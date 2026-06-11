@@ -1,0 +1,44 @@
+{
+  "name": "syntee-helper",
+  "version": "0.1.0",
+  "description": "Syntee Helper — персональный AI-ассистент для Windows",
+  "main": "./out/main/index.js",
+  "author": "Syntee",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "start": "electron-vite preview",
+    "build:win": "npm run build && electron-builder --win",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.0",
+    "@electron-toolkit/utils": "^3.0.0",
+    "electron-store": "^8.2.0",
+    "openai": "^4.100.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "framer-motion": "^11.18.2",
+    "zustand": "^4.5.5",
+    "react-markdown": "^9.0.3",
+    "react-syntax-highlighter": "^15.6.1",
+    "lucide-react": "^0.511.0",
+    "uuid": "^10.0.0",
+    "clsx": "^2.1.1"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^1.0.1",
+    "@types/node": "^20.17.50",
+    "@types/react": "^18.3.23",
+    "@types/react-dom": "^18.3.7",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.5.2",
+    "electron": "^36.3.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.19"
+  }
+}

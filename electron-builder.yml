@@ -1,0 +1,36 @@
+appId: com.synteehelper.app
+productName: Syntee Helper
+copyright: Copyright © 2026 Syntee
+
+directories:
+  buildResources: resources
+  output: dist
+
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+
+extraResources:
+  - from: resources/
+    to: resources/
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.png
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: resources/icon.png
+  uninstallerIcon: resources/icon.png
+  shortcutName: Syntee Helper
+  include: resources/installer.nsh
+
+publish: null
