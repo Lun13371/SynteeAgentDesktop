@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron'
-import type Store from 'electron-store'
+import type Store from 'electron-store/ts'
 import type { MainWindow } from '../windows/MainWindow'
 import type { OverlayWindow } from '../windows/OverlayWindow'
 import type { VoiceWindow } from '../windows/VoiceWindow'

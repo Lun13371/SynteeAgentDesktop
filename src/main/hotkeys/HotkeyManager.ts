@@ -1,5 +1,5 @@
 import { globalShortcut } from 'electron'
-import type Store from 'electron-store'
+import type Store from 'electron-store/ts'
 import { DEFAULT_HOTKEYS } from '../../shared/constants'
 
 interface HotkeyCallbacks {
