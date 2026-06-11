@@ -1,0 +1,245 @@
+/* ========== RESET & BASE ========== */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Разрешить выделение текста в сообщениях */
+.selectable { user-select: text; -webkit-user-select: text; }
+
+/* Скроллбар */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.25);
+}
+
+/* App root */
+.app-root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  position: relative;
+}
+
+/* ========== CSS ПЕРЕМЕННЫЕ — ТЁМНАЯ ТЕМА (дефолт) ========== */
+:root,
+[data-theme="dark"] {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #242424;
+  --bg-tertiary: #2e2e2e;
+  --text-primary: #f5f0e8;
+  --text-secondary: #a0a0a0;
+  --text-muted: #666666;
+  --accent: #ffffff;
+  --accent-hover: rgba(255,255,255,0.85);
+  --accent-subtle: rgba(255,255,255,0.08);
+  --border: rgba(255,255,255,0.1);
+  --border-strong: rgba(255,255,255,0.18);
+  --sidebar-bg: #141414;
+  --shadow: 0 8px 32px rgba(0,0,0,0.4);
+  --shadow-lg: 0 20px 60px rgba(0,0,0,0.6);
+
+  /* Liquid Glass */
+  --glass-bg: rgba(255,255,255,0.07);
+  --glass-border: rgba(255,255,255,0.12);
+  --glass-blur: 20px;
+  --glass-saturate: 180%;
+
+  /* Typography */
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 28px;
+
+  /* Spacing */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  /* Transitions */
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+[data-theme="light"] {
+  --bg-primary: #faf8f5;
+  --bg-secondary: #f0ede8;
+  --bg-tertiary: #e8e4de;
+  --text-primary: #000000;
+  --text-secondary: #555555;
+  --text-muted: #999999;
+  --accent: #000000;
+  --accent-hover: rgba(0,0,0,0.8);
+  --accent-subtle: rgba(0,0,0,0.06);
+  --border: rgba(0,0,0,0.08);
+  --border-strong: rgba(0,0,0,0.15);
+  --sidebar-bg: #f0ede8;
+  --shadow: 0 4px 20px rgba(0,0,0,0.08);
+  --shadow-lg: 0 20px 60px rgba(0,0,0,0.15);
+  --glass-bg: rgba(255,255,255,0.6);
+  --glass-border: rgba(0,0,0,0.08);
+}
+
+[data-theme="midnight"] {
+  --bg-primary: #0a0e1a;
+  --bg-secondary: #0f1525;
+  --bg-tertiary: #151d32;
+  --text-primary: #e0e8ff;
+  --text-secondary: #7888bb;
+  --text-muted: #445577;
+  --accent: #4d9fff;
+  --accent-hover: rgba(77,159,255,0.85);
+  --accent-subtle: rgba(77,159,255,0.1);
+  --border: rgba(77,159,255,0.12);
+  --border-strong: rgba(77,159,255,0.25);
+  --sidebar-bg: #080c16;
+  --shadow: 0 8px 32px rgba(0,0,20,0.6);
+  --shadow-lg: 0 20px 60px rgba(0,0,20,0.8);
+  --glass-bg: rgba(77,159,255,0.05);
+  --glass-border: rgba(77,159,255,0.1);
+}
+
+[data-theme="forest"] {
+  --bg-primary: #0d1a0f;
+  --bg-secondary: #122014;
+  --bg-tertiary: #172818;
+  --text-primary: #d4f0d8;
+  --text-secondary: #6a9970;
+  --text-muted: #3d5c42;
+  --accent: #4caf60;
+  --accent-hover: rgba(76,175,96,0.85);
+  --accent-subtle: rgba(76,175,96,0.1);
+  --border: rgba(76,175,96,0.12);
+  --border-strong: rgba(76,175,96,0.25);
+  --sidebar-bg: #0a150c;
+  --shadow: 0 8px 32px rgba(0,10,2,0.5);
+  --shadow-lg: 0 20px 60px rgba(0,10,2,0.7);
+  --glass-bg: rgba(76,175,96,0.05);
+  --glass-border: rgba(76,175,96,0.1);
+}
+
+/* ========== LIQUID GLASS ========== */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  position: relative;
+  overflow: hidden;
+}
+
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0.08) 0%,
+    transparent 50%,
+    rgba(255,255,255,0.03) 100%
+  );
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.glass > * { position: relative; z-index: 1; }
+
+.glass-strong {
+  --glass-bg: rgba(255,255,255,0.13);
+  --glass-blur: 40px;
+}
+
+/* ========== TITLEBAR DRAG ========== */
+.drag-region { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+/* ========== RAINBOW GRADIENT (для оверлея) ========== */
+.rainbow-border {
+  background: linear-gradient(135deg,
+    #ff0080, #ff8000, #ffff00,
+    #00ff80, #0080ff, #8000ff, #ff0080
+  );
+  background-size: 300% 300%;
+  animation: rainbow-shift 3s ease infinite;
+}
+
+@keyframes rainbow-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* ========== АНИМАЦИИ ========== */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-ring {
+  0%   { transform: scale(0.9); opacity: 0.8; }
+  50%  { transform: scale(1.05); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.8; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ========== УТИЛИТЫ ========== */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-center { justify-content: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: 4px; }
+.gap-2 { gap: 8px; }
+.gap-3 { gap: 12px; }
+.gap-4 { gap: 16px; }
+.flex-1 { flex: 1; }
+.min-w-0 { min-width: 0; }
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rounded-sm { border-radius: var(--radius-sm); }
+.rounded-md { border-radius: var(--radius-md); }
+.rounded-lg { border-radius: var(--radius-lg); }
+.rounded-xl { border-radius: var(--radius-xl); }

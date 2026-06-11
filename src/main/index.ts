@@ -1,74 +1,109 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import { electronApp, optimizer } from '@electron-toolkit/utils'
+import Store from 'electron-store'
+import { DEFAULT_SETTINGS } from '../shared/constants'
+import { MainWindow } from './windows/MainWindow'
+import { OverlayWindow } from './windows/OverlayWindow'
+import { VoiceWindow } from './windows/VoiceWindow'
+import { SpotlightWindow } from './windows/SpotlightWindow'
+import { TrayManager } from './tray/TrayManager'
+import { HotkeyManager } from './hotkeys/HotkeyManager'
+import { registerAllIPC } from './ipc'
 
-function createWindow(): void {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
-    show: false,
-    autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
-    }
-  })
+// Инициализируем store с дефолтными настройками
+const store = new Store({ defaults: DEFAULT_SETTINGS })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
+// Глобальные окна
+let mainWindow: MainWindow
+let overlayWindow: OverlayWindow
+let voiceWindow: VoiceWindow
+let spotlightWindow: SpotlightWindow
+let trayManager: TrayManager
+let hotkeyManager: HotkeyManager
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
+app.whenReady().then(async () => {
+  electronApp.setAppUserModelId('com.synteehelper.app')
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
-}
-
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
-
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
+  // Оптимизация dev tools
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  // Создаём окна
+  mainWindow = new MainWindow(store)
+  overlayWindow = new OverlayWindow()
+  voiceWindow = new VoiceWindow()
+  spotlightWindow = new SpotlightWindow()
 
-  createWindow()
+  const main = mainWindow.create()
+  overlayWindow.create()
+  voiceWindow.create()
+  spotlightWindow.create()
 
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  // Трей
+  trayManager = new TrayManager(store, {
+    showMain: () => mainWindow.show(),
+    showSpotlight: () => spotlightWindow.show(),
+    showVoice: () => voiceWindow.show(),
+    quit: () => app.quit(),
+  })
+  trayManager.init()
+
+  // Горячие клавиши
+  hotkeyManager = new HotkeyManager(store, {
+    toggleMain: () => mainWindow.toggle(),
+    showOverlay: () => overlayWindow.show(),
+    toggleVoice: () => voiceWindow.toggle(),
+    toggleSpotlight: () => spotlightWindow.toggle(),
+    quickQuestion: () => spotlightWindow.showQuick(),
+  })
+  hotkeyManager.registerAll()
+
+  // IPC
+  registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow })
+
+  // Первый запуск
+  if (!store.get('firstRunComplete')) {
+    await onFirstRun()
+  }
+
+  // Показываем главное окно
+  main.once('ready-to-show', () => {
+    main.show()
+    if (process.env.NODE_ENV === 'development') {
+      main.webContents.openDevTools({ mode: 'detach' })
+    }
   })
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+async function onFirstRun(): Promise<void> {
+  const { mkdirSync } = await import('fs')
+  const { join } = await import('path')
+  const userData = app.getPath('userData')
+
+  const dirs = [
+    join(userData, 'generated'),
+    join(userData, 'recordings'),
+    join(userData, 'backups'),
+    join(userData, 'voices'),
+    join(userData, 'screenshots'),
+    join(userData, 'logs'),
+  ]
+  dirs.forEach(d => mkdirSync(d, { recursive: true }))
+  store.set('firstRunComplete', true)
+  store.set('firstRunDate', Date.now())
+}
+
+// Не закрывать при закрытии всех окон — живём в трее
+app.on('window-all-closed', (e) => {
+  e.preventDefault()
 })
 
-// In this file you can include the rest of your app"s specific main process
-// code. You can also put them in separate files and require them here.
+app.on('will-quit', () => {
+  hotkeyManager?.unregisterAll()
+})
+
+app.on('activate', () => {
+  mainWindow?.show()
+})

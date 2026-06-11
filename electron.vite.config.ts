@@ -1,20 +1,28 @@
+import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
-import { defineConfig, externalizeDepsPlugin, bytecodePlugin } from 'electron-vite'
-import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin(), bytecodePlugin()]
-  },
-  preload: {
-    plugins: [externalizeDepsPlugin(), bytecodePlugin()]
-  },
-  renderer: {
+    plugins: [externalizeDepsPlugin()],
     resolve: {
       alias: {
-        '@renderer': resolve('src/renderer/src')
+        '@main': resolve('src/main'),
+        '@core': resolve('src/core'),
+        '@shared': resolve('src/shared')
       }
-    },
-    plugins: [vue()]
+    }
+  },
+  preload: {
+    plugins: [externalizeDepsPlugin()]
+  },
+  renderer: {
+    plugins: [react()],
+    resolve: {
+      alias: {
+        '@renderer': resolve('src/renderer/src'),
+        '@shared': resolve('src/shared')
+      }
+    }
   }
 })
