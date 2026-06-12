@@ -1,0 +1,43 @@
+.app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 0;
+  color: currentColor;
+}
+
+.app-icon svg {
+  display: block;
+}
+
+.app-icon--xs { width: 12px; height: 12px; }
+.app-icon--sm { width: 14px; height: 14px; }
+.app-icon--md { width: 16px; height: 16px; }
+.app-icon--lg { width: 18px; height: 18px; }
+.app-icon--xl { width: 22px; height: 22px; }
+
+.app-icon--default { color: var(--text-primary); }
+.app-icon--muted { color: var(--text-muted); }
+.app-icon--accent { color: var(--accent); }
+.app-icon--success { color: #2ecc71; }
+.app-icon--warning { color: #f5b041; }
+.app-icon--danger { color: #ff6b6b; }
+
+.app-icon--spin {
+  animation: app-icon-spin 1s linear infinite;
+}
+
+.app-icon--pulse {
+  animation: app-icon-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes app-icon-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes app-icon-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.75; }
+}

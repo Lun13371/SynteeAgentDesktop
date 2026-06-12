@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, KeyboardEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import AppIcon from '../AppIcon/AppIcon'
+import IconButton from '../IconButton/IconButton'
 import './ChatInput.css'
 
 interface ChatInputProps {
@@ -40,18 +42,12 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: C
     <div className={`chat-input-wrap ${isIncognito ? 'chat-input-wrap--incognito' : ''}`}>
       <div className="chat-input-box glass">
         {/* Кнопка прикрепить */}
-        <motion.button
+        <IconButton
+          icon="paperclip"
+          label="Прикрепить файл"
           className="chat-input-btn"
-          whileTap={{ scale: 0.88 }}
-          whileHover={{ scale: 1.05 }}
           onClick={onAttach}
-          title="Прикрепить файл"
-        >
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M15.5 8.5l-6.8 6.8a4.5 4.5 0 01-6.4-6.3L9 2.3a3 3 0 014.2 4.2L6.8 13a1.5 1.5 0 01-2.1-2.1L11 4.5"
-              stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-          </svg>
-        </motion.button>
+        />
 
         {/* Textarea */}
         <textarea
@@ -66,18 +62,11 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: C
         />
 
         {/* Кнопка голос */}
-        <motion.button
+        <IconButton
+          icon="mic"
+          label="Голосовой ввод"
           className="chat-input-btn"
-          whileTap={{ scale: 0.88 }}
-          whileHover={{ scale: 1.05 }}
-          title="Голосовой ввод"
-        >
-          <svg width="16" height="18" viewBox="0 0 16 18" fill="none">
-            <rect x="5" y="1" width="6" height="10" rx="3" stroke="currentColor" strokeWidth="1.4"/>
-            <path d="M2 8.5a6 6 0 0012 0" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            <line x1="8" y1="14.5" x2="8" y2="17" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-          </svg>
-        </motion.button>
+        />
 
         {/* Кнопка отправить */}
         <AnimatePresence>
@@ -92,10 +81,9 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: C
               onClick={handleSend}
               disabled={disabled}
               title="Отправить (Enter)"
+              aria-label="Отправить"
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M8 14V2M2 8l6-6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <AppIcon name="send" size="md" tone="accent" />
             </motion.button>
           )}
         </AnimatePresence>

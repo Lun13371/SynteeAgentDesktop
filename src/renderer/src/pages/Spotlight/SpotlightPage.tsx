@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import './SpotlightPage.css'
 
 interface SuggestionItem {
   id: string
-  icon: string
+  icon: IconName
   label: string
   sub?: string
   action: () => void
@@ -79,8 +80,10 @@ export default function SpotlightPage() {
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
               whileTap={{ scale: 0.88 }}
+              title="Очистить"
+              aria-label="Очистить"
             >
-              ✕
+              <AppIcon name="x" size="sm" tone="muted" />
             </motion.button>
           )}
         </div>
@@ -104,7 +107,9 @@ export default function SpotlightPage() {
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: i * 0.03 }}
                 >
-                  <span className="spotlight-result-icon">{item.icon}</span>
+                  <span className="spotlight-result-icon">
+                    <AppIcon name={item.icon} size="md" tone={i === selected ? 'accent' : 'muted'} />
+                  </span>
                   <div className="spotlight-result-text">
                     <span className="spotlight-result-label">{item.label}</span>
                     {item.sub && <span className="spotlight-result-sub">{item.sub}</span>}
@@ -129,25 +134,25 @@ export default function SpotlightPage() {
 
 function getDefaultSuggestions(): SuggestionItem[] {
   return [
-    { id: 'chat', icon: '💬', label: 'Новый чат', sub: 'Открыть главное окно', action: () => window.syntee.window.show() },
-    { id: 'voice', icon: '🎤', label: 'Голосовой режим', sub: 'Ctrl+Shift+V', action: () => window.syntee.voice?.start() },
-    { id: 'overlay', icon: '🔍', label: 'Circle to Search', sub: 'Ctrl+Shift+S', action: () => window.syntee.overlay.show() },
-    { id: 'settings', icon: '⚙️', label: 'Настройки', sub: 'Открыть настройки', action: () => { window.syntee.window.show() } },
+    { id: 'chat', icon: 'sparkles', label: 'Новый чат', sub: 'Открыть главное окно', action: () => window.syntee.window.show() },
+    { id: 'voice', icon: 'mic', label: 'Голосовой режим', sub: 'Ctrl+Shift+V', action: () => window.syntee.voice?.start() },
+    { id: 'overlay', icon: 'search', label: 'Circle to Search', sub: 'Ctrl+Shift+S', action: () => window.syntee.overlay.show() },
+    { id: 'settings', icon: 'settings', label: 'Настройки', sub: 'Открыть настройки', action: () => { window.syntee.window.show() } },
   ]
 }
 
 function getSearchResults(query: string): SuggestionItem[] {
   const q = query.toLowerCase()
   const all: SuggestionItem[] = [
-    { id: 'ask', icon: '✨', label: `Спросить: "${query}"`, sub: 'Отправить в чат', action: () => { window.syntee.window.show() } },
-    { id: 'calc', icon: '🧮', label: 'Калькулятор', sub: query, action: () => {} },
-    { id: 'translate', icon: '🌐', label: `Перевести: "${query}"`, sub: 'Перевод текста', action: () => {} },
+    { id: 'ask', icon: 'sparkles', label: `Спросить: "${query}"`, sub: 'Отправить в чат', action: () => { window.syntee.window.show() } },
+    { id: 'calc', icon: 'calculator', label: 'Калькулятор', sub: query, action: () => {} },
+    { id: 'translate', icon: 'globe', label: `Перевести: "${query}"`, sub: 'Перевод текста', action: () => {} },
   ]
   if (q.includes('настр') || q.includes('sett')) {
-    all.push({ id: 'settings', icon: '⚙️', label: 'Настройки', sub: 'Открыть настройки', action: () => {} })
+    all.push({ id: 'settings', icon: 'settings', label: 'Настройки', sub: 'Открыть настройки', action: () => {} })
   }
   if (q.includes('чат') || q.includes('chat')) {
-    all.push({ id: 'chat', icon: '💬', label: 'Новый чат', sub: '', action: () => window.syntee.window.show() })
+    all.push({ id: 'chat', icon: 'sparkles', label: 'Новый чат', sub: '', action: () => window.syntee.window.show() })
   }
   return all.slice(0, 6)
 }

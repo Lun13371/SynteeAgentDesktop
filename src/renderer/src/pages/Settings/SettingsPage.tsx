@@ -3,21 +3,23 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useSettingsStore } from '../../store/settings.store'
 import { useUIStore } from '../../store/ui.store'
 import { useToast } from '../../components/ui/Toast/Toast'
+import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
+import IconButton from '../../components/ui/IconButton/IconButton'
 import './SettingsPage.css'
 
 type Section =
   | 'general' | 'ai' | 'voice' | 'hotkeys'
   | 'agent' | 'data' | 'appearance' | 'integrations'
 
-const SECTIONS: Array<{ id: Section; label: string; icon: string }> = [
-  { id: 'general',      label: 'Общие',          icon: '⚙️' },
-  { id: 'ai',           label: 'ИИ и Модели',    icon: '🧠' },
-  { id: 'appearance',   label: 'Внешний вид',    icon: '🎨' },
-  { id: 'voice',        label: 'Голос',          icon: '🎤' },
-  { id: 'hotkeys',      label: 'Горячие клавиши',icon: '⌨️' },
-  { id: 'agent',        label: 'Агент',          icon: '🤖' },
-  { id: 'integrations', label: 'Интеграции',     icon: '🔗' },
-  { id: 'data',         label: 'Данные',         icon: '💾' },
+const SECTIONS: Array<{ id: Section; label: string; icon: IconName }> = [
+  { id: 'general',      label: 'Общие',          icon: 'settings' },
+  { id: 'ai',           label: 'ИИ и Модели',    icon: 'brain' },
+  { id: 'appearance',   label: 'Внешний вид',    icon: 'palette' },
+  { id: 'voice',        label: 'Голос',          icon: 'mic' },
+  { id: 'hotkeys',      label: 'Горячие клавиши',icon: 'shield' },
+  { id: 'agent',        label: 'Агент',          icon: 'bot' },
+  { id: 'integrations', label: 'Интеграции',     icon: 'link' },
+  { id: 'data',         label: 'Данные',         icon: 'database' },
 ]
 
 export default function SettingsPage() {
@@ -46,12 +48,12 @@ export default function SettingsPage() {
         headers: { Authorization: `Bearer ${key}` }
       })
       if (res.ok) {
-        toast('✅ API ключ работает!', 'success')
+        toast('API ключ работает', 'success')
       } else {
-        toast('❌ Ошибка: ' + res.status, 'error')
+        toast('Ошибка: ' + res.status, 'error')
       }
     } catch (e) {
-      toast('❌ Не удалось подключиться', 'error')
+      toast('Не удалось подключиться', 'error')
     }
     setTestingApi(false)
   }
@@ -68,7 +70,7 @@ export default function SettingsPage() {
             onClick={() => setSection(s.id)}
             whileTap={{ scale: 0.97 }}
           >
-            <span className="settings-nav-icon">{s.icon}</span>
+            <AppIcon name={s.icon} size="sm" tone={section === s.id ? 'accent' : 'muted'} />
             {s.label}
           </motion.button>
         ))}
@@ -226,9 +228,12 @@ function AISection({ settings, onSet, apiKeyVisible, setApiKeyVisible, testingAp
             onChange={e => onSet('apiKey', e.target.value)}
             placeholder="sk-..."
           />
-          <button className="settings-icon-btn" onClick={() => setApiKeyVisible(!apiKeyVisible)}>
-            {apiKeyVisible ? '🙈' : '👁️'}
-          </button>
+          <IconButton
+            icon={apiKeyVisible ? 'eyeOff' : 'eye'}
+            label={apiKeyVisible ? 'Скрыть ключ' : 'Показать ключ'}
+            onClick={() => setApiKeyVisible(!apiKeyVisible)}
+            className="settings-icon-btn"
+          />
           <motion.button
             className="settings-btn"
             onClick={onTestApi}

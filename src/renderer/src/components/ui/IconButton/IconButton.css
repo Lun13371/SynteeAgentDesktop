@@ -1,0 +1,33 @@
+.icon-button {
+  width: 32px;
+  height: 32px;
+  border: none;
+  outline: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.icon-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.icon-button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.08), 0 0 0 4px rgba(77,159,255,0.18);
+}
+
+.icon-button--active {
+  background: rgba(77, 159, 255, 0.12);
+  color: var(--accent);
+}
+
+.icon-button--danger:hover {
+  background: rgba(255, 107, 107, 0.10);
+  color: #ff6b6b;
+}

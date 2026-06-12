@@ -1,5 +1,7 @@
 import { motion } from 'framer-motion'
 import type { Chat } from '../../../../../shared/types'
+import AppIcon from '../../ui/AppIcon/AppIcon'
+import IconButton from '../../ui/IconButton/IconButton'
 import './Sidebar.css'
 
 interface SidebarProps {
@@ -45,9 +47,7 @@ export default function Sidebar({
           whileHover={{ scale: 1.02 }}
           onClick={onNewChat}
         >
-          <svg width="14" height="14" viewBox="0 0 14 14">
-            <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
+          <AppIcon name="plus" size="sm" tone="default" />
           Новый чат
         </motion.button>
       </div>
@@ -80,30 +80,21 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-bottom">
-        {/* Режим инкогнито */}
         <motion.button
           className={`sidebar-incognito-btn no-drag ${isIncognito ? 'sidebar-incognito-btn--active' : ''}`}
           onClick={onToggleIncognito}
           whileTap={{ scale: 0.95 }}
           title="Режим инкогнито"
+          aria-label="Режим инкогнито"
         >
-          🔒 {isIncognito ? 'Инкогнито вкл' : 'Инкогнито'}
+          <AppIcon name="lock" size="sm" tone={isIncognito ? 'accent' : 'muted'} />
+          {isIncognito ? 'Инкогнито вкл' : 'Инкогнито'}
         </motion.button>
 
         <div className="sidebar-user">
           <div className="sidebar-user-avatar">S</div>
           <span className="sidebar-user-name">Пользователь</span>
-          <motion.button
-            className="sidebar-settings-btn no-drag"
-            whileTap={{ scale: 0.88 }}
-            title="Настройки"
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41"
-                stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-          </motion.button>
+          <IconButton icon="settings" label="Настройки" className="sidebar-settings-btn no-drag" />
         </div>
       </div>
     </motion.aside>

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
+import IconButton from '../../components/ui/IconButton/IconButton'
 import './MemoryPage.css'
 
 interface MemoryEntry {
@@ -11,13 +13,19 @@ interface MemoryEntry {
   updatedAt: number
 }
 
-const CATEGORIES = [
-  { id: 'all', label: 'Все', icon: '🧠' },
-  { id: 'personal', label: 'Личное', icon: '👤' },
-  { id: 'work', label: 'Работа', icon: '💼' },
-  { id: 'preferences', label: 'Предпочтения', icon: '⭐' },
-  { id: 'projects', label: 'Проекты', icon: '🚀' },
-  { id: 'facts', label: 'Факты', icon: '📌' },
+interface Category {
+  id: string
+  label: string
+  icon: IconName
+}
+
+const CATEGORIES: Category[] = [
+  { id: 'all', label: 'Все', icon: 'brain' },
+  { id: 'personal', label: 'Личное', icon: 'user' },
+  { id: 'work', label: 'Работа', icon: 'monitor' },
+  { id: 'preferences', label: 'Предпочтения', icon: 'sparkles' },
+  { id: 'projects', label: 'Проекты', icon: 'folder' },
+  { id: 'facts', label: 'Факты', icon: 'pin' },
 ]
 
 export default function MemoryPage() {
@@ -68,7 +76,7 @@ export default function MemoryPage() {
       {/* Заголовок */}
       <div className="memory-header">
         <div className="memory-title">
-          <span>🧠</span>
+          <AppIcon name="brain" size="lg" tone="accent" />
           <h2>Память</h2>
           <span className="memory-count">{memories.length}</span>
         </div>
@@ -92,7 +100,7 @@ export default function MemoryPage() {
               onChange={e => setNewCategory(e.target.value)}
             >
               {CATEGORIES.filter(c => c.id !== 'all').map(c => (
-                <option key={c.id} value={c.id}>{c.icon} {c.label}</option>
+                <option key={c.id} value={c.id}>{c.label}</option>
               ))}
             </select>
             <input
@@ -124,13 +132,15 @@ export default function MemoryPage() {
             className={`memory-cat-btn ${activeCategory === cat.id ? 'memory-cat-btn--active' : ''}`}
             onClick={() => setActiveCategory(cat.id)}
           >
-            {cat.icon} {cat.label}
+            <AppIcon name={cat.icon} size="sm" tone={activeCategory === cat.id ? 'accent' : 'muted'} />
+            {cat.label}
           </button>
         ))}
       </div>
 
       {/* Поиск */}
       <div className="memory-search-wrap">
+        <AppIcon name="search" size="sm" tone="muted" />
         <input
           className="memory-search"
           placeholder="Поиск по памяти..."
@@ -144,7 +154,7 @@ export default function MemoryPage() {
         <AnimatePresence initial={false}>
           {filtered.length === 0 ? (
             <div className="memory-empty">
-              <span>🧠</span>
+              <AppIcon name="brain" size="xl" tone="muted" />
               <p>Нет записей. Напиши Syntee «запомни...» или добавь вручную.</p>
             </div>
           ) : (
@@ -158,7 +168,11 @@ export default function MemoryPage() {
                 layout
               >
                 <div className="memory-item-cat">
-                  {CATEGORIES.find(c => c.id === m.category)?.icon || '📌'}
+                  <AppIcon
+                    name={CATEGORIES.find(c => c.id === m.category)?.icon || 'pin'}
+                    size="md"
+                    tone="muted"
+                  />
                 </div>
                 <div className="memory-item-content">
                   <span className="memory-item-key">{m.key}</span>
@@ -166,11 +180,7 @@ export default function MemoryPage() {
                 </div>
                 <div className="memory-item-meta">
                   <span className="memory-item-conf">{Math.round(m.confidence * 100)}%</span>
-                  <button
-                    className="memory-delete-btn"
-                    onClick={() => handleDelete(m.id)}
-                    title="Удалить"
-                  >✕</button>
+                  <IconButton icon="x" label="Удалить" danger onClick={() => handleDelete(m.id)} />
                 </div>
               </motion.div>
             ))

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import AppIcon, { type IconName } from '../AppIcon/AppIcon'
+import IconButton from '../IconButton/IconButton'
 import './AgentPanel.css'
 
 interface AgentStep {
@@ -12,6 +14,17 @@ interface AgentStep {
 
 interface AgentPanelProps {
   onClose: () => void
+}
+
+const TOOL_ICONS: Record<string, IconName> = {
+  run_command: 'terminal',
+  read_file: 'fileText',
+  write_file: 'edit',
+  list_directory: 'folder',
+  get_clipboard: 'clipboard',
+  set_clipboard: 'clipboard',
+  search_web: 'globe',
+  get_system_info: 'monitor',
 }
 
 export default function AgentPanel({ onClose }: AgentPanelProps) {
@@ -49,17 +62,6 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
     await (window.syntee as any).agent?.run(query)
   }
 
-  const ICONS: Record<string, string> = {
-    run_command: '⚡',
-    read_file: '📄',
-    write_file: '✏️',
-    list_directory: '📁',
-    get_clipboard: '📋',
-    set_clipboard: '📋',
-    search_web: '🌐',
-    get_system_info: '💻',
-  }
-
   return (
     <motion.div
       className="agent-panel glass"
@@ -71,11 +73,11 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
       {/* Заголовок */}
       <div className="agent-panel-header">
         <div className="agent-panel-title">
-          <span className="agent-panel-icon">🤖</span>
-          Агент
+          <AppIcon name="bot" size="md" tone="accent" />
+          <span>Агент</span>
           {running && <span className="agent-running-dot" />}
         </div>
-        <button className="agent-close-btn" onClick={onClose}>✕</button>
+        <IconButton icon="x" label="Закрыть" onClick={onClose} />
       </div>
 
       {/* Шаги */}
@@ -91,7 +93,14 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
             >
               {step.type === 'tool_call' && (
                 <div className="agent-step-tool">
-                  <span className="agent-tool-icon">{ICONS[step.toolName || ''] || '🔧'}</span>
+                  <span className="agent-tool-icon-wrap">
+                    <AppIcon
+                      name={TOOL_ICONS[step.toolName || ''] || 'terminal'}
+                      size="md"
+                      tone={running && i === steps.length - 1 ? 'accent' : 'muted'}
+                      animation={running && i === steps.length - 1 ? 'spin' : 'none'}
+                    />
+                  </span>
                   <span className="agent-tool-name">{step.toolName}</span>
                   {step.toolArgs && Object.keys(step.toolArgs).length > 0 && (
                     <code className="agent-tool-args">
@@ -104,13 +113,19 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
               )}
               {step.type === 'tool_result' && (
                 <div className={`agent-step-result ${step.success === false ? 'agent-step-result--error' : ''}`}>
-                  <span className="agent-result-icon">{step.success === false ? '❌' : '✅'}</span>
+                  <span className="agent-result-icon-wrap">
+                    <AppIcon
+                      name={step.success === false ? 'alertCircle' : 'check'}
+                      size="sm"
+                      tone={step.success === false ? 'danger' : 'success'}
+                    />
+                  </span>
                   <pre className="agent-result-text">{step.content.slice(0, 300)}{step.content.length > 300 ? '...' : ''}</pre>
                 </div>
               )}
               {step.type === 'answer' && (
                 <div className="agent-step-answer">
-                  <span>💬</span>
+                  <AppIcon name="volume" size="md" tone="accent" />
                   <p>{step.content}</p>
                 </div>
               )}
@@ -154,8 +169,12 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
           onClick={handleRun}
           disabled={running || !query.trim()}
           whileTap={{ scale: 0.93 }}
+          title={running ? 'Выполняется' : 'Запустить'}
+          aria-label={running ? 'Выполняется' : 'Запустить'}
         >
-          {running ? '⏳' : '▶'}
+          {running
+            ? <AppIcon name="loader" size="md" tone="default" animation="spin" />
+            : <AppIcon name="send" size="md" tone="default" />}
         </motion.button>
       </div>
     </motion.div>

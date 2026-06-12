@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import IconButton from '../../components/ui/IconButton/IconButton'
 import './OverlayPage.css'
 
 interface Selection {
@@ -216,13 +217,13 @@ export default function OverlayPage() {
               <div className="overlay-popup-actions">
                 {mode === 'result' && (
                   <>
-                    <button className="overlay-action-btn" onClick={() => handleAction('translate')} title="Перевести">🌐</button>
-                    <button className="overlay-action-btn" onClick={() => handleAction('summarize')} title="Кратко">📝</button>
-                    <button className="overlay-action-btn" onClick={() => handleAction('read')} title="OCR">🔤</button>
-                    <button className="overlay-action-btn" onClick={() => navigator.clipboard.writeText(resultText)} title="Копировать">📋</button>
+                    <IconButton icon="globe" label="Перевести" className="overlay-action-btn" onClick={() => handleAction('translate')} />
+                    <IconButton icon="fileText" label="Кратко" className="overlay-action-btn" onClick={() => handleAction('summarize')} />
+                    <IconButton icon="search" label="OCR" className="overlay-action-btn" onClick={() => handleAction('read')} />
+                    <IconButton icon="copy" label="Копировать" className="overlay-action-btn" onClick={() => navigator.clipboard.writeText(resultText)} />
                   </>
                 )}
-                <button className="overlay-action-btn overlay-close-btn" onClick={handleClose}>✕</button>
+                <IconButton icon="x" label="Закрыть" className="overlay-action-btn overlay-close-btn" onClick={handleClose} />
               </div>
             </div>
 

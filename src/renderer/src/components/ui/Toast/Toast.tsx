@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { create } from 'zustand'
+import AppIcon from '../AppIcon/AppIcon'
 import './Toast.css'
 
 interface ToastItem {
@@ -26,6 +26,19 @@ export const useToast = create<ToastStore>((set) => ({
   remove: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),
 }))
 
+function getToastIcon(type: ToastItem['type']) {
+  switch (type) {
+    case 'success':
+      return <AppIcon name="check" tone="success" size="md" />
+    case 'error':
+      return <AppIcon name="alertCircle" tone="danger" size="md" />
+    case 'info':
+      return <AppIcon name="info" tone="accent" size="md" />
+    default:
+      return <AppIcon name="sparkles" tone="muted" size="md" />
+  }
+}
+
 export default function ToastContainer() {
   const { toasts } = useToast()
 
@@ -41,7 +54,8 @@ export default function ToastContainer() {
             exit={{ opacity: 0, y: -10, scale: 0.95 }}
             transition={{ type: 'spring', stiffness: 350, damping: 28 }}
           >
-            {toast.message}
+            <span className="toast-icon">{getToastIcon(toast.type)}</span>
+            <span className="toast-message">{toast.message}</span>
           </motion.div>
         ))}
       </AnimatePresence>

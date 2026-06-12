@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import './OnboardingPage.css'
 
 interface OnboardingProps {
@@ -115,7 +116,9 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
             {/* Шаг 0 — Имя */}
             {step === 0 && (
               <div className="onboarding-content">
-                <div className="onboarding-icon">👋</div>
+                <div className="onboarding-icon">
+                  <AppIcon name="brain" size="xl" tone="accent" />
+                </div>
                 <h2>{STEPS[0].title}</h2>
                 <p>{STEPS[0].subtitle}</p>
                 <div className="onboarding-field">
@@ -135,7 +138,9 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
             {/* Шаг 1 — API ключ */}
             {step === 1 && (
               <div className="onboarding-content">
-                <div className="onboarding-icon">🔑</div>
+                <div className="onboarding-icon">
+                  <AppIcon name="lock" size="xl" tone="accent" />
+                </div>
                 <h2>{STEPS[1].title}</h2>
                 <p>Введи ключ от <strong>api.onlysq.ru</strong></p>
                 <div className="onboarding-field">
@@ -153,7 +158,11 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
                   onClick={testApi}
                   disabled={testing || !apiKey.trim()}
                 >
-                  {testing ? '⏳ Проверяю...' : testResult === 'ok' ? '✅ Работает!' : testResult === 'error' ? '❌ Ошибка' : '🔍 Проверить'}
+                  {testing && <AppIcon name="loader" size="sm" animation="spin" tone="muted" />}
+                  <span>{testing ? 'Проверяю...' : testResult === 'ok' ? 'Работает!' : testResult === 'error' ? 'Ошибка' : 'Проверить'}</span>
+                  {testResult === 'ok' && !testing && <AppIcon name="check" size="sm" tone="success" />}
+                  {testResult === 'error' && !testing && <AppIcon name="alertCircle" size="sm" tone="danger" />}
+                  {!testResult && !testing && <AppIcon name="search" size="sm" tone="muted" />}
                 </button>
               </div>
             )}
@@ -161,7 +170,9 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
             {/* Шаг 2 — Модель */}
             {step === 2 && (
               <div className="onboarding-content">
-                <div className="onboarding-icon">🤖</div>
+                <div className="onboarding-icon">
+                  <AppIcon name="bot" size="xl" tone="accent" />
+                </div>
                 <h2>{STEPS[2].title}</h2>
                 <p>Можно изменить в настройках</p>
                 <div className="onboarding-models">
@@ -182,7 +193,9 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
             {/* Шаг 3 — Тема */}
             {step === 3 && (
               <div className="onboarding-content">
-                <div className="onboarding-icon">🎨</div>
+                <div className="onboarding-icon">
+                  <AppIcon name="palette" size="xl" tone="accent" />
+                </div>
                 <h2>{STEPS[3].title}</h2>
                 <p>Можно изменить в настройках</p>
                 <div className="onboarding-themes">
@@ -225,13 +238,25 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
                       fill="var(--accent)" opacity="0.2"/>
                   </svg>
                 </motion.div>
-                <h2>Привет, {name}! 👋</h2>
+                <h2>Привет, {name}!</h2>
                 <p>Syntee готов к работе.<br/>Модель: <strong>{MODELS.find(m => m.id === model)?.label}</strong></p>
                 <div className="onboarding-summary">
-                  <div className="summary-item"><span>👤</span> {name}</div>
-                  <div className="summary-item"><span>🔑</span> API ключ установлен</div>
-                  <div className="summary-item"><span>🤖</span> {MODELS.find(m => m.id === model)?.label}</div>
-                  <div className="summary-item"><span>🎨</span> {THEMES.find(t => t.id === theme)?.label} тема</div>
+                  <div className="summary-item">
+                    <AppIcon name="user" size="sm" tone="muted" />
+                    <span>{name}</span>
+                  </div>
+                  <div className="summary-item">
+                    <AppIcon name="lock" size="sm" tone="muted" />
+                    <span>API ключ установлен</span>
+                  </div>
+                  <div className="summary-item">
+                    <AppIcon name="bot" size="sm" tone="muted" />
+                    <span>{MODELS.find(m => m.id === model)?.label}</span>
+                  </div>
+                  <div className="summary-item">
+                    <AppIcon name="palette" size="sm" tone="muted" />
+                    <span>{THEMES.find(t => t.id === theme)?.label} тема</span>
+                  </div>
                 </div>
               </div>
             )}
@@ -263,7 +288,8 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3 }}
             >
-              🚀 Начать!
+              <AppIcon name="sparkles" size="sm" tone="default" />
+              <span>Начать!</span>
             </motion.button>
           )}
         </div>
