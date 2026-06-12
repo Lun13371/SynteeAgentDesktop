@@ -85,13 +85,30 @@ export class AIClient {
         })
 
         let fullText = ''
+        let chunkCount = 0
         for await (const chunk of stream) {
-          const token = chunk.choices[0]?.delta?.content || ''
+          const token = chunk.choices[0]?.delta?.content ?? ''
+          chunkCount++
           if (token) {
             fullText += token
             callbacks.onToken(token)
           }
         }
+
+        // Фоллбэк: если стриминг дал 0 токенов — пробуем non-stream
+        if (!fullText) {
+          console.warn(`[AIClient] stream вернул ${chunkCount} чанков но 0 токенов — фоллбэк на non-stream`)
+          const res = await this.client.chat.completions.create({
+            model,
+            messages: allMessages,
+            stream: false,
+            temperature: (this.store.get('temperature') as number) || 0.7,
+            max_tokens: (this.store.get('maxTokens') as number) || 4096,
+          })
+          fullText = res.choices[0]?.message?.content || ''
+          if (fullText) callbacks.onToken(fullText)
+        }
+
         callbacks.onDone(fullText)
         return
 

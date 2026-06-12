@@ -92,7 +92,9 @@ ${memoryContext ? '\n' + memoryContext : ''}`
           })
         },
         onDone: (text) => {
-          fullText = text
+          // Используем локально накопленный текст — надёжнее чем text из onDone
+          // (некоторые провайдеры возвращают пустую строку в финальном чанке)
+          if (text && text.length > fullText.length) fullText = text
           const assistantMsg: Message = {
             id: assistantMsgId,
             chatId: params.chatId,
