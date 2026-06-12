@@ -318,16 +318,9 @@ function VoiceSection({ settings, onSet }: { settings: Record<string, unknown>; 
           {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].map(v => <option key={v} value={v}>{v}</option>)}
         </select>
       </Field>
-      <Field label="Модель STT">
-        <select className="settings-select" value={(settings['sttModel'] as string) || 'gemini-3-flash'} onChange={e => onSet('sttModel', e.target.value)}>
-          {['gemini-3-flash', 'gemini-3.5-flash', 'gpt-5-mini'].map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </Field>
-      <Field label="Модель TTS">
-        <select className="settings-select" value={(settings['ttsModel'] as string) || 'gemini-3-flash'} onChange={e => onSet('ttsModel', e.target.value)}>
-          {['gemini-3-flash', 'gemini-3.5-flash'].map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </Field>
+      <div className="settings-info-note">
+        Модели STT и TTS задаются в разделе <strong>ИИ и Модели</strong> → Назначения ролей.
+      </div>
     </>
   )
 }
