@@ -13,9 +13,15 @@ interface ChatInputProps {
   isIncognito?: boolean
   replyTo?: { id: string; role: string; content: string }[]
   onCancelReply?: (id: string) => void
+  isGenerating?: boolean
+  onStop?: () => void
 }
 
-export default function ChatInput({ onSend, onAttach, disabled, isIncognito, replyTo, onCancelReply }: ChatInputProps) {
+export default function ChatInput({
+  onSend, onAttach, disabled, isIncognito,
+  replyTo, onCancelReply,
+  isGenerating, onStop,
+}: ChatInputProps) {
   const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -55,6 +61,9 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito, rep
     }
   }
 
+  // Определяем состояние кнопки: stop > send > mic
+  const btnMode = isGenerating ? 'stop' : value.trim() ? 'send' : 'mic'
+
   return (
     <div className={`chat-input-wrap ${isIncognito ? 'chat-input-wrap--incognito' : ''}`}>
       {replyTo && replyTo.length > 0 && (
@@ -88,7 +97,7 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito, rep
           onKeyDown={handleKeyDown}
           placeholder={isIncognito ? 'Режим инкогнито — чат не сохраняется...' : 'Сообщение Syntee...'}
           rows={1}
-          disabled={disabled}
+          disabled={disabled && !isGenerating}
         />
 
         {/* Селектор режима подтверждения */}
@@ -100,19 +109,27 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito, rep
           />
         )}
 
-        {/* Кнопка mic → send — анимированная */}
+        {/* Кнопка: mic / send / stop — анимированная */}
         <motion.button
-          className={`chat-input-action-btn ${value.trim() ? 'chat-input-action-btn--send' : 'chat-input-action-btn--mic'}`}
-          onClick={value.trim() ? handleSend : undefined}
-          disabled={disabled}
+          className={`chat-input-action-btn chat-input-action-btn--${btnMode}`}
+          onClick={btnMode === 'stop' ? onStop : btnMode === 'send' ? handleSend : undefined}
           whileTap={{ scale: 0.88 }}
           whileHover={{ scale: 1.08 }}
           transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-          title={value.trim() ? 'Отправить (Enter)' : 'Голосовой ввод'}
-          aria-label={value.trim() ? 'Отправить' : 'Голосовой ввод'}
+          title={btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? 'Отправить (Enter)' : 'Голосовой ввод'}
+          aria-label={btnMode === 'stop' ? 'Остановить' : btnMode === 'send' ? 'Отправить' : 'Голосовой ввод'}
         >
           <AnimatePresence mode="wait" initial={false}>
-            {value.trim() ? (
+            {btnMode === 'stop' ? (
+              <motion.span
+                key="stop"
+                initial={{ scale: 0.5, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.5, opacity: 0 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                className="chat-input-stop-icon"
+              />
+            ) : btnMode === 'send' ? (
               <motion.span
                 key="send"
                 initial={{ rotate: -90, opacity: 0, scale: 0.5 }}

@@ -127,6 +127,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (data.chatId !== currentChatId) return
       addMessage(data.message)
       clearStream()
+      setTyping(false)
+      setLiveThinking(null)
       streamMsgIdRef.current = null
       setLiveThinking(null)
       setIsAgentRunning(false)
@@ -137,6 +139,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { error: string }) => {
       clearStream()
+      setTyping(false)
+      setLiveThinking(null)
       setIsAgentRunning(false)
       setToolSteps([])
       toast('Ошибка: ' + data.error, 'error')
@@ -337,18 +341,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   </div>
                 ))}
                 {isTyping && !streamingText && !liveThinking && <TypingIndicator key="typing" />}
-                {isTyping && (
-                  <div className="chat-stop-wrap">
-                    <button
-                      className="chat-stop-btn"
-                      onClick={() => window.syntee.chat.stop()}
-                      title="Остановить генерацию"
-                    >
-                      <span className="chat-stop-icon" />
-                      Остановить
-                    </button>
-                  </div>
-                )}
               {/* Live tool chain — пока агент работает */}
               {liveSteps.length > 0 && (
                 <div className="chat-tool-chain-wrap">
@@ -372,6 +364,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             isIncognito={isIncognito}
             replyTo={replyTo}
             onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
+            isGenerating={isTyping}
+            onStop={() => window.syntee.chat.stop()}
           />
 
           {/* Selection reply popup */}
