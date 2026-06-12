@@ -297,11 +297,18 @@ export default function AISettingsTab() {
         <div className="ai-assignments">
           <p className="ai-assignments-hint">Назначьте модели для каждой роли. Модели берутся из настроенных провайдеров.</p>
           <div className="ai-assignments-grid">
-            {(Object.keys(ROLE_META) as ModelRole[]).map(role => {
+            {(Object.keys(ROLE_META) as ModelRole[]).map((role, i) => {
               const meta = ROLE_META[role]
               const current = assignments.find(a => a.role === role)
               return (
-                <div key={role} className="assignment-row glass">
+                <motion.div
+                  key={role}
+                  className="assignment-row glass"
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ type: 'spring', stiffness: 380, damping: 28, delay: i * 0.04 }}
+                  whileHover={{ scale: 1.01, transition: { type: 'spring', stiffness: 500, damping: 30 } }}
+                >
                   <div className="assignment-info">
                     <AppIcon name={meta.icon as 'bot'} size="sm" tone="accent" />
                     <div>
@@ -318,7 +325,7 @@ export default function AISettingsTab() {
                       placeholder="Не выбрано"
                     />
                   </div>
-                </div>
+                </motion.div>
               )
             })}
           </div>
