@@ -75,10 +75,12 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   google:    { name: 'Google',      baseUrl: 'https://generativelanguage.googleapis.com/v1beta', color: '#4285f4', docsUrl: 'https://aistudio.google.com' },
   groq:      { name: 'Groq',        baseUrl: 'https://api.groq.com/openai/v1',            color: '#f55036', docsUrl: 'https://console.groq.com' },
   mistral:   { name: 'Mistral AI',  baseUrl: 'https://api.mistral.ai/v1',                 color: '#ff7000', docsUrl: 'https://console.mistral.ai' },
-  ollama:    { name: 'Ollama',      baseUrl: 'http://localhost:11434/v1',                  color: '#ffffff', docsUrl: 'https://ollama.ai' },
+  ollama:    { name: 'Ollama',      baseUrl: 'http://localhost:11434/v1',                  color: '#aaaaaa', docsUrl: 'https://ollama.ai' },
   cohere:    { name: 'Cohere',      baseUrl: 'https://api.cohere.ai/v1',                  color: '#39594d', docsUrl: 'https://dashboard.cohere.com' },
   together:  { name: 'Together AI', baseUrl: 'https://api.together.xyz/v1',               color: '#7c3aed', docsUrl: 'https://api.together.ai' },
   fireworks: { name: 'Fireworks',   baseUrl: 'https://api.fireworks.ai/inference/v1',     color: '#ef4444', docsUrl: 'https://fireworks.ai' },
   deepseek:  { name: 'DeepSeek',    baseUrl: 'https://api.deepseek.com/v1',               color: '#2563eb', docsUrl: 'https://platform.deepseek.com' },
   xai:       { name: 'xAI Grok',    baseUrl: 'https://api.x.ai/v1',                       color: '#ffffff', docsUrl: 'https://console.x.ai' },
+  onlysq:    { name: 'OnlySQ',      baseUrl: 'https://api.onlysq.ru/ai/openai',            color: '#a855f7', docsUrl: 'https://api.onlysq.ru' },
+  voidai:    { name: 'VoidAI',      baseUrl: 'https://api.voidai.app/v1',                  color: '#06b6d4', docsUrl: 'https://docs.voidai.app' },
 }

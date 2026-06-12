@@ -78,7 +78,7 @@ export interface AgentAction {
 export type ProviderType =
   | 'openai' | 'anthropic' | 'google' | 'groq' | 'mistral'
   | 'ollama' | 'cohere' | 'together' | 'fireworks' | 'deepseek'
-  | 'xai' | 'custom'
+  | 'xai' | 'onlysq' | 'voidai' | 'custom'
 
 export interface Provider {
   id: string               // уникальный slug: 'openai', 'my-custom-1'
