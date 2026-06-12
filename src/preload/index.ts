@@ -70,6 +70,12 @@ const synteeAPI = {
     cancel: () => ipcRenderer.invoke('agent:cancel'),
     getSettings: () => ipcRenderer.invoke('agent:getSettings'),
     setSettings: (s: unknown) => ipcRenderer.invoke('agent:setSettings', s),
+    onConfirm: (cb: (data: { reqId: string; toolName: string; args: unknown }) => void) => {
+      ipcRenderer.on('agent:confirm', (_, data) => cb(data))
+    },
+    confirmResponse: (reqId: string, approved: boolean) => {
+      ipcRenderer.send(`agent:confirm:response:${reqId}`, approved)
+    },
   },
 
   // Провайдеры и модели

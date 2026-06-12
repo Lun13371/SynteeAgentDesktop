@@ -19,6 +19,7 @@ export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
   onDone: (answer: string) => void
   onError: (err: Error) => void
+  onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: ApprovalMode
 }
 
@@ -66,6 +67,22 @@ export class Agent {
           try { args = JSON.parse(fn.arguments) } catch {}
 
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name })
+
+          // Проверка режима подтверждения
+          const mode = callbacks.approvalMode || 'auto'
+          if (mode === 'ask' && callbacks.onConfirm) {
+            const approved = await callbacks.onConfirm(fn.name, args)
+            if (!approved) {
+              messages.push({
+                role: 'tool',
+                tool_call_id: (call as { id: string }).id,
+                name: fn.name,
+                content: 'Действие отклонено пользователем.',
+              })
+              callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: 'Отклонено пользователем', success: false })
+              continue
+            }
+          }
 
           const result = await this.executeTool(fn.name, args, tavilyKey)
 

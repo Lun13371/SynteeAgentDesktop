@@ -18,6 +18,7 @@ import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
 import AnimatedBackground from './components/ui/AnimatedBackground/AnimatedBackground'
 import AgentPanel from './components/ui/AgentPanel/AgentPanel'
+import AgentConfirmDialog from './components/ui/AgentConfirmDialog/AgentConfirmDialog'
 import './components/ui/AgentPanel/AgentPanel.css'
 
 type Route = 'chat' | 'overlay' | 'voice' | 'spotlight'
@@ -92,6 +93,7 @@ export default function App() {
         </AnimatePresence>
       </div>
       <ToastContainer />
+      <AgentConfirmDialog />
     </div>
   )
 }
