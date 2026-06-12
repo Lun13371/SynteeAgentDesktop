@@ -10,6 +10,8 @@ import SpotlightPage from './pages/Spotlight/SpotlightPage'
 import './pages/Spotlight/SpotlightPage.css'
 import SettingsPage from './pages/Settings/SettingsPage'
 import './pages/Settings/SettingsPage.css'
+import MemoryPage from './pages/Memory/MemoryPage'
+import './pages/Memory/MemoryPage.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
 import AnimatedBackground from './components/ui/AnimatedBackground/AnimatedBackground'
@@ -17,7 +19,7 @@ import AgentPanel from './components/ui/AgentPanel/AgentPanel'
 import './components/ui/AgentPanel/AgentPanel.css'
 
 type Route = 'chat' | 'overlay' | 'voice' | 'spotlight'
-type MainPage = 'chat' | 'settings'
+type MainPage = 'chat' | 'settings' | 'memory'
 
 function getRoute(): Route {
   const hash = window.location.hash.replace('#/', '')
@@ -55,11 +57,13 @@ export default function App() {
       <TitleBar
         onSettingsClick={() => setMainPage(p => p === 'settings' ? 'chat' : 'settings')}
         onAgentClick={() => setShowAgent(p => !p)}
+        onMemoryClick={() => setMainPage(p => p === 'memory' ? 'chat' : 'memory')}
       />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
           {mainPage === 'chat' && <ChatPage embedded />}
           {mainPage === 'settings' && <SettingsPage />}
+          {mainPage === 'memory' && <MemoryPage />}
         </div>
         <AnimatePresence>
           {showAgent && <AgentPanel onClose={() => setShowAgent(false)} />}

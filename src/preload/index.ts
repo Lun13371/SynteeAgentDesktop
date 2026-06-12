@@ -56,6 +56,14 @@ const synteeAPI = {
     reloadClient: () => ipcRenderer.invoke('chat:reloadClient'),
   },
 
+  // Память
+  memory: {
+    getAll: (category?: string) => ipcRenderer.invoke('memory:getAll', category),
+    save: (entry: unknown) => ipcRenderer.invoke('memory:save', entry),
+    delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
+    search: (query: string) => ipcRenderer.invoke('memory:search', query),
+  },
+
   // Агент
   agent: {
     run: (query: string) => ipcRenderer.invoke('agent:run', query),

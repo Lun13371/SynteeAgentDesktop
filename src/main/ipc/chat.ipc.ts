@@ -5,6 +5,7 @@ import {
   createChat, getAllChats, getMessages, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB
 } from '../../core/db/database'
+import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
 import type { Message } from '../../shared/types'
@@ -18,12 +19,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   // Системный промпт Syntee
   const getSystemPrompt = (): string => {
     const userName = store.get('userName') as string || ''
+    const memoryContext = getAllMemoriesForContext()
     return `Ты Syntee — персональный AI-ассистент для Windows. Умный, дружелюбный, с лёгким юмором.
 ${userName ? `Пользователя зовут ${userName}. Обращайся к нему по имени.` : ''}
 Отвечай на том же языке, на котором говорит пользователь.
 Отвечай по умолчанию в среднем объёме — не слишком коротко и не слишком длинно.
 Форматируй ответы с использованием Markdown когда это уместно.
-Дата и время: ${new Date().toLocaleString('ru')}.`
+Дата и время: ${new Date().toLocaleString('ru')}.
+${memoryContext ? '\n' + memoryContext : ''}`
   }
 
   // Создать чат
@@ -100,6 +103,12 @@ ${userName ? `Пользователя зовут ${userName}. Обращайс�
             model: store.get('mainModel') as string || 'claude-sonnet-4-6',
           }
           if (!params.incognito) saveMessage(assistantMsg)
+
+          // Автоэкстракция фактов из разговора
+          if (!params.incognito) {
+            const facts = extractMemoriesFromConversation(params.content, fullText)
+            facts.forEach(f => saveMemory(f))
+          }
 
           // Автоназвание чата после первого обмена
           if (history.length === 0 && !params.incognito) {

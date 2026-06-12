@@ -45,6 +45,12 @@ if (!window.syntee) {
       unpin: noop,
       reloadClient: noop,
     },
+    memory: {
+      getAll: () => Promise.resolve([]),
+      save: () => Promise.resolve(null),
+      delete: () => Promise.resolve(true),
+      search: () => Promise.resolve([]),
+    },
     agent: {
       run: () => Promise.resolve({ started: true }),
       cancel: () => Promise.resolve({ cancelled: true }),
