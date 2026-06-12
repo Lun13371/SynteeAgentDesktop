@@ -64,6 +64,8 @@ export default function OnboardingPage({ onDone }: OnboardingProps) {
     await (window.syntee as any).settings?.set('theme', theme)
     await (window.syntee as any).settings?.set('mainModel', model)
     await (window.syntee as any).settings?.set('firstRunComplete', true)
+    await (window.syntee as any).settings?.set('firstRunDate', Date.now())
+    await (window.syntee as any).chat?.reloadClient?.()
     document.documentElement.setAttribute('data-theme', theme)
     onDone()
   }

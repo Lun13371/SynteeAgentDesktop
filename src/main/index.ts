@@ -96,6 +96,8 @@ async function onFirstRun(): Promise<void> {
   const { join } = await import('path')
   const userData = app.getPath('userData')
 
+  // Создаём нужные папки но НЕ ставим firstRunComplete —
+  // это делает renderer после завершения онбординга
   const dirs = [
     join(userData, 'generated'),
     join(userData, 'recordings'),
@@ -105,8 +107,6 @@ async function onFirstRun(): Promise<void> {
     join(userData, 'logs'),
   ]
   dirs.forEach(d => mkdirSync(d, { recursive: true }))
-  store.set('firstRunComplete', true)
-  store.set('firstRunDate', Date.now())
 }
 
 // Не закрывать при закрытии всех окон — живём в трее
