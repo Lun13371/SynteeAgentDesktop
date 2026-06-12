@@ -336,7 +336,19 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                     />
                   </div>
                 ))}
-                {isTyping && !streamingText && <TypingIndicator key="typing" />}
+                {isTyping && !streamingText && !liveThinking && <TypingIndicator key="typing" />}
+                {isTyping && (
+                  <div className="chat-stop-wrap">
+                    <button
+                      className="chat-stop-btn"
+                      onClick={() => window.syntee.chat.stop()}
+                      title="Остановить генерацию"
+                    >
+                      <span className="chat-stop-icon" />
+                      Остановить
+                    </button>
+                  </div>
+                )}
               {/* Live tool chain — пока агент работает */}
               {liveSteps.length > 0 && (
                 <div className="chat-tool-chain-wrap">

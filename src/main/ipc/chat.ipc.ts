@@ -22,6 +22,7 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
 }
 
 let aiClient: AIClient
+let currentAbortController: AbortController | null = null
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
@@ -120,6 +121,10 @@ flowchart TD
     let thinkingStartMs = 0
     let thinkingMs: number | undefined
     const collectedSteps: import('../../shared/types').ToolStep[] = []
+
+    // AbortController — для кнопки остановки
+    const abortController = new AbortController()
+    currentAbortController = abortController
 
     const finalize = () => {
       const assistantMsg: Message = {
@@ -314,15 +319,25 @@ flowchart TD
         },
       },
       'main',
-      getSystemPrompt()
+      getSystemPrompt(),
+      abortController.signal
     )
 
+    currentAbortController = null
     return userMsg
   })
 
   // Обновить клиент при смене настроек
   ipcMain.handle('chat:reloadClient', () => {
     aiClient.reload()
+  })
+
+  // Остановить текущий стрим
+  ipcMain.handle('chat:stop', () => {
+    if (currentAbortController) {
+      currentAbortController.abort()
+      currentAbortController = null
+    }
   })
 
   // Архивировать/разархивировать чат

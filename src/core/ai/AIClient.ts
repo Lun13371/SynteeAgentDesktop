@@ -79,7 +79,8 @@ export class AIClient {
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
     modelType: 'main' | 'fast' = 'main',
-    systemPrompt?: string
+    systemPrompt?: string,
+    signal?: AbortSignal
   ): Promise<void> {
     const model = this.getModel(modelType)
     const client = this.getClientForRole(modelType)
@@ -100,11 +101,12 @@ export class AIClient {
           stream: true,
           temperature: (this.store.get('temperature') as number) || 0.7,
           max_tokens: (this.store.get('maxTokens') as number) || 4096,
-        })
+        }, { signal })
 
         let fullText = ''
         let chunkCount = 0
         for await (const chunk of stream) {
+          if (signal?.aborted) break
           const token = chunk.choices[0]?.delta?.content ?? ''
           chunkCount++
           if (token) {
@@ -131,7 +133,13 @@ export class AIClient {
         return
 
       } catch (err: unknown) {
-        const error = err as { status?: number; message?: string }
+        const error = err as { status?: number; message?: string; name?: string }
+
+        // Abort — сохраняем что успели накопить
+        if (error?.name === 'AbortError' || signal?.aborted) {
+          callbacks.onDone(fullText ?? '')
+          return
+        }
 
         if (error?.status === 429) {
           const delay = backoffDelay(attempt)
