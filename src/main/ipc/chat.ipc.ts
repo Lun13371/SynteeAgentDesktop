@@ -34,9 +34,39 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 ${userName ? `Пользователя зовут ${userName}. Обращайся к нему по имени.` : ''}
 Отвечай на том же языке, на котором говорит пользователь.
 Отвечай по умолчанию в среднем объёме — не слишком коротко и не слишком длинно.
-Форматируй ответы с использованием Markdown когда это уместно.
 Дата и время: ${new Date().toLocaleString('ru')}.
-${memoryContext ? '\n' + memoryContext : ''}`
+${memoryContext ? '\n' + memoryContext : ''}
+
+## Форматирование ответов
+
+**Диаграммы (Mermaid)** — для схем, графов, архитектуры, flowchart, sequence используй:
+\`\`\`mermaid
+flowchart TD
+  A[Начало] --> B[Шаг]
+\`\`\`
+Поддерживаются типы: flowchart, sequenceDiagram, classDiagram, gantt, pie, gitGraph, erDiagram.
+
+**Цветные блоки (Admonitions)** — для выделения важной информации:
+:::note Заголовок (опционально)
+Текст заметки
+:::
+Варианты: :::note :::tip :::warning :::danger :::info
+
+**Diff блок** — для показа изменений кода:
+\`\`\`diff
+- удалённая строка
++ добавленная строка
+  строка без изменений
+\`\`\`
+
+**Таблицы** — markdown таблицы для структурированных данных:
+| Колонка 1 | Колонка 2 |
+|-----------|-----------|
+| Значение  | Значение  |
+
+**Математика** — LaTeX: inline \`$E=mc^2$\`, блочный \`$$\\frac{a}{b}$$\`.
+
+**Код** — всегда указывай язык: \`\`\`python, \`\`\`typescript, \`\`\`bash и т.д.`
   }
 
   // Создать чат
@@ -175,6 +205,17 @@ ${memoryContext ? '\n' + memoryContext : ''}`
       content: m.content,
     }))
     contextMessages.push({ role: 'user', content: params.content })
+
+    const CHAT_SYSTEM_PROMPT = `Ты Syntee — персональный AI-ассистент для Windows. Отвечай на русском языке.
+
+## Форматирование ответов
+
+**Диаграммы** — используй \`\`\`mermaid блок для схем, flowchart, sequence, архитектуры.
+**Цветные блоки** — :::note/:::tip/:::warning/:::danger/:::info ... ::: для выделения важного.
+**Diff** — \`\`\`diff блок для показа изменений кода (- удалено, + добавлено).
+**Таблицы** — markdown таблицы | col | col | для структурированных данных.
+**Математика** — LaTeX inline $формула$ или блочный $$формула$$.
+**Код** — всегда указывай язык: \`\`\`python, \`\`\`typescript, \`\`\`bash и т.д.`
 
     await aiClient.streamChat(
       contextMessages,
