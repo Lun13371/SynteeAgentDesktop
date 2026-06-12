@@ -24,6 +24,7 @@ interface MessageBubbleProps {
   toolOutputMode?: ToolOutputMode
   searchQuery?: string
   liveThinking?: { text: string; isLive: boolean; ms?: number }
+  isStreaming?: boolean
 }
 
 const codeStyle = {
@@ -106,7 +107,7 @@ function parseContent(raw: string): Array<{ type: 'md' | 'admonition'; content: 
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
-  liveThinking,
+  liveThinking, isStreaming,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -114,6 +115,7 @@ const MessageContent = memo(function MessageContent({
   onReadAloud?: () => void; onReply?: () => void
   message: Message; isPinned: number; createdAt: number
   liveThinking?: { text: string; isLive: boolean; ms?: number }
+  isStreaming?: boolean
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -204,7 +206,7 @@ const MessageContent = memo(function MessageContent({
         )}
 
         {!isUser && toolSteps && toolSteps.length > 0 && (
-          <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={false} />
+          <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={!!isStreaming} />
         )}
 
         {/* Thinking block — сохранённый или live */}
@@ -262,7 +264,7 @@ const MessageContent = memo(function MessageContent({
 
 // Внешний пузырь — только layout + spring анимация при mount
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking,
+  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -309,6 +311,7 @@ const MessageBubble = memo(function MessageBubble({
         isPinned={message.isPinned as number}
         createdAt={message.createdAt}
         liveThinking={liveThinking}
+        isStreaming={isStreaming}
       />
     </motion.div>
   )
