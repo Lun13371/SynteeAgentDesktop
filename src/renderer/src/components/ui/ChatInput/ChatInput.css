@@ -148,6 +148,24 @@
   opacity: 0.88;
 }
 
+.chat-input-action-btn--stop {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1.5px solid rgba(239, 68, 68, 0.5);
+  color: #ef4444;
+}
+.chat-input-action-btn--stop:hover {
+  background: rgba(239, 68, 68, 0.28);
+  border-color: #ef4444;
+}
+/* Иконка квадрат внутри кнопки stop */
+.chat-input-stop-icon {
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  border-radius: 2px;
+}
+
 /* Иконки внутри кнопки — всегда чёрные, без прозрачности */
 .chat-input-action-btn svg {
   color: #000000 !important;
