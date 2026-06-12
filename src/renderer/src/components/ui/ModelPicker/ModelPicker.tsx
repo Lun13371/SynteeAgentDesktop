@@ -55,7 +55,9 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    window.syntee.models.getAll().then((all: ModelMeta[]) => setModels(all))
+    window.syntee.models.getAll()
+      .then((all: ModelMeta[]) => setModels(all))
+      .catch((e: unknown) => console.error('[ModelPicker] getAll error', e))
   }, [open])
 
   useEffect(() => {
