@@ -107,10 +107,14 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Автоскролл — instant при переключении, smooth при новых сообщениях
   useEffect(() => {
     if (!bottomRef.current) return
+    if (isLoadingMessages) return // ждём пока загрузится
     const behavior = isInitialScrollRef.current ? 'instant' : 'smooth'
-    bottomRef.current.scrollIntoView({ behavior: behavior as ScrollBehavior })
-    isInitialScrollRef.current = false
-  }, [messages, streamingText, isTyping])
+    // requestAnimationFrame гарантирует что DOM уже отрендерен
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: behavior as ScrollBehavior })
+      isInitialScrollRef.current = false
+    })
+  }, [messages, streamingText, isTyping, isLoadingMessages])
 
   const selectChat = async (id: string) => {
     setIsLoadingMessages(true)
@@ -188,14 +192,22 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           onChatsUpdate={setChats}
         />
         <main className="chat-main">
+          <AnimatePresence mode="wait">
           {isLoadingMessages ? (
-            <div className="chat-skeleton">
+            <motion.div
+              key="skeleton"
+              className="chat-skeleton"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+            >
               {[0.4, 0.7, 0.5, 0.9, 0.6, 0.8, 0.45, 0.75].map((w, i) => (
                 <div key={i} className={`chat-skeleton-row ${i % 3 === 0 ? 'chat-skeleton-row--user' : ''}`}>
                   <div className="chat-skeleton-bubble" style={{ width: `${w * 100}%` }} />
                 </div>
               ))}
-            </div>
+            </motion.div>
           ) : displayMessages.length === 0 && !isTyping ? (
             <div className="chat-empty-state">
               <div className="chat-empty-icon">
@@ -240,6 +252,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               <div ref={bottomRef} />
             </div>
           )}
+          </AnimatePresence>
 
           {rateLimitSec > 0 && (
             <div className="rate-limit-bar">
