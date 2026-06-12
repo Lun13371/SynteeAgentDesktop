@@ -11,6 +11,8 @@ const MODES: { value: ApprovalMode; label: string; icon: string; desc: string }[
   { value: 'full', label: 'Полный доступ', icon: 'shield',      desc: 'Выполнять всё без подтверждений' },
 ]
 
+const DROPDOWN_H = 160 // примерная высота дропдауна
+
 interface ApprovalModeSelectorProps {
   value: ApprovalMode
   onChange: (mode: ApprovalMode) => void
@@ -19,19 +21,21 @@ interface ApprovalModeSelectorProps {
 
 export default function ApprovalModeSelector({ value, onChange, compact }: ApprovalModeSelectorProps) {
   const [open, setOpen] = useState(false)
-  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const [pos, setPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const current = MODES.find(m => m.value === value) || MODES[0]
 
-  const updatePos = () => {
-    if (!btnRef.current) return
-    const r = btnRef.current.getBoundingClientRect()
-    setPos({ top: r.bottom + 6, left: r.left })
-  }
-
   const handleOpen = (e: React.MouseEvent) => {
     e.stopPropagation()
-    updatePos()
+    if (!btnRef.current) return
+    const r = btnRef.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - r.bottom
+    const openUp = spaceBelow < DROPDOWN_H + 12
+    setPos({
+      top: openUp ? r.top - 8 : r.bottom + 6,
+      left: r.left,
+      openUp,
+    })
     setOpen(o => !o)
   }
 
@@ -39,11 +43,7 @@ export default function ApprovalModeSelector({ value, onChange, compact }: Appro
     if (!open) return
     const close = () => setOpen(false)
     document.addEventListener('mousedown', close)
-    window.addEventListener('scroll', close, true)
-    return () => {
-      document.removeEventListener('mousedown', close)
-      window.removeEventListener('scroll', close, true)
-    }
+    return () => document.removeEventListener('mousedown', close)
   }, [open])
 
   return (
@@ -63,13 +63,20 @@ export default function ApprovalModeSelector({ value, onChange, compact }: Appro
 
       {createPortal(
         <AnimatePresence>
-          {open && (
+          {open && pos && (
             <motion.div
               className="approval-dropdown glass"
-              style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999 }}
-              initial={{ opacity: 0, y: -6, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -6, scale: 0.97 }}
+              style={{
+                position: 'fixed',
+                left: pos.left,
+                ...(pos.openUp
+                  ? { bottom: window.innerHeight - pos.top, top: 'auto' }
+                  : { top: pos.top }),
+                zIndex: 9999,
+              }}
+              initial={{ opacity: 0, y: pos.openUp ? 6 : -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: pos.openUp ? 6 : -6 }}
               transition={{ type: 'spring', stiffness: 420, damping: 30 }}
               onMouseDown={e => e.stopPropagation()}
             >
