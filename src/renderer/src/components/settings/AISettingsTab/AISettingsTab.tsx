@@ -34,14 +34,18 @@ export default function AISettingsTab() {
   useEffect(() => { load() }, [])
 
   const load = async () => {
-    const [p, a, pm] = await Promise.all([
-      window.syntee.providers.getAll() as Promise<Provider[]>,
-      window.syntee.models.getAssignments() as Promise<ModelAssignment[]>,
-      window.syntee.models.getParams() as Promise<ModelParams>,
-    ])
-    setProviders(p)
-    setAssignments(a)
-    setParams(pm)
+    try {
+      const [p, a, pm] = await Promise.all([
+        window.syntee.providers.getAll() as Promise<Provider[]>,
+        window.syntee.models.getAssignments() as Promise<ModelAssignment[]>,
+        window.syntee.models.getParams() as Promise<ModelParams>,
+      ])
+      setProviders(p)
+      setAssignments(a)
+      setParams(pm)
+    } catch (e) {
+      console.error('[AISettingsTab] load error', e)
+    }
   }
 
   const getProviderMeta = (id: string) => BUILTIN_PROVIDERS_META[id]

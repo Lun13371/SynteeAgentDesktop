@@ -122,17 +122,21 @@ export function registerProviderIPC(store: Store): void {
     const custom = store.get('customModels', []) as ModelMeta[]
     const cached = store.get('cachedModels', []) as ModelMeta[]
 
-    // Все встроенные модели — всегда доступны для выбора в назначениях
-    const all = [...BUILTIN_MODELS]
+    // Если провайдеры ещё не настроены — показываем все встроенные
+    // Если настроены — только для тех у которых есть ключ (enabled)
+    const enabledIds = providers.filter(p => p.enabled).map(p => p.id)
+    const builtin = enabledIds.length > 0
+      ? BUILTIN_MODELS.filter(m => enabledIds.includes(m.providerId))
+      : BUILTIN_MODELS
 
-    // Добавляем кэшированные (из fetchModels) и кастомные — не дублируем
+    const all = [...builtin]
+
     for (const m of [...cached, ...custom]) {
       if (!all.find(x => x.id === m.id && x.providerId === m.providerId)) {
         all.push(m)
       }
     }
 
-    // Добавляем модели из настроенных провайдеров у которых есть modelsOverride
     for (const p of providers) {
       for (const id of (p.modelsOverride || [])) {
         if (!all.find(x => x.id === id && x.providerId === p.id)) {
