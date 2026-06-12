@@ -11,6 +11,7 @@ import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
 import { registerChatIPC } from './ipc/chat.ipc'
+import { registerOverlayIPC } from './ipc/overlay.ipc'
 
 // Инициализируем store с дефолтными настройками
 const store = new Store({ defaults: DEFAULT_SETTINGS })
@@ -64,6 +65,7 @@ app.whenReady().then(async () => {
   // IPC
   registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow })
   registerChatIPC(store, mainWindow)
+  registerOverlayIPC(store, overlayWindow)
 
   // Первый запуск
   if (!store.get('firstRunComplete')) {

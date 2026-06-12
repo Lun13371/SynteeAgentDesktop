@@ -28,6 +28,10 @@ const synteeAPI = {
     show: () => ipcRenderer.invoke('overlay:show'),
     hide: () => ipcRenderer.invoke('overlay:hide'),
     getDisplays: () => ipcRenderer.invoke('overlay:getDisplays'),
+    captureScreen: () => ipcRenderer.invoke('overlay:captureScreen'),
+    analyze: (params: { imageBase64: string; prompt: string; action: string }) =>
+      ipcRenderer.invoke('overlay:analyze', params),
+    saveScreenshot: (base64: string) => ipcRenderer.invoke('overlay:saveScreenshot', base64),
   },
 
   // Spotlight
