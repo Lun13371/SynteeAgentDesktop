@@ -72,3 +72,79 @@ export interface AgentAction {
   error?: string
   timestamp: number
 }
+
+// ─── AI Providers & Models ───────────────────────────────────────────────────
+
+export type ProviderType =
+  | 'openai' | 'anthropic' | 'google' | 'groq' | 'mistral'
+  | 'ollama' | 'cohere' | 'together' | 'fireworks' | 'deepseek'
+  | 'xai' | 'custom'
+
+export interface Provider {
+  id: string               // уникальный slug: 'openai', 'my-custom-1'
+  type: ProviderType
+  name: string             // отображаемое название
+  baseUrl: string          // https://api.openai.com/v1
+  apiKey: string           // зашифрованный или пустой для Ollama
+  enabled: boolean
+  isCustom: boolean
+  iconUrl?: string         // для кастомных провайдеров
+  lastModelsFetch?: number // timestamp последнего парсинга
+  modelsOverride?: string[]// ручные модели добавленные пользователем
+}
+
+export type ModelCapability = 'vision' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt'
+
+export type ModelSpeed = 'fast' | 'medium' | 'slow'
+
+export interface ModelMeta {
+  id: string               // 'gpt-4o', 'claude-3-5-sonnet-20241022'
+  providerId: string       // ссылка на Provider.id
+  name: string             // красивое название
+  contextWindow: number    // в токенах
+  inputPrice?: number      // $ за 1M input токенов
+  outputPrice?: number     // $ за 1M output токенов
+  speed: ModelSpeed
+  capabilities: ModelCapability[]
+  description?: string
+  isCustom?: boolean       // добавлена пользователем вручную
+}
+
+export type ModelRole =
+  | 'main'        // основной чат
+  | 'fast'        // быстрые ответы, автотайтлы
+  | 'vision'      // анализ изображений
+  | 'stt'         // speech-to-text
+  | 'tts'         // text-to-speech
+  | 'embedding'   // векторный поиск / память
+  | 'memory'      // анализ памяти
+  | 'summary'     // авто-заголовки чатов
+
+export interface ModelAssignment {
+  role: ModelRole
+  modelId: string
+  providerId: string
+}
+
+export interface ModelParams {
+  temperature: number      // 0–2, default 0.7
+  maxTokens: number        // default 4096
+  systemPrompt: string     // глобальный system prompt
+  streaming: boolean
+}
+
+// IPC channels для провайдеров/моделей
+export interface ProviderIPC {
+  'providers:getAll': () => Provider[]
+  'providers:save': (provider: Provider) => void
+  'providers:delete': (id: string) => void
+  'providers:fetchModels': (providerId: string) => ModelMeta[]
+  'providers:testKey': (providerId: string) => { ok: boolean; error?: string }
+  'models:getAll': () => ModelMeta[]
+  'models:saveCustom': (model: ModelMeta) => void
+  'models:deleteCustom': (modelId: string, providerId: string) => void
+  'models:getAssignments': () => ModelAssignment[]
+  'models:setAssignment': (assignment: ModelAssignment) => void
+  'models:getParams': () => ModelParams
+  'models:setParams': (params: Partial<ModelParams>) => void
+}

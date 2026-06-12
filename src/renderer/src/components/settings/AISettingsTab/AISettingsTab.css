@@ -1,0 +1,159 @@
+.ai-settings { display: flex; flex-direction: column; gap: 16px; height: 100%; }
+
+.ai-settings-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+  flex-shrink: 0;
+}
+.ai-settings-tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
+  margin-bottom: -1px;
+}
+.ai-settings-tab:hover { color: var(--text-secondary); }
+.ai-settings-tab--active { color: var(--text-primary); border-bottom-color: var(--accent); }
+
+/* ── Провайдеры ── */
+.ai-providers { overflow-y: auto; flex: 1; }
+.ai-providers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  padding: 4px 2px 16px;
+}
+
+.provider-card {
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  transition: border-color var(--transition);
+}
+.provider-card--active { border-color: var(--border-strong); }
+.provider-card--add { justify-content: center; align-items: center; min-height: 80px; }
+
+.provider-card-header { display: flex; align-items: center; gap: 8px; }
+.provider-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.provider-name { font-size: 13px; font-weight: 600; flex: 1; color: var(--text-primary); }
+.provider-status { font-size: 10px; color: var(--text-muted); }
+.provider-status--ok { color: #4ade80; }
+.provider-url { font-size: 11px; color: var(--text-muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.provider-form { display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.provider-form-label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
+.provider-form-input {
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  width: 100%;
+  transition: border-color var(--transition);
+}
+.provider-form-input:focus { border-color: var(--border-strong); }
+
+.provider-form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.provider-card-footer { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.provider-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 10px; border-radius: var(--radius-sm);
+  font-size: 11px; font-weight: 500; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-tertiary);
+  color: var(--text-secondary); transition: all var(--transition);
+}
+.provider-btn:hover { background: var(--accent-subtle); color: var(--text-primary); }
+.provider-btn--save { background: var(--accent); color: var(--bg-primary); border-color: transparent; }
+.provider-btn--save:hover { opacity: 0.85; }
+.provider-btn--delete { color: #f87171; border-color: rgba(248,113,113,0.2); }
+.provider-btn--delete:hover { background: rgba(248,113,113,0.1); }
+.provider-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.provider-add-btn {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); font-size: 12px;
+  padding: 12px; width: 100%; border-radius: var(--radius-sm);
+  transition: color var(--transition), background var(--transition);
+}
+.provider-add-btn:hover { color: var(--text-primary); background: var(--accent-subtle); }
+
+/* ── Назначения ── */
+.ai-assignments { overflow-y: auto; flex: 1; }
+.ai-assignments-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+.ai-assignments-grid { display: flex; flex-direction: column; gap: 8px; }
+
+.assignment-row {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 16px; border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+.assignment-info { display: flex; align-items: center; gap: 10px; width: 220px; flex-shrink: 0; }
+.assignment-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.assignment-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.assignment-picker { flex: 1; min-width: 0; }
+
+/* ── Параметры ── */
+.ai-params { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; padding-right: 4px; }
+.ai-param-row { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; }
+.ai-param-row--toggle { align-items: center; }
+.ai-param-row--full { flex-direction: column; gap: 8px; }
+
+.ai-param-label {
+  font-size: 13px; font-weight: 500; color: var(--text-primary);
+  display: flex; flex-direction: column; gap: 3px; flex: 1;
+}
+.ai-param-hint { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+
+.ai-param-slider-wrap { display: flex; align-items: center; gap: 10px; }
+.ai-param-slider { width: 160px; accent-color: var(--accent); cursor: pointer; }
+.ai-param-value { font-size: 13px; font-weight: 600; color: var(--text-primary); width: 36px; text-align: right; }
+
+.ai-param-input {
+  width: 120px; padding: 6px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-secondary);
+  color: var(--text-primary); font-size: 13px; outline: none; text-align: right;
+}
+.ai-param-input:focus { border-color: var(--border-strong); }
+
+.ai-param-toggle {
+  width: 40px; height: 22px; border-radius: 11px;
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  cursor: pointer; display: flex; align-items: center;
+  padding: 2px; transition: background var(--transition);
+  flex-shrink: 0;
+}
+.ai-param-toggle--on { background: var(--accent); border-color: var(--accent); }
+.ai-param-toggle-thumb {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text-muted);
+  margin-left: 0;
+}
+.ai-param-toggle--on .ai-param-toggle-thumb {
+  background: var(--bg-primary);
+  margin-left: 18px;
+}
+
+.ai-param-textarea {
+  width: 100%; padding: 10px 12px;
+  border-radius: var(--radius-md); border: 1px solid var(--border);
+  background: var(--bg-secondary); color: var(--text-primary);
+  font-size: 13px; line-height: 1.5; resize: vertical;
+  outline: none; font-family: var(--font-family);
+  transition: border-color var(--transition);
+}
+.ai-param-textarea:focus { border-color: var(--border-strong); }
