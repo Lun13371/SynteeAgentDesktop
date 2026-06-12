@@ -7,9 +7,9 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function backoffDelay(attempt: number): number {
-  const base = 1000 * Math.pow(2, attempt) // 1s, 2s, 4s, 8s...
-  const max = 60000 // макс 60 сек
-  const jitter = base * 0.3 * Math.random() // ±30% рандом
+  const base = 1000 * Math.pow(2, attempt)
+  const max = 60000
+  const jitter = base * 0.3 * Math.random()
   return Math.min(base + jitter, max)
 }
 
@@ -34,27 +34,44 @@ export class AIClient {
   }
 
   private createClient(): OpenAI {
-    const apiKey = (this.store.get('apiKey') as string) || 'sk-placeholder'
+    const apiKey = (this.store.get('apiKey') as string) || '***'
     const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
     return new OpenAI({ apiKey, baseURL: endpoint })
   }
 
-  // Обновить клиент при смене настроек
   reload(): void {
     this.client = this.createClient()
   }
 
+  // Читаем модель из modelAssignments (новый формат) с fallback на старый ключ
   private getModel(type: 'main' | 'fast' | 'vision' | 'summary' | 'router' | 'emotion'): string {
-    const map: Record<string, string> = {
-      main: 'claude-sonnet-4-6',
-      fast: 'claude-haiku-4-5',
-      vision: 'gemini-3.5-flash',
-      summary: 'gpt-5.2',
-      router: 'nano-banana',
-      emotion: 'gpt-5-mini',
+    const defaults: Record<string, string> = {
+      main:    'claude-sonnet-4-6',
+      fast:    'claude-haiku-4-5',
+      vision:  'gpt-4o',
+      summary: 'claude-haiku-4-5',
+      router:  'claude-haiku-4-5',
+      emotion: 'claude-haiku-4-5',
     }
+    const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
+    const found = assignments?.find(a => a.role === type)
+    if (found?.modelId) return found.modelId
+    // fallback — старые ключи mainModel/fastModel
     const storeKey = `${type}Model`
-    return (this.store.get(storeKey) as string) || map[type]
+    return (this.store.get(storeKey) as string) || defaults[type]
+  }
+
+  // Получить endpoint+key для конкретного провайдера роли
+  private getClientForRole(type: string): OpenAI {
+    const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
+    const assignment = assignments?.find(a => a.role === type)
+    if (!assignment?.providerId) return this.client
+
+    const providers = this.store.get('providers') as Array<{ id: string; baseUrl: string; apiKey: string; enabled: boolean }> | undefined
+    const provider = providers?.find(p => p.id === assignment.providerId && p.enabled)
+    if (!provider?.baseUrl || !provider?.apiKey) return this.client
+
+    return new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseUrl })
   }
 
   // Стриминг чата с retry при rate limit
@@ -65,8 +82,9 @@ export class AIClient {
     systemPrompt?: string
   ): Promise<void> {
     const model = this.getModel(modelType)
-    const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
+    const client = this.getClientForRole(modelType)
 
+    const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     if (systemPrompt) {
       allMessages.push({ role: 'system', content: systemPrompt })
     }
@@ -76,7 +94,7 @@ export class AIClient {
 
     while (attempt <= this.maxRetries) {
       try {
-        const stream = await this.client.chat.completions.create({
+        const stream = await client.chat.completions.create({
           model,
           messages: allMessages,
           stream: true,
@@ -98,7 +116,7 @@ export class AIClient {
         // Фоллбэк: если стриминг дал 0 токенов — пробуем non-stream
         if (!fullText) {
           console.warn(`[AIClient] stream вернул ${chunkCount} чанков но 0 токенов — фоллбэк на non-stream`)
-          const res = await this.client.chat.completions.create({
+          const res = await client.chat.completions.create({
             model,
             messages: allMessages,
             stream: false,
@@ -115,7 +133,6 @@ export class AIClient {
       } catch (err: unknown) {
         const error = err as { status?: number; message?: string }
 
-        // Rate limit — ждём и повторяем
         if (error?.status === 429) {
           const delay = backoffDelay(attempt)
           const waitSec = Math.round(delay / 1000)
@@ -126,7 +143,6 @@ export class AIClient {
           continue
         }
 
-        // Другая ошибка — не повторяем
         callbacks.onError(new Error(error?.message || 'Unknown AI error'))
         return
       }
@@ -142,6 +158,7 @@ export class AIClient {
     systemPrompt?: string
   ): Promise<string> {
     const model = this.getModel(modelType)
+    const client = this.getClientForRole(modelType)
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
 
     if (systemPrompt) {
@@ -153,7 +170,7 @@ export class AIClient {
 
     while (attempt <= this.maxRetries) {
       try {
-        const res = await this.client.chat.completions.create({
+        const res = await client.chat.completions.create({
           model,
           messages: allMessages,
           stream: false,
@@ -200,16 +217,24 @@ export class AIClient {
     messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: unknown[]
   ): Promise<{ content: string; tool_calls?: unknown[] }> {
-    const apiKey = this.store.get('apiKey') as string
+    const model = this.getModel('main')
     const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
-    const model = (this.store.get('fastModel') as string) || 'claude-haiku-4-5'
+    const apiKey = this.store.get('apiKey') as string
+
+    // Берём endpoint из провайдера назначения main-роли если есть
+    const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
+    const mainAssignment = assignments?.find(a => a.role === 'main')
+    const providers = this.store.get('providers') as Array<{ id: string; baseUrl: string; apiKey: string; enabled: boolean }> | undefined
+    const mainProvider = providers?.find(p => p.id === mainAssignment?.providerId && p.enabled)
+    const effectiveEndpoint = mainProvider?.baseUrl || endpoint
+    const effectiveKey = mainProvider?.apiKey || apiKey
 
     let attempt = 0
     while (attempt < 6) {
       try {
-        const res = await fetch(`${endpoint}/chat/completions`, {
+        const res = await fetch(`${effectiveEndpoint}/chat/completions`, {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          headers: { 'Authorization': `Bearer ${effectiveKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, messages, tools, tool_choice: 'auto' }),
         })
         if (res.status === 429) {
@@ -236,11 +261,12 @@ export class AIClient {
     callbacks: StreamCallbacks
   ): Promise<void> {
     const model = this.getModel('vision')
+    const client = this.getClientForRole('vision')
     let attempt = 0
 
     while (attempt <= this.maxRetries) {
       try {
-        const stream = await this.client.chat.completions.create({
+        const stream = await client.chat.completions.create({
           model,
           messages: [
             {
@@ -281,7 +307,7 @@ export class AIClient {
     }
   }
 
-  // Эмбеддинги для LanceDB
+  // Эмбеддинги
   async embed(text: string): Promise<number[]> {
     const model = (this.store.get('embeddingModel') as string) || 'gemini-embedding-2'
     let attempt = 0
