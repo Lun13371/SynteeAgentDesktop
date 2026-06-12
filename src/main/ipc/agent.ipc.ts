@@ -29,18 +29,20 @@ export function registerAgentIPC(
     const agent = new Agent(store)
 
     agent.run(userMessage, {
-      onStep: (step) => {
-        win?.webContents.send('agent:step', step)
-      },
-      onDone: (answer) => {
-        win?.webContents.send('agent:done', { answer })
-      },
-      onError: (err) => {
-        win?.webContents.send('agent:error', { error: err.message })
-      },
-      // approval mode передаём для будущего use: сейчас auto/full — выполняем,
-      // ask — фронт должен показать confirm перед отправкой
+      onStep: (step) => win?.webContents.send('agent:step', step),
+      onDone: (answer) => win?.webContents.send('agent:done', { answer }),
+      onError: (err) => win?.webContents.send('agent:error', { error: err.message }),
       approvalMode: settings.approvalMode,
+      onConfirm: (toolName, args) => new Promise<boolean>((resolve) => {
+        if (!win) return resolve(true)
+        const reqId = `${Date.now()}-${Math.random()}`
+        win.webContents.send('agent:confirm', { reqId, toolName, args })
+        ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+          resolve(approved)
+        })
+        // Таймаут 60 сек — если нет ответа, отклоняем
+        setTimeout(() => resolve(false), 60_000)
+      }),
     }, settings.maxSteps)
 
     return { started: true }
