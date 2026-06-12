@@ -99,8 +99,8 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
         {/* Кнопки действий — появляются над bubble при наведении */}
         <motion.div
           className="message-actions"
-          initial={{ opacity: 0, y: 4 }}
-          animate={{ opacity: showActions ? 1 : 0, y: showActions ? 0 : 4 }}
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: showActions ? 1 : 0, y: showActions ? 0 : -4 }}
           transition={{ duration: 0.15 }}
           style={{ pointerEvents: showActions ? 'all' : 'none' }}
         >
