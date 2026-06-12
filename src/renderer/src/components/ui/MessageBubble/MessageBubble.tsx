@@ -1,12 +1,16 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { Message, ToolOutputMode } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
+import 'katex/dist/katex.min.css'
 import './MessageBubble.css'
 
 interface MessageBubbleProps {
@@ -17,14 +21,42 @@ interface MessageBubbleProps {
   toolOutputMode?: ToolOutputMode
 }
 
+// Кастомный стиль для SyntaxHighlighter — поверх oneDark
+const codeStyle = {
+  ...oneDark,
+  'pre[class*="language-"]': {
+    ...((oneDark as Record<string, React.CSSProperties>)['pre[class*="language-"]'] || {}),
+    margin: 0,
+    padding: '14px 16px',
+    background: '#0d0d0f',
+    borderRadius: '0 0 8px 8px',
+    fontSize: '13px',
+    lineHeight: '1.6',
+  },
+  'code[class*="language-"]': {
+    ...((oneDark as Record<string, React.CSSProperties>)['code[class*="language-"]'] || {}),
+    background: 'transparent',
+    fontSize: '13px',
+  },
+}
+
 export default function MessageBubble({ message, onPin, onCopy, onReadAloud, toolOutputMode = 'normal' }: MessageBubbleProps) {
   const [showActions, setShowActions] = useState(false)
+  const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const isUser = message.role === 'user'
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content)
     onCopy?.(message.content)
   }
+
+  const handleCopyBlock = (code: string, idx: number) => {
+    navigator.clipboard.writeText(code)
+    setCopiedBlock(idx)
+    setTimeout(() => setCopiedBlock(null), 1500)
+  }
+
+  let codeBlockIdx = 0
 
   return (
     <motion.div
@@ -55,7 +87,6 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud, too
             </div>
           )}
 
-          {/* ToolChain — шаги агента сохранённые в сообщении */}
           {!isUser && message.toolSteps && message.toolSteps.length > 0 && (
             <ToolChain steps={message.toolSteps} mode={toolOutputMode} isRunning={false} />
           )}
@@ -65,34 +96,68 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud, too
               <p>{message.content}</p>
             ) : (
               <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                 components={{
-                  code({ node, className, children, ...props }) {
+                  // Блоки кода
+                  code({ className, children, ...props }) {
                     const match = /language-(\w+)/.exec(className || '')
-                    const isBlock = !!(node?.position?.start.line !== node?.position?.end.line)
-                    return isBlock && match ? (
+                    const raw = String(children).replace(/\n$/, '')
+                    // inline — нет переносов строк и нет language-xxx
+                    const isInline = !match && !raw.includes('\n')
+                    if (isInline) {
+                      return <code className="inline-code" {...props}>{children}</code>
+                    }
+                    const idx = codeBlockIdx++
+                    const lang = match?.[1] || 'text'
+                    return (
                       <div className="code-block">
                         <div className="code-block-header">
-                          <span className="code-lang">{match[1]}</span>
+                          <span className="code-lang">{lang}</span>
                           <button
-                            className="code-copy-btn"
-                            onClick={() => navigator.clipboard.writeText(String(children))}
+                            className={`code-copy-btn ${copiedBlock === idx ? 'code-copy-btn--copied' : ''}`}
+                            onClick={() => handleCopyBlock(raw, idx)}
                           >
-                            Копировать
+                            {copiedBlock === idx ? '✓ Скопировано' : 'Копировать'}
                           </button>
                         </div>
                         <SyntaxHighlighter
-                          style={oneDark as Record<string, React.CSSProperties>}
-                          language={match[1]}
+                          style={codeStyle as Record<string, React.CSSProperties>}
+                          language={lang}
                           PreTag="div"
-                          customStyle={{ margin: 0, borderRadius: '0 0 8px 8px', background: 'rgba(0,0,0,0.4)' }}
+                          showLineNumbers={raw.split('\n').length > 4}
+                          lineNumberStyle={{ color: '#4a4a5a', fontSize: '11px', minWidth: '2.5em' }}
+                          wrapLongLines={false}
                         >
-                          {String(children).replace(/\n$/, '')}
+                          {raw}
                         </SyntaxHighlighter>
                       </div>
-                    ) : (
-                      <code className="inline-code" {...props}>{children}</code>
                     )
-                  }
+                  },
+                  // Таблицы
+                  table({ children }) {
+                    return (
+                      <div className="md-table-wrap">
+                        <table className="md-table">{children}</table>
+                      </div>
+                    )
+                  },
+                  thead({ children }) { return <thead className="md-thead">{children}</thead> },
+                  tbody({ children }) { return <tbody>{children}</tbody> },
+                  tr({ children }) { return <tr className="md-tr">{children}</tr> },
+                  th({ children }) { return <th className="md-th">{children}</th> },
+                  td({ children }) { return <td className="md-td">{children}</td> },
+                  // Остальные элементы
+                  blockquote({ children }) {
+                    return <blockquote className="md-blockquote">{children}</blockquote>
+                  },
+                  a({ href, children }) {
+                    return <a href={href} className="md-link" target="_blank" rel="noreferrer">{children}</a>
+                  },
+                  img({ src, alt }) {
+                    return <img src={src} alt={alt} className="md-img" />
+                  },
+                  hr() { return <hr className="md-hr" /> },
                 }}
               >
                 {message.content}
@@ -105,7 +170,6 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud, too
           </span>
         </div>
 
-        {/* Кнопки справа от bubble */}
         <motion.div
           className="message-actions"
           initial={{ opacity: 0, x: -6 }}
@@ -120,8 +184,6 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud, too
           )}
         </motion.div>
       </div>
-
-      {isUser && <div className="message-avatar message-avatar--user" />}
     </motion.div>
   )
 }
