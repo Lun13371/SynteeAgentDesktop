@@ -43,16 +43,25 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   // Selection reply — выделил текст в чате → popup с кнопкой Reply
   useEffect(() => {
+    let lastFireTime = 0
     const handleMouseUp = (e: MouseEvent) => {
+      // throttle: не чаще раза в 100мс
+      const now = Date.now()
+      if (now - lastFireTime < 100) return
+      lastFireTime = now
+
       const sel = window.getSelection()
       const text = sel?.toString().trim()
       if (!text || text.length < 2) { setSelectionPopup(null); return }
-      // только если выделение внутри .chat-messages
       const anchor = sel?.anchorNode?.parentElement
       if (!anchor?.closest('.chat-messages')) { setSelectionPopup(null); return }
       setSelectionPopup({ x: e.clientX, y: e.clientY - 48, text })
     }
-    const handleMouseDown = () => setSelectionPopup(null)
+    const handleMouseDown = (e: MouseEvent) => {
+      // не закрываем если клик на сам popup
+      if ((e.target as HTMLElement)?.closest('.selection-reply-popup')) return
+      setSelectionPopup(null)
+    }
     document.addEventListener('mouseup', handleMouseUp)
     document.addEventListener('mousedown', handleMouseDown)
     return () => {
@@ -288,7 +297,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             </div>
           ) : (
             <div className="chat-messages">
-              <AnimatePresence initial={false}>
                 {displayMessages.map(msg => (
                   <div key={msg.id} data-msg-id={msg.id}>
                     <MessageBubble
@@ -302,7 +310,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   </div>
                 ))}
                 {isTyping && !streamingText && <TypingIndicator key="typing" />}
-              </AnimatePresence>
               {/* Live tool chain — пока агент работает */}
               {liveSteps.length > 0 && (
                 <div className="chat-tool-chain-wrap">

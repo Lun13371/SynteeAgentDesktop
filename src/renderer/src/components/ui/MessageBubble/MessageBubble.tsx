@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo, memo, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -37,8 +37,8 @@ const codeStyle = {
   },
 }
 
-// Diff рендерер — красные/зелёные строки
-function DiffBlock({ code }: { code: string }) {
+// Diff рендерер
+const DiffBlock = memo(function DiffBlock({ code }: { code: string }) {
   return (
     <div className="diff-block">
       {code.split('\n').map((line, i) => {
@@ -50,7 +50,7 @@ function DiffBlock({ code }: { code: string }) {
       })}
     </div>
   )
-}
+})
 
 // Admonition блок
 const ADMONITION_META: Record<string, { icon: string; label: string; cls: string }> = {
@@ -61,7 +61,7 @@ const ADMONITION_META: Record<string, { icon: string; label: string; cls: string
   danger:  { icon: '🚨', label: 'Опасность',  cls: 'adm--danger' },
 }
 
-function AdmonitionBlock({ kind, title, children }: { kind: string; title?: string; children: React.ReactNode }) {
+const AdmonitionBlock = memo(function AdmonitionBlock({ kind, title, children }: { kind: string; title?: string; children: React.ReactNode }) {
   const meta = ADMONITION_META[kind] || ADMONITION_META.note
   return (
     <div className={`adm ${meta.cls}`}>
@@ -72,79 +72,205 @@ function AdmonitionBlock({ kind, title, children }: { kind: string; title?: stri
       <div className="adm-body">{children}</div>
     </div>
   )
+})
+
+// Парсим admonitions — вынесено и мемоизировано снаружи
+function parseContent(raw: string): Array<{ type: 'md' | 'admonition'; content: string; kind?: string; title?: string }> {
+  const result: Array<{ type: 'md' | 'admonition'; content: string; kind?: string; title?: string }> = []
+  const lines = raw.split('\n')
+  let i = 0
+  let mdBuf: string[] = []
+  const ADM_RE = /^:::(note|tip|warning|danger|info)(?:\s+(.+))?$/i
+  while (i < lines.length) {
+    const m = ADM_RE.exec(lines[i].trim())
+    if (m) {
+      if (mdBuf.length) { result.push({ type: 'md', content: mdBuf.join('\n') }); mdBuf = [] }
+      const kind = m[1].toLowerCase()
+      const title = m[2]
+      const body: string[] = []
+      i++
+      while (i < lines.length && lines[i].trim() !== ':::') { body.push(lines[i]); i++ }
+      result.push({ type: 'admonition', content: body.join('\n'), kind, title })
+    } else {
+      mdBuf.push(lines[i])
+    }
+    i++
+  }
+  if (mdBuf.length) result.push({ type: 'md', content: mdBuf.join('\n') })
+  return result
 }
 
-// Подсветка поискового запроса в тексте
-function HighlightText({ text, query }: { text: string; query?: string }) {
-  if (!query || !text) return <>{text}</>
-  const parts = text.split(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'))
-  return (
-    <>
-      {parts.map((p, i) =>
-        p.toLowerCase() === query.toLowerCase()
-          ? <mark key={i} className="search-highlight">{p}</mark>
-          : p
-      )}
-    </>
-  )
-}
-
-export default function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery
-}: MessageBubbleProps) {
-  const [showActions, setShowActions] = useState(false)
+// Мемоизированный тяжёлый контент сообщения
+const MessageContent = memo(function MessageContent({
+  content, isUser, searchQuery, toolOutputMode, toolSteps,
+  onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
+}: {
+  content: string; isUser: boolean; searchQuery?: string
+  toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
+  onPin?: (id: string) => void; onCopy?: () => void
+  onReadAloud?: () => void; onReply?: () => void
+  message: Message; isPinned: number; createdAt: number
+}) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
-  const isUser = message.role === 'user'
-  let codeBlockIdx = 0
+  const [showActions, setShowActions] = useState(false)
 
-  const handleCopy = () => {
+  const segments = useMemo(() =>
+    isUser ? [{ type: 'md' as const, content }] : parseContent(content),
+    [content, isUser]
+  )
+
+  // Мемоизированные remarkPlugins — не создаём новый массив при каждом рендере
+  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], [])
+  const rehypePlugins = useMemo(() => [rehypeKatex], [])
+
+  // Стабильные components для ReactMarkdown — без inline функций
+  const mdComponents = useMemo(() => {
+    let codeBlockIdx = 0
+    return {
+      code({ className, children }: { className?: string; children?: React.ReactNode }) {
+        const match = /language-(\w+)/.exec(className || '')
+        const raw = String(children).replace(/\n$/, '')
+        const isInline = !match && !raw.includes('\n')
+        if (isInline) return <code className="inline-code">{children}</code>
+        const lang = match?.[1] || 'text'
+        if (lang === 'mermaid') return <MermaidBlock code={raw} />
+        if (lang === 'diff') return <DiffBlock code={raw} />
+        const idx = codeBlockIdx++
+        return (
+          <div className="code-block">
+            <div className="code-block-header">
+              <span className="code-lang">{lang.toUpperCase()}</span>
+              <button
+                className={`code-copy-btn ${copiedBlock === idx ? 'code-copy-btn--copied' : ''}`}
+                onClick={() => { navigator.clipboard.writeText(raw); setCopiedBlock(idx); setTimeout(() => setCopiedBlock(null), 1500) }}
+              >
+                {copiedBlock === idx ? '✓ Скопировано' : 'Копировать'}
+              </button>
+            </div>
+            <SyntaxHighlighter
+              style={codeStyle as Record<string, React.CSSProperties>}
+              language={lang} PreTag="div"
+              showLineNumbers={raw.split('\n').length > 4}
+              lineNumberStyle={{ color: '#4a4a5a', fontSize: '11px', minWidth: '2.5em' }}
+              wrapLongLines={false}
+            >
+              {raw}
+            </SyntaxHighlighter>
+          </div>
+        )
+      },
+      table({ children }: { children?: React.ReactNode }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
+      thead({ children }: { children?: React.ReactNode }) { return <thead className="md-thead">{children}</thead> },
+      tr({ children }: { children?: React.ReactNode }) { return <tr className="md-tr">{children}</tr> },
+      th({ children }: { children?: React.ReactNode }) { return <th className="md-th">{children}</th> },
+      td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
+      blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
+      a({ href, children }: { href?: string; children?: React.ReactNode }) { return <a href={href} className="md-link" target="_blank" rel="noreferrer">{children}</a> },
+      hr() { return <hr className="md-hr" /> },
+      p({ children }: { children?: React.ReactNode }) { return <p>{children}</p> },
+    }
+  }, [copiedBlock]) // только copiedBlock меняет кнопку
+
+  const handleMouseEnter = useCallback(() => setShowActions(true), [])
+  const handleMouseLeave = useCallback(() => setShowActions(false), [])
+
+  return (
+    <div
+      className="message-bubble-wrap"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      <div className={`message-bubble ${isUser ? 'message-bubble--user glass' : 'message-bubble--assistant'}`}>
+        {isPinned === 1 && (
+          <div className="message-pinned-badge">
+            <AppIcon name="pin" size="sm" tone="accent" /><span>Закреплено</span>
+          </div>
+        )}
+
+        {(message as Message & { replyTo?: { role: string; content: string } }).replyTo && (
+          <div className="message-reply-quote">
+            <span className="message-reply-role">
+              {(message as Message & { replyTo?: { role: string; content: string } }).replyTo!.role === 'user' ? 'Вы' : 'Syntee'}
+            </span>
+            <span className="message-reply-text">
+              {(message as Message & { replyTo?: { role: string; content: string } }).replyTo!.content.slice(0, 120)}
+              {(message as Message & { replyTo?: { role: string; content: string } }).replyTo!.content.length > 120 ? '…' : ''}
+            </span>
+          </div>
+        )}
+
+        {!isUser && toolSteps && toolSteps.length > 0 && (
+          <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={false} />
+        )}
+
+        <div className="message-content selectable">
+          {isUser ? (
+            <p>{content}</p>
+          ) : (
+            segments.map((seg, si) =>
+              seg.type === 'admonition' ? (
+                <AdmonitionBlock key={si} kind={seg.kind!} title={seg.title}>
+                  <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+                    {seg.content}
+                  </ReactMarkdown>
+                </AdmonitionBlock>
+              ) : (
+                <ReactMarkdown
+                  key={si}
+                  remarkPlugins={remarkPlugins}
+                  rehypePlugins={rehypePlugins}
+                  components={mdComponents}
+                >
+                  {seg.content}
+                </ReactMarkdown>
+              )
+            )
+          )}
+        </div>
+
+        <span className="message-time">
+          {new Date(createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+
+      <div
+        className="message-actions"
+        style={{ opacity: showActions ? 1 : 0, pointerEvents: showActions ? 'all' : 'none', transition: 'opacity 0.12s' }}
+      >
+        <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={onCopy} />
+        <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
+        {onReply && <IconButton icon="reply" label="Ответить" className="msg-action-btn" onClick={onReply} />}
+        {!isUser && <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={onReadAloud} />}
+      </div>
+    </div>
+  )
+})
+
+// Внешний пузырь — только layout + spring анимация при mount
+const MessageBubble = memo(function MessageBubble({
+  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery,
+}: MessageBubbleProps) {
+  const isUser = message.role === 'user'
+
+  const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(message.content)
     onCopy?.(message.content)
-  }
+  }, [message.content, onCopy])
 
-  const handleCopyBlock = (code: string, idx: number) => {
-    navigator.clipboard.writeText(code)
-    setCopiedBlock(idx)
-    setTimeout(() => setCopiedBlock(null), 1500)
-  }
+  const handleReply = useCallback(() => {
+    onReply?.(message)
+  }, [message, onReply])
 
-  // Парсим admonitions из текста вручную (:::kind ... :::)
-  const parseContent = (raw: string): Array<{ type: 'md' | 'admonition'; content: string; kind?: string; title?: string }> => {
-    const result: Array<{ type: 'md' | 'admonition'; content: string; kind?: string; title?: string }> = []
-    const lines = raw.split('\n')
-    let i = 0
-    let mdBuf: string[] = []
-    const ADM_RE = /^:::(note|tip|warning|danger|info)(?:\s+(.+))?$/i
-
-    while (i < lines.length) {
-      const m = ADM_RE.exec(lines[i].trim())
-      if (m) {
-        if (mdBuf.length) { result.push({ type: 'md', content: mdBuf.join('\n') }); mdBuf = [] }
-        const kind = m[1].toLowerCase()
-        const title = m[2]
-        const body: string[] = []
-        i++
-        while (i < lines.length && lines[i].trim() !== ':::') { body.push(lines[i]); i++ }
-        result.push({ type: 'admonition', content: body.join('\n'), kind, title })
-      } else {
-        mdBuf.push(lines[i])
-      }
-      i++
-    }
-    if (mdBuf.length) result.push({ type: 'md', content: mdBuf.join('\n') })
-    return result
-  }
-
-  const segments = isUser ? [{ type: 'md' as const, content: message.content }] : parseContent(message.content)
+  const handleReadAloud = useCallback(() => {
+    onReadAloud?.(message.content)
+  }, [message.content, onReadAloud])
 
   return (
     <motion.div
       className={`message-wrap ${isUser ? 'message-wrap--user' : 'message-wrap--assistant'} ${searchQuery ? 'message-wrap--search-match' : ''}`}
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
+      transition={{ duration: 0.15, ease: 'easeOut' }}  // CSS ease вместо spring — в 3x быстрее
     >
       {!isUser && (
         <div className="message-avatar">
@@ -155,124 +281,22 @@ export default function MessageBubble({
         </div>
       )}
 
-      <div className="message-bubble-wrap">
-        <div className={`message-bubble ${isUser ? 'message-bubble--user glass' : 'message-bubble--assistant'}`}>
-          {message.isPinned === 1 && (
-            <div className="message-pinned-badge">
-              <AppIcon name="pin" size="sm" tone="accent" /><span>Закреплено</span>
-            </div>
-          )}
-
-          {/* Reply цитата */}
-          {(message as Message & { replyTo?: { role: string; content: string } }).replyTo && (
-            <div className="message-reply-quote">
-              <span className="message-reply-role">
-                {(message as Message & { replyTo?: { role: string; content: string } }).replyTo!.role === 'user' ? 'Вы' : 'Syntee'}
-              </span>
-              <span className="message-reply-text">
-                {(message as Message & { replyTo?: { role: string; content: string } }).replyTo!.content.slice(0, 120)}
-                {(message as Message & { replyTo?: { role: string; content: string } }).replyTo!.content.length > 120 ? '…' : ''}
-              </span>
-            </div>
-          )}
-
-          {!isUser && message.toolSteps && message.toolSteps.length > 0 && (
-            <ToolChain steps={message.toolSteps} mode={toolOutputMode} isRunning={false} />
-          )}
-
-          <div className="message-content selectable">
-            {isUser ? (
-              <p><HighlightText text={message.content} query={searchQuery} /></p>
-            ) : (
-              segments.map((seg, si) =>
-                seg.type === 'admonition' ? (
-                  <AdmonitionBlock key={si} kind={seg.kind!} title={seg.title}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-                      {seg.content}
-                    </ReactMarkdown>
-                  </AdmonitionBlock>
-                ) : (
-                  <ReactMarkdown
-                    key={si}
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                    components={{
-                      code({ className, children }) {
-                        const match = /language-(\w+)/.exec(className || '')
-                        const raw = String(children).replace(/\n$/, '')
-                        const isInline = !match && !raw.includes('\n')
-                        if (isInline) return <code className="inline-code">{children}</code>
-                        const lang = match?.[1] || 'text'
-                        if (lang === 'mermaid') return <MermaidBlock code={raw} />
-                        if (lang === 'diff') return <DiffBlock code={raw} />
-                        const idx = codeBlockIdx++
-                        return (
-                          <div className="code-block">
-                            <div className="code-block-header">
-                              <span className="code-lang">{lang}</span>
-                              <button
-                                className={`code-copy-btn ${copiedBlock === idx ? 'code-copy-btn--copied' : ''}`}
-                                onClick={() => handleCopyBlock(raw, idx)}
-                              >
-                                {copiedBlock === idx ? '✓ Скопировано' : 'Копировать'}
-                              </button>
-                            </div>
-                            <SyntaxHighlighter
-                              style={codeStyle as Record<string, React.CSSProperties>}
-                              language={lang} PreTag="div"
-                              showLineNumbers={raw.split('\n').length > 4}
-                              lineNumberStyle={{ color: '#4a4a5a', fontSize: '11px', minWidth: '2.5em' }}
-                              wrapLongLines={false}
-                            >
-                              {raw}
-                            </SyntaxHighlighter>
-                          </div>
-                        )
-                      },
-                      table({ children }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
-                      thead({ children }) { return <thead className="md-thead">{children}</thead> },
-                      tr({ children }) { return <tr className="md-tr">{children}</tr> },
-                      th({ children }) { return <th className="md-th">{children}</th> },
-                      td({ children }) { return <td className="md-td">{children}</td> },
-                      blockquote({ children }) { return <blockquote className="md-blockquote">{children}</blockquote> },
-                      a({ href, children }) { return <a href={href} className="md-link" target="_blank" rel="noreferrer">{children}</a> },
-                      hr() { return <hr className="md-hr" /> },
-                      // Подсветка поиска в параграфах
-                      p({ children }) {
-                        if (!searchQuery) return <p>{children}</p>
-                        return <p>{children}</p>
-                      },
-                    }}
-                  >
-                    {seg.content}
-                  </ReactMarkdown>
-                )
-              )
-            )}
-          </div>
-
-          <span className="message-time">
-            {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
-          </span>
-        </div>
-
-        <motion.div
-          className="message-actions"
-          initial={{ opacity: 0, x: -6 }}
-          animate={{ opacity: showActions ? 1 : 0, x: showActions ? 0 : -6 }}
-          transition={{ duration: 0.12 }}
-          style={{ pointerEvents: showActions ? 'all' : 'none' }}
-        >
-          <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={handleCopy} />
-          <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
-          {onReply && (
-            <IconButton icon="reply" label="Ответить" className="msg-action-btn" onClick={() => onReply(message)} />
-          )}
-          {!isUser && (
-            <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={() => onReadAloud?.(message.content)} />
-          )}
-        </motion.div>
-      </div>
+      <MessageContent
+        content={message.content}
+        isUser={isUser}
+        searchQuery={searchQuery}
+        toolOutputMode={toolOutputMode}
+        toolSteps={message.toolSteps}
+        onPin={onPin}
+        onCopy={handleCopy}
+        onReadAloud={handleReadAloud}
+        onReply={handleReply}
+        message={message}
+        isPinned={message.isPinned as number}
+        createdAt={message.createdAt}
+      />
     </motion.div>
   )
-}
+})
+
+export default MessageBubble
