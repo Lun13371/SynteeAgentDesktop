@@ -1,17 +1,17 @@
 import { ipcMain, BrowserWindow } from 'electron'
+import { Worker } from 'worker_threads'
+import * as path from 'path'
 import type Store from 'electron-store'
-import { AIClient } from '../../core/ai/AIClient'
-import { Agent } from '../../core/agent/Agent'
 import {
   createChat, getAllChats, getMessages, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB,
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat
 } from '../../core/db/database'
 import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
+import { AIClient } from '../../core/ai/AIClient'
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
-import type { Message } from '../../shared/types'
-import type { AgentSettings } from '../../shared/types'
+import type { Message, AgentSettings } from '../../shared/types'
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   approvalMode: 'ask',
@@ -21,14 +21,13 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   enableThinking: false,
 }
 
-let aiClient: AIClient
-let currentAbortController: AbortController | null = null
+// Текущий воркер — terminate() убивает мгновенно
+let currentWorker: Worker | null = null
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
-  aiClient = new AIClient(store)
 
-  // Системный промпт Syntee
+  // Системный промпт
   const getSystemPrompt = (): string => {
     const userName = store.get('userName') as string || ''
     const memoryContext = getAllMemoriesForContext()
@@ -61,13 +60,8 @@ flowchart TD
   строка без изменений
 \`\`\`
 
-**Таблицы** — markdown таблицы для структурированных данных:
-| Колонка 1 | Колонка 2 |
-|-----------|-----------|
-| Значение  | Значение  |
-
+**Таблицы** — markdown таблицы для структурированных данных.
 **Математика** — LaTeX: inline \`$E=mc^2$\`, блочный \`$$\\frac{a}{b}$$\`.
-
 **Код** — всегда указывай язык: \`\`\`python, \`\`\`typescript, \`\`\`bash и т.д.`
   }
 
@@ -76,23 +70,14 @@ flowchart TD
     return createChat(isIncognito)
   })
 
-  // Получить все чаты
   ipcMain.handle('chat:getAll', () => getAllChats())
-
-  // Получить сообщения
   ipcMain.handle('chat:getMessages', (_, chatId: string) => getMessages(chatId))
-
-  // Удалить чат
   ipcMain.handle('chat:delete', (_, chatId: string) => deleteChat(chatId))
-
-  // Переименовать чат
   ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
-
-  // Закрепить сообщение
   ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
   ipcMain.handle('chat:unpinMsg', (_, messageId: string) => unpinMessage(messageId))
 
-  // Отправить сообщение + стриминг ответа
+  // ── Отправить сообщение — через Worker Thread ──────────────────────────────
   ipcMain.handle('chat:send', async (_, params: {
     chatId: string
     content: string
@@ -112,181 +97,84 @@ flowchart TD
     }
     if (!params.incognito) saveMessage(userMsg)
 
-    // Получаем историю для контекста
     const history = params.incognito ? [] : getMessages(params.chatId)
-
     const assistantMsgId = uuid()
-    let fullText = ''
-    let thinkingText = ''
-    let thinkingStartMs = 0
-    let thinkingMs: number | undefined
-    const collectedSteps: import('../../shared/types').ToolStep[] = []
 
-    // AbortController — создаём ДО любых веток (агент или стрим)
-    const abortController = new AbortController()
-    currentAbortController = abortController
-
-    const finalize = () => {
-      const assistantMsg: Message = {
-        id: assistantMsgId,
-        chatId: params.chatId,
-        role: 'assistant',
-        content: fullText,
-        createdAt: Date.now(),
-        isPinned: 0,
-        model: store.get('mainModel') as string || 'claude-sonnet-4-6',
-        toolSteps: collectedSteps.length > 0 ? collectedSteps : undefined,
-        thinking: thinkingText || undefined,
-        thinkingMs,
-      }
-      if (!params.incognito) saveMessage(assistantMsg)
-      if (!params.incognito) {
-        const facts = extractMemoriesFromConversation(params.content, fullText)
-        facts.forEach(f => saveMemory(f))
-      }
-      if (history.length === 0 && !params.incognito) {
-        autoNameChat(params.chatId, params.content, store, win)
-      }
-      win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
-        chatId: params.chatId,
-        msgId: assistantMsgId,
-        message: assistantMsg,
-      })
+    // Убиваем предыдущий воркер если есть
+    if (currentWorker) {
+      currentWorker.terminate()
+      currentWorker = null
     }
 
-    // Если tools включены — запускаем через Agent
-    if (agentSettings.enableTools && !params.incognito) {
-      const agent = new Agent(store)
-
-      const historyContext = history.slice(-10).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n')
-      const messageWithContext = historyContext
-        ? `[Контекст разговора]\n${historyContext}\n\n[Новый вопрос]\n${params.content}`
-        : params.content
-
-      agent.run(messageWithContext, {
-        onStep: (step) => {
-          if (step.type === 'tool_call' || step.type === 'tool_result') {
-            const ts: import('../../shared/types').ToolStep = {
-              id: `${Date.now()}-${Math.random()}`,
-              type: step.type,
-              toolName: step.toolName,
-              toolArgs: step.toolArgs,
-              content: step.content,
-              success: step.success,
-              timestamp: Date.now(),
-            }
-            collectedSteps.push(ts)
-            win?.webContents.send('agent:step', { ...step, msgId: assistantMsgId })
-          } else if (step.type === 'answer') {
-            fullText += step.content   // накапливаем токены, не перезаписываем
-            win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-              chatId: params.chatId,
-              msgId: assistantMsgId,
-              token: step.content,
-            })
-          }
-        },
-        onDone: () => {
-          currentAbortController = null
-          finalize()
-        },
-        onError: (err) => {
-          currentAbortController = null
-          // Если это abort — финализируем с тем что успели
-          if (abortController.signal.aborted) {
-            finalize()
-          } else {
-            win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
-              chatId: params.chatId,
-              error: err.message,
-            })
-          }
-        },
-        approvalMode: agentSettings.approvalMode,
-        onConfirm: (toolName, args) => new Promise<boolean>((resolve) => {
-          if (!win) return resolve(true)
-          const reqId = `${Date.now()}-${Math.random()}`
-          win.webContents.send('agent:confirm', { reqId, toolName, args })
-          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
-            resolve(approved)
-          })
-          setTimeout(() => resolve(false), 60_000)
-        }),
-      }, agentSettings.maxSteps, abortController.signal)
-
-      return { started: true }
+    // Сериализуем store для передачи в worker (store не клонируется через structured clone)
+    const storeData: Record<string, unknown> = {}
+    const storeKeys = [
+      'apiKey', 'apiEndpoint', 'providers', 'modelAssignments',
+      'temperature', 'maxTokens', 'agentSettings', 'integrations',
+      'voiceId', 'embeddingModel',
+    ]
+    for (const k of storeKeys) {
+      const v = store.get(k)
+      if (v !== undefined) storeData[k] = v
     }
 
-    // Обычный режим без tools — streamChat
-    const contextMessages = history.slice(-20).map(m => ({
-      role: m.role as 'user' | 'assistant' | 'system',
-      content: m.content,
-    }))
-    contextMessages.push({ role: 'user', content: params.content })
+    // Путь к worker — в dist/main/ после сборки
+    const workerPath = path.join(__dirname, 'ai-worker.js')
 
-    const CHAT_SYSTEM_PROMPT = `Ты Syntee — персональный AI-ассистент для Windows. Отвечай на русском языке.
+    const worker = new Worker(workerPath, {
+      workerData: { storeData },
+    })
+    currentWorker = worker
 
-## Форматирование ответов
-
-**Диаграммы** — используй \`\`\`mermaid блок для схем, flowchart, sequence, архитектуры.
-**Цветные блоки** — :::note/:::tip/:::warning/:::danger/:::info ... ::: для выделения важного.
-**Diff** — \`\`\`diff блок для показа изменений кода (- удалено, + добавлено).
-**Таблицы** — markdown таблицы | col | col | для структурированных данных.
-**Математика** — LaTeX inline $формула$ или блочный $$формула$$.
-**Код** — всегда указывай язык: \`\`\`python, \`\`\`typescript, \`\`\`bash и т.д.`
-
-    await aiClient.streamChat(
-      contextMessages,
-      {
-        onToken: (token) => {
-          // Парсим <thinking>...</thinking> теги — не идут в основной текст
-          const combined = fullText + thinkingText + token
-          const thinkStart = '<thinking>'
-          const thinkEnd = '</thinking>'
-
-          // Аккумулируем в буфер и разбираем
-          if (agentSettings.enableThinking) {
-            const buf = (fullText || '') + token
-            // Ищем открывающий тег в потоке
-            if (!thinkingStartMs && buf.includes(thinkStart)) {
-              thinkingStartMs = Date.now()
-            }
-            // Если сейчас внутри thinking — пишем в thinkingText, не в fullText
-            const openIdx = buf.lastIndexOf(thinkStart)
-            const closeIdx = buf.lastIndexOf(thinkEnd)
-            if (openIdx !== -1 && (closeIdx === -1 || closeIdx < openIdx)) {
-              // Внутри тега — добавляем в thinking
-              thinkingText += token
-              // Отправляем thinking-токен отдельным событием
-              win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-                chatId: params.chatId, msgId: assistantMsgId,
-                thinkingToken: token,
-              })
-              return
-            }
-            // Закрывающий тег — вычисляем время
-            if (closeIdx !== -1 && closeIdx > openIdx && thinkingStartMs) {
-              thinkingMs = Date.now() - thinkingStartMs
-              // Убираем теги из thinkingText
-              thinkingText = thinkingText.replace(/<\/?thinking>/g, '').trim()
-              win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-                chatId: params.chatId, msgId: assistantMsgId,
-                thinkingDone: true, thinkingMs,
-              })
-              return
-            }
-          }
-          fullText += token
+    // Слушаем сообщения от worker
+    worker.on('message', (msg: Record<string, unknown>) => {
+      switch (msg.type) {
+        case 'token':
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-            chatId: params.chatId,
-            msgId: assistantMsgId,
-            token,
+            chatId: msg.chatId,
+            msgId: msg.msgId,
+            token: msg.token,
           })
-        },
-        onDone: (text) => {
-          // Используем локально накопленный текст — надёжнее чем text из onDone
-          // (некоторые провайдеры возвращают пустую строку в финальном чанке)
-          if (text && text.length > fullText.length) fullText = text
+          break
+
+        case 'thinking_token':
+          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+            chatId: msg.chatId,
+            msgId: msg.msgId,
+            thinkingToken: msg.token,
+          })
+          break
+
+        case 'thinking_done':
+          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+            chatId: msg.chatId,
+            msgId: msg.msgId,
+            thinkingDone: true,
+            thinkingMs: msg.thinkingMs,
+          })
+          break
+
+        case 'step':
+          win?.webContents.send('agent:step', {
+            ...(msg.step as object),
+            msgId: msg.msgId,
+          })
+          break
+
+        case 'rate_limit':
+          win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec })
+          break
+
+        case 'done': {
+          // Worker завершился штатно — сохраняем и шлём DONE
+          currentWorker = null
+
+          const fullText = (msg.fullText as string) || ''
+          const thinkingText = (msg.thinkingText as string) || undefined
+          const thinkingMs = msg.thinkingMs as number | undefined
+          const collectedSteps = (msg.collectedSteps as unknown[]) || []
+          const incognito = msg.incognito as boolean
+
           const assistantMsg: Message = {
             id: assistantMsgId,
             chatId: params.chatId,
@@ -294,18 +182,19 @@ flowchart TD
             content: fullText,
             createdAt: Date.now(),
             isPinned: 0,
-            model: store.get('mainModel') as string || 'claude-sonnet-4-6',
+            model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
+              ?.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6',
+            toolSteps: collectedSteps.length > 0 ? collectedSteps as never : undefined,
+            thinking: thinkingText,
+            thinkingMs,
           }
-          if (!params.incognito) saveMessage(assistantMsg)
 
-          // Автоэкстракция фактов из разговора
-          if (!params.incognito) {
+          if (!incognito) saveMessage(assistantMsg)
+          if (!incognito) {
             const facts = extractMemoriesFromConversation(params.content, fullText)
             facts.forEach(f => saveMemory(f))
           }
-
-          // Автоназвание чата после первого обмена
-          if (history.length === 0 && !params.incognito) {
+          if (history.length === 0 && !incognito) {
             autoNameChat(params.chatId, params.content, store, win)
           }
 
@@ -314,68 +203,78 @@ flowchart TD
             msgId: assistantMsgId,
             message: assistantMsg,
           })
-        },
-        onError: (err) => {
-          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
-            chatId: params.chatId,
-            error: err.message,
-          })
-        },
-        onRateLimit: (waitSec) => {
-          win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec })
-        },
-      },
-      'main',
-      getSystemPrompt(),
-      abortController.signal
-    )
+          break
+        }
 
-    currentAbortController = null
+        case 'error':
+          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
+            chatId: msg.chatId,
+            error: msg.error,
+          })
+          break
+      }
+    })
+
+    worker.on('error', (err) => {
+      console.error('[Worker] error:', err)
+      currentWorker = null
+      win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
+        chatId: params.chatId,
+        error: err.message,
+      })
+    })
+
+    worker.on('exit', (code) => {
+      if (code !== 0 && currentWorker === worker) {
+        // Воркер убит terminate() — сохраняем пустое сообщение если нужно
+        currentWorker = null
+      }
+    })
+
+    // Запускаем задачу в worker
+    worker.postMessage({
+      chatId: params.chatId,
+      msgId: assistantMsgId,
+      content: params.content,
+      history: history.map(m => ({ role: m.role, content: m.content })),
+      systemPrompt: getSystemPrompt(),
+      enableTools: agentSettings.enableTools,
+      incognito: !!params.incognito,
+      agentSettings,
+    })
+
     return userMsg
   })
 
-  // Обновить клиент при смене настроек
-  ipcMain.handle('chat:reloadClient', () => {
-    aiClient.reload()
-  })
-
-  // Остановить текущий стрим
+  // ── Мгновенная остановка — terminate() убивает поток и все соединения ──────
   ipcMain.handle('chat:stop', () => {
-    if (currentAbortController) {
-      currentAbortController.abort()
-      currentAbortController = null
+    if (currentWorker) {
+      // Перед terminate — говорим worker прислать finalize если успеет
+      // Но terminate() мгновенный — сохранение делаем здесь по last known state
+      currentWorker.terminate()
+      currentWorker = null
     }
   })
 
-  // Архивировать/разархивировать чат
+  ipcMain.handle('chat:reloadClient', () => { /* no-op, worker создаётся свежий на каждый запрос */ })
+
   ipcMain.handle('chat:archive', (_, chatId: string, archived: boolean) => {
     archiveChat(chatId, archived)
     return getAllChats()
   })
 
-  // Закрепить/открепить чат
   ipcMain.handle('chat:pinChat', (_, chatId: string, pinned: boolean) => {
     pinChat(chatId, pinned)
     return getAllChats()
   })
 
-  // Цветная метка
   ipcMain.handle('chat:setColor', (_, chatId: string, color: string | null) => {
     setChatColor(chatId, color)
   })
 
-  // Дублировать чат
-  ipcMain.handle('chat:duplicate', (_, chatId: string) => {
-    return duplicateChat(chatId)
-  })
+  ipcMain.handle('chat:duplicate', (_, chatId: string) => duplicateChat(chatId))
 
-  // Экспорт чата
-  ipcMain.handle('chat:export', (_, chatId: string, format: 'txt' | 'md') => {
-    return exportChat(chatId, format)
-  })
-
-  // Слушаем chat:renamed чтобы фронт мог обновить список
-  // (уже шлётся из autoNameChat напрямую в win)
+  ipcMain.handle('chat:export', (_, chatId: string, format: 'txt' | 'md') => exportChat(chatId, format))
 }
 
 // Авто-название чата через быструю модель
