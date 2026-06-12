@@ -17,6 +17,7 @@ if (!window.syntee) {
     theme: 'dark', accentColor: '#ffffff', userName: '',
     apiKey: '', apiEndpoint: 'https://api.onlysq.ru/ai/openai',
     mainModel: 'claude-sonnet-4-6', sidebarOpen: true,
+    firstRunComplete: true,
   }
   window.syntee = {
     window: { hide: noop, minimize: noop, show: noop },

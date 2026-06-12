@@ -12,6 +12,8 @@ import SettingsPage from './pages/Settings/SettingsPage'
 import './pages/Settings/SettingsPage.css'
 import MemoryPage from './pages/Memory/MemoryPage'
 import './pages/Memory/MemoryPage.css'
+import OnboardingPage from './pages/Onboarding/OnboardingPage'
+import './pages/Onboarding/OnboardingPage.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
 import AnimatedBackground from './components/ui/AnimatedBackground/AnimatedBackground'
@@ -33,6 +35,7 @@ export default function App() {
   const [route, setRoute] = useState<Route>(getRoute())
   const [mainPage, setMainPage] = useState<MainPage>('chat')
   const [showAgent, setShowAgent] = useState(false)
+  const [onboarded, setOnboarded] = useState<boolean | null>(null)
   const { theme } = useUIStore()
 
   useEffect(() => {
@@ -45,10 +48,29 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
 
+  // Проверяем первый запуск
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const done = await window.syntee.settings.get('firstRunComplete')
+        setOnboarded(!!done)
+      } catch {
+        setOnboarded(false)
+      }
+    }
+    check()
+  }, [])
+
   // Оверлей, голос, spotlight — отдельные окна
   if (route === 'overlay') return <OverlayPage />
   if (route === 'voice') return <VoicePage />
   if (route === 'spotlight') return <SpotlightPage />
+
+  // Пока проверяем — ничего не показываем
+  if (onboarded === null) return null
+
+  // Первый запуск — онбординг
+  if (!onboarded) return <OnboardingPage onDone={() => setOnboarded(true)} />
 
   // Главное окно
   return (
