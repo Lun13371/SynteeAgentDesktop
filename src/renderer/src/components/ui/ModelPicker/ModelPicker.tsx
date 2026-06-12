@@ -226,7 +226,7 @@ function getProviderColor(pid: string): string {
     openai: '#10a37f', anthropic: '#d4763b', google: '#4285f4',
     groq: '#f55036', mistral: '#ff7000', ollama: '#aaaaaa',
     cohere: '#39594d', together: '#7c3aed', fireworks: '#ef4444',
-    deepseek: '#2563eb', xai: '#ffffff',
+    deepseek: '#2563eb', xai: '#ffffff', onlysq: '#a855f7', voidai: '#06b6d4',
   }
   return colors[pid] || '#888888'
 }
