@@ -15,10 +15,7 @@
 
 /* Тултип */
 .ctx-tooltip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
+  position: fixed;
   background: var(--glass-bg, rgba(20,20,30,0.95));
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -27,8 +24,9 @@
   white-space: nowrap;
   color: var(--text-primary);
   pointer-events: none;
-  z-index: 9999;
+  z-index: 99999;
   backdrop-filter: blur(12px);
+  transform: translateX(-50%);
 }
 .ctx-tooltip-pct { color: var(--text-secondary); margin-left: 4px; }
 
