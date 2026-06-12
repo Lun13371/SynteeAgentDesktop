@@ -134,11 +134,13 @@ export interface ModelParams {
 }
 
 export type ApprovalMode = 'ask' | 'auto' | 'full'
+export type ToolOutputMode = 'compact' | 'normal' | 'detailed'
 
 export interface AgentSettings {
   approvalMode: ApprovalMode
   maxSteps: number
   enableTools: boolean
+  toolOutputMode: ToolOutputMode
 }
 
 // IPC channels для провайдеров/моделей

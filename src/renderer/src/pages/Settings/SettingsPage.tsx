@@ -359,12 +359,12 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
 }
 
 function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; enableTools: boolean }>({
-    approvalMode: 'ask', maxSteps: 8, enableTools: true
+  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string }>({
+    approvalMode: 'ask', maxSteps: 8, enableTools: true, toolOutputMode: 'normal'
   })
 
   useEffect(() => {
-    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; enableTools: boolean }) => {
+    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string }) => {
       setAgentSettings(s)
     }).catch(() => {})
   }, [])
@@ -376,6 +376,12 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
   }
 
   const perms = (settings['agentPermissions'] as Record<string, unknown>) || {}
+
+  const OUTPUT_MODES = [
+    { value: 'compact',  label: 'Компактный', desc: 'Только иконки инструментов в одну строку' },
+    { value: 'normal',   label: 'Обычный',    desc: 'Название + первый аргумент каждого шага' },
+    { value: 'detailed', label: 'Подробный',  desc: 'Все аргументы и результаты, раскрываются' },
+  ]
 
   return (
     <>
@@ -390,6 +396,21 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
 
       <Field label="Инструменты в чате" description="Разрешить агенту использовать системные инструменты в обычном чате">
         <Toggle value={agentSettings.enableTools} onChange={v => updateAgent({ enableTools: v })} />
+      </Field>
+
+      <Field label="Вывод инструментов" description="Как отображать цепочку действий агента в чате">
+        <div style={{ display: 'flex', gap: 8 }}>
+          {OUTPUT_MODES.map(m => (
+            <button
+              key={m.value}
+              className={`settings-chip ${agentSettings.toolOutputMode === m.value ? 'settings-chip--active' : ''}`}
+              onClick={() => updateAgent({ toolOutputMode: m.value })}
+              title={m.desc}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
       </Field>
 
       <Field label="Максимум шагов агента" description="Сколько шагов может сделать агент за один запрос">

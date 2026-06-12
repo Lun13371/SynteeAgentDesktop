@@ -16,6 +16,7 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   approvalMode: 'ask',
   maxSteps: 8,
   enableTools: true,
+  toolOutputMode: 'normal',
 }
 
 let aiClient: AIClient
