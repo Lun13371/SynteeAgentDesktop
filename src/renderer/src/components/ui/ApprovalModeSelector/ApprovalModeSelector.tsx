@@ -31,9 +31,11 @@ export default function ApprovalModeSelector({ value, onChange, compact }: Appro
     const r = btnRef.current.getBoundingClientRect()
     const spaceBelow = window.innerHeight - r.bottom
     const openUp = spaceBelow < DROPDOWN_H + 12
+    const dropW = 240
+    const left = Math.min(r.left, window.innerWidth - dropW - 8)
     setPos({
       top: openUp ? r.top - 8 : r.bottom + 6,
-      left: r.left,
+      left,
       openUp,
     })
     setOpen(o => !o)
@@ -65,7 +67,7 @@ export default function ApprovalModeSelector({ value, onChange, compact }: Appro
         <AnimatePresence>
           {open && pos && (
             <motion.div
-              className="approval-dropdown glass"
+              className="approval-dropdown"
               style={{
                 position: 'fixed',
                 left: pos.left,

@@ -66,13 +66,14 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
     const r = btnRef.current.getBoundingClientRect()
     const spaceBelow = window.innerHeight - r.bottom
     const openUp = spaceBelow < DROP_H + 12
+    const dropW = Math.max(r.width, 300)
+    const rawLeft = r.left
+    const left = Math.min(rawLeft, window.innerWidth - dropW - 8)
     setDropPos({
-      left: r.left,
-      width: Math.max(r.width, 300),
+      left,
+      width: dropW,
       openUp,
-      ...(openUp
-        ? { bottom: window.innerHeight - r.top + 4 }
-        : { top: r.bottom + 4 }),
+      ...(openUp ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
     })
     setOpen(o => !o)
   }
@@ -133,7 +134,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
           <AnimatePresence>
             {open && dropPos && (
               <motion.div
-                className="model-picker-dropdown glass"
+                className="model-picker-dropdown"
                 style={{
                   position: 'fixed',
                   left: dropPos.left,
@@ -208,7 +209,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
           <AnimatePresence>
             {hovered && open && (
               <motion.div
-                className="model-picker-tooltip glass"
+                className="model-picker-tooltip"
                 style={{ position: 'fixed', top: tooltipPos.top, left: tooltipPos.left, zIndex: 10000 }}
                 initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}

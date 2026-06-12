@@ -34,7 +34,11 @@
   flex-direction: column;
   border-radius: var(--radius-md);
   overflow: hidden;
-  box-shadow: var(--shadow-lg);
+  background: var(--bg-elevated, #222);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   will-change: opacity, transform;
 }
 
@@ -117,15 +121,17 @@
 
 /* Tooltip */
 .model-picker-tooltip {
-  position: absolute;
-  left: calc(100% + 8px);
   width: 220px;
   padding: 12px;
   border-radius: var(--radius-md);
-  z-index: 110;
-  box-shadow: var(--shadow-lg);
+  background: var(--bg-elevated, #222);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   pointer-events: none;
 }
+
 
 .mpt-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
 .mpt-id { font-size: 10px; color: var(--text-muted); margin-bottom: 10px; font-family: monospace; }
