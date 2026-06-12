@@ -66,11 +66,8 @@
   width: 100%;
 }
 
-.settings-section[data-exiting] {
-  position: absolute;
-  top: 28px;
-  left: 32px;
-  pointer-events: none;
+.settings-section--wide {
+  max-width: 100%;
 }
 
 .settings-section-title {

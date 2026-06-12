@@ -79,14 +79,13 @@ export default function SettingsPage() {
 
       {/* Контент */}
       <div className="settings-content">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={section}
-            className="settings-section"
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.15 }}
-          >
+        <motion.div
+          key={section}
+          className={`settings-section ${section === 'ai' ? 'settings-section--wide' : ''}`}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.15 }}
+        >
             {section === 'general' && (
               <GeneralSection settings={settings} onSet={handleSet} />
             )}
@@ -112,7 +111,6 @@ export default function SettingsPage() {
               <DataSection settings={settings} onSet={handleSet} toast={toast} />
             )}
           </motion.div>
-        </AnimatePresence>
       </div>
     </div>
   )
