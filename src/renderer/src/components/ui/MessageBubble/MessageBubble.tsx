@@ -44,64 +44,66 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
         </div>
       )}
 
-      <div className={`message-bubble ${isUser ? 'message-bubble--user glass' : 'message-bubble--assistant'}`}>
-        {message.isPinned === 1 && (
-          <div className="message-pinned-badge">
-            <AppIcon name="pin" size="sm" tone="accent" />
-            <span>Закреплено</span>
-          </div>
-        )}
-
-        <div className="message-content selectable">
-          {isUser ? (
-            <p>{message.content}</p>
-          ) : (
-            <ReactMarkdown
-              components={{
-                code({ node, className, children, ...props }) {
-                  const match = /language-(\w+)/.exec(className || '')
-                  const isBlock = !!(node?.position?.start.line !== node?.position?.end.line)
-                  return isBlock && match ? (
-                    <div className="code-block">
-                      <div className="code-block-header">
-                        <span className="code-lang">{match[1]}</span>
-                        <button
-                          className="code-copy-btn"
-                          onClick={() => navigator.clipboard.writeText(String(children))}
-                        >
-                          Копировать
-                        </button>
-                      </div>
-                      <SyntaxHighlighter
-                        style={oneDark as Record<string, React.CSSProperties>}
-                        language={match[1]}
-                        PreTag="div"
-                        customStyle={{ margin: 0, borderRadius: '0 0 8px 8px', background: 'rgba(0,0,0,0.4)' }}
-                      >
-                        {String(children).replace(/\n$/, '')}
-                      </SyntaxHighlighter>
-                    </div>
-                  ) : (
-                    <code className="inline-code" {...props}>{children}</code>
-                  )
-                }
-              }}
-            >
-              {message.content}
-            </ReactMarkdown>
+      <div className="message-bubble-wrap">
+        <div className={`message-bubble ${isUser ? 'message-bubble--user glass' : 'message-bubble--assistant'}`}>
+          {message.isPinned === 1 && (
+            <div className="message-pinned-badge">
+              <AppIcon name="pin" size="sm" tone="accent" />
+              <span>Закреплено</span>
+            </div>
           )}
+
+          <div className="message-content selectable">
+            {isUser ? (
+              <p>{message.content}</p>
+            ) : (
+              <ReactMarkdown
+                components={{
+                  code({ node, className, children, ...props }) {
+                    const match = /language-(\w+)/.exec(className || '')
+                    const isBlock = !!(node?.position?.start.line !== node?.position?.end.line)
+                    return isBlock && match ? (
+                      <div className="code-block">
+                        <div className="code-block-header">
+                          <span className="code-lang">{match[1]}</span>
+                          <button
+                            className="code-copy-btn"
+                            onClick={() => navigator.clipboard.writeText(String(children))}
+                          >
+                            Копировать
+                          </button>
+                        </div>
+                        <SyntaxHighlighter
+                          style={oneDark as Record<string, React.CSSProperties>}
+                          language={match[1]}
+                          PreTag="div"
+                          customStyle={{ margin: 0, borderRadius: '0 0 8px 8px', background: 'rgba(0,0,0,0.4)' }}
+                        >
+                          {String(children).replace(/\n$/, '')}
+                        </SyntaxHighlighter>
+                      </div>
+                    ) : (
+                      <code className="inline-code" {...props}>{children}</code>
+                    )
+                  }
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
+            )}
+          </div>
+
+          <span className="message-time">
+            {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+          </span>
         </div>
 
-        <span className="message-time">
-          {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
-        </span>
-
-        {/* Кнопки действий — появляются над bubble при наведении */}
+        {/* Кнопки справа от bubble — как у Claude */}
         <motion.div
           className="message-actions"
-          initial={{ opacity: 0, y: -4 }}
-          animate={{ opacity: showActions ? 1 : 0, y: showActions ? 0 : -4 }}
-          transition={{ duration: 0.15 }}
+          initial={{ opacity: 0, x: -6 }}
+          animate={{ opacity: showActions ? 1 : 0, x: showActions ? 0 : -6 }}
+          transition={{ duration: 0.12 }}
           style={{ pointerEvents: showActions ? 'all' : 'none' }}
         >
           <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={handleCopy} />
@@ -111,6 +113,8 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
           )}
         </motion.div>
       </div>
+
+      {isUser && <div className="message-avatar message-avatar--user" />}
     </motion.div>
   )
 }
