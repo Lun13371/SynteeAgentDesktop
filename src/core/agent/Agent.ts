@@ -105,13 +105,37 @@ export class Agent {
         return
       }
       try {
-        const response = await this.client.chatWithTools(messages, TOOL_SCHEMAS)
+        const response = await this.client.chatWithTools(messages, TOOL_SCHEMAS, signal)
 
-        // Если нет tool_calls — финальный ответ
+        // Abort во время запроса
+        if (signal?.aborted) {
+          callbacks.onDone('')
+          return
+        }
+
+        // Если нет tool_calls — финальный ответ через стриминг (чтобы stop работал во время печати)
         if (!response.tool_calls?.length) {
-          const answer = response.content || ''
-          callbacks.onStep({ type: 'answer', content: answer })
-          callbacks.onDone(answer)
+          await this.client.streamChat(
+            messages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content })),
+            {
+              onToken: (token) => {
+                callbacks.onStep({ type: 'answer', content: token })
+              },
+              onDone: (full) => {
+                callbacks.onDone(full)
+              },
+              onError: (err) => {
+                if (signal?.aborted) {
+                  callbacks.onDone('')
+                } else {
+                  callbacks.onError(err)
+                }
+              },
+            },
+            'main',
+            undefined,
+            signal
+          )
           return
         }
 

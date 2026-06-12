@@ -178,7 +178,7 @@ flowchart TD
             collectedSteps.push(ts)
             win?.webContents.send('agent:step', { ...step, msgId: assistantMsgId })
           } else if (step.type === 'answer') {
-            fullText = step.content
+            fullText += step.content   // накапливаем токены, не перезаписываем
             win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
               chatId: params.chatId,
               msgId: assistantMsgId,
