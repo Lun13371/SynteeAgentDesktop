@@ -10,6 +10,7 @@ import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedB
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ToolChain from '../../components/ui/ToolChain/ToolChain'
+import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import { useChatStore } from '../../store/chat.store'
 import { IPC_EVENTS } from '../../../../shared/constants'
 import type { Chat, Message, ToolOutputMode } from '../../../../shared/types'
@@ -34,12 +35,29 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const isInitialScrollRef = useRef(true)
   const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
+  const [showSearch, setShowSearch] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
+  const [replyTo, setReplyTo] = useState<Message | null>(null)
 
   // Загружаем toolOutputMode
   useEffect(() => {
     window.syntee.agent.getSettings().then((s: { toolOutputMode?: ToolOutputMode }) => {
       if (s.toolOutputMode) setToolOutputMode(s.toolOutputMode)
     }).catch(() => {})
+  }, [])
+
+  // Ctrl+F — поиск в чате
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault()
+        setShowSearch(v => !v)
+      }
+      if (e.key === 'Escape') { setShowSearch(false); setSearchQuery(''); setSearchMatchIds([]) }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
   }, [])
 
   // Загрузка чатов при старте
@@ -199,6 +217,18 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           onChatsUpdate={setChats}
         />
         <main className="chat-main">
+          {/* Поиск по чату */}
+          <AnimatePresence>
+            {showSearch && (
+              <motion.div key="search" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
+                <ChatSearch
+                  messages={messages}
+                  onMatchIds={ids => { setSearchMatchIds(ids); setSearchQuery(ids.length > 0 ? (document.querySelector('.chat-search-input') as HTMLInputElement)?.value || '' : '') }}
+                  onClose={() => { setShowSearch(false); setSearchQuery(''); setSearchMatchIds([]) }}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
           {showSkeleton ? (
             <motion.div
               key="skeleton"
@@ -239,13 +269,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             <div className="chat-messages">
               <AnimatePresence initial={false}>
                 {displayMessages.map(msg => (
-                  <MessageBubble
-                    key={msg.id}
-                    message={msg}
-                    toolOutputMode={toolOutputMode}
-                    onPin={handlePin}
-                    onCopy={handleCopy}
-                  />
+                  <div key={msg.id} data-msg-id={msg.id}>
+                    <MessageBubble
+                      message={msg}
+                      toolOutputMode={toolOutputMode}
+                      onPin={handlePin}
+                      onCopy={handleCopy}
+                      onReply={setReplyTo}
+                      searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
+                    />
+                  </div>
                 ))}
                 {isTyping && !streamingText && <TypingIndicator key="typing" />}
               </AnimatePresence>
@@ -270,6 +303,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onSend={handleSend}
             disabled={isTyping}
             isIncognito={isIncognito}
+            replyTo={replyTo}
+            onCancelReply={() => setReplyTo(null)}
           />
         </main>
       </div>

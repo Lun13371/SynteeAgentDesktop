@@ -5,7 +5,7 @@ import {
   Folder, Clipboard, Terminal, Monitor, Pencil, Check, X, AlertCircle,
   Eye, EyeOff, Palette, Link2, Database, Volume2, LoaderCircle, Minus,
   Shield, Info, RefreshCw, ChevronUp, ChevronDown, Trash2, Zap,
-  Archive, ChevronRight, Filter, Clock,
+  Archive, ChevronRight, Filter, Clock, CornerUpLeft,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -23,7 +23,7 @@ const ICONS = {
   loader: LoaderCircle, minus: Minus, shield: Shield, info: Info,
   refreshCw: RefreshCw, chevronUp: ChevronUp, chevronDown: ChevronDown,
   trash: Trash2, zap: Zap, archive: Archive, chevronRight: ChevronRight,
-  filter: Filter, clock: Clock,
+  filter: Filter, clock: Clock, reply: CornerUpLeft,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS
