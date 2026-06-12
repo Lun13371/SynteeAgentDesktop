@@ -3,6 +3,7 @@
   gap: 10px;
   padding: 4px 16px;
   position: relative;
+  align-items: flex-start;
 }
 
 .message-wrap--user {
@@ -23,37 +24,32 @@
   filter: drop-shadow(0 0 6px rgba(255,255,255,0.08));
 }
 
+.message-avatar--user {
+  background: transparent;
+  border: none;
+  width: 28px;
+  flex-shrink: 0;
+}
+
+/* Обёртка bubble + кнопки в одну строку */
+.message-bubble-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  max-width: 75%;
+  min-width: 0;
+}
+
+.message-wrap--user .message-bubble-wrap {
+  flex-direction: row-reverse;
+}
+
 .message-bubble {
-  width: auto;
-  max-width: 100%;
   border-radius: var(--radius-lg);
   padding: 10px 14px;
   position: relative;
-}
-
-.message-actions {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  display: flex;
-  gap: 2px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-  z-index: 10;
-  white-space: nowrap;
-}
-
-.message-wrap--user .message-bubble .message-actions {
-  left: auto;
-  right: 0;
-}
-
-.message-content {
-  font-size: 14px;
-  line-height: 1.65;
-  color: var(--text-primary);
+  min-width: 0;
 }
 
 .message-bubble--user {
@@ -68,10 +64,32 @@
   padding-left: 0;
 }
 
+/* Кнопки действий — справа от bubble (для AI), слева для user */
+.message-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  z-index: 10;
+  flex-shrink: 0;
+}
+
 .message-pinned-badge {
   font-size: 10px;
   color: var(--text-muted);
   margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.message-content {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-primary);
 }
 
 .message-content p { margin: 0 0 8px; }
@@ -141,8 +159,8 @@
 }
 
 .msg-action-btn {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -151,7 +169,6 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 11px;
   transition: background var(--transition), color var(--transition);
 }
 .msg-action-btn:hover {
