@@ -69,7 +69,6 @@ app.whenReady().then(async () => {
   registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
-  registerSettingsIPC(store)
   registerVoiceIPC(store, () => mainWindow.getWindow(), () => voiceWindow.getWindow())
   registerAgentIPC(store, () => mainWindow.getWindow())
 

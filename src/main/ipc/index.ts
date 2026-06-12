@@ -33,6 +33,7 @@ function registerSettingsIPC({ store }: IPCContext): void {
     store.set(key, value)
   })
   ipcMain.handle('settings:getAll', () => store.store)
+  ipcMain.handle('settings:reset', () => { store.clear(); return true })
 }
 
 function registerSystemIPC(_ctx: IPCContext): void {

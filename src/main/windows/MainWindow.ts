@@ -44,8 +44,13 @@ export class MainWindow {
     // Загружаем renderer
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+      this.win.webContents.openDevTools()
     } else {
       this.win.loadFile(join(__dirname, '../renderer/index.html'))
+      // В дебаг режиме открываем DevTools
+      if (process.argv.includes('--inspect') || process.argv.some(a => a.startsWith('--inspect='))) {
+        this.win.webContents.openDevTools({ mode: 'detach' })
+      }
     }
 
     return this.win
