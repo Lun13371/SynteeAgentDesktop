@@ -148,7 +148,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         setLiveThinking(prev => prev ? { ...prev, isLive: false, ms: data.thinkingMs } : null)
         return
       }
-      if (data.token) appendStreamToken(data.token)
+      if (data.token) {
+        // Первый токен текста — сразу убираем liveSteps чтобы ToolChain не прыгал
+        setLiveSteps(prev => prev.length > 0 ? [] : prev)
+        appendStreamToken(data.token)
+      }
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
@@ -160,8 +164,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       streamMsgIdRef.current = null
       setLiveThinking(null)
       setIsAgentRunning(false)
-      // Сворачиваем live цепочку через 400мс
-      setTimeout(() => setLiveSteps([]), 400)
+      setLiveSteps([])
       window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
     })
 
