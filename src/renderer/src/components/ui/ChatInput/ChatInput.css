@@ -5,6 +5,12 @@
 }
 
 /* Reply strip above input */
+.chat-input-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
 .chat-input-reply {
   display: flex;
   align-items: center;
