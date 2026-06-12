@@ -3,9 +3,10 @@ import './TitleBar.css'
 
 interface TitleBarProps {
   onSettingsClick?: () => void
+  onAgentClick?: () => void
 }
 
-export default function TitleBar({ onSettingsClick }: TitleBarProps) {
+export default function TitleBar({ onSettingsClick, onAgentClick }: TitleBarProps) {
   const handleMinimize = () => window.syntee.window.minimize()
   const handleHide = () => window.syntee.window.hide()
 
@@ -27,6 +28,21 @@ export default function TitleBar({ onSettingsClick }: TitleBarProps) {
       </div>
 
       <div className="titlebar-right no-drag">
+        {onAgentClick && (
+          <motion.button
+            className="titlebar-btn"
+            whileTap={{ scale: 0.88 }}
+            onClick={onAgentClick}
+            title="Агент"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <rect x="2" y="4" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+              <circle cx="5" cy="7.5" r="1" fill="currentColor"/>
+              <circle cx="9" cy="7.5" r="1" fill="currentColor"/>
+              <path d="M5 4V2.5a2 2 0 014 0V4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+          </motion.button>
+        )}
         {onSettingsClick && (
           <motion.button
             className="titlebar-btn"

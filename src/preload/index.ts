@@ -56,6 +56,12 @@ const synteeAPI = {
     reloadClient: () => ipcRenderer.invoke('chat:reloadClient'),
   },
 
+  // Агент
+  agent: {
+    run: (query: string) => ipcRenderer.invoke('agent:run', query),
+    cancel: () => ipcRenderer.invoke('agent:cancel'),
+  },
+
   // События (подписка)
   on: (channel: string, callback: (...args: unknown[]) => void) => {
     const handler = (_: Electron.IpcRendererEvent, ...args: unknown[]) => callback(...args)
