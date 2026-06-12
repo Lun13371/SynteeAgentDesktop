@@ -93,6 +93,7 @@ export class AIClient {
 
     let attempt = 0
 
+    let fullText = ''
     while (attempt <= this.maxRetries) {
       try {
         const stream = await client.chat.completions.create({
@@ -103,7 +104,6 @@ export class AIClient {
           max_tokens: (this.store.get('maxTokens') as number) || 4096,
         }, { signal })
 
-        let fullText = ''
         let chunkCount = 0
         for await (const chunk of stream) {
           if (signal?.aborted) break

@@ -90,7 +90,7 @@ export class Agent {
     this.client = new AIClient(store)
   }
 
-  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8): Promise<void> {
+  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal): Promise<void> {
     const messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userMessage },
@@ -99,6 +99,11 @@ export class Agent {
     const tavilyKey = (this.store.get('integrations') as { tavily?: { key: string } })?.tavily?.key
 
     for (let step = 0; step < maxSteps; step++) {
+      // Проверяем abort перед каждым шагом
+      if (signal?.aborted) {
+        callbacks.onDone('')
+        return
+      }
       try {
         const response = await this.client.chatWithTools(messages, TOOL_SCHEMAS)
 
