@@ -4,6 +4,35 @@
   width: 100%;
 }
 
+/* Reply strip above input */
+.chat-input-reply {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  margin-bottom: 6px;
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  animation: reply-slide-in 0.15s ease;
+}
+@keyframes reply-slide-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chat-input-reply-content { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.chat-input-reply-role { font-size: 11px; font-weight: 600; color: var(--accent); }
+.chat-input-reply-text { font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-input-reply-cancel {
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+  border: 1px solid var(--accent); background: transparent;
+  color: var(--accent); font-size: 12px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s;
+}
+.chat-input-reply-cancel:hover { background: var(--accent); color: white; }
+
 .chat-input-wrap--incognito .chat-input-box {
   border-color: rgba(150, 100, 255, 0.25);
   background: rgba(100, 60, 200, 0.08);

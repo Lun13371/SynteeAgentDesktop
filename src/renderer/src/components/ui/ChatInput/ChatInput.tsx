@@ -11,9 +11,11 @@ interface ChatInputProps {
   onAttach?: () => void
   disabled?: boolean
   isIncognito?: boolean
+  replyTo?: { role: string; content: string } | null
+  onCancelReply?: () => void
 }
 
-export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: ChatInputProps) {
+export default function ChatInput({ onSend, onAttach, disabled, isIncognito, replyTo, onCancelReply }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -55,6 +57,15 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: C
 
   return (
     <div className={`chat-input-wrap ${isIncognito ? 'chat-input-wrap--incognito' : ''}`}>
+      {replyTo && (
+        <div className="chat-input-reply">
+          <div className="chat-input-reply-content">
+            <span className="chat-input-reply-role">{replyTo.role === 'user' ? 'Вы' : 'Syntee'}</span>
+            <span className="chat-input-reply-text">{replyTo.content.slice(0, 100)}{replyTo.content.length > 100 ? '…' : ''}</span>
+          </div>
+          <button className="chat-input-reply-cancel" onClick={onCancelReply}>✕</button>
+        </div>
+      )}
       <div className="chat-input-box glass">
         {/* Кнопка прикрепить */}
         <IconButton
