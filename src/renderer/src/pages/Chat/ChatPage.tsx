@@ -7,6 +7,7 @@ import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import TypingIndicator from '../../components/ui/TypingIndicator/TypingIndicator'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
+import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import { useChatStore } from '../../store/chat.store'
 import { IPC_EVENTS } from '../../../../shared/constants'
@@ -61,7 +62,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (data: { waitSec: number }) => {
       setRateLimitSec(data.waitSec)
-      toast(`⏳ Rate limit — ожидание ${data.waitSec}с`, 'info', 4000)
+      toast(`Rate limit — ожидание ${data.waitSec}с`, 'info', 4000)
       setTimeout(() => setRateLimitSec(0), data.waitSec * 1000)
     })
 
@@ -116,7 +117,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handlePin = async (id: string) => {
     await window.syntee.chat.pin(id)
     pinMessage(id)
-    toast('📌 Сообщение закреплено', 'info')
+    toast('Сообщение закреплено', 'info')
   }
 
   const handleCopy = () => toast('Скопировано', 'success')
@@ -162,9 +163,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               <h2>Привет! Я Syntee.</h2>
               <p>Чем могу помочь сегодня?</p>
               {isIncognito && (
-                <p style={{ color: 'rgba(150,100,255,0.8)', fontSize: 12, marginTop: -8 }}>
-                  🔒 Режим инкогнито — чат не сохраняется
-                </p>
+                <div className="incognito-hint">
+                  <AppIcon name="lock" size="sm" tone="accent" />
+                  <span>Режим инкогнито — чат не сохраняется</span>
+                </div>
               )}
             </div>
           ) : (
@@ -186,7 +188,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
           {rateLimitSec > 0 && (
             <div className="rate-limit-bar">
-              ⏳ Ожидание rate limit: {rateLimitSec}с
+              <AppIcon name="loader" size="sm" tone="warning" animation="spin" />
+              <span>Ожидание rate limit: {rateLimitSec}с</span>
             </div>
           )}
 

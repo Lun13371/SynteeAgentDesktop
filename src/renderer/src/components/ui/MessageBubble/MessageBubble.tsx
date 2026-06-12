@@ -4,6 +4,8 @@ import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { Message } from '../../../../../shared/types'
+import AppIcon from '../AppIcon/AppIcon'
+import IconButton from '../IconButton/IconButton'
 import './MessageBubble.css'
 
 interface MessageBubbleProps {
@@ -43,9 +45,11 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
       )}
 
       <div className={`message-bubble ${isUser ? 'message-bubble--user glass' : 'message-bubble--assistant'}`}>
-        {/* Пиннут */}
         {message.isPinned === 1 && (
-          <div className="message-pinned-badge">📌 Закреплено</div>
+          <div className="message-pinned-badge">
+            <AppIcon name="pin" size="sm" tone="accent" />
+            <span>Закреплено</span>
+          </div>
         )}
 
         <div className="message-content selectable">
@@ -88,35 +92,21 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
           )}
         </div>
 
-        {/* Время */}
         <span className="message-time">
           {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
         </span>
       </div>
 
-      {/* Действия при наведении */}
       <motion.div
         className="message-actions"
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: showActions ? 1 : 0, scale: showActions ? 1 : 0.9 }}
         transition={{ duration: 0.15 }}
       >
-        <button className="msg-action-btn" onClick={handleCopy} title="Копировать">
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-            <rect x="4" y="4" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
-            <path d="M2 9V2h7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-          </svg>
-        </button>
-        <button className="msg-action-btn" onClick={() => onPin?.(message.id)} title="Закрепить">
-          📌
-        </button>
+        <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={handleCopy} />
+        <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
         {!isUser && (
-          <button className="msg-action-btn" onClick={() => onReadAloud?.(message.content)} title="Озвучить">
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-              <path d="M2 4.5h2l3-3v10l-3-3H2v-4z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
-              <path d="M9 4a3 3 0 010 5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-            </svg>
-          </button>
+          <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={() => onReadAloud?.(message.content)} />
         )}
       </motion.div>
     </motion.div>
