@@ -68,6 +68,8 @@ const synteeAPI = {
   agent: {
     run: (query: string) => ipcRenderer.invoke('agent:run', query),
     cancel: () => ipcRenderer.invoke('agent:cancel'),
+    getSettings: () => ipcRenderer.invoke('agent:getSettings'),
+    setSettings: (s: unknown) => ipcRenderer.invoke('agent:setSettings', s),
   },
 
   // Провайдеры и модели

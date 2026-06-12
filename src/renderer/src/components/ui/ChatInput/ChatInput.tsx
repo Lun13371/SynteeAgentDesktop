@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, KeyboardEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
+import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
+import type { ApprovalMode } from '../../../../../shared/types'
 import './ChatInput.css'
 
 interface ChatInputProps {
@@ -13,7 +15,20 @@ interface ChatInputProps {
 
 export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: ChatInputProps) {
   const [value, setValue] = useState('')
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Загружаем сохранённый режим
+  useEffect(() => {
+    window.syntee.agent.getSettings().then((s: { approvalMode: ApprovalMode }) => {
+      setApprovalMode(s.approvalMode)
+    }).catch(() => {})
+  }, [])
+
+  const handleApprovalChange = (mode: ApprovalMode) => {
+    setApprovalMode(mode)
+    window.syntee.agent.setSettings({ approvalMode: mode }).catch(() => {})
+  }
 
   // Авто-ресайз textarea
   useEffect(() => {
@@ -60,6 +75,15 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: C
           rows={1}
           disabled={disabled}
         />
+
+        {/* Селектор режима подтверждения */}
+        {!isIncognito && (
+          <ApprovalModeSelector
+            value={approvalMode}
+            onChange={handleApprovalChange}
+            compact
+          />
+        )}
 
         {/* Кнопка mic → send — анимированная */}
         <motion.button

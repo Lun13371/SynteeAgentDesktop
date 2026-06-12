@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Store from 'electron-store'
 import { AIClient } from '../../core/ai/AIClient'
+import { Agent } from '../../core/agent/Agent'
 import {
   createChat, getAllChats, getMessages, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB
@@ -9,6 +10,13 @@ import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory }
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
 import type { Message } from '../../shared/types'
+import type { AgentSettings } from '../../shared/types'
+
+const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  approvalMode: 'ask',
+  maxSteps: 8,
+  enableTools: true,
+}
 
 let aiClient: AIClient
 
@@ -57,6 +65,7 @@ ${memoryContext ? '\n' + memoryContext : ''}`
     incognito?: boolean
   }) => {
     const win = mainWindow.getWindow()
+    const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
 
     // Сохраняем сообщение пользователя
     const userMsg: Message = {
@@ -71,14 +80,83 @@ ${memoryContext ? '\n' + memoryContext : ''}`
 
     // Получаем историю для контекста
     const history = params.incognito ? [] : getMessages(params.chatId)
+
+    const assistantMsgId = uuid()
+    let fullText = ''
+
+    const finalize = () => {
+      const assistantMsg: Message = {
+        id: assistantMsgId,
+        chatId: params.chatId,
+        role: 'assistant',
+        content: fullText,
+        createdAt: Date.now(),
+        isPinned: 0,
+        model: store.get('mainModel') as string || 'claude-sonnet-4-6',
+      }
+      if (!params.incognito) saveMessage(assistantMsg)
+      if (!params.incognito) {
+        const facts = extractMemoriesFromConversation(params.content, fullText)
+        facts.forEach(f => saveMemory(f))
+      }
+      if (history.length === 0 && !params.incognito) {
+        autoNameChat(params.chatId, params.content, store)
+      }
+      win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
+        chatId: params.chatId,
+        msgId: assistantMsgId,
+        message: assistantMsg,
+      })
+    }
+
+    // Если tools включены — запускаем через Agent (sub-agent в чате)
+    if (agentSettings.enableTools && !params.incognito) {
+      const agent = new Agent(store)
+
+      // Формируем контекст с историей в сообщении
+      const historyContext = history.slice(-10).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n')
+      const messageWithContext = historyContext
+        ? `[Контекст разговора]\n${historyContext}\n\n[Новый вопрос]\n${params.content}`
+        : params.content
+
+      agent.run(messageWithContext, {
+        onStep: (step) => {
+          // Стримим tool calls в чат как токены прогресса
+          if (step.type === 'tool_call') {
+            win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+              chatId: params.chatId,
+              msgId: assistantMsgId,
+              token: `\`${step.toolName}\`...`,
+            })
+          } else if (step.type === 'answer') {
+            fullText = step.content
+            // Стримим финальный ответ побуквенно для эффекта
+            win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+              chatId: params.chatId,
+              msgId: assistantMsgId,
+              token: step.content,
+            })
+          }
+        },
+        onDone: () => finalize(),
+        onError: (err) => {
+          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
+            chatId: params.chatId,
+            error: err.message,
+          })
+        },
+        approvalMode: agentSettings.approvalMode,
+      }, agentSettings.maxSteps)
+
+      return { started: true }
+    }
+
+    // Обычный режим без tools — streamChat
     const contextMessages = history.slice(-20).map(m => ({
       role: m.role as 'user' | 'assistant' | 'system',
       content: m.content,
     }))
     contextMessages.push({ role: 'user', content: params.content })
-
-    const assistantMsgId = uuid()
-    let fullText = ''
 
     await aiClient.streamChat(
       contextMessages,
