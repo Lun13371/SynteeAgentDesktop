@@ -160,3 +160,36 @@
   color: var(--text-secondary);
 }
 .selection-reply-copy:hover { background: var(--border); color: var(--text-primary); }
+
+/* Stop button */
+.chat-stop-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 8px;
+}
+
+.chat-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.chat-stop-btn:hover {
+  background: rgba(239,68,68,0.12);
+  border-color: rgba(239,68,68,0.4);
+  color: #ef4444;
+}
+.chat-stop-icon {
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  border-radius: 2px;
+  flex-shrink: 0;
+}

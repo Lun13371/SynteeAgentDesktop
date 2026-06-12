@@ -54,6 +54,7 @@ const synteeAPI = {
     pin: (messageId: string) => ipcRenderer.invoke('chat:pinMsg', messageId),
     unpin: (messageId: string) => ipcRenderer.invoke('chat:unpinMsg', messageId),
     reloadClient: () => ipcRenderer.invoke('chat:reloadClient'),
+    stop: () => ipcRenderer.invoke('chat:stop'),
     archive: (chatId: string, archived: boolean) => ipcRenderer.invoke('chat:archive', chatId, archived),
     pinChat: (chatId: string, pinned: boolean) => ipcRenderer.invoke('chat:pinChat', chatId, pinned),
     setColor: (chatId: string, color: string | null) => ipcRenderer.invoke('chat:setColor', chatId, color),
