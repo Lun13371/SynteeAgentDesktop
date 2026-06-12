@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ApprovalMode } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
@@ -18,20 +19,39 @@ interface ApprovalModeSelectorProps {
 
 export default function ApprovalModeSelector({ value, onChange, compact }: ApprovalModeSelectorProps) {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const btnRef = useRef<HTMLButtonElement>(null)
   const current = MODES.find(m => m.value === value) || MODES[0]
+
+  const updatePos = () => {
+    if (!btnRef.current) return
+    const r = btnRef.current.getBoundingClientRect()
+    setPos({ top: r.bottom + 6, left: r.left })
+  }
+
+  const handleOpen = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    updatePos()
+    setOpen(o => !o)
+  }
 
   useEffect(() => {
     if (!open) return
-    const handler = () => setOpen(false)
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    const close = () => setOpen(false)
+    document.addEventListener('mousedown', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      window.removeEventListener('scroll', close, true)
+    }
   }, [open])
 
   return (
     <div className={`approval-selector ${compact ? 'approval-selector--compact' : ''}`}>
       <motion.button
+        ref={btnRef}
         className={`approval-btn approval-btn--${value}`}
-        onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
+        onClick={handleOpen}
         whileTap={{ scale: 0.95 }}
         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
         title={current.desc}
@@ -41,37 +61,41 @@ export default function ApprovalModeSelector({ value, onChange, compact }: Appro
         <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="xs" />
       </motion.button>
 
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            className="approval-dropdown glass"
-            initial={{ opacity: 0, y: 6, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 30 }}
-            onClick={e => e.stopPropagation()}
-          >
-            {MODES.map(mode => (
-              <motion.button
-                key={mode.value}
-                className={`approval-option ${value === mode.value ? 'approval-option--active' : ''}`}
-                onClick={() => { onChange(mode.value); setOpen(false) }}
-                whileHover={{ x: 3 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-              >
-                <div className={`approval-option-icon approval-option-icon--${mode.value}`}>
-                  <AppIcon name={mode.icon as 'zap'} size="xs" />
-                </div>
-                <div className="approval-option-text">
-                  <span className="approval-option-label">{mode.label}</span>
-                  <span className="approval-option-desc">{mode.desc}</span>
-                </div>
-                {value === mode.value && <AppIcon name="check" size="xs" tone="accent" />}
-              </motion.button>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {createPortal(
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              className="approval-dropdown glass"
+              style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999 }}
+              initial={{ opacity: 0, y: -6, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -6, scale: 0.97 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+              onMouseDown={e => e.stopPropagation()}
+            >
+              {MODES.map(mode => (
+                <motion.button
+                  key={mode.value}
+                  className={`approval-option ${value === mode.value ? 'approval-option--active' : ''}`}
+                  onClick={() => { onChange(mode.value); setOpen(false) }}
+                  whileHover={{ x: 3 }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                >
+                  <div className={`approval-option-icon approval-option-icon--${mode.value}`}>
+                    <AppIcon name={mode.icon as 'zap'} size="xs" />
+                  </div>
+                  <div className="approval-option-text">
+                    <span className="approval-option-label">{mode.label}</span>
+                    <span className="approval-option-desc">{mode.desc}</span>
+                  </div>
+                  {value === mode.value && <AppIcon name="check" size="xs" tone="accent" />}
+                </motion.button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   )
 }
