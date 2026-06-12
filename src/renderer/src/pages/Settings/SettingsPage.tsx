@@ -79,14 +79,14 @@ export default function SettingsPage() {
 
       {/* Контент */}
       <div className="settings-content">
-        <AnimatePresence mode="wait">
+        <AnimatePresence>
           <motion.div
             key={section}
             className="settings-section"
-            initial={{ opacity: 0, x: 16 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -16 }}
-            transition={{ duration: 0.18 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
           >
             {section === 'general' && (
               <GeneralSection settings={settings} onSet={handleSet} />
