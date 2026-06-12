@@ -223,13 +223,13 @@ export class AIClient {
   // Function calling — для агента
   async chatWithTools(
     messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
-    tools: unknown[]
+    tools: unknown[],
+    signal?: AbortSignal
   ): Promise<{ content: string; tool_calls?: unknown[] }> {
     const model = this.getModel('main')
     const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
     const apiKey = this.store.get('apiKey') as string
 
-    // Берём endpoint из провайдера назначения main-роли если есть
     const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
     const mainAssignment = assignments?.find(a => a.role === 'main')
     const providers = this.store.get('providers') as Array<{ id: string; baseUrl: string; apiKey: string; enabled: boolean }> | undefined
@@ -239,11 +239,14 @@ export class AIClient {
 
     let attempt = 0
     while (attempt < 6) {
+      // Проверяем abort перед каждой попыткой
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
         const res = await fetch(`${effectiveEndpoint}/chat/completions`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${effectiveKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, messages, tools, tool_choice: 'auto' }),
+          signal,
         })
         if (res.status === 429) {
           const wait = backoffDelay(attempt)
