@@ -106,7 +106,7 @@ flowchart TD
       currentWorker = null
     }
 
-    // Сериализуем store для передачи в worker (store не клонируется через structured clone)
+    // Сериализуем store для передачи в worker
     const storeData: Record<string, unknown> = {}
     const storeKeys = [
       'apiKey', 'apiEndpoint', 'providers', 'modelAssignments',
@@ -118,98 +118,97 @@ flowchart TD
       if (v !== undefined) storeData[k] = v
     }
 
-    // Путь к worker — в dist/main/ после сборки
-    const workerPath = path.join(__dirname, 'ai-worker.js')
+    // Буфер токенов в main — для сохранения при внезапном terminate()
+    let bufferedText = ''
+    let bufferedThinking = ''
+    let bufferedThinkingMs: number | undefined
+    const bufferedSteps: unknown[] = []
+    let doneSent = false  // флаг чтобы не слать DONE дважды
 
-    const worker = new Worker(workerPath, {
-      workerData: { storeData },
-    })
+    const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[]) => {
+      if (doneSent) return
+      doneSent = true
+      currentWorker = null
+
+      const assistantMsg: Message = {
+        id: assistantMsgId,
+        chatId: params.chatId,
+        role: 'assistant',
+        content: fullText,
+        createdAt: Date.now(),
+        isPinned: 0,
+        model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
+          ?.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6',
+        toolSteps: steps && steps.length > 0 ? steps as never : undefined,
+        thinking: thinkingText || undefined,
+        thinkingMs,
+      }
+
+      if (!params.incognito) saveMessage(assistantMsg)
+      if (!params.incognito) {
+        const facts = extractMemoriesFromConversation(params.content, fullText)
+        facts.forEach(f => saveMemory(f))
+      }
+      if (history.length === 0 && !params.incognito) {
+        autoNameChat(params.chatId, params.content, store, win)
+      }
+
+      win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
+        chatId: params.chatId,
+        msgId: assistantMsgId,
+        message: assistantMsg,
+      })
+    }
+
+    const workerPath = path.join(__dirname, 'ai-worker.js')
+    const worker = new Worker(workerPath, { workerData: { storeData } })
     currentWorker = worker
 
-    // Слушаем сообщения от worker
     worker.on('message', (msg: Record<string, unknown>) => {
       switch (msg.type) {
         case 'token':
+          bufferedText += (msg.token as string) || ''
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-            chatId: msg.chatId,
-            msgId: msg.msgId,
-            token: msg.token,
+            chatId: msg.chatId, msgId: msg.msgId, token: msg.token,
           })
           break
 
         case 'thinking_token':
+          bufferedThinking += (msg.token as string) || ''
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-            chatId: msg.chatId,
-            msgId: msg.msgId,
-            thinkingToken: msg.token,
+            chatId: msg.chatId, msgId: msg.msgId, thinkingToken: msg.token,
           })
           break
 
         case 'thinking_done':
+          bufferedThinkingMs = msg.thinkingMs as number
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-            chatId: msg.chatId,
-            msgId: msg.msgId,
-            thinkingDone: true,
-            thinkingMs: msg.thinkingMs,
+            chatId: msg.chatId, msgId: msg.msgId,
+            thinkingDone: true, thinkingMs: msg.thinkingMs,
           })
           break
 
         case 'step':
-          win?.webContents.send('agent:step', {
-            ...(msg.step as object),
-            msgId: msg.msgId,
-          })
+          bufferedSteps.push(msg.step)
+          win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId })
           break
 
         case 'rate_limit':
           win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec })
           break
 
-        case 'done': {
-          // Worker завершился штатно — сохраняем и шлём DONE
-          currentWorker = null
-
-          const fullText = (msg.fullText as string) || ''
-          const thinkingText = (msg.thinkingText as string) || undefined
-          const thinkingMs = msg.thinkingMs as number | undefined
-          const collectedSteps = (msg.collectedSteps as unknown[]) || []
-          const incognito = msg.incognito as boolean
-
-          const assistantMsg: Message = {
-            id: assistantMsgId,
-            chatId: params.chatId,
-            role: 'assistant',
-            content: fullText,
-            createdAt: Date.now(),
-            isPinned: 0,
-            model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
-              ?.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6',
-            toolSteps: collectedSteps.length > 0 ? collectedSteps as never : undefined,
-            thinking: thinkingText,
-            thinkingMs,
-          }
-
-          if (!incognito) saveMessage(assistantMsg)
-          if (!incognito) {
-            const facts = extractMemoriesFromConversation(params.content, fullText)
-            facts.forEach(f => saveMemory(f))
-          }
-          if (history.length === 0 && !incognito) {
-            autoNameChat(params.chatId, params.content, store, win)
-          }
-
-          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
-            chatId: params.chatId,
-            msgId: assistantMsgId,
-            message: assistantMsg,
-          })
+        case 'done':
+          sendDone(
+            (msg.fullText as string) || bufferedText,
+            (msg.thinkingText as string) || bufferedThinking || undefined,
+            (msg.thinkingMs as number) || bufferedThinkingMs,
+            (msg.collectedSteps as unknown[]) || bufferedSteps,
+          )
           break
-        }
 
         case 'error':
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
-            chatId: msg.chatId,
-            error: msg.error,
+            chatId: msg.chatId, error: msg.error,
           })
           break
       }
@@ -217,21 +216,19 @@ flowchart TD
 
     worker.on('error', (err) => {
       console.error('[Worker] error:', err)
-      currentWorker = null
+      // Ошибка воркера — финализируем с буфером
+      sendDone(bufferedText, bufferedThinking, bufferedThinkingMs, bufferedSteps)
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
-        chatId: params.chatId,
-        error: err.message,
+        chatId: params.chatId, error: err.message,
       })
     })
 
-    worker.on('exit', (code) => {
-      if (code !== 0 && currentWorker === worker) {
-        // Воркер убит terminate() — сохраняем пустое сообщение если нужно
-        currentWorker = null
-      }
+    worker.on('exit', () => {
+      // Вызывается при terminate() или нормальном выходе
+      // sendDone игнорирует второй вызов через doneSent флаг
+      sendDone(bufferedText, bufferedThinking, bufferedThinkingMs, bufferedSteps)
     })
 
-    // Запускаем задачу в worker
     worker.postMessage({
       chatId: params.chatId,
       msgId: assistantMsgId,
