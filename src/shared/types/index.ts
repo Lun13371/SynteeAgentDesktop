@@ -37,6 +37,9 @@ export interface Chat {
   createdAt: number
   updatedAt: number
   isIncognito: number
+  isPinned: number
+  isArchived: number
+  color?: string
   lastMessage?: string
   messageCount?: number
 }

@@ -31,7 +31,10 @@ function runMigrations(): void {
       title       TEXT NOT NULL DEFAULT 'Новый чат',
       created_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL,
-      is_incognito INTEGER NOT NULL DEFAULT 0
+      is_incognito INTEGER NOT NULL DEFAULT 0,
+      is_pinned   INTEGER NOT NULL DEFAULT 0,
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      color       TEXT
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -88,6 +91,12 @@ function runMigrations(): void {
   if (!cols.find(c => c.name === 'tool_steps')) {
     db.prepare(`ALTER TABLE messages ADD COLUMN tool_steps TEXT`).run()
   }
+
+  // Миграция: добавляем поля чатов
+  const chatCols = db.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[]
+  if (!chatCols.find(c => c.name === 'is_pinned'))   db.prepare(`ALTER TABLE chats ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0`).run()
+  if (!chatCols.find(c => c.name === 'is_archived')) db.prepare(`ALTER TABLE chats ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0`).run()
+  if (!chatCols.find(c => c.name === 'color'))       db.prepare(`ALTER TABLE chats ADD COLUMN color TEXT`).run()
 }
 
 // === CHATS ===
@@ -112,10 +121,13 @@ export function getAllChats(): Chat[] {
   return db.prepare(`
     SELECT c.id, c.title, c.created_at as createdAt, c.updated_at as updatedAt,
            c.is_incognito as isIncognito,
+           c.is_pinned as isPinned,
+           c.is_archived as isArchived,
+           c.color,
            (SELECT content FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as lastMessage,
            (SELECT COUNT(*) FROM messages WHERE chat_id = c.id) as messageCount
     FROM chats c WHERE c.is_incognito = 0
-    ORDER BY c.updated_at DESC
+    ORDER BY c.is_pinned DESC, c.updated_at DESC
   `).all() as Chat[]
 }
 
@@ -126,6 +138,52 @@ export function renameChat(id: string, title: string): void {
 
 export function deleteChat(id: string): void {
   db.prepare('DELETE FROM chats WHERE id = ?').run(id)
+}
+
+export function archiveChat(id: string, archived: boolean): void {
+  db.prepare('UPDATE chats SET is_archived = ? WHERE id = ?').run(archived ? 1 : 0, id)
+}
+
+export function pinChat(id: string, pinned: boolean): void {
+  db.prepare('UPDATE chats SET is_pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id)
+}
+
+export function setChatColor(id: string, color: string | null): void {
+  db.prepare('UPDATE chats SET color = ? WHERE id = ?').run(color, id)
+}
+
+export function duplicateChat(id: string): Chat | null {
+  const src = db.prepare(`SELECT * FROM chats WHERE id = ?`).get(id) as Chat & { created_at: number; updated_at: number; is_incognito: number } | undefined
+  if (!src) return null
+  const newId = require('uuid').v4() as string
+  const now = Date.now()
+  db.prepare(`INSERT INTO chats (id, title, created_at, updated_at, is_incognito, is_pinned, is_archived, color) VALUES (?,?,?,?,?,0,0,?)`)
+    .run(newId, src.title + ' (копия)', now, now, src.is_incognito ?? 0, (src as unknown as Record<string,unknown>).color ?? null)
+  const msgs = db.prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC').all(id) as (Message & { chat_id: string; created_at: number; is_pinned: number; tool_steps?: string })[]
+  for (const m of msgs) {
+    const mid = require('uuid').v4() as string
+    db.prepare(`INSERT INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(mid, newId, m.role, m.content, m.created_at ?? m.createdAt, 0, m.model ?? null, m.tool_steps ?? null)
+  }
+  return getAllChats().find(c => c.id === newId) ?? null
+}
+
+export function exportChat(id: string, format: 'txt' | 'md'): string {
+  const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(id) as { title: string } | undefined
+  if (!chat) return ''
+  const msgs = db.prepare('SELECT role, content, created_at FROM messages WHERE chat_id = ? ORDER BY created_at ASC').all(id) as { role: string; content: string; created_at: number }[]
+  if (format === 'md') {
+    return `# ${chat.title}\n\n` + msgs.map(m => {
+      const time = new Date(m.created_at).toLocaleString('ru')
+      const role = m.role === 'user' ? '**Вы**' : '**Ассистент**'
+      return `${role} _(${time})_\n\n${m.content}`
+    }).join('\n\n---\n\n')
+  }
+  return msgs.map(m => {
+    const time = new Date(m.created_at).toLocaleString('ru')
+    const role = m.role === 'user' ? 'Вы' : 'Ассистент'
+    return `[${time}] ${role}:\n${m.content}`
+  }).join('\n\n')
 }
 
 export function touchChat(id: string): void {
