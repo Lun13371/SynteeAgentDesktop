@@ -122,7 +122,7 @@ flowchart TD
     let thinkingMs: number | undefined
     const collectedSteps: import('../../shared/types').ToolStep[] = []
 
-    // AbortController — для кнопки остановки
+    // AbortController — создаём ДО любых веток (агент или стрим)
     const abortController = new AbortController()
     currentAbortController = abortController
 
@@ -166,7 +166,6 @@ flowchart TD
       agent.run(messageWithContext, {
         onStep: (step) => {
           if (step.type === 'tool_call' || step.type === 'tool_result') {
-            // Шаги НЕ идут в стрим-токены — только в agent:step и collectedSteps
             const ts: import('../../shared/types').ToolStep = {
               id: `${Date.now()}-${Math.random()}`,
               type: step.type,
@@ -177,7 +176,6 @@ flowchart TD
               timestamp: Date.now(),
             }
             collectedSteps.push(ts)
-            // Шлём в UI для live ToolChain
             win?.webContents.send('agent:step', { ...step, msgId: assistantMsgId })
           } else if (step.type === 'answer') {
             fullText = step.content
@@ -188,12 +186,21 @@ flowchart TD
             })
           }
         },
-        onDone: () => finalize(),
+        onDone: () => {
+          currentAbortController = null
+          finalize()
+        },
         onError: (err) => {
-          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
-            chatId: params.chatId,
-            error: err.message,
-          })
+          currentAbortController = null
+          // Если это abort — финализируем с тем что успели
+          if (abortController.signal.aborted) {
+            finalize()
+          } else {
+            win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
+              chatId: params.chatId,
+              error: err.message,
+            })
+          }
         },
         approvalMode: agentSettings.approvalMode,
         onConfirm: (toolName, args) => new Promise<boolean>((resolve) => {
@@ -205,7 +212,7 @@ flowchart TD
           })
           setTimeout(() => resolve(false), 60_000)
         }),
-      }, agentSettings.maxSteps)
+      }, agentSettings.maxSteps, abortController.signal)
 
       return { started: true }
     }
