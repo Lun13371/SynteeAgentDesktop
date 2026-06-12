@@ -196,7 +196,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                 </div>
               ))}
             </div>
-          ) : (
+          ) : displayMessages.length === 0 && !isTyping ? (
             <div className="chat-empty-state">
               <div className="chat-empty-icon">
                 <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
