@@ -9,9 +9,11 @@ import TypingIndicator from '../../components/ui/TypingIndicator/TypingIndicator
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
+import ToolChain from '../../components/ui/ToolChain/ToolChain'
 import { useChatStore } from '../../store/chat.store'
 import { IPC_EVENTS } from '../../../../shared/constants'
-import type { Chat, Message } from '../../../../shared/types'
+import type { Chat, Message, ToolOutputMode } from '../../../../shared/types'
+import type { ToolStep } from '../../components/ui/ToolChain/ToolChain'
 import './ChatPage.css'
 
 export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -26,6 +28,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
+  const [toolSteps, setToolSteps] = useState<ToolStep[]>([])
+  const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
+  const [isAgentRunning, setIsAgentRunning] = useState(false)
+
+  // Загружаем toolOutputMode
+  useEffect(() => {
+    window.syntee.agent.getSettings().then((s: { toolOutputMode?: ToolOutputMode }) => {
+      if (s.toolOutputMode) setToolOutputMode(s.toolOutputMode)
+    }).catch(() => {})
+  }, [])
 
   // Загрузка чатов при старте
   useEffect(() => {
@@ -51,12 +63,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       addMessage(data.message)
       clearStream()
       streamMsgIdRef.current = null
-      // Обновляем список чатов (новое название)
+      setIsAgentRunning(false)
+      // Сворачиваем цепочку через 600мс после завершения
+      setTimeout(() => setToolSteps([]), 600)
       window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
     })
 
     const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { error: string }) => {
       clearStream()
+      setIsAgentRunning(false)
+      setToolSteps([])
       toast('Ошибка: ' + data.error, 'error')
     })
 
@@ -66,7 +82,25 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setTimeout(() => setRateLimitSec(0), data.waitSec * 1000)
     })
 
-    return () => { offToken(); offDone(); offError(); offRateLimit() }
+    // Шаги агента
+    const offStep = window.syntee.on('agent:step', (step: {
+      type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean
+    }) => {
+      if (step.type === 'tool_call' || step.type === 'tool_result') {
+        setIsAgentRunning(true)
+        setToolSteps(prev => [...prev, {
+          id: uuid(),
+          type: step.type as 'tool_call' | 'tool_result',
+          toolName: step.toolName,
+          toolArgs: step.toolArgs,
+          content: step.content,
+          success: step.success,
+          timestamp: Date.now(),
+        }])
+      }
+    })
+
+    return () => { offToken(); offDone(); offError(); offRateLimit(); offStep() }
   }, [currentChatId])
 
   // Автоскролл
@@ -182,6 +216,12 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                 ))}
                 {isTyping && !streamingText && <TypingIndicator key="typing" />}
               </AnimatePresence>
+              {/* Tool chain — показывается над typing indicator */}
+              {toolSteps.length > 0 && (
+                <div className="chat-tool-chain-wrap">
+                  <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={isAgentRunning} />
+                </div>
+              )}
               <div ref={bottomRef} />
             </div>
           )}
