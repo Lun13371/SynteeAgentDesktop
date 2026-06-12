@@ -41,7 +41,8 @@ function runMigrations(): void {
       content     TEXT NOT NULL,
       created_at  INTEGER NOT NULL,
       is_pinned   INTEGER NOT NULL DEFAULT 0,
-      model       TEXT
+      model       TEXT,
+      tool_steps  TEXT
     );
 
     CREATE TABLE IF NOT EXISTS memory (
@@ -81,6 +82,12 @@ function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_memory_category ON memory(category);
     CREATE INDEX IF NOT EXISTS idx_clipboard_created ON clipboard_history(created_at);
   `)
+
+  // Миграция: добавляем tool_steps если колонки нет
+  const cols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[]
+  if (!cols.find(c => c.name === 'tool_steps')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN tool_steps TEXT`).run()
+  }
 }
 
 // === CHATS ===
@@ -129,18 +136,25 @@ export function touchChat(id: string): void {
 
 export function saveMessage(msg: Message): void {
   db.prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
+    msg.toolSteps ? JSON.stringify(msg.toolSteps) : null
+  )
   touchChat(msg.chatId)
 }
 
 export function getMessages(chatId: string): Message[] {
-  return db.prepare(`
-    SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model
+  const rows = db.prepare(`
+    SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model, tool_steps as toolStepsJson
     FROM messages WHERE chat_id = ?
     ORDER BY created_at ASC
-  `).all(chatId) as Message[]
+  `).all(chatId) as (Message & { toolStepsJson?: string })[]
+  return rows.map(r => {
+    const { toolStepsJson, ...rest } = r
+    return { ...rest, toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined }
+  })
 }
 
 export function pinMessage(id: string): void {
