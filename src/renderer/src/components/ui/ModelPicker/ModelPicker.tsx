@@ -99,13 +99,18 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
 
   return (
     <div className="model-picker" ref={wrapRef}>
-      <button className="model-picker-btn glass" onClick={() => setOpen(o => !o)}>
+      <motion.button
+        className="model-picker-btn glass"
+        onClick={() => setOpen(o => !o)}
+        whileTap={{ scale: 0.97 }}
+        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+      >
         <span className="model-picker-provider-dot" style={{ background: getProviderColor(providerId) }} />
         <span className="model-picker-label">
           {current ? current.name : (placeholder || 'Выберите модель')}
         </span>
         <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="sm" />
-      </button>
+      </motion.button>
 
       <AnimatePresence>
       {open && (
