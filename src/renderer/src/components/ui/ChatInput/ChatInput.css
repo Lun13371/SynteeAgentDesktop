@@ -113,6 +113,13 @@
   opacity: 0.88;
 }
 
+/* Иконки внутри кнопки — всегда чёрные, без прозрачности */
+.chat-input-action-btn svg {
+  color: #000000 !important;
+  stroke: #000000 !important;
+  opacity: 1 !important;
+}
+
 .chat-input-action-btn span {
   display: flex;
   align-items: center;
