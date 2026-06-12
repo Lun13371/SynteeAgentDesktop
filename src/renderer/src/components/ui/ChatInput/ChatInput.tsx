@@ -61,32 +61,41 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito }: C
           disabled={disabled}
         />
 
-        {/* Кнопка голос */}
-        <IconButton
-          icon="mic"
-          label="Голосовой ввод"
-          className="chat-input-btn"
-        />
-
-        {/* Кнопка отправить */}
-        <AnimatePresence>
-          {value.trim() && (
-            <motion.button
-              className="chat-input-send"
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-              whileTap={{ scale: 0.88 }}
-              onClick={handleSend}
-              disabled={disabled}
-              title="Отправить (Enter)"
-              aria-label="Отправить"
-            >
-              <AppIcon name="send" size="md" tone="accent" />
-            </motion.button>
-          )}
-        </AnimatePresence>
+        {/* Кнопка mic → send — анимированная */}
+        <motion.button
+          className={`chat-input-action-btn ${value.trim() ? 'chat-input-action-btn--send' : 'chat-input-action-btn--mic'}`}
+          onClick={value.trim() ? handleSend : undefined}
+          disabled={disabled}
+          whileTap={{ scale: 0.88 }}
+          whileHover={{ scale: 1.08 }}
+          transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+          title={value.trim() ? 'Отправить (Enter)' : 'Голосовой ввод'}
+          aria-label={value.trim() ? 'Отправить' : 'Голосовой ввод'}
+        >
+          <AnimatePresence mode="wait" initial={false}>
+            {value.trim() ? (
+              <motion.span
+                key="send"
+                initial={{ rotate: -90, opacity: 0, scale: 0.5 }}
+                animate={{ rotate: 0, opacity: 1, scale: 1 }}
+                exit={{ rotate: 90, opacity: 0, scale: 0.5 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+              >
+                <AppIcon name="send" size="md" />
+              </motion.span>
+            ) : (
+              <motion.span
+                key="mic"
+                initial={{ rotate: 90, opacity: 0, scale: 0.5 }}
+                animate={{ rotate: 0, opacity: 1, scale: 1 }}
+                exit={{ rotate: -90, opacity: 0, scale: 0.5 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+              >
+                <AppIcon name="mic" size="md" />
+              </motion.span>
+            )}
+          </AnimatePresence>
+        </motion.button>
       </div>
 
       <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка</p>
