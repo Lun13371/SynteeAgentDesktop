@@ -4,6 +4,8 @@ export interface ContextInfo {
   systemPrompt: number
   history: number
   historyMessages: number
+  toolCallsTokens: number
+  toolCallsCount: number
   currentInput: number
   reserved: number
   total: number
@@ -11,6 +13,8 @@ export interface ContextInfo {
   percent: number
   pricing: { inputPerM: number; outputPerM: number } | null
   estimatedCostCents: number | null
+  sessionCostCents: number | null
+  sessionRequests: number
   modelId: string
   warning: boolean
   critical: boolean

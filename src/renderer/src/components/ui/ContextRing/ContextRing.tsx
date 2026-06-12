@@ -146,6 +146,15 @@ export default function ContextRing({ info }: ContextRingProps) {
                 {info.historyMessages > 0 && <span className="ctx-row-sub"> ({info.historyMessages} сообщ.)</span>}
               </span>
             </div>
+            {info.toolCallsTokens > 0 && (
+              <div className="ctx-row ctx-row-indent">
+                <span className="ctx-row-label">↳ Tool calls</span>
+                <span className="ctx-row-val">
+                  {formatNum(info.toolCallsTokens)} tok
+                  <span className="ctx-row-sub"> ({info.toolCallsCount} вызовов)</span>
+                </span>
+              </div>
+            )}
             <div className="ctx-row">
               <span className="ctx-row-label">Текущий ввод</span>
               <span className="ctx-row-val">{formatNum(info.currentInput)} tok</span>
@@ -163,13 +172,21 @@ export default function ContextRing({ info }: ContextRingProps) {
           <div className="ctx-pricing">
             {info.pricing ? (
               <>
-                <span className="ctx-pricing-label">Стоимость запроса:</span>
-                <span className="ctx-pricing-val">
-                  {info.estimatedCostCents != null ? formatCost(info.estimatedCostCents) : '—'}
-                </span>
-                <span className="ctx-pricing-sub">
+                <div className="ctx-pricing-row">
+                  <span className="ctx-pricing-label">Этот запрос:</span>
+                  <span className="ctx-pricing-val">
+                    {info.estimatedCostCents != null ? formatCost(info.estimatedCostCents) : '—'}
+                  </span>
+                </div>
+                {info.sessionCostCents != null && info.sessionRequests > 0 && (
+                  <div className="ctx-pricing-row">
+                    <span className="ctx-pricing-label">Сессия ({info.sessionRequests} запр.):</span>
+                    <span className="ctx-pricing-val">{formatCost(info.sessionCostCents)}</span>
+                  </div>
+                )}
+                <div className="ctx-pricing-rates">
                   ${(info.pricing.inputPerM / 100).toFixed(2)}/M in · ${(info.pricing.outputPerM / 100).toFixed(2)}/M out
-                </span>
+                </div>
               </>
             ) : (
               <span className="ctx-pricing-nodata">Нет данных о ценах</span>

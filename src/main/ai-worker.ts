@@ -6,6 +6,7 @@
 import { parentPort, workerData } from 'worker_threads'
 import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
+import { buildSystemPrompt } from '../core/prompts/buildSystemPrompt'
 
 const storeData: Record<string, unknown> = workerData.storeData
 
