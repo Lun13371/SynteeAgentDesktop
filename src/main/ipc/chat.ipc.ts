@@ -8,6 +8,7 @@ import {
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat
 } from '../../core/db/database'
 import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
+import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { AIClient } from '../../core/ai/AIClient'
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
@@ -30,39 +31,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   // Системный промпт
   const getSystemPrompt = (): string => {
     const userName = store.get('userName') as string || ''
-    const memoryContext = getAllMemoriesForContext()
-    return `Ты Syntee — персональный AI-ассистент для Windows. Умный, дружелюбный, с лёгким юмором.
-${userName ? `Пользователя зовут ${userName}. Обращайся к нему по имени.` : ''}
-Отвечай на том же языке, на котором говорит пользователь.
-Отвечай по умолчанию в среднем объёме — не слишком коротко и не слишком длинно.
-Дата и время: ${new Date().toLocaleString('ru')}.
-${memoryContext ? '\n' + memoryContext : ''}
-
-## Форматирование ответов
-
-**Диаграммы (Mermaid)** — для схем, графов, архитектуры, flowchart, sequence используй:
-\`\`\`mermaid
-flowchart TD
-  A[Начало] --> B[Шаг]
-\`\`\`
-Поддерживаются типы: flowchart, sequenceDiagram, classDiagram, gantt, pie, gitGraph, erDiagram.
-
-**Цветные блоки (Admonitions)** — для выделения важной информации:
-:::note Заголовок (опционально)
-Текст заметки
-:::
-Варианты: :::note :::tip :::warning :::danger :::info
-
-**Diff блок** — для показа изменений кода:
-\`\`\`diff
-- удалённая строка
-+ добавленная строка
-  строка без изменений
-\`\`\`
-
-**Таблицы** — markdown таблицы для структурированных данных.
-**Математика** — LaTeX: inline \`$E=mc^2$\`, блочный \`$$\\frac{a}{b}$$\`.
-**Код** — всегда указывай язык: \`\`\`python, \`\`\`typescript, \`\`\`bash и т.д.`
+    let memoryContext = ''
+    try { memoryContext = getAllMemoriesForContext() } catch { /* ok */ }
+    return buildSystemPrompt({ userName, memoryContext })
   }
 
   // Создать чат
