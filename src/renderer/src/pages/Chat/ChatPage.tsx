@@ -149,8 +149,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         return
       }
       if (data.token) {
-        // Первый токен текста — сразу убираем liveSteps чтобы ToolChain не прыгал
-        setLiveSteps(prev => prev.length > 0 ? [] : prev)
         appendStreamToken(data.token)
       }
     })
@@ -284,7 +282,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleCopy = () => toast('Скопировано', 'success')
 
   // Собираем отображаемые сообщения (включая стриминг)
-  const displayMessages = streamingText || liveThinking
+  const displayMessages = streamingText || liveThinking || liveSteps.length > 0
     ? [...messages, {
         id: streamMsgIdRef.current || 'streaming',
         chatId: currentChatId || '',
@@ -292,6 +290,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         content: streamingText || '',
         createdAt: Date.now(),
         isPinned: 0,
+        // liveSteps едут прямо в пузырь — не исчезают а переезжают
+        toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
       }]
     : messages
 
@@ -368,16 +368,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       onReply={(msg) => setReplyTo(prev => prev.find(r => r.id === msg.id) ? prev : [...prev, msg])}
                       searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
                       liveThinking={msg.id === (streamMsgIdRef.current || 'streaming') ? liveThinking ?? undefined : undefined}
+                      isStreaming={msg.id === (streamMsgIdRef.current || 'streaming') && isTyping}
                     />
                   </div>
                 ))}
-                {isTyping && !streamingText && !liveThinking && <TypingIndicator key="typing" />}
-              {/* Live tool chain — пока агент работает */}
-              {liveSteps.length > 0 && (
-                <div className="chat-tool-chain-wrap">
-                  <ToolChain steps={liveSteps} mode={toolOutputMode} isRunning={isAgentRunning} />
-                </div>
-              )}
+                {isTyping && !streamingText && !liveThinking && liveSteps.length === 0 && <TypingIndicator key="typing" />}
               <div ref={bottomRef} />
             </div>
           )}
