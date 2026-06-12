@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useUIStore } from './store/ui.store'
 import ChatPage from './pages/Chat/ChatPage'
 import OverlayPage from './pages/Overlay/OverlayPage'
+import './pages/Overlay/OverlayPage.css'
 import VoicePage from './pages/Voice/VoicePage'
 import SpotlightPage from './pages/Spotlight/SpotlightPage'
 
