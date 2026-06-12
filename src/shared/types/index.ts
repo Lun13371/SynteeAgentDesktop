@@ -133,6 +133,14 @@ export interface ModelParams {
   streaming: boolean
 }
 
+export type ApprovalMode = 'ask' | 'auto' | 'full'
+
+export interface AgentSettings {
+  approvalMode: ApprovalMode
+  maxSteps: number
+  enableTools: boolean
+}
+
 // IPC channels для провайдеров/моделей
 export interface ProviderIPC {
   'providers:getAll': () => Provider[]

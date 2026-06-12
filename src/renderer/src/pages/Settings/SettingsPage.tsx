@@ -6,6 +6,7 @@ import { useToast } from '../../components/ui/Toast/Toast'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import IconButton from '../../components/ui/IconButton/IconButton'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
+import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
 import './SettingsPage.css'
 
 type Section =
@@ -358,17 +359,56 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
 }
 
 function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; enableTools: boolean }>({
+    approvalMode: 'ask', maxSteps: 8, enableTools: true
+  })
+
+  useEffect(() => {
+    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; enableTools: boolean }) => {
+      setAgentSettings(s)
+    }).catch(() => {})
+  }, [])
+
+  const updateAgent = (patch: Partial<typeof agentSettings>) => {
+    const next = { ...agentSettings, ...patch }
+    setAgentSettings(next)
+    window.syntee.agent.setSettings(next).catch(() => {})
+  }
+
   const perms = (settings['agentPermissions'] as Record<string, unknown>) || {}
+
   return (
     <>
       <SectionTitle>Агент и Безопасность</SectionTitle>
+
+      <Field label="Режим подтверждения действий" description="Когда агент запрашивает подтверждение перед выполнением">
+        <ApprovalModeSelector
+          value={agentSettings.approvalMode as import('../../../../../shared/types').ApprovalMode}
+          onChange={mode => updateAgent({ approvalMode: mode })}
+        />
+      </Field>
+
+      <Field label="Инструменты в чате" description="Разрешить агенту использовать системные инструменты в обычном чате">
+        <Toggle value={agentSettings.enableTools} onChange={v => updateAgent({ enableTools: v })} />
+      </Field>
+
+      <Field label="Максимум шагов агента" description="Сколько шагов может сделать агент за один запрос">
+        <select
+          className="settings-input"
+          value={agentSettings.maxSteps}
+          onChange={e => updateAgent({ maxSteps: Number(e.target.value) })}
+        >
+          {[4, 8, 12, 16, 24].map(n => (
+            <option key={n} value={n}>{n} шагов</option>
+          ))}
+        </select>
+      </Field>
+
       <Field label="Подтверждение опасных действий" description="Удаление файлов, системные команды">
         <Toggle value={!!perms['confirmDangerous']} onChange={v => onSet('agentPermissions', { ...perms, confirmDangerous: v })} />
       </Field>
-      <Field label="Dry Run режим" description="Агент показывает план, но не выполняет без подтверждения">
-        <Toggle value={!!perms['dryRunMode']} onChange={v => onSet('agentPermissions', { ...perms, dryRunMode: v })} />
-      </Field>
-      <Field label="Запрещённые папки" description="Через запятую">
+
+      <Field label="Запрещённые папки" description="Через запятую — агент не трогает эти пути">
         <input
           className="settings-input"
           value={((perms['forbiddenPaths'] as string[]) || []).join(', ')}

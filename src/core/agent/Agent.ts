@@ -5,6 +5,7 @@ import {
   getClipboard, setClipboard, searchWeb, getSystemInfo,
   TOOL_SCHEMAS, type ToolResult,
 } from '../tools'
+import type { ApprovalMode } from '../../shared/types'
 
 export interface AgentStep {
   type: 'thought' | 'tool_call' | 'tool_result' | 'answer'
@@ -18,6 +19,7 @@ export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
   onDone: (answer: string) => void
   onError: (err: Error) => void
+  approvalMode?: ApprovalMode
 }
 
 const SYSTEM_PROMPT = `Ты Syntee — персональный AI-ассистент для Windows.
