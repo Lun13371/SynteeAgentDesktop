@@ -109,9 +109,19 @@
 
 .sidebar-chat-meta {
   flex-shrink: 0; margin-left: 4px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
 }
 .sidebar-chat-time {
   font-size: 10px; color: var(--text-muted);
+}
+.sidebar-chat-count {
+  font-size: 10px; font-weight: 600;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 1px 5px;
+  min-width: 16px; text-align: center;
+  line-height: 1.4;
 }
 
 /* Rename */

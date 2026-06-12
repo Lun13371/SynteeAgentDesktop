@@ -212,6 +212,9 @@ export default function Sidebar({ chats = [], currentChatId, onSelectChat, onNew
                       <span className="sidebar-chat-time">
                         {formatTime(chat.updatedAt)}
                       </span>
+                      {!!chat.messageCount && (
+                        <span className="sidebar-chat-count">{chat.messageCount}</span>
+                      )}
                     </div>
                   </button>
                 )}
