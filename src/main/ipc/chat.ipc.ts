@@ -4,7 +4,8 @@ import { AIClient } from '../../core/ai/AIClient'
 import { Agent } from '../../core/agent/Agent'
 import {
   createChat, getAllChats, getMessages, saveMessage,
-  deleteChat, renameChat, pinMessage, unpinMessage, initDB
+  deleteChat, renameChat, pinMessage, unpinMessage, initDB,
+  archiveChat, pinChat, setChatColor, duplicateChat, exportChat
 } from '../../core/db/database'
 import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { IPC_EVENTS } from '../../shared/constants'
@@ -103,7 +104,7 @@ ${memoryContext ? '\n' + memoryContext : ''}`
         facts.forEach(f => saveMemory(f))
       }
       if (history.length === 0 && !params.incognito) {
-        autoNameChat(params.chatId, params.content, store)
+        autoNameChat(params.chatId, params.content, store, win)
       }
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
         chatId: params.chatId,
@@ -209,7 +210,7 @@ ${memoryContext ? '\n' + memoryContext : ''}`
 
           // Автоназвание чата после первого обмена
           if (history.length === 0 && !params.incognito) {
-            autoNameChat(params.chatId, params.content, store)
+            autoNameChat(params.chatId, params.content, store, win)
           }
 
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
@@ -239,17 +240,51 @@ ${memoryContext ? '\n' + memoryContext : ''}`
   ipcMain.handle('chat:reloadClient', () => {
     aiClient.reload()
   })
+
+  // Архивировать/разархивировать чат
+  ipcMain.handle('chat:archive', (_, chatId: string, archived: boolean) => {
+    archiveChat(chatId, archived)
+    return getAllChats()
+  })
+
+  // Закрепить/открепить чат
+  ipcMain.handle('chat:pin', (_, chatId: string, pinned: boolean) => {
+    pinChat(chatId, pinned)
+    return getAllChats()
+  })
+
+  // Цветная метка
+  ipcMain.handle('chat:setColor', (_, chatId: string, color: string | null) => {
+    setChatColor(chatId, color)
+  })
+
+  // Дублировать чат
+  ipcMain.handle('chat:duplicate', (_, chatId: string) => {
+    return duplicateChat(chatId)
+  })
+
+  // Экспорт чата
+  ipcMain.handle('chat:export', (_, chatId: string, format: 'txt' | 'md') => {
+    return exportChat(chatId, format)
+  })
+
+  // Слушаем chat:renamed чтобы фронт мог обновить список
+  // (уже шлётся из autoNameChat напрямую в win)
 }
 
 // Авто-название чата через быструю модель
-async function autoNameChat(chatId: string, firstMessage: string, store: Store): Promise<void> {
+async function autoNameChat(chatId: string, firstMessage: string, store: Store, win?: BrowserWindow | null): Promise<void> {
   try {
     const client = new AIClient(store)
     const title = await client.complete(
-      [{ role: 'user', content: `Придумай короткое название (3-5 слов) для чата, который начинается с этого сообщения: "${firstMessage.slice(0, 200)}". Ответь только названием без кавычек.` }],
+      [{ role: 'user', content: `Придумай короткое название (3-5 слов) для чата, который начинается с этого сообщения: "${firstMessage.slice(0, 200)}". Ответь только названием без кавычек и лишних слов.` }],
       'fast'
     )
-    if (title.trim()) renameChat(chatId, title.trim().slice(0, 60))
+    const clean = title.trim().slice(0, 60)
+    if (clean) {
+      renameChat(chatId, clean)
+      win?.webContents.send('chat:renamed', { chatId, title: clean })
+    }
   } catch {
     // не критично
   }

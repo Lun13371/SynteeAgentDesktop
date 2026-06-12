@@ -54,6 +54,11 @@ const synteeAPI = {
     pin: (messageId: string) => ipcRenderer.invoke('chat:pin', messageId),
     unpin: (messageId: string) => ipcRenderer.invoke('chat:unpin', messageId),
     reloadClient: () => ipcRenderer.invoke('chat:reloadClient'),
+    archive: (chatId: string, archived: boolean) => ipcRenderer.invoke('chat:archive', chatId, archived),
+    pinChat: (chatId: string, pinned: boolean) => ipcRenderer.invoke('chat:pin', chatId, pinned),
+    setColor: (chatId: string, color: string | null) => ipcRenderer.invoke('chat:setColor', chatId, color),
+    duplicate: (chatId: string) => ipcRenderer.invoke('chat:duplicate', chatId),
+    export: (chatId: string, format: 'txt' | 'md') => ipcRenderer.invoke('chat:export', chatId, format),
   },
 
   // Память

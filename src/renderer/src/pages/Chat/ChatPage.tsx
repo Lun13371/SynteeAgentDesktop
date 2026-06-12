@@ -177,8 +177,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           currentChatId={currentChatId}
           onSelectChat={selectChat}
           onNewChat={createNewChat}
-          isIncognito={isIncognito}
-          onToggleIncognito={toggleIncognito}
+          onChatsUpdate={setChats}
         />
         <main className="chat-main">
           {displayMessages.length === 0 && !isTyping ? (
