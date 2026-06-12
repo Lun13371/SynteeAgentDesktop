@@ -96,13 +96,12 @@
 }
 
 .chat-input-action-btn--mic {
-  background: transparent;
-  color: var(--text-muted);
+  background: var(--accent);
+  color: var(--bg-primary);
 }
 
 .chat-input-action-btn--mic:hover {
-  background: var(--accent-subtle);
-  color: var(--text-secondary);
+  opacity: 0.88;
 }
 
 .chat-input-action-btn--send {
