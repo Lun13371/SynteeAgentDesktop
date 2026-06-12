@@ -1,4 +1,4 @@
-import { ipcMain, desktopCapturer, screen, BrowserWindow, clipboard } from 'electron'
+import { ipcMain, desktopCapturer, screen, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { app } from 'electron'
 import type Store from 'electron-store'
@@ -9,8 +9,7 @@ export function registerOverlayIPC(
   store: Store,
   overlayWindow: { getWindow: () => BrowserWindow | null; show: () => void; hide: () => void }
 ): void {
-
-  // Захват всего экрана (все мониторы)
+  // Захват экрана
   ipcMain.handle('overlay:captureScreen', async () => {
     const displays = screen.getAllDisplays()
     const sources = await desktopCapturer.getSources({
