@@ -49,6 +49,17 @@ export interface Message {
   createdAt: number
   isPinned: number
   model?: string
+  toolSteps?: ToolStep[]
+}
+
+export interface ToolStep {
+  id: string
+  type: 'tool_call' | 'tool_result'
+  toolName?: string
+  toolArgs?: Record<string, unknown>
+  content: string
+  success?: boolean
+  timestamp: number
 }
 
 export interface DisplayInfo {

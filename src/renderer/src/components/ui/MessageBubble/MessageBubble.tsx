@@ -3,19 +3,21 @@ import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import type { Message } from '../../../../../shared/types'
+import type { Message, ToolOutputMode } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
+import ToolChain from '../ToolChain/ToolChain'
 import './MessageBubble.css'
 
 interface MessageBubbleProps {
   message: Message
   onPin?: (id: string) => void
-  onCopy?: (text: string) => void
-  onReadAloud?: (text: string) => void
+  onCopy?: (content: string) => void
+  onReadAloud?: (content: string) => void
+  toolOutputMode?: ToolOutputMode
 }
 
-export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: MessageBubbleProps) {
+export default function MessageBubble({ message, onPin, onCopy, onReadAloud, toolOutputMode = 'normal' }: MessageBubbleProps) {
   const [showActions, setShowActions] = useState(false)
   const isUser = message.role === 'user'
 
@@ -51,6 +53,11 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
               <AppIcon name="pin" size="sm" tone="accent" />
               <span>Закреплено</span>
             </div>
+          )}
+
+          {/* ToolChain — шаги агента сохранённые в сообщении */}
+          {!isUser && message.toolSteps && message.toolSteps.length > 0 && (
+            <ToolChain steps={message.toolSteps} mode={toolOutputMode} isRunning={false} />
           )}
 
           <div className="message-content selectable">
@@ -98,7 +105,7 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
           </span>
         </div>
 
-        {/* Кнопки справа от bubble — как у Claude */}
+        {/* Кнопки справа от bubble */}
         <motion.div
           className="message-actions"
           initial={{ opacity: 0, x: -6 }}

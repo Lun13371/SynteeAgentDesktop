@@ -84,6 +84,7 @@ ${memoryContext ? '\n' + memoryContext : ''}`
 
     const assistantMsgId = uuid()
     let fullText = ''
+    const collectedSteps: import('../../shared/types').ToolStep[] = []
 
     const finalize = () => {
       const assistantMsg: Message = {
@@ -94,6 +95,7 @@ ${memoryContext ? '\n' + memoryContext : ''}`
         createdAt: Date.now(),
         isPinned: 0,
         model: store.get('mainModel') as string || 'claude-sonnet-4-6',
+        toolSteps: collectedSteps.length > 0 ? collectedSteps : undefined,
       }
       if (!params.incognito) saveMessage(assistantMsg)
       if (!params.incognito) {
@@ -110,11 +112,10 @@ ${memoryContext ? '\n' + memoryContext : ''}`
       })
     }
 
-    // Если tools включены — запускаем через Agent (sub-agent в чате)
+    // Если tools включены — запускаем через Agent
     if (agentSettings.enableTools && !params.incognito) {
       const agent = new Agent(store)
 
-      // Формируем контекст с историей в сообщении
       const historyContext = history.slice(-10).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n')
       const messageWithContext = historyContext
         ? `[Контекст разговора]\n${historyContext}\n\n[Новый вопрос]\n${params.content}`
@@ -122,16 +123,22 @@ ${memoryContext ? '\n' + memoryContext : ''}`
 
       agent.run(messageWithContext, {
         onStep: (step) => {
-          // Стримим tool calls в чат как токены прогресса
-          if (step.type === 'tool_call') {
-            win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-              chatId: params.chatId,
-              msgId: assistantMsgId,
-              token: `\`${step.toolName}\`...`,
-            })
+          if (step.type === 'tool_call' || step.type === 'tool_result') {
+            // Шаги НЕ идут в стрим-токены — только в agent:step и collectedSteps
+            const ts: import('../../shared/types').ToolStep = {
+              id: `${Date.now()}-${Math.random()}`,
+              type: step.type,
+              toolName: step.toolName,
+              toolArgs: step.toolArgs,
+              content: step.content,
+              success: step.success,
+              timestamp: Date.now(),
+            }
+            collectedSteps.push(ts)
+            // Шлём в UI для live ToolChain
+            win?.webContents.send('agent:step', { ...step, msgId: assistantMsgId })
           } else if (step.type === 'answer') {
             fullText = step.content
-            // Стримим финальный ответ побуквенно для эффекта
             win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
               chatId: params.chatId,
               msgId: assistantMsgId,

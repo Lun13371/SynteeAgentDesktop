@@ -13,7 +13,6 @@ import ToolChain from '../../components/ui/ToolChain/ToolChain'
 import { useChatStore } from '../../store/chat.store'
 import { IPC_EVENTS } from '../../../../shared/constants'
 import type { Chat, Message, ToolOutputMode } from '../../../../shared/types'
-import type { ToolStep } from '../../components/ui/ToolChain/ToolChain'
 import './ChatPage.css'
 
 export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -28,9 +27,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
-  const [toolSteps, setToolSteps] = useState<ToolStep[]>([])
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isAgentRunning, setIsAgentRunning] = useState(false)
+  const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
 
   // Загружаем toolOutputMode
   useEffect(() => {
@@ -64,8 +63,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       clearStream()
       streamMsgIdRef.current = null
       setIsAgentRunning(false)
-      // Сворачиваем цепочку через 600мс после завершения
-      setTimeout(() => setToolSteps([]), 600)
+      // Сворачиваем live цепочку через 400мс
+      setTimeout(() => setLiveSteps([]), 400)
       window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
     })
 
@@ -88,7 +87,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }) => {
       if (step.type === 'tool_call' || step.type === 'tool_result') {
         setIsAgentRunning(true)
-        setToolSteps(prev => [...prev, {
+        setLiveSteps(prev => [...prev, {
           id: uuid(),
           type: step.type as 'tool_call' | 'tool_result',
           toolName: step.toolName,
@@ -210,16 +209,17 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   <MessageBubble
                     key={msg.id}
                     message={msg}
+                    toolOutputMode={toolOutputMode}
                     onPin={handlePin}
                     onCopy={handleCopy}
                   />
                 ))}
                 {isTyping && !streamingText && <TypingIndicator key="typing" />}
               </AnimatePresence>
-              {/* Tool chain — показывается над typing indicator */}
-              {toolSteps.length > 0 && (
+              {/* Live tool chain — пока агент работает */}
+              {liveSteps.length > 0 && (
                 <div className="chat-tool-chain-wrap">
-                  <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={isAgentRunning} />
+                  <ToolChain steps={liveSteps} mode={toolOutputMode} isRunning={isAgentRunning} />
                 </div>
               )}
               <div ref={bottomRef} />
