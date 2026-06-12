@@ -17,8 +17,11 @@ import { registerVoiceIPC } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
 
+// Имя приложения — ДОЛЖНО быть ДО создания Store и app.whenReady
+app.setName('SynteeHelper')
+
 // Инициализируем store с дефолтными настройками
-const store = new Store({ defaults: DEFAULT_SETTINGS })
+const store = new Store({ defaults: DEFAULT_SETTINGS, name: 'config', cwd: undefined })
 
 // Глобальные окна
 let mainWindow: MainWindow
