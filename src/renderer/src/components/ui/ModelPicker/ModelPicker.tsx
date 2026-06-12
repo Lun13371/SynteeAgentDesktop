@@ -116,10 +116,10 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
       {open && (
         <motion.div
           className="model-picker-dropdown glass"
-          initial={{ opacity: 0, y: -6, scaleY: 0.95, transformOrigin: 'top' }}
-          animate={{ opacity: 1, y: 0, scaleY: 1 }}
-          exit={{ opacity: 0, y: -6, scaleY: 0.95 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ type: 'spring', stiffness: 420, damping: 32 }}
         >
             {/* Поиск */}
             <div className="model-picker-search">

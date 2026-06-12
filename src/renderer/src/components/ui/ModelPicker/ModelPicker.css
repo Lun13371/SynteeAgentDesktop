@@ -41,7 +41,7 @@
   z-index: 100;
   overflow: hidden;
   box-shadow: var(--shadow-lg);
-  transform-origin: top center;
+  will-change: opacity, transform;
 }
 
 .model-picker-search {

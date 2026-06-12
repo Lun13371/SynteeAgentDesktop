@@ -108,7 +108,7 @@
 .assignment-info { display: flex; align-items: center; gap: 10px; width: 220px; flex-shrink: 0; }
 .assignment-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .assignment-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-.assignment-picker { flex: 1; min-width: 0; }
+.assignment-picker { flex: 1; min-width: 0; position: relative; }
 
 /* ── Параметры ── */
 .ai-params { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; padding-right: 4px; }
