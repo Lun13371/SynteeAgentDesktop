@@ -146,6 +146,15 @@ ${memoryContext ? '\n' + memoryContext : ''}`
           })
         },
         approvalMode: agentSettings.approvalMode,
+        onConfirm: (toolName, args) => new Promise<boolean>((resolve) => {
+          if (!win) return resolve(true)
+          const reqId = `${Date.now()}-${Math.random()}`
+          win.webContents.send('agent:confirm', { reqId, toolName, args })
+          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+            resolve(approved)
+          })
+          setTimeout(() => resolve(false), 60_000)
+        }),
       }, agentSettings.maxSteps)
 
       return { started: true }
