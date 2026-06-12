@@ -13,6 +13,7 @@ import { registerAllIPC } from './ipc'
 import { registerChatIPC } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerSettingsIPC } from './ipc/settings.ipc'
+import { registerVoiceIPC } from './ipc/voice.ipc'
 
 // Инициализируем store с дефолтными настройками
 const store = new Store({ defaults: DEFAULT_SETTINGS })
@@ -68,6 +69,7 @@ app.whenReady().then(async () => {
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerSettingsIPC(store)
+  registerVoiceIPC(store, () => mainWindow.getWindow(), () => voiceWindow.getWindow())
 
   // Первый запуск
   if (!store.get('firstRunComplete')) {

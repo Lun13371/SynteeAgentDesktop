@@ -161,6 +161,23 @@ export class AIClient {
     throw new Error('Rate limit: превышено число попыток')
   }
 
+  // Текст → речь, возвращает base64 mp3
+  async textToSpeech(text: string): Promise<string> {
+    const apiKey = this.store.get('apiKey') as string
+    const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
+    const voice = (this.store.get('voiceId') as string) || 'alloy'
+    const response = await fetch(`${endpoint}/audio/speech`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'tts-1', input: text, voice }),
+    })
+    const buffer = await response.arrayBuffer()
+    return Buffer.from(buffer).toString('base64')
+  }
+
   // Vision — анализ картинки
   async analyzeImage(
     imageBase64: string,
