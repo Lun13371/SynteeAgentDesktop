@@ -90,9 +90,9 @@ export class Agent {
     this.client = new AIClient(store)
   }
 
-  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal): Promise<void> {
+  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string): Promise<void> {
     const messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt ? `${systemPrompt}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT },
       { role: 'user', content: userMessage },
     ]
 
@@ -113,29 +113,21 @@ export class Agent {
           return
         }
 
-        // Если нет tool_calls — финальный ответ через стриминг (чтобы stop работал во время печати)
+        // Если нет tool_calls — финальный ответ
+        // НЕ переспрашиваем через streamChat — модель не знает про tools и пишет XML
+        // Просто отдаём content как есть, побуквенно для имитации стриминга
         if (!response.tool_calls?.length) {
-          await this.client.streamChat(
-            messages.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: m.content })),
-            {
-              onToken: (token) => {
-                callbacks.onStep({ type: 'answer', content: token })
-              },
-              onDone: (full) => {
-                callbacks.onDone(full)
-              },
-              onError: (err) => {
-                if (signal?.aborted) {
-                  callbacks.onDone('')
-                } else {
-                  callbacks.onError(err)
-                }
-              },
-            },
-            'main',
-            undefined,
-            signal
-          )
+          const answer = response.content || ''
+          // Эмулируем стриминг по словам чтобы UI не мигал
+          const words = answer.split(/(?<=\s)|(?=\s)/)
+          for (const chunk of words) {
+            if (signal?.aborted) {
+              callbacks.onDone(answer)
+              return
+            }
+            callbacks.onStep({ type: 'answer', content: chunk })
+          }
+          callbacks.onDone(answer)
           return
         }
 
