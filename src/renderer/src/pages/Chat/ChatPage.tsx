@@ -44,11 +44,20 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [inputText, setInputText] = useState('')
 
   // Настройка показа счётчика контекста
-  const showContextRing = (window.syntee.settings?.get?.('showContextRing') as boolean) ?? true
+  const [showContextRing, setShowContextRing] = useState(true)
+  const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
 
-  // Текущая модель из назначений
-  const modelAssignments = (window.syntee.settings?.get?.('modelAssignments') as Array<{ role: string; modelId: string }> | undefined) ?? []
-  const mainModelId = modelAssignments.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6'
+  useEffect(() => {
+    window.syntee.settings.get('showContextRing').then((v: unknown) => {
+      if (v !== null && v !== undefined) setShowContextRing(v as boolean)
+    }).catch(() => {})
+    window.syntee.settings.get('modelAssignments').then((v: unknown) => {
+      if (Array.isArray(v)) {
+        const main = (v as Array<{ role: string; modelId: string }>).find(a => a.role === 'main')
+        if (main?.modelId) setMainModelId(main.modelId)
+      }
+    }).catch(() => {})
+  }, [])
 
   // Счётчик контекста
   const contextInfo = useContextCounter({
