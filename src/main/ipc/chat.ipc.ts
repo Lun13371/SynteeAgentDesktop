@@ -57,8 +57,8 @@ ${memoryContext ? '\n' + memoryContext : ''}`
   ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
 
   // Закрепить сообщение
-  ipcMain.handle('chat:pin', (_, messageId: string) => pinMessage(messageId))
-  ipcMain.handle('chat:unpin', (_, messageId: string) => unpinMessage(messageId))
+  ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
+  ipcMain.handle('chat:unpinMsg', (_, messageId: string) => unpinMessage(messageId))
 
   // Отправить сообщение + стриминг ответа
   ipcMain.handle('chat:send', async (_, params: {
@@ -248,7 +248,7 @@ ${memoryContext ? '\n' + memoryContext : ''}`
   })
 
   // Закрепить/открепить чат
-  ipcMain.handle('chat:pin', (_, chatId: string, pinned: boolean) => {
+  ipcMain.handle('chat:pinChat', (_, chatId: string, pinned: boolean) => {
     pinChat(chatId, pinned)
     return getAllChats()
   })
