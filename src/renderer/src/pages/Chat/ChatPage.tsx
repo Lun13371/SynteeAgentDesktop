@@ -102,11 +102,25 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [])
 
   // IPC события стриминга
+  const [liveThinking, setLiveThinking] = useState<{ text: string; isLive: boolean; ms?: number } | null>(null)
+
   useEffect(() => {
-    const offToken = window.syntee.on(IPC_EVENTS.CHAT_STREAM_TOKEN, (data: { chatId: string; msgId: string; token: string }) => {
+    const offToken = window.syntee.on(IPC_EVENTS.CHAT_STREAM_TOKEN, (data: {
+      chatId: string; msgId: string; token?: string
+      thinkingToken?: string; thinkingDone?: boolean; thinkingMs?: number
+    }) => {
       if (data.chatId !== currentChatId) return
       streamMsgIdRef.current = data.msgId
-      appendStreamToken(data.token)
+
+      if (data.thinkingToken) {
+        setLiveThinking(prev => ({ text: (prev?.text ?? '') + data.thinkingToken, isLive: true }))
+        return
+      }
+      if (data.thinkingDone) {
+        setLiveThinking(prev => prev ? { ...prev, isLive: false, ms: data.thinkingMs } : null)
+        return
+      }
+      if (data.token) appendStreamToken(data.token)
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
@@ -114,6 +128,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       addMessage(data.message)
       clearStream()
       streamMsgIdRef.current = null
+      setLiveThinking(null)
       setIsAgentRunning(false)
       // Сворачиваем live цепочку через 400мс
       setTimeout(() => setLiveSteps([]), 400)
@@ -234,12 +249,12 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleCopy = () => toast('Скопировано', 'success')
 
   // Собираем отображаемые сообщения (включая стриминг)
-  const displayMessages = streamingText
+  const displayMessages = streamingText || liveThinking
     ? [...messages, {
         id: streamMsgIdRef.current || 'streaming',
         chatId: currentChatId || '',
         role: 'assistant' as const,
-        content: streamingText,
+        content: streamingText || '',
         createdAt: Date.now(),
         isPinned: 0,
       }]
@@ -317,6 +332,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       onCopy={handleCopy}
                       onReply={(msg) => setReplyTo(prev => prev.find(r => r.id === msg.id) ? prev : [...prev, msg])}
                       searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
+                      liveThinking={msg.id === (streamMsgIdRef.current || 'streaming') ? liveThinking ?? undefined : undefined}
                     />
                   </div>
                 ))}

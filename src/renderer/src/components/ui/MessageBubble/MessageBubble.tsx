@@ -11,6 +11,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
 import MermaidBlock from './MermaidBlock'
+import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import 'katex/dist/katex.min.css'
 import './MessageBubble.css'
 
@@ -22,6 +23,7 @@ interface MessageBubbleProps {
   onReply?: (message: Message) => void
   toolOutputMode?: ToolOutputMode
   searchQuery?: string
+  liveThinking?: { text: string; isLive: boolean; ms?: number }
 }
 
 const codeStyle = {
@@ -104,12 +106,14 @@ function parseContent(raw: string): Array<{ type: 'md' | 'admonition'; content: 
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
+  liveThinking,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
   onPin?: (id: string) => void; onCopy?: () => void
   onReadAloud?: () => void; onReply?: () => void
   message: Message; isPinned: number; createdAt: number
+  liveThinking?: { text: string; isLive: boolean; ms?: number }
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -203,6 +207,16 @@ const MessageContent = memo(function MessageContent({
           <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={false} />
         )}
 
+        {/* Thinking block — сохранённый или live */}
+        {!isUser && (message.thinking || liveThinking) && (
+          <ThinkingBlock
+            text={message.thinking}
+            liveText={liveThinking?.text}
+            thinkingMs={message.thinkingMs ?? liveThinking?.ms}
+            isLive={liveThinking?.isLive}
+          />
+        )}
+
         <div className="message-content selectable">
           {isUser ? (
             <p>{content}</p>
@@ -248,7 +262,7 @@ const MessageContent = memo(function MessageContent({
 
 // Внешний пузырь — только layout + spring анимация при mount
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery,
+  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -294,6 +308,7 @@ const MessageBubble = memo(function MessageBubble({
         message={message}
         isPinned={message.isPinned as number}
         createdAt={message.createdAt}
+        liveThinking={liveThinking}
       />
     </motion.div>
   )
