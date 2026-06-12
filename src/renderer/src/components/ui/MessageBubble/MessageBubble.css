@@ -31,11 +31,29 @@
   position: relative;
 }
 
+.message-actions {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  gap: 2px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  z-index: 10;
+  white-space: nowrap;
+}
+
+.message-wrap--user .message-bubble .message-actions {
+  left: auto;
+  right: 0;
+}
+
 .message-content {
   font-size: 14px;
   line-height: 1.65;
   color: var(--text-primary);
-  max-width: 720px;
 }
 
 .message-bubble--user {
@@ -120,25 +138,6 @@
   margin-top: 4px;
   text-align: right;
   opacity: 0.6;
-}
-
-.message-actions {
-  position: absolute;
-  top: 0;
-  right: 56px;
-  display: flex;
-  gap: 2px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-  pointer-events: all;
-  z-index: 10;
-}
-
-.message-wrap--user .message-actions {
-  right: auto;
-  left: 56px;
 }
 
 .msg-action-btn {
