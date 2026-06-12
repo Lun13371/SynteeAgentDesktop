@@ -178,6 +178,40 @@ export class AIClient {
     return Buffer.from(buffer).toString('base64')
   }
 
+  // Function calling — для агента
+  async chatWithTools(
+    messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
+    tools: unknown[]
+  ): Promise<{ content: string; tool_calls?: unknown[] }> {
+    const apiKey = this.store.get('apiKey') as string
+    const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
+    const model = (this.store.get('fastModel') as string) || 'claude-haiku-4-5'
+
+    let attempt = 0
+    while (attempt < 6) {
+      try {
+        const res = await fetch(`${endpoint}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, messages, tools, tool_choice: 'auto' }),
+        })
+        if (res.status === 429) {
+          const wait = backoffDelay(attempt)
+          await sleep(wait)
+          attempt++
+          continue
+        }
+        const data = await res.json() as { choices: Array<{ message: { content: string; tool_calls?: unknown[] } }> }
+        const msg = data.choices[0]?.message
+        return { content: msg?.content || '', tool_calls: msg?.tool_calls }
+      } catch {
+        attempt++
+        await sleep(backoffDelay(attempt))
+      }
+    }
+    throw new Error('Agent: превышено число попыток')
+  }
+
   // Vision — анализ картинки
   async analyzeImage(
     imageBase64: string,
