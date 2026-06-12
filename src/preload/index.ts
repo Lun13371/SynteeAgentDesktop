@@ -38,6 +38,20 @@ const synteeAPI = {
     collapse: () => ipcRenderer.invoke('spotlight:collapse'),
   },
 
+  // Чат
+  chat: {
+    create: (incognito?: boolean) => ipcRenderer.invoke('chat:create', incognito),
+    getAll: () => ipcRenderer.invoke('chat:getAll'),
+    getMessages: (chatId: string) => ipcRenderer.invoke('chat:getMessages', chatId),
+    send: (params: { chatId: string; content: string; incognito?: boolean }) =>
+      ipcRenderer.invoke('chat:send', params),
+    delete: (chatId: string) => ipcRenderer.invoke('chat:delete', chatId),
+    rename: (chatId: string, title: string) => ipcRenderer.invoke('chat:rename', chatId, title),
+    pin: (messageId: string) => ipcRenderer.invoke('chat:pin', messageId),
+    unpin: (messageId: string) => ipcRenderer.invoke('chat:unpin', messageId),
+    reloadClient: () => ipcRenderer.invoke('chat:reloadClient'),
+  },
+
   // События (подписка)
   on: (channel: string, callback: (...args: unknown[]) => void) => {
     const handler = (_: Electron.IpcRendererEvent, ...args: unknown[]) => callback(...args)

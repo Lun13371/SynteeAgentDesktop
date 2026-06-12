@@ -1,7 +1,36 @@
 import { motion } from 'framer-motion'
+import type { Chat } from '../../../../../shared/types'
 import './Sidebar.css'
 
-export default function Sidebar() {
+interface SidebarProps {
+  chats?: Chat[]
+  currentChatId?: string | null
+  onSelectChat?: (id: string) => void
+  onNewChat?: () => void
+  isIncognito?: boolean
+  onToggleIncognito?: () => void
+}
+
+function groupChatsByDate(chats: Chat[]) {
+  const now = Date.now()
+  const day = 86400000
+  const groups: Record<string, Chat[]> = { 'Сегодня': [], 'Вчера': [], 'Ранее': [] }
+
+  for (const chat of chats) {
+    const diff = now - chat.updatedAt
+    if (diff < day) groups['Сегодня'].push(chat)
+    else if (diff < day * 2) groups['Вчера'].push(chat)
+    else groups['Ранее'].push(chat)
+  }
+  return groups
+}
+
+export default function Sidebar({
+  chats = [], currentChatId, onSelectChat, onNewChat,
+  isIncognito, onToggleIncognito,
+}: SidebarProps) {
+  const groups = groupChatsByDate(chats)
+
   return (
     <motion.aside
       className="sidebar glass"
@@ -11,24 +40,56 @@ export default function Sidebar() {
     >
       <div className="sidebar-top">
         <motion.button
-          className="sidebar-new-chat"
+          className="sidebar-new-chat no-drag"
           whileTap={{ scale: 0.95 }}
           whileHover={{ scale: 1.02 }}
+          onClick={onNewChat}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16">
-            <path d="M8 2v12M2 8h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          <svg width="14" height="14" viewBox="0 0 14 14">
+            <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
           </svg>
           Новый чат
         </motion.button>
       </div>
 
       <div className="sidebar-list">
-        <div className="sidebar-group-label">Сегодня</div>
-        {/* Список чатов будет добавлен в стадии 03 */}
-        <div className="sidebar-empty">Нет чатов</div>
+        {chats.length === 0 ? (
+          <div className="sidebar-empty">Нет чатов</div>
+        ) : (
+          Object.entries(groups).map(([label, groupChats]) =>
+            groupChats.length > 0 && (
+              <div key={label}>
+                <div className="sidebar-group-label">{label}</div>
+                {groupChats.map(chat => (
+                  <motion.button
+                    key={chat.id}
+                    className={`sidebar-chat-item no-drag ${chat.id === currentChatId ? 'sidebar-chat-item--active' : ''}`}
+                    onClick={() => onSelectChat?.(chat.id)}
+                    whileTap={{ scale: 0.98 }}
+                  >
+                    <span className="sidebar-chat-title">{chat.title}</span>
+                    {chat.messageCount !== undefined && (
+                      <span className="sidebar-chat-count">{chat.messageCount}</span>
+                    )}
+                  </motion.button>
+                ))}
+              </div>
+            )
+          )
+        )}
       </div>
 
       <div className="sidebar-bottom">
+        {/* Режим инкогнито */}
+        <motion.button
+          className={`sidebar-incognito-btn no-drag ${isIncognito ? 'sidebar-incognito-btn--active' : ''}`}
+          onClick={onToggleIncognito}
+          whileTap={{ scale: 0.95 }}
+          title="Режим инкогнито"
+        >
+          🔒 {isIncognito ? 'Инкогнито вкл' : 'Инкогнито'}
+        </motion.button>
+
         <div className="sidebar-user">
           <div className="sidebar-user-avatar">S</div>
           <span className="sidebar-user-name">Пользователь</span>

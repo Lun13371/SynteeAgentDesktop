@@ -1,13 +1,18 @@
-import Database = require('better-sqlite3')
+import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
+import type { Chat, Message } from '../../shared/types'
+import { v4 as uuid } from 'uuid'
 
 let db: Database.Database
 
 export function getDB(): Database.Database {
-  if (db) return db
+  if (!db) throw new Error('DB not initialized')
+  return db
+}
 
+export function initDB(): void {
   const userData = app.getPath('userData')
   mkdirSync(userData, { recursive: true })
   const dbPath = join(userData, 'syntee.db')
@@ -16,11 +21,10 @@ export function getDB(): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
 
-  initSchema(db)
-  return db
+  runMigrations()
 }
 
-function initSchema(db: Database.Database): void {
+function runMigrations(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS chats (
       id          TEXT PRIMARY KEY,
@@ -63,119 +67,148 @@ function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS clipboard_history (
       id          TEXT PRIMARY KEY,
       content     TEXT NOT NULL,
-      type        TEXT NOT NULL DEFAULT 'text',
+      content_type TEXT NOT NULL DEFAULT 'text',
       created_at  INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS pinned_messages (
+      message_id  TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      pinned_at   INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
-    CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
     CREATE INDEX IF NOT EXISTS idx_memory_category ON memory(category);
-    CREATE INDEX IF NOT EXISTS idx_agent_logs_chat ON agent_logs(chat_id);
+    CREATE INDEX IF NOT EXISTS idx_clipboard_created ON clipboard_history(created_at);
   `)
 }
 
-// ─── CHATS ───────────────────────────────────────────────
-export function createChat(id: string, incognito = false): void {
-  const db = getDB()
+// === CHATS ===
+
+export function createChat(isIncognito = false): Chat {
   const now = Date.now()
+  const chat: Chat = {
+    id: uuid(),
+    title: 'Новый чат',
+    createdAt: now,
+    updatedAt: now,
+    isIncognito: isIncognito ? 1 : 0,
+  }
   db.prepare(`
     INSERT INTO chats (id, title, created_at, updated_at, is_incognito)
-    VALUES (?, 'Новый чат', ?, ?, ?)
-  `).run(id, now, now, incognito ? 1 : 0)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(chat.id, chat.title, chat.createdAt, chat.updatedAt, chat.isIncognito)
+  return chat
 }
 
-export function getAllChats() {
-  return getDB().prepare(`
-    SELECT c.*, 
-      (SELECT content FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
-      (SELECT COUNT(*) FROM messages WHERE chat_id = c.id) as message_count
-    FROM chats c
-    WHERE c.is_incognito = 0
+export function getAllChats(): Chat[] {
+  return db.prepare(`
+    SELECT c.id, c.title, c.created_at as createdAt, c.updated_at as updatedAt,
+           c.is_incognito as isIncognito,
+           (SELECT content FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as lastMessage,
+           (SELECT COUNT(*) FROM messages WHERE chat_id = c.id) as messageCount
+    FROM chats c WHERE c.is_incognito = 0
     ORDER BY c.updated_at DESC
-  `).all()
+  `).all() as Chat[]
 }
 
 export function renameChat(id: string, title: string): void {
-  getDB().prepare('UPDATE chats SET title = ?, updated_at = ? WHERE id = ?')
+  db.prepare('UPDATE chats SET title = ?, updated_at = ? WHERE id = ?')
     .run(title, Date.now(), id)
 }
 
 export function deleteChat(id: string): void {
-  getDB().prepare('DELETE FROM chats WHERE id = ?').run(id)
+  db.prepare('DELETE FROM chats WHERE id = ?').run(id)
 }
 
 export function touchChat(id: string): void {
-  getDB().prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), id)
+  db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), id)
 }
 
-// ─── MESSAGES ────────────────────────────────────────────
-export function addMessage(msg: {
-  id: string; chatId: string; role: string
-  content: string; model?: string
-}): void {
-  getDB().prepare(`
-    INSERT INTO messages (id, chat_id, role, content, created_at, is_pinned, model)
-    VALUES (?, ?, ?, ?, ?, 0, ?)
-  `).run(msg.id, msg.chatId, msg.role, msg.content, Date.now(), msg.model ?? null)
+// === MESSAGES ===
+
+export function saveMessage(msg: Message): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null)
   touchChat(msg.chatId)
 }
 
-export function getMessages(chatId: string) {
-  return getDB().prepare(
-    'SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC'
-  ).all(chatId)
+export function getMessages(chatId: string): Message[] {
+  return db.prepare(`
+    SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model
+    FROM messages WHERE chat_id = ?
+    ORDER BY created_at ASC
+  `).all(chatId) as Message[]
 }
 
-export function pinMessage(id: string, pinned: boolean): void {
-  getDB().prepare('UPDATE messages SET is_pinned = ? WHERE id = ?')
-    .run(pinned ? 1 : 0, id)
+export function pinMessage(id: string): void {
+  db.prepare('UPDATE messages SET is_pinned = 1 WHERE id = ?').run(id)
+  db.prepare('INSERT OR IGNORE INTO pinned_messages (message_id, pinned_at) VALUES (?, ?)')
+    .run(id, Date.now())
 }
 
-// ─── MEMORY ──────────────────────────────────────────────
-export function upsertMemory(id: string, category: string, key: string, value: string): void {
+export function unpinMessage(id: string): void {
+  db.prepare('UPDATE messages SET is_pinned = 0 WHERE id = ?').run(id)
+  db.prepare('DELETE FROM pinned_messages WHERE message_id = ?').run(id)
+}
+
+// === MEMORY ===
+
+export function saveMemory(category: string, key: string, value: string): void {
   const now = Date.now()
-  getDB().prepare(`
-    INSERT INTO memory (id, category, key, value, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(id, category, key, value, now, now)
+  const existing = db.prepare('SELECT id FROM memory WHERE category = ? AND key = ?').get(category, key)
+  if (existing) {
+    db.prepare('UPDATE memory SET value = ?, updated_at = ? WHERE category = ? AND key = ?')
+      .run(value, now, category, key)
+  } else {
+    db.prepare('INSERT INTO memory (id, category, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuid(), category, key, value, now, now)
+  }
 }
 
-export function getAllMemory() {
-  return getDB().prepare('SELECT * FROM memory ORDER BY category, key').all()
+export function getAllMemory(): Array<{ category: string; key: string; value: string }> {
+  return db.prepare('SELECT category, key, value FROM memory ORDER BY category, updated_at DESC').all() as Array<{ category: string; key: string; value: string }>
 }
 
-export function clearMemory(): void {
-  getDB().prepare('DELETE FROM memory').run()
-}
+// === CLIPBOARD HISTORY ===
 
-// ─── AGENT LOGS ──────────────────────────────────────────
-export function addAgentLog(log: {
-  id: string; chatId?: string; type: string
-  tool?: string; args?: string; result?: string; error?: string
-}): void {
-  getDB().prepare(`
-    INSERT INTO agent_logs (id, chat_id, type, tool, args, result, error, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(log.id, log.chatId ?? null, log.type, log.tool ?? null,
-    log.args ?? null, log.result ?? null, log.error ?? null, Date.now())
-}
+export function saveClipboard(content: string, contentType = 'text'): void {
+  // Не дублируем последнюю запись
+  const last = db.prepare('SELECT content FROM clipboard_history ORDER BY created_at DESC LIMIT 1').get() as { content: string } | undefined
+  if (last?.content === content) return
 
-// ─── CLIPBOARD ───────────────────────────────────────────
-export function addClipboardEntry(id: string, content: string, type = 'text'): void {
-  getDB().prepare(`
-    INSERT INTO clipboard_history (id, content, type, created_at) VALUES (?, ?, ?, ?)
-  `).run(id, content, type, Date.now())
-  // Храним только последние 200 записей
-  getDB().prepare(`
+  db.prepare('INSERT INTO clipboard_history (id, content, content_type, created_at) VALUES (?, ?, ?, ?)')
+    .run(uuid(), content, contentType, Date.now())
+
+  // Оставляем только последние 500 записей
+  db.prepare(`
     DELETE FROM clipboard_history WHERE id NOT IN (
-      SELECT id FROM clipboard_history ORDER BY created_at DESC LIMIT 200
+      SELECT id FROM clipboard_history ORDER BY created_at DESC LIMIT 500
     )
   `).run()
 }
 
-export function getClipboardHistory(limit = 50) {
-  return getDB().prepare(
-    'SELECT * FROM clipboard_history ORDER BY created_at DESC LIMIT ?'
-  ).all(limit)
+export function getClipboardHistory(limit = 50): Array<{ content: string; contentType: string; createdAt: number }> {
+  return db.prepare('SELECT content, content_type as contentType, created_at as createdAt FROM clipboard_history ORDER BY created_at DESC LIMIT ?').all(limit) as Array<{ content: string; contentType: string; createdAt: number }>
+}
+
+// === AGENT LOGS ===
+
+export function logAgentAction(action: {
+  chatId?: string; type: string; tool?: string
+  args?: unknown; result?: string; error?: string
+}): void {
+  db.prepare(`
+    INSERT INTO agent_logs (id, chat_id, type, tool, args, result, error, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    uuid(), action.chatId ?? null, action.type,
+    action.tool ?? null,
+    action.args ? JSON.stringify(action.args) : null,
+    action.result ?? null,
+    action.error ?? null,
+    Date.now()
+  )
 }

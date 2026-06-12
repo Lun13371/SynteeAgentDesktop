@@ -1,33 +1,34 @@
 import { ipcMain, BrowserWindow } from 'electron'
-import { v4 as uuid } from 'uuid'
-import type Store from 'electron-store/ts'
+import type Store from 'electron-store'
 import { AIClient } from '../../core/ai/AIClient'
 import {
-  createChat, getAllChats, getMessages, addMessage,
-  renameChat, deleteChat, pinMessage, getAllMemory,
-  clearMemory, upsertMemory
+  createChat, getAllChats, getMessages, saveMessage,
+  deleteChat, renameChat, pinMessage, unpinMessage, initDB
 } from '../../core/db/database'
 import { IPC_EVENTS } from '../../shared/constants'
-import type { MainWindow } from '../windows/MainWindow'
+import { v4 as uuid } from 'uuid'
+import type { Message } from '../../shared/types'
 
 let aiClient: AIClient
 
-export function registerChatIPC(store: Store, mainWindow: MainWindow): void {
+export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
+  initDB()
   aiClient = new AIClient(store)
 
-  // Пересоздавать клиент при смене API ключа
-  ipcMain.handle('settings:set', async (_, key: string, value: unknown) => {
-    store.set(key, value)
-    if (key === 'apiKey' || key === 'apiEndpoint') {
-      aiClient.reload()
-    }
-  })
+  // Системный промпт Syntee
+  const getSystemPrompt = (): string => {
+    const userName = store.get('userName') as string || ''
+    return `Ты Syntee — персональный AI-ассистент для Windows. Умный, дружелюбный, с лёгким юмором.
+${userName ? `Пользователя зовут ${userName}. Обращайся к нему по имени.` : ''}
+Отвечай на том же языке, на котором говорит пользователь.
+Отвечай по умолчанию в среднем объёме — не слишком коротко и не слишком длинно.
+Форматируй ответы с использованием Markdown когда это уместно.
+Дата и время: ${new Date().toLocaleString('ru')}.`
+  }
 
   // Создать чат
-  ipcMain.handle('chat:create', (_, incognito = false) => {
-    const id = uuid()
-    if (!incognito) createChat(id, false)
-    return id
+  ipcMain.handle('chat:create', (_, isIncognito = false) => {
+    return createChat(isIncognito)
   })
 
   // Получить все чаты
@@ -43,97 +44,107 @@ export function registerChatIPC(store: Store, mainWindow: MainWindow): void {
   ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
 
   // Закрепить сообщение
-  ipcMain.handle('chat:pinMessage', (_, id: string, pinned: boolean) => pinMessage(id, pinned))
+  ipcMain.handle('chat:pin', (_, messageId: string) => pinMessage(messageId))
+  ipcMain.handle('chat:unpin', (_, messageId: string) => unpinMessage(messageId))
 
   // Отправить сообщение + стриминг ответа
-  ipcMain.handle('chat:send', async (event, params: {
+  ipcMain.handle('chat:send', async (_, params: {
     chatId: string
     content: string
-    history: Array<{ role: 'user' | 'assistant'; content: string }>
     incognito?: boolean
-    model?: string
   }) => {
     const win = mainWindow.getWindow()
-    const sender = BrowserWindow.fromWebContents(event.sender)
-    if (!win && !sender) return
-
-    const notify = (channel: string, data: unknown) => {
-      try {
-        event.sender.send(channel, data)
-      } catch { /* окно закрылось */ }
-    }
-
-    const mainModel = (store.get('mainModel') as string) || 'claude-sonnet-4-6'
-    const memModel = (store.get('memoryModel') as string) || 'claude-haiku-4-5'
-    const model = params.model || mainModel
 
     // Сохраняем сообщение пользователя
-    const userMsgId = uuid()
-    if (!params.incognito) {
-      addMessage({ id: userMsgId, chatId: params.chatId, role: 'user', content: params.content })
+    const userMsg: Message = {
+      id: uuid(),
+      chatId: params.chatId,
+      role: 'user',
+      content: params.content,
+      createdAt: Date.now(),
+      isPinned: 0,
     }
+    if (!params.incognito) saveMessage(userMsg)
 
-    // Строим системный промпт с памятью
-    const memories = getAllMemory() as Array<{ key: string; value: string; category: string }>
-    let systemPrompt = `Ты Syntee — персональный AI-ассистент пользователя. Ты дружелюбна, с юмором, общаешься на вы. Отвечаешь на русском языке. Комментируешь свои действия.`
+    // Получаем историю для контекста
+    const history = params.incognito ? [] : getMessages(params.chatId)
+    const contextMessages = history.slice(-20).map(m => ({
+      role: m.role as 'user' | 'assistant' | 'system',
+      content: m.content,
+    }))
+    contextMessages.push({ role: 'user', content: params.content })
 
-    if (memories.length > 0) {
-      systemPrompt += '\n\nЧто ты знаешь о пользователе:\n'
-      systemPrompt += memories.map(m => `- [${m.category}] ${m.key}: ${m.value}`).join('\n')
-    }
-
-    const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
-      { role: 'system', content: systemPrompt },
-      ...params.history.slice(-20), // последние 20 сообщений контекст
-      { role: 'user', content: params.content }
-    ]
-
-    // Стриминг
     const assistantMsgId = uuid()
-    let fullContent = ''
+    let fullText = ''
 
-    try {
-      for await (const token of aiClient.streamChat({
-        model,
-        messages,
-        onRateLimit: (sec) => {
-          notify(IPC_EVENTS.RATE_LIMIT, { seconds: sec })
-        }
-      })) {
-        fullContent += token
-        notify(IPC_EVENTS.CHAT_STREAM_TOKEN, { id: assistantMsgId, token })
-      }
+    await aiClient.streamChat(
+      contextMessages,
+      {
+        onToken: (token) => {
+          fullText += token
+          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+            chatId: params.chatId,
+            msgId: assistantMsgId,
+            token,
+          })
+        },
+        onDone: (text) => {
+          fullText = text
+          const assistantMsg: Message = {
+            id: assistantMsgId,
+            chatId: params.chatId,
+            role: 'assistant',
+            content: fullText,
+            createdAt: Date.now(),
+            isPinned: 0,
+            model: store.get('mainModel') as string || 'claude-sonnet-4-6',
+          }
+          if (!params.incognito) saveMessage(assistantMsg)
 
-      notify(IPC_EVENTS.CHAT_STREAM_DONE, { id: assistantMsgId, content: fullContent })
+          // Автоназвание чата после первого обмена
+          if (history.length === 0 && !params.incognito) {
+            autoNameChat(params.chatId, params.content, store)
+          }
 
-      // Сохраняем ответ
-      if (!params.incognito) {
-        addMessage({ id: assistantMsgId, chatId: params.chatId, role: 'assistant', content: fullContent, model })
-      }
+          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
+            chatId: params.chatId,
+            msgId: assistantMsgId,
+            message: assistantMsg,
+          })
+        },
+        onError: (err) => {
+          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
+            chatId: params.chatId,
+            error: err.message,
+          })
+        },
+        onRateLimit: (waitSec) => {
+          win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec })
+        },
+      },
+      'main',
+      getSystemPrompt()
+    )
 
-      // Авто-заголовок чата (если первое сообщение)
-      if (!params.incognito && params.history.length === 0) {
-        const title = await aiClient.generateChatTitle(params.content, memModel)
-        renameChat(params.chatId, title)
-        notify('chat:titled', { chatId: params.chatId, title })
-      }
-
-      // Извлечение факта о пользователе
-      const fact = await aiClient.extractFact(params.content, memModel)
-      if (fact) {
-        upsertMemory(uuid(), fact.category, fact.key, fact.value)
-        notify(IPC_EVENTS.MEMORY_MEMORIZED, { key: fact.key, value: fact.value })
-      }
-
-    } catch (err: unknown) {
-      const msg = (err as Error)?.message || 'Неизвестная ошибка'
-      notify(IPC_EVENTS.CHAT_STREAM_ERROR, { id: assistantMsgId, error: msg })
-    }
-
-    return assistantMsgId
+    return userMsg
   })
 
-  // Память
-  ipcMain.handle('memory:getAll', () => getAllMemory())
-  ipcMain.handle('memory:clear', () => clearMemory())
+  // Обновить клиент при смене настроек
+  ipcMain.handle('chat:reloadClient', () => {
+    aiClient.reload()
+  })
+}
+
+// Авто-название чата через быструю модель
+async function autoNameChat(chatId: string, firstMessage: string, store: Store): Promise<void> {
+  try {
+    const client = new AIClient(store)
+    const title = await client.complete(
+      [{ role: 'user', content: `Придумай короткое название (3-5 слов) для чата, который начинается с этого сообщения: "${firstMessage.slice(0, 200)}". Ответь только названием без кавычек.` }],
+      'fast'
+    )
+    if (title.trim()) renameChat(chatId, title.trim().slice(0, 60))
+  } catch {
+    // не критично
+  }
 }
