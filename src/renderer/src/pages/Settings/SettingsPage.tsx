@@ -327,26 +327,93 @@ function VoiceSection({ settings, onSet }: { settings: Record<string, unknown>; 
 
 function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const hotkeys = (settings['hotkeys'] as Record<string, string>) || {}
+  const [recording, setRecording] = useState<string | null>(null)
+  const [pressed, setPressed] = useState<string>('')
+
   const KEYS = [
-    { id: 'mainWindow', label: 'Открыть/скрыть окно' },
-    { id: 'overlay', label: 'Оверлей (Circle to Search)' },
-    { id: 'voice', label: 'Голосовой режим' },
-    { id: 'spotlight', label: 'Spotlight строка' },
-    { id: 'quickQuestion', label: 'Быстрый вопрос' },
+    { id: 'mainWindow',    label: 'Открыть/скрыть окно',       icon: '🪟' },
+    { id: 'overlay',       label: 'Оверлей (Circle to Search)', icon: '🔍' },
+    { id: 'voice',         label: 'Голосовой режим',            icon: '🎤' },
+    { id: 'spotlight',     label: 'Spotlight строка',           icon: '⚡' },
+    { id: 'quickQuestion', label: 'Быстрый вопрос',            icon: '💬' },
   ]
+
+  const formatKey = (e: KeyboardEvent): string => {
+    const parts: string[] = []
+    if (e.ctrlKey)  parts.push('Ctrl')
+    if (e.altKey)   parts.push('Alt')
+    if (e.shiftKey) parts.push('Shift')
+    if (e.metaKey)  parts.push('Meta')
+    const key = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key
+    if (!['Control','Alt','Shift','Meta'].includes(e.key)) parts.push(key)
+    return parts.join('+')
+  }
+
+  useEffect(() => {
+    if (!recording) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault()
+      const combo = formatKey(e)
+      setPressed(combo)
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      e.preventDefault()
+      const combo = formatKey(e)
+      if (combo && !['Ctrl','Alt','Shift','Meta'].every(m => combo === m)) {
+        onSet('hotkeys', { ...hotkeys, [recording]: combo })
+        setRecording(null)
+        setPressed('')
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
+  }, [recording, hotkeys, onSet])
+
+  const renderBind = (bind: string) => {
+    if (!bind) return <span className="hk-empty">Не задано</span>
+    return bind.split('+').map((k, i) => (
+      <span key={i} className="hk-key">{k}</span>
+    ))
+  }
+
   return (
     <>
       <SectionTitle>Горячие клавиши</SectionTitle>
-      {KEYS.map(k => (
-        <Field key={k.id} label={k.label}>
-          <input
-            className="settings-input settings-input--mono"
-            value={hotkeys[k.id] || ''}
-            onChange={e => onSet('hotkeys', { ...hotkeys, [k.id]: e.target.value })}
-            placeholder="Ctrl+Shift+..."
-          />
-        </Field>
-      ))}
+      <div className="hk-list">
+        {KEYS.map(k => (
+          <div key={k.id} className="hk-row">
+            <div className="hk-info">
+              <span className="hk-icon">{k.icon}</span>
+              <span className="hk-label">{k.label}</span>
+            </div>
+            <div className="hk-bind-wrap">
+              <button
+                className={`hk-bind-btn ${recording === k.id ? 'hk-bind-btn--recording' : ''}`}
+                onClick={() => { setRecording(recording === k.id ? null : k.id); setPressed('') }}
+              >
+                {recording === k.id
+                  ? (pressed
+                      ? <>{pressed.split('+').map((p, i) => <span key={i} className="hk-key hk-key--live">{p}</span>)}</>
+                      : <span className="hk-recording-hint">Нажмите клавиши...</span>)
+                  : renderBind(hotkeys[k.id] || '')}
+              </button>
+              {hotkeys[k.id] && recording !== k.id && (
+                <button className="hk-clear" onClick={() => onSet('hotkeys', { ...hotkeys, [k.id]: '' })} title="Очистить">×</button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      {recording && (
+        <div className="hk-overlay-hint">
+          <span>Нажмите комбинацию клавиш для <strong>{KEYS.find(k => k.id === recording)?.label}</strong></span>
+          <button onClick={() => { setRecording(null); setPressed('') }}>Отмена</button>
+        </div>
+      )}
     </>
   )
 }
