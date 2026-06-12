@@ -137,10 +137,20 @@
 .settings-chip {
   padding: 5px 12px; border-radius: var(--radius-sm);
   font-size: 12px; font-weight: 500; cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--bg-secondary); color: var(--text-secondary);
   transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
+
+.settings-info-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  line-height: 1.5;
+}
+.settings-info-note strong { color: var(--text-primary); }
+
 .settings-chip:hover { border-color: var(--border-strong); color: var(--text-primary); }
 .settings-chip--active {
   background: var(--accent-subtle);
