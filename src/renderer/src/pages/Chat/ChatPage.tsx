@@ -39,6 +39,27 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
   const [replyTo, setReplyTo] = useState<Message | null>(null)
+  const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null)
+
+  // Selection reply — выделил текст в чате → popup с кнопкой Reply
+  useEffect(() => {
+    const handleMouseUp = (e: MouseEvent) => {
+      const sel = window.getSelection()
+      const text = sel?.toString().trim()
+      if (!text || text.length < 2) { setSelectionPopup(null); return }
+      // только если выделение внутри .chat-messages
+      const anchor = sel?.anchorNode?.parentElement
+      if (!anchor?.closest('.chat-messages')) { setSelectionPopup(null); return }
+      setSelectionPopup({ x: e.clientX, y: e.clientY - 48, text })
+    }
+    const handleMouseDown = () => setSelectionPopup(null)
+    document.addEventListener('mouseup', handleMouseUp)
+    document.addEventListener('mousedown', handleMouseDown)
+    return () => {
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.removeEventListener('mousedown', handleMouseDown)
+    }
+  }, [])
 
   // Загружаем toolOutputMode
   useEffect(() => {
@@ -223,7 +244,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               <motion.div key="search" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
                 <ChatSearch
                   messages={messages}
-                  onMatchIds={ids => { setSearchMatchIds(ids); setSearchQuery(ids.length > 0 ? (document.querySelector('.chat-search-input') as HTMLInputElement)?.value || '' : '') }}
+                  onMatchIds={(ids, q) => { setSearchMatchIds(ids); setSearchQuery(q) }}
                   onClose={() => { setShowSearch(false); setSearchQuery(''); setSearchMatchIds([]) }}
                 />
               </motion.div>
@@ -306,6 +327,35 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             replyTo={replyTo}
             onCancelReply={() => setReplyTo(null)}
           />
+
+          {/* Selection reply popup */}
+          {selectionPopup && (
+            <div
+              className="selection-reply-popup"
+              style={{ left: selectionPopup.x, top: selectionPopup.y }}
+              onMouseDown={e => e.preventDefault()}
+            >
+              <button
+                className="selection-reply-btn"
+                onClick={() => {
+                  setReplyTo({ id: '', role: 'user', content: selectionPopup.text, createdAt: Date.now() } as Message)
+                  setSelectionPopup(null)
+                  window.getSelection()?.removeAllRanges()
+                }}
+              >
+                ↩ Reply
+              </button>
+              <button
+                className="selection-reply-copy"
+                onClick={() => {
+                  navigator.clipboard.writeText(selectionPopup.text)
+                  setSelectionPopup(null)
+                }}
+              >
+                Copy
+              </button>
+            </div>
+          )}
         </main>
       </div>
       {!embedded && (

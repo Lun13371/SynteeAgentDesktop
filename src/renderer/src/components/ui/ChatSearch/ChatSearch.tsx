@@ -4,7 +4,7 @@ import './ChatSearch.css'
 
 interface ChatSearchProps {
   messages: { id: string; content: string; role: string }[]
-  onMatchIds: (ids: string[]) => void
+  onMatchIds: (ids: string[], query: string) => void
   onClose: () => void
 }
 
@@ -19,7 +19,7 @@ export default function ChatSearch({ messages, onMatchIds, onClose }: ChatSearch
 
   useEffect(() => {
     if (!query.trim()) {
-      onMatchIds([])
+      onMatchIds([], '')
       setMatchCount(0)
       setCurrentIdx(0)
       matchIdsRef.current = []
@@ -32,8 +32,7 @@ export default function ChatSearch({ messages, onMatchIds, onClose }: ChatSearch
     matchIdsRef.current = ids
     setMatchCount(ids.length)
     setCurrentIdx(ids.length > 0 ? 1 : 0)
-    onMatchIds(ids)
-    // Скролл к первому совпадению
+    onMatchIds(ids, query)
     if (ids.length > 0) scrollToMatch(ids[0])
   }, [query, messages])
 
@@ -80,7 +79,7 @@ export default function ChatSearch({ messages, onMatchIds, onClose }: ChatSearch
       <button className="chat-search-nav" onClick={goNext} disabled={!matchCount} title="Следующее (Enter)">
         ↓
       </button>
-      <button className="chat-search-close" onClick={() => { onClose(); onMatchIds([]) }}>
+      <button className="chat-search-close" onClick={() => { onClose(); onMatchIds([], '') }}>
         ✕
       </button>
     </div>
