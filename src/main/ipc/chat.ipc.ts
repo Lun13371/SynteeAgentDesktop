@@ -18,6 +18,7 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxSteps: 8,
   enableTools: true,
   toolOutputMode: 'normal',
+  enableThinking: false,
 }
 
 let aiClient: AIClient
@@ -115,6 +116,9 @@ flowchart TD
 
     const assistantMsgId = uuid()
     let fullText = ''
+    let thinkingText = ''
+    let thinkingStartMs = 0
+    let thinkingMs: number | undefined
     const collectedSteps: import('../../shared/types').ToolStep[] = []
 
     const finalize = () => {
@@ -127,6 +131,8 @@ flowchart TD
         isPinned: 0,
         model: store.get('mainModel') as string || 'claude-sonnet-4-6',
         toolSteps: collectedSteps.length > 0 ? collectedSteps : undefined,
+        thinking: thinkingText || undefined,
+        thinkingMs,
       }
       if (!params.incognito) saveMessage(assistantMsg)
       if (!params.incognito) {
@@ -221,6 +227,43 @@ flowchart TD
       contextMessages,
       {
         onToken: (token) => {
+          // Парсим <thinking>...</thinking> теги — не идут в основной текст
+          const combined = fullText + thinkingText + token
+          const thinkStart = '<thinking>'
+          const thinkEnd = '</thinking>'
+
+          // Аккумулируем в буфер и разбираем
+          if (agentSettings.enableThinking) {
+            const buf = (fullText || '') + token
+            // Ищем открывающий тег в потоке
+            if (!thinkingStartMs && buf.includes(thinkStart)) {
+              thinkingStartMs = Date.now()
+            }
+            // Если сейчас внутри thinking — пишем в thinkingText, не в fullText
+            const openIdx = buf.lastIndexOf(thinkStart)
+            const closeIdx = buf.lastIndexOf(thinkEnd)
+            if (openIdx !== -1 && (closeIdx === -1 || closeIdx < openIdx)) {
+              // Внутри тега — добавляем в thinking
+              thinkingText += token
+              // Отправляем thinking-токен отдельным событием
+              win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+                chatId: params.chatId, msgId: assistantMsgId,
+                thinkingToken: token,
+              })
+              return
+            }
+            // Закрывающий тег — вычисляем время
+            if (closeIdx !== -1 && closeIdx > openIdx && thinkingStartMs) {
+              thinkingMs = Date.now() - thinkingStartMs
+              // Убираем теги из thinkingText
+              thinkingText = thinkingText.replace(/<\/?thinking>/g, '').trim()
+              win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+                chatId: params.chatId, msgId: assistantMsgId,
+                thinkingDone: true, thinkingMs,
+              })
+              return
+            }
+          }
           fullText += token
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
             chatId: params.chatId,

@@ -8,6 +8,7 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxSteps: 8,
   enableTools: true,
   toolOutputMode: 'normal',
+  enableThinking: false,
 }
 
 export function registerAgentIPC(

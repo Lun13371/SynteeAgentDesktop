@@ -419,12 +419,12 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
 }
 
 function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string }>({
-    approvalMode: 'ask', maxSteps: 8, enableTools: true, toolOutputMode: 'normal'
+  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string; enableThinking: boolean }>({
+    approvalMode: 'ask', maxSteps: 8, enableTools: true, toolOutputMode: 'normal', enableThinking: false
   })
 
   useEffect(() => {
-    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string }) => {
+    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string; enableThinking: boolean }) => {
       setAgentSettings(s)
     }).catch(() => {})
   }, [])
@@ -456,6 +456,10 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
 
       <Field label="Инструменты в чате" description="Разрешить агенту использовать системные инструменты в обычном чате">
         <Toggle value={agentSettings.enableTools} onChange={v => updateAgent({ enableTools: v })} />
+      </Field>
+
+      <Field label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">
+        <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />
       </Field>
 
       <Field label="Вывод инструментов" description="Как отображать цепочку действий агента в чате">

@@ -91,6 +91,12 @@ function runMigrations(): void {
   if (!cols.find(c => c.name === 'tool_steps')) {
     db.prepare(`ALTER TABLE messages ADD COLUMN tool_steps TEXT`).run()
   }
+  if (!cols.find(c => c.name === 'thinking')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN thinking TEXT`).run()
+  }
+  if (!cols.find(c => c.name === 'thinking_ms')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN thinking_ms INTEGER`).run()
+  }
 
   // Миграция: добавляем поля чатов
   const chatCols = db.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[]
@@ -196,21 +202,24 @@ export function touchChat(id: string): void {
 
 export function saveMessage(msg: Message): void {
   db.prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
-    msg.toolSteps ? JSON.stringify(msg.toolSteps) : null
+    msg.toolSteps ? JSON.stringify(msg.toolSteps) : null,
+    msg.thinking ?? null, msg.thinkingMs ?? null
   )
   touchChat(msg.chatId)
 }
 
 export function getMessages(chatId: string): Message[] {
   const rows = db.prepare(`
-    SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model, tool_steps as toolStepsJson
+    SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model,
+           tool_steps as toolStepsJson, thinking, thinking_ms as thinkingMs
     FROM messages WHERE chat_id = ?
     ORDER BY created_at ASC
-  `).all(chatId) as (Message & { toolStepsJson?: string })[]
+  `).all(chatId) as (Message & { toolStepsJson?: string })[
+  ]
   return rows.map(r => {
     const { toolStepsJson, ...rest } = r
     return { ...rest, toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined }

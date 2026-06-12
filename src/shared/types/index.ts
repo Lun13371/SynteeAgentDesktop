@@ -53,6 +53,8 @@ export interface Message {
   isPinned: number
   model?: string
   toolSteps?: ToolStep[]
+  thinking?: string
+  thinkingMs?: number
 }
 
 export interface ToolStep {
@@ -155,6 +157,7 @@ export interface AgentSettings {
   maxSteps: number
   enableTools: boolean
   toolOutputMode: ToolOutputMode
+  enableThinking: boolean
 }
 
 // IPC channels для провайдеров/моделей
