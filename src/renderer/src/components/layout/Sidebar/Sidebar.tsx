@@ -202,9 +202,9 @@ export default function Sidebar({ chats = [], currentChatId, onSelectChat, onNew
                         {chat.isPinned && <AppIcon name="pin" size="xs" tone="accent" />}
                         {chat.title}
                       </div>
-                      {chat.lastMessage && (
+                      {chat.lastMessage && cleanPreview(chat.lastMessage) && (
                         <div className="sidebar-chat-preview">
-                          {chat.lastMessage.slice(0, 50)}{chat.lastMessage.length > 50 ? '…' : ''}
+                          {cleanPreview(chat.lastMessage)}
                         </div>
                       )}
                     </div>
@@ -238,10 +238,24 @@ export default function Sidebar({ chats = [], currentChatId, onSelectChat, onNew
 }
 
 function formatTime(ts: number): string {
+  if (!ts || ts < 1000000) return ''
   const now = Date.now()
   const diff = now - ts
   const D = 86400000
   if (diff < D) return new Date(ts).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
   if (diff < 7 * D) return new Date(ts).toLocaleDateString('ru', { weekday: 'short' })
   return new Date(ts).toLocaleDateString('ru', { day: 'numeric', month: 'short' })
+}
+
+function cleanPreview(text: string | undefined): string {
+  if (!text) return ''
+  // Убираем markdown символы и переносы строк
+  return text
+    .replace(/```[\s\S]*?```/g, '[код]')
+    .replace(/`[^`]+`/g, '[код]')
+    .replace(/#{1,6}\s/g, '')
+    .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+    .replace(/\n+/g, ' ')
+    .trim()
+    .slice(0, 60)
 }

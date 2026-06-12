@@ -109,10 +109,12 @@ export function createChat(isIncognito = false): Chat {
     createdAt: now,
     updatedAt: now,
     isIncognito: isIncognito ? 1 : 0,
+    isPinned: 0,
+    isArchived: 0,
   }
   db.prepare(`
-    INSERT INTO chats (id, title, created_at, updated_at, is_incognito)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO chats (id, title, created_at, updated_at, is_incognito, is_pinned, is_archived)
+    VALUES (?, ?, ?, ?, ?, 0, 0)
   `).run(chat.id, chat.title, chat.createdAt, chat.updatedAt, chat.isIncognito)
   return chat
 }
@@ -124,7 +126,7 @@ export function getAllChats(): Chat[] {
            c.is_pinned as isPinned,
            c.is_archived as isArchived,
            c.color,
-           (SELECT content FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as lastMessage,
+           (SELECT m.content FROM messages m WHERE m.chat_id = c.id AND m.role != 'system' ORDER BY m.created_at DESC LIMIT 1) as lastMessage,
            (SELECT COUNT(*) FROM messages WHERE chat_id = c.id) as messageCount
     FROM chats c WHERE c.is_incognito = 0
     ORDER BY c.is_pinned DESC, c.updated_at DESC
