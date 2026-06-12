@@ -141,7 +141,7 @@ export default function AISettingsTab() {
       {tab === 'providers' && (
         <div className="ai-providers">
           <div className="ai-providers-grid">
-            {BUILTIN_PROVIDER_IDS.map(id => {
+            {BUILTIN_PROVIDER_IDS.map((id, i) => {
               const meta = getProviderMeta(id)
               const configured = !!isConfigured(id)
               return (
@@ -149,6 +149,11 @@ export default function AISettingsTab() {
                   key={id}
                   className={`provider-card glass ${configured ? 'provider-card--active' : ''}`}
                   layout
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ type: 'spring', stiffness: 380, damping: 28, delay: i * 0.035 }}
+                  whileHover={{ scale: 1.02, transition: { type: 'spring', stiffness: 500, damping: 30 } }}
+                  style={{ willChange: 'transform' }}
                 >
                   <div className="provider-card-header">
                     <span className="provider-dot" style={{ background: meta.color }} />

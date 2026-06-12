@@ -149,10 +149,13 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                     <span className="model-picker-provider-dot" style={{ background: getProviderColor(pid) }} />
                     {pid}
                   </div>
-                  {mods.map(m => (
-                    <div
+                  {mods.map((m, idx) => (
+                    <motion.div
                       key={m.id}
                       className={`model-picker-item ${m.id === value && m.providerId === providerId ? 'model-picker-item--active' : ''}`}
+                      initial={{ opacity: 0, x: -8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ type: 'spring', stiffness: 400, damping: 28, delay: idx * 0.018 }}
                       onClick={() => { onChange(m.id, m.providerId); setOpen(false); setQuery('') }}
                       onMouseEnter={(e) => {
                         setHovered(m)
@@ -169,9 +172,9 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                         ))}
                       </div>
                       {m.id === value && m.providerId === providerId && (
-                        <AppIcon name="check" size="xs" tone="accent" />
-                      )}
-                    </div>
+                          <AppIcon name="check" size="xs" tone="accent" />
+                        )}
+                    </motion.div>
                   ))}
                 </div>
               ))}
