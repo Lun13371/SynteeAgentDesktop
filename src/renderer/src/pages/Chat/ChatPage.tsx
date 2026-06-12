@@ -29,6 +29,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [rateLimitSec, setRateLimitSec] = useState(0)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isAgentRunning, setIsAgentRunning] = useState(false)
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const isInitialScrollRef = useRef(true)
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
 
   // Загружаем toolOutputMode
@@ -102,15 +104,21 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => { offToken(); offDone(); offError(); offRateLimit(); offStep() }
   }, [currentChatId])
 
-  // Автоскролл
+  // Автоскролл — instant при переключении, smooth при новых сообщениях
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!bottomRef.current) return
+    const behavior = isInitialScrollRef.current ? 'instant' : 'smooth'
+    bottomRef.current.scrollIntoView({ behavior: behavior as ScrollBehavior })
+    isInitialScrollRef.current = false
   }, [messages, streamingText, isTyping])
 
   const selectChat = async (id: string) => {
+    setIsLoadingMessages(true)
+    isInitialScrollRef.current = true
     setCurrentChat(id)
     const msgs: Message[] = await window.syntee.chat.getMessages(id)
     setMessages(msgs)
+    setIsLoadingMessages(false)
   }
 
   const createNewChat = async () => {
@@ -180,7 +188,15 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           onChatsUpdate={setChats}
         />
         <main className="chat-main">
-          {displayMessages.length === 0 && !isTyping ? (
+          {isLoadingMessages ? (
+            <div className="chat-skeleton">
+              {[0.4, 0.7, 0.5, 0.9, 0.6, 0.8, 0.45, 0.75].map((w, i) => (
+                <div key={i} className={`chat-skeleton-row ${i % 3 === 0 ? 'chat-skeleton-row--user' : ''}`}>
+                  <div className="chat-skeleton-bubble" style={{ width: `${w * 100}%` }} />
+                </div>
+              ))}
+            </div>
+          ) : (
             <div className="chat-empty-state">
               <div className="chat-empty-icon">
                 <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
