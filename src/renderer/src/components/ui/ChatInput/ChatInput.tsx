@@ -3,7 +3,9 @@ import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
+import ContextRing from '../ContextRing/ContextRing'
 import type { ApprovalMode } from '../../../../../shared/types'
+import type { ContextInfo } from '../../../hooks/useContextCounter'
 import './ChatInput.css'
 
 interface ChatInputProps {
@@ -15,12 +17,17 @@ interface ChatInputProps {
   onCancelReply?: (id: string) => void
   isGenerating?: boolean
   onStop?: () => void
+  contextInfo?: ContextInfo | null
+  showContextRing?: boolean
+  onInputChange?: (text: string) => void
 }
 
 export default function ChatInput({
   onSend, onAttach, disabled, isIncognito,
   replyTo, onCancelReply,
   isGenerating, onStop,
+  contextInfo, showContextRing = true,
+  onInputChange,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
@@ -51,6 +58,7 @@ export default function ChatInput({
     if (!text || disabled) return
     onSend(text)
     setValue('')
+    onInputChange?.('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
   }
 
@@ -93,7 +101,7 @@ export default function ChatInput({
           ref={textareaRef}
           className="chat-input-textarea selectable"
           value={value}
-          onChange={e => setValue(e.target.value)}
+          onChange={e => { setValue(e.target.value); onInputChange?.(e.target.value) }}
           onKeyDown={handleKeyDown}
           placeholder={isIncognito ? 'Режим инкогнито — чат не сохраняется...' : 'Сообщение Syntee...'}
           rows={1}
@@ -107,6 +115,11 @@ export default function ChatInput({
             onChange={handleApprovalChange}
             compact
           />
+        )}
+
+        {/* Счётчик контекста */}
+        {showContextRing && !isIncognito && (
+          <ContextRing info={contextInfo ?? null} />
         )}
 
         {/* Кнопка: mic / send / stop — анимированная */}
