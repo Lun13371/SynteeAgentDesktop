@@ -3,10 +3,12 @@ import { AnimatePresence } from 'framer-motion'
 import { v4 as uuid } from 'uuid'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
-import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
+import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import TypingIndicator from '../../components/ui/TypingIndicator/TypingIndicator'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
+import AgentPanel from '../../components/ui/AgentPanel/AgentPanel'
+import '../../components/ui/AgentPanel/AgentPanel.css'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import { useChatStore } from '../../store/chat.store'
 import { IPC_EVENTS } from '../../../../shared/constants'
@@ -25,6 +27,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
+  const [showAgent, setShowAgent] = useState(false)
 
   // Загрузка чатов при старте
   useEffect(() => {
@@ -136,7 +139,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   return (
     <div className={`chat-layout ${embedded ? 'chat-layout--embedded' : ''}`}>
       {!embedded && <AnimatedBackground />}
-      {!embedded && <TitleBar />}
+      {!embedded && <TitleBar onSettingsClick={() => {}} onAgentClick={() => setShowAgent(p => !p)} />}
       <div className="chat-body">
         <Sidebar
           chats={chats}
@@ -196,6 +199,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             isIncognito={isIncognito}
           />
         </main>
+        <AnimatePresence>
+          {showAgent && <AgentPanel onClose={() => setShowAgent(false)} />}
+        </AnimatePresence>
       </div>
       {!embedded && (
         <ToastContainer />
