@@ -38,7 +38,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
-  const [replyTo, setReplyTo] = useState<Message | null>(null)
+  const [replyTo, setReplyTo] = useState<Message[]>([])
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null)
 
   // Selection reply — выделил текст в чате → popup с кнопкой Reply
@@ -201,17 +201,28 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setChats(all)
     }
 
+    // Формируем контент с цитатами reply
+    let fullContent = text
+    if (replyTo.length > 0) {
+      const quotes = replyTo.map(r => {
+        const who = r.role === 'user' ? 'Пользователь' : 'Syntee'
+        return `> [${who}]: ${r.content.slice(0, 300)}${r.content.length > 300 ? '…' : ''}`
+      }).join('\n')
+      fullContent = `${quotes}\n\n${text}`
+    }
+
     // Показываем сообщение пользователя сразу
     const userMsg: Message = {
       id: uuid(), chatId,
-      role: 'user', content: text,
+      role: 'user', content: fullContent,
       createdAt: Date.now(), isPinned: 0,
     }
     addMessage(userMsg)
     setTyping(true)
+    setReplyTo([]) // очищаем reply после отправки
 
     // Отправляем в main process
-    await window.syntee.chat.send({ chatId, content: text, incognito: isIncognito })
+    await window.syntee.chat.send({ chatId, content: fullContent, incognito: isIncognito })
   }
 
   const handlePin = async (id: string) => {
@@ -304,7 +315,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       toolOutputMode={toolOutputMode}
                       onPin={handlePin}
                       onCopy={handleCopy}
-                      onReply={setReplyTo}
+                      onReply={(msg) => setReplyTo(prev => prev.find(r => r.id === msg.id) ? prev : [...prev, msg])}
                       searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
                     />
                   </div>
@@ -332,7 +343,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             disabled={isTyping}
             isIncognito={isIncognito}
             replyTo={replyTo}
-            onCancelReply={() => setReplyTo(null)}
+            onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
           />
 
           {/* Selection reply popup */}
@@ -345,7 +356,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               <button
                 className="selection-reply-btn"
                 onClick={() => {
-                  setReplyTo({ id: '', role: 'user', content: selectionPopup.text, createdAt: Date.now() } as Message)
+                  const syntheticMsg = { id: `sel-${Date.now()}`, role: 'user', content: selectionPopup.text, createdAt: Date.now() } as Message
+                  setReplyTo(prev => [...prev, syntheticMsg])
                   setSelectionPopup(null)
                   window.getSelection()?.removeAllRanges()
                 }}

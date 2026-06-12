@@ -11,8 +11,8 @@ interface ChatInputProps {
   onAttach?: () => void
   disabled?: boolean
   isIncognito?: boolean
-  replyTo?: { role: string; content: string } | null
-  onCancelReply?: () => void
+  replyTo?: { id: string; role: string; content: string }[]
+  onCancelReply?: (id: string) => void
 }
 
 export default function ChatInput({ onSend, onAttach, disabled, isIncognito, replyTo, onCancelReply }: ChatInputProps) {
@@ -57,13 +57,17 @@ export default function ChatInput({ onSend, onAttach, disabled, isIncognito, rep
 
   return (
     <div className={`chat-input-wrap ${isIncognito ? 'chat-input-wrap--incognito' : ''}`}>
-      {replyTo && (
-        <div className="chat-input-reply">
-          <div className="chat-input-reply-content">
-            <span className="chat-input-reply-role">{replyTo.role === 'user' ? 'Вы' : 'Syntee'}</span>
-            <span className="chat-input-reply-text">{replyTo.content.slice(0, 100)}{replyTo.content.length > 100 ? '…' : ''}</span>
-          </div>
-          <button className="chat-input-reply-cancel" onClick={onCancelReply}>✕</button>
+      {replyTo && replyTo.length > 0 && (
+        <div className="chat-input-replies">
+          {replyTo.map(r => (
+            <div key={r.id} className="chat-input-reply">
+              <div className="chat-input-reply-content">
+                <span className="chat-input-reply-role">{r.role === 'user' ? 'Вы' : 'Syntee'}</span>
+                <span className="chat-input-reply-text">{r.content.slice(0, 100)}{r.content.length > 100 ? '…' : ''}</span>
+              </div>
+              <button className="chat-input-reply-cancel" onClick={() => onCancelReply?.(r.id)}>✕</button>
+            </div>
+          ))}
         </div>
       )}
       <div className="chat-input-box glass">
