@@ -108,14 +108,14 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
       </button>
 
       <AnimatePresence>
-        {open && (
-          <motion.div
-            className="model-picker-dropdown glass"
-            initial={{ opacity: 0, y: -8, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.97 }}
-            transition={{ duration: 0.15 }}
-          >
+      {open && (
+        <motion.div
+          className="model-picker-dropdown glass"
+          initial={{ opacity: 0, y: -6, scaleY: 0.95, transformOrigin: 'top' }}
+          animate={{ opacity: 1, y: 0, scaleY: 1 }}
+          exit={{ opacity: 0, y: -6, scaleY: 0.95 }}
+          transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+        >
             {/* Поиск */}
             <div className="model-picker-search">
               <AppIcon name="search" size="sm" />
