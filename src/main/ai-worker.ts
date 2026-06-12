@@ -1,16 +1,14 @@
 /**
  * AI Worker Thread — весь AI/Agent код здесь.
  * При worker.terminate() все соединения рвутся мгновенно OS-ом.
- * Сохранение происходит в main thread через сообщение 'save'.
+ * Сохранение происходит в main thread через сообщение 'done'.
  */
 import { parentPort, workerData } from 'worker_threads'
 import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
 
-// Store-совместимый объект из сериализованных данных
 const storeData: Record<string, unknown> = workerData.storeData
 
-// Заглушка под electron-store API
 const fakeStore = {
   get: (key: string, def?: unknown) => (storeData[key] !== undefined ? storeData[key] : def),
   set: (_key: string, _val: unknown) => {},
@@ -52,18 +50,16 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
   let thinkingMs: number | undefined
   const collectedSteps: unknown[] = []
 
-  // Финализация — отправляем в main для сохранения и отправки DONE
   const finalize = () => {
     send({
       type: 'done',
-      chatId,
-      msgId,
+      chatId, msgId,
       fullText,
       thinkingText: thinkingText || undefined,
       thinkingMs,
       collectedSteps,
       incognito,
-      content, // оригинальный запрос пользователя (для автоимени и памяти)
+      content,
     })
   }
 
@@ -71,6 +67,8 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
     if (enableTools && !incognito) {
       // Агентский режим
       const agent = new Agent(fakeStore)
+
+      // История как текст для контекста
       const historyContext = history.slice(-10)
         .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
         .join('\n')
@@ -105,7 +103,9 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
           },
           approvalMode: agentSettings.approvalMode as never,
         },
-        agentSettings.maxSteps
+        agentSettings.maxSteps,
+        undefined,       // signal — нет в worker (terminate() убивает всё)
+        systemPrompt,    // передаём системный промпт с памятью/именем/датой
       )
     } else {
       // Обычный стриминг без tools
@@ -120,17 +120,15 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
         {
           onToken: (token) => {
             // Парсим <thinking> теги
-            const buf = fullText + thinkingText + token
             const thinkStart = '<thinking>'
             const thinkEnd = '</thinking>'
+            const buf = fullText + thinkingText + token
 
             if (buf.includes(thinkStart) && !buf.includes(thinkEnd)) {
-              // Внутри thinking
               if (!thinkingStartMs) thinkingStartMs = Date.now()
               thinkingText += token
               send({ type: 'thinking_token', chatId, msgId, token })
             } else if (buf.includes(thinkStart) && buf.includes(thinkEnd) && !thinkingMs) {
-              // thinking завершился
               thinkingMs = Date.now() - thinkingStartMs
               send({ type: 'thinking_done', chatId, msgId, thinkingMs })
             } else if (!buf.includes(thinkStart) || buf.includes(thinkEnd)) {
@@ -139,11 +137,7 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
             }
           },
           onDone: () => finalize(),
-          onError: (err) => {
-            // При terminate() тоже попадаем сюда — финализируем с тем что есть
-            finalize()
-            send({ type: 'error', chatId, error: err.message })
-          },
+          onError: () => finalize(),
           onRateLimit: (waitSec) => {
             send({ type: 'rate_limit', chatId, waitSec })
           },
@@ -153,7 +147,6 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
       )
     }
   } catch {
-    // Любой крэш — финализируем с накопленным текстом
     finalize()
   }
 })
