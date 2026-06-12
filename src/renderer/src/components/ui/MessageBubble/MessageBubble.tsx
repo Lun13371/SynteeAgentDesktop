@@ -95,20 +95,22 @@ export default function MessageBubble({ message, onPin, onCopy, onReadAloud }: M
         <span className="message-time">
           {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
         </span>
-      </div>
 
-      <motion.div
-        className="message-actions"
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: showActions ? 1 : 0, scale: showActions ? 1 : 0.9 }}
-        transition={{ duration: 0.15 }}
-      >
-        <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={handleCopy} />
-        <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
-        {!isUser && (
-          <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={() => onReadAloud?.(message.content)} />
-        )}
-      </motion.div>
+        {/* Кнопки действий — появляются над bubble при наведении */}
+        <motion.div
+          className="message-actions"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: showActions ? 1 : 0, y: showActions ? 0 : 4 }}
+          transition={{ duration: 0.15 }}
+          style={{ pointerEvents: showActions ? 'all' : 'none' }}
+        >
+          <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={handleCopy} />
+          <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
+          {!isUser && (
+            <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={() => onReadAloud?.(message.content)} />
+          )}
+        </motion.div>
+      </div>
     </motion.div>
   )
 }
