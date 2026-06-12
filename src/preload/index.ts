@@ -70,6 +70,25 @@ const synteeAPI = {
     cancel: () => ipcRenderer.invoke('agent:cancel'),
   },
 
+  // Провайдеры и модели
+  providers: {
+    getAll: () => ipcRenderer.invoke('providers:getAll'),
+    save: (provider: unknown) => ipcRenderer.invoke('providers:save', provider),
+    delete: (id: string) => ipcRenderer.invoke('providers:delete', id),
+    testKey: (providerId: string) => ipcRenderer.invoke('providers:testKey', providerId),
+    fetchModels: (providerId: string) => ipcRenderer.invoke('providers:fetchModels', providerId),
+  },
+
+  models: {
+    getAll: () => ipcRenderer.invoke('models:getAll'),
+    saveCustom: (model: unknown) => ipcRenderer.invoke('models:saveCustom', model),
+    deleteCustom: (modelId: string, providerId: string) => ipcRenderer.invoke('models:deleteCustom', modelId, providerId),
+    getAssignments: () => ipcRenderer.invoke('models:getAssignments'),
+    setAssignment: (assignment: unknown) => ipcRenderer.invoke('models:setAssignment', assignment),
+    getParams: () => ipcRenderer.invoke('models:getParams'),
+    setParams: (params: unknown) => ipcRenderer.invoke('models:setParams', params),
+  },
+
   // События (подписка)
   on: (channel: string, callback: (...args: unknown[]) => void) => {
     const handler = (_: Electron.IpcRendererEvent, ...args: unknown[]) => callback(...args)

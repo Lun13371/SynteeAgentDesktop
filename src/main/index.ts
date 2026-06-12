@@ -16,6 +16,7 @@ import { registerSettingsIPC } from './ipc/settings.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
+import { registerProviderIPC } from './ipc/providers.ipc'
 
 // Имя приложения — ДОЛЖНО быть ДО создания Store и app.whenReady
 app.setName('SynteeHelper')
@@ -76,6 +77,7 @@ app.whenReady().then(async () => {
   registerVoiceIPC(store, () => mainWindow.getWindow(), () => voiceWindow.getWindow())
   registerAgentIPC(store, () => mainWindow.getWindow())
   registerMemoryIPC(store)
+  registerProviderIPC(store)
 
   // Первый запуск
   if (!store.get('firstRunComplete')) {

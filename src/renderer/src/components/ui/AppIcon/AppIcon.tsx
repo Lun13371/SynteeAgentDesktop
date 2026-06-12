@@ -34,6 +34,11 @@ import {
   Minus,
   Shield,
   Info,
+  RefreshCw,
+  ChevronUp,
+  ChevronDown,
+  Trash2,
+  Zap,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -75,6 +80,11 @@ const ICONS = {
   minus: Minus,
   shield: Shield,
   info: Info,
+  refreshCw: RefreshCw,
+  chevronUp: ChevronUp,
+  chevronDown: ChevronDown,
+  trash: Trash2,
+  zap: Zap,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS

@@ -5,6 +5,7 @@ import { useUIStore } from '../../store/ui.store'
 import { useToast } from '../../components/ui/Toast/Toast'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import IconButton from '../../components/ui/IconButton/IconButton'
+import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import './SettingsPage.css'
 
 type Section =
@@ -91,13 +92,7 @@ export default function SettingsPage() {
               <GeneralSection settings={settings} onSet={handleSet} />
             )}
             {section === 'ai' && (
-              <AISection
-                settings={settings} onSet={handleSet}
-                apiKeyVisible={apiKeyVisible}
-                setApiKeyVisible={setApiKeyVisible}
-                testingApi={testingApi}
-                onTestApi={testApiKey}
-              />
+              <AISettingsTab />
             )}
             {section === 'appearance' && (
               <AppearanceSection settings={settings} onSet={handleSet} />

@@ -1,0 +1,386 @@
+import { useState, useEffect } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import type { Provider, ModelAssignment, ModelParams, ModelRole, ModelCapability } from '../../../../../shared/types'
+import { BUILTIN_PROVIDERS_META } from '../../../../../shared/data/builtinModels'
+import ModelPicker from '../../ui/ModelPicker/ModelPicker'
+import AppIcon from '../../ui/AppIcon/AppIcon'
+import './AISettingsTab.css'
+
+const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; filterCaps?: ModelCapability[] }> = {
+  main:      { label: 'Основной чат',     desc: 'Для всех сообщений в чате',        icon: 'bot' },
+  fast:      { label: 'Быстрые ответы',   desc: 'Автоназвания, короткие задачи',    icon: 'zap' },
+  vision:    { label: 'Vision / Картинки',desc: 'Анализ изображений и скриншотов',  icon: 'eye', filterCaps: ['vision'] },
+  stt:       { label: 'Голос → Текст',    desc: 'Распознавание речи',               icon: 'mic',        filterCaps: ['stt'] },
+  tts:       { label: 'Текст → Голос',    desc: 'Озвучивание ответов',              icon: 'volume',     filterCaps: ['tts'] },
+  embedding: { label: 'Embeddings',       desc: 'Векторный поиск и память',         icon: 'brain',      filterCaps: ['embedding'] },
+  memory:    { label: 'Память',           desc: 'Анализ и сохранение воспоминаний', icon: 'database' },
+  summary:   { label: 'Суммаризация',     desc: 'Авто-заголовки чатов',            icon: 'fileText' },
+}
+
+const BUILTIN_PROVIDER_IDS = Object.keys(BUILTIN_PROVIDERS_META)
+
+export default function AISettingsTab() {
+  const [tab, setTab] = useState<'providers' | 'models' | 'params'>('providers')
+  const [providers, setProviders] = useState<Provider[]>([])
+  const [assignments, setAssignments] = useState<ModelAssignment[]>([])
+  const [params, setParams] = useState<ModelParams>({ temperature: 0.7, maxTokens: 4096, systemPrompt: '', streaming: true })
+  const [configuring, setConfiguring] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<Partial<Provider>>({})
+  const [testStatus, setTestStatus] = useState<Record<string, 'idle' | 'loading' | 'ok' | 'error'>>({})
+  const [fetchStatus, setFetchStatus] = useState<Record<string, 'idle' | 'loading' | 'done'>>({})
+  const [showAddCustom, setShowAddCustom] = useState(false)
+  const [customForm, setCustomForm] = useState({ name: '', baseUrl: '', apiKey: '' })
+
+  useEffect(() => { load() }, [])
+
+  const load = async () => {
+    const [p, a, pm] = await Promise.all([
+      window.syntee.providers.getAll() as Promise<Provider[]>,
+      window.syntee.models.getAssignments() as Promise<ModelAssignment[]>,
+      window.syntee.models.getParams() as Promise<ModelParams>,
+    ])
+    setProviders(p)
+    setAssignments(a)
+    setParams(pm)
+  }
+
+  const getProviderMeta = (id: string) => BUILTIN_PROVIDERS_META[id]
+
+  const isConfigured = (id: string) => providers.find(p => p.id === id && p.enabled && p.apiKey)
+
+  const startConfigure = (id: string) => {
+    const existing = providers.find(p => p.id === id)
+    const meta = BUILTIN_PROVIDERS_META[id]
+    setEditForm({
+      id,
+      type: id as Provider['type'],
+      name: meta?.name || id,
+      baseUrl: existing?.baseUrl || meta?.baseUrl || '',
+      apiKey: existing?.apiKey || '',
+      enabled: true,
+      isCustom: false,
+    })
+    setConfiguring(id)
+    setTestStatus(s => ({ ...s, [id]: 'idle' }))
+  }
+
+  const saveProvider = async () => {
+    if (!editForm.id) return
+    await window.syntee.providers.save({ ...editForm, enabled: true } as Provider)
+    await load()
+    setConfiguring(null)
+  }
+
+  const deleteProvider = async (id: string) => {
+    await window.syntee.providers.delete(id)
+    await load()
+  }
+
+  const testKey = async (id: string) => {
+    setTestStatus(s => ({ ...s, [id]: 'loading' }))
+    await window.syntee.providers.save({ ...editForm, id, enabled: true } as Provider)
+    const res = await window.syntee.providers.testKey(id) as { ok: boolean }
+    setTestStatus(s => ({ ...s, [id]: res.ok ? 'ok' : 'error' }))
+  }
+
+  const fetchModels = async (id: string) => {
+    setFetchStatus(s => ({ ...s, [id]: 'loading' }))
+    await window.syntee.providers.fetchModels(id)
+    setFetchStatus(s => ({ ...s, [id]: 'done' }))
+    await load()
+  }
+
+  const setAssignment = async (role: ModelRole, modelId: string, pid: string) => {
+    const a: ModelAssignment = { role, modelId, providerId: pid }
+    await window.syntee.models.setAssignment(a)
+    setAssignments(prev => {
+      const next = [...prev.filter(x => x.role !== role), a]
+      return next
+    })
+  }
+
+  const updateParams = async (patch: Partial<ModelParams>) => {
+    const next = { ...params, ...patch }
+    setParams(next)
+    await window.syntee.models.setParams(patch)
+  }
+
+  const addCustomProvider = async () => {
+    if (!customForm.name || !customForm.baseUrl) return
+    const id = `custom-${Date.now()}`
+    await window.syntee.providers.save({
+      id, type: 'custom', name: customForm.name,
+      baseUrl: customForm.baseUrl, apiKey: customForm.apiKey,
+      enabled: true, isCustom: true,
+    } as Provider)
+    setCustomForm({ name: '', baseUrl: '', apiKey: '' })
+    setShowAddCustom(false)
+    await load()
+  }
+
+  return (
+    <div className="ai-settings">
+      {/* Таб-переключатель */}
+      <div className="ai-settings-tabs">
+        {(['providers', 'models', 'params'] as const).map(t => (
+          <button
+            key={t}
+            className={`ai-settings-tab ${tab === t ? 'ai-settings-tab--active' : ''}`}
+            onClick={() => setTab(t)}
+          >
+            {t === 'providers' ? 'Провайдеры' : t === 'models' ? 'Назначения' : 'Параметры'}
+          </button>
+        ))}
+      </div>
+
+      {/* ── ПРОВАЙДЕРЫ ── */}
+      {tab === 'providers' && (
+        <div className="ai-providers">
+          <div className="ai-providers-grid">
+            {BUILTIN_PROVIDER_IDS.map(id => {
+              const meta = getProviderMeta(id)
+              const configured = !!isConfigured(id)
+              return (
+                <motion.div
+                  key={id}
+                  className={`provider-card glass ${configured ? 'provider-card--active' : ''}`}
+                  layout
+                >
+                  <div className="provider-card-header">
+                    <span className="provider-dot" style={{ background: meta.color }} />
+                    <span className="provider-name">{meta.name}</span>
+                    <span className={`provider-status ${configured ? 'provider-status--ok' : ''}`}>
+                      {configured ? 'Настроен' : 'Не настроен'}
+                    </span>
+                  </div>
+
+                  <AnimatePresence>
+                    {configuring === id && (
+                      <motion.div
+                        className="provider-form"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                      >
+                        <label className="provider-form-label">API Key</label>
+                        <input
+                          className="provider-form-input"
+                          type="password"
+                          placeholder="sk-..."
+                          value={editForm.apiKey || ''}
+                          onChange={e => setEditForm(f => ({ ...f, apiKey: e.target.value }))}
+                        />
+                        {id === 'ollama' && (
+                          <>
+                            <label className="provider-form-label">Base URL</label>
+                            <input
+                              className="provider-form-input"
+                              value={editForm.baseUrl || ''}
+                              onChange={e => setEditForm(f => ({ ...f, baseUrl: e.target.value }))}
+                            />
+                          </>
+                        )}
+                        <div className="provider-form-actions">
+                          <button
+                            className="provider-btn provider-btn--test"
+                            onClick={() => testKey(id)}
+                            disabled={testStatus[id] === 'loading'}
+                          >
+                            {testStatus[id] === 'loading' ? (
+                              <AppIcon name="loader" size="xs" animation="spin" />
+                            ) : testStatus[id] === 'ok' ? (
+                              <AppIcon name="check" size="xs" tone="success" />
+                            ) : testStatus[id] === 'error' ? (
+                              <AppIcon name="alertCircle" size="xs" tone="error" />
+                            ) : (
+                              <AppIcon name="zap" size="xs" />
+                            )}
+                            Проверить
+                          </button>
+                          <button className="provider-btn provider-btn--save" onClick={saveProvider}>
+                            Сохранить
+                          </button>
+                          <button className="provider-btn provider-btn--cancel" onClick={() => setConfiguring(null)}>
+                            Отмена
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <div className="provider-card-footer">
+                    {configuring !== id && (
+                      <button className="provider-btn provider-btn--configure" onClick={() => startConfigure(id)}>
+                        {configured ? 'Изменить' : 'Настроить'}
+                      </button>
+                    )}
+                    {configured && (
+                      <button
+                        className="provider-btn provider-btn--fetch"
+                        onClick={() => fetchModels(id)}
+                        disabled={fetchStatus[id] === 'loading'}
+                      >
+                        {fetchStatus[id] === 'loading' ? (
+                          <AppIcon name="loader" size="xs" animation="spin" />
+                        ) : (
+                          <AppIcon name="refreshCw" size="xs" />
+                        )}
+                        Модели
+                      </button>
+                    )}
+                    {configured && (
+                      <button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(id)}>
+                        <AppIcon name="trash" size="xs" />
+                      </button>
+                    )}
+                  </div>
+                </motion.div>
+              )
+            })}
+
+            {/* Кастомные провайдеры */}
+            {providers.filter(p => p.isCustom).map(p => (
+              <motion.div key={p.id} className="provider-card provider-card--custom glass" layout>
+                <div className="provider-card-header">
+                  <span className="provider-dot" style={{ background: '#888' }} />
+                  <span className="provider-name">{p.name}</span>
+                  <span className="provider-status provider-status--ok">Кастомный</span>
+                </div>
+                <div className="provider-url">{p.baseUrl}</div>
+                <div className="provider-card-footer">
+                  <button className="provider-btn provider-btn--configure" onClick={() => { setEditForm(p); setConfiguring(p.id) }}>
+                    Изменить
+                  </button>
+                  <button className="provider-btn provider-btn--fetch" onClick={() => fetchModels(p.id)}>
+                    <AppIcon name="refreshCw" size="xs" /> Модели
+                  </button>
+                  <button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(p.id)}>
+                    <AppIcon name="trash" size="xs" />
+                  </button>
+                </div>
+              </motion.div>
+            ))}
+
+            {/* Кнопка добавить кастомный */}
+            <motion.div className="provider-card provider-card--add glass" layout>
+              {!showAddCustom ? (
+                <button className="provider-add-btn" onClick={() => setShowAddCustom(true)}>
+                  <AppIcon name="plus" size="md" />
+                  <span>Добавить свой</span>
+                </button>
+              ) : (
+                <div className="provider-form">
+                  <label className="provider-form-label">Название</label>
+                  <input className="provider-form-input" placeholder="My Provider" value={customForm.name} onChange={e => setCustomForm(f => ({ ...f, name: e.target.value }))} />
+                  <label className="provider-form-label">Base URL</label>
+                  <input className="provider-form-input" placeholder="https://api.example.com/v1" value={customForm.baseUrl} onChange={e => setCustomForm(f => ({ ...f, baseUrl: e.target.value }))} />
+                  <label className="provider-form-label">API Key (если нужен)</label>
+                  <input className="provider-form-input" type="password" value={customForm.apiKey} onChange={e => setCustomForm(f => ({ ...f, apiKey: e.target.value }))} />
+                  <div className="provider-form-actions">
+                    <button className="provider-btn provider-btn--save" onClick={addCustomProvider}>Добавить</button>
+                    <button className="provider-btn provider-btn--cancel" onClick={() => setShowAddCustom(false)}>Отмена</button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        </div>
+      )}
+
+      {/* ── НАЗНАЧЕНИЯ МОДЕЛЕЙ ── */}
+      {tab === 'models' && (
+        <div className="ai-assignments">
+          <p className="ai-assignments-hint">Назначьте модели для каждой роли. Модели берутся из настроенных провайдеров.</p>
+          <div className="ai-assignments-grid">
+            {(Object.keys(ROLE_META) as ModelRole[]).map(role => {
+              const meta = ROLE_META[role]
+              const current = assignments.find(a => a.role === role)
+              return (
+                <div key={role} className="assignment-row glass">
+                  <div className="assignment-info">
+                    <AppIcon name={meta.icon as 'bot'} size="sm" tone="accent" />
+                    <div>
+                      <div className="assignment-label">{meta.label}</div>
+                      <div className="assignment-desc">{meta.desc}</div>
+                    </div>
+                  </div>
+                  <div className="assignment-picker">
+                    <ModelPicker
+                      value={current?.modelId || ''}
+                      providerId={current?.providerId || ''}
+                      onChange={(modelId, pid) => setAssignment(role, modelId, pid)}
+                      filterCaps={meta.filterCaps}
+                      placeholder="Не выбрано"
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── ПАРАМЕТРЫ ── */}
+      {tab === 'params' && (
+        <div className="ai-params">
+          <div className="ai-param-row">
+            <label className="ai-param-label">
+              Temperature
+              <span className="ai-param-hint">Случайность ответов (0 = детерминировано, 2 = максимально творчески)</span>
+            </label>
+            <div className="ai-param-slider-wrap">
+              <input
+                type="range" min={0} max={2} step={0.05}
+                value={params.temperature}
+                onChange={e => updateParams({ temperature: parseFloat(e.target.value) })}
+                className="ai-param-slider"
+              />
+              <span className="ai-param-value">{params.temperature.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div className="ai-param-row">
+            <label className="ai-param-label">
+              Max Tokens
+              <span className="ai-param-hint">Максимальная длина ответа</span>
+            </label>
+            <input
+              type="number" min={256} max={32000} step={256}
+              value={params.maxTokens}
+              onChange={e => updateParams({ maxTokens: parseInt(e.target.value) })}
+              className="ai-param-input"
+            />
+          </div>
+
+          <div className="ai-param-row ai-param-row--toggle">
+            <label className="ai-param-label">
+              Стриминг
+              <span className="ai-param-hint">Показывать ответ по мере генерации</span>
+            </label>
+            <button
+              className={`ai-param-toggle ${params.streaming ? 'ai-param-toggle--on' : ''}`}
+              onClick={() => updateParams({ streaming: !params.streaming })}
+            >
+              <motion.div className="ai-param-toggle-thumb" layout transition={{ type: 'spring', stiffness: 500, damping: 30 }} />
+            </button>
+          </div>
+
+          <div className="ai-param-row ai-param-row--full">
+            <label className="ai-param-label">
+              System Prompt
+              <span className="ai-param-hint">Глобальная инструкция для всех чатов</span>
+            </label>
+            <textarea
+              className="ai-param-textarea"
+              rows={6}
+              placeholder="Ты — полезный AI-ассистент..."
+              value={params.systemPrompt}
+              onChange={e => updateParams({ systemPrompt: e.target.value })}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
