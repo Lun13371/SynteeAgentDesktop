@@ -14,16 +14,18 @@ function formatNum(n: number): string {
 }
 
 function formatCost(cents: number): string {
-  if (cents < 1) return `<$0.01`
+  if (cents < 1) return '<$0.01'
   if (cents < 100) return `$${(cents / 100).toFixed(3)}`
   return `$${(cents / 100).toFixed(2)}`
 }
 
+const PANEL_WIDTH = 300
+
 export default function ContextRing({ info }: ContextRingProps) {
   const [panelOpen, setPanelOpen] = useState(false)
-  const [tooltipVisible, setTooltipVisible] = useState(false)
-  const ringRef = useRef<HTMLButtonElement>(null)
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null)
   const [panelPos, setPanelPos] = useState({ bottom: 0, left: 0 })
+  const ringRef = useRef<HTMLButtonElement>(null)
 
   const SIZE = 28
   const STROKE = 3
@@ -38,24 +40,35 @@ export default function ContextRing({ info }: ContextRingProps) {
       ? 'var(--color-warning, #f59e0b)'
       : 'var(--accent)'
 
-  useEffect(() => {
-    if (panelOpen && ringRef.current) {
-      const rect = ringRef.current.getBoundingClientRect()
-      setPanelPos({
-        bottom: window.innerHeight - rect.top + 8,
-        left: rect.left - 20,
-      })
+  const openPanel = () => {
+    if (!ringRef.current) return
+    const rect = ringRef.current.getBoundingClientRect()
+    const bottom = window.innerHeight - rect.top + 8
+    let left = rect.left - 20
+    // не уходим за правый край
+    if (left + PANEL_WIDTH > window.innerWidth - 12) {
+      left = window.innerWidth - PANEL_WIDTH - 12
     }
-  }, [panelOpen])
+    // не уходим за левый край
+    if (left < 8) left = 8
+    setPanelPos({ bottom, left })
+    setPanelOpen(true)
+  }
 
-  // Закрытие панели при клике снаружи
+  const handleMouseEnter = () => {
+    if (panelOpen || !ringRef.current) return
+    const rect = ringRef.current.getBoundingClientRect()
+    setTooltipPos({ x: rect.left + rect.width / 2, y: rect.top })
+  }
+
+  const handleMouseLeave = () => setTooltipPos(null)
+
   useEffect(() => {
     if (!panelOpen) return
     const handler = (e: MouseEvent) => {
-      if (ringRef.current && !ringRef.current.contains(e.target as Node)) {
-        const panel = document.getElementById('ctx-panel')
-        if (!panel?.contains(e.target as Node)) setPanelOpen(false)
-      }
+      if (ringRef.current?.contains(e.target as Node)) return
+      const panel = document.getElementById('ctx-panel')
+      if (!panel?.contains(e.target as Node)) setPanelOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -66,56 +79,39 @@ export default function ContextRing({ info }: ContextRingProps) {
       <button
         ref={ringRef}
         className={`ctx-ring-btn${info?.warning ? ' ctx-ring-warn' : ''}${info?.critical ? ' ctx-ring-crit' : ''}`}
-        onClick={() => {
-          setPanelOpen(p => !p)
-          setTooltipVisible(false)
-        }}
-        onMouseEnter={() => !panelOpen && setTooltipVisible(true)}
-        onMouseLeave={() => setTooltipVisible(false)}
+        onClick={() => { setTooltipPos(null); panelOpen ? setPanelOpen(false) : openPanel() }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         title=""
       >
         <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-          {/* Трек */}
+          <circle cx={SIZE/2} cy={SIZE/2} r={R} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth={STROKE} />
           <circle
-            cx={SIZE / 2} cy={SIZE / 2} r={R}
-            fill="none"
-            stroke="rgba(255,255,255,0.1)"
-            strokeWidth={STROKE}
-          />
-          {/* Прогресс */}
-          <circle
-            cx={SIZE / 2} cy={SIZE / 2} r={R}
-            fill="none"
-            stroke={color}
-            strokeWidth={STROKE}
-            strokeLinecap="round"
-            strokeDasharray={CIRC}
-            strokeDashoffset={offset}
-            transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
+            cx={SIZE/2} cy={SIZE/2} r={R} fill="none"
+            stroke={color} strokeWidth={STROKE} strokeLinecap="round"
+            strokeDasharray={CIRC} strokeDashoffset={offset}
+            transform={`rotate(-90 ${SIZE/2} ${SIZE/2})`}
             style={{ transition: 'stroke-dashoffset 0.6s ease, stroke 0.3s ease' }}
           />
-          {/* Процент внутри */}
-          <text
-            x={SIZE / 2} y={SIZE / 2 + 4}
-            textAnchor="middle"
-            fontSize="7"
-            fill={color}
-            fontFamily="inherit"
-          >
+          <text x={SIZE/2} y={SIZE/2+4} textAnchor="middle" fontSize="7" fill={color} fontFamily="inherit">
             {info ? `${Math.round(percent)}%` : '…'}
           </text>
         </svg>
-
-        {/* Тултип при hover */}
-        {tooltipVisible && info && (
-          <div className="ctx-tooltip">
-            {formatNum(info.total)} / {formatNum(info.limit)} tok
-            <span className="ctx-tooltip-pct"> {percent.toFixed(1)}%</span>
-          </div>
-        )}
       </button>
 
-      {/* Полная панель при клике — через портал */}
+      {/* Тултип через портал — fixed, не перекрывается инпутом */}
+      {tooltipPos && info && createPortal(
+        <div
+          className="ctx-tooltip"
+          style={{ left: tooltipPos.x, top: tooltipPos.y - 40 }}
+        >
+          {formatNum(info.total)} / {formatNum(info.limit)} tok
+          <span className="ctx-tooltip-pct"> {percent.toFixed(1)}%</span>
+        </div>,
+        document.body
+      )}
+
+      {/* Панель через портал — с проверкой правого и левого края */}
       {panelOpen && info && createPortal(
         <div
           id="ctx-panel"
@@ -128,7 +124,6 @@ export default function ContextRing({ info }: ContextRingProps) {
             <button className="ctx-panel-close" onClick={() => setPanelOpen(false)}>✕</button>
           </div>
 
-          {/* Прогресс-бар */}
           <div className="ctx-bar-wrap">
             <div
               className={`ctx-bar-fill${info.warning ? ' warn' : ''}${info.critical ? ' crit' : ''}`}
@@ -139,7 +134,6 @@ export default function ContextRing({ info }: ContextRingProps) {
             {formatNum(info.total)} / {formatNum(info.limit)} токенов ({percent.toFixed(1)}%)
           </div>
 
-          {/* Разбивка */}
           <div className="ctx-rows">
             <div className="ctx-row">
               <span className="ctx-row-label">System prompt</span>
@@ -147,7 +141,8 @@ export default function ContextRing({ info }: ContextRingProps) {
             </div>
             <div className="ctx-row">
               <span className="ctx-row-label">История чата</span>
-              <span className="ctx-row-val">{formatNum(info.history)} tok
+              <span className="ctx-row-val">
+                {formatNum(info.history)} tok
                 {info.historyMessages > 0 && <span className="ctx-row-sub"> ({info.historyMessages} сообщ.)</span>}
               </span>
             </div>
@@ -165,15 +160,12 @@ export default function ContextRing({ info }: ContextRingProps) {
             </div>
           </div>
 
-          {/* Цены */}
           <div className="ctx-pricing">
             {info.pricing ? (
               <>
                 <span className="ctx-pricing-label">Стоимость запроса:</span>
                 <span className="ctx-pricing-val">
-                  {info.estimatedCostCents != null
-                    ? formatCost(info.estimatedCostCents)
-                    : '—'}
+                  {info.estimatedCostCents != null ? formatCost(info.estimatedCostCents) : '—'}
                 </span>
                 <span className="ctx-pricing-sub">
                   ${(info.pricing.inputPerM / 100).toFixed(2)}/M in · ${(info.pricing.outputPerM / 100).toFixed(2)}/M out
