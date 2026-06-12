@@ -67,6 +67,29 @@ export const BUILTIN_MODELS: ModelMeta[] = [
   m('accounts/fireworks/models/llama-v3p3-70b-instruct', 'fireworks', 'Llama 3.3 70B', 128_000, 0.90, 0.90, 'fast', [T,C], 'Llama 3.3 70B на Fireworks'),
   m('accounts/fireworks/models/qwen3-32b',               'fireworks', 'Qwen3 32B',      32_768, 0.30, 0.30, 'fast', [T,C,R], 'Qwen3 32B с reasoning'),
   m('accounts/fireworks/models/deepseek-v3',             'fireworks', 'DeepSeek V3',    64_000, 0.90, 0.90, 'medium', [T,C], 'DeepSeek V3 на Fireworks'),
+
+  // OnlySQ
+  m('claude-opus-4-7',        'onlysq', 'Claude Opus 4.7',     200_000, 15.00,  75.00, 'slow',   [V,T,R,C], 'Claude Opus 4.7 через OnlySQ'),
+  m('claude-opus-4-8',        'onlysq', 'Claude Opus 4.8',     200_000, 15.00,  75.00, 'slow',   [V,T,R,C], 'Claude Opus 4.8 через OnlySQ'),
+  m('claude-sonnet-4-5',      'onlysq', 'Claude Sonnet 4.5',   200_000,  3.00,  15.00, 'medium', [V,T,C],   'Claude Sonnet 4.5 через OnlySQ'),
+  m('claude-sonnet-4-6',      'onlysq', 'Claude Sonnet 4.6',   200_000,  3.00,  15.00, 'medium', [V,T,C],   'Claude Sonnet 4.6 через OnlySQ'),
+  m('claude-haiku-4-5',       'onlysq', 'Claude Haiku 4.5',    200_000,  0.80,   4.00, 'fast',   [V,T,C],   'Claude Haiku 4.5 через OnlySQ'),
+  m('gpt-4o',                 'onlysq', 'GPT-4o',              128_000,  2.50,  10.00, 'fast',   [V,T,C],   'GPT-4o через OnlySQ'),
+  m('gpt-4.1',                'onlysq', 'GPT-4.1',           1_000_000,  2.00,   8.00, 'medium', [V,T,C],   'GPT-4.1 через OnlySQ'),
+  m('gpt-5',                  'onlysq', 'GPT-5',               128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5 через OnlySQ'),
+  m('gpt-5.1',                'onlysq', 'GPT-5.1',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.1 через OnlySQ'),
+  m('gpt-5.2',                'onlysq', 'GPT-5.2',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.2 через OnlySQ'),
+  m('gpt-5.4',                'onlysq', 'GPT-5.4',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.4 через OnlySQ'),
+  m('gpt-5.5',                'onlysq', 'GPT-5.5',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.5 через OnlySQ'),
+  m('gemini-3.1-pro',         'onlysq', 'Gemini 3.1 Pro',    1_000_000,  1.25,  10.00, 'medium', [V,T,C],   'Gemini 3.1 Pro через OnlySQ'),
+  m('gemini-3-flash',         'onlysq', 'Gemini 3 Flash',    1_000_000,  0.15,   0.60, 'fast',   [V,T,C],   'Gemini 3 Flash через OnlySQ'),
+  m('deepseek-r1',            'onlysq', 'DeepSeek R1',          64_000,  0.55,   2.19, 'slow',   [R,C],     'DeepSeek R1 через OnlySQ'),
+  m('deepseek-v3',            'onlysq', 'DeepSeek V3',          64_000,  0.27,   1.10, 'medium', [T,C],     'DeepSeek V3 через OnlySQ'),
+  m('deepseek-v4-pro',        'onlysq', 'DeepSeek V4 Pro',     128_000,  0.50,   2.00, 'medium', [T,C,R],   'DeepSeek V4 Pro через OnlySQ'),
+  m('grok-4.20',              'onlysq', 'Grok 4.20',           131_072,  3.00,  15.00, 'medium', [V,T,C],   'Grok 4.20 через OnlySQ'),
+  m('o3',                     'onlysq', 'o3',                  200_000, 10.00,  40.00, 'slow',   [T,R,C],   'o3 через OnlySQ'),
+  m('o4-mini',                'onlysq', 'o4-mini',             200_000,  1.10,   4.40, 'medium', [T,R,C],   'o4-mini через OnlySQ'),
+  m('qwen-3-32b',             'onlysq', 'Qwen 3 32B',           32_768,  0.30,   0.30, 'fast',   [T,C,R],   'Qwen 3 32B через OnlySQ'),
 ]
 
 export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: string; docsUrl: string; color: string }> = {
