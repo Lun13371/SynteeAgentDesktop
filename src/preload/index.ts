@@ -93,6 +93,12 @@ const synteeAPI = {
     fetchModels: (providerId: string) => ipcRenderer.invoke('providers:fetchModels', providerId),
   },
 
+  // Счётчик контекста
+  context: {
+    calculate: (params: { chatId: string; currentInput: string; modelId: string; incognito?: boolean }) =>
+      ipcRenderer.invoke('context:calculate', params),
+  },
+
   models: {
     getAll: () => ipcRenderer.invoke('models:getAll'),
     saveCustom: (model: unknown) => ipcRenderer.invoke('models:saveCustom', model),

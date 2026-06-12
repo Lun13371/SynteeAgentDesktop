@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { v4 as uuid } from 'uuid'
+import { useContextCounter } from '../../hooks/useContextCounter'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
@@ -40,6 +41,24 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
   const [replyTo, setReplyTo] = useState<Message[]>([])
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null)
+  const [inputText, setInputText] = useState('')
+
+  // Настройка показа счётчика контекста
+  const showContextRing = (window.syntee.settings?.get?.('showContextRing') as boolean) ?? true
+
+  // Текущая модель из назначений
+  const modelAssignments = (window.syntee.settings?.get?.('modelAssignments') as Array<{ role: string; modelId: string }> | undefined) ?? []
+  const mainModelId = modelAssignments.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6'
+
+  // Счётчик контекста
+  const contextInfo = useContextCounter({
+    chatId: currentChatId || '',
+    currentInput: inputText,
+    modelId: mainModelId,
+    incognito: isIncognito,
+    enabled: showContextRing && !isIncognito,
+    messageCount: messages.length,
+  })
 
   // Selection reply — выделил текст в чате → popup с кнопкой Reply
   useEffect(() => {
@@ -366,6 +385,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
             isGenerating={isTyping}
             onStop={() => window.syntee.chat.stop()}
+            contextInfo={contextInfo}
+            showContextRing={showContextRing}
+            onInputChange={setInputText}
           />
 
           {/* Selection reply popup */}

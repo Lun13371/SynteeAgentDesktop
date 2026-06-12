@@ -180,6 +180,9 @@ function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>
           <option value="quit">Выйти</option>
         </select>
       </Field>
+      <Field label="Счётчик контекста" description="Кружок с заполнением контекста в поле ввода">
+        <Toggle value={(settings['showContextRing'] as boolean) ?? true} onChange={v => onSet('showContextRing', v)} />
+      </Field>
     </>
   )
 }
