@@ -1,187 +1,238 @@
 import OpenAI from 'openai'
-import type Store from 'electron-store/ts'
+import type Store from 'electron-store'
 
-// ─── Rate Limit Retry ────────────────────────────────────
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  maxAttempts = 6,
-  onWait?: (seconds: number) => void
-): Promise<T> {
-  let attempt = 0
-  let delay = 1000
-
-  while (true) {
-    try {
-      return await fn()
-    } catch (err: unknown) {
-      attempt++
-      const isRateLimit =
-        (err as { status?: number })?.status === 429 ||
-        (err as { message?: string })?.message?.includes('rate limit') ||
-        (err as { message?: string })?.message?.includes('Rate limit')
-
-      if (!isRateLimit || attempt >= maxAttempts) throw err
-
-      // Jitter ±30%
-      const jitter = delay * (0.7 + Math.random() * 0.6)
-      const waitSec = Math.round(jitter / 1000)
-      onWait?.(waitSec)
-
-      await new Promise(r => setTimeout(r, jitter))
-      delay = Math.min(delay * 2, 60_000)
-    }
-  }
+// Экспоненциальный backoff с jitter для rate limit
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-// ─── AI Client ───────────────────────────────────────────
+function backoffDelay(attempt: number): number {
+  const base = 1000 * Math.pow(2, attempt) // 1s, 2s, 4s, 8s...
+  const max = 60000 // макс 60 сек
+  const jitter = base * 0.3 * Math.random() // ±30% рандом
+  return Math.min(base + jitter, max)
+}
+
+export interface StreamCallbacks {
+  onToken: (token: string) => void
+  onDone: (fullText: string) => void
+  onError: (error: Error) => void
+  onRateLimit?: (waitSec: number) => void
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+}
+
 export class AIClient {
   private client: OpenAI
+  private maxRetries = 6
 
   constructor(private store: Store) {
-    this.client = this.buildClient()
+    this.client = this.createClient()
   }
 
-  private buildClient(): OpenAI {
-    const key = (this.store.get('apiKey') as string) || ''
+  private createClient(): OpenAI {
+    const apiKey = (this.store.get('apiKey') as string) || 'sk-placeholder'
     const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
-    return new OpenAI({ apiKey: key, baseURL: endpoint })
+    return new OpenAI({ apiKey, baseURL: endpoint })
   }
 
+  // Обновить клиент при смене настроек
   reload(): void {
-    this.client = this.buildClient()
+    this.client = this.createClient()
   }
 
-  // Стриминг чата
-  async *streamChat(params: {
-    model: string
-    messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>
-    temperature?: number
-    maxTokens?: number
-    onRateLimit?: (seconds: number) => void
-  }): AsyncGenerator<string> {
-    const stream = await withRetry(
-      () => this.client.chat.completions.create({
-        model: params.model,
-        messages: params.messages,
-        temperature: params.temperature ?? 0.7,
-        max_tokens: params.maxTokens ?? 4096,
-        stream: true,
-      }),
-      6,
-      params.onRateLimit
-    )
+  private getModel(type: 'main' | 'fast' | 'vision' | 'summary' | 'router' | 'emotion'): string {
+    const map: Record<string, string> = {
+      main: 'claude-sonnet-4-6',
+      fast: 'claude-haiku-4-5',
+      vision: 'gemini-3.5-flash',
+      summary: 'gpt-5.2',
+      router: 'nano-banana',
+      emotion: 'gpt-5-mini',
+    }
+    const storeKey = `${type}Model`
+    return (this.store.get(storeKey) as string) || map[type]
+  }
 
-    for await (const chunk of stream) {
-      const token = chunk.choices[0]?.delta?.content
-      if (token) yield token
+  // Стриминг чата с retry при rate limit
+  async streamChat(
+    messages: ChatMessage[],
+    callbacks: StreamCallbacks,
+    modelType: 'main' | 'fast' = 'main',
+    systemPrompt?: string
+  ): Promise<void> {
+    const model = this.getModel(modelType)
+    const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
+
+    if (systemPrompt) {
+      allMessages.push({ role: 'system', content: systemPrompt })
+    }
+    allMessages.push(...messages)
+
+    let attempt = 0
+
+    while (attempt <= this.maxRetries) {
+      try {
+        const stream = await this.client.chat.completions.create({
+          model,
+          messages: allMessages,
+          stream: true,
+          temperature: (this.store.get('temperature') as number) || 0.7,
+          max_tokens: (this.store.get('maxTokens') as number) || 4096,
+        })
+
+        let fullText = ''
+        for await (const chunk of stream) {
+          const token = chunk.choices[0]?.delta?.content || ''
+          if (token) {
+            fullText += token
+            callbacks.onToken(token)
+          }
+        }
+        callbacks.onDone(fullText)
+        return
+
+      } catch (err: unknown) {
+        const error = err as { status?: number; message?: string }
+
+        // Rate limit — ждём и повторяем
+        if (error?.status === 429) {
+          const delay = backoffDelay(attempt)
+          const waitSec = Math.round(delay / 1000)
+          callbacks.onRateLimit?.(waitSec)
+          console.warn(`[AIClient] Rate limit, ждём ${waitSec}с (попытка ${attempt + 1}/${this.maxRetries})`)
+          await sleep(delay)
+          attempt++
+          continue
+        }
+
+        // Другая ошибка — не повторяем
+        callbacks.onError(new Error(error?.message || 'Unknown AI error'))
+        return
+      }
+    }
+
+    callbacks.onError(new Error('Превышено число попыток из-за rate limit'))
+  }
+
+  // Одиночный запрос (без стриминга) с retry
+  async complete(
+    messages: ChatMessage[],
+    modelType: 'main' | 'fast' | 'summary' | 'router' | 'emotion' = 'fast',
+    systemPrompt?: string
+  ): Promise<string> {
+    const model = this.getModel(modelType)
+    const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
+
+    if (systemPrompt) {
+      allMessages.push({ role: 'system', content: systemPrompt })
+    }
+    allMessages.push(...messages)
+
+    let attempt = 0
+
+    while (attempt <= this.maxRetries) {
+      try {
+        const res = await this.client.chat.completions.create({
+          model,
+          messages: allMessages,
+          stream: false,
+          temperature: 0.3,
+          max_tokens: 1024,
+        })
+        return res.choices[0]?.message?.content || ''
+
+      } catch (err: unknown) {
+        const error = err as { status?: number }
+        if (error?.status === 429) {
+          const delay = backoffDelay(attempt)
+          console.warn(`[AIClient] Rate limit на complete, ждём ${Math.round(delay / 1000)}с`)
+          await sleep(delay)
+          attempt++
+          continue
+        }
+        throw err
+      }
+    }
+
+    throw new Error('Rate limit: превышено число попыток')
+  }
+
+  // Vision — анализ картинки
+  async analyzeImage(
+    imageBase64: string,
+    prompt: string,
+    callbacks: StreamCallbacks
+  ): Promise<void> {
+    const model = this.getModel('vision')
+    let attempt = 0
+
+    while (attempt <= this.maxRetries) {
+      try {
+        const stream = await this.client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+                { type: 'text', text: prompt },
+              ],
+            },
+          ],
+          stream: true,
+          max_tokens: 2048,
+        })
+
+        let fullText = ''
+        for await (const chunk of stream) {
+          const token = chunk.choices[0]?.delta?.content || ''
+          if (token) {
+            fullText += token
+            callbacks.onToken(token)
+          }
+        }
+        callbacks.onDone(fullText)
+        return
+
+      } catch (err: unknown) {
+        const error = err as { status?: number }
+        if (error?.status === 429) {
+          const delay = backoffDelay(attempt)
+          callbacks.onRateLimit?.(Math.round(delay / 1000))
+          await sleep(delay)
+          attempt++
+          continue
+        }
+        callbacks.onError(err as Error)
+        return
+      }
     }
   }
 
-  // Обычный запрос (не стриминг)
-  async chat(params: {
-    model: string
-    messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>
-    temperature?: number
-    maxTokens?: number
-    onRateLimit?: (seconds: number) => void
-  }): Promise<string> {
-    const res = await withRetry(
-      () => this.client.chat.completions.create({
-        model: params.model,
-        messages: params.messages,
-        temperature: params.temperature ?? 0.7,
-        max_tokens: params.maxTokens ?? 2048,
-        stream: false,
-      }),
-      6,
-      params.onRateLimit
-    )
-    return res.choices[0]?.message?.content ?? ''
-  }
+  // Эмбеддинги для LanceDB
+  async embed(text: string): Promise<number[]> {
+    const model = (this.store.get('embeddingModel') as string) || 'gemini-embedding-2'
+    let attempt = 0
 
-  // Vision — анализ изображения
-  async vision(params: {
-    model: string
-    prompt: string
-    imageBase64: string
-    onRateLimit?: (seconds: number) => void
-  }): Promise<string> {
-    const res = await withRetry(
-      () => this.client.chat.completions.create({
-        model: params.model,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: params.prompt },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${params.imageBase64}` } }
-          ]
-        }],
-        stream: false,
-      }),
-      6,
-      params.onRateLimit
-    )
-    return res.choices[0]?.message?.content ?? ''
-  }
+    while (attempt <= this.maxRetries) {
+      try {
+        const res = await this.client.embeddings.create({ model, input: text })
+        return res.data[0].embedding
 
-  // Эмбеддинги
-  async embed(params: {
-    model: string
-    input: string | string[]
-    onRateLimit?: (seconds: number) => void
-  }): Promise<number[][]> {
-    const res = await withRetry(
-      () => this.client.embeddings.create({
-        model: params.model,
-        input: params.input,
-      }),
-      6,
-      params.onRateLimit
-    )
-    return res.data.map(d => d.embedding)
-  }
-
-  // Быстрое извлечение факта (для памяти)
-  async extractFact(text: string, model: string): Promise<{ key: string; value: string; category: string } | null> {
-    try {
-      const res = await this.chat({
-        model,
-        temperature: 0.1,
-        maxTokens: 150,
-        messages: [{
-          role: 'system',
-          content: 'Ты извлекаешь факты о пользователе из его сообщений. Отвечай ТОЛЬКО JSON: {"key":"...","value":"...","category":"personal|work|preferences|projects"} или null если нет факта.'
-        }, {
-          role: 'user',
-          content: text
-        }]
-      })
-      const clean = res.trim().replace(/```json|```/g, '').trim()
-      if (clean === 'null') return null
-      return JSON.parse(clean)
-    } catch {
-      return null
+      } catch (err: unknown) {
+        const error = err as { status?: number }
+        if (error?.status === 429) {
+          await sleep(backoffDelay(attempt))
+          attempt++
+          continue
+        }
+        throw err
+      }
     }
-  }
-
-  // Генерация заголовка чата
-  async generateChatTitle(firstMessage: string, model: string): Promise<string> {
-    try {
-      const res = await this.chat({
-        model,
-        temperature: 0.3,
-        maxTokens: 20,
-        messages: [{
-          role: 'system',
-          content: 'Придумай короткий заголовок (3-5 слов) для чата по первому сообщению пользователя. Только заголовок, без кавычек.'
-        }, {
-          role: 'user',
-          content: firstMessage
-        }]
-      })
-      return res.trim().slice(0, 60)
-    } catch {
-      return 'Новый чат'
-    }
+    throw new Error('Embed: rate limit')
   }
 }

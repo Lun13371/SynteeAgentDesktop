@@ -1,6 +1,6 @@
 import { Tray, Menu, nativeImage, app } from 'electron'
 import { join } from 'path'
-import type Store from 'electron-store/ts'
+import type Store from 'electron-store'
 
 interface TrayCallbacks {
   showMain: () => void

@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
+import { v4 as uuid } from 'uuid'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
@@ -8,65 +9,145 @@ import TypingIndicator from '../../components/ui/TypingIndicator/TypingIndicator
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import { useChatStore } from '../../store/chat.store'
-import type { Message } from '../../../../shared/types'
-import { v4 as uuid } from 'uuid'
+import { IPC_EVENTS } from '../../../../shared/constants'
+import type { Chat, Message } from '../../../../shared/types'
 import './ChatPage.css'
 
 export default function ChatPage() {
-  const { messages, isTyping, addMessage, setTyping, pinMessage } = useChatStore()
-  const { add: addToast } = useToast()
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const {
+    chats, currentChatId, messages, isTyping, streamingText,
+    setChats, setCurrentChat, setMessages, addMessage,
+    appendStreamToken, clearStream, setTyping, pinMessage,
+    isIncognito, toggleIncognito,
+  } = useChatStore()
 
-  // Автоскролл к последнему сообщению
+  const { add: toast } = useToast()
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const streamMsgIdRef = useRef<string | null>(null)
+  const [rateLimitSec, setRateLimitSec] = useState(0)
+
+  // Загрузка чатов при старте
+  useEffect(() => {
+    window.syntee.chat.getAll().then((all: Chat[]) => {
+      setChats(all)
+      // Открываем первый чат или создаём новый
+      if (all.length > 0) {
+        selectChat(all[0].id)
+      }
+    })
+  }, [])
+
+  // IPC события стриминга
+  useEffect(() => {
+    const offToken = window.syntee.on(IPC_EVENTS.CHAT_STREAM_TOKEN, (data: { chatId: string; msgId: string; token: string }) => {
+      if (data.chatId !== currentChatId) return
+      streamMsgIdRef.current = data.msgId
+      appendStreamToken(data.token)
+    })
+
+    const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
+      if (data.chatId !== currentChatId) return
+      addMessage(data.message)
+      clearStream()
+      streamMsgIdRef.current = null
+      // Обновляем список чатов (новое название)
+      window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
+    })
+
+    const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { error: string }) => {
+      clearStream()
+      toast('Ошибка: ' + data.error, 'error')
+    })
+
+    const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (data: { waitSec: number }) => {
+      setRateLimitSec(data.waitSec)
+      toast(`⏳ Rate limit — ожидание ${data.waitSec}с`, 'info', 4000)
+      setTimeout(() => setRateLimitSec(0), data.waitSec * 1000)
+    })
+
+    return () => { offToken(); offDone(); offError(); offRateLimit() }
+  }, [currentChatId])
+
+  // Автоскролл
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isTyping])
+  }, [messages, streamingText, isTyping])
 
-  const handleSend = (text: string) => {
+  const selectChat = async (id: string) => {
+    setCurrentChat(id)
+    const msgs: Message[] = await window.syntee.chat.getMessages(id)
+    setMessages(msgs)
+  }
+
+  const createNewChat = async () => {
+    const chat: Chat = await window.syntee.chat.create(isIncognito)
+    const all: Chat[] = await window.syntee.chat.getAll()
+    setChats(all)
+    setCurrentChat(chat.id)
+    setMessages([])
+  }
+
+  const handleSend = async (text: string) => {
+    let chatId = currentChatId
+
+    // Если нет активного чата — создаём
+    if (!chatId) {
+      const chat: Chat = await window.syntee.chat.create(isIncognito)
+      chatId = chat.id
+      setCurrentChat(chatId)
+      setMessages([])
+      const all: Chat[] = await window.syntee.chat.getAll()
+      setChats(all)
+    }
+
+    // Показываем сообщение пользователя сразу
     const userMsg: Message = {
-      id: uuid(),
-      chatId: 'demo',
-      role: 'user',
-      content: text,
-      createdAt: Date.now(),
-      isPinned: 0,
+      id: uuid(), chatId,
+      role: 'user', content: text,
+      createdAt: Date.now(), isPinned: 0,
     }
     addMessage(userMsg)
     setTyping(true)
 
-    // Заглушка ответа — будет заменена в стадии 03 реальным AI
-    setTimeout(() => {
-      const reply: Message = {
-        id: uuid(),
-        chatId: 'demo',
-        role: 'assistant',
-        content: `Привет! Я Syntee — твой персональный ИИ-ассистент. Пока я работаю в демо-режиме без подключения к AI. В стадии 03 здесь появится настоящий ответ от **${text.length > 30 ? 'claude-sonnet-4-6' : 'gemini-3-flash'}**.`,
+    // Отправляем в main process
+    await window.syntee.chat.send({ chatId, content: text, incognito: isIncognito })
+  }
+
+  const handlePin = async (id: string) => {
+    await window.syntee.chat.pin(id)
+    pinMessage(id)
+    toast('📌 Сообщение закреплено', 'info')
+  }
+
+  const handleCopy = () => toast('Скопировано', 'success')
+
+  // Собираем отображаемые сообщения (включая стриминг)
+  const displayMessages = streamingText
+    ? [...messages, {
+        id: streamMsgIdRef.current || 'streaming',
+        chatId: currentChatId || '',
+        role: 'assistant' as const,
+        content: streamingText,
         createdAt: Date.now(),
         isPinned: 0,
-        model: 'demo',
-      }
-      addMessage(reply)
-      setTyping(false)
-    }, 1200)
-  }
-
-  const handleCopy = () => {
-    addToast('Скопировано', 'success')
-  }
-
-  const handlePin = (id: string) => {
-    pinMessage(id)
-    addToast('📌 Сообщение закреплено', 'info')
-  }
+      }]
+    : messages
 
   return (
     <div className="chat-layout">
       <AnimatedBackground />
       <TitleBar />
       <div className="chat-body">
-        <Sidebar />
+        <Sidebar
+          chats={chats}
+          currentChatId={currentChatId}
+          onSelectChat={selectChat}
+          onNewChat={createNewChat}
+          isIncognito={isIncognito}
+          onToggleIncognito={toggleIncognito}
+        />
         <main className="chat-main">
-          {messages.length === 0 ? (
+          {displayMessages.length === 0 && !isTyping ? (
             <div className="chat-empty-state">
               <div className="chat-empty-icon">
                 <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
@@ -80,11 +161,16 @@ export default function ChatPage() {
               </div>
               <h2>Привет! Я Syntee.</h2>
               <p>Чем могу помочь сегодня?</p>
+              {isIncognito && (
+                <p style={{ color: 'rgba(150,100,255,0.8)', fontSize: 12, marginTop: -8 }}>
+                  🔒 Режим инкогнито — чат не сохраняется
+                </p>
+              )}
             </div>
           ) : (
             <div className="chat-messages">
               <AnimatePresence initial={false}>
-                {messages.map(msg => (
+                {displayMessages.map(msg => (
                   <MessageBubble
                     key={msg.id}
                     message={msg}
@@ -92,13 +178,23 @@ export default function ChatPage() {
                     onCopy={handleCopy}
                   />
                 ))}
-                {isTyping && <TypingIndicator key="typing" />}
+                {isTyping && !streamingText && <TypingIndicator key="typing" />}
               </AnimatePresence>
               <div ref={bottomRef} />
             </div>
           )}
 
-          <ChatInput onSend={handleSend} disabled={isTyping} />
+          {rateLimitSec > 0 && (
+            <div className="rate-limit-bar">
+              ⏳ Ожидание rate limit: {rateLimitSec}с
+            </div>
+          )}
+
+          <ChatInput
+            onSend={handleSend}
+            disabled={isTyping}
+            isIncognito={isIncognito}
+          />
         </main>
       </div>
       <ToastContainer />

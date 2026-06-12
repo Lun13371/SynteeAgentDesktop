@@ -1,7 +1,7 @@
 import { BrowserWindow, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
-import type Store from 'electron-store/ts'
+import type Store from 'electron-store'
 import { WINDOW_SIZES } from '../../shared/constants'
 
 export class MainWindow {
