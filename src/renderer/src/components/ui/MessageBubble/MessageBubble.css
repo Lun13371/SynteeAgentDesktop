@@ -33,7 +33,7 @@
 
 .message-actions {
   position: absolute;
-  bottom: calc(100% + 4px);
+  top: calc(100% + 4px);
   left: 0;
   display: flex;
   gap: 2px;
