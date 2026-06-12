@@ -62,6 +62,10 @@
   color: var(--text-secondary);
 }
 
+.chat-layout--embedded {
+  height: 100%;
+}
+
 .rate-limit-bar {
   padding: 6px 16px;
   font-size: 12px;

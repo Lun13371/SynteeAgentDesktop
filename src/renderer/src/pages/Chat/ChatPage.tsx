@@ -13,7 +13,7 @@ import { IPC_EVENTS } from '../../../../shared/constants'
 import type { Chat, Message } from '../../../../shared/types'
 import './ChatPage.css'
 
-export default function ChatPage() {
+export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const {
     chats, currentChatId, messages, isTyping, streamingText,
     setChats, setCurrentChat, setMessages, addMessage,
@@ -134,9 +134,9 @@ export default function ChatPage() {
     : messages
 
   return (
-    <div className="chat-layout">
-      <AnimatedBackground />
-      <TitleBar />
+    <div className={`chat-layout ${embedded ? 'chat-layout--embedded' : ''}`}>
+      {!embedded && <AnimatedBackground />}
+      {!embedded && <TitleBar />}
       <div className="chat-body">
         <Sidebar
           chats={chats}
@@ -197,7 +197,9 @@ export default function ChatPage() {
           />
         </main>
       </div>
-      <ToastContainer />
+      {!embedded && (
+        <ToastContainer />
+      )}
     </div>
   )
 }
