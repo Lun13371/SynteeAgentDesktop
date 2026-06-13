@@ -104,12 +104,22 @@ export class AIClient {
         let thinkingDoneSent = false
         let inThinkTag = false
         let thinkBuffer = ''
+        let debugCount = 0
 
         for await (const chunk of stream) {
           if (signal?.aborted) break
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const delta = (chunk.choices?.[0]?.delta ?? {}) as Record<string, any>
+
+          // DEBUG — логируем первые 5 чанков с непустыми полями
+          if (debugCount < 5) {
+            const keys = Object.keys(delta).filter(k => (delta[k] as unknown) != null && delta[k] !== '')
+            if (keys.length > 0) {
+              console.log('[AIClient delta]', JSON.stringify(delta).slice(0, 300))
+              debugCount++
+            }
+          }
 
           // --- Формат 1: delta.reasoning_content (DeepSeek R1, o3-mini, OnlySQ) ---
           if (delta.reasoning_content != null) {

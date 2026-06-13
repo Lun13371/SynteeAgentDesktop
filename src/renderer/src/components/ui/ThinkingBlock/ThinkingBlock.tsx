@@ -9,8 +9,8 @@ interface ThinkingBlockProps {
 }
 
 const THINKING_WORDS = [
-  'Анализирую...', 'Размышляю...', 'Обдумываю...', 'Ищу решение...',
-  'Рассуждаю...', 'Взвешиваю...', 'Изучаю...', 'Формулирую...',
+  'Анализирую', 'Размышляю', 'Обдумываю', 'Ищу решение',
+  'Рассуждаю', 'Взвешиваю', 'Изучаю', 'Формулирую',
 ]
 
 function formatMs(ms: number): string {
@@ -59,54 +59,74 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
   const displayMs = thinkingMs ?? (isLive ? elapsed : undefined)
   if (!displayText && !isLive) return null
 
-  return (
-    <div className={`thinking-block ${open ? 'thinking-block--open' : ''} ${isLive ? 'thinking-block--live' : ''}`}>
-      <button className="thinking-header" onClick={() => setOpen(v => !v)}>
+  const charCount = displayText.length
+  const lineCount = displayText.split('\n').length
 
-        <span className="thinking-icon-wrap">
+  return (
+    <div className={`tb ${open ? 'tb--open' : ''} ${isLive ? 'tb--live' : 'tb--done'}`}>
+
+      {/* Прогресс-линия сверху */}
+      {isLive && <div className="tb-progress"><div className="tb-progress-bar" /></div>}
+
+      {/* Шапка */}
+      <button className="tb-header" onClick={() => setOpen(v => !v)}>
+
+        {/* Иконка */}
+        <span className="tb-icon">
           {isLive ? (
-            <span className="thinking-dots"><span /><span /><span /></span>
+            <span className="tb-dots">
+              <span /><span /><span />
+            </span>
           ) : (
-            /* Sparkles icon */
-            <svg className="thinking-brain-icon" width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5L12 2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
-              <path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round"/>
-              <path d="M5 17l.5 1.5L7 19l-1.5.5L5 21l-.5-1.5L3 19l1.5-.5L5 17z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" strokeLinecap="round"/>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5L12 2z"
+                stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round"/>
+              <path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z"
+                stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round"/>
             </svg>
           )}
         </span>
 
-        <span className="thinking-label">
+        {/* Лейбл */}
+        <span className="tb-label">
           {isLive ? (
-            <span className={`thinking-word ${wordVisible ? 'thinking-word--in' : 'thinking-word--out'}`}>
+            <span className={`tb-word ${wordVisible ? 'tb-word--in' : 'tb-word--out'}`}>
               {THINKING_WORDS[wordIdx]}
             </span>
           ) : (
-            <span className="thinking-word thinking-word--in">
-              Размышление {displayMs !== undefined ? `· ${formatMs(displayMs)}` : ''}
-            </span>
+            <span className="tb-word tb-word--in">Размышление</span>
           )}
         </span>
 
-        {isLive && displayMs !== undefined && (
-          <span className="thinking-time">{formatMs(displayMs)}</span>
-        )}
+        {/* Мета-инфо */}
+        <span className="tb-meta">
+          {displayMs !== undefined && (
+            <span className="tb-time">{formatMs(displayMs)}</span>
+          )}
+          {!isLive && charCount > 0 && (
+            <span className="tb-stats">{lineCount} строк</span>
+          )}
+        </span>
 
-        <span className={`thinking-chevron ${open ? 'thinking-chevron--open' : ''}`}>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        {/* Шеврон */}
+        <span className={`tb-chevron ${open ? 'tb-chevron--open' : ''}`}>
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+            <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.6"
+              strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </span>
       </button>
 
+      {/* Тело */}
       {open && (
-        <div className="thinking-body" ref={bodyRef}>
-          <div className="thinking-text">
+        <div className="tb-body" ref={bodyRef}>
+          <div className="tb-text">
             {displayText.split('\n').map((line, i) => (
-              <p key={i} className={line.trim() === '' ? 'thinking-line--empty' : 'thinking-line'}>
+              <p key={i} className={line.trim() === '' ? 'tb-line--empty' : 'tb-line'}>
                 {line || '\u00A0'}
               </p>
             ))}
+            {isLive && <span className="tb-cursor" />}
           </div>
         </div>
       )}
