@@ -272,14 +272,26 @@ const MessageContent = memo(function MessageContent({
         )}
 
         {/* Финальный рендер итераций из БД */}
-        {!isUser && !liveIters?.length && (message as Message & { iterations?: Array<{ label?: string; textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).iterations?.map((iter, i) => (
-          <div key={i} className="message-iteration">
-            {iter.textBefore && <MessageMarkdown content={iter.textBefore} searchQuery={searchQuery} />}
-            {iter.steps.length > 0 && (
-              <ToolChain steps={iter.steps} mode={toolOutputMode} isRunning={false} label={iter.label} />
-            )}
-          </div>
-        ))}
+        {!isUser && !liveIters?.length && (() => {
+          type Iter = { label?: string; textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }
+          const iters = (message as Message & { iterations?: Iter[] }).iterations
+          if (!iters?.length) return null
+          // Все шаги для финального summary блока
+          const allSteps = iters.flatMap(it => it.steps)
+          return (
+            <>
+              {iters.map((iter, i) => (
+                <div key={i} className="message-iteration">
+                  {iter.textBefore && <MessageMarkdown content={iter.textBefore} searchQuery={searchQuery} />}
+                </div>
+              ))}
+              {/* Финальный свёрнутый тулчейн — как в Codex */}
+              {allSteps.length > 0 && (
+                <ToolChain steps={allSteps} mode={toolOutputMode} isRunning={false} summary />
+              )}
+            </>
+          )
+        })()}
 
         {/* Карточки суб-агентов */}
         {!isUser && toolSteps && !liveIters?.length && toolSteps

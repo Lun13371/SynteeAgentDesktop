@@ -200,16 +200,33 @@ function IterationBlock({
   )
 }
 
-export default function ToolChain({ steps, mode, isRunning, label }: {
+export default function ToolChain({ steps, mode, isRunning, label, elapsed, summary }: {
   steps: ToolStep[]
   mode: ToolOutputMode
   isRunning: boolean
   label?: string
+  elapsed?: number   // ms — время выполнения для финального блока
+  summary?: boolean  // если true — компактный финальный блок
 }) {
   const iters = buildIterations(steps)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)  // свёрнут по дефолту
   const totalDone = iters.filter(i => i.result).length
   const hasFailed = iters.some(i => i.result?.success === false)
+
+  // Считаем elapsed из timestamps если не передан явно
+  const allSteps = steps.filter(s => s.timestamp)
+  const autoElapsed = allSteps.length >= 2
+    ? allSteps[allSteps.length - 1].timestamp - allSteps[0].timestamp
+    : undefined
+  const elapsedMs = elapsed ?? autoElapsed
+
+  const elapsedStr = elapsedMs != null
+    ? elapsedMs >= 60000
+      ? `${Math.floor(elapsedMs / 60000)}м ${Math.round((elapsedMs % 60000) / 1000)}с`
+      : elapsedMs >= 1000
+        ? `${(elapsedMs / 1000).toFixed(1)}с`
+        : `${elapsedMs}мс`
+    : null
 
   if (iters.length === 0 && !isRunning) return null
 
@@ -234,7 +251,7 @@ export default function ToolChain({ steps, mode, isRunning, label }: {
   }
 
   return (
-    <div className="tc2">
+    <div className={`tc2${summary ? ' tc2--summary' : ''}`}>
       <div className="tc2-header">
         <button className="tc2-collapse-btn" onClick={() => setCollapsed(c => !c)}>
           <AppIcon name={collapsed ? 'chevronRight' : 'chevronDown'} size="xs" />
@@ -245,8 +262,14 @@ export default function ToolChain({ steps, mode, isRunning, label }: {
             ? <span className="tc2-header-title tc2-header-title--label">{label}</span>
             : isRunning
               ? <><span className="tc2-spinner" /><span className="tc2-header-title">Агент работает</span></>
-              : <span className="tc2-header-title">{hasFailed ? '⚠ Выполнено с ошибками' : `Выполнено ${totalDone} ${totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}`}</span>
+              : <span className="tc2-header-title">
+                  {hasFailed ? '⚠ ' : ''}
+                  {`${totalDone} ${totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}`}
+                </span>
           }
+          {elapsedStr && !isRunning && (
+            <span className="tc2-elapsed">{elapsedStr}</span>
+          )}
         </div>
 
         <div className="tc2-header-chips">
@@ -284,7 +307,7 @@ export default function ToolChain({ steps, mode, isRunning, label }: {
                 isLast={idx === iters.length - 1}
                 isRunning={!!isRunning}
                 mode={mode}
-                defaultOpen={idx === iters.length - 1}
+                defaultOpen={!!isRunning && idx === iters.length - 1}
               />
             ))}
 
