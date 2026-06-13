@@ -15,28 +15,37 @@ interface SlashMenuProps {
 export default function SlashMenu({ commands, selectedIndex, anchorRef, onSelect, onClose }: SlashMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
 
-  // Позиционируем над textarea
+  // Пересчитываем позицию после каждого рендера
   useEffect(() => {
     const anchor = anchorRef.current
     const menu = menuRef.current
     if (!anchor || !menu) return
 
     const rect = anchor.getBoundingClientRect()
+    // Ставим снизу от anchor сначала чтобы получить высоту
+    menu.style.visibility = 'hidden'
+    menu.style.top = '0px'
     menu.style.left = rect.left + 'px'
-    menu.style.top = (rect.top - menu.offsetHeight - 6) + 'px'
     menu.style.width = rect.width + 'px'
+
+    // После получения высоты — ставим над anchor
+    requestAnimationFrame(() => {
+      const h = menu.offsetHeight
+      menu.style.top = (rect.top - h - 6) + 'px'
+      menu.style.visibility = 'visible'
+    })
   })
 
-  // Скроллим к выбранному элементу
+  // Скроллим к выбранному
   useEffect(() => {
-    const item = menuRef.current?.children[selectedIndex] as HTMLElement
+    const item = menuRef.current?.querySelectorAll('.slash-menu-item')[selectedIndex] as HTMLElement
     item?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
   if (commands.length === 0) return null
 
   return createPortal(
-    <div className="slash-menu glass" ref={menuRef}>
+    <div className="slash-menu" ref={menuRef}>
       {commands.map((cmd, i) => (
         <button
           key={cmd.name}
