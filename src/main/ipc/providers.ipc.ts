@@ -10,6 +10,25 @@ const DEFAULT_PARAMS: ModelParams = {
   streaming: true,
 }
 
+/**
+ * Round-robin: возвращает следующий ключ провайдера и обновляет индекс в store.
+ * Если apiKeys пустой или не задан — возвращает apiKey (основной).
+ */
+export function getNextApiKey(store: Store, providerId: string): string {
+  const list = store.get('providers', []) as Provider[]
+  const idx = list.findIndex(p => p.id === providerId)
+  if (idx < 0) return ''
+  const p = list[idx]
+  const keys = (p.apiKeys || []).filter(k => k.trim())
+  if (keys.length === 0) return p.apiKey || ''
+  if (keys.length === 1) return keys[0]
+  const current = (p.rrIndex ?? 0) % keys.length
+  const key = keys[current]
+  list[idx] = { ...p, rrIndex: (current + 1) % keys.length }
+  store.set('providers', list)
+  return key
+}
+
 const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
   { role: 'main',      modelId: 'claude-sonnet-4-6', providerId: 'anthropic' },
   { role: 'fast',      modelId: 'claude-haiku-4-5',  providerId: 'anthropic' },
@@ -22,6 +41,10 @@ const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
 ]
 
 export function registerProviderIPC(store: Store): void {
+
+  // ── Round-robin helper (экспортируем для AIClient) ─────────────────────────
+  // Возвращает следующий ключ для провайдера и сохраняет индекс в store
+  // Вызывается из AIClient перед каждым запросом
 
   // ── Providers ─────────────────────────────────────────────────────────────
 

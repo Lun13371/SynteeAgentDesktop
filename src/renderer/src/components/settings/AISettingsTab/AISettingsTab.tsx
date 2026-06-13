@@ -26,6 +26,7 @@ export default function AISettingsTab() {
   const [params, setParams] = useState<ModelParams>({ temperature: 0.7, maxTokens: 4096, systemPrompt: '', streaming: true })
   const [configuring, setConfiguring] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<Partial<Provider>>({})
+  const [editKeys, setEditKeys] = useState<string[]>(['']) // редактируемые ключи
   const [testStatus, setTestStatus] = useState<Record<string, 'idle' | 'loading' | 'ok' | 'error'>>({})
   const [fetchStatus, setFetchStatus] = useState<Record<string, 'idle' | 'loading' | 'done'>>({})
   const [showAddCustom, setShowAddCustom] = useState(false)
@@ -64,13 +65,25 @@ export default function AISettingsTab() {
       enabled: true,
       isCustom: false,
     })
+    // Инициализируем список ключей: apiKeys если есть, иначе apiKey как первый
+    const keys = existing?.apiKeys?.length
+      ? existing.apiKeys
+      : existing?.apiKey ? [existing.apiKey] : ['']
+    setEditKeys(keys)
     setConfiguring(id)
     setTestStatus(s => ({ ...s, [id]: 'idle' }))
   }
 
   const saveProvider = async () => {
     if (!editForm.id) return
-    await window.syntee.providers.save({ ...editForm, enabled: true } as Provider)
+    const validKeys = editKeys.filter(k => k.trim())
+    await window.syntee.providers.save({
+      ...editForm,
+      apiKey: validKeys[0] || '',   // первый ключ — обратная совместимость
+      apiKeys: validKeys,
+      rrIndex: 0,                   // сбрасываем round-robin при сохранении
+      enabled: true,
+    } as Provider)
     await load()
     setConfiguring(null)
   }
@@ -182,14 +195,38 @@ export default function AISettingsTab() {
                         exit={{ height: 0, opacity: 0 }}
                         transition={{ duration: 0.2 }}
                       >
-                        <label className="provider-form-label">API Key</label>
-                        <input
-                          className="provider-form-input"
-                          type="password"
-                          placeholder="sk-..."
-                          value={editForm.apiKey || ''}
-                          onChange={e => setEditForm(f => ({ ...f, apiKey: e.target.value }))}
-                        />
+                        <label className="provider-form-label">
+                          API Keys
+                          {editKeys.length > 1 && (
+                            <span className="provider-form-rr-badge">round-robin · {editKeys.filter(k=>k.trim()).length} ключей</span>
+                          )}
+                        </label>
+                        <div className="provider-keys-list">
+                          {editKeys.map((key, ki) => (
+                            <div key={ki} className="provider-key-row">
+                              <input
+                                className="provider-form-input provider-key-input"
+                                type="password"
+                                placeholder={ki === 0 ? 'sk-... (основной)' : `sk-... (ключ ${ki + 1})`}
+                                value={key}
+                                onChange={e => setEditKeys(ks => ks.map((k, i) => i === ki ? e.target.value : k))}
+                              />
+                              {editKeys.length > 1 && (
+                                <button
+                                  className="provider-key-remove"
+                                  onClick={() => setEditKeys(ks => ks.filter((_, i) => i !== ki))}
+                                  title="Удалить ключ"
+                                >×</button>
+                              )}
+                            </div>
+                          ))}
+                          <button
+                            className="provider-key-add"
+                            onClick={() => setEditKeys(ks => [...ks, ''])}
+                          >
+                            + Добавить ключ
+                          </button>
+                        </div>
                         {id === 'ollama' && (
                           <>
                             <label className="provider-form-label">Base URL</label>

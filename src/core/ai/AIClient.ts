@@ -1,6 +1,8 @@
 import OpenAI from 'openai'
 import type Store from 'electron-store'
 import { buildReasoningParams } from '../../shared/reasoningModels'
+import { getNextApiKey } from '../../shared/roundRobin'
+import type { Provider } from '../../shared/types'
 
 // Извлекает строку из любого формата reasoning токена
 // Провайдеры могут слать: string, {text: "..."}, {thinking: "..."}, {content: "..."}
@@ -86,10 +88,18 @@ export class AIClient {
     const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
     const assignment = assignments?.find(a => a.role === type)
     if (!assignment?.providerId) return this.client
-    const providers = this.store.get('providers') as Array<{ id: string; baseUrl: string; apiKey: string; enabled: boolean }> | undefined
+    const providers = this.store.get('providers') as Provider[] | undefined
     const provider = providers?.find(p => p.id === assignment.providerId && p.enabled)
-    if (!provider?.baseUrl || !provider?.apiKey) return this.client
-    return new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseUrl })
+    if (!provider?.baseUrl) return this.client
+
+    // Round-robin: выбираем следующий ключ из списка
+    const { key, updatedProviders } = getNextApiKey(providers || [], assignment.providerId)
+    if (!key) return this.client
+
+    // Сохраняем обновлённый индекс в store
+    this.store.set('providers', updatedProviders)
+
+    return new OpenAI({ apiKey: key, baseURL: provider.baseUrl })
   }
 
   async streamChat(

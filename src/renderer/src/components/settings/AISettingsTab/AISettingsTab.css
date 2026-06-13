@@ -68,6 +68,67 @@
 
 .provider-form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* ── Множественные ключи ─────────────────────────────────────── */
+.provider-form-rr-badge {
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(139, 92, 246, 0.15);
+  color: rgba(167, 139, 250, 0.9);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  vertical-align: middle;
+}
+.provider-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.provider-key-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.provider-key-input {
+  flex: 1;
+}
+.provider-key-remove {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 80, 80, 0.25);
+  background: rgba(255, 80, 80, 0.08);
+  color: rgba(255, 100, 100, 0.7);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.provider-key-remove:hover {
+  background: rgba(255, 80, 80, 0.18);
+  color: rgba(255, 120, 120, 1);
+}
+.provider-key-add {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.provider-key-add:hover {
+  border-color: rgba(139, 92, 246, 0.4);
+  color: rgba(167, 139, 250, 0.8);
+  background: rgba(139, 92, 246, 0.06);
+}
+
 .provider-card-footer { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .provider-btn {
