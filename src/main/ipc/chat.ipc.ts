@@ -306,7 +306,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       agentSettings,
     })
 
-    return userMsg
+    return { userMsg, assistantMsgId }
   })
 
   // ── Мгновенная остановка — terminate() убивает поток и все соединения ──────
