@@ -202,11 +202,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const offStep = window.syntee.on('agent:step', (step: {
       type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string; msgId?: string
     }) => {
-      // Игнорируем шаги суб-агентов — у них msgId = agentId, не совпадает со streamMsgIdRef
-      if (step.msgId && streamMsgIdRef.current && step.msgId !== streamMsgIdRef.current) return
+      // После CHAT_STREAM_DONE streamMsgIdRef = null — игнорируем запоздавшие шаги
+      // Также игнорируем шаги суб-агентов (их msgId != streamMsgIdRef)
+      if (!streamMsgIdRef.current) return
+      if (step.msgId && step.msgId !== streamMsgIdRef.current) return
       if (step.type === 'tool_call' || step.type === 'tool_result') {
-        // Устанавливаем streamMsgIdRef если ещё не установлен (шаги могут прийти до первого токена)
-        if (step.msgId && !streamMsgIdRef.current) streamMsgIdRef.current = step.msgId
         setIsAgentRunning(true)
         setLiveSteps(prev => [...prev, {
           id: uuid(),
@@ -323,13 +323,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setTyping(true)
     setReplyTo([])
 
-    await window.syntee.chat.send({
+    const result = await window.syntee.chat.send({
       chatId,
       content: aiContent,
       displayContent: displayContent !== aiContent ? displayContent : undefined,
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
-      incognito: isIncognito,
     })
+    // Устанавливаем streamMsgIdRef сразу — до первого токена/шага
+    if (result?.assistantMsgId) {
+      streamMsgIdRef.current = result.assistantMsgId
+    }
   }
 
   const handlePin = async (id: string) => {
