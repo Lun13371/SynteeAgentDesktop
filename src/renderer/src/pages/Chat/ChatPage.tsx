@@ -40,10 +40,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Агентские итерации: [{textBefore, steps[]}]
   // textBefore — текст который AI написал ДО вызова тулов в этой итерации
   // steps — все tool_call+tool_result этой итерации
-  const [liveIters, setLiveIters] = useState<Array<{
-    textBefore: string
-    steps: import('../../components/ui/ToolChain/ToolChain').ToolStep[]
-  }>>([])
+  type LiveIter = { textBefore: string; steps: import('../../components/ui/ToolChain/ToolChain').ToolStep[] }
+  const [liveIters, setLiveIters] = useState<LiveIter[]>([])
+  // Ref для синхронного доступа — setState батчится, ref обновляется сразу
+  const liveItersRef = useRef<LiveIter[]>([])
   // текст ПОСЛЕ последних тулов (финальный ответ после выполнения)
   const [liveTextAfter, setLiveTextAfter] = useState('')
   const liveTextAfterRef = useRef('')
@@ -208,7 +208,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setTyping(false)
       setIsAgentRunning(false)
       setLiveSteps([])
+      liveItersRef.current = []
       setLiveIters([])
+      liveTextAfterRef.current = ''
       setLiveTextAfter('')
       setLiveThinking(null)
       if (data.chatId === currentChatIdRef.current) {
@@ -224,7 +226,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveThinking(null)
       setIsAgentRunning(false)
       setLiveSteps([])
+      liveItersRef.current = []
       setLiveIters([])
+      liveTextAfterRef.current = ''
       setLiveTextAfter('')
       if (data.error !== 'stopped') toast('Ошибка: ' + data.error, 'error')
     })
@@ -260,18 +264,20 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           timestamp: Date.now(), imageUrl: step.imageUrl,
         }
         setLiveSteps(prev => [...prev, newStep])
-        setLiveIters(prev => {
-          const iters = [...prev]
-          const last = iters[iters.length - 1]
-          // Если последняя итерация уже имеет tool_result — начинаем новую
-          // Иначе — добавляем в текущую (параллельные tool_calls одного round)
-          if (!last || last.steps.some(s => s.type === 'tool_result')) {
-            return [...iters, { textBefore: liveTextAfterRef.current, steps: [newStep] }]
-          } else {
-            iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
-            return iters
-          }
-        })
+        // Используем ref для синхронного чтения — prev в setState батчится и устаревает
+        const iters = [...liveItersRef.current]
+        const last = iters[iters.length - 1]
+        let newIters: typeof iters
+        if (!last || last.steps.some(s => s.type === 'tool_result')) {
+          // Новая итерация — текст до тулов берём из ref
+          newIters = [...iters, { textBefore: liveTextAfterRef.current, steps: [newStep] }]
+        } else {
+          // Та же итерация — добавляем параллельный tool_call
+          iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
+          newIters = iters
+        }
+        liveItersRef.current = newIters
+        setLiveIters(newIters)
         // Сбрасываем liveTextAfter — он теперь в итерации как textBefore
         liveTextAfterRef.current = ''
         setLiveTextAfter('')
@@ -284,12 +290,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           timestamp: Date.now(), imageUrl: step.imageUrl,
         }
         setLiveSteps(prev => [...prev, newStep])
-        setLiveIters(prev => {
-          if (prev.length === 0) return prev
-          const iters = [...prev]
-          iters[iters.length - 1] = { ...iters[iters.length - 1], steps: [...iters[iters.length - 1].steps, newStep] }
-          return iters
-        })
+        if (liveItersRef.current.length === 0) return
+        const iters = [...liveItersRef.current]
+        iters[iters.length - 1] = { ...iters[iters.length - 1], steps: [...iters[iters.length - 1].steps, newStep] }
+        liveItersRef.current = iters
+        setLiveIters(iters)
       }
     })
 
