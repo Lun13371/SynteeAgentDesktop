@@ -28,6 +28,8 @@ let currentWorker: Worker | null = null
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
 
+  let currentChatIdForStop: string | null = null  // запоминаем chatId текущего запроса для stop
+
   // Системный промпт
   const getSystemPrompt = (): string => {
     const userName = store.get('userName') as string || ''
@@ -55,6 +57,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     incognito?: boolean
   }) => {
     const win = mainWindow.getWindow()
+    currentChatIdForStop = params.chatId   // запоминаем для stop
     const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
 
     // Сохраняем сообщение пользователя
@@ -223,6 +226,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       currentWorker.terminate()
       currentWorker = null
     }
+    // Сообщаем renderer что стриминг завершён — иначе isTyping остаётся true
+    const win = mainWindow.getWindow()
+    if (win && currentChatIdForStop) {
+      win.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
+        chatId: currentChatIdForStop,
+        error: 'stopped',
+      })
+    }
+    currentChatIdForStop = null
   })
 
   ipcMain.handle('chat:reloadClient', () => { /* no-op, worker создаётся свежий на каждый запрос */ })
