@@ -282,7 +282,11 @@ const MessageContent = memo(function MessageContent({
             <>
               {iters.map((iter, i) => (
                 <div key={i} className="message-iteration">
-                  {iter.textBefore && <MessageMarkdown content={iter.textBefore} searchQuery={searchQuery} />}
+                  {iter.textBefore && (
+                    <div className="message-content selectable">
+                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{iter.textBefore}</ReactMarkdown>
+                    </div>
+                  )}
                 </div>
               ))}
               {/* Финальный свёрнутый тулчейн — как в Codex */}
