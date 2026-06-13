@@ -140,3 +140,20 @@
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
 }
+
+/* ── Сгенерированное изображение в тул-степе ─────────────────── */
+.tc-image-wrap {
+  margin-top: 6px;
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 480px;
+}
+.tc-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.tc-image:hover { opacity: 0.88; }

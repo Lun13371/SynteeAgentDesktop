@@ -67,6 +67,7 @@ export interface ToolStep {
   content: string
   success?: boolean
   timestamp: number
+  imageUrl?: string  // путь к сгенерированному изображению
 }
 
 export interface DisplayInfo {

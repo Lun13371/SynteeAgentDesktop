@@ -1,9 +1,9 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs'
-import { clipboard } from 'electron'
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
-import { app } from 'electron'
+import { clipboard, app } from 'electron'
 import OpenAI from 'openai'
 import type Store from 'electron-store'
 import type { Provider } from '../../shared/types'
@@ -192,9 +192,14 @@ export async function generateImage(
       }
 
       const b64 = data.files[0]
+      // Сохраняем в temp файл — не кидаем base64 в контекст AI
+      const imgDir = join(app.getPath('userData'), 'generated-images')
+      if (!existsSync(imgDir)) mkdirSync(imgDir, { recursive: true })
+      const imgPath = join(imgDir, `img_${Date.now()}.png`)
+      writeFileSync(imgPath, Buffer.from(b64, 'base64'))
       return {
         success: true,
-        output: `data:image/png;base64,${b64}`,
+        output: `[IMAGE:${imgPath}]`,
         error: undefined,
       }
     } catch (e: unknown) {

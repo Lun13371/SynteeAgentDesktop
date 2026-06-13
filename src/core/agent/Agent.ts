@@ -13,6 +13,7 @@ export interface AgentStep {
   toolArgs?: Record<string, unknown>
   content: string
   success?: boolean
+  imageUrl?: string
 }
 
 export interface AgentCallbacks {
@@ -163,20 +164,26 @@ export class Agent {
 
           const result = await this.executeTool(fn.name, args, tavilyKey)
 
+          // Если tool вернул [IMAGE:path] — вытаскиваем путь, не кидаем в контекст AI
+          const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
+          const imageUrl = imageMatch ? imageMatch[1] : undefined
+          const contentForAI = imageUrl
+            ? 'Изображение успешно сгенерировано и показано пользователю.'
+            : (result.success ? result.output : `Ошибка: ${result.error}`)
+
           callbacks.onStep({
             type: 'tool_result',
             toolName: fn.name,
-            content: result.output || result.error || '',
+            content: imageUrl ? 'Изображение сгенерировано' : (result.output || result.error || ''),
             success: result.success,
+            imageUrl,
           })
 
           messages.push({
             role: 'tool',
             tool_call_id: (call as { id: string }).id,
             name: fn.name,
-            content: result.success
-              ? result.output
-              : `Ошибка: ${result.error}`,
+            content: contentForAI,
           })
         }
       } catch (err) {
