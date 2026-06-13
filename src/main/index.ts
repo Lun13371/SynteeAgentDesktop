@@ -89,7 +89,7 @@ app.whenReady().then(async () => {
   // Показываем главное окно
   main.once('ready-to-show', () => {
     main.show()
-    if (process.env.NODE_ENV === 'development') {
+    if (process.env.NODE_ENV === 'development' || process.env.ELECTRON_ENABLE_DEVTOOLS === '1') {
       main.webContents.openDevTools({ mode: 'detach' })
     }
   })

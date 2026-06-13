@@ -8,4 +8,5 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo Starting Syntee Helper...
-start "" node_modules\electron\dist\electron.exe out\main\index.js
+set ELECTRON_ENABLE_DEVTOOLS=1
+node_modules\electron\dist\electron.exe out\main\index.js
