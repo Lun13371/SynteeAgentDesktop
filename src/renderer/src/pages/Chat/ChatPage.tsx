@@ -556,6 +556,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                         searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
                         liveThinking={isLive ? liveThinking ?? undefined : undefined}
                         isStreaming={isLive && isTyping}
+                        rateLimitSec={isLive ? rateLimitSec : undefined}
                       />
                     </div>
                   )

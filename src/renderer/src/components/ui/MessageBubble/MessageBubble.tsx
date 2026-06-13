@@ -26,6 +26,7 @@ interface MessageBubbleProps {
   searchQuery?: string
   liveThinking?: { text: string; isLive: boolean; ms?: number }
   isStreaming?: boolean
+  rateLimitSec?: number
 }
 
 const codeStyle = {
@@ -150,6 +151,13 @@ function AgentCardLive({ agentId, task, parallel }: {
       }}
     />
   )
+}
+
+// Shimmer-индикатор ожидания AI (думает / rate limit)
+function WaitingIndicator({ rateLimitSec }: { rateLimitSec?: number }) {
+  const isRateLimit = rateLimitSec && rateLimitSec > 0
+  const text = isRateLimit ? `Rate limit — жду ${rateLimitSec}с...` : 'Думаю...'
+  return <span className={`msg-waiting-shimmer${isRateLimit ? ' msg-waiting-shimmer--rl' : ''}`}>{text}</span>
 }
 
 // Мемоизированный тяжёлый контент сообщения
@@ -359,7 +367,7 @@ const MessageContent = memo(function MessageContent({
 
         {/* Пустой пузырь во время ожидания первого токена */}
         {!isUser && isStreaming && !content && !liveThinking && !message.thinking && (
-          <span className="msg-waiting-dots"><span/><span/><span/></span>
+          <WaitingIndicator rateLimitSec={rateLimitSec} />
         )}
 
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
@@ -394,7 +402,7 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
                   {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && (
-                    <span className="msg-waiting-dots"><span/><span/><span/></span>
+                    <WaitingIndicator rateLimitSec={rateLimitSec} />
                   )}
                 </div>
               )
@@ -462,7 +470,7 @@ const MessageContent = memo(function MessageContent({
 
 // Внешний пузырь — только layout + spring анимация при mount
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming,
+  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, rateLimitSec,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
