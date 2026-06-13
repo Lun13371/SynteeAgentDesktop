@@ -92,9 +92,11 @@ flowchart TD
 export class Agent {
   private store: Store
   private client: AIClient
+  private role: 'main' | 'subagent'
 
-  constructor(store: Store) {
+  constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
+    this.role = role
     this.client = new AIClient(store)
   }
 
@@ -113,7 +115,7 @@ export class Agent {
         return
       }
       try {
-        const response = await this.client.chatWithTools(messages, TOOL_SCHEMAS, signal)
+        const response = await this.client.chatWithTools(messages, TOOL_SCHEMAS, signal, this.role)
 
         // Abort во время запроса
         if (signal?.aborted) {

@@ -67,7 +67,8 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
   try {
     if (enableTools && !incognito) {
       // Агентский режим
-      const agent = new Agent(fakeStore)
+      const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
+      const agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
       // История как текст для контекста
       const historyContext = history.slice(-10)

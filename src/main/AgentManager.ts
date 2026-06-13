@@ -146,7 +146,7 @@ class AgentManager {
 
       let worker: Worker
       try {
-        worker = new Worker(workerPath, { workerData: { storeData } })
+        worker = new Worker(workerPath, { workerData: { storeData, isSubAgent: true } })
       } catch (e: any) {
         record.status = 'error'
         record.error = e.message
@@ -166,7 +166,7 @@ class AgentManager {
         toolOutputMode: 'normal', enableThinking: false,
       }
       worker.postMessage({
-        chatId: record.chatId,
+        chatId: `subagent:${record.id}`,  // изолируем от основного chatId
         msgId: record.id,
         content: record.task,
         history: [],

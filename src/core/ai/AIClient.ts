@@ -72,11 +72,12 @@ export class AIClient {
     this.client = this.createClient()
   }
 
-  private getModel(type: 'main' | 'fast' | 'vision' | 'summary' | 'router' | 'emotion'): string {
+  private getModel(type: 'main' | 'fast' | 'vision' | 'summary' | 'router' | 'emotion' | 'subagent'): string {
     const defaults: Record<string, string> = {
       main: 'claude-sonnet-4-6', fast: 'claude-haiku-4-5',
       vision: 'gpt-4o', summary: 'claude-haiku-4-5',
       router: 'claude-haiku-4-5', emotion: 'claude-haiku-4-5',
+      subagent: '',
     }
     const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
     const found = assignments?.find(a => a.role === type)
@@ -306,10 +307,14 @@ export class AIClient {
   async chatWithTools(
     messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: unknown[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    role: 'main' | 'subagent' = 'main'
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string }> {
-    const model = this.getModel('main')
-    const client = this.getClientForRole('main')
+    const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
+    const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
+    const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
+    const model = this.getModel(resolvedRole) || this.getModel('main')
+    const client = this.getClientForRole(resolvedRole)
 
     let attempt = 0
     while (attempt < 6) {
