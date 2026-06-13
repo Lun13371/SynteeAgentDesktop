@@ -243,6 +243,15 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (step.msgId && step.msgId !== streamMsgIdRef.current) return
 
       if (step.type === 'tool_call') {
+        // Сначала флашим буфер токенов синхронно — иначе liveTextAfterRef устаревший
+        if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+        if (tokenBufRef.current) {
+          const chunk = tokenBufRef.current
+          tokenBufRef.current = ''
+          liveTextAfterRef.current = liveTextAfterRef.current + chunk
+          setLiveTextAfter(prev => prev + chunk)
+          appendStreamToken(chunk)
+        }
         setIsAgentRunning(true)
         const newStep = {
           id: uuid(), type: 'tool_call' as const,
@@ -255,9 +264,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           const iters = [...prev]
           const last = iters[iters.length - 1]
           // Если последняя итерация уже имеет tool_result — начинаем новую
-          // Иначе — добавляем в текущую (параллельные/множественные tool_calls одного round)
+          // Иначе — добавляем в текущую (параллельные tool_calls одного round)
           if (!last || last.steps.some(s => s.type === 'tool_result')) {
-            // Перемещаем liveTextAfter как textBefore новой итерации
             return [...iters, { textBefore: liveTextAfterRef.current, steps: [newStep] }]
           } else {
             iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
@@ -265,6 +273,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           }
         })
         // Сбрасываем liveTextAfter — он теперь в итерации как textBefore
+        liveTextAfterRef.current = ''
         setLiveTextAfter('')
       } else if (step.type === 'tool_result') {
         setIsAgentRunning(true)
@@ -505,7 +514,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             <div
               className="chat-messages"
               ref={scrollContainerRef}
-              style={{ overflowY: 'auto', height: '100%' }}
             >
               <div
                 style={{
