@@ -25,7 +25,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     name: 'clear',
     label: '/clear',
     description: 'Очистить чат',
-    icon: 'trash2',
+    icon: 'trash',
   },
   {
     name: 'recap',
