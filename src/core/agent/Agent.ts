@@ -124,18 +124,14 @@ export class Agent {
         )
 
         // Abort во время запроса
-        if (signal?.aborted) {
-          callbacks.onDone('')
-          return
-        }
+        if (signal?.aborted) { callbacks.onDone(''); return }
 
         // Если нет tool_calls — финальный ответ
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
 
-          // Ждём параллельных суб-агентов перед финальным ответом
+          // Ждём параллельных суб-агентов
           if (pendingParallelAgents.size > 0 && callbacks.onWaitAgents) {
-            // НЕ шлём thought — это создаёт лишний пузырь в UI
             const results = await callbacks.onWaitAgents(Array.from(pendingParallelAgents))
             pendingParallelAgents.clear()
             const summaries = results.map((r, i) => `Суб-агент ${i + 1}: ${r.summary || r.error || 'нет результата'}`).join('\n')
@@ -143,27 +139,30 @@ export class Agent {
             continue
           }
 
-          // Reasoning от агентского запроса — шлём перед текстом
+          // Reasoning
           if (response.reasoning) {
             callbacks.onStep({ type: 'thought', content: response.reasoning })
           }
 
-          // Эмулируем стриминг по словам чтобы UI не мигал
-          const words = answer.split(/(?<=\s)|(?=\s)/)
-          for (const chunk of words) {
-            if (signal?.aborted) {
-              callbacks.onDone(answer)
-              return
+          // Если токены уже отстримились через onToken — не дублируем
+          // hadStreamedTokens=true значит onToken уже всё отдал
+          if (!(response as typeof response & { hadStreamedTokens?: boolean }).hadStreamedTokens) {
+            const words = answer.split(/(?<=\s)|(?=\s)/)
+            for (const chunk of words) {
+              if (signal?.aborted) { callbacks.onDone(answer); return }
+              callbacks.onStep({ type: 'answer', content: chunk })
             }
-            callbacks.onStep({ type: 'answer', content: chunk })
           }
+
           callbacks.onDone(answer)
           return
         }
 
-        // Обрабатываем tool calls
+        // Есть tool_calls — сохраняем в messages
+        // content НЕ стримился (hasToolCalls=true в AIClient), так и должно быть
         messages.push({ role: 'assistant', content: response.content || '', tool_calls: response.tool_calls })
 
+        // Все tool_calls этой итерации — выполняем последовательно
         for (const call of response.tool_calls) {
           const fn = (call as { function: { name: string; arguments: string } }).function
           let args: Record<string, unknown> = {}
