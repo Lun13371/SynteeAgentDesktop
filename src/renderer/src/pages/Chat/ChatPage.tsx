@@ -214,11 +214,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Также игнорируем шаги суб-агентов (их msgId != streamMsgIdRef)
       if (!streamMsgIdRef.current) return
       if (step.msgId && step.msgId !== streamMsgIdRef.current) return
-      if (step.type === 'tool_call' || step.type === 'tool_result') {
+      if (step.type === 'tool_call') {
         setIsAgentRunning(true)
         const newStep = {
           id: uuid(),
-          type: step.type as 'tool_call' | 'tool_result',
+          type: 'tool_call' as const,
           toolName: step.toolName,
           toolArgs: step.toolArgs,
           content: step.content,
@@ -226,20 +226,41 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           timestamp: Date.now(),
           imageUrl: step.imageUrl,
         }
-        // Глобальный список шагов для финального сохранения
         setLiveSteps(prev => [...prev, newStep])
-        // Сегментная логика:
-        // tool_call — создаём новый сегмент с этим шагом (текущий текст уже в предыдущем сегменте)
-        // tool_result — добавляем в последний сегмент
-        if (step.type === 'tool_call') {
-          setLiveSegments(prev => [...prev, { text: '', steps: [newStep] }])
-        } else {
-          setLiveSegments(prev => {
-            const segs = [...prev]
-            segs[segs.length - 1] = { ...segs[segs.length - 1], steps: [...segs[segs.length - 1].steps, newStep] }
+        // Новый сегмент создаём только если последний сегмент уже имеет результаты
+        // (т.е. новая итерация) или если последний сегмент вообще не имеет шагов (текстовый)
+        setLiveSegments(prev => {
+          const segs = [...prev]
+          const last = segs[segs.length - 1]
+          const lastHasResult = last.steps.some(s => s.type === 'tool_result')
+          const lastHasText = !!last.text
+          if (lastHasResult || (lastHasText && last.steps.length === 0)) {
+            // Начинаем новый сегмент
+            return [...segs, { text: '', steps: [newStep] }]
+          } else {
+            // Добавляем tool_call в текущий сегмент (параллельные вызовы одной итерации)
+            segs[segs.length - 1] = { ...last, steps: [...last.steps, newStep] }
             return segs
-          })
+          }
+        })
+      } else if (step.type === 'tool_result') {
+        setIsAgentRunning(true)
+        const newStep = {
+          id: uuid(),
+          type: 'tool_result' as const,
+          toolName: step.toolName,
+          toolArgs: step.toolArgs,
+          content: step.content,
+          success: step.success,
+          timestamp: Date.now(),
+          imageUrl: step.imageUrl,
         }
+        setLiveSteps(prev => [...prev, newStep])
+        setLiveSegments(prev => {
+          const segs = [...prev]
+          segs[segs.length - 1] = { ...segs[segs.length - 1], steps: [...segs[segs.length - 1].steps, newStep] }
+          return segs
+        })
       }
     })
 

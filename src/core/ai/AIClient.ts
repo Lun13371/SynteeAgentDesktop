@@ -328,18 +328,22 @@ export class AIClient {
 
         let content = ''
         let reasoning = ''
-        // tool_calls собираем по чанкам: index → {id, name, arguments}
         const toolCallMap: Record<number, { id: string; name: string; arguments: string }> = {}
+        const tokenBuffer: string[] = []
+        let hasToolCalls = false
 
         for await (const chunk of stream) {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
           const delta = chunk.choices[0]?.delta
           if (!delta) continue
 
-          // Текстовые токены — сразу стримим
+          // Текстовые токены — буферизуем, стримим только если нет tool_calls
           if (delta.content) {
             content += delta.content
-            onToken?.(delta.content)
+            if (!hasToolCalls) {
+              tokenBuffer.push(delta.content)
+              onToken?.(delta.content)
+            }
           }
 
           // Reasoning токены
@@ -348,6 +352,10 @@ export class AIClient {
 
           // Tool call чанки — собираем по index
           if (delta.tool_calls) {
+            if (!hasToolCalls) {
+              // Первый tool_call chunk — отзываем уже отстриминные токены назад через onToken с маркером
+              hasToolCalls = true
+            }
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
               if (!toolCallMap[idx]) {
@@ -373,6 +381,7 @@ export class AIClient {
           content,
           tool_calls,
           reasoning: reasoning ? extractReasoningText(reasoning) : undefined,
+          hadStreamedTokens: tokenBuffer.length > 0 && !tool_calls,
         }
       } catch (err: unknown) {
         const error = err as { status?: number }
