@@ -79,16 +79,20 @@ function formatArg(v: unknown): string {
 
 // Цветной diff блок
 function DiffBlock({ diff }: { diff: string }) {
-  const lines = diff.split('\n')
+  const lines = diff.split('\n').filter((_, i, arr) => {
+    // Убираем пустую последнюю строку
+    return !(i === arr.length - 1 && arr[i] === '')
+  })
   return (
     <div className="tc2-diff-pre">
       {lines.map((line, i) => {
         let cls = 'tc2-diff-line'
-        if (line.startsWith('+') && !line.startsWith('+++')) cls += ' tc2-diff-add'
-        else if (line.startsWith('-') && !line.startsWith('---')) cls += ' tc2-diff-del'
+        if (line.startsWith('+++') || line.startsWith('---')) cls += ' tc2-diff-meta'
+        else if (line.startsWith('+')) cls += ' tc2-diff-add'
+        else if (line.startsWith('-')) cls += ' tc2-diff-del'
         else if (line.startsWith('@@')) cls += ' tc2-diff-hunk'
-        else if (line.startsWith('---') || line.startsWith('+++')) cls += ' tc2-diff-meta'
-        return <div key={i} className={cls}>{line || ' '}</div>
+        else cls += ' tc2-diff-ctx'
+        return <div key={i} className={cls}>{line || '\u00a0'}</div>
       })}
     </div>
   )

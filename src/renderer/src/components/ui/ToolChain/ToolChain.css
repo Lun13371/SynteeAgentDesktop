@@ -306,10 +306,11 @@
   color: var(--text-secondary);
   white-space: pre;
 }
-.tc2-diff-add  { background: rgba(63,185,80,.15); color: #3fb950; }
-.tc2-diff-del  { background: rgba(248,81,73,.15);  color: #f85149; }
-.tc2-diff-hunk { color: #58a6ff; background: rgba(88,166,255,.08); }
+.tc2-diff-add  { background: rgba(63,185,80,.12); color: #3fb950; }
+.tc2-diff-del  { background: rgba(248,81,73,.12);  color: #f85149; }
+.tc2-diff-hunk { color: #58a6ff; background: rgba(88,166,255,.07); font-weight: 500; }
 .tc2-diff-meta { color: #8b949e; }
+.tc2-diff-ctx  { color: #8b949e; }
 
 .tc2-image-wrap {
   border-radius: 8px;
