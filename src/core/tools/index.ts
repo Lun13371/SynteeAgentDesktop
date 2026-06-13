@@ -50,7 +50,11 @@ export function writeFile(path: string, content: string): ToolResult {
 
 // Генерирует unified diff через npm diff (LCS-based, как git)
 function makeDiff(oldContent: string, newContent: string, filePath: string): string {
-  return Diff.createPatch(filePath, oldContent, newContent, '', '', { context: 3 })
+  const patch = Diff.createPatch(filePath, oldContent, newContent, '', '', { context: 3 })
+  // Убираем заголовок "Index: ...\n======\n" — оставляем только с --- строки
+  const lines = patch.split('\n')
+  const start = lines.findIndex(l => l.startsWith('---'))
+  return start >= 0 ? lines.slice(start).join('\n') : patch
 }
 
 export interface EditResult extends ToolResult {
