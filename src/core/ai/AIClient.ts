@@ -65,17 +65,6 @@ export class AIClient {
     return new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseUrl })
   }
 
-  private getEndpointAndKey(type: string): { endpoint: string; apiKey: string } {
-    const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
-    const assignment = assignments?.find(a => a.role === type)
-    const providers = this.store.get('providers') as Array<{ id: string; baseUrl: string; apiKey: string; enabled: boolean }> | undefined
-    const provider = assignment?.providerId ? providers?.find(p => p.id === assignment.providerId && p.enabled) : undefined
-    const endpoint = (provider?.baseUrl || (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai').replace(/\/$/, '')
-    const apiKey = provider?.apiKey || (this.store.get('apiKey') as string) || ''
-    return { endpoint, apiKey }
-  }
-
-  // Стриминг через raw fetch — чтобы видеть все поля включая reasoning_content
   async streamChat(
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
@@ -84,100 +73,73 @@ export class AIClient {
     signal?: AbortSignal
   ): Promise<void> {
     const model = this.getModel(modelType)
-    const { endpoint, apiKey } = this.getEndpointAndKey(modelType)
+    const client = this.getClientForRole(modelType)
 
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
-
-    const needsEnableThinking = /glm|qwq|qwen.*think|deepseek.*r1/i.test(model)
-
-    const body: Record<string, unknown> = {
-      model,
-      messages: allMessages,
-      stream: true,
-      temperature: (this.store.get('temperature') as number) || 0.7,
-      max_tokens: (this.store.get('maxTokens') as number) || 4096,
-    }
-    if (needsEnableThinking) body.enable_thinking = true
 
     let attempt = 0
     let fullText = ''
 
     while (attempt <= this.maxRetries) {
       try {
-        const resp = await fetch(`${endpoint}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal,
-        })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const stream = await (client.chat.completions.create as any)({
+          model,
+          messages: allMessages,
+          stream: true,
+          stream_options: { include_usage: true },
+          temperature: (this.store.get('temperature') as number) || 0.7,
+          max_tokens: (this.store.get('maxTokens') as number) || 4096,
+        }, { signal })
 
-        if (resp.status === 429) {
-          const delay = backoffDelay(attempt)
-          callbacks.onRateLimit?.(Math.round(delay / 1000))
-          await sleep(delay)
-          attempt++
-          continue
-        }
-
-        if (!resp.ok) {
-          const txt = await resp.text()
-          callbacks.onError(new Error(`HTTP ${resp.status}: ${txt.slice(0, 200)}`))
-          return
-        }
-
-        const reader = resp.body!.getReader()
-        const decoder = new TextDecoder()
-        let buf = ''
         let thinkingStartMs = 0
         let thinkingDoneSent = false
         let inThinkTag = false
         let thinkBuffer = ''
 
-        const processLine = (line: string) => {
-          if (!line.startsWith('data: ')) return
-          const raw = line.slice(6).trim()
-          if (raw === '[DONE]') return
+        for await (const chunk of stream) {
+          if (signal?.aborted) break
 
-          let chunk: Record<string, unknown>
-          try { chunk = JSON.parse(raw) } catch { return }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const delta = (chunk.choices?.[0]?.delta ?? {}) as Record<string, any>
 
-          const choices = chunk.choices as Array<Record<string, unknown>> | undefined
-          if (!choices?.length) return
-          const delta = (choices[0].delta ?? {}) as Record<string, unknown>
-
-          // Путь 1: отдельное поле reasoning_content / thinking
-          const rawReasoning = delta.reasoning_content ?? delta.thinking
-          if (rawReasoning !== undefined && rawReasoning !== null) {
-            const tok = typeof rawReasoning === 'string'
-              ? rawReasoning
-              : typeof (rawReasoning as Record<string, unknown>).text === 'string'
-                ? (rawReasoning as Record<string, unknown>).text as string
-                : rawReasoning !== '' ? String(rawReasoning) : ''
+          // --- Формат 1: delta.reasoning_content (DeepSeek R1, o3-mini, OnlySQ) ---
+          if (delta.reasoning_content != null) {
+            const tok = String(delta.reasoning_content)
             if (tok) {
               if (!thinkingStartMs) thinkingStartMs = Date.now()
               callbacks.onThinkingToken?.(tok)
-            } else if (thinkingStartMs && !thinkingDoneSent) {
-              thinkingDoneSent = true
-              callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
             }
-            return
+            // reasoning_content присутствует — пропускаем content этого чанка
+            continue
           }
 
-          // Путь 1 завершился — done
+          // --- Формат 2: delta.thinking (Anthropic extended thinking) ---
+          if (delta.thinking != null) {
+            const tok = String(delta.thinking)
+            if (tok) {
+              if (!thinkingStartMs) thinkingStartMs = Date.now()
+              callbacks.onThinkingToken?.(tok)
+            }
+            continue
+          }
+
+          // Если был reasoning и теперь его нет — шлём done
           if (thinkingStartMs && !thinkingDoneSent) {
             thinkingDoneSent = true
             callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
           }
 
-          // Путь 2: <think>...</think> в content
-          const rawContent = (delta.content as string) ?? ''
-          if (!rawContent) return
+          // --- Формат 3: <think>...</think> теги внутри delta.content ---
+          const rawContent: string = delta.content ?? ''
+          if (!rawContent) continue
 
           if (inThinkTag || rawContent.includes('<think>')) {
             thinkBuffer += rawContent
             let searchFrom = 0
+
             while (true) {
               if (!inThinkTag) {
                 const openIdx = thinkBuffer.indexOf('<think>', searchFrom)
@@ -193,13 +155,16 @@ export class AIClient {
                 searchFrom = openIdx + '<think>'.length
                 if (!thinkingStartMs) thinkingStartMs = Date.now()
               }
+
               const closeIdx = thinkBuffer.indexOf('</think>', searchFrom)
               if (closeIdx === -1) {
+                // тег ещё не закрыт — накапливаем и шлём partial
                 const partial = thinkBuffer.slice(searchFrom)
                 if (partial) callbacks.onThinkingToken?.(partial)
                 thinkBuffer = '<think>' + thinkBuffer.slice(searchFrom)
                 break
               }
+
               const thinkContent = thinkBuffer.slice(searchFrom, closeIdx)
               if (thinkContent) callbacks.onThinkingToken?.(thinkContent)
               if (!thinkingDoneSent) {
@@ -210,23 +175,11 @@ export class AIClient {
               searchFrom = closeIdx + '</think>'.length
             }
           } else {
+            // Обычный контент
             fullText += rawContent
             callbacks.onToken(rawContent)
           }
         }
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (signal?.aborted) { reader.cancel(); break }
-          buf += decoder.decode(value, { stream: true })
-          const lines = buf.split('\n')
-          buf = lines.pop() ?? ''
-          for (const line of lines) {
-            if (line.trim()) processLine(line.trim())
-          }
-        }
-        if (buf.trim()) processLine(buf.trim())
 
         if (thinkingStartMs && !thinkingDoneSent) {
           callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
@@ -234,13 +187,13 @@ export class AIClient {
 
         // Фоллбэк: стрим дал 0 токенов
         if (!fullText) {
-          const res = await fetch(`${endpoint}/chat/completions`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...body, stream: false }),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const res = await (client.chat.completions.create as any)({
+            model, messages: allMessages, stream: false,
+            temperature: (this.store.get('temperature') as number) || 0.7,
+            max_tokens: (this.store.get('maxTokens') as number) || 4096,
           })
-          const data = await res.json() as { choices: Array<{ message: { content: string } }> }
-          fullText = data.choices[0]?.message?.content || ''
+          fullText = res.choices[0]?.message?.content || ''
           if (fullText) callbacks.onToken(fullText)
         }
 
@@ -252,6 +205,13 @@ export class AIClient {
         if (error?.name === 'AbortError' || signal?.aborted) {
           callbacks.onDone(fullText ?? '')
           return
+        }
+        if (error?.status === 429) {
+          const delay = backoffDelay(attempt)
+          callbacks.onRateLimit?.(Math.round(delay / 1000))
+          await sleep(delay)
+          attempt++
+          continue
         }
         callbacks.onError(new Error(error?.message || 'Unknown AI error'))
         return
@@ -308,27 +268,23 @@ export class AIClient {
     signal?: AbortSignal
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string }> {
     const model = this.getModel('main')
-    const { endpoint, apiKey } = this.getEndpointAndKey('main')
+    const client = this.getClientForRole('main')
 
     let attempt = 0
     while (attempt < 6) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
-        const res = await fetch(`${endpoint}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, messages, tools, tool_choice: 'auto' }),
-          signal,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const res = await (client.chat.completions.create as any)({
+          model, messages, tools, tool_choice: 'auto', signal,
         })
-        if (res.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }
-        const data = await res.json() as {
-          choices: Array<{ message: { content: string; tool_calls?: unknown[]; reasoning_content?: string; thinking?: string } }>
-        }
-        const msg = data.choices[0]?.message
-        const rawReasoning = msg?.reasoning_content ?? msg?.thinking
-        const reasoning = typeof rawReasoning === 'string' && rawReasoning ? rawReasoning : undefined
+        const msg = res.choices[0]?.message
+        const rawReasoning = msg?.reasoning_content ?? msg?.thinking ?? msg?.reasoning_summary
+        const reasoning = rawReasoning ? String(rawReasoning) : undefined
         return { content: msg?.content || '', tool_calls: msg?.tool_calls, reasoning }
-      } catch {
+      } catch (err: unknown) {
+        const error = err as { status?: number }
+        if (error?.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }
         attempt++
         await sleep(backoffDelay(attempt))
       }
