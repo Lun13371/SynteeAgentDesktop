@@ -186,8 +186,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setTyping(false)
       setLiveThinking(null)
       setIsAgentRunning(false)
-      setToolSteps([])
-      toast('Ошибка: ' + data.error, 'error')
+      setLiveSteps([])
+      if (data.error !== 'stopped') toast('Ошибка: ' + data.error, 'error')
     })
 
     const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (data: { waitSec: number }) => {
