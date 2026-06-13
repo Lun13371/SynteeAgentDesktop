@@ -113,7 +113,7 @@ export interface Provider {
   modelsOverride?: string[]// ручные модели добавленные пользователем
 }
 
-export type ModelCapability = 'vision' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt'
+export type ModelCapability = 'vision' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt' | 'image_gen'
 
 export type ModelSpeed = 'fast' | 'medium' | 'slow'
 

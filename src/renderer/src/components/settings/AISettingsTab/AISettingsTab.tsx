@@ -409,6 +409,7 @@ export default function AISettingsTab() {
           {/* ── Генерация изображений ── */}
           <motion.div
             className="assignment-row glass"
+            style={{ marginTop: 12 }}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ type: 'spring', stiffness: 380, damping: 28, delay: Object.keys(ROLE_META).length * 0.04 }}
@@ -430,6 +431,7 @@ export default function AISettingsTab() {
                   setImageProviderId(pid)
                   window.syntee.image.setSettings({ modelId, providerId: pid })
                 }}
+                filterCaps={['image_gen']}
                 placeholder="Не выбрано"
               />
             </div>
