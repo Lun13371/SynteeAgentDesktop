@@ -1,63 +1,86 @@
 .reasoning-selector-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  gap: 5px;
+  padding: 4px 9px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 12px;
+  border: 1px solid rgba(167, 139, 250, 0.2);
+  background: rgba(167, 139, 250, 0.06);
+  color: rgba(167, 139, 250, 0.8);
+  font-size: 11.5px;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
   flex-shrink: 0;
-}
-
-.reasoning-selector-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.9);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-.reasoning-selector-icon {
-  font-size: 13px;
-  line-height: 1;
-}
-
-.reasoning-selector-label {
-  font-size: 11px;
-  font-weight: 500;
   letter-spacing: 0.01em;
 }
-
-.reasoning-selector-chevron {
-  width: 8px;
-  height: 5px;
-  opacity: 0.6;
-  flex-shrink: 0;
+.reasoning-selector-btn:hover {
+  background: rgba(167, 139, 250, 0.12);
+  color: rgba(167, 139, 250, 1);
+  border-color: rgba(167, 139, 250, 0.4);
 }
 
-/* Dropdown через portal — поверх всего */
+.reasoning-selector-icon { font-size: 12px; line-height: 1; }
+
+.reasoning-selector-label { font-size: 11px; }
+
+.reasoning-selector-chevron {
+  width: 8px; height: 5px;
+  opacity: 0.5;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.reasoning-selector-btn:hover .reasoning-selector-chevron { opacity: 0.8; }
+
+/* ── Бейдж always_on ──────────────────────────────────────────── */
+.reasoning-selector-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(167, 139, 250, 0.15);
+  background: rgba(167, 139, 250, 0.05);
+  color: rgba(167, 139, 250, 0.6);
+  font-size: 11px;
+  cursor: default;
+  user-select: none;
+}
+
+/* ── Дропдаун через portal ────────────────────────────────────── */
 .reasoning-selector-dropdown {
   position: fixed;
   z-index: 99999;
-  background: rgba(22, 22, 30, 0.97);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
+  min-width: 200px;
+  background: rgba(18, 18, 26, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
   padding: 6px;
-  min-width: 160px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(20px);
-  transform: translateY(-100%) translateY(-4px);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(167,139,250,0.08);
+  backdrop-filter: blur(24px);
+  transform: translateY(-100%) translateY(-6px);
+  animation: rs-pop 0.14s ease;
+}
+@keyframes rs-pop {
+  from { opacity: 0; transform: translateY(-100%) translateY(-10px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(-100%) translateY(-6px)  scale(1); }
 }
 
-.reasoning-selector-dropdown-label {
+.reasoning-selector-dropdown-hint {
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.35);
-  padding: 2px 8px 6px;
+  color: rgba(255,255,255,0.3);
+  padding: 3px 8px 2px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+}
+.reasoning-selector-dropdown-param {
+  font-size: 10px;
+  color: rgba(167,139,250,0.5);
+  padding: 0 8px 6px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 4px;
 }
 
 .reasoning-selector-option {
@@ -65,27 +88,34 @@
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 7px 10px;
-  border-radius: 6px;
+  padding: 8px 10px;
+  border-radius: 7px;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 13px;
+  color: rgba(255,255,255,0.7);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.1s, color 0.1s;
   text-align: left;
+  gap: 8px;
 }
-
 .reasoning-selector-option:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255,255,255,0.07);
+  color: #fff;
+}
+.reasoning-selector-option.active {
+  background: rgba(167,139,250,0.1);
+  color: #fff;
 }
 
-.reasoning-selector-option.active {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.05);
+.reasoning-selector-option-label {
+  font-size: 13px;
+  font-weight: 500;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  letter-spacing: 0.02em;
 }
 
 .reasoning-selector-check {
   color: #a78bfa;
   font-size: 13px;
+  flex-shrink: 0;
 }

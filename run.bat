@@ -7,6 +7,10 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-echo Starting Syntee Helper...
+echo Starting Syntee Helper with DevTools...
+echo.
+echo Renderer DevTools: откроется автоматически
+echo Main process logs: смотри в этом окне (stdout)
+echo.
 set ELECTRON_ENABLE_DEVTOOLS=1
 node_modules\electron\dist\electron.exe out\main\index.js
