@@ -226,8 +226,13 @@ export class Agent {
     pendingParallelAgents?: Set<string>
   ): Promise<ToolResult> {
     switch (name) {
-      case 'run_command':
-        return runCommand(args.command as string, args.cwd as string | undefined)
+      case 'run_command': {
+        const cmd = (args.command ?? args.cmd ?? args.shell ?? args.script) as string | undefined
+        if (!cmd || typeof cmd !== 'string') {
+          return { success: false, output: '', error: `run_command: поле "command" не передано. Получены аргументы: ${JSON.stringify(args)}` }
+        }
+        return runCommand(cmd, args.cwd as string | undefined)
+      }
       case 'read_file':
         return readFile(args.path as string)
       case 'write_file':

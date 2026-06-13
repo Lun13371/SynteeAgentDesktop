@@ -267,12 +267,12 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
-        {!isUser && toolSteps && toolSteps.length > 0 && (
-          <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={!!isStreaming} />
+        {!isUser && toolSteps && toolSteps.length > 0 && !liveIters?.length && (
+          <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={false} />
         )}
 
         {/* Карточки суб-агентов */}
-        {!isUser && toolSteps && toolSteps
+        {!isUser && toolSteps && !liveIters?.length && toolSteps
           .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
           .map(s => {
             // Ищем соответствующий tool_result чтобы получить agentId
@@ -295,7 +295,7 @@ const MessageContent = memo(function MessageContent({
         }
 
         {/* Сгенерированные изображения из tool steps — показываем прямо в чате */}
-        {!isUser && toolSteps && toolSteps
+        {!isUser && toolSteps && !liveIters?.length && toolSteps
           .filter(s => s.type === 'tool_result' && s.imageUrl)
           .map(s => (
             <div key={s.id} className="message-image-wrap">
