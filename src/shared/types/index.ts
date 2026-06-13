@@ -70,6 +70,7 @@ export interface ToolStep {
   success?: boolean
   timestamp: number
   imageUrl?: string  // путь к сгенерированному изображению
+  diff?: string      // unified diff для edit_file / multi_edit_file
 }
 
 export interface DisplayInfo {

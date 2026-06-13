@@ -4,7 +4,7 @@ import {
   runCommand, readFile, writeFile, listDirectory,
   getClipboard, setClipboard, searchWeb, getSystemInfo, generateImage,
   readFiles, searchCode, analyzeProject,
-  TOOL_SCHEMAS, type ToolResult,
+  TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
 } from '../tools'
 import type { ApprovalMode } from '../../shared/types'
 
@@ -15,7 +15,7 @@ export interface AgentStep {
   content: string
   success?: boolean
   imageUrl?: string
-}
+  diff?: string}
 
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
@@ -198,6 +198,7 @@ export class Agent {
             content: imageUrl ? 'Изображение сгенерировано' : (result.output || result.error || ''),
             success: result.success,
             imageUrl,
+            diff: (result as { diff?: string }).diff,
           })
 
           messages.push({
@@ -235,6 +236,10 @@ export class Agent {
         return readFile(args.path as string)
       case 'write_file':
         return writeFile(args.path as string, args.content as string)
+      case 'edit_file':
+        return editFile(args as Parameters<typeof editFile>[0])
+      case 'multi_edit_file':
+        return multiEditFile(args as Parameters<typeof multiEditFile>[0])
       case 'list_directory':
         return listDirectory(args.path as string)
       case 'get_clipboard':
