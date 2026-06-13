@@ -12,6 +12,7 @@ export interface ToolStep {
   content: string
   success?: boolean
   timestamp: number
+  imageUrl?: string
 }
 
 interface ToolChainProps {
@@ -213,9 +214,20 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
                               {result && (
                                 <div className="tc-detail-block">
                                   <div className="tc-detail-title">Результат</div>
-                                  <pre className="tc-result-pre">
-                                    {result.content.slice(0, 500)}{result.content.length > 500 ? '\n…' : ''}
-                                  </pre>
+                                  {result.imageUrl ? (
+                                    <div className="tc-image-wrap">
+                                      <img
+                                        src={`file://${result.imageUrl}`}
+                                        alt="Сгенерированное изображение"
+                                        className="tc-image"
+                                        onClick={() => window.open(`file://${result.imageUrl}`, '_blank')}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <pre className="tc-result-pre">
+                                      {result.content.slice(0, 500)}{result.content.length > 500 ? '\n…' : ''}
+                                    </pre>
+                                  )}
                                 </div>
                               )}
                             </motion.div>
