@@ -13,10 +13,22 @@ const storeData: Record<string, unknown> = workerData.storeData
 // Кэш статусов суб-агентов — обновляется через agent_status_update от main
 const agentStatusCache = new Map<string, { status: string; stepsCount: number; currentStep?: string }>()
 
-// Слушаем обновления статусов от main
+// Единый реестр одноразовых reply-handlers (replyId → resolver)
+// Все async ответы от main (spawn_agent_reply, wait_agents_reply) приходят сюда
+const replyHandlers = new Map<string, (msg: Record<string, unknown>) => void>()
+
 parentPort?.on('message', (msg: Record<string, unknown>) => {
   if (msg.type === 'agent_status_update' && msg.agentId) {
     agentStatusCache.set(msg.agentId as string, msg.statusData as never)
+    return
+  }
+  // Все reply — диспатчим в зарегистрированный handler
+  if (msg.replyId) {
+    const handler = replyHandlers.get(msg.replyId as string)
+    if (handler) {
+      replyHandlers.delete(msg.replyId as string)
+      handler(msg)
+    }
   }
 })
 
@@ -125,27 +137,18 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
           onSpawnAgent: (opts) => {
             return new Promise((resolve) => {
               const replyId = `spawn-reply-${opts.id}`
-              const handler = (msg: Record<string, unknown>) => {
-                if (msg.type === 'spawn_agent_reply' && msg.replyId === replyId) {
-                  parentPort?.off('message', handler as never)
-                  resolve({ summary: msg.summary as string, error: msg.error as string | undefined })
-                }
-              }
-              parentPort?.on('message', handler as never)
+              replyHandlers.set(replyId, (msg) => {
+                resolve({ summary: msg.summary as string, error: msg.error as string | undefined })
+              })
               send({ type: 'spawn_agent', chatId, msgId, replyId, ...opts })
             })
           },
           onWaitAgents: (agentIds) => {
-            // Ждём завершения всех параллельных агентов — поллинг через AgentManager
             return new Promise((resolve) => {
               const replyId = `wait-agents-${Date.now()}`
-              const handler = (msg: Record<string, unknown>) => {
-                if (msg.type === 'wait_agents_reply' && msg.replyId === replyId) {
-                  parentPort?.off('message', handler as never)
-                  resolve(msg.results as Array<{ summary: string; error?: string }>)
-                }
-              }
-              parentPort?.on('message', handler as never)
+              replyHandlers.set(replyId, (msg) => {
+                resolve(msg.results as Array<{ summary: string; error?: string }>)
+              })
               send({ type: 'wait_agents', chatId, msgId, replyId, agentIds })
             })
           },

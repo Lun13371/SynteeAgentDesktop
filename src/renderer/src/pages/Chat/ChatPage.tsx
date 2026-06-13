@@ -168,16 +168,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
       if (data.chatId !== currentChatIdRef.current) return
-      addMessage(data.message)
+      // clearStream ПЕРВЫМ — убираем live пузырь до добавления финального
       clearStream()
       setTyping(false)
       setIsAgentRunning(false)
       setLiveSteps([])
-      // liveThinking сбрасываем после addMessage — иначе ThinkingBlock исчезает до рендера сообщения
       setTimeout(() => {
         setLiveThinking(null)
         streamMsgIdRef.current = null
       }, 50)
+      addMessage(data.message)
       window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
     })
 
@@ -196,10 +196,12 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setTimeout(() => setRateLimitSec(0), data.waitSec * 1000)
     })
 
-    // Шаги агента
+    // Шаги агента — только от основного потока (фильтруем по msgId)
     const offStep = window.syntee.on('agent:step', (step: {
-      type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string
+      type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string; msgId?: string
     }) => {
+      // Игнорируем шаги суб-агентов — у них msgId = agentId, не совпадает со streamMsgIdRef
+      if (step.msgId && streamMsgIdRef.current && step.msgId !== streamMsgIdRef.current) return
       if (step.type === 'tool_call' || step.type === 'tool_result') {
         setIsAgentRunning(true)
         setLiveSteps(prev => [...prev, {
