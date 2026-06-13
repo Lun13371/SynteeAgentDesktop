@@ -33,6 +33,56 @@
   text-align: center;
 }
 
+/* Фильтр по чатам */
+.agent-panel__chat-filter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.agent-panel__chat-filter::-webkit-scrollbar { display: none; }
+.agent-panel__chat-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+}
+.agent-panel__chat-pill:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.agent-panel__chat-pill.active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.agent-panel__chat-pill-count {
+  font-size: 10px;
+  opacity: 0.6;
+}
+.agent-panel__chat-pill-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agent-panel__chat-pill-dot--running {
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
 /* Контент: список + детали */
 .agent-panel__content {
   display: flex;

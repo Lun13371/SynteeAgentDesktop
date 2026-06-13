@@ -35,6 +35,7 @@ interface AgentRecord {
 interface AgentPanelProps {
   onClose: () => void
   focusAgentId?: string | null
+  currentChatId?: string | null
 }
 
 const TOOL_ICONS: Record<string, IconName> = {
@@ -55,9 +56,10 @@ function elapsed(a: AgentRecord) {
   return ms < 60000 ? (ms / 1000).toFixed(1) + 's' : (ms / 60000).toFixed(1) + 'm'
 }
 
-export default function AgentPanel({ onClose, focusAgentId }: AgentPanelProps) {
+export default function AgentPanel({ onClose, focusAgentId, currentChatId }: AgentPanelProps) {
   const [agents, setAgents] = useState<AgentRecord[]>([])
   const [selected, setSelected] = useState<string | null>(focusAgentId ?? null)
+  const [filterChat, setFilterChat] = useState<string | null>(currentChatId ?? null)
 
   // Загружаем список и подписываемся на обновления
   useEffect(() => {
@@ -75,15 +77,26 @@ export default function AgentPanel({ onClose, focusAgentId }: AgentPanelProps) {
     return () => off()
   }, [])
 
-  // Если передали focusAgentId — выбираем его
+  // Если focusAgentId передан — выбираем его
   useEffect(() => {
     if (focusAgentId) setSelected(focusAgentId)
   }, [focusAgentId])
 
+  // Синхронизируем filterChat с текущим чатом
+  useEffect(() => {
+    if (currentChatId) setFilterChat(currentChatId)
+  }, [currentChatId])
+
   const selectedAgent = agents.find(a => a.id === selected) ?? null
 
+  // Уникальные chatId из всех агентов
+  const chatIds = Array.from(new Set(agents.map(a => a.chatId)))
+
+  // Отфильтрованные агенты
+  const filteredAgents = filterChat ? agents.filter(a => a.chatId === filterChat) : agents
+
   // Сортировка: активные сверху, потом по времени
-  const sorted = [...agents].sort((a, b) => {
+  const sorted = [...filteredAgents].sort((a, b) => {
     const rank = (s: string) => s === 'running' ? 0 : s === 'pending' ? 1 : 2
     if (rank(a.status) !== rank(b.status)) return rank(a.status) - rank(b.status)
     return b.createdAt - a.createdAt
@@ -112,6 +125,35 @@ export default function AgentPanel({ onClose, focusAgentId }: AgentPanelProps) {
         </div>
         <IconButton icon="x" size="sm" onClick={onClose} />
       </div>
+
+      {/* Фильтр по чатам */}
+      {chatIds.length > 1 && (
+        <div className="agent-panel__chat-filter">
+          <button
+            className={`agent-panel__chat-pill ${filterChat === null ? 'active' : ''}`}
+            onClick={() => setFilterChat(null)}
+          >
+            Все
+          </button>
+          {chatIds.map(cid => {
+            const count = agents.filter(a => a.chatId === cid).length
+            const running = agents.filter(a => a.chatId === cid && a.status === 'running').length
+            return (
+              <button
+                key={cid}
+                className={`agent-panel__chat-pill ${filterChat === cid ? 'active' : ''}`}
+                onClick={() => setFilterChat(cid)}
+              >
+                <span>Чат {cid.slice(-4)}</span>
+                {running > 0
+                  ? <span className="agent-panel__chat-pill-dot agent-panel__chat-pill-dot--running" />
+                  : <span className="agent-panel__chat-pill-count">{count}</span>
+                }
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       <div className="agent-panel__content">
         {/* Левая колонка — список */}

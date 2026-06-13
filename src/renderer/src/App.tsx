@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { useUIStore } from './store/ui.store'
+import { useChatStore } from './store/chat.store'
 import ChatPage from './pages/Chat/ChatPage'
 import OverlayPage from './pages/Overlay/OverlayPage'
 import './pages/Overlay/OverlayPage.css'
@@ -39,6 +40,7 @@ export default function App() {
   const [focusAgentId, setFocusAgentId] = useState<string | null>(null)
   const [onboarded, setOnboarded] = useState<boolean | null>(null)
   const { theme } = useUIStore()
+  const { currentChatId } = useChatStore()
 
   useEffect(() => {
     const onHash = () => setRoute(getRoute())
@@ -105,6 +107,7 @@ export default function App() {
             <AgentPanel
               onClose={() => { setShowAgent(false); setFocusAgentId(null) }}
               focusAgentId={focusAgentId}
+              currentChatId={currentChatId}
             />
           )}
         </AnimatePresence>
