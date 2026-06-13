@@ -29,7 +29,12 @@ let currentWorker: Worker | null = null
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
 
-  let currentChatIdForStop: string | null = null  // запоминаем chatId текущего запроса для stop
+  let currentChatIdForStop: string | null = null
+  let bufferedText = ''
+  let bufferedThinking = ''
+  let bufferedThinkingMs: number | undefined
+  let bufferedSteps: unknown[] = []
+  let currentSendDone: ((fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[]) => void) | null = null
 
   // Системный промпт
   const getSystemPrompt = (): string => {
@@ -62,6 +67,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   }) => {
     const win = mainWindow.getWindow()
     currentChatIdForStop = params.chatId
+
+    // Сбрасываем буферы для нового запроса
+    bufferedText = ''
+    bufferedThinking = ''
+    bufferedThinkingMs = undefined
+    bufferedSteps = []
+
     const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
 
     // Сохраняем сообщение пользователя
@@ -100,18 +112,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
 
     // Буфер токенов в main — для сохранения при внезапном terminate()
-    let bufferedText = ''
-    let bufferedThinking = ''
-    let bufferedThinkingMs: number | undefined
-    const bufferedSteps: unknown[] = []
     let doneSent = false  // флаг чтобы не слать DONE дважды
 
-    const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[]) => {
+    const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[]) => {
       if (doneSent) return
       doneSent = true
+      currentSendDone = null
       currentWorker = null
 
-      const assistantMsg: Message = {
+      const assistantMsg: Message & { iterations?: unknown } = {
         id: assistantMsgId,
         chatId: params.chatId,
         role: 'assistant',
@@ -121,6 +130,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
           ?.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6',
         toolSteps: steps && steps.length > 0 ? steps as never : undefined,
+        iterations: iters && iters.length > 0 ? iters as never : undefined,
         thinking: thinkingText || undefined,
         thinkingMs,
       }
@@ -140,6 +150,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         message: assistantMsg,
       })
     }
+    currentSendDone = sendDone
 
     const workerPath = path.join(__dirname, 'ai-worker.js')
     const worker = new Worker(workerPath, { workerData: { storeData } })
@@ -266,6 +277,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             (msg.thinkingText as string) || bufferedThinking || undefined,
             (msg.thinkingMs as number) || bufferedThinkingMs,
             (msg.collectedSteps as unknown[]) || bufferedSteps,
+            (msg.collectedIters as unknown[]) || undefined,
           )
           break
 
@@ -320,13 +332,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       currentWorker.terminate()
       currentWorker = null
     }
-    // Сообщаем renderer что стриминг завершён — иначе isTyping остаётся true
     const win = mainWindow.getWindow()
     if (win && currentChatIdForStop) {
-      win.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
-        chatId: currentChatIdForStop,
-        error: 'stopped',
-      })
+      // Сохраняем то что успело накопиться в буфере
+      currentSendDone?.(bufferedText, bufferedThinking, bufferedThinkingMs, bufferedSteps)
     }
     currentChatIdForStop = null
   })

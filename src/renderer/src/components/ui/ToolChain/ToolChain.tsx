@@ -15,11 +15,12 @@ export interface ToolStep {
   imageUrl?: string
 }
 
-interface ToolChainProps {
+function ToolChain({ steps, mode, isRunning, label }: {
   steps: ToolStep[]
   mode: ToolOutputMode
-  isRunning?: boolean
-}
+  isRunning: boolean
+  label?: string
+}) {
 
 const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
   run_command:     { label: 'Команда',       icon: 'terminal',  color: '#f59e0b' },
@@ -260,9 +261,11 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
         </button>
 
         <div className="tc2-header-summary">
-          {isRunning
-            ? <><span className="tc2-spinner" /><span className="tc2-header-title">Агент работает</span></>
-            : <span className="tc2-header-title">{hasFailed ? '⚠ Выполнено с ошибками' : `Выполнено ${totalDone} ${totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}`}</span>
+          {label
+            ? <span className="tc2-header-title tc2-header-title--label">{label}</span>
+            : isRunning
+              ? <><span className="tc2-spinner" /><span className="tc2-header-title">Агент работает</span></>
+              : <span className="tc2-header-title">{hasFailed ? '⚠ Выполнено с ошибками' : `Выполнено ${totalDone} ${totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}`}</span>
           }
         </div>
 
