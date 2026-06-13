@@ -167,6 +167,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
+      console.log('[offDone] received, chatId:', data.chatId, 'current:', currentChatIdRef.current)
       // Сбрасываем стриминг-стейт ВСЕГДА — даже если chatId не совпадает (пользователь переключил чат)
       streamMsgIdRef.current = null
       clearStream()

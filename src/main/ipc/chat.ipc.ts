@@ -106,8 +106,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let doneSent = false  // флаг чтобы не слать DONE дважды
 
     const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[]) => {
-      if (doneSent) return
+      if (doneSent) {
+        console.log('[sendDone] skipped — already sent')
+        return
+      }
       doneSent = true
+      console.log('[sendDone] sending CHAT_STREAM_DONE, fullText length:', fullText.length)
       currentWorker = null
 
       const assistantMsg: Message = {
