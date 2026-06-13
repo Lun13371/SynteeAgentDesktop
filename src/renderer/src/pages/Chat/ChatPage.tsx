@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { v4 as uuid } from 'uuid'
 import { useContextCounter } from '../../hooks/useContextCounter'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
@@ -27,6 +28,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   const { add: toast } = useToast()
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
@@ -46,6 +48,24 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [liveTextAfter, setLiveTextAfter] = useState('')
   const liveTextAfterRef = useRef('')
   useEffect(() => { liveTextAfterRef.current = liveTextAfter }, [liveTextAfter])
+
+  // Throttle буфер для токенов — батчим через RAF вместо setState на каждый токен
+  const tokenBufRef = useRef('')
+  const rafRef = useRef<number | null>(null)
+  const flushTokens = useCallback(() => {
+    rafRef.current = null
+    if (!tokenBufRef.current) return
+    const chunk = tokenBufRef.current
+    tokenBufRef.current = ''
+    setLiveTextAfter(prev => prev + chunk)
+    liveTextAfterRef.current = liveTextAfterRef.current + chunk
+    appendStreamToken(chunk)
+  }, [])
+
+  const scheduleFlush = useCallback(() => {
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(flushTokens)
+  }, [flushTokens])
   // liveSteps оставляем только для финального сохранения в БД
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
   const [showSearch, setShowSearch] = useState(false)
@@ -174,14 +194,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         return
       }
       if (data.token) {
-        // Токен идёт в liveTextAfter (текст после последних тулов)
-        setLiveTextAfter(prev => prev + data.token)
-        appendStreamToken(data.token)
+        // Батчим токены через RAF — не setState на каждый символ
+        tokenBufRef.current += data.token
+        scheduleFlush()
       }
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
       streamMsgIdRef.current = null
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+      tokenBufRef.current = ''
       clearStream()
       setTyping(false)
       setIsAgentRunning(false)
@@ -265,18 +287,17 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => { offToken(); offDone(); offError(); offRateLimit(); offStep() }
   }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
-  // Автоскролл — instant при переключении, smooth при новых сообщениях
+  // Автоскролл — virtualizer scrollToIndex для последнего сообщения
   useEffect(() => {
-    if (isLoadingMessages) return
-    const behavior = isInitialScrollRef.current ? 'instant' : 'smooth'
-    // двойной rAF — гарантирует что layout + paint завершены
+    if (isLoadingMessages || displayMessages.length === 0) return
+    const behavior = isInitialScrollRef.current ? 'auto' : 'smooth'
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: behavior as ScrollBehavior })
+        virtualizer.scrollToIndex(displayMessages.length - 1, { behavior })
         isInitialScrollRef.current = false
       })
     })
-  }, [messages, streamingText, isTyping, isLoadingMessages])
+  }, [messages.length, isTyping, isLoadingMessages])
 
   const selectChat = async (id: string) => {
     setIsLoadingMessages(true)
@@ -377,20 +398,24 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
   }
 
-  const handlePin = async (id: string) => {
+  const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
     pinMessage(id)
     toast('Сообщение закреплено', 'info')
-  }
+  }, [pinMessage, toast])
 
-  const handleCopy = () => toast('Скопировано', 'success')
+  const handleCopy = useCallback(() => toast('Скопировано', 'success'), [toast])
+
+  const handleReply = useCallback((msg: Message) => {
+    setReplyTo(prev => prev.find(r => r.id === msg.id) ? prev : [...prev, msg])
+  }, [])
 
   // Собираем отображаемые сообщения (включая стриминг)
   const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0 ||
     liveIters.length > 0 || !!liveTextAfter
   const showLiveBubble = hasLiveContent && !!streamMsgIdRef.current
   const isStreaming = showLiveBubble
-  const displayMessages = showLiveBubble
+  const displayMessages = useMemo(() => showLiveBubble
     ? [...messages, {
         id: streamMsgIdRef.current || 'streaming',
         chatId: currentChatId || '',
@@ -403,6 +428,17 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         liveTextAfter,
       }]
     : messages
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  , [messages, showLiveBubble, streamingText, liveSteps, liveIters, liveTextAfter])
+
+  // Virtualizer — рендерим только видимые сообщения
+  const virtualizer = useVirtualizer({
+    count: displayMessages.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 120,
+    overscan: 5,
+    measureElement: (el) => el.getBoundingClientRect().height,
+  })
 
   return (
     <div className={`chat-layout ${embedded ? 'chat-layout--embedded' : ''}`}>
@@ -466,21 +502,48 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               )}
             </div>
           ) : (
-            <div className="chat-messages">
-                {displayMessages.map(msg => (
-                  <div key={msg.id} data-msg-id={msg.id}>
-                    <MessageBubble
-                      message={msg}
-                      toolOutputMode={toolOutputMode}
-                      onPin={handlePin}
-                      onCopy={handleCopy}
-                      onReply={(msg) => setReplyTo(prev => prev.find(r => r.id === msg.id) ? prev : [...prev, msg])}
-                      searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
-                      liveThinking={msg.id === (streamMsgIdRef.current || 'streaming') ? liveThinking ?? undefined : undefined}
-                      isStreaming={msg.id === (streamMsgIdRef.current || 'streaming') && isTyping}
-                    />
-                  </div>
-                ))}
+            <div
+              className="chat-messages"
+              ref={scrollContainerRef}
+              style={{ overflowY: 'auto', height: '100%' }}
+            >
+              <div
+                style={{
+                  height: virtualizer.getTotalSize(),
+                  width: '100%',
+                  position: 'relative',
+                }}
+              >
+                {virtualizer.getVirtualItems().map(vItem => {
+                  const msg = displayMessages[vItem.index]
+                  const isLive = msg.id === (streamMsgIdRef.current || 'streaming')
+                  return (
+                    <div
+                      key={msg.id}
+                      data-index={vItem.index}
+                      ref={virtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${vItem.start}px)`,
+                      }}
+                    >
+                      <MessageBubble
+                        message={msg}
+                        toolOutputMode={toolOutputMode}
+                        onPin={handlePin}
+                        onCopy={handleCopy}
+                        onReply={handleReply}
+                        searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
+                        liveThinking={isLive ? liveThinking ?? undefined : undefined}
+                        isStreaming={isLive && isTyping}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
               <div ref={bottomRef} />
             </div>
           )}
