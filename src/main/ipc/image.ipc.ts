@@ -19,7 +19,13 @@ export interface ImageGenResult {
   error?: string
 }
 
-export function registerImageIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
+// OnlySQ использует отдельный endpoint для генерации изображений
+function getImageBaseUrl(provider: Provider): string {
+  if (provider.id === 'onlysq') return 'https://api.onlysq.ru/ai/imagen'
+  return provider.baseUrl
+}
+
+export function registerImageIPC(store: Store, _mainWindow: { getWindow: () => BrowserWindow | null }): void {
 
   ipcMain.handle('image:generate', async (_, params: ImageGenParams): Promise<ImageGenResult> => {
     const providers = store.get('providers', []) as Provider[]
@@ -27,31 +33,22 @@ export function registerImageIPC(store: Store, mainWindow: { getWindow: () => Br
     const imageModelId = store.get('imageModelId', '') as string
     const modelId = params.model || imageModelId
 
-    const IMAGE_PROVIDER_IDS = ['openai', 'onlysq', 'bfl', 'together', 'replicate', 'fal']
-
-    const provider = imageProviderId
-      ? providers.find(p => p.id === imageProviderId)
-      : providers.find(p =>
-          p.enabled &&
-          (p.apiKey || (p.apiKeys && p.apiKeys.length > 0)) &&
-          IMAGE_PROVIDER_IDS.includes(p.id)
-        )
-
-    if (!provider) {
+    if (!imageProviderId) {
       return { error: 'Не настроена модель генерации изображений. Зайдите в Настройки → AI → Модели → Генерация изображений.' }
     }
 
-    const apiKey = provider.apiKeys?.find(k => k.trim()) || provider.apiKey || ''
-    if (!apiKey) {
-      return { error: 'API ключ провайдера не задан' }
+    const provider = providers.find(p => p.id === imageProviderId)
+    if (!provider) {
+      return { error: 'Выбранный провайдер генерации изображений не найден. Проверьте Настройки → AI → Модели.' }
     }
 
-    try {
-      const client = new OpenAI({
-        apiKey,
-        baseURL: provider.baseUrl,
-      })
+    const apiKey = provider.apiKeys?.find(k => k.trim()) || provider.apiKey || ''
+    if (!apiKey) return { error: 'API ключ провайдера не задан' }
 
+    const baseURL = getImageBaseUrl(provider)
+
+    try {
+      const client = new OpenAI({ apiKey, baseURL })
       const size = (params.size || '1024x1024') as Parameters<typeof client.images.generate>[0]['size']
 
       const response = await client.images.generate({
@@ -71,16 +68,14 @@ export function registerImageIPC(store: Store, mainWindow: { getWindow: () => Br
         revisedPrompt: img.revised_prompt ?? undefined,
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      return { error: msg }
+      return { error: e instanceof Error ? e.message : String(e) }
     }
   })
 
-  // Получить текущие настройки image generation
   ipcMain.handle('image:getSettings', () => {
     return {
       providerId: store.get('imageProviderId', '') as string,
-      modelId: store.get('imageModelId', 'dall-e-3') as string,
+      modelId: store.get('imageModelId', '') as string,
       defaultSize: store.get('imageDefaultSize', '1024x1024') as string,
       defaultQuality: store.get('imageDefaultQuality', 'standard') as string,
     }
