@@ -356,12 +356,15 @@ export class AIClient {
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
               if (!toolCallMap[idx]) {
-                // Первый чанк для этого index — инициализируем
-                toolCallMap[idx] = { id: tc.id ?? '', name: tc.function?.name ?? '', arguments: '' }
+                // Первый чанк — инициализируем со всеми доступными полями
+                toolCallMap[idx] = {
+                  id: tc.id ?? '',
+                  name: tc.function?.name ?? '',
+                  arguments: tc.function?.arguments ?? '',
+                }
               } else {
-                // Последующие чанки — только arguments накапливаем, id и name не меняем
+                // Последующие чанки — id/name не меняем, только arguments накапливаем
                 if (tc.id && !toolCallMap[idx].id) toolCallMap[idx].id = tc.id
-                // name НЕ накапливаем через += — оно приходит целиком в первом чанке
                 if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments
               }
             }

@@ -266,8 +266,8 @@ function AgentListItem({ agent, selected, onSelect, onCancel }: {
   onSelect: () => void
   onCancel: (id: string) => void
 }) {
-  const shortTask = agent.task.length > 60 ? agent.task.slice(0, 60) + '…' : agent.task
-  const currentTool = agent.steps.filter(s => s.type === 'tool_call').slice(-1)[0]?.toolName
+  const shortTask = (agent.task ?? '').length > 60 ? agent.task.slice(0, 60) + '…' : (agent.task ?? '')
+  const currentTool = (agent.steps ?? []).filter(s => s.type === 'tool_call').slice(-1)[0]?.toolName
 
   return (
     <motion.div
