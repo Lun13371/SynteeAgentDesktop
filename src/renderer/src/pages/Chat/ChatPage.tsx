@@ -140,13 +140,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   // IPC события стриминга
   const [liveThinking, setLiveThinking] = useState<{ text: string; isLive: boolean; ms?: number } | null>(null)
+  // ref для currentChatId чтобы listener не пересоздавался при смене чата
+  const currentChatIdRef = useRef<string | null>(currentChatId)
+  useEffect(() => { currentChatIdRef.current = currentChatId }, [currentChatId])
 
   useEffect(() => {
     const offToken = window.syntee.on(IPC_EVENTS.CHAT_STREAM_TOKEN, (data: {
       chatId: string; msgId: string; token?: string
       thinkingToken?: string; thinkingDone?: boolean; thinkingMs?: number
     }) => {
-      if (data.chatId !== currentChatId) return
+      if (data.chatId !== currentChatIdRef.current) return
       streamMsgIdRef.current = data.msgId
 
       if (data.thinkingToken) {
@@ -212,7 +215,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
 
     return () => { offToken(); offDone(); offError(); offRateLimit(); offStep() }
-  }, [currentChatId])
+  }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
   // Автоскролл — instant при переключении, smooth при новых сообщениях
   useEffect(() => {
