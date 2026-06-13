@@ -35,9 +35,18 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [showSkeleton, setShowSkeleton] = useState(false)
   const isInitialScrollRef = useRef(true)
   const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Сегменты: каждый = {text, steps[]} — текст до тулчейна + сам тулчейн
-  const [liveSegments, setLiveSegments] = useState<Array<{ text: string; steps: import('../../components/ui/ToolChain/ToolChain').ToolStep[] }>>([{ text: '', steps: [] }])
-  // liveSteps оставляем для совместимости с финальным сохранением
+  // Агентские итерации: [{textBefore, steps[]}]
+  // textBefore — текст который AI написал ДО вызова тулов в этой итерации
+  // steps — все tool_call+tool_result этой итерации
+  const [liveIters, setLiveIters] = useState<Array<{
+    textBefore: string
+    steps: import('../../components/ui/ToolChain/ToolChain').ToolStep[]
+  }>>([])
+  // текст ПОСЛЕ последних тулов (финальный ответ после выполнения)
+  const [liveTextAfter, setLiveTextAfter] = useState('')
+  const liveTextAfterRef = useRef('')
+  useEffect(() => { liveTextAfterRef.current = liveTextAfter }, [liveTextAfter])
+  // liveSteps оставляем только для финального сохранения в БД
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -165,12 +174,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         return
       }
       if (data.token) {
-        // Добавляем токен в последний сегмент
-        setLiveSegments(prev => {
-          const segs = [...prev]
-          segs[segs.length - 1] = { ...segs[segs.length - 1], text: segs[segs.length - 1].text + data.token }
-          return segs
-        })
+        // Токен идёт в liveTextAfter (текст после последних тулов)
+        setLiveTextAfter(prev => prev + data.token)
         appendStreamToken(data.token)
       }
     })
@@ -181,7 +186,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setTyping(false)
       setIsAgentRunning(false)
       setLiveSteps([])
-      setLiveSegments([{ text: '', steps: [] }])
+      setLiveIters([])
+      setLiveTextAfter('')
       setLiveThinking(null)
       if (data.chatId === currentChatIdRef.current) {
         addMessage(data.message)
@@ -196,7 +202,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveThinking(null)
       setIsAgentRunning(false)
       setLiveSteps([])
-      setLiveSegments([{ text: '', steps: [] }])
+      setLiveIters([])
+      setLiveTextAfter('')
       if (data.error !== 'stopped') toast('Ошибка: ' + data.error, 'error')
     })
 
@@ -210,56 +217,47 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const offStep = window.syntee.on('agent:step', (step: {
       type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string; msgId?: string
     }) => {
-      // После CHAT_STREAM_DONE streamMsgIdRef = null — игнорируем запоздавшие шаги
-      // Также игнорируем шаги суб-агентов (их msgId != streamMsgIdRef)
       if (!streamMsgIdRef.current) return
       if (step.msgId && step.msgId !== streamMsgIdRef.current) return
+
       if (step.type === 'tool_call') {
         setIsAgentRunning(true)
         const newStep = {
-          id: uuid(),
-          type: 'tool_call' as const,
-          toolName: step.toolName,
-          toolArgs: step.toolArgs,
-          content: step.content,
-          success: step.success,
-          timestamp: Date.now(),
-          imageUrl: step.imageUrl,
+          id: uuid(), type: 'tool_call' as const,
+          toolName: step.toolName, toolArgs: step.toolArgs,
+          content: step.content, success: step.success,
+          timestamp: Date.now(), imageUrl: step.imageUrl,
         }
         setLiveSteps(prev => [...prev, newStep])
-        // Новый сегмент создаём только если последний сегмент уже имеет результаты
-        // (т.е. новая итерация) или если последний сегмент вообще не имеет шагов (текстовый)
-        setLiveSegments(prev => {
-          const segs = [...prev]
-          const last = segs[segs.length - 1]
-          const lastHasResult = last.steps.some(s => s.type === 'tool_result')
-          const lastHasText = !!last.text
-          if (lastHasResult || (lastHasText && last.steps.length === 0)) {
-            // Начинаем новый сегмент
-            return [...segs, { text: '', steps: [newStep] }]
+        setLiveIters(prev => {
+          const iters = [...prev]
+          const last = iters[iters.length - 1]
+          // Если последняя итерация уже имеет tool_result — начинаем новую
+          // Иначе — добавляем в текущую (параллельные/множественные tool_calls одного round)
+          if (!last || last.steps.some(s => s.type === 'tool_result')) {
+            // Перемещаем liveTextAfter как textBefore новой итерации
+            return [...iters, { textBefore: liveTextAfterRef.current, steps: [newStep] }]
           } else {
-            // Добавляем tool_call в текущий сегмент (параллельные вызовы одной итерации)
-            segs[segs.length - 1] = { ...last, steps: [...last.steps, newStep] }
-            return segs
+            iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
+            return iters
           }
         })
+        // Сбрасываем liveTextAfter — он теперь в итерации как textBefore
+        setLiveTextAfter('')
       } else if (step.type === 'tool_result') {
         setIsAgentRunning(true)
         const newStep = {
-          id: uuid(),
-          type: 'tool_result' as const,
-          toolName: step.toolName,
-          toolArgs: step.toolArgs,
-          content: step.content,
-          success: step.success,
-          timestamp: Date.now(),
-          imageUrl: step.imageUrl,
+          id: uuid(), type: 'tool_result' as const,
+          toolName: step.toolName, toolArgs: step.toolArgs,
+          content: step.content, success: step.success,
+          timestamp: Date.now(), imageUrl: step.imageUrl,
         }
         setLiveSteps(prev => [...prev, newStep])
-        setLiveSegments(prev => {
-          const segs = [...prev]
-          segs[segs.length - 1] = { ...segs[segs.length - 1], steps: [...segs[segs.length - 1].steps, newStep] }
-          return segs
+        setLiveIters(prev => {
+          if (prev.length === 0) return prev
+          const iters = [...prev]
+          iters[iters.length - 1] = { ...iters[iters.length - 1], steps: [...iters[iters.length - 1].steps, newStep] }
+          return iters
         })
       }
     })
@@ -389,7 +387,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   // Собираем отображаемые сообщения (включая стриминг)
   const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0 ||
-    liveSegments.some(s => s.text || s.steps.length > 0)
+    liveIters.length > 0 || !!liveTextAfter
   const showLiveBubble = hasLiveContent && !!streamMsgIdRef.current
   const isStreaming = showLiveBubble
   const displayMessages = showLiveBubble
@@ -401,7 +399,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         createdAt: Date.now(),
         isPinned: 0,
         toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
-        liveSegments,
+        liveIters,
+        liveTextAfter,
       }]
     : messages
 
