@@ -56,6 +56,7 @@ export interface Message {
   thinking?: string
   thinkingMs?: number
   slashCommand?: { name: string; args: string }  // использованная слеш-команда
+  liveSegments?: Array<{ text: string; steps: ToolStep[] }>  // только для live bubble
   imageUrl?: string                               // URL сгенерированного изображения
 }
 

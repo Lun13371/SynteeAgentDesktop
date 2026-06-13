@@ -124,6 +124,16 @@
   30%           { transform: scale(1.4); opacity: 1; }
 }
 
+.message-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.message-segment {
+  display: flex;
+  flex-direction: column;
+}
+
 .msg-waiting-dots {
   display: inline-flex;
   align-items: center;

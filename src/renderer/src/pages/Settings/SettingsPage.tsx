@@ -486,7 +486,7 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
           value={agentSettings.maxSteps}
           onChange={e => updateAgent({ maxSteps: Number(e.target.value) })}
         >
-          {[4, 8, 12, 16, 24].map(n => (
+          {[4, 8, 12, 16, 24, 32, 48, 64, 96, 128].map(n => (
             <option key={n} value={n}>{n} шагов</option>
           ))}
         </select>
