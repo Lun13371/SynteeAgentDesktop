@@ -14,6 +14,7 @@ export interface AgentStep {
   success?: boolean
   timestamp: number
   imageUrl?: string
+  diff?: string
 }
 
 export interface AgentRecord {

@@ -47,6 +47,126 @@ export function writeFile(path: string, content: string): ToolResult {
   }
 }
 
+// Генерирует unified diff между двумя строками
+function makeDiff(oldContent: string, newContent: string, filePath: string): string {
+  const oldLines = oldContent.split('\n')
+  const newLines = newContent.split('\n')
+  const lines: string[] = [`--- a/${filePath}`, `+++ b/${filePath}`]
+  // Простой diff — находим изменённые блоки
+  let i = 0, j = 0
+  const changes: Array<{ type: 'same' | 'del' | 'add'; line: string }> = []
+  while (i < oldLines.length || j < newLines.length) {
+    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
+      changes.push({ type: 'same', line: oldLines[i] })
+      i++; j++
+    } else if (i < oldLines.length) {
+      changes.push({ type: 'del', line: oldLines[i] })
+      i++
+    } else {
+      changes.push({ type: 'add', line: newLines[j] })
+      j++
+    }
+  }
+  // Группируем в hunks (контекст 2 строки)
+  const CTX = 2
+  let inHunk = false
+  let hunkStart = -1
+  const hunkLines: string[] = []
+  for (let k = 0; k < changes.length; k++) {
+    const c = changes[k]
+    const hasChange = c.type !== 'same'
+    const nearChange = changes.slice(Math.max(0, k - CTX), k + CTX + 1).some(x => x.type !== 'same')
+    if (hasChange || nearChange) {
+      if (!inHunk) { inHunk = true; hunkStart = k }
+      hunkLines.push((c.type === 'del' ? '-' : c.type === 'add' ? '+' : ' ') + c.line)
+    } else if (inHunk) {
+      lines.push(`@@ -${hunkStart + 1} +${hunkStart + 1} @@`)
+      lines.push(...hunkLines)
+      hunkLines.length = 0
+      inHunk = false
+    }
+  }
+  if (inHunk) {
+    lines.push(`@@ -${hunkStart + 1} +${hunkStart + 1} @@`)
+    lines.push(...hunkLines)
+  }
+  return lines.join('\n')
+}
+
+export interface EditResult extends ToolResult {
+  diff?: string
+}
+
+export function editFile(params: {
+  path: string
+  mode: 'replace' | 'insert' | 'overwrite'
+  old_str?: string
+  new_str?: string
+  after_line?: number
+  content?: string
+}): EditResult {
+  try {
+    if (!existsSync(params.path)) return { success: false, output: '', error: 'Файл не найден: ' + params.path }
+    const original = readFileSync(params.path, 'utf-8')
+    let updated = original
+
+    if (params.mode === 'replace') {
+      if (!params.old_str) return { success: false, output: '', error: 'edit_file replace: нужен old_str' }
+      const normStr = (s: string) => s.split(String.fromCharCode(13)).join('')
+      const normOrig = normStr(original)
+      const normOld = normStr(params.old_str)
+      if (!normOrig.includes(normOld))
+        return { success: false, output: '', error: 'edit_file replace: old_str не найден в файле' }
+      updated = normOrig.replace(normOld, params.new_str ?? '')
+
+    } else if (params.mode === 'insert') {
+      const lines = original.split('\n')
+      const at = Math.min(params.after_line ?? lines.length, lines.length)
+      lines.splice(at, 0, ...(params.content ?? '').split('\n'))
+      updated = lines.join('\n')
+
+    } else if (params.mode === 'overwrite') {
+      if (!params.content) return { success: false, output: '', error: 'edit_file overwrite: нужен content' }
+      updated = params.content
+    }
+
+    writeFileSync(params.path, updated, 'utf-8')
+    const diff = makeDiff(original, updated, params.path)
+    const changedLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length
+    return { success: true, output: `Файл обновлён: ${params.path} (${changedLines} строк изменено)`, diff }
+  } catch (e: any) {
+    return { success: false, output: '', error: e.message }
+  }
+}
+
+export function multiEditFile(params: {
+  path: string
+  edits: Array<{ old_str: string; new_str: string }>
+}): EditResult {
+  try {
+    if (!existsSync(params.path)) return { success: false, output: '', error: 'Файл не найден: ' + params.path }
+    const original = readFileSync(params.path, 'utf-8')
+    let updated = original
+    const failed: string[] = []
+
+    for (const edit of params.edits) {
+      if (updated.includes(edit.old_str)) {
+        updated = updated.replace(edit.old_str, edit.new_str)
+      } else {
+        failed.push(edit.old_str.slice(0, 60) + '…')
+      }
+    }
+
+    writeFileSync(params.path, updated, 'utf-8')
+    const diff = makeDiff(original, updated, params.path)
+    const changedLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length
+    const warn = failed.length ? `\nНе найдено ${failed.length} фрагментов: ${failed.join('; ')}` : ''
+    return { success: true, output: `Файл обновлён: ${params.path} (${changedLines} строк изменено)${warn}`, diff }
+  } catch (e: any) {
+    return { success: false, output: '', error: e.message }
+  }
+}
+
 export function listDirectory(path: string): ToolResult {
   try {
     if (!existsSync(path)) return { success: false, output: '', error: 'Папка не найдена: ' + path }
@@ -385,6 +505,51 @@ export async function generateImage(
 }
 
 export const TOOL_SCHEMAS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'edit_file',
+      description: 'Редактировать файл. Три режима: replace — заменить уникальный фрагмент (предпочтительно), insert — вставить строки после указанной, overwrite — перезаписать файл целиком. Всегда возвращает diff изменений.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Путь к файлу' },
+          mode: { type: 'string', enum: ['replace', 'insert', 'overwrite'], description: 'Режим редактирования' },
+          old_str: { type: 'string', description: '[replace] Уникальный фрагмент который нужно заменить. Включай 2-3 строки контекста для уникальности.' },
+          new_str: { type: 'string', description: '[replace] Новый фрагмент (пустая строка = удалить)' },
+          after_line: { type: 'number', description: '[insert] Вставить после этой строки (1-indexed)' },
+          content: { type: 'string', description: '[insert/overwrite] Контент для вставки или перезаписи' },
+        },
+        required: ['path', 'mode'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'multi_edit_file',
+      description: 'Несколько замен в одном файле за один вызов. Используй когда нужно изменить 2+ независимых места в файле.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Путь к файлу' },
+          edits: {
+            type: 'array',
+            description: 'Список замен — применяются последовательно',
+            items: {
+              type: 'object',
+              properties: {
+                old_str: { type: 'string', description: 'Уникальный фрагмент для замены' },
+                new_str: { type: 'string', description: 'Новый фрагмент' },
+              },
+              required: ['old_str', 'new_str'],
+            },
+          },
+        },
+        required: ['path', 'edits'],
+      },
+    },
+  },
   {
     type: 'function' as const,
     function: {

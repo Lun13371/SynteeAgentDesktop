@@ -1,7 +1,7 @@
 import { motion, type HTMLMotionProps } from 'framer-motion'
 import {
   Bot, Brain, Settings, User, Plus, Lock, Pin, Paperclip, Mic,
-  SendHorizontal, Copy, Globe, FileText, Search, Sparkles, Calculator,
+  SendHorizontal, Copy, Globe, FileText, FilePen, Search, Sparkles, Calculator,
   Folder, Clipboard, Terminal, Monitor, Pencil, Check, X, AlertCircle,
   Eye, EyeOff, Palette, Link2, Database, Volume2, LoaderCircle, Minus,
   Shield, Info, RefreshCw, ChevronUp, ChevronDown, Trash2, Zap,
@@ -15,7 +15,7 @@ type IconComponent = (props: LucideProps) => JSX.Element
 const ICONS = {
   bot: Bot, brain: Brain, settings: Settings, user: User, plus: Plus,
   lock: Lock, pin: Pin, paperclip: Paperclip, mic: Mic, send: SendHorizontal,
-  copy: Copy, globe: Globe, fileText: FileText, search: Search,
+  copy: Copy, globe: Globe, fileText: FileText, filePen: FilePen, search: Search,
   sparkles: Sparkles, calculator: Calculator, folder: Folder,
   clipboard: Clipboard, terminal: Terminal, monitor: Monitor, edit: Pencil,
   check: Check, x: X, alertCircle: AlertCircle, eye: Eye, eyeOff: EyeOff,

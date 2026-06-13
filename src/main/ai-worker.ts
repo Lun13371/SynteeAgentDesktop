@@ -156,6 +156,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 success: step.success,
                 timestamp: Date.now(),
                 imageUrl: step.imageUrl,
+                diff: (step as { diff?: string }).diff,
               }
               collectedSteps.push(ts)
               currentIterSteps.push(ts)

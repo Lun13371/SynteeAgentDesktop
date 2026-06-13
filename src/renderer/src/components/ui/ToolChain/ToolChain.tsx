@@ -13,9 +13,12 @@ export interface ToolStep {
   success?: boolean
   timestamp: number
   imageUrl?: string
+  diff?: string  // unified diff для edit_file / multi_edit_file
 }
 
 const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
+  edit_file:       { label: 'Редактировать', icon: 'filePen',   color: '#fb923c' },
+  multi_edit_file: { label: 'Мульти-правка', icon: 'filePen',   color: '#fb923c' },
   run_command:     { label: 'Команда',       icon: 'terminal',  color: '#f59e0b' },
   write_file:      { label: 'Запись файла',  icon: 'fileText',  color: '#f87171' },
   read_file:       { label: 'Чтение файла',  icon: 'fileText',  color: '#60a5fa' },
@@ -72,6 +75,23 @@ function truncate(s: string, n = 80) {
 function formatArg(v: unknown): string {
   if (typeof v === 'string') return v
   return JSON.stringify(v, null, 2)
+}
+
+// Цветной diff блок
+function DiffBlock({ diff }: { diff: string }) {
+  const lines = diff.split('\n')
+  return (
+    <div className="tc2-diff-pre">
+      {lines.map((line, i) => {
+        let cls = 'tc2-diff-line'
+        if (line.startsWith('+') && !line.startsWith('+++')) cls += ' tc2-diff-add'
+        else if (line.startsWith('-') && !line.startsWith('---')) cls += ' tc2-diff-del'
+        else if (line.startsWith('@@')) cls += ' tc2-diff-hunk'
+        else if (line.startsWith('---') || line.startsWith('+++')) cls += ' tc2-diff-meta'
+        return <div key={i} className={cls}>{line || ' '}</div>
+      })}
+    </div>
+  )
 }
 
 // Один блок итерации
@@ -178,6 +198,8 @@ function IterationBlock({
                         onClick={() => window.open(`file://${iter.result!.imageUrl}`, '_blank')}
                       />
                     </div>
+                  ) : iter.result.diff ? (
+                    <DiffBlock diff={iter.result.diff} />
                   ) : (
                     <pre className="tc2-result-pre">
                       {truncate(iter.result.content, mode === 'detailed' ? 1000 : 300)}
