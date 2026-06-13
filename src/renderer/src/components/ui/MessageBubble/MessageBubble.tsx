@@ -1,4 +1,4 @@
-import { useState, useMemo, memo, useCallback } from 'react'
+import { useState, useMemo, memo, useCallback, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -10,6 +10,7 @@ import type { Message, ToolOutputMode } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
+import AgentCard from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import 'katex/dist/katex.min.css'
@@ -220,6 +221,29 @@ const MessageContent = memo(function MessageContent({
           <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={!!isStreaming} />
         )}
 
+        {/* Карточки суб-агентов */}
+        {!isUser && toolSteps && toolSteps
+          .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
+          .map(s => {
+            // Ищем соответствующий tool_result чтобы получить agentId
+            const resultStep = toolSteps.find(r =>
+              r.type === 'tool_result' && r.toolName === 'spawn_agent' &&
+              r.timestamp >= s.timestamp
+            )
+            const agentIdMatch = resultStep?.content?.match(/\[AGENT:([^\]]+)\]/)
+            const agentId = agentIdMatch?.[1]
+            if (!agentId) return null
+            return (
+              <AgentCardLive
+                key={agentId}
+                agentId={agentId}
+                task={(s.toolArgs?.task as string) ?? ''}
+                parallel={!!(s.toolArgs?.parallel)}
+              />
+            )
+          })
+        }
+
         {/* Сгенерированные изображения из tool steps — показываем прямо в чате */}
         {!isUser && toolSteps && toolSteps
           .filter(s => s.type === 'tool_result' && s.imageUrl)
@@ -361,3 +385,56 @@ const MessageBubble = memo(function MessageBubble({
 })
 
 export default MessageBubble
+
+// ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
+function AgentCardLive({ agentId, task, parallel }: {
+  agentId: string
+  task: string
+  parallel: boolean
+}) {
+  const [agent, setAgent] = useState<{
+    id: string; status: string; model: string; steps: unknown[]
+    summary: string; error?: string; createdAt: number; finishedAt?: number
+  } | null>(null)
+
+  useEffect(() => {
+    // Загружаем начальное состояние
+    window.syntee.agent.get(agentId).then((a: unknown) => {
+      if (a) setAgent(a as never)
+    })
+    // Подписываемся на обновления
+    const off = window.syntee.on('agent:update', (updated: { id: string } & Record<string, unknown>) => {
+      if (updated.id === agentId) setAgent(updated as never)
+    })
+    return () => off()
+  }, [agentId])
+
+  const status = (agent?.status ?? 'pending') as 'pending' | 'running' | 'done' | 'error' | 'cancelled'
+  const currentTool = (agent?.steps as Array<{ type: string; toolName?: string }> | undefined)
+    ?.filter(s => s.type === 'tool_call').slice(-1)[0]?.toolName
+
+  return (
+    <AgentCard
+      agent={{
+        id: agentId,
+        task,
+        status,
+        model: agent?.model ?? '…',
+        parallel,
+        stepsCount: agent?.steps?.length ?? 0,
+        currentStep: status === 'running' && currentTool ? currentTool : undefined,
+        summary: agent?.summary,
+        error: agent?.error,
+        createdAt: agent?.createdAt ?? Date.now(),
+        finishedAt: agent?.finishedAt,
+      }}
+      onClick={() => {
+        // Открываем AgentPanel с фокусом на этом агенте
+        window.syntee.on('agent:focus', agentId as never)
+        // Шлём событие чтобы TitleBar открыл панель
+        window.dispatchEvent(new CustomEvent('open-agent-panel', { detail: { agentId } }))
+      }}
+    />
+  )
+}
+

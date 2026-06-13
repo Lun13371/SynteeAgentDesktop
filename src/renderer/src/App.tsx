@@ -36,6 +36,7 @@ export default function App() {
   const [route, setRoute] = useState<Route>(getRoute())
   const [mainPage, setMainPage] = useState<MainPage>('chat')
   const [showAgent, setShowAgent] = useState(false)
+  const [focusAgentId, setFocusAgentId] = useState<string | null>(null)
   const [onboarded, setOnboarded] = useState<boolean | null>(null)
   const { theme } = useUIStore()
 
@@ -48,6 +49,17 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
+
+  // Слушаем open-agent-panel от AgentCardLive
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const agentId = (e as CustomEvent<{ agentId: string }>).detail?.agentId ?? null
+      setFocusAgentId(agentId)
+      setShowAgent(true)
+    }
+    window.addEventListener('open-agent-panel', handler)
+    return () => window.removeEventListener('open-agent-panel', handler)
+  }, [])
 
   // Проверяем первый запуск
   useEffect(() => {
@@ -79,7 +91,7 @@ export default function App() {
       <AnimatedBackground />
       <TitleBar
         onSettingsClick={() => setMainPage(p => p === 'settings' ? 'chat' : 'settings')}
-        onAgentClick={() => setShowAgent(p => !p)}
+        onAgentClick={() => { setFocusAgentId(null); setShowAgent(p => !p) }}
         onMemoryClick={() => setMainPage(p => p === 'memory' ? 'chat' : 'memory')}
       />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
@@ -89,7 +101,12 @@ export default function App() {
           {mainPage === 'memory' && <MemoryPage />}
         </div>
         <AnimatePresence>
-          {showAgent && <AgentPanel onClose={() => setShowAgent(false)} />}
+          {showAgent && (
+            <AgentPanel
+              onClose={() => { setShowAgent(false); setFocusAgentId(null) }}
+              focusAgentId={focusAgentId}
+            />
+          )}
         </AnimatePresence>
       </div>
       <ToastContainer />

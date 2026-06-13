@@ -547,4 +547,19 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'spawn_agent',
+      description: 'Запустить суб-агента для выполнения подзадачи. Используй когда задачу лучше делегировать — параллельно или последовательно.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'Подробное описание задачи для суб-агента' },
+          parallel: { type: 'boolean', description: 'true — запустить параллельно (не ждать результата), false — ждать завершения и получить итог' },
+        },
+        required: ['task'],
+      },
+    },
+  },
 ]

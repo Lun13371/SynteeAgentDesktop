@@ -23,6 +23,12 @@ export interface AgentCallbacks {
   onError: (err: Error) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: ApprovalMode
+  onSpawnAgent?: (opts: {
+    id: string
+    task: string
+    parallel: boolean
+    model?: string
+  }) => Promise<{ summary: string; error?: string }>
 }
 
 const SYSTEM_PROMPT = `Ты Syntee — персональный AI-ассистент для Windows.
@@ -230,6 +236,25 @@ export class Agent {
         )
       case 'analyze_project':
         return analyzeProject(args.path as string)
+      case 'spawn_agent': {
+        if (!callbacks.onSpawnAgent) {
+          return { success: false, output: '', error: 'spawn_agent не поддерживается в этом контексте' }
+        }
+        const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        const result = await callbacks.onSpawnAgent({
+          id: agentId,
+          task: args.task as string,
+          parallel: !!(args.parallel ?? false),
+          model: args.model as string | undefined,
+        })
+        if (result.error) return { success: false, output: '', error: result.error }
+        return {
+          success: true,
+          output: args.parallel
+            ? `[AGENT:${agentId}] Суб-агент запущен параллельно: "${args.task}"`
+            : `[AGENT:${agentId}] Суб-агент завершил: ${result.summary}`,
+        }
+      }
       default:
         return { success: false, output: '', error: `Неизвестный инструмент: ${name}` }
     }
