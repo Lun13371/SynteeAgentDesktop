@@ -101,7 +101,9 @@ export interface Provider {
   type: ProviderType
   name: string             // отображаемое название
   baseUrl: string          // https://api.openai.com/v1
-  apiKey: string           // зашифрованный или пустой для Ollama
+  apiKey: string           // основной ключ (обратная совместимость)
+  apiKeys?: string[]       // несколько ключей — round-robin
+  rrIndex?: number         // текущий индекс round-robin
   enabled: boolean
   isCustom: boolean
   iconUrl?: string         // для кастомных провайдеров
