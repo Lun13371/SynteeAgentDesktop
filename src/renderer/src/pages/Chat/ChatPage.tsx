@@ -344,8 +344,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleCopy = () => toast('Скопировано', 'success')
 
   // Собираем отображаемые сообщения (включая стриминг)
-  // Live пузырь показываем только если streamMsgIdRef установлен (пришёл хотя бы один токен/шаг)
-  const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0 || isTyping
+  // Live пузырь — только если реально есть что показывать (текст/шаги/thinking)
+  // isTyping не считается — он ставится сразу при отправке до первых данных
+  const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0
   const showLiveBubble = hasLiveContent && !!streamMsgIdRef.current
   const isStreaming = showLiveBubble
   const displayMessages = showLiveBubble
