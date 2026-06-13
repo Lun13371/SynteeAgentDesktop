@@ -431,7 +431,7 @@ export default function AISettingsTab() {
                   setImageProviderId(pid)
                   window.syntee.image.setSettings({ modelId, providerId: pid })
                 }}
-                filterCaps={['image_gen']}
+                filterCaps={['image_gen'] as ModelCapability[]}
                 placeholder="Не выбрано"
               />
             </div>

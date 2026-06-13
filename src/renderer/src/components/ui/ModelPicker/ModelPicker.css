@@ -118,6 +118,66 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+.model-cap-badge--active {
+  background: rgba(139, 92, 246, 0.2);
+  color: rgba(167, 139, 250, 0.9);
+}
+
+/* ── Фильтры по capability ───────────────────────────────────── */
+.model-picker-caps-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.model-picker-cap-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.model-picker-cap-pill:hover {
+  border-color: rgba(139, 92, 246, 0.35);
+  color: rgba(167, 139, 250, 0.8);
+  background: rgba(139, 92, 246, 0.08);
+}
+.model-picker-cap-pill--active {
+  border-color: rgba(139, 92, 246, 0.5);
+  background: rgba(139, 92, 246, 0.15);
+  color: rgba(167, 139, 250, 1);
+}
+.model-picker-cap-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  transition: all 0.12s;
+  margin-left: 2px;
+}
+.model-picker-cap-clear:hover {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: rgba(248, 113, 113, 0.8);
+  background: rgba(248, 113, 113, 0.08);
+}
+
 
 /* Tooltip */
 .model-picker-tooltip {

@@ -9,13 +9,17 @@ interface ModelPickerProps {
   value: string
   providerId: string
   onChange: (modelId: string, providerId: string) => void
-  filterCaps?: ModelCapability[]
+  filterCaps?: ModelCapability[]   // начальный фильтр (можно снять)
   placeholder?: string
 }
 
 const CAP_LABELS: Record<ModelCapability, string> = {
-  vision: 'Vision', tools: 'Tools', reasoning: 'Reasoning',
-  code: 'Code', embedding: 'Embed', tts: 'TTS', stt: 'STT',
+  vision: 'Vision', tools: 'Tools', reasoning: 'Reason',
+  code: 'Code', embedding: 'Embed', tts: 'TTS', stt: 'STT', image_gen: 'Image',
+}
+const CAP_ICONS: Partial<Record<ModelCapability, string>> = {
+  vision: 'eye', tools: 'wrench', reasoning: 'brain', code: 'code2',
+  embedding: 'database', tts: 'volume', stt: 'mic', image_gen: 'image',
 }
 const SPEED_LABEL: Record<string, string> = { fast: 'Быстро', medium: 'Средне', slow: 'Медленно' }
 const SPEED_COLOR: Record<string, string> = { fast: '#4ade80', medium: '#facc15', slow: '#f87171' }
@@ -35,16 +39,19 @@ function getProviderColor(pid: string): string {
     groq: '#f55036', mistral: '#ff7000', ollama: '#aaaaaa',
     cohere: '#39594d', together: '#7c3aed', fireworks: '#ef4444',
     deepseek: '#2563eb', xai: '#ffffff', onlysq: '#a855f7', voidai: '#06b6d4',
+    bfl: '#e11d48',
   }
   return colors[pid] || '#888'
 }
 
-const DROP_H = 420
+const DROP_H = 460
+const ALL_CAPS: ModelCapability[] = ['vision', 'tools', 'reasoning', 'code', 'image_gen', 'embedding', 'tts', 'stt']
 
 export default function ModelPicker({ value, providerId, onChange, filterCaps, placeholder }: ModelPickerProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [models, setModels] = useState<ModelMeta[]>([])
+  const [activeCaps, setActiveCaps] = useState<ModelCapability[]>(filterCaps ?? [])
   const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number; openUp: boolean } | null>(null)
   const [hovered, setHovered] = useState<ModelMeta | null>(null)
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 })
@@ -61,12 +68,17 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
     if (open) setTimeout(() => inputRef.current?.focus(), 50)
   }, [open])
 
+  // Сбрасываем activeCaps при смене внешнего filterCaps
+  useEffect(() => {
+    setActiveCaps(filterCaps ?? [])
+  }, [filterCaps?.join(',')])
+
   const handleOpen = () => {
     if (!btnRef.current) return
     const r = btnRef.current.getBoundingClientRect()
     const spaceBelow = window.innerHeight - r.bottom
     const openUp = spaceBelow < DROP_H + 12
-    const dropW = Math.max(r.width, 300)
+    const dropW = Math.max(r.width, 320)
     const rawLeft = r.left
     const left = Math.min(rawLeft, window.innerWidth - dropW - 8)
     setDropPos({
@@ -82,13 +94,21 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
     if (!open) return
     const close = () => setOpen(false)
     document.addEventListener('mousedown', close)
-    // НЕ вешаем scroll — мешает скролу внутри дропдауна
     return () => document.removeEventListener('mousedown', close)
   }, [open])
 
+  const toggleCap = (cap: ModelCapability) => {
+    setActiveCaps(prev =>
+      prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]
+    )
+  }
+
+  // Какие caps реально есть в текущих моделях — чтобы не показывать пустые кнопки
+  const availableCaps = ALL_CAPS.filter(c => models.some(m => m.capabilities.includes(c)))
+
   // Фильтрация
   let filtered = models
-  if (filterCaps?.length) filtered = filtered.filter(m => filterCaps.every(c => m.capabilities.includes(c)))
+  if (activeCaps.length) filtered = filtered.filter(m => activeCaps.every(c => m.capabilities.includes(c)))
   if (query.trim()) {
     const q = query.toLowerCase()
     filtered = filtered.filter(m =>
@@ -109,7 +129,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
 
   const handleItemHover = (e: React.MouseEvent, m: ModelMeta) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setTooltipPos({ top: r.top, left: (dropPos?.left ?? 0) + (dropPos?.width ?? 300) + 8 })
+    setTooltipPos({ top: r.top, left: (dropPos?.left ?? 0) + (dropPos?.width ?? 320) + 8 })
     setHovered(m)
   }
 
@@ -165,10 +185,38 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                   )}
                 </div>
 
+                {/* Фильтры по capability */}
+                {availableCaps.length > 0 && (
+                  <div className="model-picker-caps-row">
+                    {availableCaps.map(cap => (
+                      <button
+                        key={cap}
+                        className={`model-picker-cap-pill ${activeCaps.includes(cap) ? 'model-picker-cap-pill--active' : ''}`}
+                        onClick={() => toggleCap(cap)}
+                        title={CAP_LABELS[cap]}
+                      >
+                        {CAP_ICONS[cap] && <AppIcon name={CAP_ICONS[cap] as 'eye'} size="xs" />}
+                        {CAP_LABELS[cap]}
+                      </button>
+                    ))}
+                    {activeCaps.length > 0 && (
+                      <button
+                        className="model-picker-cap-clear"
+                        onClick={() => setActiveCaps([])}
+                        title="Сбросить фильтры"
+                      >
+                        <AppIcon name="x" size="xs" />
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {/* Список */}
                 <div className="model-picker-list">
                   {Object.entries(grouped).length === 0 && (
-                    <div className="model-picker-empty">Модели не найдены</div>
+                    <div className="model-picker-empty">
+                      {activeCaps.length ? 'Нет моделей с такими фильтрами' : 'Модели не найдены'}
+                    </div>
                   )}
                   {Object.entries(grouped).map(([pid, mods]) => (
                     <div key={pid} className="model-picker-group">
@@ -178,7 +226,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                       </div>
                       {mods.map((m, idx) => (
                         <motion.div
-                          key={m.id}
+                          key={m.id + m.providerId}
                           className={`model-picker-item ${m.id === value && m.providerId === providerId ? 'model-picker-item--active' : ''}`}
                           initial={{ opacity: 0, x: -8 }}
                           animate={{ opacity: 1, x: 0 }}
@@ -190,7 +238,9 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                           <span className="model-picker-item-name">{m.name}</span>
                           <div className="model-picker-item-caps">
                             {m.capabilities.slice(0, 3).map(c => (
-                              <span key={c} className="model-cap-badge">{CAP_LABELS[c]}</span>
+                              <span key={c} className={`model-cap-badge ${activeCaps.includes(c) ? 'model-cap-badge--active' : ''}`}>
+                                {CAP_LABELS[c]}
+                              </span>
                             ))}
                           </div>
                           {m.id === value && m.providerId === providerId && (
@@ -205,7 +255,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
             )}
           </AnimatePresence>
 
-          {/* Tooltip — отдельный portal слой */}
+          {/* Tooltip */}
           <AnimatePresence>
             {hovered && open && (
               <motion.div
