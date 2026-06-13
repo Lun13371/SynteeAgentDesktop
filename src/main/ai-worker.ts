@@ -79,7 +79,22 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   let thinkingMs: number | undefined
   const collectedSteps: unknown[] = []
 
+  // Итерации для сохранения в БД — {label?, textBefore, steps[]}
+  const collectedIters: Array<{ label?: string; textBefore: string; steps: unknown[] }> = []
+  let currentIterTextBefore = ''
+  let currentIterSteps: unknown[] = []
+  let pendingTextAfter = ''  // текст после последнего тулчейна
+
+  const flushIter = () => {
+    if (currentIterSteps.length > 0) {
+      collectedIters.push({ textBefore: currentIterTextBefore, steps: currentIterSteps })
+      currentIterTextBefore = ''
+      currentIterSteps = []
+    }
+  }
+
   const finalize = () => {
+    flushIter()
     send({
       type: 'done',
       chatId, msgId,
@@ -87,6 +102,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       thinkingText: thinkingText || undefined,
       thinkingMs,
       collectedSteps,
+      collectedIters: collectedIters.length > 0 ? collectedIters : undefined,
       incognito,
       content,
     })
@@ -94,11 +110,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
 
   try {
     if (enableTools && !incognito) {
-      // Агентский режим
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       const agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
-      // История как текст для контекста
       const historyContext = history.slice(-10)
         .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
         .join('\n')
@@ -110,7 +124,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         messageWithContext,
         {
           onStep: (step) => {
-            if (step.type === 'tool_call' || step.type === 'tool_result') {
+            if (step.type === 'tool_call') {
               const ts = {
                 id: `${Date.now()}-${Math.random()}`,
                 type: step.type,
@@ -122,6 +136,29 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 imageUrl: step.imageUrl,
               }
               collectedSteps.push(ts)
+              if (currentIterSteps.some((s: unknown) => (s as { type: string }).type === 'tool_result')) {
+                flushIter()
+                currentIterTextBefore = pendingTextAfter
+                pendingTextAfter = ''
+              } else if (currentIterSteps.length === 0) {
+                currentIterTextBefore = pendingTextAfter
+                pendingTextAfter = ''
+              }
+              currentIterSteps.push(ts)
+              send({ type: 'step', chatId, msgId, step })
+            } else if (step.type === 'tool_result') {
+              const ts = {
+                id: `${Date.now()}-${Math.random()}`,
+                type: step.type,
+                toolName: step.toolName,
+                toolArgs: step.toolArgs,
+                content: step.content,
+                success: step.success,
+                timestamp: Date.now(),
+                imageUrl: step.imageUrl,
+              }
+              collectedSteps.push(ts)
+              currentIterSteps.push(ts)
               send({ type: 'step', chatId, msgId, step })
             } else if (step.type === 'thought') {
               if (!thinkingStartMs) thinkingStartMs = Date.now()
@@ -132,6 +169,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'thinking_done', chatId, msgId, thinkingMs })
             } else if (step.type === 'answer') {
               fullText += step.content
+              pendingTextAfter += step.content
               send({ type: 'token', chatId, msgId, token: step.content })
             }
           },

@@ -161,15 +161,14 @@ export class Agent {
         // content НЕ стримился (hasToolCalls=true в AIClient), так и должно быть
         messages.push({ role: 'assistant', content: response.content || '', tool_calls: response.tool_calls })
 
-        // Все tool_calls этой итерации — выполняем последовательно
-        for (const call of response.tool_calls) {
+        // Все tool_calls этой итерации — выполняем параллельно
+        await Promise.all(response.tool_calls.map(async (call) => {
           const fn = (call as { function: { name: string; arguments: string } }).function
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(fn.arguments) } catch {}
 
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name })
 
-          // Проверка режима подтверждения
           const mode = callbacks.approvalMode || 'auto'
           if (mode === 'ask' && callbacks.onConfirm) {
             const approved = await callbacks.onConfirm(fn.name, args)
@@ -181,13 +180,12 @@ export class Agent {
                 content: 'Действие отклонено пользователем.',
               })
               callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: 'Отклонено пользователем', success: false })
-              continue
+              return
             }
           }
 
           const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
-          // Если tool вернул [IMAGE:path] — вытаскиваем путь, не кидаем в контекст AI
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
           const imageUrl = imageMatch ? imageMatch[1] : undefined
           const contentForAI = imageUrl
@@ -208,7 +206,7 @@ export class Agent {
             name: fn.name,
             content: contentForAI,
           })
-        }
+        }))
       } catch (err) {
         callbacks.onError(err instanceof Error ? err : new Error(String(err)))
         return

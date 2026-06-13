@@ -267,9 +267,19 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
-        {!isUser && toolSteps && toolSteps.length > 0 && !liveIters?.length && (
+        {!isUser && toolSteps && toolSteps.length > 0 && !liveIters?.length && !(message as Message & { iterations?: unknown[] }).iterations?.length && (
           <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={false} />
         )}
+
+        {/* Финальный рендер итераций из БД */}
+        {!isUser && !liveIters?.length && (message as Message & { iterations?: Array<{ label?: string; textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).iterations?.map((iter, i) => (
+          <div key={i} className="message-iteration">
+            {iter.textBefore && <MessageMarkdown content={iter.textBefore} searchQuery={searchQuery} />}
+            {iter.steps.length > 0 && (
+              <ToolChain steps={iter.steps} mode={toolOutputMode} isRunning={false} label={iter.label} />
+            )}
+          </div>
+        ))}
 
         {/* Карточки суб-агентов */}
         {!isUser && toolSteps && !liveIters?.length && toolSteps
