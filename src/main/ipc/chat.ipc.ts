@@ -196,6 +196,65 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           break
         }
 
+        case 'get_agent_status': {
+          const record = agentManager.get(msg.agent_id as string)
+          worker.postMessage({
+            type: 'get_agent_status_reply',
+            replyId: msg.replyId,
+            status: record ? {
+              status: record.status,
+              stepsCount: record.steps.length,
+              currentStep: record.steps.length > 0
+                ? record.steps[record.steps.length - 1].content?.slice(0, 80)
+                : undefined,
+            } : null,
+          })
+          break
+        }
+
+        case 'wait_agents': {
+          // Ждём пока все агенты завершатся (polling с timeout 5 мин)
+          ;(async () => {
+            const agentIds = msg.agentIds as string[]
+            const TIMEOUT = 5 * 60 * 1000
+            const POLL_INTERVAL = 1000
+            const start = Date.now()
+            while (Date.now() - start < TIMEOUT) {
+              const records = agentIds.map(id => agentManager.get(id))
+              const allDone = records.every(r => r && (r.status === 'done' || r.status === 'error' || r.status === 'cancelled'))
+              if (allDone) {
+                // Шлём обновления статусов обратно в worker
+                agentIds.forEach(id => {
+                  const r = agentManager.get(id)
+                  if (r) worker.postMessage({ type: 'agent_status_update', agentId: id, statusData: { status: r.status, stepsCount: r.steps.length } })
+                })
+                worker.postMessage({
+                  type: 'wait_agents_reply',
+                  replyId: msg.replyId,
+                  results: records.map(r => ({ summary: r?.result ?? '', error: r?.error })),
+                })
+                return
+              }
+              // Шлём промежуточные статусы
+              agentIds.forEach(id => {
+                const r = agentManager.get(id)
+                if (r) worker.postMessage({ type: 'agent_status_update', agentId: id, statusData: { status: r.status, stepsCount: r.steps.length, currentStep: r.steps.at(-1)?.content?.slice(0, 80) } })
+              })
+              await new Promise(r => setTimeout(r, POLL_INTERVAL))
+            }
+            // Timeout — возвращаем что есть
+            worker.postMessage({
+              type: 'wait_agents_reply',
+              replyId: msg.replyId,
+              results: agentIds.map(id => {
+                const r = agentManager.get(id)
+                return { summary: r?.result ?? '', error: r?.status !== 'done' ? `Таймаут (${r?.status})` : undefined }
+              }),
+            })
+          })()
+          break
+        }
+
         case 'rate_limit':
           win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec })
           break

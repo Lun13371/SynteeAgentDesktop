@@ -562,4 +562,18 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_agent_status',
+      description: 'Проверить статус суб-агента — активен ли, что сейчас делает, сколько шагов выполнил. Используй когда запустил агента параллельно и хочешь узнать прогресс.',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent_id: { type: 'string', description: 'ID суб-агента из [AGENT:id] маркера' },
+        },
+        required: ['agent_id'],
+      },
+    },
+  },
 ]
