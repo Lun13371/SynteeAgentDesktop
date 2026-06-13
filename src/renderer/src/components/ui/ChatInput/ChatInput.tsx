@@ -4,6 +4,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
+import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
 import type { ApprovalMode } from '../../../../../shared/types'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import './ChatInput.css'
@@ -20,6 +21,9 @@ interface ChatInputProps {
   contextInfo?: ContextInfo | null
   showContextRing?: boolean
   onInputChange?: (text: string) => void
+  mainModelId?: string
+  reasoningValue?: string
+  onReasoningChange?: (value: string) => void
 }
 
 export default function ChatInput({
@@ -28,6 +32,9 @@ export default function ChatInput({
   isGenerating, onStop,
   contextInfo, showContextRing = true,
   onInputChange,
+  mainModelId = '',
+  reasoningValue = '',
+  onReasoningChange,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
@@ -114,6 +121,15 @@ export default function ChatInput({
             value={approvalMode}
             onChange={handleApprovalChange}
             compact
+          />
+        )}
+
+        {/* Селектор reasoning — показывается только для поддерживающих моделей */}
+        {!isIncognito && mainModelId && onReasoningChange && (
+          <ReasoningSelector
+            modelId={mainModelId}
+            value={reasoningValue}
+            onChange={onReasoningChange}
           />
         )}
 
