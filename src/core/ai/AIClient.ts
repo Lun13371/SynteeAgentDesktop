@@ -45,7 +45,6 @@ export class AIClient {
     this.client = this.createClient()
   }
 
-  // Читаем модель из modelAssignments (новый формат) с fallback на старый ключ
   private getModel(type: 'main' | 'fast' | 'vision' | 'summary' | 'router' | 'emotion'): string {
     const defaults: Record<string, string> = {
       main:    'claude-sonnet-4-6',
@@ -58,12 +57,10 @@ export class AIClient {
     const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
     const found = assignments?.find(a => a.role === type)
     if (found?.modelId) return found.modelId
-    // fallback — старые ключи mainModel/fastModel
     const storeKey = `${type}Model`
     return (this.store.get(storeKey) as string) || defaults[type]
   }
 
-  // Получить endpoint+key для конкретного провайдера роли
   private getClientForRole(type: string): OpenAI {
     const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
     const assignment = assignments?.find(a => a.role === type)
@@ -76,7 +73,6 @@ export class AIClient {
     return new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseUrl })
   }
 
-  // Стриминг чата с retry при rate limit
   async streamChat(
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
@@ -88,105 +84,123 @@ export class AIClient {
     const client = this.getClientForRole(modelType)
 
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
-    if (systemPrompt) {
-      allMessages.push({ role: 'system', content: systemPrompt })
-    }
+    if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
 
-    let attempt = 0
+    // Модели требующие enable_thinking в extra_body
+    const needsEnableThinking = /glm|qwq|qwen.*think|deepseek.*r1/i.test(model)
 
+    let attempt = 0
     let fullText = ''
+
     while (attempt <= this.maxRetries) {
       try {
-        const stream = await client.chat.completions.create({
+        const reqParams: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
           model,
           messages: allMessages,
           stream: true,
           temperature: (this.store.get('temperature') as number) || 0.7,
           max_tokens: (this.store.get('maxTokens') as number) || 4096,
-        }, { signal })
+        }
+
+        const stream = await client.chat.completions.create(
+          needsEnableThinking
+            ? { ...reqParams, ...({ extra_body: { enable_thinking: true } } as object) }
+            : reqParams,
+          { signal }
+        )
 
         let chunkCount = 0
         let thinkingStartMs = 0
         let thinkingDoneSent = false
-        let thinkBuffer = ''
         let inThinkTag = false
+        let thinkBuffer = ''
 
         for await (const chunk of stream) {
           if (signal?.aborted) break
-          const delta = chunk.choices[0]?.delta as Record<string, unknown>
+          const delta = (chunk.choices[0]?.delta ?? {}) as Record<string, unknown>
+          chunkCount++
 
-          // Reasoning токены — извлекаем только строки
-          const rawReasoning = delta?.reasoning_content ?? delta?.thinking
-          const reasoningToken = typeof rawReasoning === 'string'
-            ? rawReasoning
-            : typeof (rawReasoning as Record<string, unknown>)?.text === 'string'
-              ? (rawReasoning as Record<string, unknown>).text as string
-              : rawReasoning != null
-                ? String(rawReasoning)
-                : ''
-          if (reasoningToken) {
-            if (!thinkingStartMs) thinkingStartMs = Date.now()
-            callbacks.onThinkingToken?.(reasoningToken)
+          // --- Путь 1: отдельное поле reasoning_content / thinking ---
+          const rawReasoning = delta.reasoning_content ?? delta.thinking
+          if (rawReasoning !== undefined && rawReasoning !== null) {
+            const tok = typeof rawReasoning === 'string'
+              ? rawReasoning
+              : typeof (rawReasoning as Record<string, unknown>).text === 'string'
+                ? (rawReasoning as Record<string, unknown>).text as string
+                : String(rawReasoning)
+            if (tok) {
+              if (!thinkingStartMs) thinkingStartMs = Date.now()
+              callbacks.onThinkingToken?.(tok)
+            } else if (thinkingStartMs && !thinkingDoneSent) {
+              thinkingDoneSent = true
+              callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
+            }
+            continue // не обрабатываем content в этом чанке
           }
 
-          // Если reasoning закончился (был, теперь нет) — шлём done
-          if (thinkingStartMs && !reasoningToken && !thinkingDoneSent) {
+          // Путь 1 завершился (поле исчезло) — шлём done
+          if (thinkingStartMs && !thinkingDoneSent) {
             thinkingDoneSent = true
             callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
           }
 
-          const token = delta?.content as string ?? ''
-          chunkCount++
-          if (token) {
-            // Fallback: провайдер шлёт <think>...</think> прямо в delta.content
-            if (token.includes('<think>') || token.includes('</think>') || inThinkTag) {
-              // Аккумулируем буфер и парсим теги
-              thinkBuffer += token
-              // Извлекаем thinking части
-              const thinkRegex = /<think>([\s\S]*?)<\/think>/g
-              let thinkMatch
-              let lastIndex = 0
-              while ((thinkMatch = thinkRegex.exec(thinkBuffer)) !== null) {
-                const thinkContent = thinkMatch[1]
-                if (thinkContent) {
-                  if (!thinkingStartMs) thinkingStartMs = Date.now()
-                  callbacks.onThinkingToken?.(thinkContent)
+          // --- Путь 2: <think>...</think> внутри delta.content ---
+          const rawContent = (delta.content as string) ?? ''
+          if (!rawContent) continue
+
+          if (inThinkTag || rawContent.includes('<think>')) {
+            thinkBuffer += rawContent
+            let searchFrom = 0
+
+            while (true) {
+              if (!inThinkTag) {
+                const openIdx = thinkBuffer.indexOf('<think>', searchFrom)
+                if (openIdx === -1) {
+                  const plain = thinkBuffer.slice(searchFrom)
+                  if (plain) { fullText += plain; callbacks.onToken(plain) }
+                  thinkBuffer = ''
+                  break
                 }
-                lastIndex = thinkRegex.lastIndex
-              }
-              // Всё что после закрытого тега — обычный текст
-              if (thinkBuffer.includes('</think>')) {
-                const afterThink = thinkBuffer.split('</think>').pop() || ''
-                thinkBuffer = ''
-                inThinkTag = false
-                if (!thinkingDoneSent && thinkingStartMs) {
-                  thinkingDoneSent = true
-                  callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
-                }
-                if (afterThink) { fullText += afterThink; callbacks.onToken(afterThink) }
-              } else if (token.includes('<think>')) {
+                const before = thinkBuffer.slice(searchFrom, openIdx)
+                if (before) { fullText += before; callbacks.onToken(before) }
                 inThinkTag = true
+                searchFrom = openIdx + '<think>'.length
+                if (!thinkingStartMs) thinkingStartMs = Date.now()
               }
-            } else {
-              fullText += token
-              callbacks.onToken(token)
+
+              const closeIdx = thinkBuffer.indexOf('</think>', searchFrom)
+              if (closeIdx === -1) {
+                // тег ещё не закрыт — шлём partial и ждём
+                const partial = thinkBuffer.slice(searchFrom)
+                if (partial) callbacks.onThinkingToken?.(partial)
+                thinkBuffer = '<think>' + thinkBuffer.slice(searchFrom)
+                break
+              }
+
+              const thinkContent = thinkBuffer.slice(searchFrom, closeIdx)
+              if (thinkContent) callbacks.onThinkingToken?.(thinkContent)
+              if (!thinkingDoneSent) {
+                thinkingDoneSent = true
+                callbacks.onThinkingDone?.(Date.now() - (thinkingStartMs || Date.now()))
+              }
+              inThinkTag = false
+              searchFrom = closeIdx + '</think>'.length
             }
+          } else {
+            fullText += rawContent
+            callbacks.onToken(rawContent)
           }
         }
 
-        // Если thinking был но done не отправили (провайдер не даёт отдельного сигнала)
         if (thinkingStartMs && !thinkingDoneSent) {
           callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
         }
 
-        // Фоллбэк: если стриминг дал 0 токенов — пробуем non-stream
+        // Фоллбэк: стрим дал 0 токенов
         if (!fullText) {
-          console.warn(`[AIClient] stream вернул ${chunkCount} чанков но 0 токенов — фоллбэк на non-stream`)
           const res = await client.chat.completions.create({
-            model,
-            messages: allMessages,
-            stream: false,
+            model, messages: allMessages, stream: false,
             temperature: (this.store.get('temperature') as number) || 0.7,
             max_tokens: (this.store.get('maxTokens') as number) || 4096,
           })
@@ -199,23 +213,17 @@ export class AIClient {
 
       } catch (err: unknown) {
         const error = err as { status?: number; message?: string; name?: string }
-
-        // Abort — сохраняем что успели накопить
         if (error?.name === 'AbortError' || signal?.aborted) {
           callbacks.onDone(fullText ?? '')
           return
         }
-
         if (error?.status === 429) {
           const delay = backoffDelay(attempt)
-          const waitSec = Math.round(delay / 1000)
-          callbacks.onRateLimit?.(waitSec)
-          console.warn(`[AIClient] Rate limit, ждём ${waitSec}с (попытка ${attempt + 1}/${this.maxRetries})`)
+          callbacks.onRateLimit?.(Math.round(delay / 1000))
           await sleep(delay)
           attempt++
           continue
         }
-
         callbacks.onError(new Error(error?.message || 'Unknown AI error'))
         return
       }
@@ -224,7 +232,6 @@ export class AIClient {
     callbacks.onError(new Error('Превышено число попыток из-за rate limit'))
   }
 
-  // Одиночный запрос (без стриминга) с retry
   async complete(
     messages: ChatMessage[],
     modelType: 'main' | 'fast' | 'summary' | 'router' | 'emotion' = 'fast',
@@ -233,59 +240,43 @@ export class AIClient {
     const model = this.getModel(modelType)
     const client = this.getClientForRole(modelType)
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
-
-    if (systemPrompt) {
-      allMessages.push({ role: 'system', content: systemPrompt })
-    }
+    if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
 
     let attempt = 0
-
     while (attempt <= this.maxRetries) {
       try {
         const res = await client.chat.completions.create({
-          model,
-          messages: allMessages,
-          stream: false,
-          temperature: 0.3,
-          max_tokens: 1024,
+          model, messages: allMessages, stream: false,
+          temperature: 0.3, max_tokens: 1024,
         })
         return res.choices[0]?.message?.content || ''
-
       } catch (err: unknown) {
         const error = err as { status?: number }
         if (error?.status === 429) {
-          const delay = backoffDelay(attempt)
-          console.warn(`[AIClient] Rate limit на complete, ждём ${Math.round(delay / 1000)}с`)
-          await sleep(delay)
+          await sleep(backoffDelay(attempt))
           attempt++
           continue
         }
         throw err
       }
     }
-
     throw new Error('Rate limit: превышено число попыток')
   }
 
-  // Текст → речь, возвращает base64 mp3
   async textToSpeech(text: string): Promise<string> {
     const apiKey = this.store.get('apiKey') as string
     const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
     const voice = (this.store.get('voiceId') as string) || 'alloy'
     const response = await fetch(`${endpoint}/audio/speech`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'tts-1', input: text, voice }),
     })
     const buffer = await response.arrayBuffer()
     return Buffer.from(buffer).toString('base64')
   }
 
-  // Function calling — для агента
   async chatWithTools(
     messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: unknown[],
@@ -313,20 +304,12 @@ export class AIClient {
           signal,
         })
         if (res.status === 429) {
-          const wait = backoffDelay(attempt)
-          await sleep(wait)
+          await sleep(backoffDelay(attempt))
           attempt++
           continue
         }
         const data = await res.json() as {
-          choices: Array<{
-            message: {
-              content: string
-              tool_calls?: unknown[]
-              reasoning_content?: string
-              thinking?: string
-            }
-          }>
+          choices: Array<{ message: { content: string; tool_calls?: unknown[]; reasoning_content?: string; thinking?: string } }>
         }
         const msg = data.choices[0]?.message
         const rawReasoning = msg?.reasoning_content ?? msg?.thinking
@@ -340,12 +323,7 @@ export class AIClient {
     throw new Error('Agent: превышено число попыток')
   }
 
-  // Vision — анализ картинки
-  async analyzeImage(
-    imageBase64: string,
-    prompt: string,
-    callbacks: StreamCallbacks
-  ): Promise<void> {
+  async analyzeImage(imageBase64: string, prompt: string, callbacks: StreamCallbacks): Promise<void> {
     const model = this.getModel('vision')
     const client = this.getClientForRole('vision')
     let attempt = 0
@@ -354,30 +332,19 @@ export class AIClient {
       try {
         const stream = await client.chat.completions.create({
           model,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
-                { type: 'text', text: prompt },
-              ],
-            },
-          ],
-          stream: true,
-          max_tokens: 2048,
+          messages: [{ role: 'user', content: [
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+            { type: 'text', text: prompt },
+          ]}],
+          stream: true, max_tokens: 2048,
         })
-
         let fullText = ''
         for await (const chunk of stream) {
           const token = chunk.choices[0]?.delta?.content || ''
-          if (token) {
-            fullText += token
-            callbacks.onToken(token)
-          }
+          if (token) { fullText += token; callbacks.onToken(token) }
         }
         callbacks.onDone(fullText)
         return
-
       } catch (err: unknown) {
         const error = err as { status?: number }
         if (error?.status === 429) {
@@ -393,23 +360,16 @@ export class AIClient {
     }
   }
 
-  // Эмбеддинги
   async embed(text: string): Promise<number[]> {
     const model = (this.store.get('embeddingModel') as string) || 'gemini-embedding-2'
     let attempt = 0
-
     while (attempt <= this.maxRetries) {
       try {
         const res = await this.client.embeddings.create({ model, input: text })
         return res.data[0].embedding
-
       } catch (err: unknown) {
         const error = err as { status?: number }
-        if (error?.status === 429) {
-          await sleep(backoffDelay(attempt))
-          attempt++
-          continue
-        }
+        if (error?.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }
         throw err
       }
     }
