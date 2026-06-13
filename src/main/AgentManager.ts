@@ -147,7 +147,7 @@ class AgentManager {
 
       let worker: Worker
       try {
-        worker = new Worker(workerPath, { workerData: { storeData, isSubAgent: true } })
+        worker = new Worker(workerPath, { workerData: { storeData, isSubAgent: true }, env: process.env })
       } catch (e: any) {
         record.status = 'error'
         record.error = e.message
