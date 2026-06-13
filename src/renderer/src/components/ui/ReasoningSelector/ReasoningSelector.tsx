@@ -15,19 +15,8 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
   const [pos, setPos] = useState({ top: 0, left: 0 })
 
   const config = getReasoningConfig(modelId)
-
-  // Нет конфига или always_on без вариантов — не рендерим
-  if (!config || config.options.length <= 1 && config.paramType === 'always_on') return null
-
-  const effectiveValue = value || config.default
-  const current = config.options.find(o => o.value === effectiveValue) ?? config.options[0]
-
-  const handleOpen = () => {
-    if (!btnRef.current) return
-    const rect = btnRef.current.getBoundingClientRect()
-    setPos({ top: rect.top - 8, left: rect.left })
-    setOpen(true)
-  }
+  const effectiveValue = value || config?.default || ''
+  const current = config?.options.find(o => o.value === effectiveValue) ?? config?.options[0]
 
   useEffect(() => {
     if (!open) return
@@ -38,13 +27,23 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
     return () => document.removeEventListener('mousedown', close)
   }, [open])
 
-  // always_on — просто иконка без дропдауна
+  // Нет конфига — не рендерим
+  if (!config) return null
+
+  // always_on — просто бейдж без дропдауна
   if (config.paramType === 'always_on') {
     return (
       <span className="reasoning-selector-badge" title={config.hint}>
         🧠 reasoning
       </span>
     )
+  }
+
+  const handleOpen = () => {
+    if (!btnRef.current) return
+    const rect = btnRef.current.getBoundingClientRect()
+    setPos({ top: rect.top - 8, left: rect.left })
+    setOpen(true)
   }
 
   return (

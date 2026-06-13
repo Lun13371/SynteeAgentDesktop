@@ -397,10 +397,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onSend={handleSend}
             disabled={isTyping}
             isIncognito={isIncognito}
-            replyTo={replyToMessages}
-            onCancelReply={handleCancelReply}
+            replyTo={replyTo}
+            onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
             isGenerating={isTyping || isAgentRunning}
-            onStop={handleStop}
+            onStop={() => window.syntee.chat.stop()}
             contextInfo={contextInfo}
             showContextRing={showContextRing}
             onInputChange={setInputText}
