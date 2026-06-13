@@ -159,11 +159,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       addMessage(data.message)
       clearStream()
       setTyping(false)
-      setLiveThinking(null)
-      streamMsgIdRef.current = null
-      setLiveThinking(null)
       setIsAgentRunning(false)
       setLiveSteps([])
+      setLiveThinking(null)
+      streamMsgIdRef.current = null
       window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
     })
 

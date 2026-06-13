@@ -96,8 +96,9 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
             } else if (step.type === 'thought') {
               // Reasoning от агента — показываем как thinking блок
               if (!thinkingStartMs) thinkingStartMs = Date.now()
-              thinkingText += step.content
-              send({ type: 'thinking_token', chatId, msgId, token: step.content })
+              const thoughtStr = typeof step.content === 'string' ? step.content : String(step.content ?? '')
+              thinkingText += thoughtStr
+              send({ type: 'thinking_token', chatId, msgId, token: thoughtStr })
               thinkingMs = Date.now() - thinkingStartMs
               send({ type: 'thinking_done', chatId, msgId, thinkingMs })
             } else if (step.type === 'answer') {
@@ -132,8 +133,9 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
           },
           onThinkingToken: (token) => {
             if (!thinkingStartMs) thinkingStartMs = Date.now()
-            thinkingText += token
-            send({ type: 'thinking_token', chatId, msgId, token })
+            const tok = typeof token === 'string' ? token : ''
+            thinkingText += tok
+            send({ type: 'thinking_token', chatId, msgId, token: tok })
           },
           onThinkingDone: (ms) => {
             thinkingMs = ms
