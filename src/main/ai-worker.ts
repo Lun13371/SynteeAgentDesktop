@@ -14,23 +14,10 @@ const storeData: Record<string, unknown> = workerData.storeData
 const agentStatusCache = new Map<string, { status: string; stepsCount: number; currentStep?: string }>()
 
 // Единый реестр одноразовых reply-handlers (replyId → resolver)
-// Все async ответы от main (spawn_agent_reply, wait_agents_reply) приходят сюда
 const replyHandlers = new Map<string, (msg: Record<string, unknown>) => void>()
 
-parentPort?.on('message', (msg: Record<string, unknown>) => {
-  if (msg.type === 'agent_status_update' && msg.agentId) {
-    agentStatusCache.set(msg.agentId as string, msg.statusData as never)
-    return
-  }
-  // Все reply — диспатчим в зарегистрированный handler
-  if (msg.replyId) {
-    const handler = replyHandlers.get(msg.replyId as string)
-    if (handler) {
-      replyHandlers.delete(msg.replyId as string)
-      handler(msg)
-    }
-  }
-})
+// Флаг — агент уже запущен (стартовое сообщение обработано)
+let agentStarted = false
 
 const fakeStore = {
   get: (key: string, def?: unknown) => (storeData[key] !== undefined ? storeData[key] : def),
@@ -39,33 +26,52 @@ const fakeStore = {
 
 const aiClient = new AIClient(fakeStore)
 
-interface WorkerStartParams {
-  chatId: string
-  msgId: string
-  content: string
-  history: Array<{ role: string; content: string }>
-  systemPrompt: string
-  enableTools: boolean
-  incognito: boolean
-  agentSettings: {
-    enableTools: boolean
-    maxSteps: number
-    approvalMode: string
-    toolOutputMode: string
-    enableThinking: boolean
-  }
-}
-
 function send(msg: Record<string, unknown>) {
   parentPort?.postMessage(msg)
 }
 
-parentPort?.on('message', async (params: WorkerStartParams) => {
+// ЕДИНЫЙ handler — все входящие сообщения через один on('message')
+parentPort?.on('message', async (msg: Record<string, unknown>) => {
+  // --- Reply от main (spawn_agent_reply, wait_agents_reply, get_agent_status_reply) ---
+  if (msg.replyId) {
+    const handler = replyHandlers.get(msg.replyId as string)
+    if (handler) {
+      replyHandlers.delete(msg.replyId as string)
+      handler(msg)
+    }
+    return
+  }
+
+  // --- Обновление статуса суб-агента ---
+  if (msg.type === 'agent_status_update' && msg.agentId) {
+    agentStatusCache.set(msg.agentId as string, msg.statusData as never)
+    return
+  }
+
+  // --- Стартовое сообщение — запуск агента (только один раз) ---
+  if (agentStarted) return
+  agentStarted = true
+
   const {
     chatId, msgId, content, history,
     systemPrompt, enableTools, incognito,
     agentSettings,
-  } = params
+  } = msg as {
+    chatId: string
+    msgId: string
+    content: string
+    history: Array<{ role: string; content: string }>
+    systemPrompt: string
+    enableTools: boolean
+    incognito: boolean
+    agentSettings: {
+      enableTools: boolean
+      maxSteps: number
+      approvalMode: string
+      toolOutputMode: string
+      enableThinking: boolean
+    }
+  }
 
   let fullText = ''
   let thinkingText = ''
@@ -137,8 +143,8 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
           onSpawnAgent: (opts) => {
             return new Promise((resolve) => {
               const replyId = `spawn-reply-${opts.id}`
-              replyHandlers.set(replyId, (msg) => {
-                resolve({ summary: msg.summary as string, error: msg.error as string | undefined })
+              replyHandlers.set(replyId, (reply) => {
+                resolve({ summary: reply.summary as string, error: reply.error as string | undefined })
               })
               send({ type: 'spawn_agent', chatId, msgId, replyId, ...opts })
             })
@@ -146,17 +152,13 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
           onWaitAgents: (agentIds) => {
             return new Promise((resolve) => {
               const replyId = `wait-agents-${Date.now()}`
-              replyHandlers.set(replyId, (msg) => {
-                resolve(msg.results as Array<{ summary: string; error?: string }>)
+              replyHandlers.set(replyId, (reply) => {
+                resolve(reply.results as Array<{ summary: string; error?: string }>)
               })
               send({ type: 'wait_agents', chatId, msgId, replyId, agentIds })
             })
           },
           onGetAgentStatus: (agentId) => {
-            // Синхронный запрос статуса — worker посылает и ждёт ответа
-            // Используем блокирующий atomics trick не вариант в worker — делаем через реестр
-            // Шлём запрос, ответ придёт через parentPort — но callback синхронный
-            // Решение: кэшируем последние статусы при каждом agent:update
             return agentStatusCache.get(agentId) ?? null
           },
         },
