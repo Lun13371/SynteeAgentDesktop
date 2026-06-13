@@ -167,7 +167,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
-      console.log('[offDone] received, chatId:', data.chatId, 'current:', currentChatIdRef.current)
       // Сбрасываем стриминг-стейт ВСЕГДА — даже если chatId не совпадает (пользователь переключил чат)
       streamMsgIdRef.current = null
       clearStream()
@@ -328,6 +327,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       content: aiContent,
       displayContent: displayContent !== aiContent ? displayContent : undefined,
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
+      userMsgId: userMsg.id,  // синхронизируем id с БД
     })
     // Устанавливаем streamMsgIdRef сразу — до первого токена/шага
     if (result?.assistantMsgId) {

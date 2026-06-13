@@ -58,6 +58,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     displayContent?: string
     slashCommand?: { name: string; args: string }
     incognito?: boolean
+    userMsgId?: string
   }) => {
     const win = mainWindow.getWindow()
     currentChatIdForStop = params.chatId
@@ -66,7 +67,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Сохраняем сообщение пользователя
     // displayContent — что видит пользователь (команда), content — что уходит в AI
     const userMsg: Message = {
-      id: uuid(),
+      id: params.userMsgId ?? uuid(),  // используем id от renderer если передан
       chatId: params.chatId,
       role: 'user',
       content: params.displayContent ?? params.content,
@@ -106,12 +107,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let doneSent = false  // флаг чтобы не слать DONE дважды
 
     const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[]) => {
-      if (doneSent) {
-        console.log('[sendDone] skipped — already sent')
-        return
-      }
+      if (doneSent) return
       doneSent = true
-      console.log('[sendDone] sending CHAT_STREAM_DONE, fullText length:', fullText.length)
       currentWorker = null
 
       const assistantMsg: Message = {
