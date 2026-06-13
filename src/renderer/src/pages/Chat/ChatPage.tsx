@@ -252,52 +252,23 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }
 
   const handleSend = async (text: string) => {
-    // ── Слеш-команды ──────────────────────────────────────────────
-    const slash = parseSlashCommand(text.trim())
-    if (slash) {
-      const { command, args } = slash
-      switch (command.name) {
-        case 'clear': {
-          if (currentChatId) {
-            await window.syntee.chat.clearMessages?.(currentChatId).catch(() => {})
-            setMessages([])
-            toast('Чат очищен', 'info')
-          }
-          return
-        }
-        case 'image': {
-          if (!args) { toast('Укажи описание: /image красивый закат', 'info'); return }
-          // Показываем сообщение пользователя и отправляем через AI с явным промптом
-          text = `Сгенерируй изображение: ${args}\n\n(используй инструмент image_generation)`
-          break
-        }
-        case 'web': {
-          if (!args) { toast('Укажи запрос: /web погода в Москве', 'info'); return }
-          text = `Найди в интернете: ${args}`
-          break
-        }
-        case 'recap': {
-          const history = messages.map(m => `${m.role === 'user' ? 'Я' : 'AI'}: ${m.content.slice(0, 200)}`).join('\n')
-          text = `Дай краткое резюме этого разговора в 3-5 предложениях:\n\n${history}`
-          break
-        }
-        case 'memo': {
-          if (!args) { toast('Укажи текст: /memo важная заметка', 'info'); return }
-          text = `Запомни это: ${args}`
-          break
-        }
-        case 'sys': {
-          if (!args) { toast('Укажи промпт: /sys ты поэт', 'info'); return }
-          await window.syntee.models.setParams({ systemPrompt: args })
-          toast('Системный промпт обновлён', 'success')
-          return
-        }
-      }
-    }
-    // ── Обычная отправка ──────────────────────────────────────────
-    let chatId = currentChatId
+    const raw = text.trim()
+    const slash = parseSlashCommand(raw)
 
-    // Если нет активного чата — создаём
+    // ── Локальные команды (без AI) ──────────────────────────────
+    if (slash?.command.name === 'clear') {
+      if (currentChatId) { setMessages([]); toast('Чат очищен', 'info') }
+      return
+    }
+    if (slash?.command.name === 'sys') {
+      if (!slash.args) { toast('Укажи промпт: /sys ты поэт', 'info'); return }
+      await window.syntee.models.setParams({ systemPrompt: slash.args })
+      toast('Системный промпт обновлён', 'success')
+      return
+    }
+
+    // ── Создаём чат если нет ────────────────────────────────────
+    let chatId = currentChatId
     if (!chatId) {
       const chat: Chat = await window.syntee.chat.create(isIncognito)
       chatId = chat.id
@@ -307,28 +278,40 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setChats(all)
     }
 
-    // Формируем контент с цитатами reply
-    let fullContent = text
+    // ── Формируем контент ────────────────────────────────────────
+    // Пользователь видит "/image sunset"
+    // AI получает systemPrompt команды (скрыт от пользователя)
+    let displayContent = raw
+    let aiContent = raw
+
+    if (slash) {
+      const sysPrompt = slash.command.systemPrompt(slash.args)
+      if (sysPrompt) aiContent = sysPrompt
+    }
+
+    // Добавляем цитаты reply
     if (replyTo.length > 0) {
       const quotes = replyTo.map(r => {
         const who = r.role === 'user' ? 'Пользователь' : 'Syntee'
         return `> [${who}]: ${r.content.slice(0, 300)}${r.content.length > 300 ? '…' : ''}`
       }).join('\n')
-      fullContent = `${quotes}\n\n${text}`
+      aiContent = `${quotes}\n\n${aiContent}`
     }
 
-    // Показываем сообщение пользователя сразу
+    // ── Сообщение пользователя ───────────────────────────────────
     const userMsg: Message = {
       id: uuid(), chatId,
-      role: 'user', content: fullContent,
-      createdAt: Date.now(), isPinned: 0,
+      role: 'user',
+      content: displayContent,
+      createdAt: Date.now(),
+      isPinned: 0,
+      slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
     }
     addMessage(userMsg)
     setTyping(true)
-    setReplyTo([]) // очищаем reply после отправки
+    setReplyTo([])
 
-    // Отправляем в main process
-    await window.syntee.chat.send({ chatId, content: fullContent, incognito: isIncognito })
+    await window.syntee.chat.send({ chatId, content: aiContent, incognito: isIncognito })
   }
 
   const handlePin = async (id: string) => {

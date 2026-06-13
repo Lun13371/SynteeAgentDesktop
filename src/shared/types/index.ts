@@ -55,6 +55,7 @@ export interface Message {
   toolSteps?: ToolStep[]
   thinking?: string
   thinkingMs?: number
+  slashCommand?: { name: string; args: string }  // использованная слеш-команда
 }
 
 export interface ToolStep {

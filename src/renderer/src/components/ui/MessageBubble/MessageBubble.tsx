@@ -193,6 +193,17 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
+        {/* Пилюлька слеш-команды */}
+        {isUser && message.slashCommand && (
+          <div className="message-slash-pill">
+            <span className="message-slash-pill-icon">/</span>
+            <span className="message-slash-pill-name">{message.slashCommand.name}</span>
+            {message.slashCommand.args && (
+              <span className="message-slash-pill-args">{message.slashCommand.args}</span>
+            )}
+          </div>
+        )}
+
         {(message as Message & { replyTo?: { role: string; content: string } }).replyTo && (
           <div className="message-reply-quote">
             <span className="message-reply-role">
