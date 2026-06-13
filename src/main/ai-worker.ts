@@ -90,6 +90,7 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
                 content: step.content,
                 success: step.success,
                 timestamp: Date.now(),
+                imageUrl: step.imageUrl,
               }
               collectedSteps.push(ts)
               send({ type: 'step', chatId, msgId, step })
