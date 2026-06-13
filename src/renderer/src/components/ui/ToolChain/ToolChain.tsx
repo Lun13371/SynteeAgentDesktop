@@ -145,10 +145,10 @@ function IterationBlock({
           {open && (
             <motion.div
               className="tc2-iter-details"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 34 }}
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.15, ease: 'easeOut' }}
             >
               {iter.call.toolArgs && Object.keys(iter.call.toolArgs).length > 0 && (
                 <div className="tc2-section">
@@ -294,10 +294,10 @@ export default function ToolChain({ steps, mode, isRunning, label, elapsed, summ
         {!collapsed && (
           <motion.div
             className="tc2-iters"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
           >
             {iters.map((iter, idx) => (
               <IterationBlock
