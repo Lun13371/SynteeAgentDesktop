@@ -129,10 +129,9 @@ export class Agent {
 
           // Ждём параллельных суб-агентов перед финальным ответом
           if (pendingParallelAgents.size > 0 && callbacks.onWaitAgents) {
-            callbacks.onStep({ type: 'thought', content: `Ожидаю завершения ${pendingParallelAgents.size} суб-агент(ов)...` })
+            // НЕ шлём thought — это создаёт лишний пузырь в UI
             const results = await callbacks.onWaitAgents(Array.from(pendingParallelAgents))
             pendingParallelAgents.clear()
-            // Добавляем результаты в контекст и даём агенту ещё один шаг
             const summaries = results.map((r, i) => `Суб-агент ${i + 1}: ${r.summary || r.error || 'нет результата'}`).join('\n')
             messages.push({ role: 'user', content: `Результаты параллельных суб-агентов:\n${summaries}\n\nПродолжи и дай финальный ответ.` })
             continue
