@@ -232,7 +232,6 @@ export class Agent {
         }
         return runCommand(cmd, args.cwd as string | undefined, args.shell as string | undefined, args.timeout as number | undefined)
       }
-      }
       case 'read_file':
         return readFile(args.path as string)
       case 'write_file':
