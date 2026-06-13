@@ -22,13 +22,10 @@ export interface AgentCallbacks {
   onDone: (answer: string) => void
   onError: (err: Error) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
-  approvalMode?: ApprovalMode
-  onSpawnAgent?: (opts: {
-    id: string
-    task: string
-    parallel: boolean
-    model?: string
-  }) => Promise<{ summary: string; error?: string }>
+  approvalMode?: string
+  onSpawnAgent?: (opts: { id: string; task: string; parallel: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
+  onWaitAgents?: (agentIds: string[]) => Promise<Array<{ summary: string; error?: string }>>
+  onGetAgentStatus?: (agentId: string) => { status: string; currentStep?: string; stepsCount: number } | null
 }
 
 const SYSTEM_PROMPT = `Ты Syntee — персональный AI-ассистент для Windows.
@@ -108,6 +105,9 @@ export class Agent {
 
     const tavilyKey = (this.store.get('integrations') as { tavily?: { key: string } })?.tavily?.key
 
+    // Трекаем параллельные агенты — ждём их перед финальным ответом
+    const pendingParallelAgents = new Set<string>()
+
     for (let step = 0; step < maxSteps; step++) {
       // Проверяем abort перед каждым шагом
       if (signal?.aborted) {
@@ -126,6 +126,17 @@ export class Agent {
         // Если нет tool_calls — финальный ответ
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
+
+          // Ждём параллельных суб-агентов перед финальным ответом
+          if (pendingParallelAgents.size > 0 && callbacks.onWaitAgents) {
+            callbacks.onStep({ type: 'thought', content: `Ожидаю завершения ${pendingParallelAgents.size} суб-агент(ов)...` })
+            const results = await callbacks.onWaitAgents(Array.from(pendingParallelAgents))
+            pendingParallelAgents.clear()
+            // Добавляем результаты в контекст и даём агенту ещё один шаг
+            const summaries = results.map((r, i) => `Суб-агент ${i + 1}: ${r.summary || r.error || 'нет результата'}`).join('\n')
+            messages.push({ role: 'user', content: `Результаты параллельных суб-агентов:\n${summaries}\n\nПродолжи и дай финальный ответ.` })
+            continue
+          }
 
           // Reasoning от агентского запроса — шлём перед текстом
           if (response.reasoning) {
@@ -171,7 +182,7 @@ export class Agent {
             }
           }
 
-          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks)
+          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
           // Если tool вернул [IMAGE:path] — вытаскиваем путь, не кидаем в контекст AI
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
@@ -208,7 +219,8 @@ export class Agent {
     name: string,
     args: Record<string, unknown>,
     tavilyKey?: string,
-    callbacks?: AgentCallbacks
+    callbacks?: AgentCallbacks,
+    pendingParallelAgents?: Set<string>
   ): Promise<ToolResult> {
     switch (name) {
       case 'run_command':
@@ -240,22 +252,37 @@ export class Agent {
       case 'analyze_project':
         return analyzeProject(args.path as string)
       case 'spawn_agent': {
-        if (!callbacks.onSpawnAgent) {
+        if (!callbacks?.onSpawnAgent) {
           return { success: false, output: '', error: 'spawn_agent не поддерживается в этом контексте' }
         }
         const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        const isParallel = !!(args.parallel ?? false)
         const result = await callbacks.onSpawnAgent({
           id: agentId,
           task: args.task as string,
-          parallel: !!(args.parallel ?? false),
+          parallel: isParallel,
           model: args.model as string | undefined,
         })
         if (result.error) return { success: false, output: '', error: result.error }
+        // Трекаем параллельных — будем ждать перед финальным ответом
+        if (isParallel) pendingParallelAgents.add(agentId)
         return {
           success: true,
-          output: args.parallel
+          output: isParallel
             ? `[AGENT:${agentId}] Суб-агент запущен параллельно: "${args.task}"`
             : `[AGENT:${agentId}] Суб-агент завершил: ${result.summary}`,
+        }
+      }
+      case 'get_agent_status': {
+        if (!callbacks?.onGetAgentStatus) {
+          return { success: false, output: '', error: 'get_agent_status не поддерживается' }
+        }
+        const agentId = args.agent_id as string
+        const status = callbacks.onGetAgentStatus(agentId)
+        if (!status) return { success: false, output: '', error: `Агент ${agentId} не найден` }
+        return {
+          success: true,
+          output: `Агент ${agentId}: статус=${status.status}, шагов=${status.stepsCount}${status.currentStep ? `, текущий шаг=${status.currentStep}` : ''}`,
         }
       }
       default:

@@ -10,6 +10,16 @@ import { buildSystemPrompt } from '../core/prompts/buildSystemPrompt'
 
 const storeData: Record<string, unknown> = workerData.storeData
 
+// Кэш статусов суб-агентов — обновляется через agent_status_update от main
+const agentStatusCache = new Map<string, { status: string; stepsCount: number; currentStep?: string }>()
+
+// Слушаем обновления статусов от main
+parentPort?.on('message', (msg: Record<string, unknown>) => {
+  if (msg.type === 'agent_status_update' && msg.agentId) {
+    agentStatusCache.set(msg.agentId as string, msg.statusData as never)
+  }
+})
+
 const fakeStore = {
   get: (key: string, def?: unknown) => (storeData[key] !== undefined ? storeData[key] : def),
   set: (_key: string, _val: unknown) => {},
@@ -113,10 +123,8 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
           },
           approvalMode: agentSettings.approvalMode as never,
           onSpawnAgent: (opts) => {
-            // Шлём в main process, ждём ответа через Promise
             return new Promise((resolve) => {
               const replyId = `spawn-reply-${opts.id}`
-              // Одноразовый listener на ответ
               const handler = (msg: Record<string, unknown>) => {
                 if (msg.type === 'spawn_agent_reply' && msg.replyId === replyId) {
                   parentPort?.off('message', handler as never)
@@ -126,6 +134,27 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
               parentPort?.on('message', handler as never)
               send({ type: 'spawn_agent', chatId, msgId, replyId, ...opts })
             })
+          },
+          onWaitAgents: (agentIds) => {
+            // Ждём завершения всех параллельных агентов — поллинг через AgentManager
+            return new Promise((resolve) => {
+              const replyId = `wait-agents-${Date.now()}`
+              const handler = (msg: Record<string, unknown>) => {
+                if (msg.type === 'wait_agents_reply' && msg.replyId === replyId) {
+                  parentPort?.off('message', handler as never)
+                  resolve(msg.results as Array<{ summary: string; error?: string }>)
+                }
+              }
+              parentPort?.on('message', handler as never)
+              send({ type: 'wait_agents', chatId, msgId, replyId, agentIds })
+            })
+          },
+          onGetAgentStatus: (agentId) => {
+            // Синхронный запрос статуса — worker посылает и ждёт ответа
+            // Используем блокирующий atomics trick не вариант в worker — делаем через реестр
+            // Шлём запрос, ответ придёт через parentPort — но callback синхронный
+            // Решение: кэшируем последние статусы при каждом agent:update
+            return agentStatusCache.get(agentId) ?? null
           },
         },
         agentSettings.maxSteps,
