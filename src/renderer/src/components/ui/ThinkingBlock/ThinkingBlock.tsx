@@ -28,12 +28,10 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
   const wordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  // Живой таймер пока стримит
   useEffect(() => {
     if (isLive) {
       startRef.current = Date.now()
       timerRef.current = setInterval(() => setElapsed(Date.now() - startRef.current), 100)
-      // Меняем слово каждые 1.8с с fade
       wordTimerRef.current = setInterval(() => {
         setWordVisible(false)
         setTimeout(() => {
@@ -51,14 +49,13 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
     }
   }, [isLive])
 
-  // Автоскролл внутри body при живом стриминге
   useEffect(() => {
     if (open && isLive && bodyRef.current) {
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight
     }
   }, [liveText, open, isLive])
 
-  const displayText = liveText || text || ''
+  const displayText = typeof liveText === 'string' ? liveText : typeof text === 'string' ? text : ''
   const displayMs = thinkingMs ?? (isLive ? elapsed : undefined)
   if (!displayText && !isLive) return null
 
@@ -66,20 +63,19 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
     <div className={`thinking-block ${open ? 'thinking-block--open' : ''} ${isLive ? 'thinking-block--live' : ''}`}>
       <button className="thinking-header" onClick={() => setOpen(v => !v)}>
 
-        {/* Иконка — пульс или мозг */}
         <span className="thinking-icon-wrap">
           {isLive ? (
-            <span className="thinking-dots">
-              <span /><span /><span />
-            </span>
+            <span className="thinking-dots"><span /><span /><span /></span>
           ) : (
+            /* Sparkles icon */
             <svg className="thinking-brain-icon" width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <path d="M9 3C6.8 3 5 4.8 5 7c0 .9.3 1.7.7 2.4C4.7 10 4 11.1 4 12.5c0 1.8 1.2 3.3 2.9 3.8C7 17.5 7 18.7 7 19h10c0-.3 0-1.5.1-2.7 1.7-.5 2.9-2 2.9-3.8 0-1.4-.7-2.5-1.7-3.1.4-.7.7-1.5.7-2.4 0-2.2-1.8-4-4-4-.7 0-1.4.2-2 .5-.6-.3-1.3-.5-2-.5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
+              <path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5L12 2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
+              <path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round"/>
+              <path d="M5 17l.5 1.5L7 19l-1.5.5L5 21l-.5-1.5L3 19l1.5-.5L5 17z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" strokeLinecap="round"/>
             </svg>
           )}
         </span>
 
-        {/* Текст — меняющиеся слова или "Размышлял" */}
         <span className="thinking-label">
           {isLive ? (
             <span className={`thinking-word ${wordVisible ? 'thinking-word--in' : 'thinking-word--out'}`}>
@@ -87,17 +83,15 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
             </span>
           ) : (
             <span className="thinking-word thinking-word--in">
-              Размышлял {displayMs !== undefined ? formatMs(displayMs) : ''}
+              Размышление {displayMs !== undefined ? `· ${formatMs(displayMs)}` : ''}
             </span>
           )}
         </span>
 
-        {/* Таймер при live */}
         {isLive && displayMs !== undefined && (
           <span className="thinking-time">{formatMs(displayMs)}</span>
         )}
 
-        {/* Шеврон */}
         <span className={`thinking-chevron ${open ? 'thinking-chevron--open' : ''}`}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
             <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -107,7 +101,13 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
 
       {open && (
         <div className="thinking-body" ref={bodyRef}>
-          <pre className="thinking-text">{displayText}</pre>
+          <div className="thinking-text">
+            {displayText.split('\n').map((line, i) => (
+              <p key={i} className={line.trim() === '' ? 'thinking-line--empty' : 'thinking-line'}>
+                {line || '\u00A0'}
+              </p>
+            ))}
+          </div>
         </div>
       )}
     </div>

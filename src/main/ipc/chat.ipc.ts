@@ -144,12 +144,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           })
           break
 
-        case 'thinking_token':
-          bufferedThinking += (msg.token as string) || ''
+        case 'thinking_token': {
+          const tok = typeof msg.token === 'string' ? msg.token : ''
+          bufferedThinking += tok
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-            chatId: msg.chatId, msgId: msg.msgId, thinkingToken: msg.token,
+            chatId: msg.chatId, msgId: msg.msgId, thinkingToken: tok,
           })
           break
+        }
 
         case 'thinking_done':
           bufferedThinkingMs = msg.thinkingMs as number
