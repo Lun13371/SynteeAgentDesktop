@@ -167,7 +167,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
-      if (data.chatId !== currentChatId) return
+      if (data.chatId !== currentChatIdRef.current) return
       addMessage(data.message)
       clearStream()
       setTyping(false)
