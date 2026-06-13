@@ -35,7 +35,10 @@ export const useChatStore = create<ChatStore>((set) => ({
   setCurrentChat: (currentChatId) => set({ currentChatId }),
   setMessages: (messages) => set({ messages }),
   addMessage: (message) =>
-    set((s) => ({ messages: [...s.messages, message] })),
+    set((s) => {
+      if (s.messages.some(m => m.id === message.id)) return s
+      return { messages: [...s.messages, message] }
+    }),
   appendStreamToken: (token) =>
     set((s) => ({ streamingText: s.streamingText + token })),
   clearStream: () => set({ streamingText: '', isTyping: false }),
