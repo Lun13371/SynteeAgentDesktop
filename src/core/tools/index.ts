@@ -17,15 +17,60 @@ export interface ToolResult {
   error?: string
 }
 
-export async function runCommand(cmd: string, cwd?: string): Promise<ToolResult> {
+export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
   try {
-    const { stdout, stderr } = await execAsync(cmd, {
-      cwd: cwd || homedir(),
-      timeout: 30000,
-    })
-    return { success: true, output: stdout || stderr }
+    const isWin = process.platform === 'win32'
+    const timeoutMs = (timeout || 30) * 1000
+
+    let execCmd: string
+    let execOpts: Parameters<typeof execAsync>[1]
+
+    if (isWin) {
+      // Windows: PowerShell по умолчанию — понимает ls/cat/rm/mkdir/grep и т.д.
+      // cmd только если явно указан shell: 'cmd'
+      if (shell === 'cmd') {
+        execCmd = cmd
+        execOpts = {
+          cwd: cwd || homedir(),
+          timeout: timeoutMs,
+          shell: 'cmd.exe',
+          encoding: 'utf8',
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        }
+      } else {
+        // PowerShell: utf-8 output, понимает большинство unix-команд
+        const escaped = cmd.replace(/"/g, '\\"')
+        execCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${escaped}"`
+        execOpts = {
+          cwd: cwd || homedir(),
+          timeout: timeoutMs,
+          encoding: 'utf8',
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        }
+      }
+    } else {
+      // Linux/Mac — bash напрямую
+      execCmd = cmd
+      execOpts = {
+        cwd: cwd || homedir(),
+        timeout: timeoutMs,
+        shell: '/bin/bash',
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      }
+    }
+
+    const { stdout, stderr } = await execAsync(execCmd, execOpts)
+    const out = (stdout || '') + (stderr ? `\n[stderr]: ${stderr}` : '')
+    return { success: true, output: `[exit: 0]\n${out.trim() || '(нет вывода)'}` }
   } catch (e: any) {
-    return { success: false, output: e.stdout || '', error: e.message }
+    const out = [e.stdout, e.stderr].filter(Boolean).join('\n')
+    const exitCode = typeof e.code === 'number' ? e.code : 1
+    return {
+      success: false,
+      output: out.trim() ? `[exit: ${exitCode}]\n${out.trim()}` : `[exit: ${exitCode}]`,
+      error: e.message?.replace(/Command failed:.+\n?/, '').trim() || 'Команда завершилась с ошибкой',
+    }
   }
 }
 
@@ -518,12 +563,14 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'run_command',
-      description: 'Выполнить команду в терминале Windows. Используй для системных задач.',
+      description: 'Выполнить команду в терминале. Windows: PowerShell по умолчанию (ls/cat/rm/Get-Process/$env:PATH и т.д.), cmd — через shell:"cmd". Linux/Mac: bash. Указывай cwd для проектов, timeout для долгих операций.',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'Команда для выполнения' },
-          cwd: { type: 'string', description: 'Рабочая директория (опционально)' },
+          command: { type: 'string', description: 'Команда' },
+          cwd: { type: 'string', description: 'Рабочая директория' },
+          shell: { type: 'string', enum: ['powershell', 'cmd'], description: 'Шелл (только Windows, по умолч. powershell)' },
+          timeout: { type: 'number', description: 'Таймаут в секундах (по умолч. 30)' },
         },
         required: ['command'],
       },

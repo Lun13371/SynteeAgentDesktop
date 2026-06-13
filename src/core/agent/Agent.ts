@@ -230,7 +230,8 @@ export class Agent {
         if (!cmd || typeof cmd !== 'string') {
           return { success: false, output: '', error: `run_command: поле "command" не передано. Получены аргументы: ${JSON.stringify(args)}` }
         }
-        return runCommand(cmd, args.cwd as string | undefined)
+        return runCommand(cmd, args.cwd as string | undefined, args.shell as string | undefined, args.timeout as number | undefined)
+      }
       }
       case 'read_file':
         return readFile(args.path as string)
