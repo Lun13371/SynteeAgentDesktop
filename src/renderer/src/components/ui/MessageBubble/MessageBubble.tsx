@@ -219,6 +219,11 @@ const MessageContent = memo(function MessageContent({
           />
         )}
 
+        {/* Пустой пузырь во время ожидания первого токена */}
+        {!isUser && isStreaming && !content && !liveThinking && !message.thinking && (
+          <span className="msg-waiting-dots"><span/><span/><span/></span>
+        )}
+
         <div className="message-content selectable">
           {isUser ? (
             <p>{content}</p>

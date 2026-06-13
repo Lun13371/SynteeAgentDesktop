@@ -297,7 +297,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleCopy = () => toast('Скопировано', 'success')
 
   // Собираем отображаемые сообщения (включая стриминг)
-  const displayMessages = streamingText || liveThinking || liveSteps.length > 0
+  // Пузырь создаётся сразу при isTyping — не ждём первого токена
+  const isStreaming = isTyping || isAgentRunning || !!streamingText || !!liveThinking || liveSteps.length > 0
+  const displayMessages = isStreaming
     ? [...messages, {
         id: streamMsgIdRef.current || 'streaming',
         chatId: currentChatId || '',
@@ -305,7 +307,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         content: streamingText || '',
         createdAt: Date.now(),
         isPinned: 0,
-        // liveSteps едут прямо в пузырь — не исчезают а переезжают
         toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
       }]
     : messages

@@ -86,6 +86,28 @@
   gap: 4px;
 }
 
+@keyframes msg-dot-pulse {
+  0%, 60%, 100% { transform: scale(1);   opacity: 0.3; }
+  30%           { transform: scale(1.4); opacity: 1; }
+}
+
+.msg-waiting-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0 6px;
+}
+.msg-waiting-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.3);
+  animation: msg-dot-pulse 1.2s ease-in-out infinite;
+}
+.msg-waiting-dots span:nth-child(1) { animation-delay: 0s; }
+.msg-waiting-dots span:nth-child(2) { animation-delay: 0.2s; }
+.msg-waiting-dots span:nth-child(3) { animation-delay: 0.4s; }
+
 .message-content {
   font-size: 14px;
   line-height: 1.65;
