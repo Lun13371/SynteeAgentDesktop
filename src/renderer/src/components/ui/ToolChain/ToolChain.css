@@ -1,159 +1,324 @@
-.tool-chain {
-  margin: 6px 0 2px;
+/* ══════════════════════════════════════════════
+   ToolChain 2.0 — итерационный агентский блок
+   ══════════════════════════════════════════════ */
+
+.tc2 {
+  margin: 8px 0 4px;
   border-radius: var(--radius-md);
-  overflow: hidden;
   border: 1px solid var(--border);
   background: var(--bg-secondary);
   font-size: 12px;
+  overflow: hidden;
 }
 
 /* ── Compact ── */
-.tool-chain--compact {
+.tc2--compact {
   display: inline-flex;
   border: none;
   background: none;
   margin: 2px 0;
 }
-.tc-compact-row {
+.tc2-compact-row {
   display: flex; align-items: center; gap: 4px;
-  padding: 3px 6px;
+  padding: 3px 8px;
   background: var(--bg-secondary);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
 }
-.tc-compact-chip {
+.tc2-compact-chip {
   display: flex; align-items: center;
   color: var(--chip-color, #888);
   gap: 3px;
 }
-.tc-compact-arrow { color: var(--text-muted); font-size: 10px; }
-.tc-compact-dots { color: var(--text-muted); letter-spacing: 2px; }
+.tc2-compact-arrow { color: var(--text-muted); font-size: 10px; }
+.tc2-compact-dots  { color: var(--text-muted); letter-spacing: 2px; font-size: 11px; }
 
-/* ── Header ── */
-.tc-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px;
-  background: none; border: none; cursor: pointer; width: 100%;
-  color: var(--text-secondary);
-  transition: background 0.15s;
+/* ── Шапка всего блока ── */
+.tc2-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
 }
-.tc-header:hover { background: var(--accent-subtle); }
-.tc-header--open { color: var(--text-primary); }
-
-.tc-header-left { display: flex; align-items: center; gap: 6px; }
-.tc-header-label { font-size: 12px; font-weight: 500; }
-
-.tc-header-chips { display: flex; gap: 4px; align-items: center; }
-.tc-mini-chip {
-  padding: 2px 5px; border-radius: 4px;
-  display: flex; align-items: center; gap: 3px;
-  font-size: 10px;
-}
-.tc-mini-chip--pulse { color: var(--text-muted); animation: pulse-opacity 1.2s infinite; }
-
-/* ── Body ── */
-.tc-body { overflow: hidden; }
-.tc-steps { padding: 6px 12px 10px; display: flex; flex-direction: column; }
-
-/* ── Step ── */
-.tc-step {
-  display: flex; gap: 10px; position: relative;
+.tc2-header:has(+ .tc2-iters) {
+  border-bottom-color: var(--border);
 }
 
-.tc-line {
-  display: flex; flex-direction: column; align-items: center;
-  padding-top: 10px; flex-shrink: 0;
-}
-.tc-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  flex-shrink: 0; position: relative; z-index: 1;
-}
-.tc-dot-pulse {
-  position: absolute; inset: -3px; border-radius: 50%;
-  animation: pulse-ring 1.4s infinite;
-}
-.tc-connector {
-  width: 1px; flex: 1; min-height: 6px;
-  background: var(--border);
-  margin: 2px 0;
-}
-
-.tc-step-content { flex: 1; padding: 4px 0 8px; min-width: 0; }
-
-.tc-step-header {
-  display: flex; align-items: center; gap: 6px;
-  background: none; border: none; cursor: default;
-  color: var(--text-primary); padding: 0; text-align: left; width: 100%;
-}
-.tc-step--done .tc-step-header { cursor: pointer; }
-.tc-step--done .tc-step-header:hover { color: var(--accent); }
-
-.tc-step-icon { display: flex; align-items: center; flex-shrink: 0; }
-.tc-step-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
-.tc-step-name {
-  font-family: monospace; font-size: 11px;
-  color: var(--text-muted); background: var(--bg-tertiary);
-  padding: 1px 5px; border-radius: 3px;
-}
-.tc-step-badge {
-  font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600;
-}
-.tc-step-badge--ok   { background: rgba(74,222,128,0.15); color: #4ade80; }
-.tc-step-badge--fail { background: rgba(248,113,113,0.15); color: #f87171; }
-
-.tc-running-label { font-size: 12px; color: var(--text-muted); animation: pulse-opacity 1.2s infinite; }
-
-/* ── Preview (normal mode) ── */
-.tc-step-preview { padding: 3px 0 0 22px; }
-.tc-arg-preview { display: flex; gap: 4px; color: var(--text-muted); font-size: 11px; }
-.tc-arg-key { color: var(--text-muted); flex-shrink: 0; }
-.tc-arg-val { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* ── Details (detailed mode) ── */
-.tc-step-details { overflow: hidden; padding-left: 22px; }
-.tc-detail-block { margin-top: 6px; }
-.tc-detail-title { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
-.tc-detail-row { display: flex; gap: 6px; margin-bottom: 3px; align-items: flex-start; }
-.tc-arg-pre, .tc-result-pre {
-  font-family: monospace; font-size: 11px; color: var(--text-secondary);
-  background: var(--bg-tertiary); border-radius: 4px; padding: 4px 8px;
-  white-space: pre-wrap; word-break: break-all; margin: 0; flex: 1;
-  max-height: 120px; overflow-y: auto;
-}
-
-/* ── Spinner ── */
-.tc-spinner {
-  width: 10px; height: 10px; border-radius: 50%;
-  border: 1.5px solid var(--border);
-  border-top-color: var(--accent);
-  animation: spin 0.7s linear infinite;
+.tc2-collapse-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); padding: 2px;
+  display: flex; align-items: center;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
   flex-shrink: 0;
 }
+.tc2-collapse-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse-ring {
-  0%   { opacity: 0.6; transform: scale(1); }
-  70%  { opacity: 0; transform: scale(2); }
-  100% { opacity: 0; transform: scale(2); }
+.tc2-header-summary {
+  display: flex; align-items: center; gap: 6px; flex: 1;
 }
-@keyframes pulse-opacity {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
+.tc2-header-title {
+  font-size: 12px; font-weight: 500;
+  color: var(--text-secondary);
 }
 
-/* ── Сгенерированное изображение в тул-степе ─────────────────── */
-.tc-image-wrap {
+.tc2-header-chips {
+  display: flex; gap: 3px; align-items: center;
+  flex-shrink: 0;
+}
+.tc2-mini-chip {
+  padding: 2px 5px; border-radius: 4px;
+  display: flex; align-items: center; gap: 2px;
+  font-size: 10px;
+}
+.tc2-mini-chip--pulse {
+  color: var(--text-muted);
+  animation: tc2-pulse-opacity 1.2s infinite;
+}
+
+/* ── Контейнер итераций ── */
+.tc2-iters {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+}
+
+/* ── Одна итерация ── */
+.tc2-iter {
+  display: flex;
+  gap: 10px;
+  position: relative;
+}
+
+/* Вертикальная линия + точка */
+.tc2-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 11px;
+  flex-shrink: 0;
+  width: 14px;
+}
+.tc2-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  transition: background 0.3s;
+}
+.tc2-dot--pulse::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  animation: tc2-pulse-ring 1.4s infinite;
+  background: currentColor;
+  opacity: 0.4;
+}
+.tc2-dot--thinking {
+  background: var(--border) !important;
+  animation: tc2-pulse-opacity 1.2s infinite;
+}
+.tc2-rail-line {
+  width: 1px; flex: 1; min-height: 8px;
+  background: var(--border);
+  margin: 3px 0;
+}
+
+/* ── Тело итерации ── */
+.tc2-iter-body {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 6px;
+}
+
+/* Заголовок итерации */
+.tc2-iter-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none; border: none;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-primary);
+  text-align: left;
+  transition: background 0.12s;
+}
+.tc2-iter-header:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+.tc2-iter-header--open {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+
+.tc2-iter-icon {
+  display: flex; align-items: center;
+  flex-shrink: 0;
+}
+.tc2-iter-label {
+  font-size: 12px; font-weight: 500;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.tc2-iter-name {
+  font-family: monospace; font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 1px 5px; border-radius: 3px;
+  flex-shrink: 0;
+}
+.tc2-iter-preview {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.tc2-iter-spacer { flex: 1; }
+
+/* Бейджи статуса */
+.tc2-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 1px 7px; border-radius: 10px;
+  flex-shrink: 0;
+}
+.tc2-badge--ok      { background: rgba(74,222,128,0.15); color: #4ade80; }
+.tc2-badge--fail    { background: rgba(248,113,113,0.15); color: #f87171; }
+.tc2-badge--running {
+  background: rgba(99,102,241,0.15); color: #818cf8;
+  animation: tc2-pulse-opacity 1.2s infinite;
+}
+
+/* ── Детали итерации ── */
+.tc2-iter-details {
+  overflow: hidden;
+  padding: 4px 6px 4px 6px;
+}
+
+.tc2-section {
   margin-top: 6px;
+}
+.tc2-section--running {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 0;
+}
+.tc2-section-title {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 5px;
+  font-weight: 600;
+}
+
+.tc2-code-block {
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+}
+.tc2-arg-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+.tc2-arg-row:last-child { margin-bottom: 0; }
+.tc2-arg-key {
+  font-family: monospace;
+  font-size: 11px;
+  color: #60a5fa;
+  flex-shrink: 0;
+  min-width: 60px;
+  padding-top: 1px;
+}
+.tc2-arg-val {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  flex: 1;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.tc2-result-pre {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.tc2-image-wrap {
   border-radius: 8px;
   overflow: hidden;
-  max-width: 480px;
+  max-width: 460px;
+  border: 1px solid var(--border);
 }
-.tc-image {
-  display: block;
-  width: 100%;
-  height: auto;
+.tc2-image {
+  display: block; width: 100%; height: auto;
   border-radius: 8px;
   cursor: pointer;
   transition: opacity 0.15s;
 }
-.tc-image:hover { opacity: 0.88; }
+.tc2-image:hover { opacity: 0.88; }
+
+.tc2-running-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  animation: tc2-pulse-opacity 1.2s infinite;
+}
+
+/* ── Строка "Думаю…" ── */
+.tc2-thinking-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 6px;
+  color: var(--text-muted);
+}
+.tc2-thinking-label {
+  font-size: 12px;
+  animation: tc2-pulse-opacity 1.2s infinite;
+}
+
+/* ── Спиннер ── */
+.tc2-spinner {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  animation: tc2-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ── Анимации ── */
+@keyframes tc2-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes tc2-pulse-ring {
+  0%   { opacity: 0.5; transform: scale(1); }
+  70%  { opacity: 0;   transform: scale(2.2); }
+  100% { opacity: 0;   transform: scale(2.2); }
+}
+@keyframes tc2-pulse-opacity {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
