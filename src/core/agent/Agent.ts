@@ -169,7 +169,7 @@ export class Agent {
             }
           }
 
-          const result = await this.executeTool(fn.name, args, tavilyKey)
+          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks)
 
           // Если tool вернул [IMAGE:path] — вытаскиваем путь, не кидаем в контекст AI
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
@@ -205,7 +205,8 @@ export class Agent {
   private async executeTool(
     name: string,
     args: Record<string, unknown>,
-    tavilyKey?: string
+    tavilyKey?: string,
+    callbacks?: AgentCallbacks
   ): Promise<ToolResult> {
     switch (name) {
       case 'run_command':

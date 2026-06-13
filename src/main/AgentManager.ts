@@ -144,18 +144,9 @@ class AgentManager {
     return new Promise((resolve) => {
       const workerPath = join(__dirname, 'ai-worker.js')
 
-      const workerData = {
-        storeData: { ...storeData, _subAgentModel: record.model },
-        message: record.task,
-        chatId: record.chatId,
-        msgId: record.id,
-        isSubAgent: true,
-        systemPrompt: `Ты суб-агент. Твоя задача: ${record.task}\n\nВыполни задачу и дай чёткий итог. Будь краток в финальном ответе — только результат.`,
-      }
-
       let worker: Worker
       try {
-        worker = new Worker(workerPath, { workerData })
+        worker = new Worker(workerPath, { workerData: { storeData } })
       } catch (e: any) {
         record.status = 'error'
         record.error = e.message
@@ -168,6 +159,23 @@ class AgentManager {
       record.status = 'running'
       this.workers.set(record.id, worker)
       this.broadcast('agent:update', record)
+
+      // Шлём params так же как chat.ipc.ts
+      const agentSettings = (storeData.agentSettings as Record<string, unknown> | undefined) ?? {
+        enableTools: true, maxSteps: 8, approvalMode: 'auto',
+        toolOutputMode: 'normal', enableThinking: false,
+      }
+      worker.postMessage({
+        chatId: record.chatId,
+        msgId: record.id,
+        content: record.task,
+        history: [],
+        systemPrompt: `Ты суб-агент. Твоя задача: ${record.task}\n\nВыполни задачу и дай чёткий итог. Будь краток в финальном ответе — только результат.`,
+        enableTools: agentSettings.enableTools ?? true,
+        incognito: false,
+        agentSettings,
+        storeData,
+      })
 
       worker.on('message', (msg: Record<string, unknown>) => {
         switch (msg.type) {
@@ -195,7 +203,6 @@ class AgentManager {
           case 'done': {
             record.status = 'done'
             record.finishedAt = Date.now()
-            // Краткий summary — первые 500 символов итога
             const fullResult = record.result.trim()
             record.summary = fullResult.length > 500
               ? fullResult.slice(0, 500) + '...'
