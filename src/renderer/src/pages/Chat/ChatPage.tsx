@@ -170,8 +170,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setTyping(false)
       setIsAgentRunning(false)
       setLiveSteps([])
-      setLiveThinking(null)
-      streamMsgIdRef.current = null
+      // liveThinking сбрасываем после addMessage — иначе ThinkingBlock исчезает до рендера сообщения
+      setTimeout(() => {
+        setLiveThinking(null)
+        streamMsgIdRef.current = null
+      }, 50)
       window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
     })
 

@@ -130,7 +130,6 @@ export class AIClient {
         let thinkingDoneSent = false
         let inThinkTag = false
         let thinkBuffer = ''
-        let debugCount = 0
 
         for await (const chunk of stream) {
           if (signal?.aborted) break
@@ -138,16 +137,7 @@ export class AIClient {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const delta = (chunk.choices?.[0]?.delta ?? {}) as Record<string, any>
 
-          // DEBUG — логируем первые 5 чанков с непустыми полями
-          if (debugCount < 5) {
-            const keys = Object.keys(delta).filter(k => (delta[k] as unknown) != null && delta[k] !== '')
-            if (keys.length > 0) {
-              console.log('[AIClient delta]', JSON.stringify(delta).slice(0, 300))
-              debugCount++
-            }
-          }
-
-          // --- Формат 1: delta.reasoning_content (DeepSeek R1, o3-mini, OnlySQ) ---
+          // --- Формат 1: delta.reasoning_content ---
           if (delta.reasoning_content != null) {
             const tok = extractReasoningText(delta.reasoning_content)
             if (tok) {
@@ -321,7 +311,7 @@ export class AIClient {
         })
         const msg = res.choices[0]?.message
         const rawReasoning = msg?.reasoning_content ?? msg?.thinking ?? msg?.reasoning_summary
-        const reasoning = rawReasoning ? String(rawReasoning) : undefined
+        const reasoning = rawReasoning ? extractReasoningText(rawReasoning) : undefined
         return { content: msg?.content || '', tool_calls: msg?.tool_calls, reasoning }
       } catch (err: unknown) {
         const error = err as { status?: number }
