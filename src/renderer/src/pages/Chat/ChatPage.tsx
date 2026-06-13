@@ -198,7 +198,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     // Шаги агента
     const offStep = window.syntee.on('agent:step', (step: {
-      type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean
+      type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string
     }) => {
       if (step.type === 'tool_call' || step.type === 'tool_result') {
         setIsAgentRunning(true)
@@ -210,6 +210,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           content: step.content,
           success: step.success,
           timestamp: Date.now(),
+          imageUrl: step.imageUrl,
         }])
       }
     })

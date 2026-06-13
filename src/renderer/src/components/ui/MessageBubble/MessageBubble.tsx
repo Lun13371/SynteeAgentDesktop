@@ -220,6 +220,21 @@ const MessageContent = memo(function MessageContent({
           <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={!!isStreaming} />
         )}
 
+        {/* Сгенерированные изображения из tool steps — показываем прямо в чате */}
+        {!isUser && toolSteps && toolSteps
+          .filter(s => s.type === 'tool_result' && s.imageUrl)
+          .map(s => (
+            <div key={s.id} className="message-image-wrap">
+              <img
+                src={`file://${s.imageUrl}`}
+                alt="Сгенерированное изображение"
+                className="message-image"
+                onClick={() => window.open(`file://${s.imageUrl}`, '_blank')}
+              />
+            </div>
+          ))
+        }
+
         {/* Сгенерированное изображение */}
         {message.imageUrl && (
           <div className="message-image-wrap">
