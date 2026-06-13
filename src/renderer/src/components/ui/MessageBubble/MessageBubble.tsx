@@ -26,6 +26,7 @@ interface MessageBubbleProps {
   searchQuery?: string
   liveThinking?: { text: string; isLive: boolean; ms?: number }
   isStreaming?: boolean
+  isWaiting?: boolean
   rateLimitSec?: number
 }
 
@@ -164,7 +165,7 @@ function WaitingIndicator({ rateLimitSec }: { rateLimitSec?: number }) {
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
-  liveThinking, isStreaming, liveIters, liveTextAfter,
+  liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -173,8 +174,10 @@ const MessageContent = memo(function MessageContent({
   message: Message; isPinned: number; createdAt: number
   liveThinking?: { text: string; isLive: boolean; ms?: number }
   isStreaming?: boolean
+  isWaiting?: boolean
   liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }>
   liveTextAfter?: string
+  rateLimitSec?: number
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -365,8 +368,8 @@ const MessageContent = memo(function MessageContent({
           />
         )}
 
-        {/* Пустой пузырь во время ожидания первого токена */}
-        {!isUser && isStreaming && !content && !liveThinking && !message.thinking && (
+        {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
+        {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && liveIters?.length === 0 && (
           <WaitingIndicator rateLimitSec={rateLimitSec} />
         )}
 
@@ -470,7 +473,7 @@ const MessageContent = memo(function MessageContent({
 
 // Внешний пузырь — только layout + spring анимация при mount
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, rateLimitSec,
+  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -518,8 +521,10 @@ const MessageBubble = memo(function MessageBubble({
         createdAt={message.createdAt}
         liveThinking={liveThinking}
         isStreaming={isStreaming}
+        isWaiting={isWaiting}
         liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
         liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
+        rateLimitSec={rateLimitSec}
       />
     </motion.div>
   )
