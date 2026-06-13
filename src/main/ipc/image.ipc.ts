@@ -24,17 +24,21 @@ export function registerImageIPC(store: Store, mainWindow: { getWindow: () => Br
   ipcMain.handle('image:generate', async (_, params: ImageGenParams): Promise<ImageGenResult> => {
     const providers = store.get('providers', []) as Provider[]
     const imageProviderId = store.get('imageProviderId', '') as string
-    const imageModelId = store.get('imageModelId', 'dall-e-3') as string
-
+    const imageModelId = store.get('imageModelId', '') as string
     const modelId = params.model || imageModelId
 
-    // Найдём нужный провайдер
+    const IMAGE_PROVIDER_IDS = ['openai', 'onlysq', 'bfl', 'together', 'replicate', 'fal']
+
     const provider = imageProviderId
       ? providers.find(p => p.id === imageProviderId)
-      : providers.find(p => p.enabled && (p.apiKey || (p.apiKeys && p.apiKeys.length > 0)))
+      : providers.find(p =>
+          p.enabled &&
+          (p.apiKey || (p.apiKeys && p.apiKeys.length > 0)) &&
+          IMAGE_PROVIDER_IDS.includes(p.id)
+        )
 
     if (!provider) {
-      return { error: 'Нет настроенного провайдера для генерации изображений' }
+      return { error: 'Не настроена модель генерации изображений. Зайдите в Настройки → AI → Модели → Генерация изображений.' }
     }
 
     const apiKey = provider.apiKeys?.find(k => k.trim()) || provider.apiKey || ''

@@ -120,13 +120,31 @@ export async function generateImage(
 ): Promise<ToolResult> {
   const providers = store.get('providers', []) as Provider[]
   const imageProviderId = store.get('imageProviderId', '') as string
-  const imageModelId = store.get('imageModelId', 'dall-e-3') as string
+  const imageModelId = store.get('imageModelId', '') as string
 
-  const provider = imageProviderId
-    ? providers.find(p => p.id === imageProviderId)
-    : providers.find(p => p.enabled && (p.apiKey || (p.apiKeys && p.apiKeys.length > 0)))
+  // Провайдеры которые умеют генерировать изображения (по id)
+  const IMAGE_PROVIDER_IDS = ['openai', 'onlysq', 'bfl', 'together', 'replicate', 'fal']
 
-  if (!provider) return { success: false, output: '', error: 'Нет провайдера для генерации изображений. Настройте в Настройки → AI → Генерация изображений' }
+  let provider: Provider | undefined
+
+  if (imageProviderId) {
+    // Явно выбран в настройках — используем его
+    provider = providers.find(p => p.id === imageProviderId)
+  } else if (imageModelId) {
+    // Ищем enabled провайдер у которого есть нужная модель
+    provider = providers.find(p =>
+      p.enabled &&
+      (p.apiKey || (p.apiKeys && p.apiKeys.length > 0)) &&
+      IMAGE_PROVIDER_IDS.includes(p.id)
+    )
+  }
+
+  if (!provider) {
+    return {
+      success: false, output: '',
+      error: 'Не настроена модель генерации изображений. Зайдите в Настройки → AI → Модели → Генерация изображений и выберите модель.'
+    }
+  }
 
   const apiKey = provider.apiKeys?.find(k => k.trim()) || provider.apiKey || ''
   if (!apiKey) return { success: false, output: '', error: 'API ключ провайдера не задан' }
