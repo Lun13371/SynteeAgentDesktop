@@ -256,34 +256,81 @@ export function readFiles(paths: string[]): ToolResult {
   return { success: true, output: results.join('\n\n') }
 }
 
-// ── search_code — поиск по коду (ripgrep/grep) ───────────────────────────
+// ── search_code — поиск по коду (ripgrep/grep/Select-String) ─────────────
 export async function searchCode(
   pattern: string,
-  path: string,
-  opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number }
+  searchPath: string,
+  opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number }
 ): Promise<ToolResult> {
   const maxResults = opts?.maxResults ?? 50
-  const caseFlag = opts?.ignoreCase ? '-i' : ''
+  const context = opts?.context ?? 2
+  const caseFlag = opts?.ignoreCase ? '-i' : '-s'
   const globFlag = opts?.fileGlob ? `--glob "${opts.fileGlob}"` : ''
+  const ignoreFlag = '--glob "!node_modules" --glob "!dist" --glob "!out" --glob "!.git" --glob "!__pycache__" --glob "!.venv" --glob "!build"'
+  const escaped = pattern.replace(/"/g, '\\"')
 
-  // Пробуем ripgrep (rg), fallback на grep
-  const rgCmd = `rg --line-number --no-heading ${caseFlag} ${globFlag} -m ${maxResults} "${pattern.replace(/"/g, '\\"')}" "${path}"`
-  const grepCmd = `grep -rn ${caseFlag} -m ${maxResults} "${pattern.replace(/"/g, '\\"')}" "${path}" ${opts?.fileGlob ? `--include="${opts.fileGlob}"` : ''}`
-
+  // Пробуем ripgrep
+  const rgCmd = `rg --line-number --no-heading ${caseFlag} ${globFlag} ${ignoreFlag} -C ${context} -m ${maxResults} "${escaped}" "${searchPath}"`
   try {
     const { stdout } = await execAsync(rgCmd, { timeout: 15000 })
-    const lines = stdout.trim().split('\n').slice(0, maxResults)
-    return { success: true, output: lines.join('\n') || 'Совпадений не найдено' }
-  } catch {
+    return { success: true, output: formatRgOutput(stdout.trim(), maxResults) || 'Совпадений не найдено' }
+  } catch {}
+
+  // Fallback: grep (Linux/Mac)
+  if (process.platform !== 'win32') {
+    const grepCmd = `grep -rn ${opts?.ignoreCase ? '-i' : ''} -m ${maxResults} -C ${context} "${escaped}" "${searchPath}" ${opts?.fileGlob ? `--include="${opts.fileGlob}"` : ''} --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git`
     try {
       const { stdout } = await execAsync(grepCmd, { timeout: 15000 })
-      const lines = stdout.trim().split('\n').slice(0, maxResults)
-      return { success: true, output: lines.join('\n') || 'Совпадений не найдено' }
+      return { success: true, output: stdout.trim() || 'Совпадений не найдено' }
     } catch (e: any) {
       if (e.code === 1) return { success: true, output: 'Совпадений не найдено' }
       return { success: false, output: '', error: e.message }
     }
   }
+
+  // Fallback Windows: PowerShell Select-String
+  const psPattern = pattern.replace(/'/g, "''")
+  const psGlob = opts?.fileGlob ? opts.fileGlob : '*.*'
+  const psCase = opts?.ignoreCase ? '' : '-CaseSensitive'
+  const psCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "` +
+    `$r = Get-ChildItem -Path '${searchPath}' -Recurse -Filter '${psGlob}' | ` +
+    `Where-Object { $_.FullName -notmatch 'node_modules|dist|out|\\.git|__pycache__|\\.venv|build' } | ` +
+    `Select-String ${psCase} -Pattern '${psPattern}' | Select-Object -First ${maxResults}; ` +
+    `if ($r) { $r | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ': ' + $_.Line.Trim() } } else { 'Совпадений не найдено' }"`
+  try {
+    const { stdout } = await execAsync(psCmd, { timeout: 20000 })
+    return { success: true, output: stdout.trim() || 'Совпадений не найдено' }
+  } catch (e: any) {
+    return { success: false, output: '', error: 'search_code: ' + e.message }
+  }
+}
+
+// Группирует вывод rg по файлам
+function formatRgOutput(raw: string, max: number): string {
+  if (!raw) return ''
+  const lines = raw.split('\n').slice(0, max * 5)
+  const files = new Map<string, string[]>()
+  for (const line of lines) {
+    // rg формат: path:line:content или path-line-context
+    const m = line.match(/^([^:]+):(\d+)[:-](.*)$/)
+    if (m) {
+      const [, file, lineNum, content] = m
+      if (!files.has(file)) files.set(file, [])
+      files.get(file)!.push(`  ${lineNum}: ${content}`)
+    } else if (line === '--') {
+      // разделитель контекста — пропускаем
+    } else if (line) {
+      // контекстная строка без номера — добавляем к последнему файлу
+      const last = Array.from(files.keys()).pop()
+      if (last) files.get(last)!.push(`  ${line}`)
+    }
+  }
+  const out: string[] = []
+  Array.from(files.entries()).forEach(([file, fileLines]) => {
+    out.push(`\n● ${file}`)
+    out.push(...fileLines.slice(0, 20))
+  })
+  return out.join('\n').trim()
 }
 
 // ── analyze_project — полный анализ проекта ──────────────────────────────
@@ -695,15 +742,16 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'search_code',
-      description: 'Поиск по коду проекта — найти где используется функция, класс, переменная, паттерн. Использует ripgrep (rg) с fallback на grep.',
+      description: 'Поиск по коду: regex или текст в файлах проекта. rg → grep → PowerShell Select-String. Игнорирует node_modules/dist/.git. Возвращает результаты сгруппированные по файлам с контекстом.',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: 'Regex или текст для поиска. Например: "useState", "handleClick", "import.*axios"' },
+          pattern: { type: 'string', description: 'Regex или строка. Пример: "useState", "import.*axios", "class\\s+User"' },
           path: { type: 'string', description: 'Директория или файл для поиска' },
-          file_glob: { type: 'string', description: 'Фильтр по расширению. Например: "*.ts", "*.tsx", "*.py"' },
-          ignore_case: { type: 'boolean', description: 'Игнорировать регистр (по умолчанию false)' },
-          max_results: { type: 'number', description: 'Максимум результатов (по умолчанию 50)' },
+          file_glob: { type: 'string', description: 'Фильтр файлов: "*.ts", "*.py", "*.{ts,tsx}"' },
+          ignore_case: { type: 'boolean', description: 'Без учёта регистра (по умолч. false)' },
+          max_results: { type: 'number', description: 'Макс. совпадений (по умолч. 50)' },
+          context: { type: 'number', description: 'Строк контекста вокруг совпадения (по умолч. 2)' },
         },
         required: ['pattern', 'path'],
       },
