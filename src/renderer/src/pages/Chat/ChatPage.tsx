@@ -311,7 +311,13 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setTyping(true)
     setReplyTo([])
 
-    await window.syntee.chat.send({ chatId, content: aiContent, incognito: isIncognito })
+    await window.syntee.chat.send({
+      chatId,
+      content: aiContent,
+      displayContent: displayContent !== aiContent ? displayContent : undefined,
+      slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
+      incognito: isIncognito,
+    })
   }
 
   const handlePin = async (id: string) => {

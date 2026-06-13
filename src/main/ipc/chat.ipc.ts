@@ -54,20 +54,24 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   ipcMain.handle('chat:send', async (_, params: {
     chatId: string
     content: string
+    displayContent?: string
+    slashCommand?: { name: string; args: string }
     incognito?: boolean
   }) => {
     const win = mainWindow.getWindow()
-    currentChatIdForStop = params.chatId   // запоминаем для stop
+    currentChatIdForStop = params.chatId
     const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
 
     // Сохраняем сообщение пользователя
+    // displayContent — что видит пользователь (команда), content — что уходит в AI
     const userMsg: Message = {
       id: uuid(),
       chatId: params.chatId,
       role: 'user',
-      content: params.content,
+      content: params.displayContent ?? params.content,
       createdAt: Date.now(),
       isPinned: 0,
+      slashCommand: params.slashCommand,
     }
     if (!params.incognito) saveMessage(userMsg)
 
