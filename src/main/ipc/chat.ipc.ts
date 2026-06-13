@@ -90,6 +90,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       'apiKey', 'apiEndpoint', 'providers', 'modelAssignments',
       'temperature', 'maxTokens', 'agentSettings', 'integrations',
       'voiceId', 'embeddingModel',
+      'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
     ]
     for (const k of storeKeys) {
       const v = store.get(k)

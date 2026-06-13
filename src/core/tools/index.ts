@@ -122,22 +122,33 @@ export async function generateImage(
   const imageProviderId = store.get('imageProviderId', '') as string
   const imageModelId = store.get('imageModelId', '') as string
 
+  console.log('[generateImage] imageProviderId=', imageProviderId, 'imageModelId=', imageModelId, 'providers count=', (providers as unknown[]).length)
+  console.log('[generateImage] known provider ids=', (providers as Provider[]).map(p => p.id))
+
   let provider: Provider | undefined
 
   if (imageProviderId) {
+    // Сначала точное совпадение по id
     provider = providers.find(p => p.id === imageProviderId)
-  } else {
-    // Нет явного выбора — нельзя угадывать провайдер
-    return {
-      success: false, output: '',
-      error: 'Не настроена модель генерации изображений. Зайдите в Настройки → AI → Модели → Генерация изображений и выберите модель.'
+    // Если не нашли — ищем по частичному совпадению (кастомные провайдеры могут иметь суффикс)
+    if (!provider) {
+      provider = providers.find(p => p.id.includes(imageProviderId) || imageProviderId.includes(p.id))
+    }
+    console.log('[generateImage] found provider:', provider?.id ?? 'NOT FOUND')
+  }
+
+  if (!provider) {
+    // Последний шанс — первый enabled с ключом
+    provider = providers.find(p => p.enabled && (p.apiKey || (p.apiKeys && p.apiKeys.length > 0)))
+    if (provider) {
+      console.log('[generateImage] fallback to first enabled provider:', provider.id)
     }
   }
 
   if (!provider) {
     return {
       success: false, output: '',
-      error: 'Выбранный провайдер генерации изображений не найден. Проверьте Настройки → AI → Модели.'
+      error: 'Не настроена модель генерации изображений. Зайдите в Настройки → AI → Модели → Генерация изображений и выберите модель.'
     }
   }
 
