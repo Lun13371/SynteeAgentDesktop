@@ -12,6 +12,7 @@ const V: ModelCapability = 'vision'
 const T: ModelCapability = 'tools'
 const R: ModelCapability = 'reasoning'
 const C: ModelCapability = 'code'
+const I: ModelCapability = 'image_gen'
 
 export const BUILTIN_MODELS: ModelMeta[] = [
   // OpenAI
@@ -90,6 +91,28 @@ export const BUILTIN_MODELS: ModelMeta[] = [
   m('o3',                     'onlysq', 'o3',                  200_000, 10.00,  40.00, 'slow',   [T,R,C],   'o3 через OnlySQ'),
   m('o4-mini',                'onlysq', 'o4-mini',             200_000,  1.10,   4.40, 'medium', [T,R,C],   'o4-mini через OnlySQ'),
   m('qwen-3-32b',             'onlysq', 'Qwen 3 32B',           32_768,  0.30,   0.30, 'fast',   [T,C,R],   'Qwen 3 32B через OnlySQ'),
+
+  // ── Генерация изображений (OpenAI) ──────────────────────────────────────
+  m('dall-e-3',               'openai', 'DALL-E 3',                  0,  0.04,   0.00, 'medium', [I],       'OpenAI — качественная генерация, style/quality параметры'),
+  m('dall-e-2',               'openai', 'DALL-E 2',                  0,  0.02,   0.00, 'fast',   [I],       'OpenAI — быстрая базовая генерация'),
+  m('gpt-image-1',            'openai', 'GPT Image 1',               0,  0.04,   0.00, 'medium', [I],       'OpenAI — новейшая модель генерации изображений'),
+
+  // ── Генерация изображений (OnlySQ — если проксирует OpenAI Images) ───────
+  m('dall-e-3',               'onlysq', 'DALL-E 3',                  0,  0.04,   0.00, 'medium', [I],       'DALL-E 3 через OnlySQ'),
+  m('gpt-image-1',            'onlysq', 'GPT Image 1',               0,  0.04,   0.00, 'medium', [I],       'GPT Image 1 через OnlySQ'),
+
+  // ── Генерация изображений (Black Forest Labs — FLUX) ─────────────────────
+  m('flux-pro-1.1-ultra',     'bfl',    'FLUX 1.1 Pro Ultra',        0,  0.06,   0.00, 'medium', [I],       'BFL — наивысшее качество, до 4MP'),
+  m('flux-pro-1.1',           'bfl',    'FLUX 1.1 Pro',              0,  0.04,   0.00, 'fast',   [I],       'BFL — высокое качество, быстрее Pro'),
+  m('flux-pro',               'bfl',    'FLUX.1 Pro',                0,  0.05,   0.00, 'medium', [I],       'BFL — стандартное качество'),
+  m('flux-dev',               'bfl',    'FLUX.1 Dev',                0,  0.025,  0.00, 'fast',   [I],       'BFL — исследовательский, некоммерческий'),
+  m('flux-schnell',           'bfl',    'FLUX.1 Schnell',            0,  0.003,  0.00, 'fast',   [I],       'BFL — самый быстрый, некоммерческий'),
+
+  // ── Генерация изображений (Together AI) ─────────────────────────────────
+  m('black-forest-labs/FLUX.1-schnell',  'together', 'FLUX.1 Schnell',  0, 0.001, 0.00, 'fast',   [I], 'Together — FLUX Schnell'),
+  m('black-forest-labs/FLUX.1-dev',      'together', 'FLUX.1 Dev',      0, 0.010, 0.00, 'medium', [I], 'Together — FLUX Dev'),
+  m('black-forest-labs/FLUX.1.1-pro',    'together', 'FLUX 1.1 Pro',    0, 0.040, 0.00, 'medium', [I], 'Together — FLUX 1.1 Pro'),
+  m('stabilityai/stable-diffusion-xl-base-1.0', 'together', 'SDXL 1.0', 0, 0.008, 0.00, 'fast',   [I], 'Together — Stable Diffusion XL'),
 ]
 
 export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: string; docsUrl: string; color: string }> = {
@@ -106,4 +129,5 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   xai:       { name: 'xAI Grok',    baseUrl: 'https://api.x.ai/v1',                       color: '#ffffff', docsUrl: 'https://console.x.ai' },
   onlysq:    { name: 'OnlySQ',      baseUrl: 'https://api.onlysq.ru/ai/openai',            color: '#a855f7', docsUrl: 'https://api.onlysq.ru' },
   voidai:    { name: 'VoidAI',      baseUrl: 'https://api.voidai.app/v1',                  color: '#06b6d4', docsUrl: 'https://docs.voidai.app' },
+  bfl:       { name: 'Black Forest Labs', baseUrl: 'https://api.bfl.ai',                   color: '#e11d48', docsUrl: 'https://docs.bfl.ml' },
 }
