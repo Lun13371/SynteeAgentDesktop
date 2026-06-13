@@ -109,13 +109,22 @@ export class AIClient {
         let chunkCount = 0
         let thinkingStartMs = 0
         let thinkingDoneSent = false
+        let thinkBuffer = ''
+        let inThinkTag = false
 
         for await (const chunk of stream) {
           if (signal?.aborted) break
           const delta = chunk.choices[0]?.delta as Record<string, unknown>
 
-          // Reasoning токены — DeepSeek: reasoning_content, Qwen/другие: thinking
-          const reasoningToken = (delta?.reasoning_content as string) || (delta?.thinking as string) || ''
+          // Reasoning токены — извлекаем только строки
+          const rawReasoning = delta?.reasoning_content ?? delta?.thinking
+          const reasoningToken = typeof rawReasoning === 'string'
+            ? rawReasoning
+            : typeof (rawReasoning as Record<string, unknown>)?.text === 'string'
+              ? (rawReasoning as Record<string, unknown>).text as string
+              : rawReasoning != null
+                ? String(rawReasoning)
+                : ''
           if (reasoningToken) {
             if (!thinkingStartMs) thinkingStartMs = Date.now()
             callbacks.onThinkingToken?.(reasoningToken)
@@ -130,11 +139,35 @@ export class AIClient {
           const token = delta?.content as string ?? ''
           chunkCount++
           if (token) {
-            // Fallback: некоторые провайдеры шлют <think>...</think> в content
-            if (token.includes('<think>') || token.includes('</think>')) {
-              // Пропускаем теги, thinking уже обработан через reasoning_content
-              const cleaned = token.replace(/<\/?think>/g, '')
-              if (cleaned) { fullText += cleaned; callbacks.onToken(cleaned) }
+            // Fallback: провайдер шлёт <think>...</think> прямо в delta.content
+            if (token.includes('<think>') || token.includes('</think>') || inThinkTag) {
+              // Аккумулируем буфер и парсим теги
+              thinkBuffer += token
+              // Извлекаем thinking части
+              const thinkRegex = /<think>([\s\S]*?)<\/think>/g
+              let thinkMatch
+              let lastIndex = 0
+              while ((thinkMatch = thinkRegex.exec(thinkBuffer)) !== null) {
+                const thinkContent = thinkMatch[1]
+                if (thinkContent) {
+                  if (!thinkingStartMs) thinkingStartMs = Date.now()
+                  callbacks.onThinkingToken?.(thinkContent)
+                }
+                lastIndex = thinkRegex.lastIndex
+              }
+              // Всё что после закрытого тега — обычный текст
+              if (thinkBuffer.includes('</think>')) {
+                const afterThink = thinkBuffer.split('</think>').pop() || ''
+                thinkBuffer = ''
+                inThinkTag = false
+                if (!thinkingDoneSent && thinkingStartMs) {
+                  thinkingDoneSent = true
+                  callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
+                }
+                if (afterThink) { fullText += afterThink; callbacks.onToken(afterThink) }
+              } else if (token.includes('<think>')) {
+                inThinkTag = true
+              }
             } else {
               fullText += token
               callbacks.onToken(token)
@@ -296,7 +329,8 @@ export class AIClient {
           }>
         }
         const msg = data.choices[0]?.message
-        const reasoning = msg?.reasoning_content || msg?.thinking || undefined
+        const rawReasoning = msg?.reasoning_content ?? msg?.thinking
+        const reasoning = typeof rawReasoning === 'string' && rawReasoning ? rawReasoning : undefined
         return { content: msg?.content || '', tool_calls: msg?.tool_calls, reasoning }
       } catch {
         attempt++
