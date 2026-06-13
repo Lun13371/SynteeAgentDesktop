@@ -151,6 +151,43 @@
 .msg-waiting-dots span:nth-child(2) { animation-delay: 0.2s; }
 .msg-waiting-dots span:nth-child(3) { animation-delay: 0.4s; }
 
+/* Shimmer-текст "Думаю..." */
+.msg-waiting-shimmer {
+  display: inline-block;
+  padding: 2px 0 6px;
+  font-size: 14px;
+  font-style: italic;
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.18) 0%,
+    rgba(255,255,255,0.7) 40%,
+    rgba(255,255,255,0.18) 80%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: msg-shimmer 2s linear infinite;
+}
+
+/* Rate limit — янтарный оттенок */
+.msg-waiting-shimmer--rl {
+  background: linear-gradient(90deg,
+    rgba(251,191,36,0.3) 0%,
+    rgba(251,191,36,1.0) 40%,
+    rgba(251,191,36,0.3) 80%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: msg-shimmer 1.5s linear infinite;
+}
+
+@keyframes msg-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
 .message-content {
   font-size: 14px;
   line-height: 1.65;
