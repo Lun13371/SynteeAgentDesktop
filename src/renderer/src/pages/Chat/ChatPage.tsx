@@ -12,6 +12,7 @@ import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ToolChain from '../../components/ui/ToolChain/ToolChain'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import { useChatStore } from '../../store/chat.store'
+import { parseSlashCommand } from '../../../../shared/slashCommands'
 import { IPC_EVENTS } from '../../../../shared/constants'
 import type { Chat, Message, ToolOutputMode } from '../../../../shared/types'
 import './ChatPage.css'
@@ -251,6 +252,49 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }
 
   const handleSend = async (text: string) => {
+    // ── Слеш-команды ──────────────────────────────────────────────
+    const slash = parseSlashCommand(text.trim())
+    if (slash) {
+      const { command, args } = slash
+      switch (command.name) {
+        case 'clear': {
+          if (currentChatId) {
+            await window.syntee.chat.clearMessages?.(currentChatId).catch(() => {})
+            setMessages([])
+            toast('Чат очищен', 'info')
+          }
+          return
+        }
+        case 'image': {
+          if (!args) { toast('Укажи описание: /image красивый закат', 'info'); return }
+          // Показываем сообщение пользователя и отправляем через AI с явным промптом
+          text = `Сгенерируй изображение: ${args}\n\n(используй инструмент image_generation)`
+          break
+        }
+        case 'web': {
+          if (!args) { toast('Укажи запрос: /web погода в Москве', 'info'); return }
+          text = `Найди в интернете: ${args}`
+          break
+        }
+        case 'recap': {
+          const history = messages.map(m => `${m.role === 'user' ? 'Я' : 'AI'}: ${m.content.slice(0, 200)}`).join('\n')
+          text = `Дай краткое резюме этого разговора в 3-5 предложениях:\n\n${history}`
+          break
+        }
+        case 'memo': {
+          if (!args) { toast('Укажи текст: /memo важная заметка', 'info'); return }
+          text = `Запомни это: ${args}`
+          break
+        }
+        case 'sys': {
+          if (!args) { toast('Укажи промпт: /sys ты поэт', 'info'); return }
+          await window.syntee.models.setParams({ systemPrompt: args })
+          toast('Системный промпт обновлён', 'success')
+          return
+        }
+      }
+    }
+    // ── Обычная отправка ──────────────────────────────────────────
     let chatId = currentChatId
 
     // Если нет активного чата — создаём

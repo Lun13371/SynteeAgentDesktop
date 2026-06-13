@@ -5,6 +5,9 @@ import IconButton from '../IconButton/IconButton'
 import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
 import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
+import SlashMenu from '../SlashMenu/SlashMenu'
+import { filterCommands } from '../../../../../shared/slashCommands'
+import type { SlashCommand } from '../../../../../shared/slashCommands'
 import type { ApprovalMode } from '../../../../../shared/types'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import './ChatInput.css'
@@ -38,9 +41,11 @@ export default function ChatInput({
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
+  const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
+  const [slashIdx, setSlashIdx] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
 
-  // Загружаем сохранённый режим
   useEffect(() => {
     window.syntee.agent.getSettings().then((s: { approvalMode: ApprovalMode }) => {
       setApprovalMode(s.approvalMode)
@@ -60,27 +65,83 @@ export default function ChatInput({
     el.style.height = Math.min(el.scrollHeight, 160) + 'px'
   }, [value])
 
+  // Обновляем слеш-меню при вводе
+  const handleChange = (text: string) => {
+    setValue(text)
+    onInputChange?.(text)
+    // Показываем меню только если строка начинается с / и нет пробелов после команды
+    const firstWord = text.split(' ')[0]
+    if (text.startsWith('/') && !text.includes(' ')) {
+      const cmds = filterCommands(firstWord)
+      setSlashCmds(cmds)
+      setSlashIdx(0)
+    } else {
+      setSlashCmds([])
+    }
+  }
+
+  const selectCommand = (cmd: SlashCommand) => {
+    // Заменяем ввод на "/command " и фокусируем
+    const next = `/${cmd.name} `
+    setValue(next)
+    onInputChange?.(next)
+    setSlashCmds([])
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }
+
   const handleSend = () => {
     const text = value.trim()
     if (!text || disabled) return
     onSend(text)
     setValue('')
     onInputChange?.('')
+    setSlashCmds([])
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Навигация по слеш-меню
+    if (slashCmds.length > 0) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashIdx(i => (i - 1 + slashCmds.length) % slashCmds.length)
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashIdx(i => (i + 1) % slashCmds.length)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault()
+        selectCommand(slashCmds[slashIdx])
+        return
+      }
+      if (e.key === 'Escape') {
+        setSlashCmds([])
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
   }
 
-  // Определяем состояние кнопки: stop > send > mic
   const btnMode = isGenerating ? 'stop' : value.trim() ? 'send' : 'mic'
 
   return (
     <div className={`chat-input-wrap ${isIncognito ? 'chat-input-wrap--incognito' : ''}`}>
+
+      {/* Слеш-меню */}
+      <SlashMenu
+        commands={slashCmds}
+        selectedIndex={slashIdx}
+        anchorRef={boxRef as React.RefObject<HTMLElement>}
+        onSelect={selectCommand}
+        onClose={() => setSlashCmds([])}
+      />
+
       {replyTo && replyTo.length > 0 && (
         <div className="chat-input-replies">
           {replyTo.map(r => (
@@ -94,51 +155,32 @@ export default function ChatInput({
           ))}
         </div>
       )}
-      <div className="chat-input-box glass">
-        {/* Кнопка прикрепить */}
-        <IconButton
-          icon="paperclip"
-          label="Прикрепить файл"
-          className="chat-input-btn"
-          onClick={onAttach}
-        />
+      <div className="chat-input-box glass" ref={boxRef}>
+        <IconButton icon="paperclip" label="Прикрепить файл" className="chat-input-btn" onClick={onAttach} />
 
-        {/* Textarea */}
         <textarea
           ref={textareaRef}
           className="chat-input-textarea selectable"
           value={value}
-          onChange={e => { setValue(e.target.value); onInputChange?.(e.target.value) }}
+          onChange={e => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isIncognito ? 'Режим инкогнито — чат не сохраняется...' : 'Сообщение Syntee...'}
+          placeholder={isIncognito ? 'Режим инкогнито — чат не сохраняется...' : 'Сообщение Syntee... (/ для команд)'}
           rows={1}
           disabled={disabled && !isGenerating}
         />
 
-        {/* Селектор режима подтверждения */}
         {!isIncognito && (
-          <ApprovalModeSelector
-            value={approvalMode}
-            onChange={handleApprovalChange}
-            compact
-          />
+          <ApprovalModeSelector value={approvalMode} onChange={handleApprovalChange} compact />
         )}
 
-        {/* Селектор reasoning — показывается только для поддерживающих моделей */}
         {!isIncognito && mainModelId && onReasoningChange && (
-          <ReasoningSelector
-            modelId={mainModelId}
-            value={reasoningValue}
-            onChange={onReasoningChange}
-          />
+          <ReasoningSelector modelId={mainModelId} value={reasoningValue} onChange={onReasoningChange} />
         )}
 
-        {/* Счётчик контекста */}
         {showContextRing && !isIncognito && (
           <ContextRing info={contextInfo ?? null} />
         )}
 
-        {/* Кнопка: mic / send / stop — анимированная */}
         <motion.button
           className={`chat-input-action-btn chat-input-action-btn--${btnMode}`}
           onClick={btnMode === 'stop' ? onStop : btnMode === 'send' ? handleSend : undefined}
@@ -146,36 +188,16 @@ export default function ChatInput({
           whileHover={{ scale: 1.08 }}
           transition={{ type: 'spring', stiffness: 400, damping: 25 }}
           title={btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? 'Отправить (Enter)' : 'Голосовой ввод'}
-          aria-label={btnMode === 'stop' ? 'Остановить' : btnMode === 'send' ? 'Отправить' : 'Голосовой ввод'}
         >
           <AnimatePresence mode="wait" initial={false}>
             {btnMode === 'stop' ? (
-              <motion.span
-                key="stop"
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.5, opacity: 0 }}
-                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                className="chat-input-stop-icon"
-              />
+              <motion.span key="stop" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }} className="chat-input-stop-icon" />
             ) : btnMode === 'send' ? (
-              <motion.span
-                key="send"
-                initial={{ rotate: -90, opacity: 0, scale: 0.5 }}
-                animate={{ rotate: 0, opacity: 1, scale: 1 }}
-                exit={{ rotate: 90, opacity: 0, scale: 0.5 }}
-                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-              >
+              <motion.span key="send" initial={{ rotate: -90, opacity: 0, scale: 0.5 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} exit={{ rotate: 90, opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
                 <AppIcon name="send" size="md" />
               </motion.span>
             ) : (
-              <motion.span
-                key="mic"
-                initial={{ rotate: 90, opacity: 0, scale: 0.5 }}
-                animate={{ rotate: 0, opacity: 1, scale: 1 }}
-                exit={{ rotate: -90, opacity: 0, scale: 0.5 }}
-                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-              >
+              <motion.span key="mic" initial={{ rotate: 90, opacity: 0, scale: 0.5 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} exit={{ rotate: -90, opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
                 <AppIcon name="mic" size="md" />
               </motion.span>
             )}
@@ -183,7 +205,7 @@ export default function ChatInput({
         </motion.button>
       </div>
 
-      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка</p>
+      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды</p>
     </div>
   )
 }
