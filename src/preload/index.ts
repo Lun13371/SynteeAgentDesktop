@@ -73,7 +73,11 @@ const synteeAPI = {
   // Агент
   agent: {
     run: (query: string) => ipcRenderer.invoke('agent:run', query),
-    cancel: () => ipcRenderer.invoke('agent:cancel'),
+    cancel: (id?: string) => ipcRenderer.invoke('agent:cancel', id),
+    list: () => ipcRenderer.invoke('agent:list'),
+    get: (id: string) => ipcRenderer.invoke('agent:get', id),
+    children: (parentId: string) => ipcRenderer.invoke('agent:children', parentId),
+    clearChat: (chatId: string) => ipcRenderer.invoke('agent:clearChat', chatId),
     getSettings: () => ipcRenderer.invoke('agent:getSettings'),
     setSettings: (s: unknown) => ipcRenderer.invoke('agent:setSettings', s),
     onConfirm: (cb: (data: { reqId: string; toolName: string; args: unknown }) => void) => {

@@ -140,6 +140,7 @@ export type ModelRole =
   | 'embedding'   // векторный поиск / память
   | 'memory'      // анализ памяти
   | 'summary'     // авто-заголовки чатов
+  | 'subagent'    // суб-агенты
 
 export interface ModelAssignment {
   role: ModelRole

@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { Worker } from 'worker_threads'
 import * as path from 'path'
 import type Store from 'electron-store'
+import { agentManager } from '../AgentManager'
 import {
   createChat, getAllChats, getMessages, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB,
@@ -172,6 +173,28 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           bufferedSteps.push(msg.step)
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId })
           break
+
+        case 'spawn_agent': {
+          // Worker хочет запустить суб-агента — делаем через AgentManager
+          ;(async () => {
+            const spawnResult = await agentManager.spawn({
+              id: msg.id as string,
+              parentId: msg.msgId as string,
+              chatId: msg.chatId as string,
+              task: msg.task as string,
+              parallel: !!(msg.parallel),
+              model: msg.model as string | undefined,
+              storeData,
+            })
+            worker.postMessage({
+              type: 'spawn_agent_reply',
+              replyId: msg.replyId,
+              summary: spawnResult.summary,
+              error: spawnResult.error,
+            })
+          })()
+          break
+        }
 
         case 'rate_limit':
           win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec })

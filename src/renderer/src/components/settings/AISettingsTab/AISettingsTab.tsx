@@ -11,6 +11,7 @@ const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; 
   fast:      { label: 'Быстрые ответы',   desc: 'Автоназвания, короткие задачи',    icon: 'zap' },
   vision:    { label: 'Vision / Картинки',desc: 'Анализ изображений и скриншотов',  icon: 'eye', filterCaps: ['vision'] },
   stt:       { label: 'Голос → Текст',    desc: 'Распознавание речи',               icon: 'mic',        filterCaps: ['stt'] },
+  subagent:  { label: 'Суб-агенты',       desc: 'Модель для дочерних агентов',      icon: 'git-branch' },
   tts:       { label: 'Текст → Голос',    desc: 'Озвучивание ответов',              icon: 'volume',     filterCaps: ['tts'] },
   embedding: { label: 'Embeddings',       desc: 'Векторный поиск и память',         icon: 'brain',      filterCaps: ['embedding'] },
   memory:    { label: 'Память',           desc: 'Анализ и сохранение воспоминаний', icon: 'database' },

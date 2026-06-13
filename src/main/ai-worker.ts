@@ -95,7 +95,6 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
               collectedSteps.push(ts)
               send({ type: 'step', chatId, msgId, step })
             } else if (step.type === 'thought') {
-              // Reasoning от агента — показываем как thinking блок
               if (!thinkingStartMs) thinkingStartMs = Date.now()
               const thoughtStr = typeof step.content === 'string' ? step.content : String(step.content ?? '')
               thinkingText += thoughtStr
@@ -112,10 +111,25 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
             send({ type: 'error', chatId, error: err.message })
           },
           approvalMode: agentSettings.approvalMode as never,
+          onSpawnAgent: (opts) => {
+            // Шлём в main process, ждём ответа через Promise
+            return new Promise((resolve) => {
+              const replyId = `spawn-reply-${opts.id}`
+              // Одноразовый listener на ответ
+              const handler = (msg: Record<string, unknown>) => {
+                if (msg.type === 'spawn_agent_reply' && msg.replyId === replyId) {
+                  parentPort?.off('message', handler as never)
+                  resolve({ summary: msg.summary as string, error: msg.error as string | undefined })
+                }
+              }
+              parentPort?.on('message', handler as never)
+              send({ type: 'spawn_agent', chatId, msgId, replyId, ...opts })
+            })
+          },
         },
         agentSettings.maxSteps,
-        undefined,       // signal — нет в worker (terminate() убивает всё)
-        systemPrompt,    // передаём системный промпт с памятью/именем/датой
+        undefined,
+        systemPrompt,
       )
     } else {
       // Обычный стриминг без tools
