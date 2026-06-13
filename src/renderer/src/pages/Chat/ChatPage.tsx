@@ -167,21 +167,22 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
-      if (data.chatId !== currentChatIdRef.current) return
-      // clearStream ПЕРВЫМ — убираем live пузырь до добавления финального
+      // Сбрасываем стриминг-стейт ВСЕГДА — даже если chatId не совпадает (пользователь переключил чат)
+      streamMsgIdRef.current = null
       clearStream()
       setTyping(false)
       setIsAgentRunning(false)
       setLiveSteps([])
-      setTimeout(() => {
-        setLiveThinking(null)
-        streamMsgIdRef.current = null
-      }, 50)
-      addMessage(data.message)
-      window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
+      setLiveThinking(null)
+      // Сообщение добавляем только если это текущий чат
+      if (data.chatId === currentChatIdRef.current) {
+        addMessage(data.message)
+        window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
+      }
     })
 
     const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { error: string }) => {
+      streamMsgIdRef.current = null
       clearStream()
       setTyping(false)
       setLiveThinking(null)
@@ -203,6 +204,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Игнорируем шаги суб-агентов — у них msgId = agentId, не совпадает со streamMsgIdRef
       if (step.msgId && streamMsgIdRef.current && step.msgId !== streamMsgIdRef.current) return
       if (step.type === 'tool_call' || step.type === 'tool_result') {
+        // Устанавливаем streamMsgIdRef если ещё не установлен (шаги могут прийти до первого токена)
+        if (step.msgId && !streamMsgIdRef.current) streamMsgIdRef.current = step.msgId
         setIsAgentRunning(true)
         setLiveSteps(prev => [...prev, {
           id: uuid(),
@@ -337,9 +340,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleCopy = () => toast('Скопировано', 'success')
 
   // Собираем отображаемые сообщения (включая стриминг)
-  // Пузырь создаётся сразу при isTyping — не ждём первого токена
-  const isStreaming = isTyping || isAgentRunning || !!streamingText || !!liveThinking || liveSteps.length > 0
-  const displayMessages = isStreaming
+  // Live пузырь показываем только если streamMsgIdRef установлен (пришёл хотя бы один токен/шаг)
+  const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0 || isTyping
+  const showLiveBubble = hasLiveContent && !!streamMsgIdRef.current
+  const isStreaming = showLiveBubble
+  const displayMessages = showLiveBubble
     ? [...messages, {
         id: streamMsgIdRef.current || 'streaming',
         chatId: currentChatId || '',
