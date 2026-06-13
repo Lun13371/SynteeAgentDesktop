@@ -82,10 +82,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     // Убиваем предыдущий воркер если есть
     if (currentWorker) {
+      ;(currentWorker as unknown as { _terminated?: boolean })._terminated = true
       currentWorker.terminate()
       currentWorker = null
     }
-
     // Сериализуем store для передачи в worker
     const storeData: Record<string, unknown> = {}
     const storeKeys = [
@@ -286,10 +286,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       })
     })
 
+    let terminated = false  // флаг намеренного terminate — не вызывать sendDone
+
     worker.on('exit', () => {
-      // Вызывается при terminate() или нормальном выходе
-      // sendDone игнорирует второй вызов через doneSent флаг
-      sendDone(bufferedText, bufferedThinking, bufferedThinkingMs, bufferedSteps)
+      // exit может прийти раньше последнего message('done') в event loop
+      // setImmediate даёт обработать все pending message события сначала
+      setImmediate(() => {
+        const wasTerminated = terminated || !!(worker as unknown as { _terminated?: boolean })._terminated
+        if (!wasTerminated) {
+          sendDone(bufferedText, bufferedThinking, bufferedThinkingMs, bufferedSteps)
+        }
+      })
     })
 
     worker.postMessage({
@@ -309,8 +316,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   // ── Мгновенная остановка — terminate() убивает поток и все соединения ──────
   ipcMain.handle('chat:stop', () => {
     if (currentWorker) {
-      // Перед terminate — говорим worker прислать finalize если успеет
-      // Но terminate() мгновенный — сохранение делаем здесь по last known state
+      ;(currentWorker as unknown as { _terminated?: boolean })._terminated = true
       currentWorker.terminate()
       currentWorker = null
     }
