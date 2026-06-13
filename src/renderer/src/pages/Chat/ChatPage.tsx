@@ -141,7 +141,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       streamMsgIdRef.current = data.msgId
 
       if (data.thinkingToken) {
-        setLiveThinking(prev => ({ text: (prev?.text ?? '') + data.thinkingToken, isLive: true }))
+        const tok = typeof data.thinkingToken === 'string' ? data.thinkingToken : String(data.thinkingToken ?? '')
+        setLiveThinking(prev => ({ text: (prev?.text ?? '') + tok, isLive: true }))
         return
       }
       if (data.thinkingDone) {
