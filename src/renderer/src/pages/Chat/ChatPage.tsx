@@ -266,6 +266,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       toast('Системный промпт обновлён', 'success')
       return
     }
+    if (slash?.command.name === 'image') {
+      if (!slash.args) { toast('Укажи описание: /image красивый закат', 'info'); return }
+      // Просто отправляем в AI — он сам вызовет tool generate_image
+      // Никакой прямой генерации здесь
+    }
 
     // ── Создаём чат если нет ────────────────────────────────────
     let chatId = currentChatId

@@ -130,6 +130,13 @@ const synteeAPI = {
     streamTest: () => ipcRenderer.invoke('debug:stream-test'),
     openDevTools: () => ipcRenderer.invoke('debug:open-devtools'),
   },
+
+  // Генерация изображений
+  image: {
+    generate: (params: unknown) => ipcRenderer.invoke('image:generate', params),
+    getSettings: () => ipcRenderer.invoke('image:getSettings'),
+    setSettings: (s: unknown) => ipcRenderer.invoke('image:setSettings', s),
+  },
 }
 
 contextBridge.exposeInMainWorld('syntee', synteeAPI)
