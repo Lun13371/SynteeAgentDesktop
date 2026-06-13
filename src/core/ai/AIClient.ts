@@ -18,6 +18,8 @@ export interface StreamCallbacks {
   onDone: (fullText: string) => void
   onError: (error: Error) => void
   onRateLimit?: (waitSec: number) => void
+  onThinkingToken?: (token: string) => void
+  onThinkingDone?: (ms: number) => void
 }
 
 export interface ChatMessage {
@@ -105,14 +107,44 @@ export class AIClient {
         }, { signal })
 
         let chunkCount = 0
+        let thinkingStartMs = 0
+        let thinkingDoneSent = false
+
         for await (const chunk of stream) {
           if (signal?.aborted) break
-          const token = chunk.choices[0]?.delta?.content ?? ''
+          const delta = chunk.choices[0]?.delta as Record<string, unknown>
+
+          // Reasoning токены — DeepSeek: reasoning_content, Qwen/другие: thinking
+          const reasoningToken = (delta?.reasoning_content as string) || (delta?.thinking as string) || ''
+          if (reasoningToken) {
+            if (!thinkingStartMs) thinkingStartMs = Date.now()
+            callbacks.onThinkingToken?.(reasoningToken)
+          }
+
+          // Если reasoning закончился (был, теперь нет) — шлём done
+          if (thinkingStartMs && !reasoningToken && !thinkingDoneSent) {
+            thinkingDoneSent = true
+            callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
+          }
+
+          const token = delta?.content as string ?? ''
           chunkCount++
           if (token) {
-            fullText += token
-            callbacks.onToken(token)
+            // Fallback: некоторые провайдеры шлют <think>...</think> в content
+            if (token.includes('<think>') || token.includes('</think>')) {
+              // Пропускаем теги, thinking уже обработан через reasoning_content
+              const cleaned = token.replace(/<\/?think>/g, '')
+              if (cleaned) { fullText += cleaned; callbacks.onToken(cleaned) }
+            } else {
+              fullText += token
+              callbacks.onToken(token)
+            }
           }
+        }
+
+        // Если thinking был но done не отправили (провайдер не даёт отдельного сигнала)
+        if (thinkingStartMs && !thinkingDoneSent) {
+          callbacks.onThinkingDone?.(Date.now() - thinkingStartMs)
         }
 
         // Фоллбэк: если стриминг дал 0 токенов — пробуем non-stream
@@ -225,7 +257,7 @@ export class AIClient {
     messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: unknown[],
     signal?: AbortSignal
-  ): Promise<{ content: string; tool_calls?: unknown[] }> {
+  ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string }> {
     const model = this.getModel('main')
     const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
     const apiKey = this.store.get('apiKey') as string
@@ -239,7 +271,6 @@ export class AIClient {
 
     let attempt = 0
     while (attempt < 6) {
-      // Проверяем abort перед каждой попыткой
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
         const res = await fetch(`${effectiveEndpoint}/chat/completions`, {
@@ -254,9 +285,19 @@ export class AIClient {
           attempt++
           continue
         }
-        const data = await res.json() as { choices: Array<{ message: { content: string; tool_calls?: unknown[] } }> }
+        const data = await res.json() as {
+          choices: Array<{
+            message: {
+              content: string
+              tool_calls?: unknown[]
+              reasoning_content?: string
+              thinking?: string
+            }
+          }>
+        }
         const msg = data.choices[0]?.message
-        return { content: msg?.content || '', tool_calls: msg?.tool_calls }
+        const reasoning = msg?.reasoning_content || msg?.thinking || undefined
+        return { content: msg?.content || '', tool_calls: msg?.tool_calls, reasoning }
       } catch {
         attempt++
         await sleep(backoffDelay(attempt))

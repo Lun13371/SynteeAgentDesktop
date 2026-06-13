@@ -93,6 +93,13 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
               }
               collectedSteps.push(ts)
               send({ type: 'step', chatId, msgId, step })
+            } else if (step.type === 'thought') {
+              // Reasoning от агента — показываем как thinking блок
+              if (!thinkingStartMs) thinkingStartMs = Date.now()
+              thinkingText += step.content
+              send({ type: 'thinking_token', chatId, msgId, token: step.content })
+              thinkingMs = Date.now() - thinkingStartMs
+              send({ type: 'thinking_done', chatId, msgId, thinkingMs })
             } else if (step.type === 'answer') {
               fullText += step.content
               send({ type: 'token', chatId, msgId, token: step.content })
@@ -120,22 +127,17 @@ parentPort?.on('message', async (params: WorkerStartParams) => {
         contextMessages,
         {
           onToken: (token) => {
-            // Парсим <thinking> теги
-            const thinkStart = '<thinking>'
-            const thinkEnd = '</thinking>'
-            const buf = fullText + thinkingText + token
-
-            if (buf.includes(thinkStart) && !buf.includes(thinkEnd)) {
-              if (!thinkingStartMs) thinkingStartMs = Date.now()
-              thinkingText += token
-              send({ type: 'thinking_token', chatId, msgId, token })
-            } else if (buf.includes(thinkStart) && buf.includes(thinkEnd) && !thinkingMs) {
-              thinkingMs = Date.now() - thinkingStartMs
-              send({ type: 'thinking_done', chatId, msgId, thinkingMs })
-            } else if (!buf.includes(thinkStart) || buf.includes(thinkEnd)) {
-              fullText += token
-              send({ type: 'token', chatId, msgId, token })
-            }
+            fullText += token
+            send({ type: 'token', chatId, msgId, token })
+          },
+          onThinkingToken: (token) => {
+            if (!thinkingStartMs) thinkingStartMs = Date.now()
+            thinkingText += token
+            send({ type: 'thinking_token', chatId, msgId, token })
+          },
+          onThinkingDone: (ms) => {
+            thinkingMs = ms
+            send({ type: 'thinking_done', chatId, msgId, thinkingMs: ms })
           },
           onDone: () => finalize(),
           onError: () => finalize(),
