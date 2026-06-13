@@ -6,7 +6,6 @@ import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
-import TypingIndicator from '../../components/ui/TypingIndicator/TypingIndicator'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
@@ -388,7 +387,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                     />
                   </div>
                 ))}
-                {isTyping && !streamingText && !liveThinking && liveSteps.length === 0 && <TypingIndicator key="typing" />}
               <div ref={bottomRef} />
             </div>
           )}
