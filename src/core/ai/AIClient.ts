@@ -310,7 +310,7 @@ export class AIClient {
     signal?: AbortSignal,
     role: 'main' | 'subagent' = 'main',
     onToken?: (token: string) => void,
-  ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string }> {
+  ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
@@ -352,18 +352,18 @@ export class AIClient {
 
           // Tool call чанки — собираем по index
           if (delta.tool_calls) {
-            if (!hasToolCalls) {
-              // Первый tool_call chunk — отзываем уже отстриминные токены назад через onToken с маркером
-              hasToolCalls = true
-            }
+            hasToolCalls = true
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
               if (!toolCallMap[idx]) {
+                // Первый чанк для этого index — инициализируем
                 toolCallMap[idx] = { id: tc.id ?? '', name: tc.function?.name ?? '', arguments: '' }
+              } else {
+                // Последующие чанки — только arguments накапливаем, id и name не меняем
+                if (tc.id && !toolCallMap[idx].id) toolCallMap[idx].id = tc.id
+                // name НЕ накапливаем через += — оно приходит целиком в первом чанке
+                if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments
               }
-              if (tc.id) toolCallMap[idx].id = tc.id
-              if (tc.function?.name) toolCallMap[idx].name += tc.function.name
-              if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments
             }
           }
         }

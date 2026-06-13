@@ -145,8 +145,7 @@ export class Agent {
           }
 
           // Если токены уже отстримились через onToken — не дублируем
-          // hadStreamedTokens=true значит onToken уже всё отдал
-          if (!(response as typeof response & { hadStreamedTokens?: boolean }).hadStreamedTokens) {
+          if (!response.hadStreamedTokens) {
             const words = answer.split(/(?<=\s)|(?=\s)/)
             for (const chunk of words) {
               if (signal?.aborted) { callbacks.onDone(answer); return }
