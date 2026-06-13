@@ -3,6 +3,7 @@ import { AIClient } from '../ai/AIClient'
 import {
   runCommand, readFile, writeFile, listDirectory,
   getClipboard, setClipboard, searchWeb, getSystemInfo, generateImage,
+  readFiles, searchCode, analyzeProject,
   TOOL_SCHEMAS, type ToolResult,
 } from '../tools'
 import type { ApprovalMode } from '../../shared/types'
@@ -219,6 +220,16 @@ export class Agent {
         return getSystemInfo()
       case 'generate_image':
         return generateImage(args as { prompt: string; model?: string; size?: string; quality?: string; style?: string }, this.store)
+      case 'read_files':
+        return readFiles(args.paths as string[])
+      case 'search_code':
+        return searchCode(
+          args.pattern as string,
+          args.path as string,
+          { fileGlob: args.file_glob as string | undefined, ignoreCase: args.ignore_case as boolean | undefined, maxResults: args.max_results as number | undefined }
+        )
+      case 'analyze_project':
+        return analyzeProject(args.path as string)
       default:
         return { success: false, output: '', error: `Неизвестный инструмент: ${name}` }
     }
