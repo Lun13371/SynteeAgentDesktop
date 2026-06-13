@@ -156,7 +156,7 @@ function AgentCardLive({ agentId, task, parallel }: {
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
-  liveThinking, isStreaming, liveSegments,
+  liveThinking, isStreaming, liveIters, liveTextAfter,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -165,7 +165,8 @@ const MessageContent = memo(function MessageContent({
   message: Message; isPinned: number; createdAt: number
   liveThinking?: { text: string; isLive: boolean; ms?: number }
   isStreaming?: boolean
-  liveSegments?: Array<{ text: string; steps: import('../ToolChain/ToolChain').ToolStep[] }>
+  liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }>
+  liveTextAfter?: string
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -335,19 +336,18 @@ const MessageContent = memo(function MessageContent({
           <span className="msg-waiting-dots"><span/><span/><span/></span>
         )}
 
-        {/* ── СЕГМЕНТНЫЙ РЕНДЕР (live стриминг с тулами) ── */}
-        {!isUser && liveSegments && liveSegments.length > 0 ? (
+        {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
+        {!isUser && liveIters && liveIters.length > 0 ? (
           <div className="message-segments">
-            {liveSegments.map((seg, si) => {
-              const isLastSeg = si === liveSegments.length - 1
-              const hasSteps = seg.steps.length > 0
-              const hasText = !!seg.text
+            {liveIters.map((iter, ii) => {
+              const isLastIter = ii === liveIters.length - 1
+              const lastStepIsResult = iter.steps[iter.steps.length - 1]?.type === 'tool_result'
               return (
-                <div key={si} className="message-segment">
+                <div key={ii} className="message-segment">
                   {/* Текст ДО тулчейна */}
-                  {hasText && (
+                  {iter.textBefore && (
                     <div className="message-content selectable">
-                      {parseContent(seg.text).map((s, i) =>
+                      {parseContent(iter.textBefore).map((s, i) =>
                         s.type === 'admonition' ? (
                           <AdmonitionBlock key={i} kind={s.kind!} title={s.title}>
                             <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{s.content}</ReactMarkdown>
@@ -358,24 +358,38 @@ const MessageContent = memo(function MessageContent({
                       )}
                     </div>
                   )}
-                  {/* Тулчейн этого сегмента */}
-                  {hasSteps && (
+                  {/* Тулчейн итерации */}
+                  {iter.steps.length > 0 && (
                     <ToolChain
-                      steps={seg.steps}
+                      steps={iter.steps}
                       mode={toolOutputMode}
-                      isRunning={!!isStreaming && isLastSeg && !seg.steps.some(s => s.type === 'tool_result' && !liveSegments[si + 1])}
+                      isRunning={!!isStreaming && isLastIter && !lastStepIsResult}
                     />
                   )}
-                  {/* Пульс "думаю" между сегментами если это последний и агент ещё работает */}
-                  {isStreaming && isLastSeg && hasSteps && seg.steps[seg.steps.length - 1]?.type === 'tool_result' && !hasText && (
+                  {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
+                  {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && (
                     <span className="msg-waiting-dots"><span/><span/><span/></span>
                   )}
                 </div>
               )
             })}
+            {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
+            {liveTextAfter && (
+              <div className="message-content selectable">
+                {parseContent(liveTextAfter).map((s, i) =>
+                  s.type === 'admonition' ? (
+                    <AdmonitionBlock key={i} kind={s.kind!} title={s.title}>
+                      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{s.content}</ReactMarkdown>
+                    </AdmonitionBlock>
+                  ) : (
+                    <ReactMarkdown key={i} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={mdComponents}>{s.content}</ReactMarkdown>
+                  )
+                )}
+              </div>
+            )}
           </div>
         ) : (
-          /* ── ОБЫЧНЫЙ РЕНДЕР (финальное сообщение без сегментов) ── */
+          /* ── ОБЫЧНЫЙ РЕНДЕР (нет итераций — обычный чат или финальное сообщение) ── */
           <div className="message-content selectable">
             {isUser ? (
               <p>{content}</p>
@@ -470,7 +484,8 @@ const MessageBubble = memo(function MessageBubble({
         createdAt={message.createdAt}
         liveThinking={liveThinking}
         isStreaming={isStreaming}
-        liveSegments={(message as Message & { liveSegments?: Array<{ text: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveSegments}
+        liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
+        liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
       />
     </motion.div>
   )
