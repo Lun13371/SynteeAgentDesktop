@@ -374,3 +374,20 @@
   background: var(--accent-subtle);
   color: var(--text-primary);
 }
+
+/* ── Сгенерированное изображение ─────────────────────────────── */
+.message-image-wrap {
+  margin: 6px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  max-width: 480px;
+}
+.message-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.message-image:hover { opacity: 0.9; }

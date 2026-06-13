@@ -220,6 +220,18 @@ const MessageContent = memo(function MessageContent({
           <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={!!isStreaming} />
         )}
 
+        {/* Сгенерированное изображение */}
+        {message.imageUrl && (
+          <div className="message-image-wrap">
+            <img
+              src={message.imageUrl}
+              alt="Generated"
+              className="message-image"
+              onClick={() => window.open(message.imageUrl, '_blank')}
+            />
+          </div>
+        )}
+
         {/* Thinking block — сохранённый или live */}
         {!isUser && (message.thinking || liveThinking) && (
           <ThinkingBlock

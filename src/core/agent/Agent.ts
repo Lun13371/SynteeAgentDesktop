@@ -2,7 +2,7 @@ import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import {
   runCommand, readFile, writeFile, listDirectory,
-  getClipboard, setClipboard, searchWeb, getSystemInfo,
+  getClipboard, setClipboard, searchWeb, getSystemInfo, generateImage,
   TOOL_SCHEMAS, type ToolResult,
 } from '../tools'
 import type { ApprovalMode } from '../../shared/types'
@@ -210,6 +210,8 @@ export class Agent {
         return searchWeb(args.query as string, tavilyKey)
       case 'get_system_info':
         return getSystemInfo()
+      case 'generate_image':
+        return generateImage(args as { prompt: string; model?: string; size?: string; quality?: string; style?: string }, this.store)
       default:
         return { success: false, output: '', error: `Неизвестный инструмент: ${name}` }
     }

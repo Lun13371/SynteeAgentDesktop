@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Provider, ModelAssignment, ModelParams, ModelRole, ModelCapability } from '../../../../../shared/types'
 import { BUILTIN_PROVIDERS_META } from '../../../../../shared/data/builtinModels'
+import { IMAGE_MODELS, getImageModelsByProvider } from '../../../../../shared/imageModels'
 import ModelPicker from '../../ui/ModelPicker/ModelPicker'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import './AISettingsTab.css'
@@ -18,6 +19,121 @@ const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; 
 }
 
 const BUILTIN_PROVIDER_IDS = Object.keys(BUILTIN_PROVIDERS_META)
+
+// ── Компонент настроек генерации изображений ─────────────────────────────
+function ImageGenSettings({ providers }: { providers: Provider[] }) {
+  const [modelId, setModelId] = useState('dall-e-3')
+  const [providerId, setProviderId] = useState('')
+  const [defaultSize, setDefaultSize] = useState('1024x1024')
+  const [defaultQuality, setDefaultQuality] = useState('standard')
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    window.syntee.image.getSettings().then((s: { modelId: string; providerId: string; defaultSize: string; defaultQuality: string }) => {
+      setModelId(s.modelId || 'dall-e-3')
+      setProviderId(s.providerId || '')
+      setDefaultSize(s.defaultSize || '1024x1024')
+      setDefaultQuality(s.defaultQuality || 'standard')
+    }).catch(() => {})
+  }, [])
+
+  const selectedModel = IMAGE_MODELS.find(m => m.id === modelId)
+  const byProvider = getImageModelsByProvider()
+
+  const save = async () => {
+    await window.syntee.image.setSettings({ modelId, providerId, defaultSize, defaultQuality })
+    setSaved(true)
+    setTimeout(() => setSaved(false), 1500)
+  }
+
+  return (
+    <div className="image-gen-settings">
+      <div className="image-gen-settings-header">
+        <AppIcon name="image" size="sm" tone="accent" />
+        <span>Генерация изображений</span>
+        <span className="image-gen-settings-hint">Используется командой /image</span>
+      </div>
+
+      {/* Выбор модели */}
+      <div className="image-gen-row">
+        <label className="image-gen-label">Модель</label>
+        <select
+          className="image-gen-select"
+          value={modelId}
+          onChange={e => {
+            setModelId(e.target.value)
+            const m = IMAGE_MODELS.find(x => x.id === e.target.value)
+            if (m) setDefaultSize(m.defaultSize)
+          }}
+        >
+          {Object.entries(byProvider).map(([prov, models]) => (
+            <optgroup key={prov} label={prov}>
+              {models.map(m => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+
+      {/* Провайдер */}
+      <div className="image-gen-row">
+        <label className="image-gen-label">Провайдер (API)</label>
+        <select
+          className="image-gen-select"
+          value={providerId}
+          onChange={e => setProviderId(e.target.value)}
+        >
+          <option value="">Авто (первый активный)</option>
+          {providers.filter(p => p.enabled).map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Размер */}
+      {selectedModel && (
+        <div className="image-gen-row">
+          <label className="image-gen-label">Размер по умолчанию</label>
+          <select
+            className="image-gen-select"
+            value={defaultSize}
+            onChange={e => setDefaultSize(e.target.value)}
+          >
+            {selectedModel.sizes.map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Качество (если поддерживается) */}
+      {selectedModel?.supportsQuality && (
+        <div className="image-gen-row">
+          <label className="image-gen-label">Качество</label>
+          <select
+            className="image-gen-select"
+            value={defaultQuality}
+            onChange={e => setDefaultQuality(e.target.value)}
+          >
+            {modelId === 'dall-e-3'
+              ? ['standard', 'hd'].map(q => <option key={q} value={q}>{q}</option>)
+              : ['auto', 'low', 'medium', 'high'].map(q => <option key={q} value={q}>{q}</option>)
+            }
+          </select>
+        </div>
+      )}
+
+      {selectedModel?.notes && (
+        <p className="image-gen-notes">{selectedModel.notes}</p>
+      )}
+
+      <button className="image-gen-save" onClick={save}>
+        {saved ? '✓ Сохранено' : 'Сохранить'}
+      </button>
+    </div>
+  )
+}
 
 export default function AISettingsTab() {
   const [tab, setTab] = useState<'providers' | 'models' | 'params'>('providers')
@@ -399,6 +515,9 @@ export default function AISettingsTab() {
               )
             })}
           </div>
+
+          {/* ── Генерация изображений ── */}
+          <ImageGenSettings providers={providers} />
         </div>
       )}
 

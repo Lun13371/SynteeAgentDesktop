@@ -56,6 +56,7 @@ export interface Message {
   thinking?: string
   thinkingMs?: number
   slashCommand?: { name: string; args: string }  // использованная слеш-команда
+  imageUrl?: string                               // URL сгенерированного изображения
 }
 
 export interface ToolStep {

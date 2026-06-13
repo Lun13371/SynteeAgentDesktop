@@ -229,3 +229,70 @@
   transition: border-color var(--transition);
 }
 .ai-param-textarea:focus { border-color: var(--border-strong); }
+
+/* ── Image Generation Settings ───────────────────────────────── */
+.image-gen-settings {
+  margin-top: 24px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+}
+.image-gen-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.85);
+}
+.image-gen-settings-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(255,255,255,0.3);
+  margin-left: 4px;
+}
+.image-gen-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.image-gen-label {
+  font-size: 12px;
+  color: rgba(255,255,255,0.5);
+  min-width: 140px;
+  flex-shrink: 0;
+}
+.image-gen-select {
+  flex: 1;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: rgba(255,255,255,0.85);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  cursor: pointer;
+}
+.image-gen-select:focus { border-color: rgba(139,92,246,0.5); }
+.image-gen-select option, .image-gen-select optgroup { background: #1a1a22; }
+.image-gen-notes {
+  font-size: 11px;
+  color: rgba(255,255,255,0.25);
+  margin: 8px 0 10px;
+  line-height: 1.5;
+}
+.image-gen-save {
+  margin-top: 4px;
+  padding: 6px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(139,92,246,0.35);
+  background: rgba(139,92,246,0.12);
+  color: rgba(167,139,250,0.9);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.image-gen-save:hover { background: rgba(139,92,246,0.22); }
