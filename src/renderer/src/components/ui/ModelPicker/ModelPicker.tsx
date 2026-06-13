@@ -17,10 +17,6 @@ const CAP_LABELS: Record<ModelCapability, string> = {
   vision: 'Vision', tools: 'Tools', reasoning: 'Reason',
   code: 'Code', embedding: 'Embed', tts: 'TTS', stt: 'STT', image_gen: 'Image',
 }
-const CAP_ICONS: Partial<Record<ModelCapability, string>> = {
-  vision: 'eye', tools: 'wrench', reasoning: 'brain', code: 'code2',
-  embedding: 'database', tts: 'volume', stt: 'mic', image_gen: 'image',
-}
 const SPEED_LABEL: Record<string, string> = { fast: 'Быстро', medium: 'Средне', slow: 'Медленно' }
 const SPEED_COLOR: Record<string, string> = { fast: '#4ade80', medium: '#facc15', slow: '#f87171' }
 
@@ -195,7 +191,6 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                         onClick={() => toggleCap(cap)}
                         title={CAP_LABELS[cap]}
                       >
-                        {CAP_ICONS[cap] && <AppIcon name={CAP_ICONS[cap] as 'eye'} size="xs" />}
                         {CAP_LABELS[cap]}
                       </button>
                     ))}
