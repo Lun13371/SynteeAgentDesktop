@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import type Store from 'electron-store'
-import type { Provider, ModelMeta, ModelAssignment, ModelParams } from '../../shared/types'
+import type { Provider, ModelMeta, ModelAssignment, ModelParams, ModelCapability } from '../../shared/types'
 import { BUILTIN_MODELS, BUILTIN_PROVIDERS_META } from '../../shared/data/builtinModels'
 
 const DEFAULT_PARAMS: ModelParams = {
@@ -65,44 +65,55 @@ export function registerProviderIPC(store: Store): void {
   ipcMain.handle('providers:fetchModels', async (_e, providerId: string) => {
     const list = store.get('providers', []) as Provider[]
     const provider = list.find(p => p.id === providerId)
-    if (!provider) return []
+    if (!provider) return { ok: false, error: 'Провайдер не найден', models: [] }
 
     let fetched: ModelMeta[] = []
+    let error: string | null = null
 
     try {
-      const res = await fetch(`${provider.baseUrl}/models`, {
+      const url = provider.baseUrl.replace(/\/$/, '') + '/models'
+      const res = await fetch(url, {
         headers: {
-          'Authorization': `Bearer ${provider.apiKey}`,
-          'x-api-key': provider.apiKey,
+          'Authorization': `Bearer ${provider.apiKey || ''}`,
+          'Content-Type': 'application/json',
         },
       })
-      if (res.ok) {
-        const data = await res.json() as { data?: { id: string }[] }
-        const ids: string[] = (data.data || []).map((m: { id: string }) => m.id)
+      if (!res.ok) {
+        error = `HTTP ${res.status}: ${res.statusText}`
+      } else {
+        const data = await res.json() as { data?: { id: string }[]; models?: { id: string }[] }
+        // Поддерживаем оба формата: { data: [...] } и { models: [...] }
+        const items = data.data || data.models || []
+        const ids: string[] = items.map((m: { id: string }) => m.id).filter(Boolean)
 
         fetched = ids.map(id => {
-          // Обогащаем метаданными из встроенной базы если есть
-          const known = BUILTIN_MODELS.find(b => b.id === id && b.providerId === providerId)
-          if (known) return known
+          const known = BUILTIN_MODELS.find(b => b.id === id)
+          if (known) return { ...known, providerId }
           return {
-            id,
-            providerId,
+            id, providerId,
             name: id,
             contextWindow: 0,
             speed: 'medium' as const,
-            capabilities: [],
+            capabilities: [] as ModelCapability[],
             description: '',
           }
         })
 
-        // Сохраняем timestamp
+        // Обновляем timestamp провайдера
         const idx = list.findIndex(p => p.id === providerId)
         if (idx >= 0) {
           list[idx].lastModelsFetch = Date.now()
           store.set('providers', list)
         }
+
+        // Сохраняем модели в cachedModels — убираем старые от этого провайдера, добавляем новые
+        const cached = store.get('cachedModels', []) as ModelMeta[]
+        const filtered = cached.filter(m => m.providerId !== providerId)
+        store.set('cachedModels', [...filtered, ...fetched])
       }
-    } catch { /* провайдер недоступен */ }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e)
+    }
 
     // Добавляем ручные переопределения
     const overrides = provider.modelsOverride || []
@@ -112,7 +123,7 @@ export function registerProviderIPC(store: Store): void {
       }
     }
 
-    return fetched
+    return { ok: !error, error, models: fetched, count: fetched.length }
   })
 
   // ── Models ─────────────────────────────────────────────────────────────────
