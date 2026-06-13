@@ -108,7 +108,7 @@ function parseContent(raw: string): Array<{ type: 'md' | 'admonition'; content: 
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
-  liveThinking, isStreaming,
+  liveThinking, isStreaming, liveSegments,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -117,6 +117,7 @@ const MessageContent = memo(function MessageContent({
   message: Message; isPinned: number; createdAt: number
   liveThinking?: { text: string; isLive: boolean; ms?: number }
   isStreaming?: boolean
+  liveSegments?: Array<{ text: string; steps: import('../ToolChain/ToolChain').ToolStep[] }>
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -286,30 +287,72 @@ const MessageContent = memo(function MessageContent({
           <span className="msg-waiting-dots"><span/><span/><span/></span>
         )}
 
-        <div className="message-content selectable">
-          {isUser ? (
-            <p>{content}</p>
-          ) : (
-            segments.map((seg, si) =>
-              seg.type === 'admonition' ? (
-                <AdmonitionBlock key={si} kind={seg.kind!} title={seg.title}>
-                  <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+        {/* ── СЕГМЕНТНЫЙ РЕНДЕР (live стриминг с тулами) ── */}
+        {!isUser && liveSegments && liveSegments.length > 0 ? (
+          <div className="message-segments">
+            {liveSegments.map((seg, si) => {
+              const isLastSeg = si === liveSegments.length - 1
+              const hasSteps = seg.steps.length > 0
+              const hasText = !!seg.text
+              return (
+                <div key={si} className="message-segment">
+                  {/* Текст ДО тулчейна */}
+                  {hasText && (
+                    <div className="message-content selectable">
+                      {parseContent(seg.text).map((s, i) =>
+                        s.type === 'admonition' ? (
+                          <AdmonitionBlock key={i} kind={s.kind!} title={s.title}>
+                            <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{s.content}</ReactMarkdown>
+                          </AdmonitionBlock>
+                        ) : (
+                          <ReactMarkdown key={i} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={mdComponents}>{s.content}</ReactMarkdown>
+                        )
+                      )}
+                    </div>
+                  )}
+                  {/* Тулчейн этого сегмента */}
+                  {hasSteps && (
+                    <ToolChain
+                      steps={seg.steps}
+                      mode={toolOutputMode}
+                      isRunning={!!isStreaming && isLastSeg && !seg.steps.some(s => s.type === 'tool_result' && !liveSegments[si + 1])}
+                    />
+                  )}
+                  {/* Пульс "думаю" между сегментами если это последний и агент ещё работает */}
+                  {isStreaming && isLastSeg && hasSteps && seg.steps[seg.steps.length - 1]?.type === 'tool_result' && !hasText && (
+                    <span className="msg-waiting-dots"><span/><span/><span/></span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          /* ── ОБЫЧНЫЙ РЕНДЕР (финальное сообщение без сегментов) ── */
+          <div className="message-content selectable">
+            {isUser ? (
+              <p>{content}</p>
+            ) : (
+              segments.map((seg, si) =>
+                seg.type === 'admonition' ? (
+                  <AdmonitionBlock key={si} kind={seg.kind!} title={seg.title}>
+                    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+                      {seg.content}
+                    </ReactMarkdown>
+                  </AdmonitionBlock>
+                ) : (
+                  <ReactMarkdown
+                    key={si}
+                    remarkPlugins={remarkPlugins}
+                    rehypePlugins={rehypePlugins}
+                    components={mdComponents}
+                  >
                     {seg.content}
                   </ReactMarkdown>
-                </AdmonitionBlock>
-              ) : (
-                <ReactMarkdown
-                  key={si}
-                  remarkPlugins={remarkPlugins}
-                  rehypePlugins={rehypePlugins}
-                  components={mdComponents}
-                >
-                  {seg.content}
-                </ReactMarkdown>
+                )
               )
-            )
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         <span className="message-time">
           {new Date(createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
@@ -379,6 +422,7 @@ const MessageBubble = memo(function MessageBubble({
         createdAt={message.createdAt}
         liveThinking={liveThinking}
         isStreaming={isStreaming}
+        liveSegments={(message as Message & { liveSegments?: Array<{ text: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveSegments}
       />
     </motion.div>
   )

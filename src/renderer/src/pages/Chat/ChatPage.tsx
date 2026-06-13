@@ -35,6 +35,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [showSkeleton, setShowSkeleton] = useState(false)
   const isInitialScrollRef = useRef(true)
   const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Сегменты: каждый = {text, steps[]} — текст до тулчейна + сам тулчейн
+  const [liveSegments, setLiveSegments] = useState<Array<{ text: string; steps: import('../../components/ui/ToolChain/ToolChain').ToolStep[] }>>([{ text: '', steps: [] }])
+  // liveSteps оставляем для совместимости с финальным сохранением
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -162,19 +165,24 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         return
       }
       if (data.token) {
+        // Добавляем токен в последний сегмент
+        setLiveSegments(prev => {
+          const segs = [...prev]
+          segs[segs.length - 1] = { ...segs[segs.length - 1], text: segs[segs.length - 1].text + data.token }
+          return segs
+        })
         appendStreamToken(data.token)
       }
     })
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
-      // Сбрасываем стриминг-стейт ВСЕГДА — даже если chatId не совпадает (пользователь переключил чат)
       streamMsgIdRef.current = null
       clearStream()
       setTyping(false)
       setIsAgentRunning(false)
       setLiveSteps([])
+      setLiveSegments([{ text: '', steps: [] }])
       setLiveThinking(null)
-      // Сообщение добавляем только если это текущий чат
       if (data.chatId === currentChatIdRef.current) {
         addMessage(data.message)
         window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
@@ -188,6 +196,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveThinking(null)
       setIsAgentRunning(false)
       setLiveSteps([])
+      setLiveSegments([{ text: '', steps: [] }])
       if (data.error !== 'stopped') toast('Ошибка: ' + data.error, 'error')
     })
 
@@ -207,7 +216,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (step.msgId && step.msgId !== streamMsgIdRef.current) return
       if (step.type === 'tool_call' || step.type === 'tool_result') {
         setIsAgentRunning(true)
-        setLiveSteps(prev => [...prev, {
+        const newStep = {
           id: uuid(),
           type: step.type as 'tool_call' | 'tool_result',
           toolName: step.toolName,
@@ -216,7 +225,21 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           success: step.success,
           timestamp: Date.now(),
           imageUrl: step.imageUrl,
-        }])
+        }
+        // Глобальный список шагов для финального сохранения
+        setLiveSteps(prev => [...prev, newStep])
+        // Сегментная логика:
+        // tool_call — создаём новый сегмент с этим шагом (текущий текст уже в предыдущем сегменте)
+        // tool_result — добавляем в последний сегмент
+        if (step.type === 'tool_call') {
+          setLiveSegments(prev => [...prev, { text: '', steps: [newStep] }])
+        } else {
+          setLiveSegments(prev => {
+            const segs = [...prev]
+            segs[segs.length - 1] = { ...segs[segs.length - 1], steps: [...segs[segs.length - 1].steps, newStep] }
+            return segs
+          })
+        }
       }
     })
 
@@ -344,9 +367,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleCopy = () => toast('Скопировано', 'success')
 
   // Собираем отображаемые сообщения (включая стриминг)
-  // Live пузырь — только если реально есть что показывать (текст/шаги/thinking)
-  // isTyping не считается — он ставится сразу при отправке до первых данных
-  const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0
+  const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0 ||
+    liveSegments.some(s => s.text || s.steps.length > 0)
   const showLiveBubble = hasLiveContent && !!streamMsgIdRef.current
   const isStreaming = showLiveBubble
   const displayMessages = showLiveBubble
@@ -358,6 +380,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         createdAt: Date.now(),
         isPinned: 0,
         toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
+        liveSegments,
       }]
     : messages
 

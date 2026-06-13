@@ -308,7 +308,8 @@ export class AIClient {
     messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: unknown[],
     signal?: AbortSignal,
-    role: 'main' | 'subagent' = 'main'
+    role: 'main' | 'subagent' = 'main',
+    onToken?: (token: string) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
@@ -321,13 +322,58 @@ export class AIClient {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const res = await (client.chat.completions.create as any)({
-          model, messages, tools, tool_choice: 'auto', signal,
+        const stream = await (client.chat.completions.create as any)({
+          model, messages, tools, tool_choice: 'auto', signal, stream: true,
         })
-        const msg = res.choices[0]?.message
-        const rawReasoning = msg?.reasoning_content ?? msg?.thinking ?? msg?.reasoning_summary
-        const reasoning = rawReasoning ? extractReasoningText(rawReasoning) : undefined
-        return { content: msg?.content || '', tool_calls: msg?.tool_calls, reasoning }
+
+        let content = ''
+        let reasoning = ''
+        // tool_calls собираем по чанкам: index → {id, name, arguments}
+        const toolCallMap: Record<number, { id: string; name: string; arguments: string }> = {}
+
+        for await (const chunk of stream) {
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+          const delta = chunk.choices[0]?.delta
+          if (!delta) continue
+
+          // Текстовые токены — сразу стримим
+          if (delta.content) {
+            content += delta.content
+            onToken?.(delta.content)
+          }
+
+          // Reasoning токены
+          const rTok = delta.reasoning_content ?? delta.thinking ?? delta.reasoning_summary
+          if (rTok && typeof rTok === 'string') reasoning += rTok
+
+          // Tool call чанки — собираем по index
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0
+              if (!toolCallMap[idx]) {
+                toolCallMap[idx] = { id: tc.id ?? '', name: tc.function?.name ?? '', arguments: '' }
+              }
+              if (tc.id) toolCallMap[idx].id = tc.id
+              if (tc.function?.name) toolCallMap[idx].name += tc.function.name
+              if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments
+            }
+          }
+        }
+
+        // Собираем tool_calls в финальный формат
+        const tool_calls = Object.values(toolCallMap).length > 0
+          ? Object.values(toolCallMap).map(tc => ({
+              id: tc.id,
+              type: 'function',
+              function: { name: tc.name, arguments: tc.arguments },
+            }))
+          : undefined
+
+        return {
+          content,
+          tool_calls,
+          reasoning: reasoning ? extractReasoningText(reasoning) : undefined,
+        }
       } catch (err: unknown) {
         const error = err as { status?: number }
         if (error?.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }

@@ -115,7 +115,13 @@ export class Agent {
         return
       }
       try {
-        const response = await this.client.chatWithTools(messages, TOOL_SCHEMAS, signal, this.role)
+        const response = await this.client.chatWithTools(
+          messages,
+          TOOL_SCHEMAS,
+          signal,
+          this.role,
+          (token) => callbacks.onStep({ type: 'answer', content: token }),
+        )
 
         // Abort во время запроса
         if (signal?.aborted) {
