@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import type Store from 'electron-store'
+import { buildReasoningParams } from '../../shared/reasoningModels'
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -79,6 +80,10 @@ export class AIClient {
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
 
+    // Берём reasoning параметры из store (выбраны пользователем в UI)
+    const reasoningValue = (this.store.get('reasoningValue') as string) || ''
+    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue) : {}
+
     let attempt = 0
     let fullText = ''
 
@@ -92,6 +97,7 @@ export class AIClient {
           stream_options: { include_usage: true },
           temperature: (this.store.get('temperature') as number) || 0.7,
           max_tokens: (this.store.get('maxTokens') as number) || 4096,
+          ...reasoningExtra,
         }, { signal })
 
         let thinkingStartMs = 0

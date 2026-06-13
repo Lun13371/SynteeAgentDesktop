@@ -46,6 +46,12 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Настройка показа счётчика контекста
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
+  const [reasoningValue, setReasoningValue] = useState('')
+
+  const handleReasoningChange = (value: string) => {
+    setReasoningValue(value)
+    window.syntee.settings.set('reasoningValue', value).catch(() => {})
+  }
 
   useEffect(() => {
     window.syntee.settings.get('showContextRing').then((v: unknown) => {
@@ -54,8 +60,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     window.syntee.settings.get('modelAssignments').then((v: unknown) => {
       if (Array.isArray(v)) {
         const main = (v as Array<{ role: string; modelId: string }>).find(a => a.role === 'main')
-        if (main?.modelId) setMainModelId(main.modelId)
+        if (main) setMainModelId(main.modelId)
       }
+    }).catch(() => {})
+    window.syntee.settings.get('reasoningValue').then((v: unknown) => {
+      if (typeof v === 'string' && v) setReasoningValue(v)
     }).catch(() => {})
   }, [])
 
@@ -388,13 +397,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onSend={handleSend}
             disabled={isTyping}
             isIncognito={isIncognito}
-            replyTo={replyTo}
-            onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
-            isGenerating={isTyping}
-            onStop={() => window.syntee.chat.stop()}
+            replyTo={replyToMessages}
+            onCancelReply={handleCancelReply}
+            isGenerating={isTyping || isAgentRunning}
+            onStop={handleStop}
             contextInfo={contextInfo}
             showContextRing={showContextRing}
             onInputChange={setInputText}
+            mainModelId={mainModelId}
+            reasoningValue={reasoningValue}
+            onReasoningChange={handleReasoningChange}
           />
 
           {/* Selection reply popup */}
