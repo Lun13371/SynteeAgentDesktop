@@ -323,7 +323,7 @@ export class AIClient {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const stream = await (client.chat.completions.create as any)({
-          model, messages, tools, tool_choice: 'auto', signal, stream: true,
+          model, messages, tools, tool_choice: 'auto', parallel_tool_calls: true, signal, stream: true,
         })
 
         let content = ''
