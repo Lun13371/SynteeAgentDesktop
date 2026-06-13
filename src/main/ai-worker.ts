@@ -136,11 +136,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 imageUrl: step.imageUrl,
               }
               collectedSteps.push(ts)
-              if (currentIterSteps.some((s: unknown) => (s as { type: string }).type === 'tool_result')) {
+              // Новая итерация только если между тулами был текст
+              if (pendingTextAfter.trim()) {
                 flushIter()
                 currentIterTextBefore = pendingTextAfter
                 pendingTextAfter = ''
               } else if (currentIterSteps.length === 0) {
+                // Первый тул — берём накопленный текст как textBefore
                 currentIterTextBefore = pendingTextAfter
                 pendingTextAfter = ''
               }

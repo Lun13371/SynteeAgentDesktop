@@ -267,12 +267,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         // Используем ref для синхронного чтения — prev в setState батчится и устаревает
         const iters = [...liveItersRef.current]
         const last = iters[iters.length - 1]
+        const textBetween = liveTextAfterRef.current  // текст между предыдущим тулчейном и этим тулом
         let newIters: typeof iters
-        if (!last || last.steps.some(s => s.type === 'tool_result')) {
-          // Новая итерация — текст до тулов берём из ref
-          newIters = [...iters, { textBefore: liveTextAfterRef.current, steps: [newStep] }]
+        // Новая итерация только если:
+        // 1. Итераций ещё нет
+        // 2. Между тулами был текст (textBetween не пустой)
+        // В остальных случаях — добавляем в текущую итерацию (тул за тулом = один тулчейн)
+        if (!last || textBetween.trim()) {
+          newIters = [...iters, { textBefore: textBetween, steps: [newStep] }]
         } else {
-          // Та же итерация — добавляем параллельный tool_call
+          // Та же итерация — тулы идут подряд без текста
           iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
           newIters = iters
         }
