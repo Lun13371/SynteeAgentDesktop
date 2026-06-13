@@ -104,6 +104,54 @@ function parseContent(raw: string): Array<{ type: 'md' | 'admonition'; content: 
   return result
 }
 
+// ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
+function AgentCardLive({ agentId, task, parallel }: {
+  agentId: string
+  task: string
+  parallel: boolean
+}) {
+  const [agent, setAgent] = useState<{
+    id: string; status: string; model: string; steps: unknown[]
+    summary: string; error?: string; createdAt: number; finishedAt?: number
+  } | null>(null)
+
+  useEffect(() => {
+    window.syntee.agent.get(agentId).then((a: unknown) => {
+      if (a) setAgent(a as never)
+    })
+    const off = window.syntee.on('agent:update', (updated: { id: string } & Record<string, unknown>) => {
+      if (updated.id === agentId) setAgent(updated as never)
+    })
+    return () => off()
+  }, [agentId])
+
+  const status = (agent?.status ?? 'pending') as 'pending' | 'running' | 'done' | 'error' | 'cancelled'
+  const currentTool = (agent?.steps as Array<{ type: string; toolName?: string }> | undefined)
+    ?.filter(s => s.type === 'tool_call').slice(-1)[0]?.toolName
+
+  return (
+    <AgentCard
+      agent={{
+        id: agentId,
+        task,
+        status,
+        model: agent?.model ?? '…',
+        parallel,
+        stepsCount: agent?.steps?.length ?? 0,
+        currentStep: status === 'running' && currentTool ? currentTool : undefined,
+        summary: agent?.summary,
+        error: agent?.error,
+        createdAt: agent?.createdAt ?? Date.now(),
+        finishedAt: agent?.finishedAt,
+      }}
+      onClick={() => {
+        window.syntee.on('agent:focus', agentId as never)
+        window.dispatchEvent(new CustomEvent('open-agent-panel', { detail: { agentId } }))
+      }}
+    />
+  )
+}
+
 // Мемоизированный тяжёлый контент сообщения
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
@@ -429,56 +477,4 @@ const MessageBubble = memo(function MessageBubble({
 })
 
 export default MessageBubble
-
-// ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
-function AgentCardLive({ agentId, task, parallel }: {
-  agentId: string
-  task: string
-  parallel: boolean
-}) {
-  const [agent, setAgent] = useState<{
-    id: string; status: string; model: string; steps: unknown[]
-    summary: string; error?: string; createdAt: number; finishedAt?: number
-  } | null>(null)
-
-  useEffect(() => {
-    // Загружаем начальное состояние
-    window.syntee.agent.get(agentId).then((a: unknown) => {
-      if (a) setAgent(a as never)
-    })
-    // Подписываемся на обновления
-    const off = window.syntee.on('agent:update', (updated: { id: string } & Record<string, unknown>) => {
-      if (updated.id === agentId) setAgent(updated as never)
-    })
-    return () => off()
-  }, [agentId])
-
-  const status = (agent?.status ?? 'pending') as 'pending' | 'running' | 'done' | 'error' | 'cancelled'
-  const currentTool = (agent?.steps as Array<{ type: string; toolName?: string }> | undefined)
-    ?.filter(s => s.type === 'tool_call').slice(-1)[0]?.toolName
-
-  return (
-    <AgentCard
-      agent={{
-        id: agentId,
-        task,
-        status,
-        model: agent?.model ?? '…',
-        parallel,
-        stepsCount: agent?.steps?.length ?? 0,
-        currentStep: status === 'running' && currentTool ? currentTool : undefined,
-        summary: agent?.summary,
-        error: agent?.error,
-        createdAt: agent?.createdAt ?? Date.now(),
-        finishedAt: agent?.finishedAt,
-      }}
-      onClick={() => {
-        // Открываем AgentPanel с фокусом на этом агенте
-        window.syntee.on('agent:focus', agentId as never)
-        // Шлём событие чтобы TitleBar открыл панель
-        window.dispatchEvent(new CustomEvent('open-agent-panel', { detail: { agentId } }))
-      }}
-    />
-  )
-}
 
