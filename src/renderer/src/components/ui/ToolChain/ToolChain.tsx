@@ -15,13 +15,6 @@ export interface ToolStep {
   imageUrl?: string
 }
 
-function ToolChain({ steps, mode, isRunning, label }: {
-  steps: ToolStep[]
-  mode: ToolOutputMode
-  isRunning: boolean
-  label?: string
-}) {
-
 const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
   run_command:     { label: 'Команда',       icon: 'terminal',  color: '#f59e0b' },
   write_file:      { label: 'Запись файла',  icon: 'fileText',  color: '#f87171' },
@@ -44,7 +37,7 @@ function getToolMeta(name?: string) {
   return TOOL_META[name] || { label: name, icon: 'zap', color: '#94a3b8' }
 }
 
-// Группируем шаги в итерации: каждая итерация = один вызов тула + его результат
+// Группируем шаги: каждая итерация = один вызов тула + его результат
 interface Iteration {
   id: string
   call: ToolStep
@@ -83,12 +76,7 @@ function formatArg(v: unknown): string {
 
 // Один блок итерации
 function IterationBlock({
-  iter,
-  index,
-  isLast,
-  isRunning,
-  mode,
-  defaultOpen,
+  iter, index, isLast, isRunning, mode, defaultOpen,
 }: {
   iter: Iteration
   index: number
@@ -100,17 +88,15 @@ function IterationBlock({
   const [open, setOpen] = useState(defaultOpen)
   const meta = getToolMeta(iter.call.toolName)
   const failed = iter.result?.success === false
-  const pending = !iter.result && !(isLast && isRunning)
   const running = isLast && isRunning && !iter.result
 
-  // Авто-открывать последний активный блок
   const prevRunning = useRef(running)
   useEffect(() => {
     if (running && !prevRunning.current) setOpen(true)
     prevRunning.current = running
   }, [running])
 
-  const statusColor = failed ? '#f87171' : running ? meta.color : pending ? '#555' : meta.color
+  const statusColor = failed ? '#f87171' : running ? meta.color : meta.color
 
   return (
     <motion.div
@@ -119,7 +105,6 @@ function IterationBlock({
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.04, type: 'spring', stiffness: 420, damping: 32 }}
     >
-      {/* Вертикальная линия слева */}
       <div className="tc2-rail">
         <div
           className={`tc2-dot ${running ? 'tc2-dot--pulse' : ''}`}
@@ -128,9 +113,7 @@ function IterationBlock({
         {!isLast && <div className="tc2-rail-line" />}
       </div>
 
-      {/* Содержимое блока */}
       <div className="tc2-iter-body">
-        {/* Заголовок — кликабельный */}
         <button
           className={`tc2-iter-header ${open ? 'tc2-iter-header--open' : ''}`}
           onClick={() => setOpen(o => !o)}
@@ -143,7 +126,6 @@ function IterationBlock({
             <code className="tc2-iter-name">{iter.call.toolName}</code>
           )}
 
-          {/* Превью аргумента */}
           {iter.call.toolArgs && !open && (
             <span className="tc2-iter-preview">
               {truncate(String(Object.values(iter.call.toolArgs)[0] ?? ''))}
@@ -152,7 +134,6 @@ function IterationBlock({
 
           <span className="tc2-iter-spacer" />
 
-          {/* Статус */}
           {running && <span className="tc2-badge tc2-badge--running">выполняется</span>}
           {failed && <span className="tc2-badge tc2-badge--fail">ошибка</span>}
           {iter.result && !failed && <span className="tc2-badge tc2-badge--ok">✓</span>}
@@ -160,7 +141,6 @@ function IterationBlock({
           <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="xs" />
         </button>
 
-        {/* Детали */}
         <AnimatePresence initial={false}>
           {open && (
             <motion.div
@@ -170,7 +150,6 @@ function IterationBlock({
               exit={{ height: 0, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 400, damping: 34 }}
             >
-              {/* Аргументы */}
               {iter.call.toolArgs && Object.keys(iter.call.toolArgs).length > 0 && (
                 <div className="tc2-section">
                   <div className="tc2-section-title">Аргументы</div>
@@ -185,7 +164,6 @@ function IterationBlock({
                 </div>
               )}
 
-              {/* Результат */}
               {iter.result && (
                 <div className="tc2-section">
                   <div className="tc2-section-title" style={{ color: failed ? '#f87171' : '#4ade80' }}>
@@ -208,7 +186,6 @@ function IterationBlock({
                 </div>
               )}
 
-              {/* Выполняется */}
               {running && (
                 <div className="tc2-section tc2-section--running">
                   <span className="tc2-spinner" />
@@ -223,7 +200,12 @@ function IterationBlock({
   )
 }
 
-export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
+export default function ToolChain({ steps, mode, isRunning, label }: {
+  steps: ToolStep[]
+  mode: ToolOutputMode
+  isRunning: boolean
+  label?: string
+}) {
   const iters = buildIterations(steps)
   const [collapsed, setCollapsed] = useState(false)
   const totalDone = iters.filter(i => i.result).length
@@ -231,7 +213,6 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
 
   if (iters.length === 0 && !isRunning) return null
 
-  // compact — одна строка с иконками
   if (mode === 'compact') {
     return (
       <div className="tc2 tc2--compact">
@@ -254,7 +235,6 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
 
   return (
     <div className="tc2">
-      {/* Шапка всего блока */}
       <div className="tc2-header">
         <button className="tc2-collapse-btn" onClick={() => setCollapsed(c => !c)}>
           <AppIcon name={collapsed ? 'chevronRight' : 'chevronDown'} size="xs" />
@@ -269,7 +249,6 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
           }
         </div>
 
-        {/* Мини-чипы всех тулов */}
         <div className="tc2-header-chips">
           {iters.map(({ id, call }) => {
             const meta = getToolMeta(call.toolName)
@@ -288,7 +267,6 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
         </div>
       </div>
 
-      {/* Итерации */}
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.div
@@ -310,13 +288,9 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
               />
             ))}
 
-            {/* Пульс когда ждём следующего вызова */}
+            {/* Пульс — ждём следующего тула */}
             {isRunning && iters.length > 0 && iters[iters.length - 1].result && (
-              <motion.div
-                className="tc2-iter"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-              >
+              <motion.div className="tc2-iter" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                 <div className="tc2-rail">
                   <div className="tc2-dot tc2-dot--thinking" />
                 </div>
@@ -329,7 +303,7 @@ export default function ToolChain({ steps, mode, isRunning }: ToolChainProps) {
               </motion.div>
             )}
 
-            {/* Пустой старт */}
+            {/* Старт — нет тулов ещё */}
             {isRunning && iters.length === 0 && (
               <div className="tc2-iter">
                 <div className="tc2-rail">
