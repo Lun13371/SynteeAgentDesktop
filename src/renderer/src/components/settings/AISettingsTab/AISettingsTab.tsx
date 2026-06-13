@@ -89,8 +89,16 @@ export default function AISettingsTab() {
 
   const fetchModels = async (id: string) => {
     setFetchStatus(s => ({ ...s, [id]: 'loading' }))
-    await window.syntee.providers.fetchModels(id)
-    setFetchStatus(s => ({ ...s, [id]: 'done' }))
+    try {
+      const res = await window.syntee.providers.fetchModels(id) as { ok: boolean; error?: string; count?: number }
+      if (res?.ok) {
+        setFetchStatus(s => ({ ...s, [id]: `ok:${res.count ?? 0}` }))
+      } else {
+        setFetchStatus(s => ({ ...s, [id]: `error:${res?.error || 'Ошибка'}` }))
+      }
+    } catch (e) {
+      setFetchStatus(s => ({ ...s, [id]: `error:${e instanceof Error ? e.message : 'Ошибка'}` }))
+    }
     await load()
   }
 
@@ -120,6 +128,8 @@ export default function AISettingsTab() {
     setCustomForm({ name: '', baseUrl: '', apiKey: '' })
     setShowAddCustom(false)
     await load()
+    // Сразу тянем модели от нового провайдера
+    await fetchModels(id)
   }
 
   return (
@@ -238,6 +248,14 @@ export default function AISettingsTab() {
                         Модели
                       </button>
                     )}
+                    {/* Статус последнего fetchModels */}
+                    {fetchStatus[id] && fetchStatus[id] !== 'loading' && (
+                      <span className={`provider-fetch-status ${fetchStatus[id].startsWith('ok') ? 'provider-fetch-status--ok' : 'provider-fetch-status--err'}`}>
+                        {fetchStatus[id].startsWith('ok:')
+                          ? `✓ ${fetchStatus[id].slice(3)} моделей`
+                          : `✗ ${fetchStatus[id].startsWith('error:') ? fetchStatus[id].slice(6) : fetchStatus[id]}`}
+                      </span>
+                    )}
                     {configured && (
                       <button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(id)}>
                         <AppIcon name="trash" size="xs" />
@@ -261,9 +279,19 @@ export default function AISettingsTab() {
                   <button className="provider-btn provider-btn--configure" onClick={() => { setEditForm(p); setConfiguring(p.id) }}>
                     Изменить
                   </button>
-                  <button className="provider-btn provider-btn--fetch" onClick={() => fetchModels(p.id)}>
-                    <AppIcon name="refreshCw" size="xs" /> Модели
+                  <button className="provider-btn provider-btn--fetch" onClick={() => fetchModels(p.id)} disabled={fetchStatus[p.id] === 'loading'}>
+                    {fetchStatus[p.id] === 'loading'
+                      ? <AppIcon name="loader" size="xs" animation="spin" />
+                      : <AppIcon name="refreshCw" size="xs" />}
+                    Модели
                   </button>
+                  {fetchStatus[p.id] && fetchStatus[p.id] !== 'loading' && (
+                    <span className={`provider-fetch-status ${fetchStatus[p.id].startsWith('ok') ? 'provider-fetch-status--ok' : 'provider-fetch-status--err'}`}>
+                      {fetchStatus[p.id].startsWith('ok:')
+                        ? `✓ ${fetchStatus[p.id].slice(3)} моделей`
+                        : `✗ ${fetchStatus[p.id].startsWith('error:') ? fetchStatus[p.id].slice(6) : fetchStatus[p.id]}`}
+                    </span>
+                  )}
                   <button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(p.id)}>
                     <AppIcon name="trash" size="xs" />
                   </button>
