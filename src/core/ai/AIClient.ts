@@ -2,6 +2,32 @@ import OpenAI from 'openai'
 import type Store from 'electron-store'
 import { buildReasoningParams } from '../../shared/reasoningModels'
 
+// Извлекает строку из любого формата reasoning токена
+// Провайдеры могут слать: string, {text: "..."}, {thinking: "..."}, {content: "..."}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractReasoningText(val: any): string {
+  if (val == null) return ''
+  if (typeof val === 'string') return val
+  if (typeof val === 'object') {
+    // Anthropic: { type: "thinking", thinking: "..." }
+    if (typeof val.thinking === 'string') return val.thinking
+    // Некоторые прокси: { text: "..." }
+    if (typeof val.text === 'string') return val.text
+    // { content: "..." }
+    if (typeof val.content === 'string') return val.content
+    // { delta: { thinking: "..." } }
+    if (val.delta && typeof val.delta.thinking === 'string') return val.delta.thinking
+    // Массив блоков: [{type:"thinking", thinking:"..."}]
+    if (Array.isArray(val)) {
+      return val
+        .map((b: any) => typeof b === 'string' ? b : (b.thinking ?? b.text ?? b.content ?? ''))
+        .filter(Boolean)
+        .join('')
+    }
+  }
+  return ''
+}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -123,18 +149,17 @@ export class AIClient {
 
           // --- Формат 1: delta.reasoning_content (DeepSeek R1, o3-mini, OnlySQ) ---
           if (delta.reasoning_content != null) {
-            const tok = String(delta.reasoning_content)
+            const tok = extractReasoningText(delta.reasoning_content)
             if (tok) {
               if (!thinkingStartMs) thinkingStartMs = Date.now()
               callbacks.onThinkingToken?.(tok)
             }
-            // reasoning_content присутствует — пропускаем content этого чанка
             continue
           }
 
           // --- Формат 2: delta.thinking (Anthropic extended thinking) ---
           if (delta.thinking != null) {
-            const tok = String(delta.thinking)
+            const tok = extractReasoningText(delta.thinking)
             if (tok) {
               if (!thinkingStartMs) thinkingStartMs = Date.now()
               callbacks.onThinkingToken?.(tok)
