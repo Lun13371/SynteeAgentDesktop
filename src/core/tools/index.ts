@@ -7,6 +7,7 @@ import { clipboard } from 'electron'
 import OpenAI from 'openai'
 import type Store from 'electron-store'
 import type { Provider } from '../../shared/types'
+import * as Diff from 'diff'
 
 const execAsync = promisify(exec)
 
@@ -47,50 +48,9 @@ export function writeFile(path: string, content: string): ToolResult {
   }
 }
 
-// Генерирует unified diff между двумя строками
+// Генерирует unified diff через npm diff (LCS-based, как git)
 function makeDiff(oldContent: string, newContent: string, filePath: string): string {
-  const oldLines = oldContent.split('\n')
-  const newLines = newContent.split('\n')
-  const lines: string[] = [`--- a/${filePath}`, `+++ b/${filePath}`]
-  // Простой diff — находим изменённые блоки
-  let i = 0, j = 0
-  const changes: Array<{ type: 'same' | 'del' | 'add'; line: string }> = []
-  while (i < oldLines.length || j < newLines.length) {
-    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
-      changes.push({ type: 'same', line: oldLines[i] })
-      i++; j++
-    } else if (i < oldLines.length) {
-      changes.push({ type: 'del', line: oldLines[i] })
-      i++
-    } else {
-      changes.push({ type: 'add', line: newLines[j] })
-      j++
-    }
-  }
-  // Группируем в hunks (контекст 2 строки)
-  const CTX = 2
-  let inHunk = false
-  let hunkStart = -1
-  const hunkLines: string[] = []
-  for (let k = 0; k < changes.length; k++) {
-    const c = changes[k]
-    const hasChange = c.type !== 'same'
-    const nearChange = changes.slice(Math.max(0, k - CTX), k + CTX + 1).some(x => x.type !== 'same')
-    if (hasChange || nearChange) {
-      if (!inHunk) { inHunk = true; hunkStart = k }
-      hunkLines.push((c.type === 'del' ? '-' : c.type === 'add' ? '+' : ' ') + c.line)
-    } else if (inHunk) {
-      lines.push(`@@ -${hunkStart + 1} +${hunkStart + 1} @@`)
-      lines.push(...hunkLines)
-      hunkLines.length = 0
-      inHunk = false
-    }
-  }
-  if (inHunk) {
-    lines.push(`@@ -${hunkStart + 1} +${hunkStart + 1} @@`)
-    lines.push(...hunkLines)
-  }
-  return lines.join('\n')
+  return Diff.createPatch(filePath, oldContent, newContent, '', '', { context: 3 })
 }
 
 export interface EditResult extends ToolResult {
