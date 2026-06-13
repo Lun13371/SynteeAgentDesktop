@@ -1,9 +1,9 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs'
-import { tmpdir } from 'os'
+import { tmpdir, homedir } from 'os'
 import { join } from 'path'
-import { clipboard, app } from 'electron'
+import { clipboard } from 'electron'
 import OpenAI from 'openai'
 import type Store from 'electron-store'
 import type { Provider } from '../../shared/types'
@@ -19,7 +19,7 @@ export interface ToolResult {
 export async function runCommand(cmd: string, cwd?: string): Promise<ToolResult> {
   try {
     const { stdout, stderr } = await execAsync(cmd, {
-      cwd: cwd || app.getPath('home'),
+      cwd: cwd || homedir(),
       timeout: 30000,
     })
     return { success: true, output: stdout || stderr }
@@ -193,7 +193,7 @@ export async function generateImage(
 
       const b64 = data.files[0]
       // Сохраняем в temp файл — не кидаем base64 в контекст AI
-      const imgDir = join(app.getPath('userData'), 'generated-images')
+      const imgDir = join(tmpdir(), 'syntee-generated')
       if (!existsSync(imgDir)) mkdirSync(imgDir, { recursive: true })
       const imgPath = join(imgDir, `img_${Date.now()}.png`)
       writeFileSync(imgPath, Buffer.from(b64, 'base64'))
