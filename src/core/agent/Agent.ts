@@ -114,10 +114,14 @@ export class Agent {
         }
 
         // Если нет tool_calls — финальный ответ
-        // НЕ переспрашиваем через streamChat — модель не знает про tools и пишет XML
-        // Просто отдаём content как есть, побуквенно для имитации стриминга
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
+
+          // Reasoning от агентского запроса — шлём перед текстом
+          if (response.reasoning) {
+            callbacks.onStep({ type: 'thought', content: response.reasoning })
+          }
+
           // Эмулируем стриминг по словам чтобы UI не мигал
           const words = answer.split(/(?<=\s)|(?=\s)/)
           for (const chunk of words) {
