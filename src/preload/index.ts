@@ -123,6 +123,13 @@ const synteeAPI = {
   once: (channel: string, callback: (...args: unknown[]) => void) => {
     ipcRenderer.once(channel, (_, ...args) => callback(...args))
   },
+
+  // Диагностика — вызывается из DevTools консоли:
+  // window.syntee.debug.streamTest().then(r => console.log(JSON.stringify(r, null, 2)))
+  debug: {
+    streamTest: () => ipcRenderer.invoke('debug:stream-test'),
+    openDevTools: () => ipcRenderer.invoke('debug:open-devtools'),
+  },
 }
 
 contextBridge.exposeInMainWorld('syntee', synteeAPI)

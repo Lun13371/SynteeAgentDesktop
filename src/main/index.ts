@@ -18,6 +18,7 @@ import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerContextIPC } from './ipc/context.ipc'
+import { registerDebugIPC } from './ipc/debug.ipc'
 
 // Имя приложения — ДОЛЖНО быть ДО создания Store и app.whenReady
 app.setName('SynteeHelper')
@@ -80,6 +81,7 @@ app.whenReady().then(async () => {
   registerMemoryIPC(store)
   registerProviderIPC(store)
   registerContextIPC(store)
+  registerDebugIPC(store)
 
   // Первый запуск
   if (!store.get('firstRunComplete')) {
