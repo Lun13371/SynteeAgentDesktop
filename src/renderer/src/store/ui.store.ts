@@ -8,6 +8,7 @@ interface UIStore {
   accentColor: string
   sidebarOpen: boolean
   animatedBackground: boolean
+  bgStyle: string
   currentPage: Page
   isLoading: boolean
   // Actions
@@ -17,6 +18,7 @@ interface UIStore {
   setSidebarOpen: (open: boolean) => void
   setCurrentPage: (page: Page) => void
   setLoading: (loading: boolean) => void
+  setBgStyle: (style: string) => void
 }
 
 export const useUIStore = create<UIStore>((set) => ({
@@ -24,6 +26,7 @@ export const useUIStore = create<UIStore>((set) => ({
   accentColor: '#ffffff',
   sidebarOpen: true,
   animatedBackground: true,
+  bgStyle: 'particles',
   currentPage: 'chat',
   isLoading: false,
 
@@ -33,4 +36,5 @@ export const useUIStore = create<UIStore>((set) => ({
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   setCurrentPage: (currentPage) => set({ currentPage }),
   setLoading: (isLoading) => set({ isLoading }),
+  setBgStyle: (bgStyle) => set({ bgStyle }),
 }))
