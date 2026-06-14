@@ -123,7 +123,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     // ── Context management ─────────────────────────────────────────────────
     const ctxSettings = getContextSettings(storeData)
-    const rawHistory: ChatMessage[] = history.map(m => ({ role: m.role as ChatMessage['role'], content: m.content }))
+    const rawHistory: ChatMessage[] = history.map(m => {
+      if (m.planData) {
+        return {
+          role: m.role as ChatMessage['role'],
+          content: `[ПЛАН: "${m.planData.title}"]\n${m.planData.content}\n[Файл: ${m.planData.filePath}]`,
+        }
+      }
+      return { role: m.role as ChatMessage['role'], content: m.content }
+    })
 
     // ── Compressed tool history — последние 2 assistant-ответа с тулами ────
     // Добавляем в начало истории сжатые tool_call/tool_result из прошлых сессий
