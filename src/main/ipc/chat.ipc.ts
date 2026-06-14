@@ -6,7 +6,8 @@ import { agentManager } from '../AgentManager'
 import {
   createChat, getAllChats, getMessages, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB,
-  archiveChat, pinChat, setChatColor, duplicateChat, exportChat
+  archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
+  getWorkingMemory, setWorkingMemory,
 } from '../../core/db/database'
 import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
@@ -41,12 +42,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   let bufferedSteps: unknown[] = []
   let currentSendDone: ((fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[]) => void) | null = null
 
-  // Системный промпт
-  const getSystemPrompt = (): string => {
+  // Системный промпт с рабочей памятью
+  const getSystemPrompt = (chatId?: string): string => {
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
+    let workingMemory = ''
     try { memoryContext = getAllMemoriesForContext() } catch { /* ok */ }
-    return buildSystemPrompt({ userName, memoryContext })
+    try { if (chatId) workingMemory = getWorkingMemory(chatId) } catch { /* ok */ }
+    return buildSystemPrompt({ userName, memoryContext, workingMemory })
   }
 
   // Создать чат
@@ -121,6 +124,40 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const ctxSettings = getContextSettings(storeData)
     const rawHistory: ChatMessage[] = history.map(m => ({ role: m.role as ChatMessage['role'], content: m.content }))
 
+    // ── Compressed tool history — последние 2 assistant-ответа с тулами ────
+    // Добавляем в начало истории сжатые tool_call/tool_result из прошлых сессий
+    // чтобы AI помнил что делал раньше (result обрезается до 300 символов)
+    if (agentSettings.enableTools && !params.incognito) {
+      try {
+        const allMsgs = getMessages(params.chatId)
+        // Берём последние assistant-сообщения у которых есть toolSteps
+        const toolMsgs = allMsgs
+          .filter(m => m.role === 'assistant' && m.toolSteps && (m.toolSteps as unknown[]).length > 0)
+          .slice(-2)  // последние 2 агентные сессии
+
+        const compressedToolHistory: ChatMessage[] = []
+        for (const m of toolMsgs) {
+          const steps = (m.toolSteps ?? []) as Array<{ type: string; toolName?: string; content?: string }>
+          const calls = steps.filter(s => s.type === 'tool_call')
+          const results = steps.filter(s => s.type === 'tool_result')
+          if (calls.length === 0) continue
+
+          const summary = calls.map((c, i) => {
+            const r = results[i]
+            const resultShort = r?.content ? r.content.slice(0, 300) + (r.content.length > 300 ? '…' : '') : '(нет результата)'
+            return `[${c.toolName}] → ${resultShort}`
+          }).join('\n')
+
+          compressedToolHistory.push({ role: 'assistant', content: `[Предыдущие действия агента]\n${summary}` })
+        }
+
+        // Вставляем compressed history в начало (после system если есть)
+        if (compressedToolHistory.length > 0) {
+          rawHistory.unshift(...compressedToolHistory)
+        }
+      } catch { /* ok */ }
+    }
+
     let processedHistory = rawHistory
     let contextCompressed = false
     if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
@@ -146,7 +183,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Получаем реальный contextWindow активной модели из провайдера
       const contextWindow = getModelContextWindow(storeData)
       // Строим systemPrompt для точного подсчёта его токенов
-      const sysPrompt = getSystemPrompt()
+      const sysPrompt = getSystemPrompt(params.chatId)
       const currentMsgTokens = estimateTokens(params.content)
       const usage = calcTokenUsage(processedHistory, contextWindow, {
         systemPrompt: sysPrompt,
@@ -329,6 +366,19 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec })
           break
 
+        case 'update_working_memory': {
+          const { chatId: wChatId, content: wContent, mode: wMode } = msg as { chatId: string; content: string; mode: 'replace' | 'append' }
+          try {
+            if (wMode === 'append') {
+              const existing = getWorkingMemory(wChatId)
+              setWorkingMemory(wChatId, existing ? existing + '\n' + wContent : wContent)
+            } else {
+              setWorkingMemory(wChatId, wContent)
+            }
+          } catch { /* ok */ }
+          break
+        }
+
         case 'context_usage':
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
             pct: msg.pct,
@@ -385,7 +435,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       msgId: assistantMsgId,
       content: params.content,
       history: processedHistory,
-      systemPrompt: getSystemPrompt(),
+      systemPrompt: getSystemPrompt(params.chatId),
       enableTools: agentSettings.enableTools,
       incognito: !!params.incognito,
       agentSettings,

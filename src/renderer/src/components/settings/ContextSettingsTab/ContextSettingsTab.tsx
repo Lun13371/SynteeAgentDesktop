@@ -65,23 +65,12 @@ export default function ContextSettingsTab() {
             <p className="ctx-section__desc">
               Когда история чата заполняет контекст выше порога — старые сообщения сжимаются в резюме.
               Первые и последние сообщения всегда сохраняются полностью.
+              Лимит токенов берётся автоматически от активной модели провайдера.
             </p>
           </div>
           <Toggle value={s.rollingEnabled} onChange={v => upd({ rollingEnabled: v })} />
         </div>
         <div className={`ctx-fields${!s.rollingEnabled ? ' ctx-field--disabled' : ''}`}>
-          <div className="ctx-field">
-            <label>Лимит токенов модели</label>
-            <div className="ctx-slider-row">
-              <input type="range" min={8000} max={200000} step={4000}
-                value={s.contextLimitTokens}
-                disabled={!s.rollingEnabled}
-                onChange={e => upd({ contextLimitTokens: +e.target.value })}
-              />
-              <span className="ctx-slider-val">{(s.contextLimitTokens / 1000).toFixed(0)}K</span>
-            </div>
-            <span className="ctx-hint">GPT-4o: 128K, Claude: 200K, Gemini: 1M</span>
-          </div>
           <div className="ctx-field">
             <label>Триггер сжатия (%)</label>
             <div className="ctx-slider-row">
@@ -133,6 +122,23 @@ export default function ContextSettingsTab() {
             </p>
           </div>
           <Toggle value={s.tokenCounterEnabled} onChange={v => upd({ tokenCounterEnabled: v })} />
+        </div>
+      </section>
+
+      {/* ── Рабочая память ── */}
+      <section className="ctx-section">
+        <div className="ctx-section__head">
+          <div>
+            <h3>Рабочая память агента</h3>
+            <p className="ctx-section__desc">
+              Агент автоматически запоминает что делал в этом чате — изменённые файлы, принятые решения, текущее состояние проекта.
+              Память сохраняется между сообщениями и включается в system prompt.
+              Агент сам обновляет её через инструмент <code>update_working_memory</code> в конце сессии.
+            </p>
+          </div>
+        </div>
+        <div className="ctx-field">
+          <span className="ctx-hint">💡 Подсказка: напиши агенту «запомни что ты сделал» — он обновит рабочую память вручную.</span>
         </div>
       </section>
 

@@ -94,6 +94,8 @@ export class Agent {
   private store: Store
   private client: AIClient
   private role: 'main' | 'subagent'
+  chatId?: string
+  onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
@@ -350,6 +352,17 @@ export class Agent {
       }
       default:
         return { success: false, output: '', error: `Неизвестный инструмент: ${name}` }
+
+      case 'update_working_memory': {
+        const content = args.content as string
+        const mode = (args.mode as 'replace' | 'append') ?? 'replace'
+        if (!content) return { success: false, output: '', error: 'content обязателен' }
+        if (this.chatId && this.onUpdateWorkingMemory) {
+          this.onUpdateWorkingMemory(this.chatId, content, mode)
+          return { success: true, output: `Рабочая память обновлена (${mode}, ${content.length} символов)`, error: '' }
+        }
+        return { success: false, output: '', error: 'chatId не установлен — update_working_memory недоступен' }
+      }
     }
   }
 }

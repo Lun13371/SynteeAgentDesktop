@@ -138,6 +138,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       const agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
+      // Прокидываем chatId и колбэк обновления рабочей памяти
+      agent.chatId = chatId
+      agent.onUpdateWorkingMemory = (cid, content, mode) => {
+        send({ type: 'update_working_memory', chatId: cid, content, mode })
+      }
+
       await agent.run(
         content,
         {
