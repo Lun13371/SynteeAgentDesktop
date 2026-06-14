@@ -21,6 +21,7 @@ interface UIStore {
   setLoading: (loading: boolean) => void
   setBgStyle: (style: string) => void
   setMsgAnim: (anim: string) => void
+  setAnimatedBackground: (v: boolean) => void
 }
 
 export const useUIStore = create<UIStore>((set) => ({
@@ -41,4 +42,5 @@ export const useUIStore = create<UIStore>((set) => ({
   setLoading: (isLoading) => set({ isLoading }),
   setBgStyle: (bgStyle) => set({ bgStyle }),
   setMsgAnim: (msgAnim) => set({ msgAnim }),
+  setAnimatedBackground: (animatedBackground) => set({ animatedBackground }),
 }))

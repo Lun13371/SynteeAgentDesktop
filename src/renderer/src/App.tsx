@@ -39,8 +39,29 @@ export default function App() {
   const [showAgent, setShowAgent] = useState(false)
   const [focusAgentId, setFocusAgentId] = useState<string | null>(null)
   const [onboarded, setOnboarded] = useState<boolean | null>(null)
-  const { theme } = useUIStore()
+  const { theme, setTheme, setBgStyle, setMsgAnim, setAccentColor, setAnimatedBackground } = useUIStore()
   const { currentChatId } = useChatStore()
+
+  // Загружаем визуальные настройки из electron-store при старте
+  useEffect(() => {
+    const applyVisualSettings = async () => {
+      try {
+        const [theme, bgStyle, msgAnim, accentColor, animatedBg] = await Promise.all([
+          window.syntee.settings.get('theme'),
+          window.syntee.settings.get('bgStyle'),
+          window.syntee.settings.get('msgAnim'),
+          window.syntee.settings.get('accentColor'),
+          window.syntee.settings.get('animatedBackground'),
+        ])
+        if (theme) setTheme(theme as any)
+        if (bgStyle) setBgStyle(bgStyle as string)
+        if (msgAnim) setMsgAnim(msgAnim as string)
+        if (accentColor) setAccentColor(accentColor as string)
+        if (animatedBg !== undefined && animatedBg !== null) setAnimatedBackground(animatedBg as boolean)
+      } catch { /* ok */ }
+    }
+    applyVisualSettings()
+  }, [])
 
   useEffect(() => {
     const onHash = () => setRoute(getRoute())
