@@ -584,12 +584,38 @@ const MessageBubble = memo(function MessageBubble({
       {!isUser && <AssistantAvatar style={avatarStyle} />}
 
       {message.planData ? (
-        <PlanCard
-          title={message.planData.title}
-          content={message.planData.content}
-          summary={message.planData.summary}
-          filePath={message.planData.filePath}
-        />
+        <>
+          {message.content && message.content.trim() && (
+            <MessageContent
+              content={message.content}
+              isUser={isUser}
+              searchQuery={searchQuery}
+              toolOutputMode={toolOutputMode}
+              toolSteps={message.toolSteps}
+              onPin={onPin}
+              onCopy={handleCopy}
+              onReadAloud={handleReadAloud}
+              onReply={handleReply}
+              message={message}
+              isPinned={message.isPinned as number}
+              createdAt={message.createdAt}
+              liveThinking={liveThinking}
+              isStreaming={isStreaming}
+              isWaiting={isWaiting}
+              liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
+              liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
+              rateLimitSec={rateLimitSec}
+              userMarkdown={isUser ? userMarkdown : true}
+              timeEl={timeEl}
+            />
+          )}
+          <PlanCard
+            title={message.planData.title}
+            content={message.planData.content}
+            summary={message.planData.summary}
+            filePath={message.planData.filePath}
+          />
+        </>
       ) : (
       <MessageContent
         content={message.content}
