@@ -219,8 +219,31 @@ export class Agent {
           })
         }))
       } catch (err) {
-        callbacks.onError(err instanceof Error ? err : new Error(String(err)))
-        return
+        const error = err as { name?: string; status?: number; message?: string }
+        // AbortError — тихо выходим
+        if (error?.name === 'AbortError' || signal?.aborted) {
+          callbacks.onDone('')
+          return
+        }
+        // Фатальная API ошибка (4xx кроме 429) — сообщаем и выходим
+        const status = error?.status ?? 0
+        if (status >= 400 && status < 500 && status !== 429) {
+          callbacks.onError(err instanceof Error ? err : new Error(`API ошибка ${status}: ${error?.message}`))
+          return
+        }
+        // Превышено число попыток в chatWithTools — сообщаем
+        if (error?.message?.includes('превышено число попыток')) {
+          callbacks.onError(new Error(`Не удалось получить ответ от AI после нескольких попыток. Проверь соединение и провайдера.`))
+          return
+        }
+        // Остальные ошибки (сетевые, таймаут) — логируем в step и продолжаем если есть шаги
+        callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Ошибка: ${error?.message || String(err)}`, success: false })
+        if (step >= maxSteps - 1) {
+          callbacks.onError(new Error(`Агент завершился с ошибкой: ${error?.message || String(err)}`))
+          return
+        }
+        // Даём агенту знать об ошибке и продолжаем
+        messages.push({ role: 'user', content: `Произошла сетевая ошибка: ${error?.message}. Продолжи работу.` })
       }
     }
 

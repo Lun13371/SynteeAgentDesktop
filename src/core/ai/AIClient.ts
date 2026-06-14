@@ -37,7 +37,7 @@ async function sleep(ms: number): Promise<void> {
 function backoffDelay(attempt: number): number {
   const base = 1000 * Math.pow(2, attempt)
   const jitter = base * 0.3 * Math.random()
-  return Math.min(base + jitter, 60000)
+  return Math.min(base + jitter, 120000)  // max 120с
 }
 
 export interface StreamCallbacks {
@@ -318,7 +318,8 @@ export class AIClient {
     const client = this.getClientForRole(resolvedRole)
 
     let attempt = 0
-    while (attempt < 6) {
+    const maxAttempts = 10
+    while (attempt < maxAttempts) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -387,13 +388,27 @@ export class AIClient {
           hadStreamedTokens: tokenBuffer.length > 0 && !tool_calls,
         }
       } catch (err: unknown) {
-        const error = err as { status?: number }
+        const error = err as { status?: number; code?: string; name?: string; message?: string }
+        // AbortError — не ретраим, бросаем сразу
+        if (error?.name === 'AbortError' || signal?.aborted) throw err
+        // 429 Rate limit — ретраим с backoff
         if (error?.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }
-        attempt++
-        await sleep(backoffDelay(attempt))
+        // Сетевые ошибки (ECONNRESET, ETIMEDOUT, ENOTFOUND, fetch failed) — ретраим
+        const msg = error?.message?.toLowerCase() ?? ''
+        const isNetwork = !error?.status || error.status >= 500 ||
+          msg.includes('econnreset') || msg.includes('etimedout') ||
+          msg.includes('enotfound') || msg.includes('fetch failed') ||
+          msg.includes('network') || msg.includes('socket')
+        if (isNetwork && attempt < maxAttempts - 1) {
+          await sleep(backoffDelay(attempt))
+          attempt++
+          continue
+        }
+        // Фатальная ошибка (4xx, неизвестная) — бросаем сразу
+        throw err
       }
     }
-    throw new Error('Agent: превышено число попыток')
+    throw new Error('Agent: превышено число попыток запросов к API')
   }
 
   async analyzeImage(imageBase64: string, prompt: string, callbacks: StreamCallbacks): Promise<void> {
