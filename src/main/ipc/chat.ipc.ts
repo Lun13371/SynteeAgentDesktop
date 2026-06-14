@@ -14,7 +14,7 @@ import { AIClient } from '../../core/ai/AIClient'
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
 import {
-  applyRollingWindow, calcTokenUsage, getContextSettings,
+  applyRollingWindowAsync, calcTokenUsage, getContextSettings, estimateTokens,
   type ChatMessage,
 } from '../../core/context/contextManager'
 import type { Message, AgentSettings } from '../../shared/types'
@@ -123,7 +123,18 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let processedHistory = rawHistory
     let contextCompressed = false
     if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
-      const result = applyRollingWindow(rawHistory, ctxSettings)
+      // AI-резюме через fast модель (haiku/flash) — fallback на обрезку если не работает
+      const summaryFn = async (prompt: string): Promise<string> => {
+        const aiClient = new AIClient(store)
+        let result = ''
+        await aiClient.streamChat(
+          [{ role: 'user', content: prompt }],
+          { onToken: (t) => { result += t }, onDone: () => {}, onError: () => {} },
+          'fast',
+        )
+        return result
+      }
+      const result = await applyRollingWindowAsync(rawHistory, ctxSettings, summaryFn)
       if (result.compressed) {
         processedHistory = result.messages
         contextCompressed = true
@@ -131,7 +142,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
 
     if (ctxSettings.tokenCounterEnabled) {
-      const usage = calcTokenUsage(processedHistory, ctxSettings.contextLimitTokens)
+      const currentMsgTokens = estimateTokens(params.content)
+      const usage = calcTokenUsage(processedHistory, ctxSettings.contextLimitTokens, currentMsgTokens)
       win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, { pct: usage.pct, estimated: usage.estimated, limit: usage.limit, status: usage.status, compressed: contextCompressed })
     }
     // ──────────────────────────────────────────────────────────────────────

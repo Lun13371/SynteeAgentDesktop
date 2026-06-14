@@ -113,15 +113,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       const agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
-      const historyContext = history.slice(-10)
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-        .join('\n')
-      const messageWithContext = historyContext
-        ? `[Контекст разговора]\n${historyContext}\n\n[Новый вопрос]\n${content}`
-        : content
-
+      // Передаём историю как нормальный массив сообщений в userMessage
+      // Agent.run добавит их в messages перед user-запросом
       await agent.run(
-        messageWithContext,
+        content,
         {
           onStep: (step) => {
             if (step.type === 'tool_call') {
@@ -206,10 +201,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         agentSettings.maxSteps,
         undefined,
         systemPrompt,
+        history,  // processedHistory (после rolling window) как нормальные messages
       )
     } else {
-      // Обычный стриминг без tools
-      const contextMessages = history.slice(-20).map(m => ({
+      // Обычный стриминг без tools — тоже используем processedHistory
+      const contextMessages = history.map(m => ({
         role: m.role as 'user' | 'assistant' | 'system',
         content: m.content,
       }))
