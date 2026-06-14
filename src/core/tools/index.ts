@@ -20,7 +20,7 @@ export interface ToolResult {
 export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
   try {
     const isWin = process.platform === 'win32'
-    const timeoutMs = (timeout || 30) * 1000
+    const timeoutMs = (timeout || 60) * 1000
 
     let execCmd: string
     let execOpts: Parameters<typeof execAsync>[1]
@@ -74,11 +74,33 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
   }
 }
 
-export function readFile(path: string): ToolResult {
+export function readFile(path: string, offset?: number, limit?: number): ToolResult {
   try {
     if (!existsSync(path)) return { success: false, output: '', error: 'Файл не найден: ' + path }
     const content = readFileSync(path, 'utf-8')
-    return { success: true, output: content.slice(0, 8000) + (content.length > 8000 ? '\n...[обрезано]' : '') }
+    const lines = content.split('\n')
+    const totalLines = lines.length
+
+    if (offset !== undefined || limit !== undefined) {
+      const from = Math.max(0, (offset ?? 1) - 1)  // offset 1-indexed
+      const count = limit ?? 200
+      const slice = lines.slice(from, from + count)
+      const numbered = slice.map((l, i) => `${from + i + 1}|${l}`).join('\n')
+      const hasMore = from + count < totalLines
+      return {
+        success: true,
+        output: `[Файл: ${path} | Строки ${from + 1}-${from + slice.length} из ${totalLines}]\n${numbered}${hasMore ? `\n...[ещё ${totalLines - from - count} строк, используй offset=${from + count + 1}]` : ''}`,
+      }
+    }
+
+    // Без offset — читаем весь файл, но с предупреждением если большой
+    const MAX_CHARS = 8000
+    const truncated = content.length > MAX_CHARS
+    const out = content.slice(0, MAX_CHARS)
+    return {
+      success: true,
+      output: `[Файл: ${path} | ${totalLines} строк]\n${out}${truncated ? `\n...[обрезано, показано ${MAX_CHARS} из ${content.length} символов. Используй offset и limit для чтения по частям]` : ''}`,
+    }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
@@ -86,6 +108,9 @@ export function readFile(path: string): ToolResult {
 
 export function writeFile(path: string, content: string): ToolResult {
   try {
+    // Автоматически создаём директории если нужно
+    const dir = join(path, '..')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     writeFileSync(path, content, 'utf-8')
     return { success: true, output: 'Файл записан: ' + path }
   } catch (e: any) {
@@ -113,20 +138,54 @@ export function editFile(params: {
   new_str?: string
   after_line?: number
   content?: string
+  create_if_not_exists?: boolean
 }): EditResult {
   try {
-    if (!existsSync(params.path)) return { success: false, output: '', error: 'Файл не найден: ' + params.path }
+    const fileExists = existsSync(params.path)
+
+    // create_if_not_exists — создать файл если не существует (только overwrite/insert)
+    if (!fileExists) {
+      if (params.create_if_not_exists) {
+        const dir = join(params.path, '..')
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+        const initial = params.content ?? params.new_str ?? ''
+        writeFileSync(params.path, initial, 'utf-8')
+        return { success: true, output: `Файл создан: ${params.path}`, diff: `+++ ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}` }
+      }
+      return { success: false, output: '', error: 'Файл не найден: ' + params.path }
+    }
+
     const original = readFileSync(params.path, 'utf-8')
     let updated = original
 
     if (params.mode === 'replace') {
       if (!params.old_str) return { success: false, output: '', error: 'edit_file replace: нужен old_str' }
-      const normStr = (s: string) => s.split(String.fromCharCode(13)).join('')
+      // Нормализуем CRLF → LF для сравнения
+      const normStr = (s: string) => s.split('\r\n').join('\n').split('\r').join('\n')
       const normOrig = normStr(original)
       const normOld = normStr(params.old_str)
-      if (!normOrig.includes(normOld))
-        return { success: false, output: '', error: 'edit_file replace: old_str не найден в файле' }
-      updated = normOrig.replace(normOld, params.new_str ?? '')
+      if (!normOrig.includes(normOld)) {
+        // Попытка fuzzy: игнорируем ведущие пробелы строк
+        const stripIndent = (s: string) => s.split('\n').map(l => l.trimStart()).join('\n')
+        if (stripIndent(normOrig).includes(stripIndent(normOld))) {
+          // Найдено с другим отступом — ищем реальное место в оригинале
+          const oldLines = normOld.split('\n').map(l => l.trimStart())
+          const origLines = normOrig.split('\n')
+          const matchIdx = origLines.findIndex((_, i) =>
+            oldLines.every((ol, j) => (origLines[i + j] ?? '').trimStart() === ol)
+          )
+          if (matchIdx >= 0) {
+            const realOld = origLines.slice(matchIdx, matchIdx + oldLines.length).join('\n')
+            updated = normOrig.replace(realOld, params.new_str ?? '')
+          } else {
+            return { success: false, output: '', error: 'edit_file replace: old_str не найден (fuzzy тоже не помог). Проверь отступы и точность фрагмента.' }
+          }
+        } else {
+          return { success: false, output: '', error: 'edit_file replace: old_str не найден в файле. Используй read_file чтобы уточнить контент.' }
+        }
+      } else {
+        updated = normOrig.replace(normOld, params.new_str ?? '')
+      }
 
     } else if (params.mode === 'insert') {
       const lines = original.split('\n')
@@ -135,7 +194,7 @@ export function editFile(params: {
       updated = lines.join('\n')
 
     } else if (params.mode === 'overwrite') {
-      if (!params.content) return { success: false, output: '', error: 'edit_file overwrite: нужен content' }
+      if (params.content === undefined) return { success: false, output: '', error: 'edit_file overwrite: нужен content' }
       updated = params.content
     }
 
@@ -176,15 +235,45 @@ export function multiEditFile(params: {
   }
 }
 
-export function listDirectory(path: string): ToolResult {
+export function listDirectory(path: string, opts?: { recursive?: boolean; depth?: number; ignore?: string[] }): ToolResult {
   try {
     if (!existsSync(path)) return { success: false, output: '', error: 'Папка не найдена: ' + path }
-    const items = readdirSync(path).map(name => {
-      const full = join(path, name)
-      const stat = statSync(full)
-      return (stat.isDirectory() ? '📁' : '📄') + ' ' + name + (stat.isDirectory() ? '/' : ' (' + formatSize(stat.size) + ')')
-    })
-    return { success: true, output: items.join('\n') }
+    const maxDepth = opts?.depth ?? (opts?.recursive ? 3 : 0)
+    const defaultIgnore = ['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage']
+    const ignore = [...defaultIgnore, ...(opts?.ignore ?? [])]
+    const lines: string[] = []
+
+    const walk = (dir: string, level: number, prefix: string) => {
+      if (level > maxDepth) return
+      let entries: string[]
+      try { entries = readdirSync(dir) } catch { return }
+      entries.sort((a, b) => {
+        const aIsDir = statSync(join(dir, a)).isDirectory()
+        const bIsDir = statSync(join(dir, b)).isDirectory()
+        if (aIsDir !== bIsDir) return aIsDir ? -1 : 1
+        return a.localeCompare(b)
+      })
+      entries.forEach((name, i) => {
+        if (ignore.includes(name)) return
+        const full = join(dir, name)
+        const isLast = i === entries.length - 1 || entries.slice(i + 1).every(n => ignore.includes(n))
+        const stat = statSync(full)
+        const isDir = stat.isDirectory()
+        const connector = isLast ? '└── ' : '├── '
+        const size = isDir ? '' : ` (${formatSize(stat.size)})`
+        lines.push(`${prefix}${connector}${name}${isDir ? '/' : size}`)
+        if (isDir && level < maxDepth) {
+          walk(full, level + 1, prefix + (isLast ? '    ' : '│   '))
+        }
+      })
+    }
+
+    lines.push(path + '/')
+    walk(path, 0, '')
+    if (lines.length > 300) {
+      return { success: true, output: lines.slice(0, 300).join('\n') + `\n...[обрезано, показано 300 из ${lines.length} записей]` }
+    }
+    return { success: true, output: lines.join('\n') }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
@@ -193,6 +282,84 @@ export function listDirectory(path: string): ToolResult {
 export function getClipboard(): ToolResult {
   const text = clipboard.readText()
   return { success: true, output: text || '(буфер обмена пуст)' }
+}
+
+// ── find_files — поиск файлов по имени/паттерну ───────────────────────────
+export function findFiles(pattern: string, searchPath: string, opts?: { maxResults?: number }): ToolResult {
+  const maxResults = opts?.maxResults ?? 50
+  const defaultIgnore = ['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage']
+  const results: string[] = []
+  const rx = (() => {
+    try { return new RegExp(pattern, 'i') } catch {
+      const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
+      return new RegExp(escaped, 'i')
+    }
+  })()
+  const walk = (dir: string) => {
+    if (results.length >= maxResults) return
+    let entries: string[]
+    try { entries = readdirSync(dir) } catch { return }
+    for (const name of entries) {
+      if (defaultIgnore.includes(name)) continue
+      const full = join(dir, name)
+      let stat; try { stat = statSync(full) } catch { continue }
+      if (stat.isDirectory()) walk(full)
+      else if (rx.test(name)) { results.push(full); if (results.length >= maxResults) return }
+    }
+  }
+  if (!existsSync(searchPath)) return { success: false, output: '', error: 'Путь не найден: ' + searchPath }
+  walk(searchPath)
+  if (results.length === 0) return { success: true, output: 'Файлов не найдено' }
+  return { success: true, output: results.join('\n') + (results.length >= maxResults ? `\n...[показано ${maxResults}, есть ещё]` : `\n[Найдено: ${results.length}]`) }
+}
+
+// ── get_file_outline — структура файла (функции/классы/экспорты) ──────────
+export function getFileOutline(filePath: string): ToolResult {
+  if (!existsSync(filePath)) return { success: false, output: '', error: 'Файл не найден: ' + filePath }
+  try {
+    const content = readFileSync(filePath, 'utf-8')
+    const lines = content.split('\n')
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+    const outline: string[] = [`[Outline: ${filePath} | ${lines.length} строк]`]
+    const tsPatterns: Array<{ re: RegExp; label: string }> = [
+      { re: /^export\s+default\s+(async\s+)?(function|class)\s*(\w*)/, label: 'export default' },
+      { re: /^export\s+(async\s+)?function\s+(\w+)/, label: 'export fn' },
+      { re: /^export\s+(const|let)\s+(\w+)\s*[:=].*(?:=>|\bfunction\b)/, label: 'export const fn' },
+      { re: /^export\s+(?:abstract\s+)?class\s+(\w+)/, label: 'class' },
+      { re: /^export\s+(?:interface|type|enum)\s+(\w+)/, label: 'type' },
+      { re: /^  (?:public|private|protected|static|async|\bget\b|\bset\b)\s+(?:async\s+)?(\w+)\s*[(<]/, label: 'method' },
+      { re: /^(?:async\s+)?function\s+(\w+)/, label: 'fn' },
+      { re: /^(?:const|let)\s+(\w+)\s*=\s*(?:async\s*)?\(/, label: 'fn' },
+      { re: /^import\s+.*\s+from\s+['"](.+)['"]/, label: 'import' },
+    ]
+    const pyPatterns: Array<{ re: RegExp; label: string }> = [
+      { re: /^(?:async\s+)?def\s+(\w+)/, label: 'def' },
+      { re: /^class\s+(\w+)/, label: 'class' },
+      { re: /^(?:from\s+\S+\s+)?import\s+(\S+)/, label: 'import' },
+    ]
+    const activePatterns = ['py'].includes(ext) ? pyPatterns : tsPatterns
+    const imports: string[] = []
+    let pastImports = false
+    lines.forEach((line, i) => {
+      for (const { re, label } of activePatterns) {
+        const m = line.match(re)
+        if (!m) continue
+        const name = (m[3] || m[2] || m[1] || '').trim() || line.slice(0, 50)
+        if (label === 'import') { if (!pastImports) imports.push(name); return }
+        if (!pastImports) {
+          if (imports.length) outline.push(`  imports(${imports.length}): ${imports.slice(0, 5).join(', ')}${imports.length > 5 ? ` +${imports.length - 5}` : ''}`)
+          pastImports = true
+        }
+        outline.push(`  ${i + 1}: [${label}] ${name}`)
+        return
+      }
+      if (!pastImports && line.trim() && !line.startsWith('//') && !line.startsWith(' *') && !line.startsWith('*')) pastImports = true
+    })
+    if (!pastImports && imports.length) outline.push(`  imports(${imports.length}): ${imports.slice(0, 5).join(', ')}`)
+    return { success: true, output: outline.join('\n') }
+  } catch (e: any) {
+    return { success: false, output: '', error: e.message }
+  }
 }
 
 export function setClipboard(text: string): ToolResult {
@@ -260,10 +427,11 @@ export function readFiles(paths: string[]): ToolResult {
 export async function searchCode(
   pattern: string,
   searchPath: string,
-  opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number }
+  opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number; maxChars?: number }
 ): Promise<ToolResult> {
   const maxResults = opts?.maxResults ?? 50
   const context = opts?.context ?? 2
+  const maxChars = opts?.maxChars ?? 12000
   const caseFlag = opts?.ignoreCase ? '-i' : '-s'
   const globFlag = opts?.fileGlob ? `--glob "${opts.fileGlob}"` : ''
   const ignoreFlag = '--glob "!node_modules" --glob "!dist" --glob "!out" --glob "!.git" --glob "!__pycache__" --glob "!.venv" --glob "!build"'
@@ -273,7 +441,9 @@ export async function searchCode(
   const rgCmd = `rg --line-number --no-heading ${caseFlag} ${globFlag} ${ignoreFlag} -C ${context} -m ${maxResults} "${escaped}" "${searchPath}"`
   try {
     const { stdout } = await execAsync(rgCmd, { timeout: 15000 })
-    return { success: true, output: formatRgOutput(stdout.trim(), maxResults) || 'Совпадений не найдено' }
+    const out = formatRgOutput(stdout.trim(), maxResults) || 'Совпадений не найдено'
+    const truncated = out.length > maxChars
+    return { success: true, output: truncated ? out.slice(0, maxChars) + `\n...[обрезано, ${out.length} символов]` : out }
   } catch {}
 
   // Fallback: grep (Linux/Mac)
@@ -565,16 +735,17 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'edit_file',
-      description: 'Редактировать файл. Три режима: replace — заменить уникальный фрагмент (предпочтительно), insert — вставить строки после указанной, overwrite — перезаписать файл целиком. Всегда возвращает diff изменений.',
+      description: 'Редактировать файл. replace — заменить фрагмент (с fuzzy по отступам), insert — вставить после строки, overwrite — перезаписать. create_if_not_exists=true создаёт файл и директории. Возвращает diff.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Путь к файлу' },
           mode: { type: 'string', enum: ['replace', 'insert', 'overwrite'], description: 'Режим редактирования' },
-          old_str: { type: 'string', description: '[replace] Уникальный фрагмент который нужно заменить. Включай 2-3 строки контекста для уникальности.' },
+          old_str: { type: 'string', description: '[replace] Уникальный фрагмент для замены. Включай 2-3 строки контекста.' },
           new_str: { type: 'string', description: '[replace] Новый фрагмент (пустая строка = удалить)' },
           after_line: { type: 'number', description: '[insert] Вставить после этой строки (1-indexed)' },
           content: { type: 'string', description: '[insert/overwrite] Контент для вставки или перезаписи' },
+          create_if_not_exists: { type: 'boolean', description: 'Создать файл (и директории) если не существует' },
         },
         required: ['path', 'mode'],
       },
@@ -617,7 +788,7 @@ export const TOOL_SCHEMAS = [
           command: { type: 'string', description: 'Команда' },
           cwd: { type: 'string', description: 'Рабочая директория' },
           shell: { type: 'string', enum: ['powershell', 'cmd'], description: 'Шелл (только Windows, по умолч. powershell)' },
-          timeout: { type: 'number', description: 'Таймаут в секундах (по умолч. 30)' },
+          timeout: { type: 'number', description: 'Таймаут в секундах (по умолч. 60)' },
         },
         required: ['command'],
       },
@@ -627,10 +798,14 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: 'Прочитать содержимое файла.',
+      description: 'Прочитать файл. Без offset читает первые 8000 символов. С offset/limit читает конкретный диапазон строк (1-indexed) и показывает total_lines.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string', description: 'Абсолютный путь к файлу' } },
+        properties: {
+          path: { type: 'string', description: 'Абсолютный путь к файлу' },
+          offset: { type: 'number', description: 'Начальная строка (1-indexed). Используй чтобы читать большие файлы по частям.' },
+          limit: { type: 'number', description: 'Кол-во строк для чтения (по умолч. 200)' },
+        },
         required: ['path'],
       },
     },
@@ -654,10 +829,14 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'list_directory',
-      description: 'Показать содержимое папки.',
+      description: 'Показать содержимое папки в виде дерева. recursive=true обходит вложенные папки (depth по умолч. 3). Игнорирует node_modules/dist/.git.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string', description: 'Путь к папке' } },
+        properties: {
+          path: { type: 'string', description: 'Путь к папке' },
+          recursive: { type: 'boolean', description: 'Рекурсивный обход (по умолч. false)' },
+          depth: { type: 'number', description: 'Глубина рекурсии (по умолч. 3)' },
+        },
         required: ['path'],
       },
     },
@@ -766,6 +945,36 @@ export const TOOL_SCHEMAS = [
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Абсолютный путь к корню проекта' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'find_files',
+      description: 'Найти файлы по имени или regex-паттерну. Используй когда нужно найти файл по имени: "где ChatPage.tsx?", "найди все *.config.ts". Игнорирует node_modules/dist/.git.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Имя файла, glob (*.tsx) или regex. Пример: "ChatPage.tsx", "*.config.ts", "index\\.(ts|tsx)"' },
+          path: { type: 'string', description: 'Директория для поиска' },
+          max_results: { type: 'number', description: 'Макс. результатов (по умолч. 50)' },
+        },
+        required: ['pattern', 'path'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_file_outline',
+      description: 'Структура файла: функции, классы, экспорты, импорты — без тела. Используй перед edit_file для больших файлов чтобы понять что где находится.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Абсолютный путь к файлу (.ts, .tsx, .js, .jsx, .py)' },
         },
         required: ['path'],
       },
