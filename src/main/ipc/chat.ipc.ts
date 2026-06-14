@@ -96,28 +96,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const history = params.incognito ? [] : getMessages(params.chatId)
     const assistantMsgId = uuid()
 
-    // ── Context management ─────────────────────────────────────────────────
-    const ctxSettings = getContextSettings(storeData)
-    const rawHistory: ChatMessage[] = history.map(m => ({ role: m.role as ChatMessage['role'], content: m.content }))
-
-    // Rolling window — сжимаем если включено
-    let processedHistory = rawHistory
-    let contextCompressed = false
-    if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
-      const result = applyRollingWindow(rawHistory, ctxSettings)
-      if (result.compressed) {
-        processedHistory = result.messages
-        contextCompressed = true
-      }
-    }
-
-    // Token usage — считаем и шлём во фронт
-    if (ctxSettings.tokenCounterEnabled) {
-      const usage = calcTokenUsage(processedHistory, ctxSettings.contextLimitTokens)
-      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, { pct: usage.pct, estimated: usage.estimated, limit: usage.limit, status: usage.status, compressed: contextCompressed })
-    }
-    // ──────────────────────────────────────────────────────────────────────
-
     // Убиваем предыдущий воркер если есть
     if (currentWorker) {
       ;(currentWorker as unknown as { _terminated?: boolean })._terminated = true
@@ -137,6 +115,26 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       const v = store.get(k)
       if (v !== undefined) storeData[k] = v
     }
+
+    // ── Context management ─────────────────────────────────────────────────
+    const ctxSettings = getContextSettings(storeData)
+    const rawHistory: ChatMessage[] = history.map(m => ({ role: m.role as ChatMessage['role'], content: m.content }))
+
+    let processedHistory = rawHistory
+    let contextCompressed = false
+    if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
+      const result = applyRollingWindow(rawHistory, ctxSettings)
+      if (result.compressed) {
+        processedHistory = result.messages
+        contextCompressed = true
+      }
+    }
+
+    if (ctxSettings.tokenCounterEnabled) {
+      const usage = calcTokenUsage(processedHistory, ctxSettings.contextLimitTokens)
+      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, { pct: usage.pct, estimated: usage.estimated, limit: usage.limit, status: usage.status, compressed: contextCompressed })
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     // Буфер токенов в main — для сохранения при внезапном terminate()
     let doneSent = false  // флаг чтобы не слать DONE дважды

@@ -16,15 +16,16 @@
 
 .ctx-section__head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
 }
 
 .ctx-section__head h3 {
   font-size: 13px;
   font-weight: 600;
   color: rgba(255,255,255,0.9);
-  margin: 0;
+  margin: 0 0 4px;
 }
 
 .ctx-section__desc {
@@ -49,8 +50,7 @@
 }
 
 .ctx-field--disabled,
-.ctx-field--disabled label,
-.ctx-fields.ctx-field--disabled label {
+.ctx-fields.ctx-field--disabled {
   opacity: 0.35;
   pointer-events: none;
 }
@@ -78,41 +78,4 @@
 .ctx-hint {
   font-size: 11px;
   color: rgba(255,255,255,0.3);
-}
-
-/* Toggle switch */
-.ctx-toggle {
-  position: relative;
-  display: inline-flex;
-  cursor: pointer;
-}
-
-.ctx-toggle input { display: none; }
-
-.ctx-toggle__track {
-  width: 36px;
-  height: 20px;
-  background: rgba(255,255,255,0.12);
-  border-radius: 10px;
-  transition: background 0.2s;
-  position: relative;
-}
-
-.ctx-toggle__track::after {
-  content: '';
-  position: absolute;
-  top: 3px; left: 3px;
-  width: 14px; height: 14px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.5);
-  transition: transform 0.2s, background 0.2s;
-}
-
-.ctx-toggle input:checked + .ctx-toggle__track {
-  background: var(--accent, #7c6fff);
-}
-
-.ctx-toggle input:checked + .ctx-toggle__track::after {
-  transform: translateX(16px);
-  background: #fff;
 }

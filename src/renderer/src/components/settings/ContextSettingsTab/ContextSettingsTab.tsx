@@ -1,6 +1,23 @@
+import { motion } from 'framer-motion'
 import { useSettingsStore } from '../../../store/settings.store'
 import { DEFAULT_CONTEXT_SETTINGS, type ContextSettings } from '../../../../../core/context/contextManager'
 import './ContextSettingsTab.css'
+
+function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <motion.button
+      className={`settings-toggle ${value ? 'settings-toggle--on' : ''}`}
+      onClick={() => onChange(!value)}
+      whileTap={{ scale: 0.93 }}
+    >
+      <motion.span
+        className="settings-toggle-thumb"
+        animate={{ x: value ? 20 : 2 }}
+        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+      />
+    </motion.button>
+  )
+}
 
 export default function ContextSettingsTab() {
   const { get, set } = useSettingsStore()
@@ -17,16 +34,15 @@ export default function ContextSettingsTab() {
       {/* ── Tool truncation ── */}
       <section className="ctx-section">
         <div className="ctx-section__head">
-          <h3>Обрезка результатов тулов</h3>
-          <label className="ctx-toggle">
-            <input type="checkbox" checked={s.toolTruncEnabled} onChange={e => upd({ toolTruncEnabled: e.target.checked })} />
-            <span className="ctx-toggle__track" />
-          </label>
+          <div>
+            <h3>Обрезка результатов тулов</h3>
+            <p className="ctx-section__desc">
+              Большие ответы тулов (read_file, run_command, search_code и др.) обрезаются до указанного лимита.
+              Показывается начало и конец, середина сжимается.
+            </p>
+          </div>
+          <Toggle value={s.toolTruncEnabled} onChange={v => upd({ toolTruncEnabled: v })} />
         </div>
-        <p className="ctx-section__desc">
-          Большие ответы тулов (read_file, run_command, search_code и др.) обрезаются до указанного лимита.
-          Показывается начало и конец, середина сжимается.
-        </p>
         <div className={`ctx-field${!s.toolTruncEnabled ? ' ctx-field--disabled' : ''}`}>
           <label>Макс. символов на тул-результат</label>
           <div className="ctx-slider-row">
@@ -44,16 +60,15 @@ export default function ContextSettingsTab() {
       {/* ── Rolling window ── */}
       <section className="ctx-section">
         <div className="ctx-section__head">
-          <h3>Сжатие истории (Rolling Window)</h3>
-          <label className="ctx-toggle">
-            <input type="checkbox" checked={s.rollingEnabled} onChange={e => upd({ rollingEnabled: e.target.checked })} />
-            <span className="ctx-toggle__track" />
-          </label>
+          <div>
+            <h3>Сжатие истории (Rolling Window)</h3>
+            <p className="ctx-section__desc">
+              Когда история чата заполняет контекст выше порога — старые сообщения сжимаются в резюме.
+              Первые и последние сообщения всегда сохраняются полностью.
+            </p>
+          </div>
+          <Toggle value={s.rollingEnabled} onChange={v => upd({ rollingEnabled: v })} />
         </div>
-        <p className="ctx-section__desc">
-          Когда история чата заполняет контекст выше порога — старые сообщения сжимаются в краткое резюме.
-          Первые и последние сообщения всегда сохраняются полностью.
-        </p>
         <div className={`ctx-fields${!s.rollingEnabled ? ' ctx-field--disabled' : ''}`}>
           <div className="ctx-field">
             <label>Лимит токенов модели</label>
@@ -65,7 +80,7 @@ export default function ContextSettingsTab() {
               />
               <span className="ctx-slider-val">{(s.contextLimitTokens / 1000).toFixed(0)}K</span>
             </div>
-            <span className="ctx-hint">Установи по лимиту твоей модели. GPT-4o: 128K, Claude: 200K, Gemini: 1M</span>
+            <span className="ctx-hint">GPT-4o: 128K, Claude: 200K, Gemini: 1M</span>
           </div>
           <div className="ctx-field">
             <label>Триггер сжатия (%)</label>
@@ -77,7 +92,7 @@ export default function ContextSettingsTab() {
               />
               <span className="ctx-slider-val">{s.rollingTriggerPct}%</span>
             </div>
-            <span className="ctx-hint">При заполнении контекста на этот % — запустится сжатие. По умолчанию: 75%</span>
+            <span className="ctx-hint">При заполнении на этот % — запустится сжатие. По умолчанию: 75%</span>
           </div>
           <div className="ctx-row2">
             <div className="ctx-field">
@@ -109,17 +124,16 @@ export default function ContextSettingsTab() {
       {/* ── Token counter ── */}
       <section className="ctx-section">
         <div className="ctx-section__head">
-          <h3>Счётчик токенов</h3>
-          <label className="ctx-toggle">
-            <input type="checkbox" checked={s.tokenCounterEnabled} onChange={e => upd({ tokenCounterEnabled: e.target.checked })} />
-            <span className="ctx-toggle__track" />
-          </label>
+          <div>
+            <h3>Счётчик токенов</h3>
+            <p className="ctx-section__desc">
+              Показывает полоску над полем ввода когда контекст заполнен более чем на 60%.
+              Жёлтый — предупреждение (60–85%), красный — критично (&gt;85%).
+              ⚡ означает что история была автоматически сжата.
+            </p>
+          </div>
+          <Toggle value={s.tokenCounterEnabled} onChange={v => upd({ tokenCounterEnabled: v })} />
         </div>
-        <p className="ctx-section__desc">
-          Показывает полоску над полем ввода когда контекст заполнен более чем на 60%.
-          Жёлтый — предупреждение (60–85%), красный — критично ({'>'}85%).
-          ⚡ означает что история была автоматически сжата.
-        </p>
       </section>
 
     </div>
