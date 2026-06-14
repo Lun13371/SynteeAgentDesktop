@@ -14,6 +14,7 @@ export interface ToolStep {
   timestamp: number
   imageUrl?: string
   diff?: string  // unified diff для edit_file / multi_edit_file
+  callId?: string  // id tool_call из API — для матчинга call↔result при параллельных тулах
 }
 
 const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
@@ -49,22 +50,32 @@ interface Iteration {
 
 function buildIterations(steps: ToolStep[]): Iteration[] {
   const iters: Iteration[] = []
-  let i = 0
-  while (i < steps.length) {
-    const s = steps[i]
-    if (s.type === 'tool_call') {
-      const next = steps[i + 1]
-      if (next?.type === 'tool_result') {
-        iters.push({ id: s.id, call: s, result: next })
-        i += 2
-      } else {
-        iters.push({ id: s.id, call: s })
-        i++
-      }
-    } else {
-      i++
+  const calls = steps.filter(s => s.type === 'tool_call')
+  const results = steps.filter(s => s.type === 'tool_result')
+
+  for (const call of calls) {
+    // Матчим по callId если есть, иначе по toolName (первый незаматченный result с тем же toolName)
+    let result: ToolStep | undefined
+    if (call.callId) {
+      result = results.find(r => r.callId === call.callId)
     }
+    if (!result) {
+      // Fallback: первый незаматченный result с тем же toolName
+      result = results.find(r => r.toolName === call.toolName && !(r as ToolStep & { _matched?: boolean })._matched)
+    }
+    if (!result) {
+      // Последний fallback: первый незаматченный result
+      result = results.find(r => !(r as ToolStep & { _matched?: boolean })._matched)
+    }
+    if (result) {
+      (result as ToolStep & { _matched?: boolean })._matched = true
+    }
+    iters.push({ id: call.id, call, result })
   }
+
+  // Чистим временный флаг
+  results.forEach(r => { delete (r as ToolStep & { _matched?: boolean })._matched })
+
   return iters
 }
 
