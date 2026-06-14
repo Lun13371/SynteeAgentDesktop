@@ -226,6 +226,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onError: (err) => {
             send({ type: 'error', chatId, error: err.message })
           },
+          onPlanSaved: (plan) => {
+            send({ type: 'plan_saved', chatId, msgId, plan })
+          },
           approvalMode: agentSettings.approvalMode as never,
           onSpawnAgent: (opts) => {
             return new Promise((resolve) => {

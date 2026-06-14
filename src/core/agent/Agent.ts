@@ -26,6 +26,7 @@ export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
   onDone: (answer: string) => void
   onError: (error: Error) => void
+  onPlanSaved?: (plan: { title: string; content: string; summary: string; filePath: string }) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
@@ -429,7 +430,15 @@ export class Agent {
       case 'save_plan': {
         const { savePlan } = await import('../tools/index')
         const result = savePlan(args as { title: string; content: string; summary: string })
-        return result
+        if (result.success && callbacks.onPlanSaved) {
+          callbacks.onPlanSaved({
+            title: args.title as string,
+            content: args.content as string,
+            summary: args.summary as string,
+            filePath: result.output,
+          })
+        }
+        return { success: true, output: `План сохранён: ${args.title}` }
       }
     }
   }

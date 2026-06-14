@@ -57,8 +57,9 @@ export interface Message {
   thinkingMs?: number
   slashCommand?: { name: string; args: string }
   iterations?: Array<{ label?: string; textBefore: string; steps: ToolStep[] }>
-  liveSegments?: Array<{ text: string; steps: ToolStep[] }>  // только для live bubble
-  imageUrl?: string                               // URL сгенерированного изображения
+  liveSegments?: Array<{ text: string; steps: ToolStep[] }>
+  imageUrl?: string
+  planData?: { title: string; content: string; summary: string; filePath: string }
 }
 
 export interface ToolStep {
