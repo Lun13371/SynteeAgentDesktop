@@ -2,6 +2,7 @@ import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import {
   runCommand, readFile, writeFile, listDirectory,
+  findFiles, getFileOutline,
   getClipboard, setClipboard, searchWeb, getSystemInfo, generateImage,
   readFiles, searchCode, analyzeProject,
   TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
@@ -242,7 +243,13 @@ export class Agent {
         return runCommand(cmd, args.cwd as string | undefined, args.shell as string | undefined, args.timeout as number | undefined)
       }
       case 'read_file':
-        return readFile(args.path as string)
+        return readFile(args.path as string, args.offset as number | undefined, args.limit as number | undefined)
+
+      case 'find_files':
+        return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined })
+
+      case 'get_file_outline':
+        return getFileOutline(args.path as string)
       case 'write_file':
         return writeFile(args.path as string, args.content as string)
       case 'edit_file':
@@ -250,7 +257,10 @@ export class Agent {
       case 'multi_edit_file':
         return multiEditFile(args as Parameters<typeof multiEditFile>[0])
       case 'list_directory':
-        return listDirectory(args.path as string)
+        return listDirectory(args.path as string, {
+          recursive: args.recursive as boolean | undefined,
+          depth: args.depth as number | undefined,
+        })
       case 'get_clipboard':
         return getClipboard()
       case 'set_clipboard':
