@@ -268,6 +268,24 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             thinkingMs = ms
             send({ type: 'thinking_done', chatId, msgId, thinkingMs: ms })
           },
+          onUsage: (usage) => {
+            // Реальные токены от провайдера — обновляем counter точными данными
+            const contextWindow = getModelContextWindow(storeData)
+            const pct = Math.min(100, Math.round(usage.promptTokens / contextWindow * 100))
+            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            send({
+              type: 'context_usage',
+              pct, estimated: usage.promptTokens, limit: contextWindow, status,
+              breakdown: {
+                history: usage.promptTokens,
+                system: 0,
+                tools: 0,
+                current: 0,
+                real: true,  // флаг что это реальные данные от провайдера
+                completionTokens: usage.completionTokens,
+              },
+            })
+          },
           onDone: () => finalize(),
           onError: (err) => {
             send({ type: 'error', chatId, error: err.message })

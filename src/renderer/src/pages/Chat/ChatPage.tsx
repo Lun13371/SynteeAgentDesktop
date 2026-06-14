@@ -33,12 +33,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const streamMsgIdRef = useRef<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
   const [contextUsage, setContextUsage] = useState<{
-    pct: number
-    estimated: number
-    limit: number
-    status: 'ok' | 'warn' | 'critical'
-    compressed: boolean
-    breakdown?: { history: number; system: number; tools: number; current: number }
+    pct: number; estimated: number; limit: number; status: string; compressed?: boolean
+    breakdown?: { history: number; system: number; tools: number; current: number; toolResults?: number; real?: boolean; completionTokens?: number }
   } | null>(null)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isAgentRunning, setIsAgentRunning] = useState(false)
@@ -605,7 +601,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             <div
               className={`context-usage-bar context-usage-bar--${contextUsage.status}`}
               title={contextUsage.breakdown
-                ? `История: ${contextUsage.breakdown.history.toLocaleString()} | System: ${contextUsage.breakdown.system.toLocaleString()} | Tools: ${contextUsage.breakdown.tools.toLocaleString()} | Сообщение: ${contextUsage.breakdown.current.toLocaleString()}\nИтого: ${contextUsage.estimated.toLocaleString()} / ${contextUsage.limit.toLocaleString()} токенов`
+                ? `${contextUsage.breakdown.real ? '✓ Реальные токены от провайдера' : '≈ Оценка (tiktoken)'}\nВход: ${contextUsage.estimated.toLocaleString()}${contextUsage.breakdown.completionTokens ? ` | Выход: ${contextUsage.breakdown.completionTokens.toLocaleString()}` : ''} / ${contextUsage.limit.toLocaleString()} токенов\nИстория: ${contextUsage.breakdown.history.toLocaleString()} | System: ${contextUsage.breakdown.system.toLocaleString()} | Tools: ${contextUsage.breakdown.tools.toLocaleString()}${contextUsage.breakdown.toolResults ? ` | Tool results: ${contextUsage.breakdown.toolResults.toLocaleString()}` : ''}`
                 : `${contextUsage.estimated?.toLocaleString()} / ${contextUsage.limit?.toLocaleString()} токенов`
               }
             >
