@@ -207,6 +207,7 @@ export default function ChatInput({
           <button
             ref={plusBtnRef}
             className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
+            onMouseDown={e => e.stopPropagation()}
             onClick={() => {
               if (!plusBtnRef.current) return
               const r = plusBtnRef.current.getBoundingClientRect()
