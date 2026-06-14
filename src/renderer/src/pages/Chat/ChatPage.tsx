@@ -66,6 +66,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setLiveTextAfter(prev => prev + chunk)
     liveTextAfterRef.current = liveTextAfterRef.current + chunk
     appendStreamToken(chunk)
+    // Автоскролл при стриминге — только если пользователь не ушёл вверх
+    if (autoScrollRef.current) {
+      const el = scrollContainerRef.current
+      if (el) el.scrollTop = el.scrollHeight - el.clientHeight
+    }
   }, [])
 
   const scheduleFlush = useCallback(() => {
@@ -334,21 +339,82 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep() }
   }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
-  // Автоскролл — virtualizer scrollToIndex для последнего сообщения
+  // ── АВТОСКРОЛЛ — плавный 60fps через rAF + ResizeObserver ──────────────────
+  const autoScrollRef    = useRef(true)   // true = следим за низом
+  const scrollRafRef     = useRef<number | null>(null)
+  const lastScrollHeight = useRef(0)
+
+  // Плавно анимируем скролл к низу через rAF (не через CSS smooth — контролируем сами)
+  const smoothScrollToBottom = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+
+    const animate = () => {
+      if (!el) return
+      const target = el.scrollHeight - el.clientHeight
+      const current = el.scrollTop
+      const diff = target - current
+      if (Math.abs(diff) < 1) { el.scrollTop = target; scrollRafRef.current = null; return }
+      // Easing: двигаемся на 18% разницы за кадр → ~60fps плавно
+      el.scrollTop += diff * 0.18
+      scrollRafRef.current = requestAnimationFrame(animate)
+    }
+    scrollRafRef.current = requestAnimationFrame(animate)
+  }, [])
+
+  const scrollToBottomInstant = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+    el.scrollTop = el.scrollHeight - el.clientHeight
+  }, [])
+
+  // Детект ручного скролла вверх — отпускаем автоскролл
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    // Если пользователь ушёл > 80px от низа — отпускаем
+    // Если вернулся < 20px — снова цепляемся
+    if (distFromBottom > 80) autoScrollRef.current = false
+    if (distFromBottom < 20) autoScrollRef.current = true
+  }, [])
+
+  // ResizeObserver на контейнер виртуализатора — ловит раскрытие тулчейнов
+  useEffect(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      const newHeight = el.scrollHeight
+      if (newHeight !== lastScrollHeight.current) {
+        lastScrollHeight.current = newHeight
+        if (autoScrollRef.current) smoothScrollToBottom()
+      }
+    })
+    // Наблюдаем за внутренним контентом а не за самим контейнером
+    const inner = el.firstElementChild
+    if (inner) ro.observe(inner as Element)
+    return () => ro.disconnect()
+  }, [smoothScrollToBottom])
+
+  // Скролл при новых сообщениях / начале стриминга
   useEffect(() => {
     if (isLoadingMessages || displayMessages.length === 0) return
-    const behavior = isInitialScrollRef.current ? 'auto' : 'smooth'
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        virtualizer.scrollToIndex(displayMessages.length - 1, { behavior })
-        isInitialScrollRef.current = false
-      })
-    })
-  }, [messages.length, isTyping, isLoadingMessages])
+    if (isInitialScrollRef.current) {
+      // Первый рендер чата — мгновенно без анимации
+      requestAnimationFrame(() => { scrollToBottomInstant(); isInitialScrollRef.current = false })
+      autoScrollRef.current = true
+    } else if (autoScrollRef.current) {
+      smoothScrollToBottom()
+    }
+  }, [messages.length, isTyping, isLoadingMessages, smoothScrollToBottom, scrollToBottomInstant])
 
   const selectChat = async (id: string) => {
     setIsLoadingMessages(true)
     isInitialScrollRef.current = true
+    autoScrollRef.current = true
+    if (scrollRafRef.current) { cancelAnimationFrame(scrollRafRef.current); scrollRafRef.current = null }
     // показываем скелетон только если грузится дольше 120мс
     skeletonTimerRef.current = setTimeout(() => setShowSkeleton(true), 120)
     setCurrentChat(id)
@@ -365,6 +431,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setChats(all)
     setCurrentChat(chat.id)
     setMessages([])
+    autoScrollRef.current = true
+    isInitialScrollRef.current = true
   }
 
   const handleSend = async (text: string) => {
@@ -555,6 +623,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             <div
               className="chat-messages"
               ref={scrollContainerRef}
+              onScroll={handleScroll}
             >
               <div
                 style={{
