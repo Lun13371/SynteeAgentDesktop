@@ -339,7 +339,7 @@ export class AIClient {
     role: 'main' | 'subagent' = 'main',
     onToken?: (token: string) => void,
     onContextCounted?: (promptTokens: number) => void,
-    onToolCallChunk?: (idx: number, name: string, partialArgs: string) => void,
+    onToolCallChunk?: (idx: number, name: string, partialArgs: string, toolId: string) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
@@ -414,7 +414,7 @@ export class AIClient {
               }
               // Стримим частичные аргументы в реальном времени
               if (onToolCallChunk && toolCallMap[idx].name) {
-                onToolCallChunk(idx, toolCallMap[idx].name, toolCallMap[idx].arguments)
+                onToolCallChunk(idx, toolCallMap[idx].name, toolCallMap[idx].arguments, toolCallMap[idx].id)
               }
             }
           }
