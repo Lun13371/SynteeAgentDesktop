@@ -48,6 +48,7 @@ export interface StreamCallbacks {
   onThinkingToken?: (token: string) => void
   onThinkingDone?: (ms: number) => void
   onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void
+  onContextCounted?: (promptTokens: number) => void  // tiktoken подсчёт реального запроса до отправки
 }
 
 export interface ChatMessage {
@@ -117,6 +118,20 @@ export class AIClient {
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
+
+    // Считаем реальный контекст через tiktoken — то что идёт в запрос
+    if (callbacks.onContextCounted && modelType === 'main') {
+      try {
+        const { estimateTokens } = await import('../context/contextManager')
+        let promptTokens = 0
+        for (const m of allMessages) {
+          const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+          promptTokens += estimateTokens(content) + 4  // +4 per message (role overhead)
+        }
+        promptTokens += 2  // reply primer
+        callbacks.onContextCounted(promptTokens)
+      } catch { /* ok — tiktoken не критичен */ }
+    }
 
     // Берём reasoning параметры из store (выбраны пользователем в UI)
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
@@ -323,12 +338,28 @@ export class AIClient {
     signal?: AbortSignal,
     role: 'main' | 'subagent' = 'main',
     onToken?: (token: string) => void,
+    onContextCounted?: (promptTokens: number) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
     const model = this.getModel(resolvedRole) || this.getModel('main')
     const client = this.getClientForRole(resolvedRole)
+
+    // Считаем реальный контекст через tiktoken перед каждым раундом агента
+    if (onContextCounted) {
+      try {
+        const { estimateTokens } = await import('../context/contextManager')
+        let promptTokens = 0
+        for (const m of messages) {
+          const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+          promptTokens += estimateTokens(content) + 4
+        }
+        // tool schemas overhead (статичный)
+        promptTokens += 3800 + 2
+        onContextCounted(promptTokens)
+      } catch { /* ok */ }
+    }
 
     let attempt = 0
     const maxAttempts = 10

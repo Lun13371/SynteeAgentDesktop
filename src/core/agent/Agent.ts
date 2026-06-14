@@ -25,12 +25,13 @@ export interface AgentStep {
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
   onDone: (answer: string) => void
-  onError: (err: Error) => void
+  onError: (error: Error) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
-  approvalMode?: string
-  onSpawnAgent?: (opts: { id: string; task: string; parallel: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
+  approvalMode?: 'auto' | 'ask'
+  onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
   onWaitAgents?: (agentIds: string[]) => Promise<Array<{ summary: string; error?: string }>>
   onGetAgentStatus?: (agentId: string) => { status: string; currentStep?: string; stepsCount: number } | null
+  onContextCounted?: (promptTokens: number) => void  // tiktoken подсчёт реального запроса перед каждым раундом
 }
 
 const SYSTEM_PROMPT = `Ты Syntee — автономный AI-агент для Windows. Решаешь задачи через инструменты: файлы, команды, поиск, система.
@@ -158,6 +159,7 @@ export class Agent {
           signal,
           this.role,
           (token) => callbacks.onStep({ type: 'answer', content: token }),
+          callbacks.onContextCounted,
         )
 
         // Abort во время запроса
