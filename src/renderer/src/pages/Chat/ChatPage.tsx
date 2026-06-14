@@ -85,6 +85,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [replyTo, setReplyTo] = useState<Message[]>([])
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null)
   const [inputText, setInputText] = useState('')
+  const [planningMode, setPlanningMode] = useState(false)
 
   // Настройка показа счётчика контекста
   const [showContextRing, setShowContextRing] = useState(true)
@@ -508,6 +509,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       displayContent: displayContent !== aiContent ? displayContent : undefined,
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
       userMsgId: userMsg.id,
+      planningMode,
     })
     // Обновляем на реальный id из БД
     if (result?.assistantMsgId) {
@@ -709,6 +711,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             mainModelId={mainModelId}
             reasoningValue={reasoningValue}
             onReasoningChange={handleReasoningChange}
+            planningMode={planningMode}
+            onPlanningModeChange={setPlanningMode}
           />
 
           {/* Selection reply popup — через portal чтобы fixed работал правильно */}

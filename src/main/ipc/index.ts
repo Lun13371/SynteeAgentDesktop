@@ -37,7 +37,7 @@ function registerSettingsIPC({ store }: IPCContext): void {
 }
 
 function registerSystemIPC(_ctx: IPCContext): void {
-  const { app } = require('electron')
+  const { app, shell } = require('electron')
   ipcMain.handle('system:info', () => ({
     platform: process.platform,
     version: process.getSystemVersion(),
@@ -46,6 +46,7 @@ function registerSystemIPC(_ctx: IPCContext): void {
   ipcMain.handle('system:logError', (_, message: string, stack?: string) => {
     console.error('[Renderer Error]', message, stack)
   })
+  ipcMain.handle('shell:openPath', (_, path: string) => shell.openPath(path))
 }
 
 function registerOverlayIPC({ overlayWindow }: IPCContext): void {

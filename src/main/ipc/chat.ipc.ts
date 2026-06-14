@@ -72,6 +72,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     slashCommand?: { name: string; args: string }
     incognito?: boolean
     userMsgId?: string
+    planningMode?: boolean
   }) => {
     const win = mainWindow.getWindow()
     currentChatIdForStop = params.chatId
@@ -248,7 +249,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     currentSendDone = sendDone
 
     const workerPath = path.join(__dirname, 'ai-worker.js')
-    const worker = new Worker(workerPath, { workerData: { storeData }, env: process.env })
+    const worker = new Worker(workerPath, {
+      workerData: { storeData, planningMode: params.planningMode ?? false },
+      env: process.env
+    })
     currentWorker = worker
 
     worker.on('message', (msg: Record<string, unknown>) => {

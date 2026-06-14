@@ -130,7 +130,7 @@ export class Agent {
     this.client = new AIClient(store)
   }
 
-  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string, history?: Array<{ role: string; content: string }>): Promise<void> {
+  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string, history?: Array<{ role: string; content: string }>, toolSchemas?: typeof TOOL_SCHEMAS): Promise<void> {
     const messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
       { role: 'system', content: systemPrompt || SYSTEM_PROMPT },
       // История как нормальные role: user/assistant сообщения
@@ -155,7 +155,7 @@ export class Agent {
       try {
         const response = await this.client.chatWithTools(
           messages,
-          TOOL_SCHEMAS,
+          toolSchemas ?? TOOL_SCHEMAS,
           signal,
           this.role,
           (token) => callbacks.onStep({ type: 'answer', content: token }),
@@ -424,9 +424,12 @@ export class Agent {
       case 'think': {
         const thought = args.thought as string
         if (!thought) return { success: false, output: '', error: 'thought обязателен' }
-        // Возвращаем мысль агенту — он видит её как tool_result
-        // hidden=true — в UI не отображается
         return { success: true, output: `OK. Продолжай по плану.`, error: '', hidden: true }
+      }
+      case 'save_plan': {
+        const { savePlan } = await import('../tools/index')
+        const result = savePlan(args as { title: string; content: string; summary: string })
+        return result
       }
     }
   }

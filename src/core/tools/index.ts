@@ -760,6 +760,45 @@ export async function generateImage(
   }
 }
 
+// ── save_plan — только в режиме планирования ─────────────────────────────────
+export function savePlan(params: { title: string; content: string; summary: string }): ToolResult {
+  try {
+    const os = require('os')
+    const fs = require('fs')
+    const path = require('path')
+    const plansDir = path.join(os.homedir(), 'Documents', 'Syntee', 'Plans')
+    fs.mkdirSync(plansDir, { recursive: true })
+    // Санитизируем имя файла
+    const safeName = params.title
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+      .replace(/\s+/g, '_')
+      .slice(0, 80) || 'plan'
+    const filePath = path.join(plansDir, `plan_${safeName}.md`)
+    const fullContent = `# ${params.title}\n\n> ${params.summary}\n\n${params.content}`
+    fs.writeFileSync(filePath, fullContent, 'utf-8')
+    return { success: true, output: filePath }
+  } catch (e: unknown) {
+    return { success: false, output: '', error: String(e) }
+  }
+}
+
+const PLAN_TOOL_SCHEMA = {
+  type: 'function' as const,
+  function: {
+    name: 'save_plan',
+    description: 'Сохраняет готовый план в .md файл. Вызывай ТОЛЬКО когда план полностью готов.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Краткое название плана (станет именем файла).' },
+        content: { type: 'string', description: 'Полный текст плана в markdown формате.' },
+        summary: { type: 'string', description: 'Одна строка — итоговый вердикт: что именно будет сделано.' },
+      },
+      required: ['title', 'content', 'summary'],
+    },
+  },
+}
+
 export const TOOL_SCHEMAS = [
   {
     type: 'function' as const,
@@ -1066,3 +1105,10 @@ export const TOOL_SCHEMAS = [
     },
   },
 ]
+
+// Динамический набор тулов — добавляем по режиму
+export function getToolSchemas(options: { planningMode?: boolean } = {}) {
+  const schemas = [...TOOL_SCHEMAS]
+  if (options.planningMode) schemas.push(PLAN_TOOL_SCHEMA)
+  return schemas
+}

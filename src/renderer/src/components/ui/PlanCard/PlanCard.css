@@ -1,0 +1,148 @@
+.plan-card {
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+  margin: 8px 0;
+}
+
+.plan-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.plan-card-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.plan-card-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.plan-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.plan-card-summary {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.plan-card-body {
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+
+.plan-card-markdown {
+  padding: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.plan-card-markdown h1,
+.plan-card-markdown h2,
+.plan-card-markdown h3 {
+  color: var(--text-primary);
+  margin: 12px 0 6px;
+}
+
+.plan-card-markdown h1 { font-size: 16px; }
+.plan-card-markdown h2 { font-size: 14px; color: var(--accent); }
+.plan-card-markdown h3 { font-size: 13px; }
+
+.plan-card-markdown ul,
+.plan-card-markdown ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.plan-card-markdown li { margin: 3px 0; }
+
+.plan-card-markdown input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: var(--accent);
+}
+
+.plan-card-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 8px 0;
+}
+
+.plan-card-markdown th,
+.plan-card-markdown td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.plan-card-markdown th { background: var(--bg-primary); }
+
+.plan-card-markdown blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.plan-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  gap: 8px;
+}
+
+.plan-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.plan-card-btn {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.plan-card-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.plan-card-btn--primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.plan-card-btn--primary:hover {
+  opacity: 0.85;
+  color: #fff;
+}
+
+.plan-card-btn--expand {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-size: 11px;
+}

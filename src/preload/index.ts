@@ -141,6 +141,11 @@ const synteeAPI = {
     getSettings: () => ipcRenderer.invoke('image:getSettings'),
     setSettings: (s: unknown) => ipcRenderer.invoke('image:setSettings', s),
   },
+
+  // Shell
+  shell: {
+    openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
+  },
 }
 
 contextBridge.exposeInMainWorld('syntee', synteeAPI)
