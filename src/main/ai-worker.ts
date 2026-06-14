@@ -147,6 +147,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       await agent.run(
         content,
         {
+          onContextCounted: (promptTokens) => {
+            const pct = Math.min(100, Math.round(promptTokens / contextWindow * 100))
+            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            send({
+              type: 'context_usage',
+              pct, estimated: promptTokens, limit: contextWindow, status,
+              breakdown: { history: promptTokens, system: 0, tools: 3800, current: 0 },
+            })
+          },
           onStep: (step) => {
             // Скрытые тулы (think, update_working_memory) — не шлём в UI
             if (step.hidden) {
@@ -254,6 +263,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       await aiClient.streamChat(
         contextMessages,
         {
+          onContextCounted: (promptTokens) => {
+            const pct = Math.min(100, Math.round(promptTokens / contextWindow * 100))
+            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            send({
+              type: 'context_usage',
+              pct, estimated: promptTokens, limit: contextWindow, status,
+              breakdown: { history: promptTokens, system: 0, tools: 0, current: 0, real: false },
+            })
+          },
           onToken: (token) => {
             fullText += token
             send({ type: 'token', chatId, msgId, token })
