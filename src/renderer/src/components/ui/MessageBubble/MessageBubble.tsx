@@ -210,7 +210,7 @@ const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
-  userMarkdown = true, timeEl, streamingTools,
+  userMarkdown = true, timeEl,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -225,7 +225,6 @@ const MessageContent = memo(function MessageContent({
   rateLimitSec?: number
   userMarkdown?: boolean
   timeEl?: React.ReactNode
-  streamingTools?: Record<string, { toolName: string; partialArgs: string }>
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -476,20 +475,6 @@ const MessageContent = memo(function MessageContent({
                 )}
               </div>
             )}
-            {/* Streaming tool calls — аргументы стримятся в реальном времени */}
-            {streamingTools && Object.entries(streamingTools).map(([callId, { toolName, partialArgs }]) => (
-              <div key={callId} className="tc-streaming-card">
-                <div className="tc-streaming-header">
-                  <div className="tc-streaming-dots">
-                    <span /><span /><span />
-                  </div>
-                  <span className="tc-streaming-name">{toolName}</span>
-                </div>
-                {partialArgs && (
-                  <div className="tc-streaming-args">{partialArgs}</div>
-                )}
-              </div>
-            ))}
           </div>
         ) : (
           /* ── ОБЫЧНЫЙ РЕНДЕР (нет итераций — обычный чат или финальное сообщение) ── */
@@ -622,7 +607,6 @@ const MessageBubble = memo(function MessageBubble({
               rateLimitSec={rateLimitSec}
               userMarkdown={isUser ? userMarkdown : true}
               timeEl={timeEl}
-              streamingTools={(message as Message & { streamingTools?: Record<string, { toolName: string; partialArgs: string }> }).streamingTools}
             />
           )}
           <PlanCard
@@ -654,7 +638,6 @@ const MessageBubble = memo(function MessageBubble({
         rateLimitSec={rateLimitSec}
         userMarkdown={isUser ? userMarkdown : true}
         timeEl={timeEl}
-        streamingTools={(message as Message & { streamingTools?: Record<string, { toolName: string; partialArgs: string }> }).streamingTools}
       />
       )}
     </motion.div>
