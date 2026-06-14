@@ -208,7 +208,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // ──────────────────────────────────────────────────────────────────────
 
     // Буфер токенов в main — для сохранения при внезапном terminate()
-    let doneSent = false  // флаг чтобы не слать DONE дважды
+    let doneSent = false
+    let pendingPlan: { title: string; content: string; summary: string; filePath: string } | undefined  // флаг чтобы не слать DONE дважды
 
     const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[]) => {
       if (doneSent) return
@@ -229,6 +230,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         iterations: iters && iters.length > 0 ? iters as never : undefined,
         thinking: thinkingText || undefined,
         thinkingMs,
+        planData: pendingPlan,
       }
 
       if (!params.incognito) saveMessage(assistantMsg)
@@ -405,10 +407,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           break
 
         case 'plan_saved':
-          win?.webContents.send('PLAN_SAVED', {
-            chatId: msg.chatId,
-            plan: msg.plan,
-          })
+          pendingPlan = msg.plan as { title: string; content: string; summary: string; filePath: string }
           break
 
         case 'error':
