@@ -6,7 +6,7 @@
 import { parentPort, workerData } from 'worker_threads'
 import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
-import { buildSystemPrompt, buildPlanningSystemPrompt } from '../core/prompts/buildSystemPrompt'
+import { buildSystemPrompt, buildPlanningInjection } from '../core/prompts/buildSystemPrompt'
 import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '../core/context/contextManager'
 import { getToolSchemas } from '../core/tools/index'
 
@@ -254,8 +254,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         },
         agentSettings.maxSteps,
         undefined,
-        planningMode ? buildPlanningSystemPrompt() : systemPrompt,
-        history,
+        systemPrompt,
+        planningMode ? [{ role: 'system', content: buildPlanningInjection() }, ...history] : history,
         getToolSchemas({ planningMode }),
       )
     } else {
