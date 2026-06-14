@@ -30,7 +30,8 @@ const SECTIONS: Array<{ id: Section; label: string; icon: IconName }> = [
 export default function SettingsPage() {
   const [section, setSection] = useState<Section>('general')
   const { settings, load, set } = useSettingsStore()
-  const { setTheme, setAccentColor, setBgStyle, setMsgAnim } = useUIStore()
+  const { setTheme, setAccentColor, setBgStyle, setMsgAnim, setAnimatedBackground,
+    setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect } = useUIStore()
   const { add: toast } = useToast()
   const [apiKeyVisible, setApiKeyVisible] = useState(false)
   const [testingApi, setTestingApi] = useState(false)
@@ -43,6 +44,11 @@ export default function SettingsPage() {
     if (key === 'accentColor') setAccentColor(value as string)
     if (key === 'bgStyle') setBgStyle(value as string)
     if (key === 'msgAnim') setMsgAnim(value as string)
+    if (key === 'avatarStyle') setAvatarStyle(value as any)
+    if (key === 'showTime') setShowTime(value as any)
+    if (key === 'userMarkdown') setUserMarkdown(value as boolean)
+    if (key === 'uiSounds') setUiSounds(value as boolean)
+    if (key === 'sendEffect') setSendEffect(value as boolean)
   }
 
   const testApiKey = async () => {
@@ -384,6 +390,56 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
             />
           ))}
         </div>
+      </Field>
+
+      <Field label="Аватар ассистента" description="Иконка рядом с ответами">
+        <div className="settings-theme-grid">
+          {[
+            { id: 'hex',    label: '⬡ Гекс'   },
+            { id: 'circle', label: '● Круг'    },
+            { id: 'letter', label: 'S Буква'   },
+            { id: 'emoji',  label: '🤖 Эмодзи' },
+            { id: 'none',   label: '✕ Нет'     },
+          ].map(a => (
+            <motion.button
+              key={a.id}
+              className={`settings-theme-btn ${(settings['avatarStyle'] || 'hex') === a.id ? 'settings-theme-btn--active' : ''}`}
+              style={{ background: 'var(--bg-tertiary)', fontSize: 12 }}
+              onClick={() => onSet('avatarStyle', a.id)}
+              whileTap={{ scale: 0.94 }}
+            >{a.label}</motion.button>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Время сообщений" description="Когда показывать время рядом с сообщением">
+        <div className="settings-theme-grid">
+          {[
+            { id: 'always', label: 'Всегда'   },
+            { id: 'hover',  label: 'При наведении' },
+            { id: 'never',  label: 'Никогда'  },
+          ].map(t => (
+            <motion.button
+              key={t.id}
+              className={`settings-theme-btn ${(settings['showTime'] || 'hover') === t.id ? 'settings-theme-btn--active' : ''}`}
+              style={{ background: 'var(--bg-tertiary)', fontSize: 12 }}
+              onClick={() => onSet('showTime', t.id)}
+              whileTap={{ scale: 0.94 }}
+            >{t.label}</motion.button>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Markdown в своих сообщениях" description="Рендерить жирный, курсив, код в ваших сообщениях">
+        <Toggle value={!!(settings['userMarkdown'])} onChange={v => onSet('userMarkdown', v)} />
+      </Field>
+
+      <Field label="Звуки интерфейса" description="Звук отправки и получения сообщений">
+        <Toggle value={settings['uiSounds'] !== false} onChange={v => onSet('uiSounds', v)} />
+      </Field>
+
+      <Field label="Эффект отправки" description="Ripple-вспышка на кнопке при отправке">
+        <Toggle value={settings['sendEffect'] !== false} onChange={v => onSet('sendEffect', v)} />
       </Field>
       <Field label="Автосмена темы">
         <Toggle value={!!(settings['themeSchedule'] as any)?.enabled} onChange={v => onSet('themeSchedule', { ...((settings['themeSchedule'] as any) || {}), enabled: v })} />

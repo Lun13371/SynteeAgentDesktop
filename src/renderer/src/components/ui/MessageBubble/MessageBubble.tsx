@@ -1,4 +1,4 @@
-import { useState, useMemo, memo, useCallback, useEffect } from 'react'
+import { useState, useMemo, memo, useCallback, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -13,7 +13,8 @@ import ToolChain from '../ToolChain/ToolChain'
 import AgentCard from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
-import { useUIStore } from '../../../store/ui.store'
+import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
+import { playReceiveSound } from '../../../utils/sounds'
 import 'katex/dist/katex.min.css'
 import './MessageBubble.css'
 
@@ -209,6 +210,7 @@ const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
+  userMarkdown = true, timeEl,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -221,13 +223,19 @@ const MessageContent = memo(function MessageContent({
   liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }>
   liveTextAfter?: string
   rateLimitSec?: number
+  userMarkdown?: boolean
+  timeEl?: React.ReactNode
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
 
   const segments = useMemo(() =>
-    isUser ? [{ type: 'md' as const, content }] : parseContent(content),
-    [content, isUser]
+    isUser && !userMarkdown
+      ? [{ type: 'plain' as const, content }]
+      : isUser
+        ? [{ type: 'md' as const, content }]
+        : parseContent(content),
+    [content, isUser, userMarkdown]
   )
 
   // Мемоизированные remarkPlugins — не создаём новый массив при каждом рендере
@@ -471,7 +479,7 @@ const MessageContent = memo(function MessageContent({
         ) : (
           /* ── ОБЫЧНЫЙ РЕНДЕР (нет итераций — обычный чат или финальное сообщение) ── */
           <div className="message-content selectable">
-            {isUser ? (
+            {isUser && !userMarkdown ? (
               <p>{content}</p>
             ) : (
               segments.map((seg, si) =>
@@ -496,9 +504,7 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
-        <span className="message-time">
-          {new Date(createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
-        </span>
+        {timeEl}
       </div>
 
       <div
@@ -514,7 +520,32 @@ const MessageContent = memo(function MessageContent({
   )
 })
 
-// Внешний пузырь — только layout + spring анимация при mount
+// Аватар ассистента — несколько стилей
+function AssistantAvatar({ style }: { style: AvatarStyle }) {
+  if (style === 'none') return null
+  if (style === 'circle') return (
+    <div className="message-avatar message-avatar--circle">
+      <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="var(--accent)" opacity="0.7"/></svg>
+    </div>
+  )
+  if (style === 'letter') return (
+    <div className="message-avatar message-avatar--letter">S</div>
+  )
+  if (style === 'emoji') return (
+    <div className="message-avatar message-avatar--emoji">🤖</div>
+  )
+  // hex (default)
+  return (
+    <div className="message-avatar">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <polygon points="9,1 17,5 17,13 9,17 1,13 1,5" fill="none" stroke="var(--accent)" strokeWidth="1.2" opacity="0.8"/>
+        <polygon points="9,4 14,7 14,11 9,14 4,11 4,7" fill="var(--accent)" opacity="0.1"/>
+      </svg>
+    </div>
+  )
+}
+
+
 const MessageBubble = memo(function MessageBubble({
   message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec,
 }: MessageBubbleProps) {
@@ -533,8 +564,24 @@ const MessageBubble = memo(function MessageBubble({
     onReadAloud?.(message.content)
   }, [message.content, onReadAloud])
 
-  const { msgAnim } = useUIStore()
+  const { msgAnim, avatarStyle, showTime, userMarkdown, uiSounds } = useUIStore()
   const anim = MSG_ANIM_VARIANTS[msgAnim] ?? MSG_ANIM_VARIANTS.slide
+
+  // Звук получения — только для первого рендера assistant сообщения
+  const soundFired = useRef(false)
+  useEffect(() => {
+    if (!isUser && !soundFired.current && uiSounds && !isStreaming && !isWaiting) {
+      soundFired.current = true
+      playReceiveSound()
+    }
+  }, [isUser, isStreaming, isWaiting, uiSounds])
+
+  // Время — always / hover / never
+  const timeEl = showTime !== 'never' ? (
+    <span className={`message-time ${showTime === 'hover' ? 'message-time--hover' : ''}`}>
+      {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+    </span>
+  ) : null
 
   return (
     <motion.div
@@ -543,14 +590,7 @@ const MessageBubble = memo(function MessageBubble({
       animate={anim.animate}
       transition={anim.transition}
     >
-      {!isUser && (
-        <div className="message-avatar">
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <polygon points="9,1 17,5 17,13 9,17 1,13 1,5" fill="none" stroke="var(--accent)" strokeWidth="1.2" opacity="0.8"/>
-            <polygon points="9,4 14,7 14,11 9,14 4,11 4,7" fill="var(--accent)" opacity="0.1"/>
-          </svg>
-        </div>
-      )}
+      {!isUser && <AssistantAvatar style={avatarStyle} />}
 
       <MessageContent
         content={message.content}
@@ -571,6 +611,8 @@ const MessageBubble = memo(function MessageBubble({
         liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
         liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
         rateLimitSec={rateLimitSec}
+        userMarkdown={isUser ? userMarkdown : true}
+        timeEl={timeEl}
       />
     </motion.div>
   )

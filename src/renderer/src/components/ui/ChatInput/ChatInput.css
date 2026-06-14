@@ -179,6 +179,18 @@
   justify-content: center;
 }
 
+/* Эффект отправки — ripple вспышка */
+@keyframes send-burst {
+  0%   { box-shadow: 0 0 0 0px var(--accent); opacity: 1; }
+  60%  { box-shadow: 0 0 0 10px transparent; opacity: 0.4; }
+  100% { box-shadow: 0 0 0 14px transparent; opacity: 0; }
+}
+
+.chat-input-action-btn--burst {
+  animation: send-burst 0.38s ease-out forwards;
+}
+
+
 .chat-input-hint {
   font-size: 11px;
   color: var(--text-muted);
