@@ -29,6 +29,8 @@ interface ChatInputProps {
   mainModelId?: string
   reasoningValue?: string
   onReasoningChange?: (value: string) => void
+  planningMode?: boolean
+  onPlanningModeChange?: (v: boolean) => void
 }
 
 export default function ChatInput({
@@ -40,15 +42,31 @@ export default function ChatInput({
   mainModelId = '',
   reasoningValue = '',
   onReasoningChange,
+  planningMode = false,
+  onPlanningModeChange,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
   const [slashIdx, setSlashIdx] = useState(0)
   const [sendBurst, setSendBurst] = useState(false)
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
+  const plusBtnRef = useRef<HTMLButtonElement>(null)
   const { uiSounds, sendEffect } = useUIStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
+
+  // Закрытие + меню по клику снаружи
+  useEffect(() => {
+    if (!plusMenuOpen) return
+    const handler = (e: MouseEvent) => {
+      if (plusBtnRef.current && !plusBtnRef.current.closest('.chat-input-plus-wrap')?.contains(e.target as Node)) {
+        setPlusMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [plusMenuOpen])
 
   useEffect(() => {
     window.syntee.agent.getSettings().then((s: { approvalMode: ApprovalMode }) => {
@@ -161,16 +179,89 @@ export default function ChatInput({
           ))}
         </div>
       )}
+      <AnimatePresence>
+        {planningMode && (
+          <motion.div
+            className="chat-input-planning-badge"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            Режим планирования
+            <button className="chat-input-planning-badge-close" onClick={() => onPlanningModeChange?.(false)}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <div className="chat-input-box glass" ref={boxRef}>
-        <IconButton icon="paperclip" label="Прикрепить файл" className="chat-input-btn" onClick={onAttach} />
+        {/* + кнопка с меню */}
+        <div className="chat-input-plus-wrap">
+          <button
+            ref={plusBtnRef}
+            className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
+            onClick={() => setPlusMenuOpen(v => !v)}
+            title="Прикрепить / Режим"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
+
+          <AnimatePresence>
+            {plusMenuOpen && (
+              <motion.div
+                className="chat-input-plus-menu"
+                initial={{ opacity: 0, y: 6, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 6, scale: 0.95 }}
+                transition={{ duration: 0.15, ease: 'easeOut' }}
+              >
+                <button className="chat-input-plus-item" onClick={() => { onAttach?.(); setPlusMenuOpen(false) }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                  </svg>
+                  Прикрепить файл
+                </button>
+                <div className="chat-input-plus-divider" />
+                <button
+                  className={`chat-input-plus-item${planningMode ? ' chat-input-plus-item--active' : ''}`}
+                  onClick={() => { onPlanningModeChange?.(!planningMode); setPlusMenuOpen(false) }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                  </svg>
+                  Режим планирования
+                  {planningMode && (
+                    <svg className="chat-input-plus-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  )}
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
         <textarea
           ref={textareaRef}
-          className="chat-input-textarea selectable"
+          className={`chat-input-textarea selectable${planningMode ? ' chat-input-textarea--planning' : ''}`}
           value={value}
           onChange={e => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isIncognito ? 'Режим инкогнито — чат не сохраняется...' : 'Сообщение Syntee... (/ для команд)'}
+          placeholder={planningMode ? 'Режим планирования — опишите задачу...' : isIncognito ? 'Режим инкогнито — чат не сохраняется...' : 'Сообщение Syntee... (/ для команд)'}
           rows={1}
           disabled={disabled && !isGenerating}
         />

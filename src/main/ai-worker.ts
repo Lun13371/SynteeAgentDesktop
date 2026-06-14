@@ -6,10 +6,12 @@
 import { parentPort, workerData } from 'worker_threads'
 import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
-import { buildSystemPrompt } from '../core/prompts/buildSystemPrompt'
+import { buildSystemPrompt, buildPlanningSystemPrompt } from '../core/prompts/buildSystemPrompt'
 import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '../core/context/contextManager'
+import { getToolSchemas } from '../core/tools/index'
 
 const storeData: Record<string, unknown> = workerData.storeData
+const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
 
 // Кэш статусов суб-агентов — обновляется через agent_status_update от main
 const agentStatusCache = new Map<string, { status: string; stepsCount: number; currentStep?: string }>()
@@ -249,8 +251,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         },
         agentSettings.maxSteps,
         undefined,
-        systemPrompt,
+        planningMode ? buildPlanningSystemPrompt() : systemPrompt,
         history,
+        getToolSchemas({ planningMode }),
       )
     } else {
       // Обычный стриминг без tools

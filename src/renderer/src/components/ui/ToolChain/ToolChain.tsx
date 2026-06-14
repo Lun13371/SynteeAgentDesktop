@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
+import PlanCard from '../PlanCard/PlanCard'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import './ToolChain.css'
 
@@ -204,7 +205,14 @@ function IterationBlock({
                   <div className="tc2-section-title" style={{ color: failed ? '#f87171' : '#4ade80' }}>
                     {failed ? 'Ошибка' : 'Результат'}
                   </div>
-                  {iter.result.imageUrl ? (
+                  {iter.call.toolName === 'save_plan' && iter.result.success && iter.call.toolArgs ? (
+                    <PlanCard
+                      title={String(iter.call.toolArgs.title ?? '')}
+                      summary={String(iter.call.toolArgs.summary ?? '')}
+                      content={String(iter.call.toolArgs.content ?? '')}
+                      filePath={String(iter.result.content ?? '')}
+                    />
+                  ) : iter.result.imageUrl ? (
                     <div className="tc2-image-wrap">
                       <img
                         src={`file://${iter.result.imageUrl}`}
