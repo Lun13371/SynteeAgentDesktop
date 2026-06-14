@@ -98,9 +98,11 @@ export class Agent {
     this.client = new AIClient(store)
   }
 
-  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string): Promise<void> {
+  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string, history?: Array<{ role: string; content: string }>): Promise<void> {
     const messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
-      { role: 'system', content: systemPrompt ? `${systemPrompt}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt || SYSTEM_PROMPT },
+      // История как нормальные role: user/assistant сообщения
+      ...(history ?? []).map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: userMessage },
     ]
 
@@ -191,7 +193,7 @@ export class Agent {
           const imageUrl = imageMatch ? imageMatch[1] : undefined
 
           // Tool result truncation
-          const ctxSettings = getContextSettings(this.store.get('contextSettings') ? { contextSettings: this.store.get('contextSettings') } : {})
+          const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
           const rawContent = imageUrl
             ? 'Изображение успешно сгенерировано и показано пользователю.'
             : (result.success ? result.output : `Ошибка: ${result.error}`)

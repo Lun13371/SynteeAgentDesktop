@@ -66,13 +66,14 @@ export interface CompressResult {
 
 /**
  * Применяет rolling window к истории.
- * Если summary уже есть (первое сообщение role=system с [Summary:]) — обновляет его.
- * Возвращает сжатую историю и метаданные.
+ * summaryFn — опциональная async функция которая генерирует AI-резюме.
+ * Если не передана — делает простое обрезание текста.
  */
-export function applyRollingWindow(
+export async function applyRollingWindowAsync(
   messages: ChatMessage[],
-  settings: Pick<ContextSettings, 'rollingKeepFirst' | 'rollingKeepLast' | 'rollingTriggerPct' | 'contextLimitTokens'>
-): CompressResult {
+  settings: Pick<ContextSettings, 'rollingKeepFirst' | 'rollingKeepLast' | 'rollingTriggerPct' | 'contextLimitTokens'>,
+  summaryFn?: (prompt: string) => Promise<string>,
+): Promise<CompressResult> {
   const totalTokens = estimateMessagesTokens(messages)
   const limitTokens = settings.contextLimitTokens
   const triggerTokens = Math.floor(limitTokens * settings.rollingTriggerPct / 100)
@@ -83,8 +84,6 @@ export function applyRollingWindow(
 
   const keepFirst = settings.rollingKeepFirst
   const keepLast = settings.rollingKeepLast
-
-  // Разделяем на части
   const headMessages = messages.slice(0, keepFirst)
   const tailMessages = messages.slice(messages.length - keepLast)
   const middleMessages = messages.slice(keepFirst, messages.length - keepLast)
@@ -93,20 +92,32 @@ export function applyRollingWindow(
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
   }
 
-  // Собираем текст для резюме
-  const summaryText = middleMessages
-    .map(m => `${m.role === 'user' ? 'Пользователь' : 'AI'}: ${m.content.slice(0, 500)}`)
-    .join('\n')
-
-  // Резюме добавляем как system-сообщение
-  const summaryMsg: ChatMessage = {
-    role: 'system',
-    content: `[Summary — сжатая история ${middleMessages.length} сообщений]:\n${summaryText.slice(0, 2000)}\n[/Summary]`,
+  let summaryContent: string
+  if (summaryFn) {
+    try {
+      const prompt = buildSummaryPrompt(middleMessages)
+      summaryContent = await summaryFn(prompt)
+    } catch {
+      // fallback — простое обрезание
+      summaryContent = middleMessages
+        .map(m => `${m.role === 'user' ? 'Пользователь' : 'AI'}: ${m.content.slice(0, 300)}`)
+        .join('\n')
+        .slice(0, 1500)
+    }
+  } else {
+    summaryContent = middleMessages
+      .map(m => `${m.role === 'user' ? 'Пользователь' : 'AI'}: ${m.content.slice(0, 300)}`)
+      .join('\n')
+      .slice(0, 1500)
   }
 
-  const compressed = [...headMessages, summaryMsg, ...tailMessages]
+  const summaryMsg: ChatMessage = {
+    role: 'system',
+    content: `[Резюме предыдущего разговора (${middleMessages.length} сообщений сжаты)]:\n${summaryContent}\n[/Резюме]`,
+  }
+
   return {
-    messages: compressed,
+    messages: [...headMessages, summaryMsg, ...tailMessages],
     compressed: true,
     removedCount: middleMessages.length,
     summaryAdded: true,
@@ -133,8 +144,11 @@ export interface TokenUsage {
   status: 'ok' | 'warn' | 'critical'  // ok < 60%, warn < 85%, critical >= 85%
 }
 
-export function calcTokenUsage(messages: ChatMessage[], limitTokens: number): TokenUsage {
-  const estimated = estimateMessagesTokens(messages)
+// OVERHEAD: system prompt (~600) + tool schemas (~2200) + current message (~50) + buffer
+const CONTEXT_OVERHEAD_TOKENS = 3000
+
+export function calcTokenUsage(messages: ChatMessage[], limitTokens: number, currentMsgTokens = 0): TokenUsage {
+  const estimated = estimateMessagesTokens(messages) + CONTEXT_OVERHEAD_TOKENS + currentMsgTokens
   const pct = Math.min(100, Math.round(estimated / limitTokens * 100))
   const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
   return { estimated, limit: limitTokens, pct, status }
@@ -165,7 +179,10 @@ export function buildAgentStateBlock(state: AgentState): string {
   ].filter(Boolean).join('\n')
 }
 
-export function getContextSettings(storeData: Record<string, unknown>): ContextSettings {
-  const saved = (storeData.contextSettings ?? {}) as Partial<ContextSettings>
+export function getContextSettings(input: Record<string, unknown> | Partial<ContextSettings>): ContextSettings {
+  const rec = input as Record<string, unknown>
+  const saved = ('toolTruncEnabled' in rec || 'rollingEnabled' in rec || 'tokenCounterEnabled' in rec)
+    ? rec as Partial<ContextSettings>
+    : (rec['contextSettings'] ?? {}) as Partial<ContextSettings>
   return { ...DEFAULT_CONTEXT_SETTINGS, ...saved }
 }
