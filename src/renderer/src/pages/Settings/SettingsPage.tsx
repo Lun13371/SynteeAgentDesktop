@@ -6,16 +6,18 @@ import { useToast } from '../../components/ui/Toast/Toast'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import IconButton from '../../components/ui/IconButton/IconButton'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
+import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
 import './SettingsPage.css'
 
 type Section =
   | 'general' | 'ai' | 'voice' | 'hotkeys'
-  | 'agent' | 'data' | 'appearance' | 'integrations'
+  | 'agent' | 'data' | 'appearance' | 'integrations' | 'context'
 
 const SECTIONS: Array<{ id: Section; label: string; icon: IconName }> = [
   { id: 'general',      label: 'Общие',          icon: 'settings' },
   { id: 'ai',           label: 'ИИ и Модели',    icon: 'brain' },
+  { id: 'context',      label: 'Контекст',       icon: 'layers' },
   { id: 'appearance',   label: 'Внешний вид',    icon: 'palette' },
   { id: 'voice',        label: 'Голос',          icon: 'mic' },
   { id: 'hotkeys',      label: 'Горячие клавиши',icon: 'shield' },
@@ -92,6 +94,9 @@ export default function SettingsPage() {
             )}
             {section === 'ai' && (
               <AISettingsTab />
+            )}
+            {section === 'context' && (
+              <ContextSettingsTab />
             )}
             {section === 'appearance' && (
               <AppearanceSection settings={settings} onSet={handleSet} />

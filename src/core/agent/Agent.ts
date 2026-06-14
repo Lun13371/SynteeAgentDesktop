@@ -7,6 +7,7 @@ import {
   TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
 } from '../tools'
 import type { ApprovalMode } from '../../shared/types'
+import { truncateToolResult, getContextSettings } from '../context/contextManager'
 
 export interface AgentStep {
   type: 'thought' | 'tool_call' | 'tool_result' | 'answer'
@@ -188,9 +189,15 @@ export class Agent {
 
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
           const imageUrl = imageMatch ? imageMatch[1] : undefined
-          const contentForAI = imageUrl
+
+          // Tool result truncation
+          const ctxSettings = getContextSettings(this.store.get('contextSettings') ? { contextSettings: this.store.get('contextSettings') } : {})
+          const rawContent = imageUrl
             ? 'Изображение успешно сгенерировано и показано пользователю.'
             : (result.success ? result.output : `Ошибка: ${result.error}`)
+          const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled)
+            ? truncateToolResult(rawContent || '', ctxSettings.toolMaxChars)
+            : (rawContent || '')
 
           callbacks.onStep({
             type: 'tool_result',

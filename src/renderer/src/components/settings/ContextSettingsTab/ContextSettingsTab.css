@@ -1,0 +1,118 @@
+.ctx-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ctx-section {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ctx-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ctx-section__head h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+  margin: 0;
+}
+
+.ctx-section__desc {
+  font-size: 12px;
+  color: rgba(255,255,255,0.45);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.ctx-fields { display: flex; flex-direction: column; gap: 12px; }
+.ctx-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.ctx-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ctx-field label {
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+}
+
+.ctx-field--disabled,
+.ctx-field--disabled label,
+.ctx-fields.ctx-field--disabled label {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.ctx-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ctx-slider-row input[type=range] {
+  flex: 1;
+  accent-color: var(--accent, #7c6fff);
+  height: 4px;
+}
+
+.ctx-slider-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.75);
+  min-width: 40px;
+  text-align: right;
+}
+
+.ctx-hint {
+  font-size: 11px;
+  color: rgba(255,255,255,0.3);
+}
+
+/* Toggle switch */
+.ctx-toggle {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.ctx-toggle input { display: none; }
+
+.ctx-toggle__track {
+  width: 36px;
+  height: 20px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 10px;
+  transition: background 0.2s;
+  position: relative;
+}
+
+.ctx-toggle__track::after {
+  content: '';
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.5);
+  transition: transform 0.2s, background 0.2s;
+}
+
+.ctx-toggle input:checked + .ctx-toggle__track {
+  background: var(--accent, #7c6fff);
+}
+
+.ctx-toggle input:checked + .ctx-toggle__track::after {
+  transform: translateX(16px);
+  background: #fff;
+}
