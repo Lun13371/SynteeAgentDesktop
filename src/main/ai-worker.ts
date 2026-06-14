@@ -148,6 +148,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         content,
         {
           onStep: (step) => {
+            // Скрытые тулы (think, update_working_memory) — не шлём в UI
+            if (step.hidden) {
+              // update_working_memory сам шлёт отдельное сообщение через onUpdateWorkingMemory
+              return
+            }
             if (step.type === 'tool_call') {
               const ts = {
                 id: `${Date.now()}-${Math.random()}`,

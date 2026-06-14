@@ -61,25 +61,38 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     }
 
     const { stdout, stderr } = await execAsync(execCmd, execOpts)
-    const out = (stdout || '') + (stderr ? `\n[stderr]: ${stderr}` : '')
-    return { success: true, output: `[exit: 0]\n${out.trim() || '(нет вывода)'}` }
+    const stdoutClean = (stdout as string)?.trim() || ''
+    const stderrClean = (stderr as string)?.trim() || ''
+    let out = stdoutClean || '(нет вывода)'
+    if (stderrClean) out += `\n[stderr]:\n${stderrClean}`
+    return { success: true, output: `[exit: 0]\n${out}` }
   } catch (e: any) {
-    const out = [e.stdout, e.stderr].filter(Boolean).join('\n')
+    const stdoutPart = e.stdout?.trim() || ''
+    const stderrPart = e.stderr?.trim() || ''
     const exitCode = typeof e.code === 'number' ? e.code : 1
+    let out = `[exit: ${exitCode}]`
+    if (stdoutPart) out += `\n[stdout]:\n${stdoutPart}`
+    if (stderrPart) out += `\n[stderr]:\n${stderrPart}`
     return {
       success: false,
-      output: out.trim() ? `[exit: ${exitCode}]\n${out.trim()}` : `[exit: ${exitCode}]`,
-      error: e.message?.replace(/Command failed:.+\n?/, '').trim() || 'Команда завершилась с ошибкой',
+      output: out,
+      error: stderrPart || e.message?.replace(/Command failed:.+\n?/, '').trim() || 'Команда завершилась с ошибкой',
     }
   }
 }
 
-export function readFile(path: string, offset?: number, limit?: number): ToolResult {
+export function readFile(path: string, offset?: number, limit?: number, outlineOnly?: boolean): ToolResult {
   try {
     if (!existsSync(path)) return { success: false, output: '', error: 'Файл не найден: ' + path }
     const content = readFileSync(path, 'utf-8')
     const lines = content.split('\n')
     const totalLines = lines.length
+
+    // outline_only — возвращаем только структуру файла
+    if (outlineOnly) {
+      const outlineResult = getFileOutline(path)
+      return outlineResult
+    }
 
     if (offset !== undefined || limit !== undefined) {
       const from = Math.max(0, (offset ?? 1) - 1)  // offset 1-indexed
@@ -87,19 +100,34 @@ export function readFile(path: string, offset?: number, limit?: number): ToolRes
       const slice = lines.slice(from, from + count)
       const numbered = slice.map((l, i) => `${from + i + 1}|${l}`).join('\n')
       const hasMore = from + count < totalLines
+      const truncatedInfo = hasMore
+        ? `\n...[показано ${slice.length} из ${totalLines} строк | ещё ${totalLines - from - count} строк | используй offset=${from + count + 1} для продолжения]`
+        : ''
       return {
         success: true,
-        output: `[Файл: ${path} | Строки ${from + 1}-${from + slice.length} из ${totalLines}]\n${numbered}${hasMore ? `\n...[ещё ${totalLines - from - count} строк, используй offset=${from + count + 1}]` : ''}`,
+        output: `[Файл: ${path} | Строки ${from + 1}-${from + slice.length} из ${totalLines}]${truncatedInfo}\n${numbered}`,
       }
     }
 
-    // Без offset — читаем весь файл, но с предупреждением если большой
-    const MAX_CHARS = 8000
-    const truncated = content.length > MAX_CHARS
-    const out = content.slice(0, MAX_CHARS)
+    // Без offset — читаем первые 200 строк, если файл большой — добавляем авто-outline
+    const DEFAULT_LINES = 200
+    const truncated = totalLines > DEFAULT_LINES
+    const slice = lines.slice(0, DEFAULT_LINES)
+    const numbered = slice.map((l, i) => `${i + 1}|${l}`).join('\n')
+
+    let suffix = ''
+    if (truncated) {
+      suffix = `\n...[показано ${DEFAULT_LINES} из ${totalLines} строк | используй offset/limit для чтения по частям]`
+      // Авто-outline для больших файлов — агент сразу видит структуру
+      const ext = path.split('.').pop()?.toLowerCase()
+      if (['ts', 'tsx', 'js', 'jsx', 'py'].includes(ext ?? '')) {
+        const outlineResult = getFileOutline(path)
+        if (outlineResult.success) suffix += `\n\n${outlineResult.output}`
+      }
+    }
     return {
       success: true,
-      output: `[Файл: ${path} | ${totalLines} строк]\n${out}${truncated ? `\n...[обрезано, показано ${MAX_CHARS} из ${content.length} символов. Используй offset и limit для чтения по частям]` : ''}`,
+      output: `[Файл: ${path} | ${totalLines} строк]${suffix}\n${numbered}`,
     }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
@@ -798,13 +826,14 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: 'Прочитать файл. Без offset читает первые 8000 символов. С offset/limit читает конкретный диапазон строк (1-indexed) и показывает total_lines.',
+      description: 'Читает файл. Без offset — первые 200 строк + авто-outline структуры если файл большой. С offset/limit — точный диапазон строк. Всегда показывает [total_lines] и подсказку если файл обрезан.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Абсолютный путь к файлу' },
-          offset: { type: 'number', description: 'Начальная строка (1-indexed). Используй чтобы читать большие файлы по частям.' },
-          limit: { type: 'number', description: 'Кол-во строк для чтения (по умолч. 200)' },
+          offset: { type: 'number', description: 'Начальная строка (1-indexed). Для чтения по частям.' },
+          limit: { type: 'number', description: 'Кол-во строк (по умолч. 200). Увеличь до 500 если нужно больше.' },
+          outline_only: { type: 'boolean', description: 'true — вернуть только структуру файла (функции, классы, экспорты) без содержимого. Удобно чтобы сориентироваться в большом файле.' },
         },
         required: ['path'],
       },
@@ -969,20 +998,6 @@ export const TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
-      name: 'get_file_outline',
-      description: 'Структура файла: функции, классы, экспорты, импорты — без тела. Используй перед edit_file для больших файлов чтобы понять что где находится.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Абсолютный путь к файлу (.ts, .tsx, .js, .jsx, .py)' },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
       name: 'spawn_agent',
       description: 'Запустить суб-агента для выполнения подзадачи. Используй когда задачу лучше делегировать — параллельно или последовательно.',
       parameters: {
@@ -1006,6 +1021,23 @@ export const TOOL_SCHEMAS = [
           agent_id: { type: 'string', description: 'ID суб-агента из [AGENT:id] маркера' },
         },
         required: ['agent_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'think',
+      description: 'Внутренний монолог — используй ПЕРЕД сложными действиями. Напиши план: что нужно сделать, в каком порядке, какие файлы прочитать, какие риски. Результат не виден пользователю — только тебе. Не тратит его токены.',
+      parameters: {
+        type: 'object',
+        properties: {
+          thought: {
+            type: 'string',
+            description: 'Твои рассуждения, план действий, анализ ситуации.',
+          },
+        },
+        required: ['thought'],
       },
     },
   },
