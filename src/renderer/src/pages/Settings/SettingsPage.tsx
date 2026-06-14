@@ -29,7 +29,7 @@ const SECTIONS: Array<{ id: Section; label: string; icon: IconName }> = [
 export default function SettingsPage() {
   const [section, setSection] = useState<Section>('general')
   const { settings, load, set } = useSettingsStore()
-  const { setTheme, setAccentColor } = useUIStore()
+  const { setTheme, setAccentColor, setBgStyle } = useUIStore()
   const { add: toast } = useToast()
   const [apiKeyVisible, setApiKeyVisible] = useState(false)
   const [testingApi, setTestingApi] = useState(false)
@@ -38,9 +38,9 @@ export default function SettingsPage() {
 
   const handleSet = async (key: string, value: unknown) => {
     await set(key, value)
-    // Применяем тему сразу
     if (key === 'theme') setTheme(value as any)
     if (key === 'accentColor') setAccentColor(value as string)
+    if (key === 'bgStyle') setBgStyle(value as string)
   }
 
   const testApiKey = async () => {
@@ -272,15 +272,23 @@ function AISection({ settings, onSet, apiKeyVisible, setApiKeyVisible, testingAp
   )
 }
 
-function AppearanceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  const THEMES = [
-    { id: 'dark', label: 'Тёмная', color: '#1a1a1a' },
-    { id: 'light', label: 'Светлая', color: '#faf8f5' },
-    { id: 'midnight', label: 'Полночь', color: '#0a0e1a' },
-    { id: 'forest', label: 'Лес', color: '#0d1a0f' },
-  ]
-  const FONTS = ['Inter', 'Plus Jakarta Sans', 'Geist', 'DM Sans']
+const BG_STYLES = [
+  { id: 'particles', label: 'Частицы',   icon: '✦', desc: 'Точки с линиями' },
+  { id: 'matrix',    label: 'Матрица',   icon: '⌨', desc: 'Дождь символов' },
+  { id: 'waves',     label: 'Волны',     icon: '〜', desc: 'Плавные волны' },
+  { id: 'aurora',    label: 'Аврора',    icon: '◈', desc: 'Северное сияние' },
+  { id: 'fireflies', label: 'Светлячки', icon: '✺', desc: 'Мерцающие огни' },
+  { id: 'none',      label: 'Выкл',      icon: '✕', desc: 'Без анимации' },
+]
+const THEMES = [
+  { id: 'dark',     label: 'Тёмная',  color: '#1a1a1a' },
+  { id: 'light',    label: 'Светлая', color: '#faf8f5' },
+  { id: 'midnight', label: 'Полночь', color: '#0a0e1a' },
+  { id: 'forest',   label: 'Лес',     color: '#0d1a0f' },
+]
+const FONTS = ['Inter', 'Plus Jakarta Sans', 'Geist', 'DM Sans']
 
+function AppearanceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   return (
     <>
       <SectionTitle>Внешний вид</SectionTitle>
@@ -304,8 +312,21 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
           {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
         </select>
       </Field>
-      <Field label="Анимированный фон">
-        <Toggle value={!!settings['animatedBackground']} onChange={v => onSet('animatedBackground', v)} />
+      <Field label="Стиль фона" description="Анимация на заднем плане">
+        <div className="settings-bg-grid">
+          {BG_STYLES.map(s => (
+            <motion.button
+              key={s.id}
+              className={`settings-bg-btn ${(settings['bgStyle'] || 'particles') === s.id ? 'settings-bg-btn--active' : ''}`}
+              onClick={() => { onSet('bgStyle', s.id); onSet('animatedBackground', s.id !== 'none') }}
+              whileTap={{ scale: 0.94 }}
+              title={s.desc}
+            >
+              <span className="settings-bg-icon">{s.icon}</span>
+              <span className="settings-bg-label">{s.label}</span>
+            </motion.button>
+          ))}
+        </div>
       </Field>
       <Field label="Автосмена темы">
         <Toggle value={!!(settings['themeSchedule'] as any)?.enabled} onChange={v => onSet('themeSchedule', { ...((settings['themeSchedule'] as any) || {}), enabled: v })} />
