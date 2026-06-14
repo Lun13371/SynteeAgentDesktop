@@ -584,7 +584,7 @@ const MessageBubble = memo(function MessageBubble({
       {!isUser && <AssistantAvatar style={avatarStyle} />}
 
       {message.planData ? (
-        <>
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
           {message.content && message.content.trim() && (
             <MessageContent
               content={message.content}
@@ -615,7 +615,7 @@ const MessageBubble = memo(function MessageBubble({
             summary={message.planData.summary}
             filePath={message.planData.filePath}
           />
-        </>
+        </div>
       ) : (
       <MessageContent
         content={message.content}
