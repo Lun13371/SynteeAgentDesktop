@@ -402,15 +402,17 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     addMessage(userMsg)
     setTyping(true)
     setReplyTo([])
+    // Временный id сразу — чтобы пузырь появился до ответа chat.send
+    streamMsgIdRef.current = 'streaming-pending'
 
     const result = await window.syntee.chat.send({
       chatId,
       content: aiContent,
       displayContent: displayContent !== aiContent ? displayContent : undefined,
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
-      userMsgId: userMsg.id,  // синхронизируем id с БД
+      userMsgId: userMsg.id,
     })
-    // Устанавливаем streamMsgIdRef сразу — до первого токена/шага
+    // Обновляем на реальный id из БД
     if (result?.assistantMsgId) {
       streamMsgIdRef.current = result.assistantMsgId
     }
@@ -431,7 +433,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Собираем отображаемые сообщения (включая стриминг)
   const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0 ||
     liveIters.length > 0 || !!liveTextAfter
-  const showLiveBubble = hasLiveContent && !!streamMsgIdRef.current
+  // Показываем пузырь сразу при отправке (isTyping), не ждём первого токена
+  const showLiveBubble = (hasLiveContent || isTyping) && !!streamMsgIdRef.current
   const isStreaming = showLiveBubble
   const displayMessages = useMemo(() => showLiveBubble
     ? [...messages, {
