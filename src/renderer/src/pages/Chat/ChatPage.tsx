@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { v4 as uuid } from 'uuid'
@@ -125,7 +126,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (!text || text.length < 2) { setSelectionPopup(null); return }
       const anchor = sel?.anchorNode?.parentElement
       if (!anchor?.closest('.chat-messages')) { setSelectionPopup(null); return }
-      setSelectionPopup({ x: e.clientX, y: e.clientY - 48, text })
+      const range = sel?.getRangeAt(0)
+      const rect = range?.getBoundingClientRect()
+      if (!rect) return
+      setSelectionPopup({ x: rect.left + rect.width / 2, y: rect.top - 8, text })
     }
     const handleMouseDown = (e: MouseEvent) => {
       // не закрываем если клик на сам popup
@@ -609,8 +613,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onReasoningChange={handleReasoningChange}
           />
 
-          {/* Selection reply popup */}
-          {selectionPopup && (
+          {/* Selection reply popup — через portal чтобы fixed работал правильно */}
+          {selectionPopup && createPortal(
             <div
               className="selection-reply-popup"
               style={{ left: selectionPopup.x, top: selectionPopup.y }}
@@ -636,7 +640,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               >
                 Copy
               </button>
-            </div>
+            </div>,
+            document.body
           )}
         </main>
       </div>
