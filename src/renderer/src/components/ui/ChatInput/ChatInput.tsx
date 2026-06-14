@@ -10,6 +10,8 @@ import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import type { ApprovalMode } from '../../../../../shared/types'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
+import { useUIStore } from '../../../store/ui.store'
+import { playSendSound } from '../../../utils/sounds'
 import './ChatInput.css'
 
 interface ChatInputProps {
@@ -43,6 +45,8 @@ export default function ChatInput({
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
   const [slashIdx, setSlashIdx] = useState(0)
+  const [sendBurst, setSendBurst] = useState(false)
+  const { uiSounds, sendEffect } = useUIStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
 
@@ -97,6 +101,8 @@ export default function ChatInput({
     onInputChange?.('')
     setSlashCmds([])
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    if (uiSounds) playSendSound()
+    if (sendEffect) { setSendBurst(true); setTimeout(() => setSendBurst(false), 400) }
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -182,7 +188,7 @@ export default function ChatInput({
         )}
 
         <motion.button
-          className={`chat-input-action-btn chat-input-action-btn--${btnMode}`}
+          className={`chat-input-action-btn chat-input-action-btn--${btnMode}${sendBurst ? ' chat-input-action-btn--burst' : ''}`}
           onClick={btnMode === 'stop' ? onStop : btnMode === 'send' ? handleSend : undefined}
           whileTap={{ scale: 0.88 }}
           whileHover={{ scale: 1.08 }}
