@@ -9,6 +9,7 @@ interface UIStore {
   sidebarOpen: boolean
   animatedBackground: boolean
   bgStyle: string
+  msgAnim: string
   currentPage: Page
   isLoading: boolean
   // Actions
@@ -19,6 +20,7 @@ interface UIStore {
   setCurrentPage: (page: Page) => void
   setLoading: (loading: boolean) => void
   setBgStyle: (style: string) => void
+  setMsgAnim: (anim: string) => void
 }
 
 export const useUIStore = create<UIStore>((set) => ({
@@ -27,6 +29,7 @@ export const useUIStore = create<UIStore>((set) => ({
   sidebarOpen: true,
   animatedBackground: true,
   bgStyle: 'particles',
+  msgAnim: 'slide',
   currentPage: 'chat',
   isLoading: false,
 
@@ -37,4 +40,5 @@ export const useUIStore = create<UIStore>((set) => ({
   setCurrentPage: (currentPage) => set({ currentPage }),
   setLoading: (isLoading) => set({ isLoading }),
   setBgStyle: (bgStyle) => set({ bgStyle }),
+  setMsgAnim: (msgAnim) => set({ msgAnim }),
 }))
