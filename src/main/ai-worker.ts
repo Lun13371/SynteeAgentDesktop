@@ -229,7 +229,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             send({ type: 'thinking_done', chatId, msgId, thinkingMs: ms })
           },
           onDone: () => finalize(),
-          onError: () => finalize(),
+          onError: (err) => {
+            send({ type: 'error', chatId, error: err.message })
+          },
           onRateLimit: (waitSec) => {
             send({ type: 'rate_limit', chatId, waitSec })
           },
@@ -238,7 +240,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         systemPrompt
       )
     }
-  } catch {
-    finalize()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    send({ type: 'error', chatId, error: msg })
   }
 })
