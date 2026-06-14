@@ -17,7 +17,9 @@ export interface AgentStep {
   content: string
   success?: boolean
   imageUrl?: string
-  diff?: string}
+  diff?: string
+  callId?: string  // id tool_call из API — для матчинга call↔result при параллельных тулах
+}
 
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
@@ -166,23 +168,22 @@ export class Agent {
         messages.push({ role: 'assistant', content: response.content || '', tool_calls: response.tool_calls })
 
         // Все tool_calls этой итерации — выполняем параллельно
+        // Результаты собираем в Map чтобы потом запушить в правильном порядке
+        const resultMap = new Map<string, { contentForAI: string; callId: string; name: string }>()
+
         await Promise.all(response.tool_calls.map(async (call) => {
           const fn = (call as { function: { name: string; arguments: string } }).function
+          const callId = (call as { id: string }).id
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(fn.arguments) } catch {}
 
-          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name })
+          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId })
 
           const mode = callbacks.approvalMode || 'auto'
           if (mode === 'ask' && callbacks.onConfirm) {
             const approved = await callbacks.onConfirm(fn.name, args)
             if (!approved) {
-              messages.push({
-                role: 'tool',
-                tool_call_id: (call as { id: string }).id,
-                name: fn.name,
-                content: 'Действие отклонено пользователем.',
-              })
+              resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
               callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: 'Отклонено пользователем', success: false })
               return
             }
@@ -209,15 +210,24 @@ export class Agent {
             success: result.success,
             imageUrl,
             diff: (result as { diff?: string }).diff,
+            callId,
           })
 
+          resultMap.set(callId, { contentForAI, callId, name: fn.name })
+        }))
+
+        // Пушим tool results в том же порядке что и tool_calls — важно для провайдеров
+        for (const call of response.tool_calls) {
+          const callId = (call as { id: string }).id
+          const fn = (call as { function: { name: string; arguments: string } }).function
+          const r = resultMap.get(callId)
           messages.push({
             role: 'tool',
-            tool_call_id: (call as { id: string }).id,
+            tool_call_id: callId,
             name: fn.name,
-            content: contentForAI,
+            content: r?.contentForAI ?? '',
           })
-        }))
+        }
       } catch (err) {
         const error = err as { name?: string; status?: number; message?: string }
         // AbortError — тихо выходим

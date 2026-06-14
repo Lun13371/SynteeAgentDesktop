@@ -129,6 +129,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 success: step.success,
                 timestamp: Date.now(),
                 imageUrl: step.imageUrl,
+                callId: step.callId,
               }
               collectedSteps.push(ts)
               // Новая итерация только если между тулами был текст

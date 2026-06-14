@@ -278,27 +278,21 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           toolName: step.toolName, toolArgs: step.toolArgs,
           content: step.content, success: step.success,
           timestamp: Date.now(), imageUrl: step.imageUrl,
+          callId: step.callId,
         }
         setLiveSteps(prev => [...prev, newStep])
-        // Используем ref для синхронного чтения — prev в setState батчится и устаревает
         const iters = [...liveItersRef.current]
         const last = iters[iters.length - 1]
-        const textBetween = liveTextAfterRef.current  // текст между предыдущим тулчейном и этим тулом
+        const textBetween = liveTextAfterRef.current
         let newIters: typeof iters
-        // Новая итерация только если:
-        // 1. Итераций ещё нет
-        // 2. Между тулами был текст (textBetween не пустой)
-        // В остальных случаях — добавляем в текущую итерацию (тул за тулом = один тулчейн)
         if (!last || textBetween.trim()) {
           newIters = [...iters, { textBefore: textBetween, steps: [newStep] }]
         } else {
-          // Та же итерация — тулы идут подряд без текста
           iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
           newIters = iters
         }
         liveItersRef.current = newIters
         setLiveIters(newIters)
-        // Сбрасываем liveTextAfter — он теперь в итерации как textBefore
         liveTextAfterRef.current = ''
         setLiveTextAfter('')
       } else if (step.type === 'tool_result') {
@@ -308,11 +302,32 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           toolName: step.toolName, toolArgs: step.toolArgs,
           content: step.content, success: step.success,
           timestamp: Date.now(), imageUrl: step.imageUrl,
+          diff: (step as { diff?: string }).diff,
+          callId: step.callId,
         }
         setLiveSteps(prev => [...prev, newStep])
         if (liveItersRef.current.length === 0) return
         const iters = [...liveItersRef.current]
-        iters[iters.length - 1] = { ...iters[iters.length - 1], steps: [...iters[iters.length - 1].steps, newStep] }
+
+        // Матчим result в правильную итерацию по callId или toolName
+        // а не просто в последнюю — это фикс для параллельных тулов
+        let targetIterIdx = iters.length - 1  // fallback: последняя
+        if (step.callId) {
+          // Ищем итерацию где есть tool_call с тем же callId
+          const idx = iters.findIndex(iter =>
+            iter.steps.some(s => s.type === 'tool_call' && s.callId === step.callId)
+          )
+          if (idx !== -1) targetIterIdx = idx
+        } else if (step.toolName) {
+          // Fallback: ищем итерацию с tool_call того же toolName без result
+          const idx = iters.findIndex(iter =>
+            iter.steps.some(s => s.type === 'tool_call' && s.toolName === step.toolName) &&
+            !iter.steps.some(s => s.type === 'tool_result' && s.toolName === step.toolName)
+          )
+          if (idx !== -1) targetIterIdx = idx
+        }
+
+        iters[targetIterIdx] = { ...iters[targetIterIdx], steps: [...iters[targetIterIdx].steps, newStep] }
         liveItersRef.current = iters
         setLiveIters(iters)
       }
