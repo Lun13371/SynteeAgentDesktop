@@ -53,7 +53,7 @@ export default function ChatInput({
   const [sendBurst, setSendBurst] = useState(false)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const plusBtnRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 })
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
   const { uiSounds, sendEffect } = useUIStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -61,13 +61,9 @@ export default function ChatInput({
   // Закрытие + меню по клику снаружи
   useEffect(() => {
     if (!plusMenuOpen) return
-    const handler = (e: MouseEvent) => {
-      if (plusBtnRef.current && !plusBtnRef.current.closest('.chat-input-plus-wrap')?.contains(e.target as Node)) {
-        setPlusMenuOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    const close = () => setPlusMenuOpen(false)
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
   }, [plusMenuOpen])
 
   useEffect(() => {
@@ -212,11 +208,15 @@ export default function ChatInput({
             ref={plusBtnRef}
             className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
             onClick={() => {
-              if (!plusMenuOpen && plusBtnRef.current) {
-                const rect = plusBtnRef.current.getBoundingClientRect()
-                // top считаем как расстояние снизу экрана — меню растёт вверх
-                setMenuPos({ x: rect.left, y: window.innerHeight - rect.top + 6 })
-              }
+              if (!plusBtnRef.current) return
+              const r = plusBtnRef.current.getBoundingClientRect()
+              const spaceBelow = window.innerHeight - r.bottom
+              const openUp = spaceBelow < 120
+              setMenuPos({
+                top: openUp ? r.top - 8 : r.bottom + 6,
+                left: r.left,
+                openUp,
+              })
               setPlusMenuOpen(v => !v)
             }}
             title="Прикрепить / Режим"
@@ -227,19 +227,22 @@ export default function ChatInput({
           </button>
 
           <AnimatePresence>
-            {plusMenuOpen && createPortal(
+            {plusMenuOpen && menuPos && createPortal(
               <motion.div
                 className="chat-input-plus-menu"
                 style={{
                   position: 'fixed',
-                  left: menuPos.x,
-                  bottom: menuPos.y,
+                  left: menuPos.left,
+                  ...(menuPos.openUp
+                    ? { bottom: window.innerHeight - menuPos.top, top: 'auto' }
+                    : { top: menuPos.top }),
                   zIndex: 9999,
                 }}
-                initial={{ opacity: 0, y: 6, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 6, scale: 0.95 }}
+                initial={{ opacity: 0, y: menuPos.openUp ? 6 : -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: menuPos.openUp ? 6 : -6 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
+                onMouseDown={e => e.stopPropagation()}
               >
                 <button className="chat-input-plus-item" onClick={() => { onAttach?.(); setPlusMenuOpen(false) }}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
