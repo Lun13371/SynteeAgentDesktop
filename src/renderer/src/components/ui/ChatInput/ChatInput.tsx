@@ -183,30 +183,6 @@ export default function ChatInput({
           ))}
         </div>
       )}
-      <AnimatePresence>
-        {planningMode && (
-          <motion.div
-            className="chat-input-planning-badge"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-            </svg>
-            Режим планирования
-            <button className="chat-input-planning-badge-close" onClick={() => onPlanningModeChange?.(false)}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
       <div className="chat-input-box glass" ref={boxRef}>
         {/* + кнопка с меню */}
         <div className="chat-input-plus-wrap" ref={plusWrapRef}>
@@ -217,9 +193,12 @@ export default function ChatInput({
               console.log('[PLUS] clicked, open was:', plusMenuOpen)
               if (!plusBtnRef.current) return
               const r = plusBtnRef.current.getBoundingClientRect()
-              const spaceBelow = window.innerHeight - r.bottom
-              const openUp = spaceBelow < 120
-              setMenuPos({ top: openUp ? r.top - 8 : r.bottom + 6, left: r.left, openUp })
+              const menuH = 90 // примерная высота меню
+              setMenuPos({
+                top: r.top - menuH - 8,
+                left: r.left,
+                openUp: true,
+              })
               setPlusMenuOpen(v => !v)
             }}
             title="Прикрепить / Режим"
@@ -229,23 +208,16 @@ export default function ChatInput({
             </svg>
           </button>
 
-          <AnimatePresence>
-            {plusMenuOpen && menuPos && createPortal(
+          {plusMenuOpen && menuPos && createPortal(
+            <AnimatePresence>
               <motion.div
                 ref={menuRef}
                 className="chat-input-plus-menu"
-                style={{
-                  position: 'fixed',
-                  left: menuPos.left,
-                  ...(menuPos.openUp
-                    ? { bottom: window.innerHeight - menuPos.top, top: 'auto' }
-                    : { top: menuPos.top }),
-                  zIndex: 9999,
-                }}
-                initial={{ opacity: 0, y: menuPos.openUp ? 6 : -6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: menuPos.openUp ? 6 : -6 }}
-                transition={{ duration: 0.15, ease: 'easeOut' }}
+                style={{ position: 'fixed', left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
+                initial={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
+                animate={{ opacity: 1, scale: 1, y: 0, transformOrigin: 'bottom left' }}
+                exit={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
+                transition={{ type: 'spring', stiffness: 480, damping: 28 }}
                 onMouseDown={e => e.stopPropagation()}
               >
                 <button className="chat-input-plus-item" onClick={() => { onAttach?.(); setPlusMenuOpen(false) }}>
@@ -255,28 +227,51 @@ export default function ChatInput({
                   Прикрепить файл
                 </button>
                 <div className="chat-input-plus-divider" />
-                <button
-                  className={`chat-input-plus-item${planningMode ? ' chat-input-plus-item--active' : ''}`}
-                  onClick={() => { onPlanningModeChange?.(!planningMode); setPlusMenuOpen(false) }}
-                >
+                <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onPlanningModeChange?.(!planningMode) }}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                     <polyline points="14 2 14 8 20 8"/>
                     <line x1="16" y1="13" x2="8" y2="13"/>
                     <line x1="16" y1="17" x2="8" y2="17"/>
                   </svg>
-                  Режим планирования
-                  {planningMode && (
-                    <svg className="chat-input-plus-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="20 6 9 17 4 12"/>
-                    </svg>
-                  )}
-                </button>
-              </motion.div>,
-              document.body
-            )}
-          </AnimatePresence>
+                  Планирование
+                  <motion.button
+                    className={`plus-menu-toggle${planningMode ? ' plus-menu-toggle--on' : ''}`}
+                    onClick={e => { e.stopPropagation(); onPlanningModeChange?.(!planningMode) }}
+                    whileTap={{ scale: 0.93 }}
+                  >
+                    <motion.span
+                      className="plus-menu-toggle-thumb"
+                      animate={{ x: planningMode ? 16 : 2 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                    />
+                  </motion.button>
+                </div>
+              </motion.div>
+            </AnimatePresence>,
+            document.body
+          )}
         </div>
+
+        <AnimatePresence>
+          {planningMode && (
+            <motion.div
+              className="chat-input-planning-badge"
+              initial={{ opacity: 0, scale: 0.8, width: 0 }}
+              animate={{ opacity: 1, scale: 1, width: 'auto' }}
+              exit={{ opacity: 0, scale: 0.8, width: 0 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+              onClick={() => onPlanningModeChange?.(false)}
+              title="Выключить режим планирования"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+              </svg>
+              План
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <textarea
           ref={textareaRef}

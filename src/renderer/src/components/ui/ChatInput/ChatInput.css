@@ -254,21 +254,58 @@
   margin: 3px 6px;
 }
 
-/* ── Бейдж режима планирования ── */
+.chat-input-plus-item--toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Toggle внутри меню */
+.plus-menu-toggle {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: none;
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  position: relative;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.plus-menu-toggle--on { background: var(--accent); }
+.plus-menu-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  display: block;
+}
+
+/* Компактный бейдж планирования — внутри chat-input-box */
 .chat-input-planning-badge {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 10px 5px 12px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  border-radius: 8px;
-  margin-bottom: 6px;
-  font-size: 12px;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 20px;
+  font-size: 11px;
   color: var(--accent);
-  overflow: hidden;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
 }
-
+.chat-input-planning-badge:hover {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
 .chat-input-planning-badge svg {
   flex-shrink: 0;
 }
