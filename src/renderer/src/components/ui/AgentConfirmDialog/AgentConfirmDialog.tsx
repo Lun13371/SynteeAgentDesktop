@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
+import { playConfirmSound } from '../../../utils/sounds'
 import './AgentConfirmDialog.css'
 
 interface ConfirmRequest {
@@ -27,6 +28,7 @@ export default function AgentConfirmDialog() {
   useEffect(() => {
     window.syntee.agent.onConfirm((data) => {
       setQueue(q => [...q, data as ConfirmRequest])
+      playConfirmSound()
     })
   }, [])
 
