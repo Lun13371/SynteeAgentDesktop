@@ -7,6 +7,7 @@ import { parentPort, workerData } from 'worker_threads'
 import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
 import { buildSystemPrompt } from '../core/prompts/buildSystemPrompt'
+import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '../core/context/contextManager'
 
 const storeData: Record<string, unknown> = workerData.storeData
 
@@ -85,6 +86,30 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   let currentIterSteps: unknown[] = []
   let pendingTextAfter = ''  // текст после последнего тулчейна
 
+  // Live token counter — считаем накопленный контекст агента
+  const contextWindow = getModelContextWindow(storeData)
+  const sysPromptTokens = estimateTokens(systemPrompt) + 4
+  // Токены истории (начальный снапшот)
+  const historyBaseTokens = history.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0)
+  let toolResultTokensAccum = 0  // накопленные токены tool results за сессию
+
+  function sendLiveContextUsage() {
+    const estimated = historyBaseTokens + sysPromptTokens + TOOL_SCHEMAS_OVERHEAD + toolResultTokensAccum + estimateTokens(fullText) + 100
+    const pct = Math.min(100, Math.round(estimated / contextWindow * 100))
+    const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+    send({
+      type: 'context_usage',
+      pct, estimated, limit: contextWindow, status,
+      breakdown: {
+        history: historyBaseTokens,
+        system: sysPromptTokens,
+        tools: TOOL_SCHEMAS_OVERHEAD,
+        toolResults: toolResultTokensAccum,
+        answer: estimateTokens(fullText),
+      },
+    })
+  }
+
   const flushIter = () => {
     if (currentIterSteps.length > 0) {
       collectedIters.push({ textBefore: currentIterTextBefore, steps: currentIterSteps })
@@ -113,8 +138,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       const agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
-      // Передаём историю как нормальный массив сообщений в userMessage
-      // Agent.run добавит их в messages перед user-запросом
       await agent.run(
         content,
         {
@@ -132,13 +155,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 callId: step.callId,
               }
               collectedSteps.push(ts)
-              // Новая итерация только если между тулами был текст
               if (pendingTextAfter.trim()) {
                 flushIter()
                 currentIterTextBefore = pendingTextAfter
                 pendingTextAfter = ''
               } else if (currentIterSteps.length === 0) {
-                // Первый тул — берём накопленный текст как textBefore
                 currentIterTextBefore = pendingTextAfter
                 pendingTextAfter = ''
               }
@@ -155,10 +176,17 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 timestamp: Date.now(),
                 imageUrl: step.imageUrl,
                 diff: (step as { diff?: string }).diff,
+                callId: step.callId,
               }
               collectedSteps.push(ts)
               currentIterSteps.push(ts)
               send({ type: 'step', chatId, msgId, step })
+
+              // Live обновление token counter после каждого tool result
+              const resultTokens = estimateTokens(step.content || '') + 4
+              toolResultTokensAccum += resultTokens
+              sendLiveContextUsage()
+
             } else if (step.type === 'thought') {
               if (!thinkingStartMs) thinkingStartMs = Date.now()
               const thoughtStr = typeof step.content === 'string' ? step.content : String(step.content ?? '')
@@ -202,10 +230,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         agentSettings.maxSteps,
         undefined,
         systemPrompt,
-        history,  // processedHistory (после rolling window) как нормальные messages
+        history,
       )
     } else {
-      // Обычный стриминг без tools — тоже используем processedHistory
+      // Обычный стриминг без tools
       const contextMessages = history.map(m => ({
         role: m.role as 'user' | 'assistant' | 'system',
         content: m.content,
@@ -242,7 +270,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       )
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    send({ type: 'error', chatId, error: msg })
+    const errMsg = err instanceof Error ? err.message : String(err)
+    send({ type: 'error', chatId, error: errMsg })
   }
 })

@@ -329,6 +329,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec })
           break
 
+        case 'context_usage':
+          win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+            pct: msg.pct,
+            estimated: msg.estimated,
+            limit: msg.limit,
+            status: msg.status,
+            compressed: contextCompressed,
+            breakdown: msg.breakdown,
+          })
+          break
+
         case 'done':
           sendDone(
             (msg.fullText as string) || bufferedText,

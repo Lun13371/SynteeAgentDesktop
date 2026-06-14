@@ -34,7 +34,7 @@ export function estimateMessagesTokens(messages: Array<{ role: string; content: 
 // system prompt buildSystemPrompt ≈ 500-700 токенов (считаем точнее ниже)
 // tool schemas (20+ тулов) ≈ 3500-4000 токенов
 // служебные структуры OpenAI API ≈ 100 токенов
-const TOOL_SCHEMAS_OVERHEAD = 3800  // токены на tool schemas (постоянный overhead)
+export const TOOL_SCHEMAS_OVERHEAD = 3800  // токены на tool schemas (постоянный overhead)
 const API_OVERHEAD = 100            // служебные токены протокола
 
 export function calcSystemPromptTokens(systemPrompt: string): number {
@@ -220,7 +220,7 @@ export function calcTokenUsage(
 ): TokenUsage {
   const historyTokens = estimateMessagesTokens(messages)
   const systemPromptTokens = opts.systemPrompt ? calcSystemPromptTokens(opts.systemPrompt) : 600
-  const toolSchemasTokens = opts.includeToolSchemas !== false ? TOOL_SCHEMAS_OVERHEAD : 0
+  const toolSchemasTokens = opts.includeToolSchemas === true ? TOOL_SCHEMAS_OVERHEAD : 0
   const currentMsgTokens = opts.currentMsgTokens ?? 0
 
   const estimated = historyTokens + systemPromptTokens + toolSchemasTokens + currentMsgTokens + API_OVERHEAD
