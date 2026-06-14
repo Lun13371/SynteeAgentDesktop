@@ -130,11 +130,11 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="settings-section-title">{children}</h2>
 }
 
-function Field({ label, description, children }: {
-  label: string; description?: string; children: React.ReactNode
+function Field({ label, description, children, block }: {
+  label: string; description?: string; children: React.ReactNode; block?: boolean
 }) {
   return (
-    <div className="settings-field">
+    <div className={`settings-field${block ? ' settings-field--block' : ''}`}>
       <div className="settings-field-label">
         <span>{label}</span>
         {description && <p className="settings-field-desc">{description}</p>}
@@ -357,7 +357,7 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
           {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
         </select>
       </Field>
-      <Field label="Стиль фона" description="Анимация на заднем плане">
+      <Field label="Стиль фона" description="Анимация на заднем плане" block>
         <div className="settings-bg-grid">
           {BG_STYLES.map(s => (
             <motion.button
@@ -373,7 +373,7 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
           ))}
         </div>
       </Field>
-      <Field label="Анимация сообщений" description="Наведи на карточку чтобы увидеть превью">
+      <Field label="Анимация сообщений" description="Наведи на карточку чтобы увидеть превью" block>
         <div className="anim-preview-grid">
           {Object.entries(MSG_ANIM_VARIANTS).map(([id]) => (
             <AnimPreview

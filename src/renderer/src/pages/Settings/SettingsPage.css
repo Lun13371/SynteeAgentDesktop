@@ -88,6 +88,16 @@
   border-bottom: 1px solid var(--border);
 }
 
+.settings-field--block {
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-field--block .settings-field-control {
+  width: 100%;
+  flex-shrink: 1;
+}
+
 .settings-field:last-child { border-bottom: none; }
 
 .settings-field-label {
