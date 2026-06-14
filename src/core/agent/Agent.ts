@@ -161,6 +161,12 @@ export class Agent {
           this.role,
           (token) => callbacks.onStep({ type: 'answer', content: token }),
           callbacks.onContextCounted,
+          (idx, name, partialArgs) => callbacks.onStep({
+            type: 'tool_call_streaming',
+            toolName: name,
+            content: partialArgs,
+            callId: `streaming-${idx}`,
+          } as never),
         )
 
         // Abort во время запроса

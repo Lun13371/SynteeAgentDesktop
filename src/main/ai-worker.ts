@@ -161,7 +161,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onStep: (step) => {
             // Скрытые тулы (think, update_working_memory) — не шлём в UI
             if (step.hidden) {
-              // update_working_memory сам шлёт отдельное сообщение через onUpdateWorkingMemory
+              return
+            }
+            // Streaming tool call — шлём partial args в UI (не сохраняем в steps)
+            if ((step as { type: string }).type === 'tool_call_streaming') {
+              send({ type: 'tool_call_streaming', chatId, msgId,
+                toolName: step.toolName,
+                partialArgs: step.content,
+                callId: step.callId,
+              })
               return
             }
             if (step.type === 'tool_call') {

@@ -339,6 +339,7 @@ export class AIClient {
     role: 'main' | 'subagent' = 'main',
     onToken?: (token: string) => void,
     onContextCounted?: (promptTokens: number) => void,
+    onToolCallChunk?: (idx: number, name: string, partialArgs: string) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
@@ -401,16 +402,19 @@ export class AIClient {
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
               if (!toolCallMap[idx]) {
-                // Первый чанк — инициализируем со всеми доступными полями
                 toolCallMap[idx] = {
                   id: tc.id ?? '',
                   name: tc.function?.name ?? '',
                   arguments: tc.function?.arguments ?? '',
                 }
               } else {
-                // Последующие чанки — id/name не меняем, только arguments накапливаем
                 if (tc.id && !toolCallMap[idx].id) toolCallMap[idx].id = tc.id
+                if (tc.function?.name && !toolCallMap[idx].name) toolCallMap[idx].name = tc.function.name
                 if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments
+              }
+              // Стримим частичные аргументы в реальном времени
+              if (onToolCallChunk && toolCallMap[idx].name) {
+                onToolCallChunk(idx, toolCallMap[idx].name, toolCallMap[idx].arguments)
               }
             }
           }
