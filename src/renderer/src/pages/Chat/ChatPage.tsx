@@ -79,6 +79,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [flushTokens])
   // liveSteps оставляем только для финального сохранения в БД
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
+  // streaming tool calls — partial args по callId
+  const [streamingTools, setStreamingTools] = useState<Record<string, { toolName: string; partialArgs: string }>>({})
+  const streamingToolsRef = useRef<Record<string, { toolName: string; partialArgs: string }>>({})
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
@@ -229,6 +232,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveTextAfter('')
       playDoneSound()
       setLiveThinking(null)
+      streamingToolsRef.current = {}
+      setStreamingTools({})
       if (data.chatId === currentChatIdRef.current) {
         addMessage(data.message)
         window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
@@ -337,7 +342,17 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }
     })
 
-    return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep() }
+    const offToolStreaming = window.syntee.on('agent:tool_streaming', (data: {
+      msgId: string; chatId: string; toolName: string; partialArgs: string; callId: string
+    }) => {
+      if (!streamMsgIdRef.current) return
+      if (data.msgId !== streamMsgIdRef.current) return
+      const key = data.callId ?? data.toolName
+      streamingToolsRef.current = { ...streamingToolsRef.current, [key]: { toolName: data.toolName, partialArgs: data.partialArgs } }
+      setStreamingTools({ ...streamingToolsRef.current })
+    })
+
+    return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep(); offToolStreaming() }
   }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
   // ── АВТОСКРОЛЛ — плавный 60fps через rAF + ResizeObserver ──────────────────
@@ -546,6 +561,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
         liveIters,
         liveTextAfter,
+        streamingTools: Object.keys(streamingTools).length > 0 ? streamingTools : undefined,
       }]
     : messages
   // eslint-disable-next-line react-hooks/exhaustive-deps

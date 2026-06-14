@@ -295,6 +295,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId })
           break
 
+        case 'tool_call_streaming':
+          win?.webContents.send('agent:tool_streaming', {
+            msgId: msg.msgId,
+            chatId: msg.chatId,
+            toolName: msg.toolName,
+            partialArgs: msg.partialArgs,
+            callId: msg.callId,
+          })
+          break
+
         case 'spawn_agent': {
           // Worker хочет запустить суб-агента — делаем через AgentManager
           ;(async () => {
