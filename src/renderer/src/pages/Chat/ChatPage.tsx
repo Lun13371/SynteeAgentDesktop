@@ -31,6 +31,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
+  const [contextUsage, setContextUsage] = useState<{ pct: number; status: 'ok' | 'warn' | 'critical'; compressed: boolean } | null>(null)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isAgentRunning, setIsAgentRunning] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
@@ -239,6 +240,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setTimeout(() => setRateLimitSec(0), data.waitSec * 1000)
     })
 
+    const offContextUsage = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, (data: { pct: number; status: 'ok' | 'warn' | 'critical'; compressed: boolean }) => {
+      setContextUsage(data)
+    })
+
     // Шаги агента — только от основного потока (фильтруем по msgId)
     const offStep = window.syntee.on('agent:step', (step: {
       type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string; msgId?: string
@@ -302,7 +307,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }
     })
 
-    return () => { offToken(); offDone(); offError(); offRateLimit(); offStep() }
+    return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep() }
   }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
   // Автоскролл — virtualizer scrollToIndex для последнего сообщения
@@ -567,6 +572,17 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                 })}
               </div>
               <div ref={bottomRef} />
+            </div>
+          )}
+
+          {contextUsage && contextUsage.status !== 'ok' && (
+            <div className={`context-usage-bar context-usage-bar--${contextUsage.status}`}>
+              <div className="context-usage-bar__fill" style={{ width: `${contextUsage.pct}%` }} />
+              <span className="context-usage-bar__label">
+                {contextUsage.compressed && '⚡ '}
+                Контекст: {contextUsage.pct}%
+                {contextUsage.status === 'critical' && ' — критично'}
+              </span>
             </div>
           )}
 

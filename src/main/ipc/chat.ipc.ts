@@ -13,6 +13,10 @@ import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { AIClient } from '../../core/ai/AIClient'
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
+import {
+  applyRollingWindow, calcTokenUsage, getContextSettings,
+  type ChatMessage,
+} from '../../core/context/contextManager'
 import type { Message, AgentSettings } from '../../shared/types'
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -92,6 +96,28 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const history = params.incognito ? [] : getMessages(params.chatId)
     const assistantMsgId = uuid()
 
+    // ── Context management ─────────────────────────────────────────────────
+    const ctxSettings = getContextSettings(storeData)
+    const rawHistory: ChatMessage[] = history.map(m => ({ role: m.role as ChatMessage['role'], content: m.content }))
+
+    // Rolling window — сжимаем если включено
+    let processedHistory = rawHistory
+    let contextCompressed = false
+    if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
+      const result = applyRollingWindow(rawHistory, ctxSettings)
+      if (result.compressed) {
+        processedHistory = result.messages
+        contextCompressed = true
+      }
+    }
+
+    // Token usage — считаем и шлём во фронт
+    if (ctxSettings.tokenCounterEnabled) {
+      const usage = calcTokenUsage(processedHistory, ctxSettings.contextLimitTokens)
+      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, { pct: usage.pct, estimated: usage.estimated, limit: usage.limit, status: usage.status, compressed: contextCompressed })
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
     // Убиваем предыдущий воркер если есть
     if (currentWorker) {
       ;(currentWorker as unknown as { _terminated?: boolean })._terminated = true
@@ -105,6 +131,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       'temperature', 'maxTokens', 'agentSettings', 'integrations',
       'voiceId', 'embeddingModel',
       'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
+      'contextSettings',
     ]
     for (const k of storeKeys) {
       const v = store.get(k)
@@ -315,7 +342,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       chatId: params.chatId,
       msgId: assistantMsgId,
       content: params.content,
-      history: history.map(m => ({ role: m.role, content: m.content })),
+      history: processedHistory,
       systemPrompt: getSystemPrompt(),
       enableTools: agentSettings.enableTools,
       incognito: !!params.incognito,

@@ -71,6 +71,7 @@ export const IPC_EVENTS = {
   CHAT_STREAM_TOKEN: 'chat:stream:token',
   CHAT_STREAM_DONE: 'chat:stream:done',
   CHAT_STREAM_ERROR: 'chat:stream:error',
+  CONTEXT_USAGE: 'context:usage',
   MEMORY_MEMORIZED: 'memory:memorized',
   AGENT_ACTION: 'agent:action',
   AGENT_PERMISSION_REQUEST: 'agent:permission:request',
