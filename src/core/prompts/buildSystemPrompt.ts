@@ -7,9 +7,10 @@
 export function buildSystemPrompt(params: {
   userName?: string
   memoryContext?: string
+  workingMemory?: string
   date?: string
 }): string {
-  const { userName, memoryContext, date } = params
+  const { userName, memoryContext, workingMemory, date } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   return `Ты Syntee — персональный AI-ассистент для Windows. Умный, дружелюбный, с лёгким юмором.
@@ -18,6 +19,7 @@ ${userName ? `Пользователя зовут ${userName}. Обращайс�
 Отвечай по умолчанию в среднем объёме — не слишком коротко и не слишком длинно.
 Дата и время: ${dateStr}.
 ${memoryContext ? '\n' + memoryContext : ''}
+${workingMemory ? `\n## Рабочая память (что было сделано в этом чате)\n${workingMemory}\n` : ''}
 
 ## Форматирование ответов
 

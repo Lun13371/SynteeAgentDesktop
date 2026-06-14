@@ -1009,4 +1009,26 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'update_working_memory',
+      description: 'Обновляет рабочую память чата — заметки о проекте, сделанных изменениях, текущем состоянии. Вызывай в конце сессии чтобы запомнить важное для следующих сообщений. Максимум ~2000 токенов.',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: {
+            type: 'string',
+            description: 'Новое содержимое рабочей памяти. Полностью заменяет старое. Пиши компактно: что сделано, текущее состояние, важные факты о проекте.',
+          },
+          mode: {
+            type: 'string',
+            enum: ['replace', 'append'],
+            description: 'replace — полная замена (по умолчанию), append — добавить к существующему.',
+          },
+        },
+        required: ['content'],
+      },
+    },
+  },
 ]
