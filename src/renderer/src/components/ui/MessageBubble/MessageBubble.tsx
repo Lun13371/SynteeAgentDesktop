@@ -13,8 +13,51 @@ import ToolChain from '../ToolChain/ToolChain'
 import AgentCard from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
+import { useUIStore } from '../../../store/ui.store'
 import 'katex/dist/katex.min.css'
 import './MessageBubble.css'
+
+// Варианты анимации сообщений
+export const MSG_ANIM_VARIANTS: Record<string, {
+  initial: object; animate: object; transition: object; label: string; desc: string
+}> = {
+  slide: {
+    label: 'Слайд', desc: 'Снизу вверх',
+    initial: { opacity: 0, y: 18 },
+    animate: { opacity: 1, y: 0 },
+    transition: { duration: 0.2, ease: 'easeOut' },
+  },
+  fade: {
+    label: 'Плавно', desc: 'Плавное появление',
+    initial: { opacity: 0 },
+    animate: { opacity: 1 },
+    transition: { duration: 0.3, ease: 'easeOut' },
+  },
+  pop: {
+    label: 'Поп', desc: 'Пружинный эффект',
+    initial: { opacity: 0, scale: 0.88 },
+    animate: { opacity: 1, scale: 1 },
+    transition: { type: 'spring', stiffness: 420, damping: 26 },
+  },
+  swing: {
+    label: 'Качели', desc: 'С боку',
+    initial: { opacity: 0, x: -24, rotate: -3 },
+    animate: { opacity: 1, x: 0, rotate: 0 },
+    transition: { type: 'spring', stiffness: 380, damping: 28 },
+  },
+  rise: {
+    label: 'Подъём', desc: 'Снизу с блюром',
+    initial: { opacity: 0, y: 32, filter: 'blur(6px)' },
+    animate: { opacity: 1, y: 0, filter: 'blur(0px)' },
+    transition: { duration: 0.28, ease: [0.22, 1, 0.36, 1] },
+  },
+  none: {
+    label: 'Нет', desc: 'Без анимации',
+    initial: {},
+    animate: {},
+    transition: { duration: 0 },
+  },
+}
 
 interface MessageBubbleProps {
   message: Message
@@ -490,12 +533,15 @@ const MessageBubble = memo(function MessageBubble({
     onReadAloud?.(message.content)
   }, [message.content, onReadAloud])
 
+  const { msgAnim } = useUIStore()
+  const anim = MSG_ANIM_VARIANTS[msgAnim] ?? MSG_ANIM_VARIANTS.slide
+
   return (
     <motion.div
       className={`message-wrap ${isUser ? 'message-wrap--user' : 'message-wrap--assistant'} ${searchQuery ? 'message-wrap--search-match' : ''}`}
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.15, ease: 'easeOut' }}  // CSS ease вместо spring — в 3x быстрее
+      initial={anim.initial}
+      animate={anim.animate}
+      transition={anim.transition}
     >
       {!isUser && (
         <div className="message-avatar">

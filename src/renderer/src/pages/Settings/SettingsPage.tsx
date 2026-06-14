@@ -8,6 +8,7 @@ import IconButton from '../../components/ui/IconButton/IconButton'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
+import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
 import './SettingsPage.css'
 
 type Section =
@@ -29,7 +30,7 @@ const SECTIONS: Array<{ id: Section; label: string; icon: IconName }> = [
 export default function SettingsPage() {
   const [section, setSection] = useState<Section>('general')
   const { settings, load, set } = useSettingsStore()
-  const { setTheme, setAccentColor, setBgStyle } = useUIStore()
+  const { setTheme, setAccentColor, setBgStyle, setMsgAnim } = useUIStore()
   const { add: toast } = useToast()
   const [apiKeyVisible, setApiKeyVisible] = useState(false)
   const [testingApi, setTestingApi] = useState(false)
@@ -41,6 +42,7 @@ export default function SettingsPage() {
     if (key === 'theme') setTheme(value as any)
     if (key === 'accentColor') setAccentColor(value as string)
     if (key === 'bgStyle') setBgStyle(value as string)
+    if (key === 'msgAnim') setMsgAnim(value as string)
   }
 
   const testApiKey = async () => {
@@ -272,6 +274,49 @@ function AISection({ settings, onSet, apiKeyVisible, setApiKeyVisible, testingAp
   )
 }
 
+// Превью анимации — мини-демо при наведении
+function AnimPreview({ animId, active, onClick }: { animId: string; active: boolean; onClick: () => void }) {
+  const [key, setKey] = useState(0)
+  const v = MSG_ANIM_VARIANTS[animId]
+
+  return (
+    <button
+      className={`anim-preview-btn ${active ? 'anim-preview-btn--active' : ''}`}
+      onClick={onClick}
+      onMouseEnter={() => setKey(k => k + 1)}
+      title={v.desc}
+    >
+      <div className="anim-preview-canvas">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={key}
+            className="anim-preview-bubble anim-preview-bubble--ai"
+            initial={v.initial}
+            animate={v.animate}
+            transition={v.transition}
+          >
+            Ассистент
+          </motion.div>
+        </AnimatePresence>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={key + 1000}
+            className="anim-preview-bubble anim-preview-bubble--user"
+            initial={v.initial}
+            animate={v.animate}
+            transition={{ ...v.transition, delay: (v.transition as any).duration ? ((v.transition as any).duration as number) * 0.4 : 0.08 }}
+          >
+            Вы
+          </motion.div>
+        </AnimatePresence>
+      </div>
+      <span className="anim-preview-label">{v.label}</span>
+      <span className="anim-preview-desc">{v.desc}</span>
+    </button>
+  )
+}
+
+
 const BG_STYLES = [
   { id: 'particles', label: 'Частицы',   icon: '✦', desc: 'Точки с линиями' },
   { id: 'matrix',    label: 'Матрица',   icon: '⌨', desc: 'Дождь символов' },
@@ -325,6 +370,18 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
               <span className="settings-bg-icon">{s.icon}</span>
               <span className="settings-bg-label">{s.label}</span>
             </motion.button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Анимация сообщений" description="Наведи на карточку чтобы увидеть превью">
+        <div className="anim-preview-grid">
+          {Object.entries(MSG_ANIM_VARIANTS).map(([id]) => (
+            <AnimPreview
+              key={id}
+              animId={id}
+              active={(settings['msgAnim'] || 'slide') === id}
+              onClick={() => onSet('msgAnim', id)}
+            />
           ))}
         </div>
       </Field>
