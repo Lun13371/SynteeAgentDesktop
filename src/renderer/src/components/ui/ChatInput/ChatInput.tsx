@@ -214,7 +214,8 @@ export default function ChatInput({
             onClick={() => {
               if (!plusMenuOpen && plusBtnRef.current) {
                 const rect = plusBtnRef.current.getBoundingClientRect()
-                setMenuPos({ x: rect.left, y: rect.top })
+                // top считаем как расстояние снизу экрана — меню растёт вверх
+                setMenuPos({ x: rect.left, y: window.innerHeight - rect.top + 6 })
               }
               setPlusMenuOpen(v => !v)
             }}
@@ -232,8 +233,7 @@ export default function ChatInput({
                 style={{
                   position: 'fixed',
                   left: menuPos.x,
-                  top: menuPos.y - 8,
-                  transform: 'translateY(-100%)',
+                  bottom: menuPos.y,
                   zIndex: 9999,
                 }}
                 initial={{ opacity: 0, y: 6, scale: 0.95 }}
