@@ -59,11 +59,17 @@ export default function ChatInput({
   const boxRef = useRef<HTMLDivElement>(null)
 
   // Закрытие + меню по клику снаружи
+  const plusWrapRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!plusMenuOpen) return
-    const close = () => setPlusMenuOpen(false)
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
+    const close = (e: MouseEvent) => {
+      if (plusWrapRef.current?.contains(e.target as Node)) return
+      if (menuRef.current?.contains(e.target as Node)) return
+      setPlusMenuOpen(false)
+    }
+    const t = setTimeout(() => document.addEventListener('mousedown', close), 0)
+    return () => { clearTimeout(t); document.removeEventListener('mousedown', close) }
   }, [plusMenuOpen])
 
   useEffect(() => {
@@ -203,21 +209,17 @@ export default function ChatInput({
       </AnimatePresence>
       <div className="chat-input-box glass" ref={boxRef}>
         {/* + кнопка с меню */}
-        <div className="chat-input-plus-wrap">
+        <div className="chat-input-plus-wrap" ref={plusWrapRef}>
           <button
             ref={plusBtnRef}
             className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
-            onMouseDown={e => e.stopPropagation()}
             onClick={() => {
+              console.log('[PLUS] clicked, open was:', plusMenuOpen)
               if (!plusBtnRef.current) return
               const r = plusBtnRef.current.getBoundingClientRect()
               const spaceBelow = window.innerHeight - r.bottom
               const openUp = spaceBelow < 120
-              setMenuPos({
-                top: openUp ? r.top - 8 : r.bottom + 6,
-                left: r.left,
-                openUp,
-              })
+              setMenuPos({ top: openUp ? r.top - 8 : r.bottom + 6, left: r.left, openUp })
               setPlusMenuOpen(v => !v)
             }}
             title="Прикрепить / Режим"
@@ -230,6 +232,7 @@ export default function ChatInput({
           <AnimatePresence>
             {plusMenuOpen && menuPos && createPortal(
               <motion.div
+                ref={menuRef}
                 className="chat-input-plus-menu"
                 style={{
                   position: 'fixed',
