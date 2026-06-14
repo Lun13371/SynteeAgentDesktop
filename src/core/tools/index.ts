@@ -1109,6 +1109,6 @@ export const TOOL_SCHEMAS = [
 // Динамический набор тулов — добавляем по режиму
 export function getToolSchemas(options: { planningMode?: boolean } = {}) {
   const schemas = [...TOOL_SCHEMAS]
-  if (options.planningMode) schemas.push(PLAN_TOOL_SCHEMA)
+  if (options.planningMode) schemas.push(PLAN_TOOL_SCHEMA as any)
   return schemas
 }

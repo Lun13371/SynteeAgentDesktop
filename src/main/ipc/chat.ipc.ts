@@ -404,6 +404,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           )
           break
 
+        case 'plan_saved':
+          win?.webContents.send('PLAN_SAVED', {
+            chatId: msg.chatId,
+            plan: msg.plan,
+          })
+          break
+
         case 'error':
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
             chatId: msg.chatId, error: msg.error,

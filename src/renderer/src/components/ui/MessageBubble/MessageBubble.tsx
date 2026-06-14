@@ -6,6 +6,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import PlanCard from '../PlanCard/PlanCard'
 import type { Message, ToolOutputMode } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
@@ -582,6 +583,14 @@ const MessageBubble = memo(function MessageBubble({
     >
       {!isUser && <AssistantAvatar style={avatarStyle} />}
 
+      {message.planData ? (
+        <PlanCard
+          title={message.planData.title}
+          content={message.planData.content}
+          summary={message.planData.summary}
+          filePath={message.planData.filePath}
+        />
+      ) : (
       <MessageContent
         content={message.content}
         isUser={isUser}
@@ -604,6 +613,7 @@ const MessageBubble = memo(function MessageBubble({
         userMarkdown={isUser ? userMarkdown : true}
         timeEl={timeEl}
       />
+      )}
     </motion.div>
   )
 })
