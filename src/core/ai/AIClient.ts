@@ -47,6 +47,7 @@ export interface StreamCallbacks {
   onRateLimit?: (waitSec: number) => void
   onThinkingToken?: (token: string) => void
   onThinkingDone?: (ms: number) => void
+  onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void
 }
 
 export interface ChatMessage {
@@ -144,6 +145,18 @@ export class AIClient {
 
         for await (const chunk of stream) {
           if (signal?.aborted) break
+
+          // Реальные токены из провайдера — последний чанк содержит usage
+          if (chunk.usage) {
+            const u = chunk.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+            if (u.prompt_tokens != null) {
+              callbacks.onUsage?.({
+                promptTokens: u.prompt_tokens,
+                completionTokens: u.completion_tokens ?? 0,
+                totalTokens: u.total_tokens ?? (u.prompt_tokens + (u.completion_tokens ?? 0)),
+              })
+            }
+          }
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const delta = (chunk.choices?.[0]?.delta ?? {}) as Record<string, any>

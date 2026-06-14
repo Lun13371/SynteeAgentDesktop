@@ -15,6 +15,8 @@ export interface ToolResult {
   success: boolean
   output: string
   error?: string
+  diff?: string
+  hidden?: boolean  // скрытые тулы (think, update_working_memory) — не показываются в UI
 }
 
 export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
