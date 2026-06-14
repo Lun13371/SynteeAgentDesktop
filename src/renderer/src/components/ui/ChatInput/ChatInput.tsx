@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, KeyboardEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
@@ -52,6 +53,7 @@ export default function ChatInput({
   const [sendBurst, setSendBurst] = useState(false)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const plusBtnRef = useRef<HTMLButtonElement>(null)
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 })
   const { uiSounds, sendEffect } = useUIStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -209,7 +211,13 @@ export default function ChatInput({
           <button
             ref={plusBtnRef}
             className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
-            onClick={() => setPlusMenuOpen(v => !v)}
+            onClick={() => {
+              if (!plusMenuOpen && plusBtnRef.current) {
+                const rect = plusBtnRef.current.getBoundingClientRect()
+                setMenuPos({ x: rect.left, y: rect.top })
+              }
+              setPlusMenuOpen(v => !v)
+            }}
             title="Прикрепить / Режим"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -218,9 +226,16 @@ export default function ChatInput({
           </button>
 
           <AnimatePresence>
-            {plusMenuOpen && (
+            {plusMenuOpen && createPortal(
               <motion.div
                 className="chat-input-plus-menu"
+                style={{
+                  position: 'fixed',
+                  left: menuPos.x,
+                  top: menuPos.y - 8,
+                  transform: 'translateY(-100%)',
+                  zIndex: 9999,
+                }}
                 initial={{ opacity: 0, y: 6, scale: 0.95 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 6, scale: 0.95 }}
@@ -250,7 +265,8 @@ export default function ChatInput({
                     </svg>
                   )}
                 </button>
-              </motion.div>
+              </motion.div>,
+              document.body
             )}
           </AnimatePresence>
         </div>
