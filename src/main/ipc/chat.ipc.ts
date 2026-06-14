@@ -15,6 +15,7 @@ import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
 import {
   applyRollingWindowAsync, calcTokenUsage, getContextSettings, estimateTokens,
+  getModelContextWindow,
   type ChatMessage,
 } from '../../core/context/contextManager'
 import type { Message, AgentSettings } from '../../shared/types'
@@ -142,9 +143,29 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
 
     if (ctxSettings.tokenCounterEnabled) {
+      // Получаем реальный contextWindow активной модели из провайдера
+      const contextWindow = getModelContextWindow(storeData)
+      // Строим systemPrompt для точного подсчёта его токенов
+      const sysPrompt = getSystemPrompt()
       const currentMsgTokens = estimateTokens(params.content)
-      const usage = calcTokenUsage(processedHistory, ctxSettings.contextLimitTokens, currentMsgTokens)
-      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, { pct: usage.pct, estimated: usage.estimated, limit: usage.limit, status: usage.status, compressed: contextCompressed })
+      const usage = calcTokenUsage(processedHistory, contextWindow, {
+        systemPrompt: sysPrompt,
+        currentMsgTokens,
+        includeToolSchemas: !!(storeData.agentSettings as { enableTools?: boolean } | undefined)?.enableTools,
+      })
+      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+        pct: usage.pct,
+        estimated: usage.estimated,
+        limit: usage.limit,
+        status: usage.status,
+        compressed: contextCompressed,
+        breakdown: {
+          history: usage.historyTokens,
+          system: usage.systemPromptTokens,
+          tools: usage.toolSchemasTokens,
+          current: usage.currentMsgTokens,
+        },
+      })
     }
     // ──────────────────────────────────────────────────────────────────────
 
