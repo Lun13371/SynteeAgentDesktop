@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { create } from 'zustand'
 import AppIcon from '../AppIcon/AppIcon'
+import { playToastSound } from '../../../utils/sounds'
 import './Toast.css'
 
 interface ToastItem {
@@ -22,6 +23,7 @@ export const useToast = create<ToastStore>((set) => ({
     const id = Math.random().toString(36).slice(2)
     set(s => ({ toasts: [...s.toasts, { id, message, type, duration }] }))
     setTimeout(() => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })), duration)
+    playToastSound(type)
   },
   remove: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),
 }))

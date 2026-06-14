@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { useUIStore } from './store/ui.store'
 import { useChatStore } from './store/chat.store'
+import { setUiSoundsFlag } from './utils/sounds'
 import ChatPage from './pages/Chat/ChatPage'
 import OverlayPage from './pages/Overlay/OverlayPage'
 import './pages/Overlay/OverlayPage.css'
@@ -68,7 +69,10 @@ export default function App() {
         if (avatarStyle) setAvatarStyle(avatarStyle as any)
         if (showTime) setShowTime(showTime as any)
         if (userMarkdown !== undefined && userMarkdown !== null) setUserMarkdown(userMarkdown as boolean)
-        if (uiSounds !== undefined && uiSounds !== null) setUiSounds(uiSounds as boolean)
+        if (uiSounds !== undefined && uiSounds !== null) {
+          setUiSounds(uiSounds as boolean)
+          setUiSoundsFlag(uiSounds as boolean)
+        }
         if (sendEffect !== undefined && sendEffect !== null) setSendEffect(sendEffect as boolean)
       } catch { /* ok */ }
     }
@@ -84,6 +88,10 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
+
+  // Синхронизируем флаг звуков при изменении в store
+  const { uiSounds } = useUIStore()
+  useEffect(() => { setUiSoundsFlag(uiSounds) }, [uiSounds])
 
   // Слушаем open-agent-panel от AgentCardLive
   useEffect(() => {

@@ -14,7 +14,6 @@ import AgentCard from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
-import { playReceiveSound } from '../../../utils/sounds'
 import 'katex/dist/katex.min.css'
 import './MessageBubble.css'
 
@@ -564,17 +563,8 @@ const MessageBubble = memo(function MessageBubble({
     onReadAloud?.(message.content)
   }, [message.content, onReadAloud])
 
-  const { msgAnim, avatarStyle, showTime, userMarkdown, uiSounds } = useUIStore()
+  const { msgAnim, avatarStyle, showTime, userMarkdown } = useUIStore()
   const anim = MSG_ANIM_VARIANTS[msgAnim] ?? MSG_ANIM_VARIANTS.slide
-
-  // Звук получения — только для первого рендера assistant сообщения
-  const soundFired = useRef(false)
-  useEffect(() => {
-    if (!isUser && !soundFired.current && uiSounds && !isStreaming && !isWaiting) {
-      soundFired.current = true
-      playReceiveSound()
-    }
-  }, [isUser, isStreaming, isWaiting, uiSounds])
 
   // Время — always / hover / never
   const timeEl = showTime !== 'never' ? (

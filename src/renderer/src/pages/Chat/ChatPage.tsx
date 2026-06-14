@@ -6,6 +6,7 @@ import { v4 as uuid } from 'uuid'
 import { useContextCounter } from '../../hooks/useContextCounter'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
+import { playDoneSound } from '../../utils/sounds'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
@@ -220,6 +221,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveIters([])
       liveTextAfterRef.current = ''
       setLiveTextAfter('')
+      playDoneSound()
       setLiveThinking(null)
       if (data.chatId === currentChatIdRef.current) {
         addMessage(data.message)
