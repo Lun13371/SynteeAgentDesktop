@@ -235,23 +235,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }
     })
 
-    const offPlanSaved = window.syntee.on('PLAN_SAVED', (data: {
-      chatId: string
-      plan: { title: string; content: string; summary: string; filePath: string }
-    }) => {
-      if (data.chatId !== currentChatIdRef.current) return
-      const planMsg: Message = {
-        id: `plan-${Date.now()}`,
-        chatId: data.chatId,
-        role: 'assistant',
-        content: '',
-        createdAt: Date.now(),
-        isPinned: 0,
-        planData: data.plan,
-      }
-      addMessage(planMsg)
-    })
-
     const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { error: string }) => {
       streamMsgIdRef.current = null
       clearStream()
@@ -354,7 +337,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }
     })
 
-    return () => { offToken(); offDone(); offPlanSaved(); offError(); offRateLimit(); offContextUsage(); offStep() }
+    return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep() }
   }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
   // ── АВТОСКРОЛЛ — плавный 60fps через rAF + ResizeObserver ──────────────────
