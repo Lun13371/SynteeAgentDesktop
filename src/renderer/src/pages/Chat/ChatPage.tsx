@@ -32,7 +32,14 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
-  const [contextUsage, setContextUsage] = useState<{ pct: number; status: 'ok' | 'warn' | 'critical'; compressed: boolean } | null>(null)
+  const [contextUsage, setContextUsage] = useState<{
+    pct: number
+    estimated: number
+    limit: number
+    status: 'ok' | 'warn' | 'critical'
+    compressed: boolean
+    breakdown?: { history: number; system: number; tools: number; current: number }
+  } | null>(null)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isAgentRunning, setIsAgentRunning] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
@@ -580,11 +587,20 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           )}
 
           {contextUsage && contextUsage.status !== 'ok' && (
-            <div className={`context-usage-bar context-usage-bar--${contextUsage.status}`}>
+            <div
+              className={`context-usage-bar context-usage-bar--${contextUsage.status}`}
+              title={contextUsage.breakdown
+                ? `История: ${contextUsage.breakdown.history.toLocaleString()} | System: ${contextUsage.breakdown.system.toLocaleString()} | Tools: ${contextUsage.breakdown.tools.toLocaleString()} | Сообщение: ${contextUsage.breakdown.current.toLocaleString()}\nИтого: ${contextUsage.estimated.toLocaleString()} / ${contextUsage.limit.toLocaleString()} токенов`
+                : `${contextUsage.estimated?.toLocaleString()} / ${contextUsage.limit?.toLocaleString()} токенов`
+              }
+            >
               <div className="context-usage-bar__fill" style={{ width: `${contextUsage.pct}%` }} />
               <span className="context-usage-bar__label">
                 {contextUsage.compressed && '⚡ '}
                 Контекст: {contextUsage.pct}%
+                {contextUsage.estimated != null && contextUsage.limit != null && (
+                  <> ({contextUsage.estimated.toLocaleString()} / {contextUsage.limit.toLocaleString()} токенов)</>
+                )}
                 {contextUsage.status === 'critical' && ' — критично'}
               </span>
             </div>
