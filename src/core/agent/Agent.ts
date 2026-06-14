@@ -18,7 +18,8 @@ export interface AgentStep {
   success?: boolean
   imageUrl?: string
   diff?: string
-  callId?: string  // id tool_call из API — для матчинга call↔result при параллельных тулах
+  callId?: string
+  hidden?: boolean  // скрытые тулы (think, update_working_memory) — не показываются в UI
 }
 
 export interface AgentCallbacks {
@@ -32,63 +33,88 @@ export interface AgentCallbacks {
   onGetAgentStatus?: (agentId: string) => { status: string; currentStep?: string; stepsCount: number } | null
 }
 
-const SYSTEM_PROMPT = `Ты Syntee — персональный AI-ассистент для Windows.
-У тебя есть инструменты для работы с системой: запуск команд, чтение/запись файлов, поиск в интернете, буфер обмена.
-Отвечай на русском языке. Будь кратким и точным.
-Если задача требует нескольких шагов — используй инструменты последовательно.
+const SYSTEM_PROMPT = `Ты Syntee — автономный AI-агент для Windows. Решаешь задачи через инструменты: файлы, команды, поиск, система.
+
+## Режим работы
+
+Ты агент, не чат-бот. Получив задачу — действуй, не объясняй что собираешься делать.
+
+**Перед первым действием используй think** — набрось план: что нужно понять, какие файлы прочитать, какой порядок шагов. Это занимает 0 токенов у пользователя но резко улучшает качество.
+
+**Правила выполнения:**
+- Параллельность — ВСЕГДА. Нужно прочитать 3 файла? Вызывай все три одновременно, не по очереди.
+- Независимые команды — запускай параллельно. Зависимые (B нужен результат A) — последовательно.
+- Не спрашивай разрешения на очевидные шаги. Просто делай.
+- Не пиши "Сейчас я сделаю X" — просто сделай X.
+- После выполнения — краткий итог что сделано. Не пересказывай каждый шаг.
+
+**При ошибке тула:**
+- Прочитай error внимательно — там обычно есть подсказка.
+- Не повторяй ту же команду. Исправь причину ошибки.
+- Если файл не найден — сначала найди его через find_files.
+- Если edit_file не нашёл old_str — прочитай файл заново, old_str мог устареть.
+
+**При работе с кодом:**
+- Сначала используй think чтобы понять архитектуру.
+- Читай только нужные части файлов (offset/limit), не весь файл целиком.
+- После изменения файла — diff уже в ответе тула, не нужно читать файл снова.
+- Изменяй только то что нужно. Не переписывай файл целиком если можно edit_file.
+
+**Рабочая память:**
+- В конце сложной сессии с изменениями файлов — вызови update_working_memory.
+- Пиши компактно: что изменил, в каком состоянии проект, что осталось.
 
 ## Форматирование ответов
 
-### Диаграммы (Mermaid)
-Для любых схем, графов, flowchart, sequence диаграмм, архитектуры — используй mermaid блок:
+**Диаграммы (Mermaid)** — для схем, графов, архитектуры:
 \`\`\`mermaid
 flowchart TD
   A[Начало] --> B[Шаг]
 \`\`\`
-Поддерживаются: flowchart, sequenceDiagram, classDiagram, gantt, pie, gitGraph.
+Типы: flowchart, sequenceDiagram, classDiagram, gantt, pie, gitGraph.
 
-### Цветные блоки (Admonitions)
-Для выделения важной информации используй:
-:::note Заголовок
-Текст заметки
-:::
+**Цветные блоки:**
+:::note / :::tip / :::warning / :::danger / :::info
 
-:::tip Совет
-Полезный совет
-:::
-
-:::warning Внимание
-Предупреждение
-:::
-
-:::danger Опасность
-Критическое предупреждение
-:::
-
-:::info Информация
-Информационный блок
-:::
-
-### Diff (изменения кода)
-Для показа изменений в коде используй diff блок:
+**Diff** — для показа изменений:
 \`\`\`diff
 - старая строка
 + новая строка
-  без изменений
 \`\`\`
 
-### Таблицы
-Используй markdown таблицы для структурированных данных:
-| Колонка 1 | Колонка 2 |
-|-----------|-----------|
-| Значение  | Значение  |
+**Таблицы** — markdown для структурированных данных.
+**Математика** — LaTeX: \`$E=mc^2$\`, \`$$\\frac{a}{b}$$\`.
+**Код** — всегда указывай язык: \`\`\`typescript, \`\`\`bash, \`\`\`python.
 
-### Математика
-Для формул используй LaTeX: inline \`$E=mc^2$\`, блочный \`$$\\frac{a}{b}$$\`.
+## Система (Windows 10)
 
-### Код
-Всегда указывай язык в блоках кода: \`\`\`python, \`\`\`typescript, \`\`\`bash и т.д.
-При выполнении команд предпочитай PowerShell синтаксис для Windows.`
+- Команды: PowerShell по умолчанию. Unix-команды (ls, cat, grep) тоже работают.
+- Пути: \`C:\\Users\\....\` или \`/c/Users/...\` — оба формата OK.
+- Переменные: \`$env:USERPROFILE\`, \`$env:APPDATA\`.`
+
+// Подсказки агенту при ошибках тулов — помогают исправить без лишних итераций
+function getToolErrorHint(toolName: string, error: string): string {
+  const e = error.toLowerCase()
+  if (toolName === 'edit_file' || toolName === 'multi_edit_file') {
+    if (e.includes('old_str не найден') || e.includes('not found')) {
+      return '\n\n[Hint: old_str не найден. Используй read_file чтобы получить актуальное содержимое файла, потом повтори edit_file с точным фрагментом.]'
+    }
+  }
+  if (toolName === 'read_file' || toolName === 'write_file') {
+    if (e.includes('no such file') || e.includes('не найден') || e.includes('enoent')) {
+      return '\n\n[Hint: файл не найден. Используй find_files чтобы найти правильный путь.]'
+    }
+  }
+  if (toolName === 'run_command') {
+    if (e.includes('not recognized') || e.includes('не является') || e.includes('command not found')) {
+      return '\n\n[Hint: команда не найдена. Проверь что инструмент установлен, или используй альтернативную команду.]'
+    }
+    if (e.includes('permission') || e.includes('access denied') || e.includes('доступ запрещён')) {
+      return '\n\n[Hint: нет прав доступа. Попробуй с правами администратора или измени путь.]'
+    }
+  }
+  return ''
+}
 
 export class Agent {
   private store: Store
@@ -115,6 +141,9 @@ export class Agent {
 
     // Трекаем параллельные агенты — ждём их перед финальным ответом
     const pendingParallelAgents = new Set<string>()
+
+    // Трекаем изменённые файлы для авто-обновления рабочей памяти
+    const modifiedFiles = new Set<string>()
 
     for (let step = 0; step < maxSteps; step++) {
       // Проверяем abort перед каждым шагом
@@ -162,6 +191,19 @@ export class Agent {
           }
 
           callbacks.onDone(answer)
+
+          // Авто-обновление рабочей памяти если были изменения файлов
+          if (
+            modifiedFiles.size > 0 &&
+            this.chatId &&
+            this.onUpdateWorkingMemory &&
+            this.role === 'main'
+          ) {
+            const fileList = Array.from(modifiedFiles).join(', ')
+            const autoMemory = `[авто] Изменены файлы: ${fileList}. Итог: ${answer.slice(0, 400)}${answer.length > 400 ? '...' : ''}`
+            this.onUpdateWorkingMemory(this.chatId, autoMemory, 'append')
+          }
+
           return
         }
 
@@ -179,7 +221,10 @@ export class Agent {
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(fn.arguments) } catch {}
 
-          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId })
+          // Скрытые тулы (think, update_working_memory) — не показываем в UI
+          const isHiddenTool = fn.name === 'think' || fn.name === 'update_working_memory'
+
+          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool })
 
           const mode = callbacks.approvalMode || 'auto'
           if (mode === 'ask' && callbacks.onConfirm) {
@@ -193,6 +238,12 @@ export class Agent {
 
           const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
+          // Трекаем изменённые файлы для авто-памяти
+          if (result.success && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
+            const p = args.path as string | undefined
+            if (p) modifiedFiles.add(p)
+          }
+
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
           const imageUrl = imageMatch ? imageMatch[1] : undefined
 
@@ -201,9 +252,12 @@ export class Agent {
           const rawContent = imageUrl
             ? 'Изображение успешно сгенерировано и показано пользователю.'
             : (result.success ? result.output : `Ошибка: ${result.error}`)
+
+          // При ошибке тула — добавляем подсказку агенту как исправить
+          const errorHint = !result.success ? getToolErrorHint(fn.name, result.error ?? '') : ''
           const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled)
-            ? truncateToolResult(rawContent || '', ctxSettings.toolMaxChars)
-            : (rawContent || '')
+            ? truncateToolResult((rawContent || '') + errorHint, ctxSettings.toolMaxChars)
+            : ((rawContent || '') + errorHint)
 
           callbacks.onStep({
             type: 'tool_result',
@@ -213,6 +267,7 @@ export class Agent {
             imageUrl,
             diff: (result as { diff?: string }).diff,
             callId,
+            hidden: isHiddenTool || !!(result as { hidden?: boolean }).hidden,
           })
 
           resultMap.set(callId, { contentForAI, callId, name: fn.name })
@@ -278,7 +333,7 @@ export class Agent {
         return runCommand(cmd, args.cwd as string | undefined, args.shell as string | undefined, args.timeout as number | undefined)
       }
       case 'read_file':
-        return readFile(args.path as string, args.offset as number | undefined, args.limit as number | undefined)
+        return readFile(args.path as string, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined)
 
       case 'find_files':
         return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined })
@@ -359,9 +414,17 @@ export class Agent {
         if (!content) return { success: false, output: '', error: 'content обязателен' }
         if (this.chatId && this.onUpdateWorkingMemory) {
           this.onUpdateWorkingMemory(this.chatId, content, mode)
-          return { success: true, output: `Рабочая память обновлена (${mode}, ${content.length} символов)`, error: '' }
+          return { success: true, output: `Рабочая память обновлена (${mode}, ${content.length} символов)`, error: '', hidden: true }
         }
         return { success: false, output: '', error: 'chatId не установлен — update_working_memory недоступен' }
+      }
+
+      case 'think': {
+        const thought = args.thought as string
+        if (!thought) return { success: false, output: '', error: 'thought обязателен' }
+        // Возвращаем мысль агенту — он видит её как tool_result
+        // hidden=true — в UI не отображается
+        return { success: true, output: `OK. Продолжай по плану.`, error: '', hidden: true }
       }
     }
   }
