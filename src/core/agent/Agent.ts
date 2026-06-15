@@ -1,5 +1,6 @@
 import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
+import { needsApproval } from './commandSafety'
 import {
   runCommand, readFile, writeFile, listDirectory,
   findFiles, getFileOutline,
@@ -265,32 +266,18 @@ export class Agent {
 
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool })
 
-          const mode = callbacks.approvalMode || 'auto'
-          const needsConfirm = (() => {
-            if (mode === 'auto') return false
-            if (mode === 'full') return !isHiddenTool  // спрашивать всё кроме скрытых
-            if (mode === 'ask') {
-              // Только реально опасные — необратимые действия
-              if (fn.name === 'run_command') {
-                const cmd = String(args.command ?? '').toLowerCase()
-                const dangerous = [
-                  'rm ', 'rm\t', 'rmdir', 'del ', 'del\t', 'rd ',
-                  'format', 'shutdown', 'taskkill', 'kill ',
-                  'reg delete', 'reg add', 'netsh', 'bcdedit',
-                  'diskpart', 'cipher /w', 'sdelete', 'mkfs',
-                  'dd if=', 'shred', ':(){', 'fork bomb',
-                  '> /dev/', 'truncate', 'wipefs',
-                ]
-                return dangerous.some(d => cmd.includes(d))
-              }
-              if (fn.name === 'set_clipboard') return true        // скрытая запись
-              if (fn.name === 'generate_image') return true        // расход денег
-              return false
-            }
-            return false
-          })()
+          const mode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
+          const approval = needsApproval(fn.name, args, mode)
 
-          if (needsConfirm && callbacks.onConfirm) {
+          if (approval.block) {
+            // Блокируем без диалога — auto режим для опасных команд
+            const blockMsg = `Действие заблокировано (режим ${mode}): ${approval.reason}`
+            resultMap.set(callId, { contentForAI: blockMsg, callId, name: fn.name })
+            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockMsg, success: false })
+            return
+          }
+
+          if (approval.confirm && callbacks.onConfirm) {
             const approved = await callbacks.onConfirm(fn.name, args)
             if (!approved) {
               resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
