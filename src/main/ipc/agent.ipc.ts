@@ -49,7 +49,8 @@ export function registerAgentIPC(store: Store, getWindow: () => BrowserWindow | 
   })
 
   ipcMain.handle('agent:setSettings', (_e, settings: unknown) => {
-    store.set('agentSettings', settings)
+    const current = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as Record<string, unknown>
+    store.set('agentSettings', { ...current, ...(settings as Record<string, unknown>) })
     return { ok: true }
   })
 }

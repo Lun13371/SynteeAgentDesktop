@@ -196,7 +196,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       const usage = calcTokenUsage(processedHistory, contextWindow, {
         systemPrompt: sysPrompt,
         currentMsgTokens,
-        includeToolSchemas: !!(storeData.agentSettings as { enableTools?: boolean } | undefined)?.enableTools,
+        includeToolSchemas: true,
       })
       win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
         pct: usage.pct,
