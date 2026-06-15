@@ -32,6 +32,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
+  const [streamMsgId, setStreamMsgId] = useState<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
   const [contextUsage, setContextUsage] = useState<{
     pct: number; estimated: number; limit: number; status: string; compressed?: boolean
@@ -199,6 +200,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }) => {
       if (data.chatId !== currentChatIdRef.current) return
       streamMsgIdRef.current = data.msgId
+      setStreamMsgId(data.msgId)
 
       if (data.thinkingToken) {
         const tok = typeof data.thinkingToken === 'string' ? data.thinkingToken : String(data.thinkingToken ?? '')
@@ -218,6 +220,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
       streamMsgIdRef.current = null
+      setStreamMsgId(null)
       if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
       tokenBufRef.current = ''
       clearStream()
@@ -239,6 +242,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { error: string }) => {
       streamMsgIdRef.current = null
+      setStreamMsgId(null)
       clearStream()
       setTyping(false)
       setLiveThinking(null)
@@ -510,6 +514,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setReplyTo([])
     // Временный id сразу — чтобы пузырь появился до ответа chat.send
     streamMsgIdRef.current = 'streaming-pending'
+    setStreamMsgId('streaming-pending')
 
     const result = await window.syntee.chat.send({
       chatId,
@@ -541,11 +546,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const hasLiveContent = !!streamingText || !!liveThinking || liveSteps.length > 0 ||
     liveIters.length > 0 || !!liveTextAfter
   // Показываем пузырь сразу при отправке (isTyping), не ждём первого токена
-  const showLiveBubble = (hasLiveContent || isTyping) && !!streamMsgIdRef.current
+  const showLiveBubble = (hasLiveContent || isTyping) && !!streamMsgId
   const isStreaming = showLiveBubble
   const displayMessages = useMemo(() => showLiveBubble
     ? [...messages, {
-        id: streamMsgIdRef.current || 'streaming',
+        id: streamMsgId || 'streaming',
         chatId: currentChatId || '',
         role: 'assistant' as const,
         content: streamingText || '',
