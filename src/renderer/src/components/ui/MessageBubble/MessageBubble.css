@@ -157,49 +157,58 @@
   padding: 2px 0 6px;
   font-size: 14px;
   font-style: italic;
+  color: rgba(255,255,255,0.35);
   background: linear-gradient(90deg,
-    rgba(255,255,255,0.18) 0%,
-    rgba(255,255,255,0.7) 40%,
-    rgba(255,255,255,0.18) 80%
+    rgba(255,255,255,0.15) 0%,
+    rgba(255,255,255,0.15) 30%,
+    rgba(255,255,255,0.85) 50%,
+    rgba(255,255,255,0.15) 70%,
+    rgba(255,255,255,0.15) 100%
   );
-  background-size: 200% auto;
+  background-size: 300% auto;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: msg-shimmer 2s linear infinite;
+  animation: msg-shimmer 2.4s ease-in-out infinite;
 }
 
 /* Rate limit — янтарный оттенок */
 .msg-waiting-shimmer--rl {
+  color: rgba(251,191,36,0.5);
   background: linear-gradient(90deg,
-    rgba(251,191,36,0.3) 0%,
-    rgba(251,191,36,1.0) 40%,
-    rgba(251,191,36,0.3) 80%
+    rgba(251,191,36,0.2) 0%,
+    rgba(251,191,36,0.2) 30%,
+    rgba(251,191,36,1.0) 50%,
+    rgba(251,191,36,0.2) 70%,
+    rgba(251,191,36,0.2) 100%
   );
-  background-size: 200% auto;
+  background-size: 300% auto;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: msg-shimmer 1.5s linear infinite;
+  animation: msg-shimmer 1.8s ease-in-out infinite;
 }
 
 /* Статус агента — accent цвет */
 .msg-waiting-shimmer--status {
+  color: var(--accent);
   background: linear-gradient(90deg,
-    color-mix(in srgb, var(--accent) 40%, transparent) 0%,
-    var(--accent) 40%,
-    color-mix(in srgb, var(--accent) 40%, transparent) 80%
+    color-mix(in srgb, var(--accent) 25%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 25%, transparent) 30%,
+    var(--accent) 50%,
+    color-mix(in srgb, var(--accent) 25%, transparent) 70%,
+    color-mix(in srgb, var(--accent) 25%, transparent) 100%
   );
-  background-size: 200% auto;
+  background-size: 300% auto;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: msg-shimmer 1.8s linear infinite;
+  animation: msg-shimmer 2s ease-in-out infinite;
 }
 
 @keyframes msg-shimmer {
-  0%   { background-position: 200% center; }
-  100% { background-position: -200% center; }
+  0%   { background-position: 150% center; }
+  100% { background-position: -150% center; }
 }
 
 .message-content {

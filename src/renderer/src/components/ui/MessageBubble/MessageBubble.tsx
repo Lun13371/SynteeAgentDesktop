@@ -199,11 +199,48 @@ function AgentCardLive({ agentId, task, parallel }: {
 }
 
 // Shimmer-индикатор ожидания AI (думает / rate limit)
+const WAITING_PHRASES = [
+  'Думаю...',
+  'Анализирую...',
+  'Составляю ответ...',
+  'Обрабатываю...',
+  'Формулирую...',
+]
+
 function WaitingIndicator({ rateLimitSec, agentStatus }: { rateLimitSec?: number; agentStatus?: string | null }) {
+  const [phraseIdx, setPhraseIdx] = useState(0)
+  const [visible, setVisible] = useState(true)
+
+  useEffect(() => {
+    if (agentStatus || rateLimitSec) return
+    const interval = setInterval(() => {
+      setVisible(false)
+      setTimeout(() => {
+        setPhraseIdx(i => (i + 1) % WAITING_PHRASES.length)
+        setVisible(true)
+      }, 300)
+    }, 2500)
+    return () => clearInterval(interval)
+  }, [agentStatus, rateLimitSec])
+
   const isRateLimit = rateLimitSec && rateLimitSec > 0
-  const text = agentStatus ?? (isRateLimit ? `Rate limit — жду ${rateLimitSec}с...` : 'Думаю...')
-  const cls = isRateLimit ? ' msg-waiting-shimmer--rl' : agentStatus ? ' msg-waiting-shimmer--status' : ''
-  return <span className={`msg-waiting-shimmer${cls}`}>{text}</span>
+  const text = isRateLimit
+    ? `Rate limit — жду ${rateLimitSec}с...`
+    : agentStatus ?? WAITING_PHRASES[phraseIdx]
+  const cls = isRateLimit
+    ? ' msg-waiting-shimmer--rl'
+    : agentStatus
+      ? ' msg-waiting-shimmer--status'
+      : ''
+
+  return (
+    <span
+      className={`msg-waiting-shimmer${cls}`}
+      style={{ opacity: visible ? 1 : 0, transition: 'opacity 0.3s ease' }}
+    >
+      {text}
+    </span>
+  )
 }
 
 // Мемоизированный тяжёлый контент сообщения
