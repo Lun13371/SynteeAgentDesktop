@@ -7,5 +7,10 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-echo Starting Syntee Helper with DevTools...
-node_modules\electron\dist\electron.exe out\main\index.js --inspect=5858 --enable-logging
+echo.
+echo ============================================
+echo  SYNTEE DEBUG — логи main/worker ниже
+echo ============================================
+echo.
+node_modules\electron\dist\electron.exe out\main\index.js --enable-logging 2>&1
+pause
