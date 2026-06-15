@@ -294,6 +294,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId })
           break
 
+        case 'confirm': {
+          const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown> }
+          // Шлём в renderer — показываем диалог
+          win?.webContents.send('agent:confirm', { reqId, toolName, args })
+          // Ждём ответа от пользователя
+          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+            worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved })
+          })
+          break
+        }
+
         case 'agent_status':
           win?.webContents.send('agent:status', { msgId: msg.msgId, chatId: msg.chatId, text: msg.text })
           break

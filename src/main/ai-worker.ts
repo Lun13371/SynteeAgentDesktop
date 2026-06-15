@@ -232,6 +232,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             send({ type: 'agent_status', chatId, msgId, text })
           },
           approvalMode: agentSettings.approvalMode as never,
+          onConfirm: (toolName, args) => {
+            return new Promise((resolve) => {
+              const reqId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(`confirm-reply-${reqId}`, (reply) => {
+                resolve(reply.approved as boolean)
+              })
+              send({ type: 'confirm', chatId, msgId, reqId, toolName, args })
+            })
+          },
           onSpawnAgent: (opts) => {
             return new Promise((resolve) => {
               const replyId = `spawn-reply-${opts.id}`
