@@ -63,6 +63,11 @@
   border-radius: var(--radius-lg);
   transition: border-color var(--transition);
   width: 100%;
+  background: var(--glass-bg, rgba(18,18,28,0.97));
+  border: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
 }
 
 .chat-input-box:focus-within {
