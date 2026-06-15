@@ -195,11 +195,13 @@ export class Agent {
           callbacks.onContextCounted,
           (waitSec) => {
             callbacks.onStatus?.(`Rate limit — жду ${waitSec}с...`)
+            callbacks.onRateLimit?.(waitSec)
           },
           (attempt, reason, waitSec) => {
             callbacks.onStatus?.(reason === 'rate_limit'
               ? `Лимит запросов, повтор через ${waitSec}с...`
               : `Ошибка сети, повтор ${attempt}...`)
+            callbacks.onRetry?.(attempt, reason, waitSec)
           },
         )
 
