@@ -459,7 +459,7 @@ const MessageContent = memo(function MessageContent({
         )}
 
         {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
-        {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && liveIters?.length === 0 && (
+        {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && !liveIters?.length && (
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
         )}
 
