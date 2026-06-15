@@ -310,59 +310,42 @@ export function classifyCommand(cmd: string): SafetyResult {
 /**
  * Нужно ли подтверждение для данного тула и режима?
  *
- * auto:  блокировать blocked, спрашивать dangerous — без диалога (возврат false = отклонить)
- * ask:   спрашивать dangerous + blocked + warn
- * full:  спрашивать всё
+ * blocked: блокировать везде независимо от режима
+ * auto:    умный режим — dangerous+warn спрашивать, safe пропускать
+ * ask:     спрашивать каждый тул
+ * full:    полный доступ — всё пропускается без проверок
  */
 export function needsApproval(
   toolName: string,
   args: Record<string, unknown>,
   mode: 'auto' | 'ask' | 'full'
 ): { confirm: boolean; block: boolean; reason: string } {
+  // full — полный доступ, ничего не проверяем
   if (mode === 'full') {
-    return { confirm: true, block: false, reason: 'Режим full — подтверждение на каждый тул' }
-  }
-
-  // Тулы кроме run_command — только для ask/full
-  if (toolName === 'set_clipboard') {
-    if (mode === 'ask') return { confirm: true, block: false, reason: 'Скрытая запись в буфер обмена' }
     return { confirm: false, block: false, reason: '' }
   }
 
-  if (toolName === 'generate_image') {
-    if (mode === 'ask') return { confirm: true, block: false, reason: 'Расход токенов/денег на генерацию' }
-    return { confirm: false, block: false, reason: '' }
+  // ask — спрашивать каждый тул кроме скрытых
+  if (mode === 'ask') {
+    return { confirm: true, block: false, reason: 'Режим "спрашивать" — подтверждение на каждый тул' }
   }
 
+  // auto — умная детекция только для run_command
   if (toolName !== 'run_command') {
     return { confirm: false, block: false, reason: '' }
   }
 
-  // run_command — классифицируем
   const cmd = String(args.command ?? '')
   const result = classifyCommand(cmd)
 
   if (result.level === 'blocked') {
-    // Всегда блокировать — не показывать диалог, просто отказ
+    // Блокировать везде — диалога нет
     return { confirm: false, block: true, reason: result.reason }
   }
 
-  if (result.level === 'dangerous') {
-    if (mode === 'auto') {
-      // auto — блокировать dangerous без диалога
-      return { confirm: false, block: true, reason: result.reason }
-    }
-    if (mode === 'ask') {
-      return { confirm: true, block: false, reason: result.reason }
-    }
-  }
-
-  if (result.level === 'warn') {
-    if (mode === 'ask') {
-      return { confirm: true, block: false, reason: result.reason }
-    }
-    // auto — warn пропускаем (обратимо)
-    return { confirm: false, block: false, reason: '' }
+  if (result.level === 'dangerous' || result.level === 'warn') {
+    // auto — показываем диалог для dangerous и warn
+    return { confirm: true, block: false, reason: result.reason }
   }
 
   return { confirm: false, block: false, reason: '' }
