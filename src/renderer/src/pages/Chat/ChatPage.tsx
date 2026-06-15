@@ -555,6 +555,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         liveIters,
         liveTextAfter,
         agentStatus,
+        rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
       }]
     : messages
   // eslint-disable-next-line react-hooks/exhaustive-deps
