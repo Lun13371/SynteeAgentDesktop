@@ -207,12 +207,14 @@
 }
 
 .chat-input-plus-menu {
-  min-width: 200px;
-  background: var(--bg-secondary);
+  min-width: 220px;
+  background: var(--glass-bg, rgba(18,18,28,0.97));
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-  padding: 4px;
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  padding: 8px;
+  backdrop-filter: blur(20px);
+  font-size: 12px;
 }
 
 .chat-input-plus-item {
@@ -287,24 +289,26 @@
   display: block;
 }
 
-/* Компактный бейдж планирования — внутри chat-input-box */
+/* Компактный бейдж планирования — над инпут полем */
 .chat-input-planning-badge {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px 2px 6px;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 20px;
   font-size: 11px;
   color: var(--accent);
   font-weight: 500;
   white-space: nowrap;
-  flex-shrink: 0;
   cursor: pointer;
+  margin-bottom: 4px;
+  align-self: flex-start;
+  backdrop-filter: blur(8px);
 }
 .chat-input-planning-badge:hover {
-  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .chat-input-planning-badge svg {
   flex-shrink: 0;
