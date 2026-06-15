@@ -22,16 +22,17 @@
 .approval-dropdown {
   position: fixed;
   width: 240px;
-  border-radius: var(--radius-md);
-  padding: 6px;
-  background: var(--bg-elevated, #222);
+  border-radius: 14px;
+  padding: 8px;
+  background: var(--glass-bg, rgba(18,18,28,0.97));
   border: 1px solid var(--border);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
   display: flex;
   flex-direction: column;
   gap: 2px;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
+  z-index: 9999;
 }
 
 .approval-option {
