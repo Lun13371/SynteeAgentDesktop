@@ -165,7 +165,6 @@ export type ToolOutputMode = 'compact' | 'normal' | 'detailed'
 export interface AgentSettings {
   approvalMode: ApprovalMode
   maxSteps: number
-  enableTools: boolean
   toolOutputMode: ToolOutputMode
   enableThinking: boolean
 }

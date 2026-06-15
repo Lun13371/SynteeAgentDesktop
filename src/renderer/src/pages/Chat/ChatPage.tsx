@@ -79,6 +79,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [flushTokens])
   // liveSteps оставляем только для финального сохранения в БД
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
+  const [agentStatus, setAgentStatus] = useState<string | null>(null)
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
@@ -229,6 +230,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveTextAfter('')
       playDoneSound()
       setLiveThinking(null)
+      setAgentStatus(null)
       if (data.chatId === currentChatIdRef.current) {
         addMessage(data.message)
         window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
@@ -277,21 +279,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           appendStreamToken(chunk)
         }
         setIsAgentRunning(true)
-        // Если тул уже добавлен через streaming — обновляем финальные args, не дублируем
-        const streamingKey = step.callId
-        const alreadyAdded = streamingKey && liveItersRef.current.flatMap(i => i.steps).find(s => s.callId === streamingKey)
-        if (alreadyAdded) {
-          const newIters = liveItersRef.current.map(iter => ({
-            ...iter,
-            steps: iter.steps.map(s => s.callId === streamingKey
-              ? { ...s, toolArgs: step.toolArgs, content: step.content }
-              : s
-            )
-          }))
-          liveItersRef.current = newIters
-          setLiveIters(newIters)
-          return
-        }
         const newStep = {
           id: uuid(), type: 'tool_call' as const,
           toolName: step.toolName, toolArgs: step.toolArgs,
@@ -352,62 +339,13 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }
     })
 
-    const offToolStreaming = window.syntee.on('agent:tool_streaming', (data: {
-      msgId: string; chatId: string; toolName: string; partialArgs: string; callId: string
-    }) => {
+    const offStatus = window.syntee.on('agent:status', (data: { msgId: string; chatId: string; text: string }) => {
       if (!streamMsgIdRef.current) return
       if (data.msgId !== streamMsgIdRef.current) return
-      const key = data.callId ?? data.toolName
-      // Если тул с этим callId уже в liveIters — просто обновляем args
-      const existing = liveItersRef.current.flatMap(i => i.steps).find(s => s.callId === key)
-      if (existing) {
-        // Обновляем partialArgs в существующем шаге
-        const newIters = liveItersRef.current.map(iter => ({
-          ...iter,
-          steps: iter.steps.map(s => s.callId === key
-            ? { ...s, toolArgs: { _partial: data.partialArgs } }
-            : s
-          )
-        }))
-        liveItersRef.current = newIters
-        setLiveIters(newIters)
-        return
-      }
-      // Первый чанк — добавляем тул сразу как tool_call в ожидании
-      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-      if (tokenBufRef.current) {
-        const chunk = tokenBufRef.current
-        tokenBufRef.current = ''
-        liveTextAfterRef.current = liveTextAfterRef.current + chunk
-        setLiveTextAfter(prev => prev + chunk)
-        appendStreamToken(chunk)
-      }
-      setIsAgentRunning(true)
-      const newStep = {
-        id: uuid(), type: 'tool_call' as const,
-        toolName: data.toolName, toolArgs: { _partial: data.partialArgs },
-        content: data.toolName, success: undefined,
-        timestamp: Date.now(), imageUrl: undefined,
-        callId: key,
-      }
-      setLiveSteps(prev => [...prev, newStep])
-      const iters = [...liveItersRef.current]
-      const last = iters[iters.length - 1]
-      const textBetween = liveTextAfterRef.current
-      let newIters: typeof iters
-      if (!last || textBetween.trim()) {
-        newIters = [...iters, { textBefore: textBetween, steps: [newStep] }]
-      } else {
-        iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
-        newIters = iters
-      }
-      liveItersRef.current = newIters
-      setLiveIters(newIters)
-      liveTextAfterRef.current = ''
-      setLiveTextAfter('')
+      setAgentStatus(data.text)
     })
 
-    return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep(); offToolStreaming() }
+    return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep(); offStatus() }
   }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
   // ── АВТОСКРОЛЛ — плавный 60fps через rAF + ResizeObserver ──────────────────
@@ -616,6 +554,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
         liveIters,
         liveTextAfter,
+        agentStatus,
       }]
     : messages
   // eslint-disable-next-line react-hooks/exhaustive-deps

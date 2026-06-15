@@ -48,7 +48,9 @@ export interface StreamCallbacks {
   onThinkingToken?: (token: string) => void
   onThinkingDone?: (ms: number) => void
   onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void
-  onContextCounted?: (promptTokens: number) => void  // tiktoken подсчёт реального запроса до отправки
+  onContextCounted?: (promptTokens: number) => void
+  onWaiting?: () => void                                      // запрос ушёл, ждём первый токен
+  onRetry?: (attempt: number, reason: string, waitSec?: number) => void  // ретрай с причиной
 }
 
 export interface ChatMessage {
@@ -143,6 +145,7 @@ export class AIClient {
     while (attempt <= this.maxRetries) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        callbacks.onWaiting?.()
         const stream = await (client.chat.completions.create as any)({
           model,
           messages: allMessages,
@@ -278,7 +281,21 @@ export class AIClient {
         }
         if (error?.status === 429) {
           const delay = backoffDelay(attempt)
-          callbacks.onRateLimit?.(Math.round(delay / 1000))
+          const waitSec = Math.round(delay / 1000)
+          callbacks.onRateLimit?.(waitSec)
+          callbacks.onRetry?.(attempt + 1, 'rate_limit', waitSec)
+          await sleep(delay)
+          attempt++
+          continue
+        }
+        const msg = (error?.message ?? '').toLowerCase()
+        const isNetwork = !error?.status || error.status >= 500 ||
+          msg.includes('econnreset') || msg.includes('etimedout') ||
+          msg.includes('enotfound') || msg.includes('fetch failed') ||
+          msg.includes('network') || msg.includes('socket')
+        if (isNetwork && attempt < this.maxRetries) {
+          const delay = backoffDelay(attempt)
+          callbacks.onRetry?.(attempt + 1, 'network')
           await sleep(delay)
           attempt++
           continue
@@ -339,7 +356,6 @@ export class AIClient {
     role: 'main' | 'subagent' = 'main',
     onToken?: (token: string) => void,
     onContextCounted?: (promptTokens: number) => void,
-    onToolCallChunk?: (idx: number, name: string, partialArgs: string, toolId: string) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
@@ -369,7 +385,7 @@ export class AIClient {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const stream = await (client.chat.completions.create as any)({
-          model, messages, tools, tool_choice: 'auto', parallel_tool_calls: true, signal, stream: true,
+          model, messages, tools, tool_choice: 'auto', signal, stream: true,
         })
 
         let content = ''
@@ -412,10 +428,8 @@ export class AIClient {
                 if (tc.function?.name && !toolCallMap[idx].name) toolCallMap[idx].name = tc.function.name
                 if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments
               }
-              // Стримим частичные аргументы в реальном времени
-              if (onToolCallChunk && toolCallMap[idx].name) {
-                onToolCallChunk(idx, toolCallMap[idx].name, toolCallMap[idx].arguments, toolCallMap[idx].id)
-              }
+              // Стримим частичные аргументы в реальном времени — убрано
+              // onToolCallChunk удалён
             }
           }
         }
