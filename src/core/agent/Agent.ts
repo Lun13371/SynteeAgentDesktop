@@ -28,7 +28,9 @@ export interface AgentCallbacks {
   onDone: (answer: string) => void
   onError: (error: Error) => void
   onPlanSaved?: (plan: { title: string; content: string; summary: string; filePath: string }) => void
-  onStatus?: (text: string) => void  // текущий статус агента для UI
+  onStatus?: (text: string) => void
+  onRateLimit?: (waitSec: number) => void
+  onRetry?: (attempt: number, reason: string, waitSec?: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
@@ -191,6 +193,14 @@ export class Agent {
           this.role,
           (token) => callbacks.onStep({ type: 'answer', content: token }),
           callbacks.onContextCounted,
+          (waitSec) => {
+            callbacks.onStatus?.(`Rate limit — жду ${waitSec}с...`)
+          },
+          (attempt, reason, waitSec) => {
+            callbacks.onStatus?.(reason === 'rate_limit'
+              ? `Лимит запросов, повтор через ${waitSec}с...`
+              : `Ошибка сети, повтор ${attempt}...`)
+          },
         )
 
         // Abort во время запроса

@@ -356,6 +356,8 @@ export class AIClient {
     role: 'main' | 'subagent' = 'main',
     onToken?: (token: string) => void,
     onContextCounted?: (promptTokens: number) => void,
+    onRateLimit?: (waitSec: number) => void,
+    onRetry?: (attempt: number, reason: string, waitSec?: number) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
@@ -453,8 +455,16 @@ export class AIClient {
         const error = err as { status?: number; code?: string; name?: string; message?: string }
         // AbortError — не ретраим, бросаем сразу
         if (error?.name === 'AbortError' || signal?.aborted) throw err
-        // 429 Rate limit — ретраим с backoff
-        if (error?.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }
+        // 429 Rate limit — ретраим с backoff + уведомляем
+        if (error?.status === 429) {
+          const delay = backoffDelay(attempt)
+          const waitSec = Math.round(delay / 1000)
+          onRateLimit?.(waitSec)
+          onRetry?.(attempt + 1, 'rate_limit', waitSec)
+          await sleep(delay)
+          attempt++
+          continue
+        }
         // Сетевые ошибки (ECONNRESET, ETIMEDOUT, ENOTFOUND, fetch failed) — ретраим
         const msg = error?.message?.toLowerCase() ?? ''
         const isNetwork = !error?.status || error.status >= 500 ||
@@ -462,7 +472,9 @@ export class AIClient {
           msg.includes('enotfound') || msg.includes('fetch failed') ||
           msg.includes('network') || msg.includes('socket')
         if (isNetwork && attempt < maxAttempts - 1) {
-          await sleep(backoffDelay(attempt))
+          const delay = backoffDelay(attempt)
+          onRetry?.(attempt + 1, 'network')
+          await sleep(delay)
           attempt++
           continue
         }
