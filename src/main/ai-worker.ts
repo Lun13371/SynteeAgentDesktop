@@ -231,6 +231,20 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onStatus: (text) => {
             send({ type: 'agent_status', chatId, msgId, text })
           },
+          onRateLimit: (waitSec) => {
+            // Шлём оба события — rate_limit для бара и agent_status для bubble
+            send({ type: 'rate_limit', chatId, waitSec })
+            send({ type: 'agent_status', chatId, msgId, text: `Rate limit — жду ${waitSec}с...` })
+          },
+          onRetry: (attempt, reason, waitSec) => {
+            const text = reason === 'rate_limit'
+              ? `Лимит запросов, повтор через ${waitSec}с...`
+              : `Ошибка сети, повтор ${attempt}...`
+            send({ type: 'agent_status', chatId, msgId, text })
+            if (reason === 'rate_limit' && waitSec) {
+              send({ type: 'rate_limit', chatId, waitSec })
+            }
+          },
           approvalMode: agentSettings.approvalMode as never,
           onConfirm: (toolName, args) => {
             return new Promise((resolve) => {
