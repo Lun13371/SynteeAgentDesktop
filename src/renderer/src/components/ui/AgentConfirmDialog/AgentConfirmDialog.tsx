@@ -13,13 +13,28 @@ interface ConfirmRequest {
 
 const TOOL_LABELS: Record<string, { label: string; icon: string; danger: boolean }> = {
   run_command:    { label: 'Выполнить команду',   icon: 'terminal', danger: true },
-  write_file:     { label: 'Записать файл',        icon: 'fileText', danger: true },
+  write_file:     { label: 'Записать файл',        icon: 'fileText', danger: false },
+  edit_file:      { label: 'Редактировать файл',   icon: 'filePen',  danger: false },
+  multi_edit_file:{ label: 'Мульти-редактирование',icon: 'filePen',  danger: false },
   read_file:      { label: 'Прочитать файл',       icon: 'fileText', danger: false },
   list_directory: { label: 'Просмотр папки',       icon: 'folder',   danger: false },
   search_web:     { label: 'Поиск в интернете',    icon: 'globe',    danger: false },
   get_clipboard:  { label: 'Читать буфер обмена',  icon: 'clipboard',danger: false },
-  set_clipboard:  { label: 'Записать в буфер',     icon: 'clipboard',danger: false },
+  set_clipboard:  { label: 'Записать в буфер',     icon: 'clipboard',danger: true },
   get_system_info:{ label: 'Инфо о системе',       icon: 'info',     danger: false },
+  generate_image: { label: 'Генерация изображения',icon: 'image',    danger: true },
+}
+
+const DANGEROUS_CMD_PATTERNS = [
+  'rm ', 'rmdir', 'del ', 'rd ', 'format', 'shutdown',
+  'taskkill', 'kill ', 'reg delete', 'reg add', 'netsh',
+  'bcdedit', 'diskpart', 'dd if=', 'shred', 'wipefs', 'mkfs',
+]
+
+function isDangerousCommand(toolName: string, args: Record<string, unknown>): boolean {
+  if (toolName !== 'run_command') return TOOL_LABELS[toolName]?.danger ?? false
+  const cmd = String(args.command ?? '').toLowerCase()
+  return DANGEROUS_CMD_PATTERNS.some(p => cmd.includes(p))
 }
 
 export default function AgentConfirmDialog() {
@@ -39,6 +54,7 @@ export default function AgentConfirmDialog() {
 
   const current = queue[0]
   const meta = current ? (TOOL_LABELS[current.toolName] || { label: current.toolName, icon: 'zap', danger: false }) : null
+  const isDanger = current ? isDangerousCommand(current.toolName, current.args) : false
 
   return createPortal(
     <AnimatePresence>
@@ -56,12 +72,14 @@ export default function AgentConfirmDialog() {
             exit={{ opacity: 0, y: 16, scale: 0.97 }}
             transition={{ type: 'spring', stiffness: 420, damping: 30 }}
           >
-            <div className={`agent-confirm-icon ${meta.danger ? 'agent-confirm-icon--danger' : 'agent-confirm-icon--safe'}`}>
+            <div className={`agent-confirm-icon ${isDanger ? 'agent-confirm-icon--danger' : 'agent-confirm-icon--safe'}`}>
               <AppIcon name={meta.icon as 'zap'} size="md" />
             </div>
 
             <div className="agent-confirm-body">
-              <div className="agent-confirm-title">Агент хочет выполнить действие</div>
+              <div className="agent-confirm-title">
+                {isDanger ? '⚠ Опасное действие' : 'Агент хочет выполнить действие'}
+              </div>
               <div className="agent-confirm-tool">{meta.label}</div>
 
               {/* Аргументы */}

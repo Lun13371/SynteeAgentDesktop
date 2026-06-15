@@ -266,7 +266,31 @@ export class Agent {
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool })
 
           const mode = callbacks.approvalMode || 'auto'
-          if (mode === 'ask' && callbacks.onConfirm) {
+          const needsConfirm = (() => {
+            if (mode === 'auto') return false
+            if (mode === 'full') return !isHiddenTool  // спрашивать всё кроме скрытых
+            if (mode === 'ask') {
+              // Только реально опасные — необратимые действия
+              if (fn.name === 'run_command') {
+                const cmd = String(args.command ?? '').toLowerCase()
+                const dangerous = [
+                  'rm ', 'rm\t', 'rmdir', 'del ', 'del\t', 'rd ',
+                  'format', 'shutdown', 'taskkill', 'kill ',
+                  'reg delete', 'reg add', 'netsh', 'bcdedit',
+                  'diskpart', 'cipher /w', 'sdelete', 'mkfs',
+                  'dd if=', 'shred', ':(){', 'fork bomb',
+                  '> /dev/', 'truncate', 'wipefs',
+                ]
+                return dangerous.some(d => cmd.includes(d))
+              }
+              if (fn.name === 'set_clipboard') return true        // скрытая запись
+              if (fn.name === 'generate_image') return true        // расход денег
+              return false
+            }
+            return false
+          })()
+
+          if (needsConfirm && callbacks.onConfirm) {
             const approved = await callbacks.onConfirm(fn.name, args)
             if (!approved) {
               resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
