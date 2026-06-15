@@ -41,10 +41,14 @@ export default function AgentConfirmDialog() {
   const [queue, setQueue] = useState<ConfirmRequest[]>([])
 
   useEffect(() => {
-    window.syntee.agent.onConfirm((data) => {
-      setQueue(q => [...q, data as ConfirmRequest])
+    const handler = (data: ConfirmRequest) => {
+      setQueue(q => [...q, data])
       playConfirmSound()
-    })
+    }
+    const wrapper = window.syntee.agent.onConfirm(handler)
+    return () => {
+      if (wrapper) window.syntee.agent.offConfirm?.(wrapper as never)
+    }
   }, [])
 
   const respond = (reqId: string, approved: boolean) => {

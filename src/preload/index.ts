@@ -81,7 +81,12 @@ const synteeAPI = {
     getSettings: () => ipcRenderer.invoke('agent:getSettings'),
     setSettings: (s: unknown) => ipcRenderer.invoke('agent:setSettings', s),
     onConfirm: (cb: (data: { reqId: string; toolName: string; args: unknown }) => void) => {
-      ipcRenderer.on('agent:confirm', (_, data) => cb(data))
+      const wrapper = (_: unknown, data: unknown) => cb(data as { reqId: string; toolName: string; args: unknown })
+      ipcRenderer.on('agent:confirm', wrapper)
+      return wrapper  // возвращаем wrapper для последующего offConfirm
+    },
+    offConfirm: (wrapper: (...args: unknown[]) => void) => {
+      ipcRenderer.removeListener('agent:confirm', wrapper)
     },
     confirmResponse: (reqId: string, approved: boolean) => {
       ipcRenderer.send(`agent:confirm:response:${reqId}`, approved)
