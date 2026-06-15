@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import PlanCard from '../PlanCard/PlanCard'
+import ToolResultRenderer from './ToolResultRenderer'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import './ToolChain.css'
 
@@ -186,7 +187,7 @@ function IterationBlock({
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.15, ease: 'easeOut' }}
             >
-              {iter.call.toolArgs && Object.keys(iter.call.toolArgs).length > 0 && (
+              {iter.call.toolArgs && Object.keys(iter.call.toolArgs).length > 0 && mode === 'detailed' && (
                 <div className="tc2-section">
                   <div className="tc2-section-title">Аргументы</div>
                   <div className="tc2-code-block">
@@ -200,37 +201,56 @@ function IterationBlock({
                 </div>
               )}
 
-              {iter.result && (
-                <div className="tc2-section">
-                  <div className="tc2-section-title" style={{ color: failed ? '#f87171' : '#4ade80' }}>
-                    {failed ? 'Ошибка' : 'Результат'}
-                  </div>
-                  {iter.call.toolName === 'save_plan' && iter.result.success ? (
-                    <div className="tc2-plan-saved">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14 2 14 8 20 8"/>
-                      </svg>
-                      {iter.result.content}
+              {iter.result && mode !== 'compact' && (() => {
+                // save_plan — специальная плашка
+                if (iter.call.toolName === 'save_plan' && iter.result.success) {
+                  return (
+                    <div className="tc2-section">
+                      <div className="tc2-section-title" style={{ color: '#4ade80' }}>Результат</div>
+                      <div className="tc2-plan-saved">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                          <polyline points="14 2 14 8 20 8"/>
+                        </svg>
+                        {iter.result.content}
+                      </div>
                     </div>
-                  ) : iter.result.imageUrl ? (
-                    <div className="tc2-image-wrap">
-                      <img
-                        src={`file://${iter.result.imageUrl}`}
-                        alt="Результат"
-                        className="tc2-image"
-                        onClick={() => window.open(`file://${iter.result!.imageUrl}`, '_blank')}
-                      />
+                  )
+                }
+                // image — картинка
+                if (iter.result.imageUrl) {
+                  return (
+                    <div className="tc2-section">
+                      <div className="tc2-section-title" style={{ color: '#4ade80' }}>Результат</div>
+                      <div className="tc2-image-wrap">
+                        <img
+                          src={`file://${iter.result.imageUrl}`}
+                          alt="Результат"
+                          className="tc2-image"
+                          onClick={() => window.open(`file://${iter.result!.imageUrl}`, '_blank')}
+                        />
+                      </div>
                     </div>
-                  ) : iter.result.diff ? (
-                    <DiffBlock diff={iter.result.diff} />
-                  ) : (
-                    <pre className="tc2-result-pre">
-                      {truncate(iter.result.content, mode === 'detailed' ? 1000 : 300)}
-                    </pre>
-                  )}
-                </div>
-              )}
+                  )
+                }
+                // diff — DiffBlock
+                if (iter.result.diff) {
+                  return (
+                    <div className="tc2-section">
+                      <div className="tc2-section-title" style={{ color: '#4ade80' }}>Результат</div>
+                      <DiffBlock diff={iter.result.diff} />
+                    </div>
+                  )
+                }
+                // умный рендер через ToolResultRenderer
+                return (
+                  <ToolResultRenderer
+                    call={iter.call}
+                    result={iter.result}
+                    mode={mode}
+                  />
+                )
+              })()}
 
               {running && (
                 <div className="tc2-section tc2-section--running">
