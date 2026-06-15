@@ -251,7 +251,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             })
           },
           onGetAgentStatus: (agentId) => {
-            return agentStatusCache.get(agentId) ?? null
+            return new Promise((resolve) => {
+              const replyId = `get-status-${agentId}-${Date.now()}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve(reply.status as { status: string; currentStep?: string; stepsCount: number } | null)
+              })
+              send({ type: 'get_agent_status', chatId, msgId, replyId, agent_id: agentId })
+            })
           },
         },
         agentSettings.maxSteps,
