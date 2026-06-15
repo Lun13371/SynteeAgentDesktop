@@ -163,15 +163,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             if (step.hidden) {
               return
             }
-            // Streaming tool call — шлём partial args в UI (не сохраняем в steps)
-            if ((step as { type: string }).type === 'tool_call_streaming') {
-              send({ type: 'tool_call_streaming', chatId, msgId,
-                toolName: step.toolName,
-                partialArgs: step.content,
-                callId: step.callId,
-              })
-              return
-            }
             if (step.type === 'tool_call') {
               const ts = {
                 id: `${Date.now()}-${Math.random()}`,
@@ -236,6 +227,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           },
           onPlanSaved: (plan) => {
             send({ type: 'plan_saved', chatId, msgId, plan })
+          },
+          onStatus: (text) => {
+            send({ type: 'agent_status', chatId, msgId, text })
           },
           approvalMode: agentSettings.approvalMode as never,
           onSpawnAgent: (opts) => {
@@ -324,6 +318,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           },
           onRateLimit: (waitSec) => {
             send({ type: 'rate_limit', chatId, waitSec })
+          },
+          onWaiting: () => {
+            send({ type: 'agent_status', chatId, msgId, text: 'Ожидаю ответа...' })
+          },
+          onRetry: (attempt, reason, waitSec) => {
+            const text = reason === 'rate_limit'
+              ? `Лимит запросов, повтор через ${waitSec}с...`
+              : `Ошибка сети, повтор ${attempt}...`
+            send({ type: 'agent_status', chatId, msgId, text })
           },
         },
         'main',

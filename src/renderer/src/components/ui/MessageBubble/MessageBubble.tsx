@@ -199,10 +199,11 @@ function AgentCardLive({ agentId, task, parallel }: {
 }
 
 // Shimmer-индикатор ожидания AI (думает / rate limit)
-function WaitingIndicator({ rateLimitSec }: { rateLimitSec?: number }) {
+function WaitingIndicator({ rateLimitSec, agentStatus }: { rateLimitSec?: number; agentStatus?: string | null }) {
   const isRateLimit = rateLimitSec && rateLimitSec > 0
-  const text = isRateLimit ? `Rate limit — жду ${rateLimitSec}с...` : 'Думаю...'
-  return <span className={`msg-waiting-shimmer${isRateLimit ? ' msg-waiting-shimmer--rl' : ''}`}>{text}</span>
+  const text = agentStatus ?? (isRateLimit ? `Rate limit — жду ${rateLimitSec}с...` : 'Думаю...')
+  const cls = isRateLimit ? ' msg-waiting-shimmer--rl' : agentStatus ? ' msg-waiting-shimmer--status' : ''
+  return <span className={`msg-waiting-shimmer${cls}`}>{text}</span>
 }
 
 // Мемоизированный тяжёлый контент сообщения
@@ -210,7 +211,7 @@ const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
-  userMarkdown = true, timeEl,
+  userMarkdown = true, timeEl, agentStatus,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -225,6 +226,7 @@ const MessageContent = memo(function MessageContent({
   rateLimitSec?: number
   userMarkdown?: boolean
   timeEl?: React.ReactNode
+  agentStatus?: string | null
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -421,7 +423,7 @@ const MessageContent = memo(function MessageContent({
 
         {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
         {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && liveIters?.length === 0 && (
-          <WaitingIndicator rateLimitSec={rateLimitSec} />
+          <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
         )}
 
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
@@ -456,7 +458,7 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
                   {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && (
-                    <WaitingIndicator rateLimitSec={rateLimitSec} />
+                    <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
                   )}
                 </div>
               )
@@ -607,6 +609,7 @@ const MessageBubble = memo(function MessageBubble({
               rateLimitSec={rateLimitSec}
               userMarkdown={isUser ? userMarkdown : true}
               timeEl={timeEl}
+              agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
             />
           )}
           <PlanCard
@@ -638,6 +641,7 @@ const MessageBubble = memo(function MessageBubble({
         rateLimitSec={rateLimitSec}
         userMarkdown={isUser ? userMarkdown : true}
         timeEl={timeEl}
+        agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
       />
       )}
     </motion.div>

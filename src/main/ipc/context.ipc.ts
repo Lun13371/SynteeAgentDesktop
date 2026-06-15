@@ -71,9 +71,7 @@ export function registerContextIPC(store: Store): void {
     if (!incognito && chatId) {
       try {
         const messages = getMessages(chatId) as Message[]
-        const slice = agentSettings.enableTools !== false
-          ? messages.slice(-10)
-          : messages.slice(-20)
+        const slice = messages.slice(-10)
 
         historyTokens = countMessages(slice.map(m => ({ role: m.role, content: m.content })))
         historyMsgCount = slice.length

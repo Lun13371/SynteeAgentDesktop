@@ -4,7 +4,6 @@ import { agentManager } from '../AgentManager'
 
 const DEFAULT_AGENT_SETTINGS = {
   approvalMode: 'ask',
-  enableTools: true,
   maxSteps: 8,
   toolOutputMode: 'normal',
   enableThinking: false,

@@ -561,12 +561,12 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
 }
 
 function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string; enableThinking: boolean }>({
-    approvalMode: 'ask', maxSteps: 8, enableTools: true, toolOutputMode: 'normal', enableThinking: false
+  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; toolOutputMode: string; enableThinking: boolean }>({
+    approvalMode: 'ask', maxSteps: 8, toolOutputMode: 'normal', enableThinking: false
   })
 
   useEffect(() => {
-    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; enableTools: boolean; toolOutputMode: string; enableThinking: boolean }) => {
+    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; toolOutputMode: string; enableThinking: boolean }) => {
       setAgentSettings(s)
     }).catch(() => {})
   }, [])
@@ -594,10 +594,6 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
           value={agentSettings.approvalMode as import('../../../../../shared/types').ApprovalMode}
           onChange={mode => updateAgent({ approvalMode: mode })}
         />
-      </Field>
-
-      <Field label="Инструменты в чате" description="Разрешить агенту использовать системные инструменты в обычном чате">
-        <Toggle value={agentSettings.enableTools} onChange={v => updateAgent({ enableTools: v })} />
       </Field>
 
       <Field label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">

@@ -24,7 +24,6 @@ import type { Message, AgentSettings } from '../../shared/types'
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   approvalMode: 'ask',
   maxSteps: 8,
-  enableTools: true,
   toolOutputMode: 'normal',
   enableThinking: false,
 }
@@ -136,7 +135,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // ── Compressed tool history — последние 2 assistant-ответа с тулами ────
     // Добавляем в начало истории сжатые tool_call/tool_result из прошлых сессий
     // чтобы AI помнил что делал раньше (result обрезается до 300 символов)
-    if (agentSettings.enableTools && !params.incognito) {
+    if (!params.incognito) {
       try {
         const allMsgs = getMessages(params.chatId)
         // Берём последние assistant-сообщения у которых есть toolSteps
@@ -295,14 +294,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId })
           break
 
-        case 'tool_call_streaming':
-          win?.webContents.send('agent:tool_streaming', {
-            msgId: msg.msgId,
-            chatId: msg.chatId,
-            toolName: msg.toolName,
-            partialArgs: msg.partialArgs,
-            callId: msg.callId,
-          })
+        case 'agent_status':
+          win?.webContents.send('agent:status', { msgId: msg.msgId, chatId: msg.chatId, text: msg.text })
           break
 
         case 'spawn_agent': {
@@ -464,7 +457,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       content: params.content,
       history: processedHistory,
       systemPrompt: getSystemPrompt(params.chatId),
-      enableTools: agentSettings.enableTools,
+      enableTools: true,
       incognito: !!params.incognito,
       agentSettings,
     })

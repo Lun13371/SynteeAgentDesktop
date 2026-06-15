@@ -163,16 +163,16 @@ class AgentManager {
 
       // Шлём params так же как chat.ipc.ts
       const agentSettings = (storeData.agentSettings as Record<string, unknown> | undefined) ?? {
-        enableTools: true, maxSteps: 8, approvalMode: 'auto',
+        maxSteps: 8, approvalMode: 'auto',
         toolOutputMode: 'normal', enableThinking: false,
       }
       worker.postMessage({
-        chatId: `subagent:${record.id}`,  // изолируем от основного chatId
+        chatId: `subagent:${record.id}`,
         msgId: record.id,
         content: record.task,
         history: [],
         systemPrompt: `Ты суб-агент. Твоя задача: ${record.task}\n\nВыполни задачу и дай чёткий итог. Будь краток в финальном ответе — только результат.`,
-        enableTools: agentSettings.enableTools ?? true,
+        enableTools: true,
         incognito: false,
         agentSettings,
         storeData,

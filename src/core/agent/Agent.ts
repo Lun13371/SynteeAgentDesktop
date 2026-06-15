@@ -27,6 +27,7 @@ export interface AgentCallbacks {
   onDone: (answer: string) => void
   onError: (error: Error) => void
   onPlanSaved?: (plan: { title: string; content: string; summary: string; filePath: string }) => void
+  onStatus?: (text: string) => void  // текущий статус агента для UI
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
@@ -94,6 +95,33 @@ flowchart TD
 - Пути: \`C:\\Users\\....\` или \`/c/Users/...\` — оба формата OK.
 - Переменные: \`$env:USERPROFILE\`, \`$env:APPDATA\`.`
 
+// Нормализация имени тула — убирает любые префиксы/суффиксы которые провайдеры добавляют
+// Берёт актуальные имена из переданных схем динамически
+// Например: u_read_file -> read_file, hermes_run_command -> run_command
+function normalizeToolName(name: string, schemas: Array<{ function: { name: string } }>): string {
+  const knownNames = schemas.map(s => s.function.name)
+  // Точное совпадение
+  if (knownNames.includes(name)) return name
+  // Убираем любой префикс до первого _ и проверяем остаток
+  // Работает с любым префиксом: u_, hermes_, tools_, custom_, etc.
+  const parts = name.split('_')
+  for (let i = 1; i < parts.length; i++) {
+    const candidate = parts.slice(i).join('_')
+    if (knownNames.includes(candidate)) return candidate
+  }
+  // Убираем любой суффикс после последнего _ и проверяем
+  for (let i = parts.length - 1; i > 0; i--) {
+    const candidate = parts.slice(0, i).join('_')
+    if (knownNames.includes(candidate)) return candidate
+  }
+  // Substring match — имя тула содержится как подстрока
+  for (const known of knownNames) {
+    if (name.includes(known)) return known
+  }
+  // Не распознали — возвращаем как есть
+  return name
+}
+
 // Подсказки агенту при ошибках тулов — помогают исправить без лишних итераций
 function getToolErrorHint(toolName: string, error: string): string {
   const e = error.toLowerCase()
@@ -154,6 +182,7 @@ export class Agent {
         return
       }
       try {
+        callbacks.onStatus?.('Ожидаю ответа...')
         const response = await this.client.chatWithTools(
           messages,
           toolSchemas ?? TOOL_SCHEMAS,
@@ -161,12 +190,6 @@ export class Agent {
           this.role,
           (token) => callbacks.onStep({ type: 'answer', content: token }),
           callbacks.onContextCounted,
-          (idx, name, partialArgs, toolId) => callbacks.onStep({
-            type: 'tool_call_streaming',
-            toolName: name,
-            content: partialArgs,
-            callId: toolId || `streaming-${idx}`,
-          } as never),
         )
 
         // Abort во время запроса
@@ -227,6 +250,13 @@ export class Agent {
         await Promise.all(response.tool_calls.map(async (call) => {
           const fn = (call as { function: { name: string; arguments: string } }).function
           const callId = (call as { id: string }).id
+          // Нормализуем имя тула — фикс для провайдеров которые добавляют префиксы (u_, hermes_ и т.д.)
+          const rawName = fn.name
+          const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string } }>
+          fn.name = normalizeToolName(rawName, activeSchemas)
+          if (fn.name !== rawName) {
+            console.warn(`[Agent] Auto-repaired tool name: '${rawName}' -> '${fn.name}'`)
+          }
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(fn.arguments) } catch {}
 
@@ -244,6 +274,7 @@ export class Agent {
               return
             }
           }
+          callbacks.onStatus?.(`${fn.name}...`)
 
           const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
