@@ -651,7 +651,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               >
                 {virtualizer.getVirtualItems().map(vItem => {
                   const msg = displayMessages[vItem.index]
-                  const isLive = msg.id === (streamMsgIdRef.current || 'streaming')
+                  const isLive = msg.id === (streamMsgId || 'streaming')
                   return (
                     <div
                       key={msg.id}
