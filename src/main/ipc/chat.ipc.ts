@@ -296,12 +296,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
         case 'confirm': {
           const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown> }
-          // Шлём в renderer — показываем диалог
-          win?.webContents.send('agent:confirm', { reqId, toolName, args })
-          // Ждём ответа от пользователя
+          // Сначала регистрируем listener — до отправки в renderer, чтобы не пропустить быстрый ответ
           ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
             worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved })
           })
+          // Потом шлём в renderer — показываем диалог
+          win?.webContents.send('agent:confirm', { reqId, toolName, args })
           break
         }
 
