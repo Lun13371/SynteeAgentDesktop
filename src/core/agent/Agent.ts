@@ -269,15 +269,19 @@ export class Agent {
           const mode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
           const approval = needsApproval(fn.name, args, mode)
 
-          if (approval.block) {
-            // Блокируем без диалога — auto режим для опасных команд
-            const blockMsg = `Действие заблокировано (режим ${mode}): ${approval.reason}`
+          // Скрытые тулы (think, update_working_memory) никогда не спрашиваем
+          const effectiveApproval = isHiddenTool
+            ? { confirm: false, block: false, reason: '' }
+            : approval
+
+          if (effectiveApproval.block) {
+            const blockMsg = `Действие заблокировано (режим ${mode}): ${effectiveApproval.reason}`
             resultMap.set(callId, { contentForAI: blockMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockMsg, success: false })
             return
           }
 
-          if (approval.confirm && callbacks.onConfirm) {
+          if (effectiveApproval.confirm && callbacks.onConfirm) {
             const approved = await callbacks.onConfirm(fn.name, args)
             if (!approved) {
               resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
