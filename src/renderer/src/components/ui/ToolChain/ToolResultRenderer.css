@@ -1,0 +1,278 @@
+/* ToolResultRenderer styles */
+
+.trr-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Секция аргументов (только detailed) */
+.trr-args-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trr-result-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trr-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+/* Аргументы */
+.trr-args {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.trr-arg-row {
+  display: flex;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  align-items: flex-start;
+}
+.trr-arg-row:last-child { border-bottom: none; }
+
+.trr-arg-key {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 80px;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+.trr-arg-val {
+  font-size: 11px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  font-family: monospace;
+  max-height: 120px;
+  overflow: hidden;
+}
+
+/* Code блок */
+.trr-code-wrap {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Terminal */
+.trr-terminal {
+  background: #0d1117;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.trr-terminal-pre {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* File list */
+.trr-filelist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.trr-filelist-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.trr-filelist-item:hover { background: rgba(255,255,255,0.04); }
+
+.trr-filelist-icon { font-size: 11px; flex-shrink: 0; }
+.trr-filelist-name { font-family: monospace; }
+
+/* Web search */
+.trr-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trr-search-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.trr-search-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.trr-search-url {
+  font-size: 10px;
+  color: var(--accent);
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trr-search-snippet {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Key-value */
+.trr-kv {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.trr-kv-row {
+  display: flex;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 12px;
+}
+.trr-kv-row:last-child { border-bottom: none; }
+
+.trr-kv-key {
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 120px;
+  flex-shrink: 0;
+}
+
+.trr-kv-val {
+  color: var(--text-primary);
+  font-family: monospace;
+  word-break: break-all;
+}
+
+/* Code matches */
+.trr-code-matches {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: #0d1117;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.trr-code-match-line {
+  padding: 2px 10px;
+}
+
+.trr-code-match-line:hover { background: rgba(255,255,255,0.04); }
+
+.trr-code-match-line pre {
+  margin: 0;
+  font-size: 11px;
+  font-family: monospace;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+}
+
+/* Quote */
+.trr-quote {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: rgba(255,255,255,0.03);
+  border-radius: 0 8px 8px 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  font-style: italic;
+}
+
+/* File written */
+.trr-file-written {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #4ade80;
+  padding: 6px 10px;
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: 8px;
+  font-family: monospace;
+}
+
+/* Default pre */
+.trr-pre {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Truncated notice */
+.trr-truncated {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 3px 6px;
+  opacity: 0.7;
+}
+
+/* Expand button */
+.trr-expand-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.trr-expand-btn:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--text-primary);
+}
