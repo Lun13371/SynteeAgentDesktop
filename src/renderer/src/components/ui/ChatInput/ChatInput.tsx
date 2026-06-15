@@ -207,7 +207,7 @@ export default function ChatInput({
           ))}
         </div>
       )}
-      <div className="chat-input-box glass" ref={boxRef}>
+      <div className="chat-input-box" ref={boxRef}>
         {/* + кнопка с меню */}
         <div className="chat-input-plus-wrap" ref={plusWrapRef}>
           <button
