@@ -32,7 +32,7 @@ export interface AgentCallbacks {
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
   onWaitAgents?: (agentIds: string[]) => Promise<Array<{ summary: string; error?: string }>>
-  onGetAgentStatus?: (agentId: string) => { status: string; currentStep?: string; stepsCount: number } | null
+  onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   onContextCounted?: (promptTokens: number) => void  // tiktoken подсчёт реального запроса перед каждым раундом
 }
 
@@ -438,7 +438,7 @@ export class Agent {
           return { success: false, output: '', error: 'get_agent_status не поддерживается' }
         }
         const agentId = args.agent_id as string
-        const status = callbacks.onGetAgentStatus(agentId)
+        const status = await callbacks.onGetAgentStatus(agentId)
         if (!status) return { success: false, output: '', error: `Агент ${agentId} не найден` }
         return {
           success: true,

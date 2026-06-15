@@ -40,6 +40,7 @@ class AgentManager {
   private windows = new Set<BrowserWindow>()
   private store: Store | null = null
   private defaultMaxParallel = 3
+  private resolvers = new Map<string, (result: { summary: string; error?: string }) => void>()
 
   init(store: Store) {
     this.store = store
@@ -144,6 +145,8 @@ class AgentManager {
   ): Promise<{ summary: string; error?: string }> {
     return new Promise((resolve) => {
       const workerPath = join(__dirname, 'ai-worker.js')
+      // Сохраняем resolver чтобы cancel() мог его вызвать
+      this.resolvers.set(record.id, resolve)
 
       let worker: Worker
       try {
@@ -209,6 +212,7 @@ class AgentManager {
               ? fullResult.slice(0, 500) + '...'
               : fullResult
             this.workers.delete(record.id)
+            this.resolvers.delete(record.id)
             this.broadcast('agent:update', record)
             resolve({ summary: record.summary })
             break
@@ -218,6 +222,7 @@ class AgentManager {
             record.error = msg.error as string
             record.finishedAt = Date.now()
             this.workers.delete(record.id)
+            this.resolvers.delete(record.id)
             this.broadcast('agent:update', record)
             resolve({ summary: '', error: record.error })
             break
@@ -258,6 +263,12 @@ class AgentManager {
       record.status = 'cancelled'
       record.finishedAt = Date.now()
       this.broadcast('agent:update', record)
+    }
+    // Резолвим зависший Promise — основной агент продолжит работу
+    const resolver = this.resolvers.get(id)
+    if (resolver) {
+      this.resolvers.delete(id)
+      resolver({ summary: '', error: 'Суб-агент отменён пользователем' })
     }
     // Отменяем дочерние тоже
     for (const child of this.getChildren(id)) {
