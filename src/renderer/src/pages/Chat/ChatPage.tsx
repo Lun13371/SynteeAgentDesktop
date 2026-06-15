@@ -355,7 +355,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     const offStatus = window.syntee.on('agent:status', (data: { msgId: string; chatId: string; text: string }) => {
       if (!streamMsgIdRef.current) return
-      if (data.msgId !== streamMsgIdRef.current) return
+      // Принимаем статус если chatId совпадает — msgId может быть 'streaming-pending' в начале
+      if (data.chatId && data.chatId !== currentChatIdRef.current) return
       setAgentStatus(data.text)
     })
 
@@ -715,13 +716,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             </div>
           )}
 
-          {rateLimitSec > 0 && (
-            <div className="rate-limit-bar">
-              <AppIcon name="loader" size="sm" tone="warning" animation="spin" />
-              <span>Ожидание rate limit: {rateLimitSec}с</span>
-            </div>
-          )}
-
           <ChatInput
             onSend={handleSend}
             disabled={isTyping}
@@ -738,6 +732,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onReasoningChange={handleReasoningChange}
             planningMode={planningMode}
             onPlanningModeChange={setPlanningMode}
+            rateLimitSec={rateLimitSec}
           />
 
           {/* Selection reply popup — через portal чтобы fixed работал правильно */}

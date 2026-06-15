@@ -356,6 +356,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               ? `Лимит запросов, повтор через ${waitSec}с...`
               : `Ошибка сети, повтор ${attempt}...`
             send({ type: 'agent_status', chatId, msgId, text })
+            // Дублируем rate_limit для бара с таймером
+            if (reason === 'rate_limit' && waitSec) {
+              send({ type: 'rate_limit', chatId, waitSec })
+            }
           },
         },
         'main',
