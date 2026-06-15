@@ -1,8 +1,8 @@
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import { promisify } from 'util'
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs'
 import { tmpdir, homedir } from 'os'
-import { join } from 'path'
+import { join, resolve as pathResolve } from 'path'
 import { clipboard } from 'electron'
 import OpenAI from 'openai'
 import type Store from 'electron-store'
@@ -454,81 +454,122 @@ export function readFiles(paths: string[]): ToolResult {
 }
 
 // ── search_code — поиск по коду (ripgrep/grep/Select-String) ─────────────
+
+// Кэшируем путь к rg один раз
+let rgBin: string | null | undefined = undefined
+async function findRg(): Promise<string | null> {
+  if (rgBin !== undefined) return rgBin
+  try {
+    const cmd = process.platform === 'win32' ? 'where rg' : 'which rg'
+    const { stdout } = await execAsync(cmd, { timeout: 3000 })
+    rgBin = stdout.trim().split('\n')[0].trim() || null
+  } catch { rgBin = null }
+  return rgBin
+}
+
 export async function searchCode(
   pattern: string,
   searchPath: string,
   opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number; maxChars?: number }
 ): Promise<ToolResult> {
   const maxResults = opts?.maxResults ?? 50
-  const context = opts?.context ?? 2
+  const contextLines = opts?.context ?? 2
   const maxChars = opts?.maxChars ?? 12000
+
+  // Нормализуем путь — относительный → абсолютный
+  const absPath = pathResolve(process.cwd(), searchPath)
+
+  const ignoreGlobs = ['!node_modules', '!dist', '!out', '!.git', '!__pycache__', '!.venv', '!build', '!*.min.js', '!*.map']
+  const ignoreFlag = ignoreGlobs.map(g => `--glob "${g}"`).join(' ')
   const caseFlag = opts?.ignoreCase ? '-i' : '-s'
   const globFlag = opts?.fileGlob ? `--glob "${opts.fileGlob}"` : ''
-  const ignoreFlag = '--glob "!node_modules" --glob "!dist" --glob "!out" --glob "!.git" --glob "!__pycache__" --glob "!.venv" --glob "!build"'
-  const escaped = pattern.replace(/"/g, '\\"')
 
-  // Пробуем ripgrep
-  const rgCmd = `rg --line-number --no-heading ${caseFlag} ${globFlag} ${ignoreFlag} -C ${context} -m ${maxResults} "${escaped}" "${searchPath}"`
-  try {
-    const { stdout } = await execAsync(rgCmd, { timeout: 15000 })
-    const out = formatRgOutput(stdout.trim(), maxResults) || 'Совпадений не найдено'
-    const truncated = out.length > maxChars
-    return { success: true, output: truncated ? out.slice(0, maxChars) + `\n...[обрезано, ${out.length} символов]` : out }
-  } catch {}
+  const rg = await findRg()
 
-  // Fallback: grep (Linux/Mac)
-  if (process.platform !== 'win32') {
-    const grepCmd = `grep -rn ${opts?.ignoreCase ? '-i' : ''} -m ${maxResults} -C ${context} "${escaped}" "${searchPath}" ${opts?.fileGlob ? `--include="${opts.fileGlob}"` : ''} --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git`
+  if (rg) {
+    // Используем spawn-стиль через --json для надёжного парсинга на Windows
+    // Но execAsync с правильным экранированием проще — используем одинарные кавычки внутри
+    const escaped = pattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+    const cmd = `"${rg}" --line-number --no-heading ${caseFlag} ${globFlag} ${ignoreFlag} -C ${contextLines} -m ${maxResults} "${escaped}" "${absPath}"`
     try {
-      const { stdout } = await execAsync(grepCmd, { timeout: 15000 })
-      return { success: true, output: stdout.trim() || 'Совпадений не найдено' }
+      const { stdout } = await execAsync(cmd, { timeout: 15000 })
+      const out = formatRgOutput(stdout.trim(), maxResults)
+      if (out) {
+        const truncated = out.length > maxChars
+        return { success: true, output: truncated ? out.slice(0, maxChars) + `\n...[обрезано, показано ${maxChars} из ${out.length} символов]` : out }
+      }
+      return { success: true, output: 'Совпадений не найдено' }
     } catch (e: any) {
+      // rg exit code 1 = нет совпадений (не ошибка)
       if (e.code === 1) return { success: true, output: 'Совпадений не найдено' }
-      return { success: false, output: '', error: e.message }
+      // Реальная ошибка — логируем и идём дальше
+      const rgErr = `[rg error: ${e.message?.slice(0, 100)}]`
+
+      // Fallback PowerShell с пометкой
+      const psResult = await searchCodePowerShell(pattern, absPath, opts)
+      if (psResult.success) {
+        return { success: true, output: `${rgErr}\n${psResult.output}` }
+      }
+      return psResult
     }
   }
 
-  // Fallback Windows: PowerShell Select-String
-  const psPattern = pattern.replace(/'/g, "''")
-  const psGlob = opts?.fileGlob ? opts.fileGlob : '*.*'
+  // rg не найден — сразу PowerShell
+  return searchCodePowerShell(pattern, absPath, opts)
+}
+
+async function searchCodePowerShell(
+  pattern: string,
+  absPath: string,
+  opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number }
+): Promise<ToolResult> {
+  const maxResults = opts?.maxResults ?? 50
+  const psPattern = pattern.replace(/'/g, "''").replace(/\\/g, '\\')
+  const psGlob = opts?.fileGlob ?? '*.*'
   const psCase = opts?.ignoreCase ? '' : '-CaseSensitive'
+  const context = opts?.context ?? 2
+
   const psCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "` +
-    `$r = Get-ChildItem -Path '${searchPath}' -Recurse -Filter '${psGlob}' | ` +
+    `$r = Get-ChildItem -Path '${absPath}' -Recurse -Filter '${psGlob}' -ErrorAction SilentlyContinue | ` +
     `Where-Object { $_.FullName -notmatch 'node_modules|dist|out|\\.git|__pycache__|\\.venv|build' } | ` +
-    `Select-String ${psCase} -Pattern '${psPattern}' | Select-Object -First ${maxResults}; ` +
+    `Select-String ${psCase} -Pattern '${psPattern}' -Context ${context},${context} -ErrorAction SilentlyContinue | ` +
+    `Select-Object -First ${maxResults}; ` +
     `if ($r) { $r | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ': ' + $_.Line.Trim() } } else { 'Совпадений не найдено' }"`
   try {
-    const { stdout } = await execAsync(psCmd, { timeout: 20000 })
+    const { stdout } = await execAsync(psCmd, { timeout: 25000 })
     return { success: true, output: stdout.trim() || 'Совпадений не найдено' }
   } catch (e: any) {
     return { success: false, output: '', error: 'search_code: ' + e.message }
   }
 }
 
-// Группирует вывод rg по файлам
+// Группирует вывод rg по файлам (поддерживает Windows пути C:\...)
 function formatRgOutput(raw: string, max: number): string {
   if (!raw) return ''
-  const lines = raw.split('\n').slice(0, max * 5)
+  const lines = raw.split('\n').slice(0, max * 8)
   const files = new Map<string, string[]>()
   for (const line of lines) {
-    // rg формат: path:line:content или path-line-context
-    const m = line.match(/^([^:]+):(\d+)[:-](.*)$/)
+    if (line === '--') continue  // разделитель контекста
+    // Windows: C:\path\file.ts:42:content — берём всё до последнего :digit:
+    const m = line.match(/^(.+?):(\d+)[:-](.*)$/)
     if (m) {
       const [, file, lineNum, content] = m
-      if (!files.has(file)) files.set(file, [])
-      files.get(file)!.push(`  ${lineNum}: ${content}`)
-    } else if (line === '--') {
-      // разделитель контекста — пропускаем
-    } else if (line) {
-      // контекстная строка без номера — добавляем к последнему файлу
+      // Фикс Windows путей: если file = "C" и следующий символ был ":", восстанавливаем
+      const realFile = file.length === 1 && /^[a-zA-Z]$/.test(file)
+        ? line.match(/^([a-zA-Z]:[^:]+):(\d+)[:-](.*)$/)?.[1] ?? file
+        : file
+      if (!files.has(realFile)) files.set(realFile, [])
+      files.get(realFile)!.push(`  ${lineNum}: ${content}`)
+    } else if (line.trim()) {
       const last = Array.from(files.keys()).pop()
       if (last) files.get(last)!.push(`  ${line}`)
     }
   }
   const out: string[] = []
-  Array.from(files.entries()).forEach(([file, fileLines]) => {
+  files.forEach((fileLines, file) => {
     out.push(`\n● ${file}`)
-    out.push(...fileLines.slice(0, 20))
+    out.push(...fileLines.slice(0, 30))
+    if (fileLines.length > 30) out.push(`  ... ещё ${fileLines.length - 30} строк`)
   })
   return out.join('\n').trim()
 }
@@ -991,7 +1032,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'search_code',
-      description: 'Поиск по коду: regex или текст в файлах проекта. rg → grep → PowerShell Select-String. Игнорирует node_modules/dist/.git. Возвращает результаты сгруппированные по файлам с контекстом.',
+      description: 'Поиск по коду: regex или текст в файлах. Использует ripgrep (быстро) или PowerShell. Игнорирует node_modules/dist/.git. Возвращает файлы + номера строк + контекст. ВАЖНО: path должен быть абсолютным (C:\\Projects\\... или /c/Projects/...).',
       parameters: {
         type: 'object',
         properties: {
