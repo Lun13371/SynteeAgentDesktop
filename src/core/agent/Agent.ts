@@ -186,7 +186,6 @@ export class Agent {
 
     // Трекаем изменённые файлы для авто-обновления рабочей памяти
     const modifiedFiles = new Set<string>()
-    let toolCallCount = 0
     // Кэш прочитанных файлов (можно отключить через настройки)
     const useCache = options?.readFileCache !== false
     const readFileCache = useCache ? new Map<string, string>() : new Map<string, string>()
@@ -256,20 +255,33 @@ export class Agent {
 
           callbacks.onDone(answer)
 
-          // Авто-обновление рабочей памяти если были изменения файлов
-          if (modifiedFiles.size > 0 && this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {
+          // Авто-обновление рабочей памяти — при изменении файлов или при read-only сессии
+          if (this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {
             const ctxS = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
-
             const existing = this.onGetWorkingMemory ? this.onGetWorkingMemory(this.chatId) : ''
-            console.log('[agent] updating structured memory, files:', Array.from(modifiedFiles).join(', '))
-            const structured = updateStructuredMemory(existing, {
-              lastTask: answer.slice(0, 200),
-              modifiedFiles: Array.from(modifiedFiles),
-              diffEntries: ctxS.diffJournalEnabled ? this.pendingDiffEntries : [],
-              fileMap: ctxS.fileMapEnabled ? this.fileMap : undefined,
-            })
-            this.pendingDiffEntries = []
-            this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
+
+            if (modifiedFiles.size > 0) {
+              // Были изменения — полное обновление с diff и file map
+              console.log('[agent] updating structured memory, files:', Array.from(modifiedFiles).join(', '))
+              const structured = updateStructuredMemory(existing, {
+                lastTask: answer.slice(0, 200),
+                modifiedFiles: Array.from(modifiedFiles),
+                diffEntries: ctxS.diffJournalEnabled ? this.pendingDiffEntries : [],
+                fileMap: ctxS.fileMapEnabled ? this.fileMap : undefined,
+              })
+              this.pendingDiffEntries = []
+              this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
+            } else if (this.fileMap.size > 0 && ctxS.fileMapEnabled) {
+              // Read-only сессия — обновляем только file map без изменения других секций
+              console.log('[agent] updating file map only (read-only session), files:', this.fileMap.size)
+              const structured = updateStructuredMemory(existing, {
+                lastTask: answer.slice(0, 200),
+                modifiedFiles: [],
+                diffEntries: [],
+                fileMap: this.fileMap,
+              })
+              this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
+            }
           }
 
           return
@@ -389,7 +401,6 @@ export class Agent {
           })
 
           resultMap.set(callId, { contentForAI, callId, name: fn.name })
-          toolCallCount++
         }))
 
         // Применяем мутации state после всех параллельных тулов — race condition safe
