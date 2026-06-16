@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { useSettingsStore } from '../../../store/settings.store'
 import { DEFAULT_CONTEXT_SETTINGS, type ContextSettings } from '../../../../../core/context/contextManager'
@@ -27,6 +28,34 @@ export default function ContextSettingsTab() {
   const upd = (patch: Partial<ContextSettings>) => {
     set('contextSettings', { ...s, ...patch })
   }
+
+  // Агентные настройки — через agent.getSettings/setSettings
+  const [agentS, setAgentS] = useState<{ readFileCache: boolean; toolSummarization: boolean; autoMemoryInterval: number }>({
+    readFileCache: true, toolSummarization: true, autoMemoryInterval: 5,
+  })
+
+  useEffect(() => {
+    window.syntee.agent.getSettings().then((r: Record<string, unknown>) => {
+      setAgentS(prev => ({
+        readFileCache: r.readFileCache !== false,
+        toolSummarization: r.toolSummarization !== false,
+        autoMemoryInterval: (r.autoMemoryInterval as number) ?? 5,
+        ...prev,
+      }))
+    }).catch(() => {})
+  }, [])
+
+  const setAgentSetting = (key: string, value: unknown) => {
+    setAgentS(prev => ({ ...prev, [key]: value }))
+    window.syntee.agent.setSettings({ [key]: value }).catch(() => {})
+  }
+
+  const AgentToggle = ({ settingKey, defaultValue }: { settingKey: keyof typeof agentS; defaultValue: boolean }) => (
+    <Toggle
+      value={agentS[settingKey] as boolean ?? defaultValue}
+      onChange={v => setAgentSetting(settingKey, v)}
+    />
+  )
 
   return (
     <div className="ctx-tab">
@@ -139,6 +168,51 @@ export default function ContextSettingsTab() {
         </div>
         <div className="ctx-field">
           <span className="ctx-hint">💡 Подсказка: напиши агенту «запомни что ты сделал» — он обновит рабочую память вручную.</span>
+        </div>
+      </section>
+
+      {/* ── Оптимизация агента ── */}
+      <section className="ctx-section">
+        <div className="ctx-section__head">
+          <div>
+            <h3>Оптимизация агента</h3>
+            <p className="ctx-section__desc">
+              Настройки экономии токенов и улучшения контекста при длинных агентских сессиях.
+            </p>
+          </div>
+        </div>
+
+        <div className="ctx-fields">
+          <div className="ctx-section__head" style={{ marginTop: 12 }}>
+            <div>
+              <label style={{ fontWeight: 600, fontSize: 13 }}>Кэш прочитанных файлов</label>
+              <p className="ctx-section__desc">Не читать один файл повторно в рамках одного запроса — экономит токены</p>
+            </div>
+            <AgentToggle settingKey="readFileCache" defaultValue={true} />
+          </div>
+
+          <div className="ctx-section__head" style={{ marginTop: 12 }}>
+            <div>
+              <label style={{ fontWeight: 600, fontSize: 13 }}>Сжатие истории тулов</label>
+              <p className="ctx-section__desc">Автоматически сжимать старые вызовы инструментов в краткое резюме при длинных сессиях</p>
+            </div>
+            <AgentToggle settingKey="toolSummarization" defaultValue={true} />
+          </div>
+
+          <div className="ctx-field" style={{ marginTop: 12 }}>
+            <label>Авто-память каждые N шагов</label>
+            <div className="ctx-slider-row">
+              <select className="ctx-select" value={agentS.autoMemoryInterval ?? 5}
+                onChange={e => setAgentSetting('autoMemoryInterval', Number(e.target.value))}>
+                <option value={0}>Отключено</option>
+                <option value={3}>Каждые 3 шага</option>
+                <option value={5}>Каждые 5 шагов</option>
+                <option value={10}>Каждые 10 шагов</option>
+                <option value={15}>Каждые 15 шагов</option>
+              </select>
+            </div>
+            <span className="ctx-hint">Автоматически сохранять прогресс в рабочую память. По умолчанию: каждые 5</span>
+          </div>
         </div>
       </section>
 
