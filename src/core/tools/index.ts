@@ -147,11 +147,17 @@ export function readFile(path: string, offset?: number, limit?: number, outlineO
 
 export function writeFile(path: string, content: string): ToolResult {
   try {
-    // Автоматически создаём директории если нужно
     const dir = join(path, '..')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    // Читаем оригинал для diff (если файл существует)
+    let original = ''
+    try { original = existsSync(path) ? readFileSync(path, 'utf-8') : '' } catch { /* ok */ }
     writeFileSync(path, content, 'utf-8')
-    return { success: true, output: 'Файл записан: ' + path }
+    const lines = content.split('\n').length
+    // Генерируем diff как у edit_file
+    const diff = makeDiff(original, content, path)
+    const changedLines = diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).length
+    return { success: true, output: `Файл записан: ${path} (${lines} строк, ${changedLines} строк изменено)`, diff }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
@@ -934,7 +940,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: 'Записать текст в файл.',
+      description: 'ПОЛНАЯ ПЕРЕЗАПИСЬ файла целиком. Для изменений в существующем файле используй edit_file (mode=replace или overwrite) — он безопаснее и возвращает diff. write_file только для создания нового файла с нуля или полного замены содержимого. Возвращает diff.',
       parameters: {
         type: 'object',
         properties: {
