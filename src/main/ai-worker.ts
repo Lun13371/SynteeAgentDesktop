@@ -236,6 +236,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onError: (err) => {
             send({ type: 'error', chatId, error: err.message })
           },
+          onContextUpdate: (tokens: number) => {
+            const pct = Math.min(100, Math.round(tokens / contextWindow * 100))
+            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            send({
+              type: 'context_usage',
+              pct, estimated: tokens, limit: contextWindow, status,
+              breakdown: { history: historyBaseTokens, system: sysPromptTokens, tools: 3800, current: tokens - historyBaseTokens - sysPromptTokens - 3800 },
+            })
+          },
           onPlanSaved: (plan) => {
             send({ type: 'plan_saved', chatId, msgId, plan })
           },

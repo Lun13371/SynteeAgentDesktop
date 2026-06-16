@@ -42,35 +42,33 @@ export function calcSystemPromptTokens(systemPrompt: string): number {
 }
 
 // ─── ПОЛУЧЕНИЕ contextWindow ОТ АКТИВНОЙ МОДЕЛИ ──────────────────────────────
+// Единый источник истины — делегируем в ModelContextLimits
 
+import { getContextLimit } from '../tokens/ModelContextLimits'
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import type { ModelMeta, ModelAssignment } from '../../shared/types'
 
 export function getModelContextWindow(storeData: Record<string, unknown>): number {
   const assignments = storeData.modelAssignments as ModelAssignment[] | undefined
   const mainAssignment = assignments?.find(a => a.role === 'main')
-  if (!mainAssignment?.modelId) return 200_000  // разумный дефолт
+  if (!mainAssignment?.modelId) return 128_000
 
   const modelId = mainAssignment.modelId
 
-  // 1. Ищем в builtin моделях
-  const builtin = BUILTIN_MODELS.find(m => m.id === modelId)
-  if (builtin?.contextWindow && builtin.contextWindow > 0) return builtin.contextWindow
-
-  // 2. Ищем в кастомных моделях
+  // 1. Кастомные модели — пользователь мог задать явно
   const customModels = storeData.customModels as ModelMeta[] | undefined
   const custom = customModels?.find(m => m.id === modelId)
   if (custom?.contextWindow && custom.contextWindow > 0) return custom.contextWindow
 
-  // 3. Эвристика по имени модели
-  const id = modelId.toLowerCase()
-  if (id.includes('gemini-2.5') || id.includes('gpt-4.1')) return 1_000_000
-  if (id.includes('claude') || id.includes('gpt-4o') || id.includes('o3') || id.includes('o4')) return 200_000
-  if (id.includes('gemini')) return 1_000_000
-  if (id.includes('deepseek')) return 64_000
-  if (id.includes('llama') || id.includes('grok')) return 128_000
+  // 2. Builtin модели
+  const builtin = BUILTIN_MODELS.find(m => m.id === modelId)
+  if (builtin?.contextWindow && builtin.contextWindow > 0) return builtin.contextWindow
 
-  return 200_000  // безопасный дефолт
+  // 3. Единая таблица ModelContextLimits (частичное совпадение)
+  const limit = getContextLimit(modelId)
+  if (limit > 0) return limit
+
+  return 128_000  // безопасный дефолт — лучше занижать чем завышать
 }
 
 // ─── НАСТРОЙКИ КОНТЕКСТА ──────────────────────────────────────────────────────

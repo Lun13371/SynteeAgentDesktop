@@ -1,24 +1,30 @@
 // Лимиты контекста моделей (в токенах)
 // Если модели нет в таблице — возвращаем 0 (нужно брать у провайдера)
 
+// Добавляем актуальные модели — gpt-5.x, claude-opus-4-7/8, sonnet-4-6 и др.
 const CONTEXT_LIMITS: Record<string, number> = {
   // Claude
   'claude-opus-4': 200000,
-  'claude-sonnet-4-6': 200000,
+  'claude-opus-4-7': 200000,
+  'claude-opus-4-8': 200000,
   'claude-sonnet-4-5': 200000,
+  'claude-sonnet-4-6': 200000,
   'claude-haiku-4-5': 200000,
   'claude-3-5-sonnet': 200000,
   'claude-3-5-haiku': 200000,
   'claude-3-opus': 200000,
 
-  // GPT
-  'gpt-4o': 128000,
-  'gpt-4o-mini': 128000,
+  // GPT-5.x (onlysq)
+  'gpt-5': 128000,
+  'gpt-5.1': 128000,
+  'gpt-5.2': 128000,
+  'gpt-5.4': 128000,
+  'gpt-5.5': 128000,
   'gpt-4.1': 1000000,
   'gpt-4.1-mini': 1000000,
+  'gpt-4o': 128000,
+  'gpt-4o-mini': 128000,
   'gpt-4.5': 128000,
-  'gpt-5': 200000,
-  'gpt-5.1': 200000,
   'o3': 200000,
   'o4-mini': 200000,
 
@@ -47,6 +53,7 @@ const CONTEXT_LIMITS: Record<string, number> = {
 
   // Kimi
   'kimi-k2p6': 128000,
+  'kimi-k2': 128000,
 }
 
 export function getContextLimit(modelId: string): number {

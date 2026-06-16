@@ -71,13 +71,15 @@ export function registerContextIPC(store: Store): void {
     if (!incognito && chatId) {
       try {
         const messages = getMessages(chatId) as Message[]
-        const slice = messages.slice(-10)
+        // Берём все сообщения — реально в запрос идут все, не только последние 10
+        const slice = messages
 
         historyTokens = countMessages(slice.map(m => ({ role: m.role, content: m.content })))
         historyMsgCount = slice.length
 
-        // Считаем токены tool_steps (tool_call + tool_result JSON)
-        for (const msg of slice) {
+        // Токены tool_steps считаем только для последних 20 — они реально идут в историю
+        const recentWithTools = slice.slice(-20)
+        for (const msg of recentWithTools) {
           if (msg.toolSteps?.length) {
             for (const step of msg.toolSteps) {
               const stepText = JSON.stringify(step)

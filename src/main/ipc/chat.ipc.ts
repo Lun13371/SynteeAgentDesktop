@@ -181,6 +181,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let processedHistory = rawHistory
     let contextCompressed = false
     if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
+      // Используем реальный лимит модели вместо дефолта 200k
+      const realContextWindow = getModelContextWindow(storeData)
+      const rollingSettings = { ...ctxSettings, contextLimitTokens: realContextWindow }
       // AI-резюме через fast модель — iterative update если уже есть резюме
       const summaryFn = async (prompt: string): Promise<string> => {
         const aiClient = new AIClient(store)
@@ -201,7 +204,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           .replace(/^\[CONTEXT COMPACTION[^\]]*\][^\n]*\n\n/, '')
           .replace(/\n\[\/CONTEXT COMPACTION\]$/, '')
         : undefined
-      const result = await applyRollingWindowAsync(rawHistory, ctxSettings, summaryFn, existingSummary)
+      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, existingSummary)
       if (result.compressed) {
         processedHistory = result.messages
         contextCompressed = true
