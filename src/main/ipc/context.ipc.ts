@@ -1,11 +1,12 @@
 import { ipcMain } from 'electron'
 import type Store from 'electron-store'
-import { getMessages } from '../../core/db/database'
+import { getMessages, getWorkingMemory } from '../../core/db/database'
 import { getAllMemoriesForContext } from '../../core/memory/MemoryEngine'
 import { countTokens, countMessages } from '../../core/tokens/TokenCounter'
 import { getContextLimit } from '../../core/tokens/ModelContextLimits'
 import { getModelPrice, estimateCost } from '../../core/tokens/ModelPricing'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
+import { TOOL_SCHEMAS_OVERHEAD } from '../../core/context/contextManager'
 import type { AgentSettings, Message } from '../../shared/types'
 
 const RESERVED_FOR_OUTPUT = 2000
@@ -51,51 +52,35 @@ export function registerContextIPC(store: Store): void {
   }): ContextInfo => {
     const { chatId, currentInput, modelId, incognito } = params
 
-    // System prompt — те же данные что и в ai-worker
+    // System prompt — ТОЧНО такой же как в реальном запросе (с working memory)
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
-    try {
-      memoryContext = getAllMemoriesForContext()
-    } catch { /* нет памяти — не критично */ }
-
-    const systemPromptText = buildSystemPrompt({ userName, memoryContext })
+    let workingMemory = ''
+    try { memoryContext = getAllMemoriesForContext() } catch { /* ok */ }
+    try { if (chatId) workingMemory = getWorkingMemory(chatId) } catch { /* ok */ }
+    const systemPromptText = buildSystemPrompt({ userName, memoryContext, workingMemory })
     const systemPromptTokens = countTokens(systemPromptText)
 
-    // История чата + tool_calls токены
-    const agentSettings = store.get('agentSettings', {}) as AgentSettings
+    // История — только m.content как в реальном запросе (toolSteps НЕ идут в API)
     let historyTokens = 0
     let historyMsgCount = 0
-    let toolCallsTokens = 0
-    let toolCallsCount = 0
 
     if (!incognito && chatId) {
       try {
         const messages = getMessages(chatId) as Message[]
-        // Берём все сообщения — реально в запрос идут все, не только последние 10
-        const slice = messages
-
-        historyTokens = countMessages(slice.map(m => ({ role: m.role, content: m.content })))
-        historyMsgCount = slice.length
-
-        // Токены tool_steps считаем только для последних 20 — они реально идут в историю
-        const recentWithTools = slice.slice(-20)
-        for (const msg of recentWithTools) {
-          if (msg.toolSteps?.length) {
-            for (const step of msg.toolSteps) {
-              const stepText = JSON.stringify(step)
-              toolCallsTokens += countTokens(stepText)
-              if (step.type === 'tool_call') toolCallsCount++
-            }
-          }
-        }
+        historyTokens = countMessages(messages.map(m => ({ role: m.role, content: m.content })))
+        historyMsgCount = messages.length
       } catch { /* DB ошибка — не критично */ }
     }
 
     // Текущий ввод
     const inputTokens = countTokens(currentInput)
 
-    // Итого
-    const total = systemPromptTokens + historyTokens + toolCallsTokens + inputTokens + RESERVED_FOR_OUTPUT
+    // Tool schemas — всегда присутствуют в запросе
+    const toolSchemasTokens = TOOL_SCHEMAS_OVERHEAD
+
+    // Итого — точно то что пойдёт в следующий запрос
+    const total = systemPromptTokens + historyTokens + inputTokens + toolSchemasTokens + RESERVED_FOR_OUTPUT
     const limit = getContextLimit(modelId)
     const percent = limit > 0 ? Math.min(100, (total / limit) * 100) : 0
 
@@ -112,8 +97,8 @@ export function registerContextIPC(store: Store): void {
       systemPrompt: systemPromptTokens,
       history: historyTokens,
       historyMessages: historyMsgCount,
-      toolCallsTokens,
-      toolCallsCount,
+      toolCallsTokens: toolSchemasTokens,  // теперь это tool schemas overhead
+      toolCallsCount: 0,                    // не считаем отдельно
       currentInput: inputTokens,
       reserved: RESERVED_FOR_OUTPUT,
       total,
