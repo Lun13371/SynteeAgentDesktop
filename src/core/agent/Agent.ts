@@ -361,16 +361,7 @@ export class Agent {
               })
             }
           }
-          // File Map — трекаем read_file
-          if (result.success && fn.name === 'read_file') {
-            const p = args.path as string | undefined
-            if (p && ctxSettings.fileMapEnabled) {
-              pendingMutations.push(() => {
-                const existing = this.fileMap.get(p)
-                this.fileMap.set(p, { reads: (existing?.reads ?? 0) + 1, writes: existing?.writes ?? 0, note: existing?.note ?? '' })
-              })
-            }
-          }
+          // File Map для read_file обновляется прямо в executeTool (case 'read_file')
 
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
           const imageUrl = imageMatch ? imageMatch[1] : undefined
@@ -432,12 +423,10 @@ export class Agent {
           })
         }
 
-        // Tool result summarization — сжимаем старые раунды если messages > 12
-        // Оставляем system + history + user + последние 3 раунда полными
-        const KEEP_FULL_ROUNDS = 3
+        // Tool result summarization — сжимаем старые раунды если накопилось много
+        const KEEP_FULL_ROUNDS = 8  // было 3 — AI теперь видит 8 последних раундов полностью
         const toolMsgCount = messages.filter(m => m.role === 'tool' || (m.role === 'assistant' && (m as { tool_calls?: unknown[] }).tool_calls?.length)).length
         if (useSummarization && toolMsgCount > KEEP_FULL_ROUNDS * 2) {
-          // Находим первый assistant с tool_calls (начало старых раундов)
           let oldRoundsCompressed = 0
           const compressed: string[] = []
           const toRemove = new Set<number>()
@@ -445,19 +434,28 @@ export class Agent {
             const m = messages[i]
             const asst = m as { role: string; tool_calls?: Array<{ function: { name: string } }> }
             if (asst.role === 'assistant' && asst.tool_calls?.length && oldRoundsCompressed < toolMsgCount - KEEP_FULL_ROUNDS * 2) {
-              // Сжимаем этот раунд
               const names = asst.tool_calls.map(tc => tc.function.name).join(', ')
-              // Ищем tool results после этого assistant
               let j = i + 1
               const results: string[] = []
               while (j < messages.length && messages[j].role === 'tool') {
-                const content = (messages[j].content as string) ?? ''
-                results.push(content.slice(0, 400))  // фикс 2: было 60, теперь 400
-                toRemove.add(j)
+                const toolMsg = messages[j] as { role: string; name?: string; content: string }
+                const content = toolMsg.content ?? ''
+                // read_file результаты не сжимаем — AI должен помнить содержимое файлов
+                const isReadFile = toolMsg.name === 'read_file' || names.includes('read_file')
+                if (isReadFile) {
+                  // Оставляем read_file в toRemove но не сжимаем — просто не убираем
+                  results.push(content.slice(0, 1500))
+                } else {
+                  results.push(content.slice(0, 400))
+                  toRemove.add(j)
+                }
                 j++
               }
               compressed.push(`[${names}]: ${results.join(' | ')}`)
-              toRemove.add(i)
+              // assistant message убираем только если все его tool results убраны
+              if (asst.tool_calls.every((_, idx) => toRemove.has(i + 1 + idx))) {
+                toRemove.add(i)
+              }
               oldRoundsCompressed++
             }
           }
@@ -526,7 +524,18 @@ export class Agent {
           return { success: true, output: this.readFileCache.get(cacheKey)! }
         }
         const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined)
-        if (result.success) this.readFileCache.set(cacheKey, result.output)
+        if (result.success) {
+          this.readFileCache.set(cacheKey, result.output)
+          // Обновляем file map с первыми 200 символами содержимого
+          if (ctxSettings.fileMapEnabled) {
+            const existing = this.fileMap.get(filePath)
+            this.fileMap.set(filePath, {
+              reads: (existing?.reads ?? 0) + 1,
+              writes: existing?.writes ?? 0,
+              note: existing?.note || result.output.slice(0, 200).replace(/\n/g, ' '),
+            })
+          }
+        }
         return result
       }
 
