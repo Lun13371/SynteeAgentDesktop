@@ -86,6 +86,12 @@ function runMigrations(): void {
       updated_at  INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS chat_summaries (
+      chat_id     TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+      content     TEXT NOT NULL DEFAULT '',
+      updated_at  INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
     CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
     CREATE INDEX IF NOT EXISTS idx_memory_category ON memory(category);
@@ -339,3 +345,19 @@ export function clearWorkingMemory(chatId: string): void {
   db.prepare('DELETE FROM chat_working_memory WHERE chat_id = ?').run(chatId)
 }
 
+export function getChatSummary(chatId: string): string {
+  const row = db.prepare('SELECT content FROM chat_summaries WHERE chat_id = ?').get(chatId) as { content: string } | undefined
+  return row?.content ?? ''
+}
+
+export function setChatSummary(chatId: string, content: string): void {
+  db.prepare(`
+    INSERT INTO chat_summaries (chat_id, content, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(chat_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at
+  `).run(chatId, content.slice(0, 12000), Date.now())
+}
+
+export function clearChatSummary(chatId: string): void {
+  db.prepare('DELETE FROM chat_summaries WHERE chat_id = ?').run(chatId)
+}

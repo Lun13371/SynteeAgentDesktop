@@ -365,6 +365,10 @@ export class AIClient {
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
     const model = this.getModel(resolvedRole) || this.getModel('main')
     const client = this.getClientForRole(resolvedRole)
+    const temperature = (this.store.get('temperature') as number) || 0.7
+    const maxTokens = (this.store.get('maxTokens') as number) || 4096
+    const reasoningValue = (this.store.get('reasoningValue') as string) || ''
+    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue) : {}
 
     // Считаем реальный контекст через tiktoken перед каждым раундом агента
     if (onContextCounted) {
@@ -388,8 +392,16 @@ export class AIClient {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const stream = await (client.chat.completions.create as any)({
-          model, messages, tools, tool_choice: 'auto', signal, stream: true,
-        })
+          model,
+          messages,
+          tools,
+          tool_choice: 'auto',
+          stream: true,
+          stream_options: { include_usage: true },
+          temperature,
+          max_tokens: maxTokens,
+          ...reasoningExtra,
+        }, { signal })
 
         let content = ''
         let reasoning = ''
@@ -399,6 +411,12 @@ export class AIClient {
 
         for await (const chunk of stream) {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+          if (chunk.usage) {
+            const usage = chunk.usage as { prompt_tokens?: number; completion_tokens?: number }
+            if (usage.prompt_tokens != null) {
+              onUsage?.(usage.prompt_tokens, usage.completion_tokens ?? 0)
+            }
+          }
           const delta = chunk.choices[0]?.delta
           if (!delta) continue
 
@@ -413,7 +431,8 @@ export class AIClient {
 
           // Reasoning токены
           const rTok = delta.reasoning_content ?? delta.thinking ?? delta.reasoning_summary
-          if (rTok && typeof rTok === 'string') reasoning += rTok
+          const reasoningChunk = extractReasoningText(rTok)
+          if (reasoningChunk) reasoning += reasoningChunk
 
           // Tool call чанки — собираем по index
           if (delta.tool_calls) {
