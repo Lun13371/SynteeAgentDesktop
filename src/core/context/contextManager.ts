@@ -103,7 +103,7 @@ export interface ContextSettings {
 
 export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
   toolTruncEnabled: true,
-  toolMaxChars: 8000,          // было 4000 — больше контента файлов
+  toolMaxChars: 6000,          // было 8000 — достаточно, outline компенсирует
   rollingEnabled: true,
   rollingTriggerPct: 85,       // было 75 — меньше ненужных сжатий
   rollingKeepFirst: 2,
