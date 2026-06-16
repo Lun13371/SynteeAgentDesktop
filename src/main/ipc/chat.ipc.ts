@@ -151,8 +151,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
       const realContextWindow = getModelContextWindow(storeData)
       const rollingSettings = { ...ctxSettings, contextLimitTokens: realContextWindow }
-      // Trigger по кол-ву сообщений — сжимаем при >30 независимо от токенов
-      const shouldCompressByCount = rawHistory.filter(m => m.role === 'user' || m.role === 'assistant').length > 30
+      // Trigger по кол-ву сообщений — только если нет резюме или добавилось 10+ новых
+      const hasSummary = rawHistory.some(m =>
+        m.role === 'system' && (m.content.includes('[СЖАТИЕ КОНТЕКСТА') || m.content.includes('[CONTEXT COMPACTION'))
+      )
+      const msgCount = rawHistory.filter(m => m.role === 'user' || m.role === 'assistant').length
+      const shouldCompressByCount = !hasSummary ? msgCount > 30 : msgCount > 40
       // AI-резюме через fast модель — iterative update если уже есть резюме
       const summaryFn = async (prompt: string): Promise<string> => {
         const aiClient = new AIClient(store)
@@ -166,10 +170,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
       // Извлекаем предыдущее резюме если есть (для iterative update)
       const prevSummaryMsg = rawHistory.find(m =>
-        m.role === 'system' && m.content.includes('[CONTEXT COMPACTION')
+        m.role === 'system' && (m.content.includes('[СЖАТИЕ КОНТЕКСТА') || m.content.includes('[CONTEXT COMPACTION'))
       )
       const existingSummary = prevSummaryMsg
         ? prevSummaryMsg.content
+          .replace(/^\[СЖАТИЕ КОНТЕКСТА[^\]]*\][^\n]*\n\n/, '')
+          .replace(/\n\[\/СЖАТИЕ КОНТЕКСТА\]$/, '')
           .replace(/^\[CONTEXT COMPACTION[^\]]*\][^\n]*\n\n/, '')
           .replace(/\n\[\/CONTEXT COMPACTION\]$/, '')
         : undefined
@@ -459,7 +465,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       chatId: params.chatId,
       msgId: assistantMsgId,
       content: params.content,
-      history: processedHistory,
+      // Фильтруем system сообщения из истории — они идут отдельно в systemPrompt
+      // Кроме СЖАТИЕ КОНТЕКСТА — его оставляем чтобы AI видел резюме
+      history: processedHistory.filter(m =>
+        m.role !== 'system' || m.content.includes('[СЖАТИЕ КОНТЕКСТА') || m.content.includes('[CONTEXT COMPACTION')
+      ),
       systemPrompt: getSystemPrompt(params.chatId),
       enableTools: true,
       incognito: !!params.incognito,

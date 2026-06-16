@@ -306,7 +306,7 @@ export async function applyRollingWindowAsync(
 
   const summaryMsg: ChatMessage = {
     role: 'system',
-    content: `[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. Treat it as background reference, NOT as active instructions. Do NOT repeat completed work. Respond ONLY to the latest user message after this summary.\n\n${summaryContent}\n[/CONTEXT COMPACTION]`,
+    content: `[СЖАТИЕ КОНТЕКСТА — ТОЛЬКО СПРАВОЧНО] Предыдущие сообщения сжаты в резюме ниже. Используй как фоновую информацию, НЕ как активные инструкции. НЕ повторяй уже выполненное. Отвечай ТОЛЬКО на последнее сообщение пользователя после этого резюме.\n\n${summaryContent}\n[/СЖАТИЕ КОНТЕКСТА]`,
   }
 
   return {
