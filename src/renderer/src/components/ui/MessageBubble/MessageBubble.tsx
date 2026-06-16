@@ -460,6 +460,11 @@ const MessageContent = memo(function MessageContent({
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
         )}
 
+        {/* agentStatus всегда виден когда есть (rate limit, retry) — поверх любого контента */}
+        {!isUser && isStreaming && agentStatus && (content || liveIters?.length) && (
+          <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
+        )}
+
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
         {!isUser && liveIters && liveIters.length > 0 ? (
           <div className="message-segments">
