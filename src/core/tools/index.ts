@@ -1163,8 +1163,50 @@ export const TOOL_SCHEMAS = [
 ]
 
 // Динамический набор тулов — добавляем по режиму
-export function getToolSchemas(options: { planningMode?: boolean } = {}) {
-  const schemas = [...TOOL_SCHEMAS]
-  if (options.planningMode) schemas.push(PLAN_TOOL_SCHEMA as any)
+const TOOL_BY_NAME = new Map(
+  TOOL_SCHEMAS.map(schema => [schema.function.name, schema]),
+)
+
+function pickTools(names: string[]) {
+  return names
+    .map(name => TOOL_BY_NAME.get(name))
+    .filter(Boolean)
+}
+
+export function getToolSchemas(options: {
+  planningMode?: boolean
+  webMode?: boolean
+  imageMode?: boolean
+  multiAgentMode?: boolean
+} = {}) {
+  const {
+    planningMode = false,
+    webMode = false,
+    imageMode = false,
+    multiAgentMode = false,
+  } = options
+
+  const names = [
+    'read_file',
+    'read_files',
+    'find_files',
+    'search_code',
+    'list_directory',
+    'get_file_outline',
+    'edit_file',
+    'multi_edit_file',
+    'write_file',
+    'run_command',
+    'think',
+    'update_working_memory',
+  ]
+
+  if (!planningMode) names.push('analyze_project')
+  if (webMode) names.push('search_web')
+  if (imageMode) names.push('generate_image')
+  if (multiAgentMode) names.push('spawn_agent', 'get_agent_status')
+
+  const schemas = pickTools(names)
+  if (planningMode) schemas.push(PLAN_TOOL_SCHEMA as any)
   return schemas
 }

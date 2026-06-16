@@ -19,27 +19,31 @@ export interface AgentStep {
 
 export interface AgentRecord {
   id: string
-  parentId: string | null       // null = корневой агент чата
+  parentId: string | null
   chatId: string
   task: string
   status: AgentStatus
   model: string
   parallel: boolean
   steps: AgentStep[]
-  result: string                // итоговый текст после завершения
-  summary: string               // краткий итог для контекста родителя
+  result: string
+  summary: string
   createdAt: number
   finishedAt?: number
   error?: string
 }
 
-// ── AgentManager ──────────────────────────────────────────────────────────
+export interface SubagentContext {
+  systemPrompt?: string
+  history?: Array<{ role: string; content: string }>
+  workingMemory?: string
+}
+
 class AgentManager {
   private agents = new Map<string, AgentRecord>()
   private workers = new Map<string, Worker>()
   private windows = new Set<BrowserWindow>()
   private store: Store | null = null
-  private defaultMaxParallel = 3
   private resolvers = new Map<string, (result: { summary: string; error?: string }) => void>()
 
   init(store: Store) {
@@ -80,7 +84,6 @@ class AgentManager {
     ).length
   }
 
-  // Основной метод — запустить суб-агента
   async spawn(opts: {
     id: string
     parentId: string
@@ -89,8 +92,8 @@ class AgentManager {
     parallel: boolean
     model?: string
     storeData: Record<string, unknown>
+    context?: SubagentContext
   }): Promise<{ summary: string; error?: string }> {
-
     const maxParallel = this.getMaxParallel()
     const running = this.getRunningCount()
     if (running >= maxParallel) {
@@ -121,11 +124,9 @@ class AgentManager {
     this.agents.set(opts.id, record)
     this.broadcast('agent:update', record)
 
-    // Запускаем worker
-    const promise = this._runWorker(record, opts.storeData)
+    const promise = this._runWorker(record, opts.storeData, opts.context)
 
     if (opts.parallel) {
-      // Не ждём — возвращаем сразу
       promise.catch(e => {
         record.status = 'error'
         record.error = String(e)
@@ -133,19 +134,18 @@ class AgentManager {
         this.broadcast('agent:update', record)
       })
       return { summary: `Суб-агент "${opts.task}" запущен параллельно (id: ${opts.id})` }
-    } else {
-      // Ждём результата
-      return promise
     }
+
+    return promise
   }
 
   private async _runWorker(
     record: AgentRecord,
-    storeData: Record<string, unknown>
+    storeData: Record<string, unknown>,
+    context?: SubagentContext,
   ): Promise<{ summary: string; error?: string }> {
     return new Promise((resolve) => {
       const workerPath = join(__dirname, 'ai-worker.js')
-      // Сохраняем resolver чтобы cancel() мог его вызвать
       this.resolvers.set(record.id, resolve)
 
       let worker: Worker
@@ -164,21 +164,31 @@ class AgentManager {
       this.workers.set(record.id, worker)
       this.broadcast('agent:update', record)
 
-      // Шлём params так же как chat.ipc.ts
       const agentSettings = (storeData.agentSettings as Record<string, unknown> | undefined) ?? {
-        maxSteps: 8, approvalMode: 'auto',
-        toolOutputMode: 'normal', enableThinking: false,
+        maxSteps: 8,
+        approvalMode: 'auto',
+        toolOutputMode: 'normal',
+        enableThinking: false,
       }
+
       worker.postMessage({
         chatId: `subagent:${record.id}`,
         msgId: record.id,
         content: record.task,
-        history: [],
-        systemPrompt: `Ты суб-агент. Твоя задача: ${record.task}\n\nВыполни задачу и дай чёткий итог. Будь краток в финальном ответе — только результат.`,
+        history: context?.history ?? [],
+        systemPrompt: context?.systemPrompt ?? `Ты суб-агент. Твоя задача: ${record.task}
+
+Работай только в рамках этой подзадачи.
+Сначала пойми релевантный код и контекст, затем выполни работу.
+Финальный ответ дай кратко:
+- что найдено или сделано
+- какие файлы важны
+- какие есть риски или следующий шаг`,
         enableTools: true,
         incognito: false,
         agentSettings,
         storeData,
+        workingMemory: context?.workingMemory ?? '',
       })
 
       worker.on('message', (msg: Record<string, unknown>) => {
@@ -264,13 +274,11 @@ class AgentManager {
       record.finishedAt = Date.now()
       this.broadcast('agent:update', record)
     }
-    // Резолвим зависший Promise — основной агент продолжит работу
     const resolver = this.resolvers.get(id)
     if (resolver) {
       this.resolvers.delete(id)
-      resolver({ summary: '', error: 'Суб-агент отменён пользователем' })
+      resolver({ summary: '', error: 'Суб-агент отменен пользователем' })
     }
-    // Отменяем дочерние тоже
     for (const child of this.getChildren(id)) {
       this.cancel(child.id)
     }

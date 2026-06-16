@@ -6,7 +6,7 @@
 import { parentPort, workerData } from 'worker_threads'
 import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
-import { buildSystemPrompt, buildPlanningInjection } from '../core/prompts/buildSystemPrompt'
+import { buildPlanningInjection } from '../core/prompts/buildSystemPrompt'
 import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '../core/context/contextManager'
 import { getToolSchemas } from '../core/tools/index'
 
@@ -59,6 +59,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     chatId, msgId, content, history,
     systemPrompt, enableTools, incognito,
     agentSettings,
+    toolSchemas,
   } = msg as {
     chatId: string
     msgId: string
@@ -67,6 +68,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     systemPrompt: string
     enableTools: boolean
     incognito: boolean
+    toolSchemas?: unknown[]
     agentSettings: {
       enableTools: boolean
       maxSteps: number
@@ -307,7 +309,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         undefined,
         systemPrompt,
         planningMode ? [{ role: 'system', content: buildPlanningInjection() }, ...history] : history,
-        getToolSchemas({ planningMode }),
+        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({ planningMode }),
         {
           autoMemoryInterval: agentSettings.autoMemoryInterval ?? 5,
           readFileCache: agentSettings.readFileCache !== false,

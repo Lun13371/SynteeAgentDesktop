@@ -10,7 +10,6 @@ import {
   readFiles, searchCode, analyzeProject,
   TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
 } from '../tools'
-import type { ApprovalMode } from '../../shared/types'
 import { truncateToolResult, getContextSettings } from '../context/contextManager'
 
 export interface AgentStep {
@@ -22,7 +21,7 @@ export interface AgentStep {
   imageUrl?: string
   diff?: string
   callId?: string
-  hidden?: boolean  // скрытые тулы (think, update_working_memory) — не показываются в UI
+  hidden?: boolean
 }
 
 export interface AgentCallbacks {
@@ -33,123 +32,80 @@ export interface AgentCallbacks {
   onStatus?: (text: string) => void
   onRateLimit?: (waitSec: number) => void
   onRetry?: (attempt: number, reason: string, waitSec?: number) => void
-  onContextUpdate?: (tokens: number) => void  // реальный размер messages после каждого раунда
+  onContextUpdate?: (tokens: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
   onWaitAgents?: (agentIds: string[]) => Promise<Array<{ summary: string; error?: string }>>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
-  onContextCounted?: (promptTokens: number) => void  // tiktoken подсчёт реального запроса перед каждым раундом
+  onContextCounted?: (promptTokens: number) => void
 }
 
-const SYSTEM_PROMPT = `Ты Syntee — автономный AI-агент для Windows. Решаешь задачи через инструменты: файлы, команды, поиск, система.
+const FALLBACK_SYSTEM_PROMPT = 'You are a capable coding agent. Follow the provided system prompt and use tools when needed.'
 
-## Режим работы
+type AgentMessage = {
+  role: string
+  content: string
+  tool_calls?: unknown[]
+  tool_call_id?: string
+  name?: string
+}
 
-Ты агент, не чат-бот. Получив задачу — действуй, не объясняй что собираешься делать.
+type NormalizedToolCall = {
+  call: unknown
+  callId: string
+  fn: { name: string; arguments: string }
+  args: Record<string, unknown>
+  isHiddenTool: boolean
+}
 
-**Перед первым действием используй think** — набрось план: что нужно понять, какие файлы прочитать, какой порядок шагов. Это занимает 0 токенов у пользователя но резко улучшает качество.
-
-**Правила выполнения:**
-- Параллельность — ВСЕГДА. Нужно прочитать 3 файла? Вызывай все три одновременно, не по очереди.
-- Независимые команды — запускай параллельно. Зависимые (B нужен результат A) — последовательно.
-- Не спрашивай разрешения на очевидные шаги. Просто делай.
-- Не пиши "Сейчас я сделаю X" — просто сделай X.
-- После выполнения — краткий итог что сделано. Не пересказывай каждый шаг.
-
-**При ошибке тула:**
-- Прочитай error внимательно — там обычно есть подсказка.
-- Не повторяй ту же команду. Исправь причину ошибки.
-- Если файл не найден — сначала найди его через find_files.
-- Если edit_file не нашёл old_str — прочитай файл заново, old_str мог устареть.
-
-**При работе с кодом:**
-- Сначала используй think чтобы понять архитектуру.
-- Читай только нужные части файлов (offset/limit), не весь файл целиком.
-- После изменения файла — diff уже в ответе тула, не нужно читать файл снова.
-- Изменяй только то что нужно. Не переписывай файл целиком если можно edit_file.
-
-**Рабочая память:**
-- В конце сложной сессии с изменениями файлов — вызови update_working_memory.
-- Пиши компактно: что изменил, в каком состоянии проект, что осталось.
-
-## Форматирование ответов
-
-**Диаграммы (Mermaid)** — для схем, графов, архитектуры:
-\`\`\`mermaid
-flowchart TD
-  A[Начало] --> B[Шаг]
-\`\`\`
-Типы: flowchart, sequenceDiagram, classDiagram, gantt, pie, gitGraph.
-
-**Цветные блоки:**
-:::note / :::tip / :::warning / :::danger / :::info
-
-**Diff** — для показа изменений:
-\`\`\`diff
-- старая строка
-+ новая строка
-\`\`\`
-
-**Таблицы** — markdown для структурированных данных.
-**Математика** — LaTeX: \`$E=mc^2$\`, \`$$\\frac{a}{b}$$\`.
-**Код** — всегда указывай язык: \`\`\`typescript, \`\`\`bash, \`\`\`python.
-
-## Система (Windows 10)
-
-- Команды: PowerShell по умолчанию. Unix-команды (ls, cat, grep) тоже работают.
-- Пути: \`C:\\Users\\....\` или \`/c/Users/...\` — оба формата OK.
-- Переменные: \`$env:USERPROFILE\`, \`$env:APPDATA\`.`
-
-// Нормализация имени тула — убирает любые префиксы/суффиксы которые провайдеры добавляют
-// Берёт актуальные имена из переданных схем динамически
-// Например: u_read_file -> read_file, hermes_run_command -> run_command
 function normalizeToolName(name: string, schemas: Array<{ function: { name: string } }>): string {
   const knownNames = schemas.map(s => s.function.name)
-  // Точное совпадение
   if (knownNames.includes(name)) return name
-  // Убираем любой префикс до первого _ и проверяем остаток
-  // Работает с любым префиксом: u_, hermes_, tools_, custom_, etc.
+
   const parts = name.split('_')
   for (let i = 1; i < parts.length; i++) {
     const candidate = parts.slice(i).join('_')
     if (knownNames.includes(candidate)) return candidate
   }
-  // Убираем любой суффикс после последнего _ и проверяем
+
   for (let i = parts.length - 1; i > 0; i--) {
     const candidate = parts.slice(0, i).join('_')
     if (knownNames.includes(candidate)) return candidate
   }
-  // Substring match — имя тула содержится как подстрока
+
   for (const known of knownNames) {
     if (name.includes(known)) return known
   }
-  // Не распознали — возвращаем как есть
+
   return name
 }
 
-// Подсказки агенту при ошибках тулов — помогают исправить без лишних итераций
 function getToolErrorHint(toolName: string, error: string): string {
   const e = error.toLowerCase()
-  if (toolName === 'edit_file' || toolName === 'multi_edit_file') {
-    if (e.includes('old_str не найден') || e.includes('not found')) {
-      return '\n\n[Hint: old_str не найден. Используй read_file чтобы получить актуальное содержимое файла, потом повтори edit_file с точным фрагментом.]'
-    }
+  if ((toolName === 'edit_file' || toolName === 'multi_edit_file') && (e.includes('not found') || e.includes('old_str'))) {
+    return '\n\n[Hint: refresh the file with read_file before retrying edit_file.]'
   }
-  if (toolName === 'read_file' || toolName === 'write_file') {
-    if (e.includes('no such file') || e.includes('не найден') || e.includes('enoent')) {
-      return '\n\n[Hint: файл не найден. Используй find_files чтобы найти правильный путь.]'
-    }
+  if ((toolName === 'read_file' || toolName === 'write_file') && (e.includes('no such file') || e.includes('enoent') || e.includes('not found'))) {
+    return '\n\n[Hint: locate the exact path with find_files first.]'
   }
   if (toolName === 'run_command') {
-    if (e.includes('not recognized') || e.includes('не является') || e.includes('command not found')) {
-      return '\n\n[Hint: команда не найдена. Проверь что инструмент установлен, или используй альтернативную команду.]'
+    if (e.includes('not recognized') || e.includes('command not found')) {
+      return '\n\n[Hint: verify the command exists or use an installed alternative.]'
     }
-    if (e.includes('permission') || e.includes('access denied') || e.includes('доступ запрещён')) {
-      return '\n\n[Hint: нет прав доступа. Попробуй с правами администратора или измени путь.]'
+    if (e.includes('permission') || e.includes('access denied')) {
+      return '\n\n[Hint: the command likely needs different permissions or a safer target path.]'
     }
   }
   return ''
+}
+
+function isSequentialTool(name: string): boolean {
+  return name === 'write_file' ||
+    name === 'edit_file' ||
+    name === 'multi_edit_file' ||
+    name === 'run_command' ||
+    name === 'set_clipboard'
 }
 
 export class Agent {
@@ -160,9 +116,7 @@ export class Agent {
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
   onGetWorkingMemory?: (chatId: string) => string
   pendingDiffEntries: DiffEntry[] = []
-  // Кэш read_file — сбрасывается при каждом run() — избегает повторных чтений
   private readFileCache = new Map<string, string>()
-  // File map — файлы которые AI трогал в этом run
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
@@ -171,37 +125,39 @@ export class Agent {
     this.client = new AIClient(store)
   }
 
-  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string, history?: Array<{ role: string; content: string }>, toolSchemas?: typeof TOOL_SCHEMAS, options?: { autoMemoryInterval?: number; readFileCache?: boolean; toolSummarization?: boolean }): Promise<void> {
-    const messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
-      { role: 'system', content: systemPrompt || SYSTEM_PROMPT },
-      // История как нормальные role: user/assistant сообщения
+  async run(
+    userMessage: string,
+    callbacks: AgentCallbacks,
+    maxSteps = 8,
+    signal?: AbortSignal,
+    systemPrompt?: string,
+    history?: Array<{ role: string; content: string }>,
+    toolSchemas?: typeof TOOL_SCHEMAS,
+    options?: { autoMemoryInterval?: number; readFileCache?: boolean; toolSummarization?: boolean }
+  ): Promise<void> {
+    const messages: AgentMessage[] = [
+      { role: 'system', content: systemPrompt || FALLBACK_SYSTEM_PROMPT },
       ...(history ?? []).map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: userMessage },
     ]
 
-    const tavilyKey = (this.store.get('integrations') as { tavily?: { key: string } })?.tavily?.key
-
-    // Трекаем параллельные агенты — ждём их перед финальным ответом
+    const tavilyKey = (this.store.get('integrations') as { tavily?: { key: string } } | undefined)?.tavily?.key
     const pendingParallelAgents = new Set<string>()
-
-    // Трекаем изменённые файлы для авто-обновления рабочей памяти
     const modifiedFiles = new Set<string>()
-    // Кэш прочитанных файлов (можно отключить через настройки)
     const useCache = options?.readFileCache !== false
-    const readFileCache = useCache ? new Map<string, string>() : new Map<string, string>()
-    this.readFileCache = useCache ? readFileCache : new Map()
+    this.readFileCache = useCache ? new Map<string, string>() : new Map()
     this.pendingDiffEntries = []
     this.fileMap = new Map()
-    // Summarization — OFF по умолчанию, включается только явно
     const useSummarization = options?.toolSummarization === true
     const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
+    const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string } }>
 
     for (let step = 0; step < maxSteps; step++) {
-      // Проверяем abort перед каждым шагом
       if (signal?.aborted) {
         callbacks.onDone('')
         return
       }
+
       try {
         callbacks.onStatus?.('Ожидаю ответа...')
         const response = await this.client.chatWithTools(
@@ -223,57 +179,51 @@ export class Agent {
           },
         )
 
-        // Abort во время запроса
-        if (signal?.aborted) { callbacks.onDone(''); return }
+        if (signal?.aborted) {
+          callbacks.onDone('')
+          return
+        }
 
-        // Если нет tool_calls — финальный ответ
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
 
-          // Ждём параллельных суб-агентов
           if (pendingParallelAgents.size > 0 && callbacks.onWaitAgents) {
             const results = await callbacks.onWaitAgents(Array.from(pendingParallelAgents))
             pendingParallelAgents.clear()
-            const summaries = results.map((r, i) => `Суб-агент ${i + 1}: ${r.summary || r.error || 'нет результата'}`).join('\n')
-            messages.push({ role: 'user', content: `Результаты параллельных суб-агентов:\n${summaries}\n\nПродолжи и дай финальный ответ.` })
+            const summaries = results.map((r, i) => `Subagent ${i + 1}: ${r.summary || r.error || 'no result'}`).join('\n')
+            messages.push({ role: 'user', content: `Parallel subagent results:\n${summaries}\n\nContinue and give the final answer.` })
             continue
           }
 
-          // Reasoning
           if (response.reasoning) {
             callbacks.onStep({ type: 'thought', content: response.reasoning })
           }
 
-          // Если токены уже отстримились через onToken — не дублируем
           if (!response.hadStreamedTokens) {
             const words = answer.split(/(?<=\s)|(?=\s)/)
             for (const chunk of words) {
-              if (signal?.aborted) { callbacks.onDone(answer); return }
+              if (signal?.aborted) {
+                callbacks.onDone(answer)
+                return
+              }
               callbacks.onStep({ type: 'answer', content: chunk })
             }
           }
 
           callbacks.onDone(answer)
 
-          // Авто-обновление рабочей памяти — при изменении файлов или при read-only сессии
           if (this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {
-            const ctxS = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
             const existing = this.onGetWorkingMemory ? this.onGetWorkingMemory(this.chatId) : ''
-
             if (modifiedFiles.size > 0) {
-              // Были изменения — полное обновление с diff и file map
-              console.log('[agent] updating structured memory, files:', Array.from(modifiedFiles).join(', '))
               const structured = updateStructuredMemory(existing, {
                 lastTask: answer.slice(0, 200),
                 modifiedFiles: Array.from(modifiedFiles),
-                diffEntries: ctxS.diffJournalEnabled ? this.pendingDiffEntries : [],
-                fileMap: ctxS.fileMapEnabled ? this.fileMap : undefined,
+                diffEntries: ctxSettings.diffJournalEnabled ? this.pendingDiffEntries : [],
+                fileMap: ctxSettings.fileMapEnabled ? this.fileMap : undefined,
               })
               this.pendingDiffEntries = []
               this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
-            } else if (this.fileMap.size > 0 && ctxS.fileMapEnabled) {
-              // Read-only сессия — обновляем только file map без изменения других секций
-              console.log('[agent] updating file map only (read-only session), files:', this.fileMap.size)
+            } else if (this.fileMap.size > 0 && ctxSettings.fileMapEnabled) {
               const structured = updateStructuredMemory(existing, {
                 lastTask: answer.slice(0, 200),
                 modifiedFiles: [],
@@ -287,40 +237,40 @@ export class Agent {
           return
         }
 
-        // Есть tool_calls — сохраняем в messages
-        // content НЕ стримился (hasToolCalls=true в AIClient), так и должно быть
         messages.push({ role: 'assistant', content: response.content || '', tool_calls: response.tool_calls })
 
-        // Все tool_calls этой итерации — выполняем параллельно
         const resultMap = new Map<string, { contentForAI: string; callId: string; name: string }>()
-        // Мутации state (cache, fileMap, modifiedFiles) — применяем после Promise.all чтобы избежать race condition
         const pendingMutations: Array<() => void> = []
 
-        await Promise.all(response.tool_calls.map(async (call) => {
+        const normalizedCalls: NormalizedToolCall[] = response.tool_calls.map((call) => {
           const fn = (call as { function: { name: string; arguments: string } }).function
           const callId = (call as { id: string }).id
-          // Нормализуем имя тула — фикс для провайдеров которые добавляют префиксы (u_, hermes_ и т.д.)
           const rawName = fn.name
-          const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string } }>
-          fn.name = normalizeToolName(rawName, activeSchemas)
-          if (fn.name !== rawName) {
-            console.warn(`[Agent] Auto-repaired tool name: '${rawName}' -> '${fn.name}'`)
+          const normalizedName = normalizeToolName(rawName, activeSchemas)
+          if (normalizedName !== rawName) {
+            console.warn(`[Agent] Auto-repaired tool name: '${rawName}' -> '${normalizedName}'`)
           }
+          fn.name = normalizedName
+
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(fn.arguments) } catch {}
 
-          // Скрытые тулы (think, update_working_memory) — не показываем в UI
-          const isHiddenTool = fn.name === 'think' || fn.name === 'update_working_memory'
+          return {
+            call,
+            callId,
+            fn,
+            args,
+            isHiddenTool: normalizedName === 'think' || normalizedName === 'update_working_memory',
+          }
+        })
 
+        const executeCall = async (item: NormalizedToolCall) => {
+          const { callId, fn, args, isHiddenTool } = item
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool })
 
           const mode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
           const approval = needsApproval(fn.name, args, mode)
-
-          // Скрытые тулы (think, update_working_memory) никогда не спрашиваем
-          const effectiveApproval = isHiddenTool
-            ? { confirm: false, block: false, reason: '' }
-            : approval
+          const effectiveApproval = isHiddenTool ? { confirm: false, block: false, reason: '' } : approval
 
           if (effectiveApproval.block) {
             const blockMsg = `Действие заблокировано (режим ${mode}): ${effectiveApproval.reason}`
@@ -337,11 +287,10 @@ export class Agent {
               return
             }
           }
-          callbacks.onStatus?.(`${fn.name}...`)
 
+          callbacks.onStatus?.(`${fn.name}...`)
           const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
-          // Трекаем изменённые файлы — через pendingMutations (race condition safe)
           if (result.success && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
             const p = args.path as string | undefined
             if (p) {
@@ -352,38 +301,35 @@ export class Agent {
                   const diffLines = diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).slice(0, ctxSettings.diffJournalLines)
                   diffSummary = diffLines.join(' | ').slice(0, 200)
                 } else {
-                  diffSummary = fn.name === 'write_file' ? 'создан/перезаписан' : `изменён (${fn.name})`
+                  diffSummary = fn.name === 'write_file' ? 'created or replaced' : `changed via ${fn.name}`
                 }
               }
               const fnNameCopy = fn.name
               pendingMutations.push(() => {
                 modifiedFiles.add(p)
-                // Инвалидируем кэш
                 for (const key of Array.from(this.readFileCache.keys())) {
                   if (key.startsWith(p + ':')) this.readFileCache.delete(key)
                 }
                 if (ctxSettings.diffJournalEnabled && diffSummary) {
-                  console.log('[agent] diff journal:', p, '->', diffSummary)
                   this.pendingDiffEntries.push({ file: p, summary: diffSummary })
                 }
                 if (ctxSettings.fileMapEnabled) {
                   const existing = this.fileMap.get(p)
-                  this.fileMap.set(p, { reads: existing?.reads ?? 0, writes: (existing?.writes ?? 0) + 1, note: existing?.note ?? fnNameCopy })
+                  this.fileMap.set(p, {
+                    reads: existing?.reads ?? 0,
+                    writes: (existing?.writes ?? 0) + 1,
+                    note: existing?.note ?? fnNameCopy,
+                  })
                 }
               })
             }
           }
-          // File Map для read_file обновляется прямо в executeTool (case 'read_file')
 
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
           const imageUrl = imageMatch ? imageMatch[1] : undefined
-
-          // Tool result truncation — используем ctxSettings из внешнего scope
           const rawContent = imageUrl
-            ? 'Изображение успешно сгенерировано и показано пользователю.'
+            ? 'Image generated and shown to the user.'
             : (result.success ? result.output : `Ошибка: ${result.error}`)
-
-          // При ошибке тула — добавляем подсказку агенту как исправить
           const errorHint = !result.success ? getToolErrorHint(fn.name, result.error ?? '') : ''
           const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled)
             ? truncateToolResult((rawContent || '') + errorHint, ctxSettings.toolMaxChars)
@@ -401,37 +347,36 @@ export class Agent {
           })
 
           resultMap.set(callId, { contentForAI, callId, name: fn.name })
-        }))
+        }
 
-        // Применяем мутации state после всех параллельных тулов — race condition safe
+        const parallelCalls = normalizedCalls.filter((item) => !isSequentialTool(item.fn.name))
+        const sequentialCalls = normalizedCalls.filter((item) => isSequentialTool(item.fn.name))
+
+        if (parallelCalls.length > 0) {
+          await Promise.all(parallelCalls.map(executeCall))
+        }
+        for (const item of sequentialCalls) {
+          await executeCall(item)
+        }
+
         for (const mutation of pendingMutations) mutation()
 
-        // autoMemory interval убран — memory обновляется только в onDone через structured memory
-
-        // Пушим tool results в том же порядке что и tool_calls — важно для провайдеров
-        for (const call of response.tool_calls) {
-          const callId = (call as { id: string }).id
-          const fn = (call as { function: { name: string; arguments: string } }).function
-          const r = resultMap.get(callId)
+        for (const item of normalizedCalls) {
+          const r = resultMap.get(item.callId)
           messages.push({
             role: 'tool',
-            tool_call_id: callId,
-            name: fn.name,
+            tool_call_id: item.callId,
+            name: item.fn.name,
             content: r?.contentForAI ?? '',
           })
         }
 
-        // Real-time контекст — считаем реальный размер messages и шлём в UI
         if (callbacks.onContextUpdate) {
-          const msgTokens = messages.reduce((sum, m) => {
-            const content = typeof m.content === 'string' ? m.content : ''
-            return sum + Math.ceil(content.length / 3.5) + 4
-          }, 0)
-          callbacks.onContextUpdate(msgTokens + 3800)  // + tool schemas overhead
+          const msgTokens = messages.reduce((sum, m) => sum + Math.ceil((m.content || '').length / 3.5) + 4, 0)
+          callbacks.onContextUpdate(msgTokens + 3800)
         }
 
-        // Tool result summarization — сжимаем старые раунды если накопилось много
-        const KEEP_FULL_ROUNDS = 8  // было 3 — AI теперь видит 8 последних раундов полностью
+        const KEEP_FULL_ROUNDS = 8
         const toolMsgCount = messages.filter(m => m.role === 'tool' || (m.role === 'assistant' && (m as { tool_calls?: unknown[] }).tool_calls?.length)).length
         if (useSummarization && toolMsgCount > KEEP_FULL_ROUNDS * 2) {
           let oldRoundsCompressed = 0
@@ -447,10 +392,8 @@ export class Agent {
               while (j < messages.length && messages[j].role === 'tool') {
                 const toolMsg = messages[j] as { role: string; name?: string; content: string }
                 const content = toolMsg.content ?? ''
-                // read_file результаты не сжимаем — AI должен помнить содержимое файлов
                 const isReadFile = toolMsg.name === 'read_file' || names.includes('read_file')
                 if (isReadFile) {
-                  // Оставляем read_file в toRemove но не сжимаем — просто не убираем
                   results.push(content.slice(0, 1500))
                 } else {
                   results.push(content.slice(0, 400))
@@ -459,7 +402,6 @@ export class Agent {
                 j++
               }
               compressed.push(`[${names}]: ${results.join(' | ')}`)
-              // assistant message убираем только если все его tool results убраны
               if (asst.tool_calls.every((_, idx) => toRemove.has(i + 1 + idx))) {
                 toRemove.add(i)
               }
@@ -467,9 +409,8 @@ export class Agent {
             }
           }
           if (compressed.length > 0) {
-            const summaryMsg = { role: 'assistant' as const, content: `[Предыдущие действия]\n${compressed.join('\n')}` }
+            const summaryMsg = { role: 'assistant' as const, content: `[Previous actions]\n${compressed.join('\n')}` }
             const newMessages = messages.filter((_, i) => !toRemove.has(i))
-            // Фикс 3: вставляем summary ПЕРЕД user message, не после
             const insertIdx = newMessages.findIndex(m => m.role === 'user')
             const safeIdx = insertIdx === -1 ? newMessages.length : insertIdx
             newMessages.splice(safeIdx, 0, summaryMsg)
@@ -479,29 +420,24 @@ export class Agent {
         }
       } catch (err) {
         const error = err as { name?: string; status?: number; message?: string }
-        // AbortError — тихо выходим
         if (error?.name === 'AbortError' || signal?.aborted) {
           callbacks.onDone('')
           return
         }
-        // Фатальная API ошибка (4xx кроме 429) — сообщаем и выходим
         const status = error?.status ?? 0
         if (status >= 400 && status < 500 && status !== 429) {
-          callbacks.onError(err instanceof Error ? err : new Error(`API ошибка ${status}: ${error?.message}`))
+          callbacks.onError(err instanceof Error ? err : new Error(`API error ${status}: ${error?.message}`))
           return
         }
-        // Превышено число попыток в chatWithTools — сообщаем
-        if (error?.message?.includes('превышено число попыток')) {
-          callbacks.onError(new Error(`Не удалось получить ответ от AI после нескольких попыток. Проверь соединение и провайдера.`))
+        if (error?.message?.includes('превышено число попыток') || error?.message?.includes('number of retries')) {
+          callbacks.onError(new Error('Не удалось получить ответ от AI после нескольких попыток.'))
           return
         }
-        // Остальные ошибки (сетевые, таймаут) — логируем в step и продолжаем если есть шаги
         callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Ошибка: ${error?.message || String(err)}`, success: false })
         if (step >= maxSteps - 1) {
           callbacks.onError(new Error(`Агент завершился с ошибкой: ${error?.message || String(err)}`))
           return
         }
-        // Даём агенту знать об ошибке и продолжаем
         messages.push({ role: 'user', content: `Произошла сетевая ошибка: ${error?.message}. Продолжи работу.` })
       }
     }
@@ -520,7 +456,7 @@ export class Agent {
       case 'run_command': {
         const cmd = (args.command ?? args.cmd ?? args.shell ?? args.script) as string | undefined
         if (!cmd || typeof cmd !== 'string') {
-          return { success: false, output: '', error: `run_command: поле "command" не передано. Получены аргументы: ${JSON.stringify(args)}` }
+          return { success: false, output: '', error: `run_command: missing "command". Received: ${JSON.stringify(args)}` }
         }
         return runCommand(cmd, args.cwd as string | undefined, args.shell as string | undefined, args.timeout as number | undefined)
       }
@@ -533,7 +469,6 @@ export class Agent {
         const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined)
         if (result.success) {
           this.readFileCache.set(cacheKey, result.output)
-          // Обновляем file map с первыми 200 символами содержимого
           const localCtx = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
           if (localCtx.fileMapEnabled) {
             const existing = this.fileMap.get(filePath)
@@ -546,10 +481,8 @@ export class Agent {
         }
         return result
       }
-
       case 'find_files':
         return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined })
-
       case 'get_file_outline':
         return getFileOutline(args.path as string)
       case 'write_file':
@@ -585,7 +518,7 @@ export class Agent {
         return analyzeProject(args.path as string)
       case 'spawn_agent': {
         if (!callbacks?.onSpawnAgent) {
-          return { success: false, output: '', error: 'spawn_agent не поддерживается в этом контексте' }
+          return { success: false, output: '', error: 'spawn_agent is not supported in this context' }
         }
         const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
         const isParallel = !!(args.parallel ?? false)
@@ -596,50 +529,45 @@ export class Agent {
           model: args.model as string | undefined,
         })
         if (result.error) return { success: false, output: '', error: result.error }
-        // Трекаем параллельных — будем ждать перед финальным ответом
-        if (isParallel) pendingParallelAgents.add(agentId)
+        if (isParallel) pendingParallelAgents?.add(agentId)
         return {
           success: true,
           output: isParallel
-            ? `[AGENT:${agentId}] Суб-агент запущен параллельно: "${args.task}"`
-            : `[AGENT:${agentId}] Суб-агент завершил: ${result.summary}`,
+            ? `[AGENT:${agentId}] Subagent started in parallel: "${args.task}"`
+            : `[AGENT:${agentId}] Subagent finished: ${result.summary}`,
         }
       }
       case 'get_agent_status': {
         if (!callbacks?.onGetAgentStatus) {
-          return { success: false, output: '', error: 'get_agent_status не поддерживается' }
+          return { success: false, output: '', error: 'get_agent_status is not supported' }
         }
         const agentId = args.agent_id as string
         const status = await callbacks.onGetAgentStatus(agentId)
-        if (!status) return { success: false, output: '', error: `Агент ${agentId} не найден` }
+        if (!status) return { success: false, output: '', error: `Agent ${agentId} not found` }
         return {
           success: true,
-          output: `Агент ${agentId}: статус=${status.status}, шагов=${status.stepsCount}${status.currentStep ? `, текущий шаг=${status.currentStep}` : ''}`,
+          output: `Agent ${agentId}: status=${status.status}, steps=${status.stepsCount}${status.currentStep ? `, current=${status.currentStep}` : ''}`,
         }
       }
-      default:
-        return { success: false, output: '', error: `Неизвестный инструмент: ${name}` }
-
       case 'update_working_memory': {
         const content = args.content as string
         const mode = (args.mode as 'replace' | 'append') ?? 'replace'
-        if (!content) return { success: false, output: '', error: 'content обязателен' }
+        if (!content) return { success: false, output: '', error: 'content is required' }
         if (this.chatId && this.onUpdateWorkingMemory) {
           this.onUpdateWorkingMemory(this.chatId, content, mode)
-          return { success: true, output: `Рабочая память обновлена (${mode}, ${content.length} символов)`, error: '', hidden: true }
+          return { success: true, output: `Working memory updated (${mode}, ${content.length} chars)`, hidden: true }
         }
-        return { success: false, output: '', error: 'chatId не установлен — update_working_memory недоступен' }
+        return { success: false, output: '', error: 'chatId is not set - update_working_memory unavailable' }
       }
-
       case 'think': {
         const thought = args.thought as string
-        if (!thought) return { success: false, output: '', error: 'thought обязателен' }
-        return { success: true, output: `OK. Продолжай по плану.`, error: '', hidden: true }
+        if (!thought) return { success: false, output: '', error: 'thought is required' }
+        return { success: true, output: 'OK. Continue with the plan.', hidden: true }
       }
       case 'save_plan': {
         const { savePlan } = await import('../tools/index')
         const result = savePlan(args as { title: string; content: string; summary: string })
-        if (result.success && callbacks.onPlanSaved) {
+        if (result.success && callbacks?.onPlanSaved) {
           callbacks.onPlanSaved({
             title: args.title as string,
             content: args.content as string,
@@ -647,8 +575,10 @@ export class Agent {
             filePath: result.output,
           })
         }
-        return { success: true, output: `План сохранён: ${args.title}` }
+        return { success: true, output: `Plan saved: ${args.title}` }
       }
+      default:
+        return { success: false, output: '', error: `Unknown tool: ${name}` }
     }
   }
 }

@@ -141,6 +141,7 @@ export interface CompressResult {
   compressed: boolean
   removedCount: number
   summaryAdded: boolean
+  summaryContent?: string
 }
 
 // Умный summarize tool result — информативная 1-строчная замена (как в Hermes)
@@ -314,6 +315,7 @@ export async function applyRollingWindowAsync(
     compressed: true,
     removedCount: middleMessages.length,
     summaryAdded: true,
+    summaryContent: summaryMsg.content,
   }
 }
 
