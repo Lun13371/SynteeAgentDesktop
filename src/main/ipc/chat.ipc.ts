@@ -132,14 +132,26 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           content: `[ПЛАН: "${m.planData.title}"]\n${m.planData.content}\n[Файл: ${m.planData.filePath}]`,
         }
       }
+      // Для ассистентских сообщений с тулами — добавляем резюме tool_calls
+      if (m.role === 'assistant' && m.toolSteps && (m.toolSteps as unknown[]).length > 0) {
+        const steps = m.toolSteps as Array<{ type: string; toolName?: string; content?: string; success?: boolean }>
+        const calls = steps.filter(s => s.type === 'tool_call')
+        const results = steps.filter(s => s.type === 'tool_result')
+        if (calls.length > 0) {
+          const toolSummary = calls.map((c, i) => {
+            const r = results[i]
+            const resultShort = r?.content ? r.content.slice(0, ctxSettings.toolHistoryChars) : ''
+            return `[${c.toolName}]${resultShort ? `: ${resultShort}` : ''}`
+          }).join('\n')
+          const content = m.content ? `${m.content}\n\n[Использованные инструменты]\n${toolSummary}` : `[Использованные инструменты]\n${toolSummary}`
+          return { role: m.role as ChatMessage['role'], content }
+        }
+      }
       return { role: m.role as ChatMessage['role'], content: m.content }
     })
 
-    // ── Compressed tool history — настраиваемое кол-во сессий ────────────────
-    // Фикс 6: не дублировать если structured memory уже содержит историю правок
-    const hasStructuredMemory = currentWorkingMemory.includes('## Изменённые файлы') || currentWorkingMemory.includes('## Diff журнал')
-    const skipToolHistory = hasStructuredMemory && ctxSettings.structuredMemoryEnabled
-    if (!params.incognito && !skipToolHistory && ctxSettings.toolHistorySessions > 0) {
+    // ── Compressed tool history — последние N агентных сессий ─────────────────
+    if (!params.incognito && ctxSettings.toolHistorySessions > 0) {
       try {
         const allMsgs = getMessages(params.chatId)
         const toolMsgs = allMsgs
