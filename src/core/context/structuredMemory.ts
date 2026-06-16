@@ -37,9 +37,10 @@ const SECTION = {
   ARCH: '## Архитектурные решения',
 }
 
-const MAX_DIFF_ENTRIES = 20   // максимум записей в diff журнале
-const MAX_FILE_MAP = 30       // максимум файлов в file map
-const MAX_ARCH_ENTRIES = 10   // максимум архитектурных решений
+const MAX_DIFF_ENTRIES = 20
+const MAX_FILE_MAP = 30
+const MAX_ARCH_ENTRIES = 10
+const MAX_MEMORY_CHARS = 3000  // фикс 8: лимит на весь working memory
 
 // ─── Парсинг существующей памяти ──────────────────────────────────────────────
 
@@ -161,6 +162,18 @@ export function updateStructuredMemory(existing: string, update: StructuredMemor
   }
 
   const result = parts.join('\n\n')
+
+  // Фикс 8: если память превысила лимит — сжимаем diff журнал
+  if (result.length > MAX_MEMORY_CHARS) {
+    const trimmedDiff = mergedDiff.slice(-Math.floor(MAX_DIFF_ENTRIES / 2))
+    const trimmedParts = parts.map(p =>
+      p.startsWith(SECTION.DIFF) ? `${SECTION.DIFF}\n${renderDiffEntries(trimmedDiff)}` : p
+    )
+    const trimmed = trimmedParts.join('\n\n')
+    console.log('[structuredMemory] trimmed:', result.length, '->', trimmed.length, 'chars')
+    return trimmed.slice(0, MAX_MEMORY_CHARS)
+  }
+
   console.log('[structuredMemory] built:', result.length, 'chars,', result.split('\n').length, 'lines')
   return result
 }
