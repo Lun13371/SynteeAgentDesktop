@@ -81,6 +81,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // liveSteps оставляем только для финального сохранения в БД
   const [liveSteps, setLiveSteps] = useState<import('../../components/ui/ToolChain/ToolChain').ToolStep[]>([])
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
+  const rateLimitUntilRef = useRef<number>(0)
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
@@ -255,8 +256,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (data.error !== 'stopped') toast('Ошибка: ' + data.error, 'error')
     })
 
-    const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (_data: { waitSec: number }) => {
-      // Rate limit виден через agentStatus в WaitingIndicator — отдельный бар и toast убраны
+    const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (data: { waitSec: number }) => {
+      // Блокируем перезапись agentStatus на время ожидания + 1 сек запас
+      rateLimitUntilRef.current = Date.now() + (data.waitSec + 1) * 1000
     })
 
     const offContextUsage = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, (data: { pct: number; status: 'ok' | 'warn' | 'critical'; compressed: boolean }) => {
@@ -343,8 +345,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     const offStatus = window.syntee.on('agent:status', (data: { msgId: string; chatId: string; text: string }) => {
       if (!streamMsgIdRef.current) return
-      // Принимаем статус если chatId совпадает — msgId может быть 'streaming-pending' в начале
       if (data.chatId && data.chatId !== currentChatIdRef.current) return
+      // Не перебиваем rate limit пока ещё ждём
+      if (Date.now() < rateLimitUntilRef.current) return
       setAgentStatus(data.text)
     })
 

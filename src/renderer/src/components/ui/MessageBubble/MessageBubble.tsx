@@ -455,13 +455,8 @@ const MessageContent = memo(function MessageContent({
           />
         )}
 
-        {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
+        {/* Индикатор ожидания — при старте, пустом bubble, или когда есть agentStatus (rate limit/retry) */}
         {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && !liveIters?.length && (
-          <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
-        )}
-
-        {/* agentStatus всегда виден когда есть (rate limit, retry) — поверх любого контента */}
-        {!isUser && isStreaming && agentStatus && (content || liveIters?.length) && (
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
         )}
 
