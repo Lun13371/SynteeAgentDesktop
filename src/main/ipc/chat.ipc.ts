@@ -132,21 +132,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           content: `[ПЛАН: "${m.planData.title}"]\n${m.planData.content}\n[Файл: ${m.planData.filePath}]`,
         }
       }
-      // Для ассистентских сообщений с тулами — добавляем резюме tool_calls
-      if (m.role === 'assistant' && m.toolSteps && (m.toolSteps as unknown[]).length > 0) {
-        const steps = m.toolSteps as Array<{ type: string; toolName?: string; content?: string; success?: boolean }>
-        const calls = steps.filter(s => s.type === 'tool_call')
-        const results = steps.filter(s => s.type === 'tool_result')
-        if (calls.length > 0) {
-          const toolSummary = calls.map((c, i) => {
-            const r = results[i]
-            const resultShort = r?.content ? r.content.slice(0, ctxSettings.toolHistoryChars) : ''
-            return `[${c.toolName}]${resultShort ? `: ${resultShort}` : ''}`
-          }).join('\n')
-          const content = m.content ? `${m.content}\n\n[Использованные инструменты]\n${toolSummary}` : `[Использованные инструменты]\n${toolSummary}`
-          return { role: m.role as ChatMessage['role'], content }
-        }
-      }
+      // Чистая история — только текстовые ответы, как в Codex/Claude Code
+      // Tool results хранятся в working memory, не в history
       return { role: m.role as ChatMessage['role'], content: m.content }
     })
 
@@ -194,7 +181,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let processedHistory = rawHistory
     let contextCompressed = false
     if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
-      // AI-резюме через fast модель (haiku/flash) — fallback на обрезку если не работает
+      // AI-резюме через fast модель — iterative update если уже есть резюме
       const summaryFn = async (prompt: string): Promise<string> => {
         const aiClient = new AIClient(store)
         let result = ''
@@ -205,7 +192,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         )
         return result
       }
-      const result = await applyRollingWindowAsync(rawHistory, ctxSettings, summaryFn)
+      // Извлекаем предыдущее резюме если есть (для iterative update)
+      const prevSummaryMsg = rawHistory.find(m =>
+        m.role === 'system' && m.content.includes('[CONTEXT COMPACTION')
+      )
+      const existingSummary = prevSummaryMsg
+        ? prevSummaryMsg.content
+          .replace(/^\[CONTEXT COMPACTION[^\]]*\][^\n]*\n\n/, '')
+          .replace(/\n\[\/CONTEXT COMPACTION\]$/, '')
+        : undefined
+      const result = await applyRollingWindowAsync(rawHistory, ctxSettings, summaryFn, existingSummary)
       if (result.compressed) {
         processedHistory = result.messages
         contextCompressed = true
