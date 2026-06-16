@@ -166,19 +166,6 @@ export default function ContextSettingsTab() {
         </div>
       </section>
 
-      {/* ── Project Index ── */}
-      <section className="ctx-section">
-        <div className="ctx-section__head">
-          <div>
-            <h3>Project Index</h3>
-            <p className="ctx-section__desc">
-              Автоматически читать AGENTS.md / CLAUDE.md / README.md и package.json из рабочей директории и добавлять в контекст.
-              AI сразу знает стек, структуру и правила проекта без лишних вопросов.
-            </p>
-          </div>
-          <Toggle value={s.projectIndexEnabled} onChange={v => upd({ projectIndexEnabled: v })} />
-        </div>
-      </section>
 
       {/* ── Diff журнал + File Map ── */}
       <section className="ctx-section">

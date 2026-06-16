@@ -125,7 +125,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Читаем рабочую память заранее — нужна и для tool history и для workerData
     let currentWorkingMemory = ''
     try { currentWorkingMemory = getWorkingMemory(params.chatId) } catch { /* ok */ }
-    const rawHistory: ChatMessage[] = history.map(m => {
+    // Лимит истории — последние 40 сообщений как в Codex
+    // Старше 40 — в rolling window summary, не в прямой истории
+    const historyLimit = 40
+    const rawHistory: ChatMessage[] = history.slice(-historyLimit).map(m => {
       if (m.planData) {
         return {
           role: m.role as ChatMessage['role'],
@@ -140,50 +143,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // rawHistory уже содержит [Использованные инструменты] для каждого агентного ответа
     // compressed tool history убран — дублировал rawHistory
 
-    // ── Project Index — только для первых 3 сообщений чата ────────────────────
-    // Фикс 5: не добавлять при каждом запросе — только при старте сессии
-    const isEarlyConversation = rawHistory.filter(m => m.role === 'user').length <= 2
-    if (!params.incognito && ctxSettings.projectIndexEnabled && isEarlyConversation) {
-      try {
-        const fs = await import('fs')
-        const path = await import('path')
-        const cwd = process.cwd()
-        const candidates = ['AGENTS.md', 'CLAUDE.md', '.cursorrules', 'README.md']
-        let projectIndex = ''
-
-        for (const file of candidates) {
-          const full = path.join(cwd, file)
-          if (fs.existsSync(full)) {
-            const content = fs.readFileSync(full, 'utf-8').slice(0, 2000)
-            projectIndex += `\n### ${file}\n${content}\n`
-            console.log('[chat.ipc] project index loaded:', file)
-            break  // берём первый найденный
-          }
-        }
-
-        // package.json — всегда добавляем если есть
-        const pkgPath = path.join(cwd, 'package.json')
-        if (fs.existsSync(pkgPath)) {
-          try {
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
-            projectIndex += `\n### package.json\nname: ${pkg.name}, version: ${pkg.version}\ndeps: ${Object.keys(pkg.dependencies ?? {}).slice(0, 15).join(', ')}\n`
-          } catch { /* ok */ }
-        }
-
-        if (projectIndex) {
-          rawHistory.unshift({ role: 'system', content: `## Контекст проекта\n${projectIndex.trim()}` })
-        }
-      } catch (e) {
-        console.warn('[chat.ipc] project index error:', e)
-      }
-    }
+    // Project Index убран — process.cwd() в Electron = папка приложения, не проект пользователя
+    // Пользователь может добавить AGENTS.md в рабочую директорию агента через настройки
 
     let processedHistory = rawHistory
     let contextCompressed = false
     if (ctxSettings.rollingEnabled && rawHistory.length > 0) {
-      // Используем реальный лимит модели вместо дефолта 200k
       const realContextWindow = getModelContextWindow(storeData)
       const rollingSettings = { ...ctxSettings, contextLimitTokens: realContextWindow }
+      // Trigger по кол-ву сообщений — сжимаем при >30 независимо от токенов
+      const shouldCompressByCount = rawHistory.filter(m => m.role === 'user' || m.role === 'assistant').length > 30
       // AI-резюме через fast модель — iterative update если уже есть резюме
       const summaryFn = async (prompt: string): Promise<string> => {
         const aiClient = new AIClient(store)
@@ -204,7 +173,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           .replace(/^\[CONTEXT COMPACTION[^\]]*\][^\n]*\n\n/, '')
           .replace(/\n\[\/CONTEXT COMPACTION\]$/, '')
         : undefined
-      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, existingSummary)
+      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, existingSummary, shouldCompressByCount)
       if (result.compressed) {
         processedHistory = result.messages
         contextCompressed = true
