@@ -122,6 +122,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     // ── Context management ─────────────────────────────────────────────────
     const ctxSettings = getContextSettings(storeData)
+    // Читаем рабочую память заранее — нужна и для tool history и для workerData
+    let currentWorkingMemory = ''
+    try { currentWorkingMemory = getWorkingMemory(params.chatId) } catch { /* ok */ }
     const rawHistory: ChatMessage[] = history.map(m => {
       if (m.planData) {
         return {
@@ -299,9 +302,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     currentSendDone = sendDone
 
     const workerPath = path.join(__dirname, 'ai-worker.js')
-    // Передаём workingMemory в воркер чтобы onGetWorkingMemory мог его прочитать синхронно
-    let currentWorkingMemory = ''
-    try { currentWorkingMemory = getWorkingMemory(params.chatId) } catch { /* ok */ }
     const worker = new Worker(workerPath, {
       workerData: { storeData, planningMode: params.planningMode ?? false, workingMemory: currentWorkingMemory },
       env: process.env
