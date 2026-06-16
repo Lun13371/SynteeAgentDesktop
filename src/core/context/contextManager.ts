@@ -78,17 +78,34 @@ export function getModelContextWindow(storeData: Record<string, unknown>): numbe
 export interface ContextSettings {
   // Tool truncation
   toolTruncEnabled: boolean
-  toolMaxChars: number        // макс символов на один tool result (дефолт 4000)
+  toolMaxChars: number
 
   // Rolling window + summary
   rollingEnabled: boolean
-  rollingTriggerPct: number   // % заполненности контекста для триггера (дефолт 75)
-  rollingKeepFirst: number    // сколько первых сообщений всегда сохранять (дефолт 2)
-  rollingKeepLast: number     // сколько последних сообщений всегда сохранять (дефолт 12)
-  contextLimitTokens: number  // лимит токенов модели — теперь берётся из провайдера
+  rollingTriggerPct: number
+  rollingKeepFirst: number
+  rollingKeepLast: number
+  contextLimitTokens: number
 
   // Token counter
   tokenCounterEnabled: boolean
+
+  // Structured working memory
+  structuredMemoryEnabled: boolean   // структурированная рабочая память вместо append строк
+
+  // Diff journal
+  diffJournalEnabled: boolean        // сохранять diff правок в рабочую память
+  diffJournalLines: number           // сколько строк diff сохранять (дефолт 5)
+
+  // Project Index
+  projectIndexEnabled: boolean       // авточтение AGENTS.md/package.json при старте
+
+  // File Map
+  fileMapEnabled: boolean            // карта файлов которые AI трогал в этом чате
+
+  // Compressed tool history
+  toolHistorySessions: number        // сколько прошлых сессий включать (дефолт 2, макс 5)
+  toolHistoryChars: number           // символов на result (дефолт 300)
 }
 
 export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
@@ -98,8 +115,15 @@ export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
   rollingTriggerPct: 75,
   rollingKeepFirst: 2,
   rollingKeepLast: 12,
-  contextLimitTokens: 200_000,  // дефолт — перекрывается реальным из провайдера
+  contextLimitTokens: 200_000,
   tokenCounterEnabled: true,
+  structuredMemoryEnabled: true,
+  diffJournalEnabled: true,
+  diffJournalLines: 5,
+  projectIndexEnabled: true,
+  fileMapEnabled: true,
+  toolHistorySessions: 3,
+  toolHistoryChars: 600,
 }
 
 export function getContextSettings(input: Record<string, unknown> | Partial<ContextSettings>): ContextSettings {

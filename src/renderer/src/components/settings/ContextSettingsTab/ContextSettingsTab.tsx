@@ -171,6 +171,102 @@ export default function ContextSettingsTab() {
         </div>
       </section>
 
+      {/* ── Структурированная память ── */}
+      <section className="ctx-section">
+        <div className="ctx-section__head">
+          <div>
+            <h3>Структурированная рабочая память</h3>
+            <p className="ctx-section__desc">
+              Агент ведёт структурированный журнал: текущая задача, изменённые файлы, diff правок, карта файлов, архитектурные решения.
+              Вместо хаотичных append-строк — всегда актуальная картина проекта.
+            </p>
+          </div>
+          <Toggle value={s.structuredMemoryEnabled} onChange={v => upd({ structuredMemoryEnabled: v })} />
+        </div>
+
+        <div className={`ctx-fields${!s.structuredMemoryEnabled ? ' ctx-field--disabled' : ''}`}>
+          <div className="ctx-section__head" style={{ marginTop: 12 }}>
+            <div>
+              <label style={{ fontWeight: 600, fontSize: 13 }}>Diff журнал правок</label>
+              <p className="ctx-section__desc">Сохранять изменённые строки при edit_file/write_file — AI знает что именно менял</p>
+            </div>
+            <Toggle value={s.diffJournalEnabled} onChange={v => upd({ diffJournalEnabled: v })} />
+          </div>
+
+          <div className={`ctx-field${!s.diffJournalEnabled ? ' ctx-field--disabled' : ''}`} style={{ marginTop: 8 }}>
+            <label>Строк diff на правку</label>
+            <div className="ctx-slider-row">
+              <input type="range" min={2} max={20} step={1}
+                value={s.diffJournalLines}
+                disabled={!s.diffJournalEnabled}
+                onChange={e => upd({ diffJournalLines: +e.target.value })}
+              />
+              <span className="ctx-slider-val">{s.diffJournalLines}</span>
+            </div>
+            <span className="ctx-hint">Сколько строк изменений сохранять на каждый файл. По умолчанию: 5</span>
+          </div>
+
+          <div className="ctx-section__head" style={{ marginTop: 12 }}>
+            <div>
+              <label style={{ fontWeight: 600, fontSize: 13 }}>File Map</label>
+              <p className="ctx-section__desc">Карта файлов: сколько раз читал/писал каждый файл — AI не читает одно повторно</p>
+            </div>
+            <Toggle value={s.fileMapEnabled} onChange={v => upd({ fileMapEnabled: v })} />
+          </div>
+        </div>
+      </section>
+
+      {/* ── Project Index ── */}
+      <section className="ctx-section">
+        <div className="ctx-section__head">
+          <div>
+            <h3>Project Index</h3>
+            <p className="ctx-section__desc">
+              Автоматически читать AGENTS.md / CLAUDE.md / README.md и package.json из рабочей директории и добавлять в контекст.
+              AI сразу знает стек, структуру и правила проекта без лишних вопросов.
+            </p>
+          </div>
+          <Toggle value={s.projectIndexEnabled} onChange={v => upd({ projectIndexEnabled: v })} />
+        </div>
+      </section>
+
+      {/* ── История тулов ── */}
+      <section className="ctx-section">
+        <div className="ctx-section__head">
+          <div>
+            <h3>История агентных сессий</h3>
+            <p className="ctx-section__desc">
+              Сжатая история прошлых агентных запросов добавляется в начало каждого запроса — AI помнит что делал раньше.
+            </p>
+          </div>
+        </div>
+        <div className="ctx-fields">
+          <div className="ctx-field">
+            <label>Количество прошлых сессий</label>
+            <div className="ctx-slider-row">
+              <input type="range" min={0} max={5} step={1}
+                value={s.toolHistorySessions}
+                onChange={e => upd({ toolHistorySessions: +e.target.value })}
+              />
+              <span className="ctx-slider-val">{s.toolHistorySessions === 0 ? 'выкл' : s.toolHistorySessions}</span>
+            </div>
+            <span className="ctx-hint">0 = отключено. По умолчанию: 3</span>
+          </div>
+
+          <div className="ctx-field" style={{ marginTop: 8 }}>
+            <label>Символов на результат тула</label>
+            <div className="ctx-slider-row">
+              <input type="range" min={100} max={1200} step={100}
+                value={s.toolHistoryChars}
+                onChange={e => upd({ toolHistoryChars: +e.target.value })}
+              />
+              <span className="ctx-slider-val">{s.toolHistoryChars}</span>
+            </div>
+            <span className="ctx-hint">Сколько символов результата сохранять на каждый вызов тула. По умолчанию: 600</span>
+          </div>
+        </div>
+      </section>
+
       {/* ── Оптимизация агента ── */}
       <section className="ctx-section">
         <div className="ctx-section__head">

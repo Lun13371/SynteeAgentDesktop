@@ -1,6 +1,8 @@
 import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import { needsApproval } from './commandSafety'
+import { updateStructuredMemory } from '../context/structuredMemory'
+import type { DiffEntry } from '../context/structuredMemory'
 import {
   runCommand, readFile, writeFile, listDirectory,
   findFiles, getFileOutline,
@@ -155,8 +157,12 @@ export class Agent {
   private role: 'main' | 'subagent'
   chatId?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
-  // Кэш read_file — сбрасывается при каждом run() — избегает повторных чтений одного файла
+  onGetWorkingMemory?: (chatId: string) => string
+  pendingDiffEntries: DiffEntry[] = []
+  // Кэш read_file — сбрасывается при каждом run() — избегает повторных чтений
   private readFileCache = new Map<string, string>()
+  // File map — файлы которые AI трогал в этом run
+  private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
@@ -183,7 +189,9 @@ export class Agent {
     // Кэш прочитанных файлов (можно отключить через настройки)
     const useCache = options?.readFileCache !== false
     const readFileCache = useCache ? new Map<string, string>() : new Map<string, string>()
-    this.readFileCache = useCache ? readFileCache : new Map() // пустой если отключён
+    this.readFileCache = useCache ? readFileCache : new Map()
+    this.pendingDiffEntries = []
+    this.fileMap = new Map()
     const autoMemInterval = options?.autoMemoryInterval ?? 5
     const useSummarization = options?.toolSummarization !== false
 
@@ -247,15 +255,19 @@ export class Agent {
           callbacks.onDone(answer)
 
           // Авто-обновление рабочей памяти если были изменения файлов
-          if (
-            modifiedFiles.size > 0 &&
-            this.chatId &&
-            this.onUpdateWorkingMemory &&
-            this.role === 'main'
-          ) {
-            const fileList = Array.from(modifiedFiles).join(', ')
-            const autoMemory = `[авто] Изменены файлы: ${fileList}. Итог: ${answer.slice(0, 400)}${answer.length > 400 ? '...' : ''}`
-            this.onUpdateWorkingMemory(this.chatId, autoMemory, 'append')
+          if (modifiedFiles.size > 0 && this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {
+            const ctxS = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
+
+            const existing = this.onGetWorkingMemory ? this.onGetWorkingMemory(this.chatId) : ''
+            console.log('[agent] updating structured memory, files:', Array.from(modifiedFiles).join(', '))
+            const structured = updateStructuredMemory(existing, {
+              lastTask: answer.slice(0, 200),
+              modifiedFiles: Array.from(modifiedFiles),
+              diffEntries: ctxS.diffJournalEnabled ? this.pendingDiffEntries : [],
+              fileMap: ctxS.fileMapEnabled ? this.fileMap : undefined,
+            })
+            this.pendingDiffEntries = []
+            this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
           }
 
           return
@@ -314,14 +326,45 @@ export class Agent {
 
           const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
-          // Трекаем изменённые файлы для авто-памяти + инвалидируем кэш
+          // Трекаем изменённые файлы для авто-памяти + инвалидируем кэш + diff журнал + file map
           if (result.success && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
             const p = args.path as string | undefined
             if (p) {
               modifiedFiles.add(p)
-              // Инвалидируем все кэшированные версии этого файла
+              // Инвалидируем кэш
               for (const key of Array.from(this.readFileCache.keys())) {
                 if (key.startsWith(p + ':')) this.readFileCache.delete(key)
+              }
+              // Diff журнал
+              const ctxSd = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
+              if (ctxSd.diffJournalEnabled) {
+                const diff = (result as { diff?: string }).diff
+                let summary = ''
+                if (diff) {
+                  // Берём первые N строк diff
+                  const diffLines = diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).slice(0, ctxSd.diffJournalLines)
+                  summary = diffLines.join(' | ').slice(0, 200)
+                } else {
+                  summary = fn.name === 'write_file' ? 'создан/перезаписан' : `изменён (${fn.name})`
+                }
+                console.log('[agent] diff journal:', p, '->', summary)
+                this.pendingDiffEntries.push({ file: p, summary })
+              }
+              // File Map
+              if (ctxSd.fileMapEnabled) {
+                const existing = this.fileMap.get(p)
+                this.fileMap.set(p, { reads: existing?.reads ?? 0, writes: (existing?.writes ?? 0) + 1, note: existing?.note ?? '' })
+              }
+            }
+          }
+          // File Map — трекаем read_file
+          if (result.success && fn.name === 'read_file') {
+            const p = args.path as string | undefined
+            if (p) {
+              const ctxSfm = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
+              if (ctxSfm.fileMapEnabled) {
+                const existing = this.fileMap.get(p)
+                this.fileMap.set(p, { reads: (existing?.reads ?? 0) + 1, writes: existing?.writes ?? 0, note: existing?.note ?? '' })
               }
             }
           }

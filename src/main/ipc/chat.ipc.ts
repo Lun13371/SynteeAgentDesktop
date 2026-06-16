@@ -132,16 +132,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       return { role: m.role as ChatMessage['role'], content: m.content }
     })
 
-    // ── Compressed tool history — последние 2 assistant-ответа с тулами ────
-    // Добавляем в начало истории сжатые tool_call/tool_result из прошлых сессий
-    // чтобы AI помнил что делал раньше (result обрезается до 300 символов)
+    // ── Compressed tool history — настраиваемое кол-во сессий ────────────────
     if (!params.incognito) {
       try {
         const allMsgs = getMessages(params.chatId)
-        // Берём последние assistant-сообщения у которых есть toolSteps
         const toolMsgs = allMsgs
           .filter(m => m.role === 'assistant' && m.toolSteps && (m.toolSteps as unknown[]).length > 0)
-          .slice(-2)  // последние 2 агентные сессии
+          .slice(-ctxSettings.toolHistorySessions)  // настраиваемое кол-во сессий
 
         const compressedToolHistory: ChatMessage[] = []
         for (const m of toolMsgs) {
@@ -152,18 +149,57 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
           const summary = calls.map((c, i) => {
             const r = results[i]
-            const resultShort = r?.content ? r.content.slice(0, 300) + (r.content.length > 300 ? '…' : '') : '(нет результата)'
+            const maxChars = ctxSettings.toolHistoryChars  // настраиваемый размер
+            const resultShort = r?.content ? r.content.slice(0, maxChars) + (r.content.length > maxChars ? '…' : '') : '(нет результата)'
             return `[${c.toolName}] → ${resultShort}`
           }).join('\n')
 
           compressedToolHistory.push({ role: 'assistant', content: `[Предыдущие действия агента]\n${summary}` })
         }
 
-        // Вставляем compressed history в начало (после system если есть)
         if (compressedToolHistory.length > 0) {
+          console.log('[chat.ipc] injecting tool history:', compressedToolHistory.length, 'sessions')
           rawHistory.unshift(...compressedToolHistory)
         }
-      } catch { /* ok */ }
+      } catch (e) {
+        console.warn('[chat.ipc] compressed tool history error:', e)
+      }
+    }
+
+    // ── Project Index — авточтение AGENTS.md/package.json при старте ──────────
+    if (!params.incognito && ctxSettings.projectIndexEnabled) {
+      try {
+        const fs = await import('fs')
+        const path = await import('path')
+        const cwd = process.cwd()
+        const candidates = ['AGENTS.md', 'CLAUDE.md', '.cursorrules', 'README.md']
+        let projectIndex = ''
+
+        for (const file of candidates) {
+          const full = path.join(cwd, file)
+          if (fs.existsSync(full)) {
+            const content = fs.readFileSync(full, 'utf-8').slice(0, 2000)
+            projectIndex += `\n### ${file}\n${content}\n`
+            console.log('[chat.ipc] project index loaded:', file)
+            break  // берём первый найденный
+          }
+        }
+
+        // package.json — всегда добавляем если есть
+        const pkgPath = path.join(cwd, 'package.json')
+        if (fs.existsSync(pkgPath)) {
+          try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
+            projectIndex += `\n### package.json\nname: ${pkg.name}, version: ${pkg.version}\ndeps: ${Object.keys(pkg.dependencies ?? {}).slice(0, 15).join(', ')}\n`
+          } catch { /* ok */ }
+        }
+
+        if (projectIndex) {
+          rawHistory.unshift({ role: 'system', content: `## Контекст проекта\n${projectIndex.trim()}` })
+        }
+      } catch (e) {
+        console.warn('[chat.ipc] project index error:', e)
+      }
     }
 
     let processedHistory = rawHistory
@@ -258,8 +294,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     currentSendDone = sendDone
 
     const workerPath = path.join(__dirname, 'ai-worker.js')
+    // Передаём workingMemory в воркер чтобы onGetWorkingMemory мог его прочитать синхронно
+    let currentWorkingMemory = ''
+    try { currentWorkingMemory = getWorkingMemory(params.chatId) } catch { /* ok */ }
     const worker = new Worker(workerPath, {
-      workerData: { storeData, planningMode: params.planningMode ?? false },
+      workerData: { storeData, planningMode: params.planningMode ?? false, workingMemory: currentWorkingMemory },
       env: process.env
     })
     currentWorker = worker

@@ -143,10 +143,18 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       const agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
-      // Прокидываем chatId и колбэк обновления рабочей памяти
+      // Прокидываем chatId и колбэки рабочей памяти
       agent.chatId = chatId
       agent.onUpdateWorkingMemory = (cid, content, mode) => {
+        console.log('[ai-worker] update_working_memory:', cid, mode, content.length, 'chars')
         send({ type: 'update_working_memory', chatId: cid, content, mode })
+      }
+      agent.onGetWorkingMemory = (cid) => {
+        // Синхронно читаем из БД — getWorkingMemory импортирован в main thread
+        // В воркере нет прямого доступа к БД — используем кэш из workerData
+        const wm = (workerData as Record<string, unknown>).workingMemory as string | undefined
+        console.log('[ai-worker] getWorkingMemory:', cid, '->', wm?.length ?? 0, 'chars')
+        return wm ?? ''
       }
 
       await agent.run(
