@@ -133,12 +133,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     })
 
     // ── Compressed tool history — настраиваемое кол-во сессий ────────────────
-    if (!params.incognito) {
+    // Фикс 6: не дублировать если structured memory уже содержит историю правок
+    const hasStructuredMemory = currentWorkingMemory.includes('## Изменённые файлы') || currentWorkingMemory.includes('## Diff журнал')
+    const skipToolHistory = hasStructuredMemory && ctxSettings.structuredMemoryEnabled
+    if (!params.incognito && !skipToolHistory && ctxSettings.toolHistorySessions > 0) {
       try {
         const allMsgs = getMessages(params.chatId)
         const toolMsgs = allMsgs
           .filter(m => m.role === 'assistant' && m.toolSteps && (m.toolSteps as unknown[]).length > 0)
-          .slice(-ctxSettings.toolHistorySessions)  // настраиваемое кол-во сессий
+          .slice(-ctxSettings.toolHistorySessions)
 
         const compressedToolHistory: ChatMessage[] = []
         for (const m of toolMsgs) {
@@ -166,8 +169,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
     }
 
-    // ── Project Index — авточтение AGENTS.md/package.json при старте ──────────
-    if (!params.incognito && ctxSettings.projectIndexEnabled) {
+    // ── Project Index — только для первых 3 сообщений чата ────────────────────
+    // Фикс 5: не добавлять при каждом запросе — только при старте сессии
+    const isEarlyConversation = rawHistory.filter(m => m.role === 'user').length <= 2
+    if (!params.incognito && ctxSettings.projectIndexEnabled && isEarlyConversation) {
       try {
         const fs = await import('fs')
         const path = await import('path')

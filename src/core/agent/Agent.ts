@@ -194,6 +194,8 @@ export class Agent {
     this.fileMap = new Map()
     const autoMemInterval = options?.autoMemoryInterval ?? 5
     const useSummarization = options?.toolSummarization !== false
+    // Фикс 4: вынести getContextSettings из цикла — читаем store один раз
+    const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
 
     for (let step = 0; step < maxSteps; step++) {
       // Проверяем abort перед каждым шагом
@@ -336,8 +338,7 @@ export class Agent {
                 if (key.startsWith(p + ':')) this.readFileCache.delete(key)
               }
               // Diff журнал
-              const ctxSd = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
-              if (ctxSd.diffJournalEnabled) {
+              if (ctxSettings.diffJournalEnabled) {
                 const diff = (result as { diff?: string }).diff
                 let summary = ''
                 if (diff) {
@@ -351,7 +352,7 @@ export class Agent {
                 this.pendingDiffEntries.push({ file: p, summary })
               }
               // File Map
-              if (ctxSd.fileMapEnabled) {
+              if (ctxSettings.fileMapEnabled) {
                 const existing = this.fileMap.get(p)
                 this.fileMap.set(p, { reads: existing?.reads ?? 0, writes: (existing?.writes ?? 0) + 1, note: existing?.note ?? '' })
               }
@@ -360,12 +361,9 @@ export class Agent {
           // File Map — трекаем read_file
           if (result.success && fn.name === 'read_file') {
             const p = args.path as string | undefined
-            if (p) {
-              const ctxSfm = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
-              if (ctxSfm.fileMapEnabled) {
-                const existing = this.fileMap.get(p)
-                this.fileMap.set(p, { reads: (existing?.reads ?? 0) + 1, writes: existing?.writes ?? 0, note: existing?.note ?? '' })
-              }
+            if (p && ctxSettings.fileMapEnabled) {
+              const existing = this.fileMap.get(p)
+              this.fileMap.set(p, { reads: (existing?.reads ?? 0) + 1, writes: existing?.writes ?? 0, note: existing?.note ?? '' })
             }
           }
 
@@ -404,7 +402,8 @@ export class Agent {
             this.chatId && this.onUpdateWorkingMemory) {
           const recentActions = Array.from(resultMap.values())
             .slice(-autoMemInterval)
-            .map(r => `- ${r.name}: ${r.contentForAI.slice(0, 80)}`)
+            .filter(r => !r.contentForAI.startsWith('[кэш]'))  // фикс 7: не пишем кэш-хиты в память
+            .map(r => `- ${r.name}: ${r.contentForAI.slice(0, 100)}`)
             .join('\n')
           this.onUpdateWorkingMemory(
             this.chatId,
@@ -446,7 +445,7 @@ export class Agent {
               const results: string[] = []
               while (j < messages.length && messages[j].role === 'tool') {
                 const content = (messages[j].content as string) ?? ''
-                results.push(content.slice(0, 60))
+                results.push(content.slice(0, 400))  // фикс 2: было 60, теперь 400
                 toRemove.add(j)
                 j++
               }
@@ -456,12 +455,12 @@ export class Agent {
             }
           }
           if (compressed.length > 0) {
-            // Заменяем удалённые сообщения одним summary
             const summaryMsg = { role: 'assistant' as const, content: `[Предыдущие действия]\n${compressed.join('\n')}` }
             const newMessages = messages.filter((_, i) => !toRemove.has(i))
-            // Вставляем summary после system + history
-            const insertIdx = newMessages.findIndex(m => m.role === 'user') + 1
-            newMessages.splice(insertIdx, 0, summaryMsg)
+            // Фикс 3: вставляем summary ПЕРЕД user message, не после
+            const insertIdx = newMessages.findIndex(m => m.role === 'user')
+            const safeIdx = insertIdx === -1 ? newMessages.length : insertIdx
+            newMessages.splice(safeIdx, 0, summaryMsg)
             messages.length = 0
             messages.push(...newMessages)
           }
@@ -517,7 +516,7 @@ export class Agent {
         const filePath = args.path as string
         const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}`
         if (this.readFileCache.has(cacheKey)) {
-          return { success: true, output: `[кэш] ${this.readFileCache.get(cacheKey)!}` }
+          return { success: true, output: this.readFileCache.get(cacheKey)! }
         }
         const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined)
         if (result.success) this.readFileCache.set(cacheKey, result.output)
