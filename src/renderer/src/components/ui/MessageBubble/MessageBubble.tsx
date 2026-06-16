@@ -458,10 +458,10 @@ const MessageContent = memo(function MessageContent({
         {/* Индикатор ожидания — при старте/пустом bubble, ИЛИ при rate limit всегда */}
         {!isUser && (isStreaming || isWaiting) && (
           (!content && !liveThinking && !message.thinking && !liveIters?.length) ||
-          (agentStatus && (agentStatus.includes('Rate limit') || agentStatus.includes('Лимит') || agentStatus.includes('Ошибка сети')))
+          (agentStatus && (agentStatus.includes('⏳') || agentStatus.includes('🔄')))
         ) && !(
           // не дублируем если уже показывается после тулчейна
-          liveIters && liveIters.length > 0 && !agentStatus?.includes('Rate limit') && !agentStatus?.includes('Лимит')
+          liveIters && liveIters.length > 0 && !agentStatus?.includes('⏳') && !agentStatus?.includes('🔄')
         ) && (
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
         )}
@@ -499,7 +499,7 @@ const MessageContent = memo(function MessageContent({
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
                   {isStreaming && isLastIter && lastStepIsResult && (
                     !liveTextAfter ||
-                    (agentStatus && (agentStatus.includes('Rate limit') || agentStatus.includes('Лимит') || agentStatus.includes('Ошибка сети')))
+                    (agentStatus && (agentStatus.includes('⏳') || agentStatus.includes('🔄')))
                   ) && (
                     <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
                   )}

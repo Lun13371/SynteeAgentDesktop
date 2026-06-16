@@ -257,8 +257,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
 
     const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (data: { waitSec: number }) => {
-      // Блокируем перезапись agentStatus на время ожидания + 1 сек запас
-      rateLimitUntilRef.current = Date.now() + (data.waitSec + 1) * 1000
+      // Блокируем перезапись agentStatus на время ожидания + 2 сек запас
+      rateLimitUntilRef.current = Date.now() + (data.waitSec + 2) * 1000
     })
 
     const offContextUsage = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, (data: { pct: number; status: 'ok' | 'warn' | 'critical'; compressed: boolean }) => {
