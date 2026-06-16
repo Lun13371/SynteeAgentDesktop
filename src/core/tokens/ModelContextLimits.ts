@@ -14,12 +14,12 @@ const CONTEXT_LIMITS: Record<string, number> = {
   'claude-3-5-haiku': 200000,
   'claude-3-opus': 200000,
 
-  // GPT-5.x (onlysq)
-  'gpt-5': 128000,
-  'gpt-5.1': 128000,
-  'gpt-5.2': 128000,
-  'gpt-5.4': 128000,
-  'gpt-5.5': 128000,
+  // GPT-5.x (onlysq) — 1M контекст как gpt-4.1
+  'gpt-5': 1000000,
+  'gpt-5.1': 1000000,
+  'gpt-5.2': 1000000,
+  'gpt-5.4': 1000000,
+  'gpt-5.5': 1000000,
   'gpt-4.1': 1000000,
   'gpt-4.1-mini': 1000000,
   'gpt-4o': 128000,
