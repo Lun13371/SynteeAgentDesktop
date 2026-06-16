@@ -561,13 +561,17 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
 }
 
 function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  const [agentSettings, setAgentSettings] = useState<{ approvalMode: string; maxSteps: number; toolOutputMode: string; enableThinking: boolean }>({
-    approvalMode: 'ask', maxSteps: 8, toolOutputMode: 'normal', enableThinking: false
+  const [agentSettings, setAgentSettings] = useState<{
+    approvalMode: string; maxSteps: number; toolOutputMode: string; enableThinking: boolean
+    autoMemoryInterval: number; readFileCache: boolean; toolSummarization: boolean
+  }>({
+    approvalMode: 'ask', maxSteps: 8, toolOutputMode: 'normal', enableThinking: false,
+    autoMemoryInterval: 5, readFileCache: true, toolSummarization: true,
   })
 
   useEffect(() => {
-    window.syntee.agent.getSettings().then((s: { approvalMode: string; maxSteps: number; toolOutputMode: string; enableThinking: boolean }) => {
-      setAgentSettings(s)
+    window.syntee.agent.getSettings().then((s: typeof agentSettings) => {
+      setAgentSettings(prev => ({ ...prev, ...s }))
     }).catch(() => {})
   }, [])
 
@@ -629,6 +633,28 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
 
       <Field label="Подтверждение опасных действий" description="Удаление файлов, системные команды">
         <Toggle value={!!perms['confirmDangerous']} onChange={v => onSet('agentPermissions', { ...perms, confirmDangerous: v })} />
+      </Field>
+
+      <SectionTitle>Оптимизация контекста</SectionTitle>
+
+      <Field label="Кэш прочитанных файлов" description="Не читать один файл повторно в рамках одного запроса — экономит токены">
+        <Toggle value={agentSettings.readFileCache} onChange={v => updateAgent({ readFileCache: v })} />
+      </Field>
+
+      <Field label="Сжатие истории тулов" description="Автоматически сжимать старые вызовы инструментов в краткое резюме при длинных сессиях">
+        <Toggle value={agentSettings.toolSummarization} onChange={v => updateAgent({ toolSummarization: v })} />
+      </Field>
+
+      <Field label="Авто-память каждые N шагов" description="Автоматически сохранять прогресс в рабочую память каждые N вызовов инструментов (0 = отключено)">
+        <select
+          className="settings-input"
+          value={agentSettings.autoMemoryInterval}
+          onChange={e => updateAgent({ autoMemoryInterval: Number(e.target.value) })}
+        >
+          {[0, 3, 5, 10, 15].map(n => (
+            <option key={n} value={n}>{n === 0 ? 'Отключено' : `Каждые ${n} шагов`}</option>
+          ))}
+        </select>
       </Field>
 
       <Field label="Запрещённые папки" description="Через запятую — агент не трогает эти пути">

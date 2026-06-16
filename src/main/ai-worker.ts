@@ -73,6 +73,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       approvalMode: string
       toolOutputMode: string
       enableThinking: boolean
+      autoMemoryInterval?: number
+      readFileCache?: boolean
+      toolSummarization?: boolean
     }
   }
 
@@ -288,6 +291,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         systemPrompt,
         planningMode ? [{ role: 'system', content: buildPlanningInjection() }, ...history] : history,
         getToolSchemas({ planningMode }),
+        {
+          autoMemoryInterval: agentSettings.autoMemoryInterval ?? 5,
+          readFileCache: agentSettings.readFileCache !== false,
+          toolSummarization: agentSettings.toolSummarization !== false,
+        }
       )
     } else {
       // Обычный стриминг без tools

@@ -155,6 +155,8 @@ export class Agent {
   private role: 'main' | 'subagent'
   chatId?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
+  // Кэш read_file — сбрасывается при каждом run() — избегает повторных чтений одного файла
+  private readFileCache = new Map<string, string>()
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
@@ -162,7 +164,7 @@ export class Agent {
     this.client = new AIClient(store)
   }
 
-  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string, history?: Array<{ role: string; content: string }>, toolSchemas?: typeof TOOL_SCHEMAS): Promise<void> {
+  async run(userMessage: string, callbacks: AgentCallbacks, maxSteps = 8, signal?: AbortSignal, systemPrompt?: string, history?: Array<{ role: string; content: string }>, toolSchemas?: typeof TOOL_SCHEMAS, options?: { autoMemoryInterval?: number; readFileCache?: boolean; toolSummarization?: boolean }): Promise<void> {
     const messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }> = [
       { role: 'system', content: systemPrompt || SYSTEM_PROMPT },
       // История как нормальные role: user/assistant сообщения
@@ -177,6 +179,13 @@ export class Agent {
 
     // Трекаем изменённые файлы для авто-обновления рабочей памяти
     const modifiedFiles = new Set<string>()
+    let toolCallCount = 0
+    // Кэш прочитанных файлов (можно отключить через настройки)
+    const useCache = options?.readFileCache !== false
+    const readFileCache = useCache ? new Map<string, string>() : new Map<string, string>()
+    this.readFileCache = useCache ? readFileCache : new Map() // пустой если отключён
+    const autoMemInterval = options?.autoMemoryInterval ?? 5
+    const useSummarization = options?.toolSummarization !== false
 
     for (let step = 0; step < maxSteps; step++) {
       // Проверяем abort перед каждым шагом
@@ -305,10 +314,16 @@ export class Agent {
 
           const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
-          // Трекаем изменённые файлы для авто-памяти
+          // Трекаем изменённые файлы для авто-памяти + инвалидируем кэш
           if (result.success && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
             const p = args.path as string | undefined
-            if (p) modifiedFiles.add(p)
+            if (p) {
+              modifiedFiles.add(p)
+              // Инвалидируем все кэшированные версии этого файла
+              for (const key of Array.from(this.readFileCache.keys())) {
+                if (key.startsWith(p + ':')) this.readFileCache.delete(key)
+              }
+            }
           }
 
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
@@ -338,7 +353,22 @@ export class Agent {
           })
 
           resultMap.set(callId, { contentForAI, callId, name: fn.name })
+          toolCallCount++
         }))
+
+        // Авто-память каждые N тулвызовов — сохраняем прогресс
+        if (autoMemInterval > 0 && toolCallCount > 0 && toolCallCount % autoMemInterval === 0 &&
+            this.chatId && this.onUpdateWorkingMemory) {
+          const recentActions = Array.from(resultMap.values())
+            .slice(-autoMemInterval)
+            .map(r => `- ${r.name}: ${r.contentForAI.slice(0, 80)}`)
+            .join('\n')
+          this.onUpdateWorkingMemory(
+            this.chatId,
+            `[авто, шаг ${toolCallCount}] Последние действия:\n${recentActions}`,
+            'append'
+          )
+        }
 
         // Пушим tool results в том же порядке что и tool_calls — важно для провайдеров
         for (const call of response.tool_calls) {
@@ -351,6 +381,47 @@ export class Agent {
             name: fn.name,
             content: r?.contentForAI ?? '',
           })
+        }
+
+        // Tool result summarization — сжимаем старые раунды если messages > 12
+        // Оставляем system + history + user + последние 3 раунда полными
+        const KEEP_FULL_ROUNDS = 3
+        const toolMsgCount = messages.filter(m => m.role === 'tool' || (m.role === 'assistant' && (m as { tool_calls?: unknown[] }).tool_calls?.length)).length
+        if (useSummarization && toolMsgCount > KEEP_FULL_ROUNDS * 2) {
+          // Находим первый assistant с tool_calls (начало старых раундов)
+          let oldRoundsCompressed = 0
+          const compressed: string[] = []
+          const toRemove = new Set<number>()
+          for (let i = 0; i < messages.length; i++) {
+            const m = messages[i]
+            const asst = m as { role: string; tool_calls?: Array<{ function: { name: string } }> }
+            if (asst.role === 'assistant' && asst.tool_calls?.length && oldRoundsCompressed < toolMsgCount - KEEP_FULL_ROUNDS * 2) {
+              // Сжимаем этот раунд
+              const names = asst.tool_calls.map(tc => tc.function.name).join(', ')
+              // Ищем tool results после этого assistant
+              let j = i + 1
+              const results: string[] = []
+              while (j < messages.length && messages[j].role === 'tool') {
+                const content = (messages[j].content as string) ?? ''
+                results.push(content.slice(0, 60))
+                toRemove.add(j)
+                j++
+              }
+              compressed.push(`[${names}]: ${results.join(' | ')}`)
+              toRemove.add(i)
+              oldRoundsCompressed++
+            }
+          }
+          if (compressed.length > 0) {
+            // Заменяем удалённые сообщения одним summary
+            const summaryMsg = { role: 'assistant' as const, content: `[Предыдущие действия]\n${compressed.join('\n')}` }
+            const newMessages = messages.filter((_, i) => !toRemove.has(i))
+            // Вставляем summary после system + history
+            const insertIdx = newMessages.findIndex(m => m.role === 'user') + 1
+            newMessages.splice(insertIdx, 0, summaryMsg)
+            messages.length = 0
+            messages.push(...newMessages)
+          }
         }
       } catch (err) {
         const error = err as { name?: string; status?: number; message?: string }
@@ -399,8 +470,16 @@ export class Agent {
         }
         return runCommand(cmd, args.cwd as string | undefined, args.shell as string | undefined, args.timeout as number | undefined)
       }
-      case 'read_file':
-        return readFile(args.path as string, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined)
+      case 'read_file': {
+        const filePath = args.path as string
+        const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}`
+        if (this.readFileCache.has(cacheKey)) {
+          return { success: true, output: `[кэш] ${this.readFileCache.get(cacheKey)!}` }
+        }
+        const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined)
+        if (result.success) this.readFileCache.set(cacheKey, result.output)
+        return result
+      }
 
       case 'find_files':
         return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined })
