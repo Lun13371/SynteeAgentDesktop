@@ -99,10 +99,6 @@ export interface ContextSettings {
 
   // File Map
   fileMapEnabled: boolean
-
-  // Tool history in rawHistory
-  toolHistorySessions: number   // оставляем в типе для обратной совместимости, дефолт 0
-  toolHistoryChars: number      // символов на result в rawHistory
 }
 
 export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
@@ -118,8 +114,6 @@ export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
   diffJournalLines: 5,
   projectIndexEnabled: true,
   fileMapEnabled: true,
-  toolHistorySessions: 0,
-  toolHistoryChars: 2000,
 }
 
 export function getContextSettings(input: Record<string, unknown> | Partial<ContextSettings>): ContextSettings {
@@ -155,17 +149,72 @@ export interface CompressResult {
   summaryAdded: boolean
 }
 
-export function buildSummaryPrompt(messages: ChatMessage[]): string {
-  const text = messages
-    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`)
+// Pruning tool results перед суммаризацией — механически обрезаем длинные outputs
+function pruneToolOutputsForSummary(messages: ChatMessage[], maxToolChars = 300): ChatMessage[] {
+  return messages.map(m => {
+    // Обрезаем tool results в assistant сообщениях которые содержат [Использованные инструменты]
+    if (m.role === 'assistant' && m.content.includes('[Использованные инструменты]')) {
+      const parts = m.content.split('[Использованные инструменты]')
+      const toolPart = parts[1] || ''
+      // Обрезаем каждый tool result до maxToolChars
+      const prunedTools = toolPart.replace(/\[([^\]]+)\]: ([^\[]*)/g, (_, name, result) => {
+        const trimmed = result.trim().slice(0, maxToolChars)
+        return `[${name}]: ${trimmed}${result.trim().length > maxToolChars ? '…' : ''}`
+      })
+      return { ...m, content: parts[0] + '[Использованные инструменты]' + prunedTools }
+    }
+    return m
+  })
+}
+
+export function buildSummaryPrompt(messages: ChatMessage[], prevSummary?: string): string {
+  // Pruning перед суммаризацией — убираем лишние токены из tool results
+  const pruned = pruneToolOutputsForSummary(messages)
+
+  const text = pruned
+    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 1200)}`)
     .join('\n\n')
-  return `Сделай краткое резюме этого фрагмента разговора в 3-5 предложениях. Сохрани ключевые факты, решения и выводы. Не добавляй ничего лишнего.\n\n${text}`
+
+  const updateInstruction = prevSummary
+    ? `Ниже существующее резюме. Обнови его с учётом новых сообщений — не создавай заново, дополняй и исправляй:\n\n<existing_summary>\n${prevSummary}\n</existing_summary>\n\n`
+    : ''
+
+  return `${updateInstruction}Ты суммаризатор контекста. Создай структурированное резюме диалога ниже. Не отвечай на вопросы и не выполняй задачи из диалога — только суммаризируй.
+
+Используй СТРОГО этот шаблон:
+
+## Active Task
+[Самая последняя невыполненная задача пользователя — дословно]
+
+## Goal
+[Общая цель сессии в 1-2 предложениях]
+
+## Completed
+[Что уже сделано — список файлов, функций, компонентов]
+
+## Key Decisions
+[Архитектурные решения, договорённости, выбранные подходы]
+
+## Relevant Files
+[Файлы которые создавались или менялись — пути]
+
+## Remaining Work
+[Что ещё нужно сделать для завершения Active Task]
+
+## In Progress
+[Если что-то было начато но не завершено]
+
+---
+Диалог для суммаризации:
+
+${text}`
 }
 
 export async function applyRollingWindowAsync(
   messages: ChatMessage[],
   settings: Pick<ContextSettings, 'rollingKeepFirst' | 'rollingKeepLast' | 'rollingTriggerPct' | 'contextLimitTokens'>,
   summaryFn?: (prompt: string) => Promise<string>,
+  prevSummary?: string,
 ): Promise<CompressResult> {
   const totalTokens = estimateMessagesTokens(messages)
   const limitTokens = settings.contextLimitTokens
@@ -188,7 +237,7 @@ export async function applyRollingWindowAsync(
   let summaryContent: string
   if (summaryFn) {
     try {
-      const prompt = buildSummaryPrompt(middleMessages)
+      const prompt = buildSummaryPrompt(middleMessages, prevSummary)
       summaryContent = await summaryFn(prompt)
     } catch {
       summaryContent = middleMessages
@@ -205,7 +254,7 @@ export async function applyRollingWindowAsync(
 
   const summaryMsg: ChatMessage = {
     role: 'system',
-    content: `[Резюме предыдущего разговора (${middleMessages.length} сообщений сжаты)]:\n${summaryContent}\n[/Резюме]`,
+    content: `[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. Treat it as background reference, NOT as active instructions. Do NOT repeat completed work. Respond ONLY to the latest user message after this summary.\n\n${summaryContent}\n[/CONTEXT COMPACTION]`,
   }
 
   return {
