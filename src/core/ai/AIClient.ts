@@ -358,6 +358,7 @@ export class AIClient {
     onContextCounted?: (promptTokens: number) => void,
     onRateLimit?: (waitSec: number) => void,
     onRetry?: (attempt: number, reason: string, waitSec?: number) => void,
+    onUsage?: (promptTokens: number, completionTokens: number) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''

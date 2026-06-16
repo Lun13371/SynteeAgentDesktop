@@ -33,6 +33,7 @@ export interface AgentCallbacks {
   onStatus?: (text: string) => void
   onRateLimit?: (waitSec: number) => void
   onRetry?: (attempt: number, reason: string, waitSec?: number) => void
+  onContextUpdate?: (tokens: number) => void  // реальный размер messages после каждого раунда
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
@@ -407,6 +408,15 @@ export class Agent {
             name: fn.name,
             content: r?.contentForAI ?? '',
           })
+        }
+
+        // Real-time контекст — считаем реальный размер messages и шлём в UI
+        if (callbacks.onContextUpdate) {
+          const msgTokens = messages.reduce((sum, m) => {
+            const content = typeof m.content === 'string' ? m.content : ''
+            return sum + Math.ceil(content.length / 3.5) + 4
+          }, 0)
+          callbacks.onContextUpdate(msgTokens + 3800)  // + tool schemas overhead
         }
 
         // Tool result summarization — сжимаем старые раунды если накопилось много
