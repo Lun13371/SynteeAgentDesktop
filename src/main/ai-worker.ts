@@ -78,6 +78,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       autoMemoryInterval?: number
       readFileCache?: boolean
       toolSummarization?: boolean
+      maxRepeatedToolCalls?: number
+      maxRepeatedErrors?: number
+      contextCompactionPct?: number
+      preserveRecentToolRounds?: number
     }
   }
 
@@ -314,6 +318,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           autoMemoryInterval: agentSettings.autoMemoryInterval ?? 5,
           readFileCache: agentSettings.readFileCache !== false,
           toolSummarization: agentSettings.toolSummarization !== false,
+          maxRepeatedToolCalls: agentSettings.maxRepeatedToolCalls ?? 3,
+          maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,
+          contextCompactionPct: agentSettings.contextCompactionPct ?? 75,
+          preserveRecentToolRounds: agentSettings.preserveRecentToolRounds ?? 8,
         }
       )
     } else {

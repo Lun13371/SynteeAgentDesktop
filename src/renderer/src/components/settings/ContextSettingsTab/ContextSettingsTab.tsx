@@ -30,13 +30,26 @@ export default function ContextSettingsTab() {
   }
 
   // Агентные настройки — через agent.getSettings/setSettings
-  const [agentS, setAgentS] = useState<{ readFileCache: boolean }>({
+  const [agentS, setAgentS] = useState<{
+    readFileCache: boolean
+    toolSummarization: boolean
+    contextCompactionPct: number
+    preserveRecentToolRounds: number
+  }>({
     readFileCache: true,
+    toolSummarization: true,
+    contextCompactionPct: 75,
+    preserveRecentToolRounds: 8,
   })
 
   useEffect(() => {
     window.syntee.agent.getSettings().then((r: Record<string, unknown>) => {
-      setAgentS({ readFileCache: r.readFileCache !== false })
+      setAgentS({
+        readFileCache: r.readFileCache !== false,
+        toolSummarization: r.toolSummarization !== false,
+        contextCompactionPct: typeof r.contextCompactionPct === 'number' ? r.contextCompactionPct : 75,
+        preserveRecentToolRounds: typeof r.preserveRecentToolRounds === 'number' ? r.preserveRecentToolRounds : 8,
+      })
     }).catch(() => {})
   }, [])
 
@@ -198,6 +211,41 @@ export default function ContextSettingsTab() {
               <p className="ctx-section__desc">Не читать один файл повторно в рамках одного запроса</p>
             </div>
             <AgentToggle settingKey="readFileCache" defaultValue={true} />
+          </div>
+          <div className="ctx-section__head" style={{ marginTop: 12 }}>
+            <div>
+              <label style={{ fontWeight: 600, fontSize: 13 }}>Суммаризация tool-истории</label>
+              <p className="ctx-section__desc">Сжимать старые tool-раунды внутри одного длинного ответа агента</p>
+            </div>
+            <AgentToggle settingKey="toolSummarization" defaultValue={true} />
+          </div>
+          <div className="ctx-field" style={{ marginTop: 12 }}>
+            <label>Порог сжатия внутреннего контекста (%)</label>
+            <div className="ctx-slider-row">
+              <input
+                type="range"
+                min={50}
+                max={90}
+                step={5}
+                value={agentS.contextCompactionPct}
+                onChange={e => setAgentSetting('contextCompactionPct', Number(e.target.value))}
+              />
+              <span className="ctx-slider-val">{agentS.contextCompactionPct}%</span>
+            </div>
+          </div>
+          <div className="ctx-field" style={{ marginTop: 12 }}>
+            <label>Хранить полных tool-раундов</label>
+            <div className="ctx-slider-row">
+              <input
+                type="range"
+                min={2}
+                max={16}
+                step={1}
+                value={agentS.preserveRecentToolRounds}
+                onChange={e => setAgentSetting('preserveRecentToolRounds', Number(e.target.value))}
+              />
+              <span className="ctx-slider-val">{agentS.preserveRecentToolRounds}</span>
+            </div>
           </div>
         </div>
       </section>

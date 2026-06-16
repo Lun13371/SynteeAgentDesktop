@@ -24,9 +24,17 @@ import type { Message, AgentSettings } from '../../shared/types'
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   approvalMode: 'ask',
-  maxSteps: 8,
+  maxSteps: 32,
   toolOutputMode: 'normal',
   enableThinking: false,
+  maxParallelSubAgents: 3,
+  readFileCache: true,
+  toolSummarization: true,
+  autoMemoryInterval: 5,
+  maxRepeatedToolCalls: 3,
+  maxRepeatedErrors: 2,
+  contextCompactionPct: 75,
+  preserveRecentToolRounds: 8,
 }
 
 let currentWorker: Worker | null = null

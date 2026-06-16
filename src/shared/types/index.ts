@@ -167,6 +167,14 @@ export interface AgentSettings {
   maxSteps: number
   toolOutputMode: ToolOutputMode
   enableThinking: boolean
+  maxParallelSubAgents: number
+  readFileCache: boolean
+  toolSummarization: boolean
+  autoMemoryInterval: number
+  maxRepeatedToolCalls: number
+  maxRepeatedErrors: number
+  contextCompactionPct: number
+  preserveRecentToolRounds: number
 }
 
 // IPC channels для провайдеров/моделей

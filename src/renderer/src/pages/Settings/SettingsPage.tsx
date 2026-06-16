@@ -9,6 +9,7 @@ import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
+import type { AgentSettings as SharedAgentSettings } from '../../../../shared/types'
 import './SettingsPage.css'
 
 type Section =
@@ -561,19 +562,28 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
 }
 
 function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  const [agentSettings, setAgentSettings] = useState<{
-    approvalMode: string; maxSteps: number; toolOutputMode: string; enableThinking: boolean
-  }>({
-    approvalMode: 'ask', maxSteps: 8, toolOutputMode: 'normal', enableThinking: false,
+  const [agentSettings, setAgentSettings] = useState<SharedAgentSettings>({
+    approvalMode: 'ask',
+    maxSteps: 32,
+    toolOutputMode: 'normal',
+    enableThinking: false,
+    maxParallelSubAgents: 3,
+    readFileCache: true,
+    toolSummarization: true,
+    autoMemoryInterval: 5,
+    maxRepeatedToolCalls: 3,
+    maxRepeatedErrors: 2,
+    contextCompactionPct: 75,
+    preserveRecentToolRounds: 8,
   })
 
   useEffect(() => {
-    window.syntee.agent.getSettings().then((s: typeof agentSettings) => {
+    window.syntee.agent.getSettings().then((s: SharedAgentSettings) => {
       setAgentSettings(prev => ({ ...prev, ...s }))
     }).catch(() => {})
   }, [])
 
-  const updateAgent = (patch: Partial<typeof agentSettings>) => {
+  const updateAgent = (patch: Partial<SharedAgentSettings>) => {
     const next = { ...agentSettings, ...patch }
     setAgentSettings(next)
     window.syntee.agent.setSettings(next).catch(() => {})
@@ -625,6 +635,54 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
         >
           {[4, 8, 12, 16, 24, 32, 48, 64, 96, 128].map(n => (
             <option key={n} value={n}>{n} шагов</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Параллельных суб-агентов" description="Сколько дочерних агентов можно держать активными одновременно">
+        <select
+          className="settings-input"
+          value={agentSettings.maxParallelSubAgents}
+          onChange={e => updateAgent({ maxParallelSubAgents: Number(e.target.value) })}
+        >
+          {[1, 2, 3, 4, 6, 8].map(n => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Автосохранение рабочей памяти" description="Через сколько шагов агент обновляет working memory во время длинной сессии">
+        <select
+          className="settings-input"
+          value={agentSettings.autoMemoryInterval}
+          onChange={e => updateAgent({ autoMemoryInterval: Number(e.target.value) })}
+        >
+          {[0, 3, 5, 8, 12].map(n => (
+            <option key={n} value={n}>{n === 0 ? 'выкл' : `каждые ${n} шагов`}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Повтор одного и того же tool-call" description="После этого количества одинаковых вызовов агент получает защиту от зацикливания">
+        <select
+          className="settings-input"
+          value={agentSettings.maxRepeatedToolCalls}
+          onChange={e => updateAgent({ maxRepeatedToolCalls: Number(e.target.value) })}
+        >
+          {[2, 3, 4, 5].map(n => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Повтор одной и той же ошибки" description="Если инструмент падает одинаково несколько раз подряд, агенту запрещается тупо повторять вызов">
+        <select
+          className="settings-input"
+          value={agentSettings.maxRepeatedErrors}
+          onChange={e => updateAgent({ maxRepeatedErrors: Number(e.target.value) })}
+        >
+          {[2, 3, 4].map(n => (
+            <option key={n} value={n}>{n}</option>
           ))}
         </select>
       </Field>
