@@ -255,20 +255,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (data.error !== 'stopped') toast('Ошибка: ' + data.error, 'error')
     })
 
-    const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (data: { waitSec: number }) => {
-      setRateLimitSec(data.waitSec)
-      toast(`Rate limit — ожидание ${data.waitSec}с`, 'warning', data.waitSec * 1000)
-      // Countdown — уменьшаем каждую секунду
-      let remaining = data.waitSec
-      const countdown = setInterval(() => {
-        remaining -= 1
-        if (remaining <= 0) {
-          clearInterval(countdown)
-          setRateLimitSec(0)
-        } else {
-          setRateLimitSec(remaining)
-        }
-      }, 1000)
+    const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (_data: { waitSec: number }) => {
+      // Rate limit виден через agentStatus в WaitingIndicator — отдельный бар и toast убраны
     })
 
     const offContextUsage = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, (data: { pct: number; status: 'ok' | 'warn' | 'critical'; compressed: boolean }) => {
@@ -571,7 +559,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         liveIters,
         liveTextAfter,
         agentStatus,
-        rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
+        rateLimitSec: undefined,
       }]
     : messages
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -732,7 +720,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onReasoningChange={handleReasoningChange}
             planningMode={planningMode}
             onPlanningModeChange={setPlanningMode}
-            rateLimitSec={rateLimitSec}
+            rateLimitSec={0}
           />
 
           {/* Selection reply popup — через portal чтобы fixed работал правильно */}
