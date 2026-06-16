@@ -10,7 +10,7 @@ import {
   readFiles, searchCode, analyzeProject,
   TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
 } from '../tools'
-import { truncateToolResult, getContextSettings } from '../context/contextManager'
+import { truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD } from '../context/contextManager'
 
 export interface AgentStep {
   type: 'thought' | 'tool_call' | 'tool_result' | 'answer'
@@ -57,6 +57,27 @@ type NormalizedToolCall = {
   fn: { name: string; arguments: string }
   args: Record<string, unknown>
   isHiddenTool: boolean
+}
+
+type AgentRuntimeOptions = {
+  autoMemoryInterval?: number
+  readFileCache?: boolean
+  toolSummarization?: boolean
+  maxRepeatedToolCalls?: number
+  maxRepeatedErrors?: number
+  contextCompactionPct?: number
+  preserveRecentToolRounds?: number
+}
+
+type AgentToolCallFingerprint = {
+  toolName: string
+  argsKey: string
+}
+
+type ToolRound = {
+  assistantIndex: number
+  toolIndices: number[]
+  toolNames: string[]
 }
 
 function normalizeToolName(name: string, schemas: Array<{ function: { name: string } }>): string {
@@ -108,6 +129,121 @@ function isSequentialTool(name: string): boolean {
     name === 'set_clipboard'
 }
 
+function stableStringify(value: unknown): string {
+  if (value == null) return ''
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}:${stableStringify(v)}`)
+    return `{${entries.join(',')}}`
+  }
+  return String(value)
+}
+
+function summarizeToolResultForMemory(toolName: string, content: string, success: boolean): string {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  const short = normalized.slice(0, 180)
+  const status = success ? 'ok' : 'error'
+
+  if (toolName === 'read_file' || toolName === 'read_files') {
+    const fileMatch = content.match(/\[Файл: ([^\]|]+)/)
+    const file = fileMatch?.[1]?.trim()
+    return `${toolName}:${status}${file ? ` ${file}` : ''}`
+  }
+
+  if (toolName === 'run_command') {
+    const exitMatch = content.match(/\[exit: (\d+)\]/)
+    return `${toolName}:${status} exit=${exitMatch?.[1] ?? '?'}`
+  }
+
+  return `${toolName}:${status} ${short}`
+}
+
+function buildToolFingerprint(toolName: string, args: Record<string, unknown>): AgentToolCallFingerprint {
+  const normalizedArgs: Record<string, unknown> = { ...args }
+  for (const key of ['content', 'old_str', 'new_str']) {
+    if (typeof normalizedArgs[key] === 'string' && normalizedArgs[key].length > 160) {
+      normalizedArgs[key] = `${normalizedArgs[key].slice(0, 160)}...`
+    }
+  }
+  return {
+    toolName,
+    argsKey: stableStringify(normalizedArgs),
+  }
+}
+
+function getToolRounds(messages: AgentMessage[]): ToolRound[] {
+  const rounds: ToolRound[] = []
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i] as AgentMessage & { tool_calls?: Array<{ function?: { name?: string } }> }
+    if (msg.role !== 'assistant' || !msg.tool_calls?.length) continue
+    const toolIndices: number[] = []
+    let j = i + 1
+    while (j < messages.length && messages[j].role === 'tool') {
+      toolIndices.push(j)
+      j++
+    }
+    rounds.push({
+      assistantIndex: i,
+      toolIndices,
+      toolNames: msg.tool_calls.map(tc => tc.function?.name || 'tool'),
+    })
+  }
+  return rounds
+}
+
+function summarizeToolRound(messages: AgentMessage[], round: ToolRound): string {
+  const parts = round.toolIndices.map(toolIndex => {
+    const toolMsg = messages[toolIndex]
+    const toolName = toolMsg.name || 'tool'
+    const success = !toolMsg.content.startsWith('Ошибка:')
+    return summarizeToolResultForMemory(toolName, toolMsg.content || '', success)
+  }).filter(Boolean)
+
+  return parts.length > 0
+    ? `[${round.toolNames.join(', ')}] ${parts.join(' | ')}`
+    : `[${round.toolNames.join(', ')}]`
+}
+
+function compactAgentMessages(
+  messages: AgentMessage[],
+  maxPromptTokens: number,
+  preserveRecentRounds: number,
+): AgentMessage[] {
+  const estimated = messages.reduce((sum, msg) => sum + estimateTokens(msg.content || '') + 4, TOOL_SCHEMAS_OVERHEAD)
+  if (estimated <= maxPromptTokens) return messages
+
+  const rounds = getToolRounds(messages)
+  if (rounds.length <= preserveRecentRounds) return messages
+
+  const splitIndex = Math.max(0, rounds.length - preserveRecentRounds)
+  const roundsToCompress = rounds.slice(0, splitIndex)
+  if (roundsToCompress.length === 0) return messages
+
+  const compressedLines = roundsToCompress
+    .map(round => summarizeToolRound(messages, round))
+    .filter(Boolean)
+  if (compressedLines.length === 0) return messages
+
+  const removeIndices = new Set<number>()
+  for (const round of roundsToCompress) {
+    removeIndices.add(round.assistantIndex)
+    for (const toolIndex of round.toolIndices) removeIndices.add(toolIndex)
+  }
+
+  const summaryMessage: AgentMessage = {
+    role: 'system',
+    content: `[Agent scratch summary]\n${compressedLines.join('\n')}\n[/Agent scratch summary]`,
+  }
+
+  const compacted = messages.filter((_, index) => !removeIndices.has(index))
+  const firstNonSystem = compacted.findIndex(msg => msg.role !== 'system')
+  const insertAt = firstNonSystem === -1 ? compacted.length : firstNonSystem
+  compacted.splice(insertAt, 0, summaryMessage)
+  return compacted
+}
+
 export class Agent {
   private store: Store
   private client: AIClient
@@ -118,6 +254,8 @@ export class Agent {
   pendingDiffEntries: DiffEntry[] = []
   private readFileCache = new Map<string, string>()
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
+  private recentToolFingerprints: AgentToolCallFingerprint[] = []
+  private recentErrorFingerprints: string[] = []
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
@@ -133,7 +271,7 @@ export class Agent {
     systemPrompt?: string,
     history?: Array<{ role: string; content: string }>,
     toolSchemas?: typeof TOOL_SCHEMAS,
-    options?: { autoMemoryInterval?: number; readFileCache?: boolean; toolSummarization?: boolean }
+    options?: AgentRuntimeOptions
   ): Promise<void> {
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt || FALLBACK_SYSTEM_PROMPT },
@@ -148,9 +286,32 @@ export class Agent {
     this.readFileCache = useCache ? new Map<string, string>() : new Map()
     this.pendingDiffEntries = []
     this.fileMap = new Map()
+    this.recentToolFingerprints = []
+    this.recentErrorFingerprints = []
     const useSummarization = options?.toolSummarization === true
     const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
     const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string } }>
+    const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
+    const maxRepeatedToolCalls = Math.max(2, options?.maxRepeatedToolCalls ?? 3)
+    const maxRepeatedErrors = Math.max(2, options?.maxRepeatedErrors ?? 2)
+    const contextWindow = Math.max(32_000, ctxSettings.contextLimitTokens)
+    const contextCompactionPct = Math.min(95, Math.max(50, options?.contextCompactionPct ?? 75))
+    const preserveRecentToolRounds = Math.max(2, options?.preserveRecentToolRounds ?? 8)
+    const maxPromptTokensBeforeCompact = Math.floor(contextWindow * contextCompactionPct / 100)
+
+    const flushWorkingMemory = (label: string) => {
+      if (!this.chatId || !this.onUpdateWorkingMemory || this.role !== 'main') return
+      const existing = this.onGetWorkingMemory ? this.onGetWorkingMemory(this.chatId) : ''
+      const structured = updateStructuredMemory(existing, {
+        lastTask: label.slice(0, 200),
+        modifiedFiles: Array.from(modifiedFiles),
+        diffEntries: ctxSettings.diffJournalEnabled
+          ? this.pendingDiffEntries.slice(-ctxSettings.diffJournalLines * 2)
+          : [],
+        fileMap: ctxSettings.fileMapEnabled ? this.fileMap : undefined,
+      })
+      this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
+    }
 
     for (let step = 0; step < maxSteps; step++) {
       if (signal?.aborted) {
@@ -266,6 +427,23 @@ export class Agent {
 
         const executeCall = async (item: NormalizedToolCall) => {
           const { callId, fn, args, isHiddenTool } = item
+          if (!isHiddenTool) {
+            const fingerprint = buildToolFingerprint(fn.name, args)
+            this.recentToolFingerprints.push(fingerprint)
+            if (this.recentToolFingerprints.length > maxRepeatedToolCalls) {
+              this.recentToolFingerprints.shift()
+            }
+            const repeatedCalls = this.recentToolFingerprints.length >= maxRepeatedToolCalls &&
+              this.recentToolFingerprints.every(entry =>
+                entry.toolName === fingerprint.toolName && entry.argsKey === fingerprint.argsKey,
+              )
+            if (repeatedCalls) {
+              messages.push({
+                role: 'user',
+                content: `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`,
+              })
+            }
+          }
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool })
 
           const mode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
@@ -335,6 +513,22 @@ export class Agent {
             ? truncateToolResult((rawContent || '') + errorHint, ctxSettings.toolMaxChars)
             : ((rawContent || '') + errorHint)
 
+          if (!result.success && !isHiddenTool) {
+            const errorFingerprint = `${fn.name}:${(result.error ?? '').slice(0, 180)}`
+            this.recentErrorFingerprints.push(errorFingerprint)
+            if (this.recentErrorFingerprints.length > maxRepeatedErrors) {
+              this.recentErrorFingerprints.shift()
+            }
+            const repeatedErrors = this.recentErrorFingerprints.length >= maxRepeatedErrors &&
+              this.recentErrorFingerprints.every(entry => entry === errorFingerprint)
+            if (repeatedErrors) {
+              messages.push({
+                role: 'user',
+                content: `Loop guard: ${fn.name} produced the same error ${maxRepeatedErrors} times. Do not retry it unchanged. Use a different tool or explain the blocker.`,
+              })
+            }
+          }
+
           callbacks.onStep({
             type: 'tool_result',
             toolName: fn.name,
@@ -371,52 +565,28 @@ export class Agent {
           })
         }
 
-        if (callbacks.onContextUpdate) {
-          const msgTokens = messages.reduce((sum, m) => sum + Math.ceil((m.content || '').length / 3.5) + 4, 0)
-          callbacks.onContextUpdate(msgTokens + 3800)
+        if (autoMemoryInterval > 0 && (step + 1) % autoMemoryInterval === 0) {
+          flushWorkingMemory(`Intermediate progress after ${step + 1} agent steps`)
         }
 
-        const KEEP_FULL_ROUNDS = 8
+        const compactedMessages = compactAgentMessages(messages, maxPromptTokensBeforeCompact, preserveRecentToolRounds)
+        if (compactedMessages !== messages) {
+          messages.length = 0
+          messages.push(...compactedMessages)
+        }
+
         const toolMsgCount = messages.filter(m => m.role === 'tool' || (m.role === 'assistant' && (m as { tool_calls?: unknown[] }).tool_calls?.length)).length
-        if (useSummarization && toolMsgCount > KEEP_FULL_ROUNDS * 2) {
-          let oldRoundsCompressed = 0
-          const compressed: string[] = []
-          const toRemove = new Set<number>()
-          for (let i = 0; i < messages.length; i++) {
-            const m = messages[i]
-            const asst = m as { role: string; tool_calls?: Array<{ function: { name: string } }> }
-            if (asst.role === 'assistant' && asst.tool_calls?.length && oldRoundsCompressed < toolMsgCount - KEEP_FULL_ROUNDS * 2) {
-              const names = asst.tool_calls.map(tc => tc.function.name).join(', ')
-              let j = i + 1
-              const results: string[] = []
-              while (j < messages.length && messages[j].role === 'tool') {
-                const toolMsg = messages[j] as { role: string; name?: string; content: string }
-                const content = toolMsg.content ?? ''
-                const isReadFile = toolMsg.name === 'read_file' || names.includes('read_file')
-                if (isReadFile) {
-                  results.push(content.slice(0, 1500))
-                } else {
-                  results.push(content.slice(0, 400))
-                  toRemove.add(j)
-                }
-                j++
-              }
-              compressed.push(`[${names}]: ${results.join(' | ')}`)
-              if (asst.tool_calls.every((_, idx) => toRemove.has(i + 1 + idx))) {
-                toRemove.add(i)
-              }
-              oldRoundsCompressed++
-            }
-          }
-          if (compressed.length > 0) {
-            const summaryMsg = { role: 'assistant' as const, content: `[Previous actions]\n${compressed.join('\n')}` }
-            const newMessages = messages.filter((_, i) => !toRemove.has(i))
-            const insertIdx = newMessages.findIndex(m => m.role === 'user')
-            const safeIdx = insertIdx === -1 ? newMessages.length : insertIdx
-            newMessages.splice(safeIdx, 0, summaryMsg)
+        if (useSummarization && toolMsgCount > preserveRecentToolRounds * 2) {
+          const summarized = compactAgentMessages(messages, maxPromptTokensBeforeCompact, preserveRecentToolRounds)
+          if (summarized !== messages) {
             messages.length = 0
-            messages.push(...newMessages)
+            messages.push(...summarized)
           }
+        }
+
+        if (callbacks.onContextUpdate) {
+          const msgTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content || '') + 4, 0)
+          callbacks.onContextUpdate(msgTokens + TOOL_SCHEMAS_OVERHEAD)
         }
       } catch (err) {
         const error = err as { name?: string; status?: number; message?: string }
