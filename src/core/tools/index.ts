@@ -65,12 +65,12 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     const { stdout, stderr } = await execAsync(execCmd, execOpts)
     const stdoutClean = (stdout as string)?.trim() || ''
     const stderrClean = (stderr as string)?.trim() || ''
-    let out = stdoutClean || '(нет вывода)'
-    if (stderrClean) out += `\n[stderr]:\n${stderrClean}`
+    let out = smartTrimOutput(stdoutClean) || '(нет вывода)'
+    if (stderrClean) out += `\n[stderr]:\n${smartTrimOutput(stderrClean)}`
     return { success: true, output: `[exit: 0]\n${out}` }
   } catch (e: any) {
-    const stdoutPart = e.stdout?.trim() || ''
-    const stderrPart = e.stderr?.trim() || ''
+    const stdoutPart = smartTrimOutput(e.stdout?.trim() || '')
+    const stderrPart = smartTrimOutput(e.stderr?.trim() || '')
     const exitCode = typeof e.code === 'number' ? e.code : 1
     let out = `[exit: ${exitCode}]`
     if (stdoutPart) out += `\n[stdout]:\n${stdoutPart}`
@@ -81,6 +81,15 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
       error: stderrPart || e.message?.replace(/Command failed:.+\n?/, '').trim() || 'Команда завершилась с ошибкой',
     }
   }
+}
+
+// Умная обрезка вывода команды — показываем начало (контекст) и конец (результат/ошибки)
+function smartTrimOutput(text: string, maxChars = 4000): string {
+  if (!text || text.length <= maxChars) return text
+  const head = 800   // начало — контекст команды
+  const tail = 2000  // конец — результат и ошибки (самое важное)
+  const removed = text.length - head - tail
+  return `${text.slice(0, head)}\n\n...[обрезано ${removed} символов, показано начало и конец]...\n\n${text.slice(-tail)}`
 }
 
 export function readFile(path: string, offset?: number, limit?: number, outlineOnly?: boolean): ToolResult {
@@ -111,8 +120,8 @@ export function readFile(path: string, offset?: number, limit?: number, outlineO
       }
     }
 
-    // Без offset — читаем первые 200 строк, если файл большой — добавляем авто-outline
-    const DEFAULT_LINES = 200
+    // Без offset — читаем первые 100 строк, если файл большой — добавляем авто-outline
+    const DEFAULT_LINES = 100
     const truncated = totalLines > DEFAULT_LINES
     const slice = lines.slice(0, DEFAULT_LINES)
     const numbered = slice.map((l, i) => `${i + 1}|${l}`).join('\n')
@@ -908,7 +917,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: 'Читает файл. Без offset — первые 200 строк + авто-outline структуры если файл большой. С offset/limit — точный диапазон строк. Всегда показывает [total_lines] и подсказку если файл обрезан.',
+      description: 'Читает файл. Без offset — первые 100 строк + авто-outline структуры если файл > 100 строк. С offset/limit — точный диапазон строк. Всегда показывает [total_lines] и подсказку если файл обрезан.',
       parameters: {
         type: 'object',
         properties: {
