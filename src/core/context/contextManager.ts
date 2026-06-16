@@ -92,9 +92,6 @@ export interface ContextSettings {
   diffJournalEnabled: boolean
   diffJournalLines: number
 
-  // Project Index
-  projectIndexEnabled: boolean
-
   // File Map
   fileMapEnabled: boolean
 }
@@ -110,7 +107,6 @@ export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
   tokenCounterEnabled: true,
   diffJournalEnabled: true,
   diffJournalLines: 5,
-  projectIndexEnabled: true,
   fileMapEnabled: true,
 }
 
@@ -147,17 +143,73 @@ export interface CompressResult {
   summaryAdded: boolean
 }
 
-// Pruning tool results перед суммаризацией — механически обрезаем длинные outputs
+// Умный summarize tool result — информативная 1-строчная замена (как в Hermes)
+function smartSummarizeToolResult(toolName: string, content: string): string {
+  const lines = content.split('\n').length
+  const chars = content.length
+
+  // read_file
+  if (toolName === 'read_file' || toolName === 'read_files') {
+    const fileMatch = content.match(/\[Файл: ([^\]|]+)/)
+    const linesMatch = content.match(/Строки (\d+-\d+) из (\d+)/)
+    const totalMatch = content.match(/из (\d+) строк/)
+    const file = fileMatch?.[1]?.trim() ?? '?'
+    const total = linesMatch?.[2] ?? totalMatch?.[1] ?? lines
+    return `[${toolName}] прочитан ${file} (${total} строк, ${chars} символов)`
+  }
+  // edit_file / multi_edit_file
+  if (toolName === 'edit_file' || toolName === 'multi_edit_file') {
+    const fileMatch = content.match(/([^\s]+\.[a-z]+)/i)
+    const file = fileMatch?.[1] ?? '?'
+    return `[${toolName}] изменён ${file}`
+  }
+  // write_file
+  if (toolName === 'write_file') {
+    const fileMatch = content.match(/([^\s]+\.[a-z]+)/i)
+    const file = fileMatch?.[1] ?? '?'
+    return `[write_file] записан ${file} (${chars} символов)`
+  }
+  // run_command
+  if (toolName === 'run_command') {
+    const exitMatch = content.match(/\[exit: (\d+)\]/)
+    const exitCode = exitMatch?.[1] ?? '?'
+    return `[run_command] exit ${exitCode}, ${lines} строк вывода`
+  }
+  // search_code / search_web
+  if (toolName === 'search_code') {
+    const matchCount = (content.match(/●/g) ?? []).length
+    return `[search_code] ${matchCount} файлов с совпадениями`
+  }
+  if (toolName === 'search_web') {
+    return `[search_web] ${lines} строк результатов`
+  }
+  // find_files / list_directory
+  if (toolName === 'find_files' || toolName === 'list_directory') {
+    return `[${toolName}] ${lines} строк результатов`
+  }
+  // get_file_outline
+  if (toolName === 'get_file_outline') {
+    const fileMatch = content.match(/([^\s]+\.[a-z]+)/i)
+    return `[get_file_outline] ${fileMatch?.[1] ?? '?'} (${lines} строк)`
+  }
+  // think / update_working_memory — скрытые, совсем убираем
+  if (toolName === 'think' || toolName === 'update_working_memory') {
+    return `[${toolName}] (скрыто)`
+  }
+  // дефолт — первые 80 символов
+  return `[${toolName}] ${content.slice(0, 80).replace(/\n/g, ' ')}${content.length > 80 ? '…' : ''}`
+}
+
+// Pruning tool results перед суммаризацией — заменяем старые на умные 1-строчники
 function pruneToolOutputsForSummary(messages: ChatMessage[], maxToolChars = 300): ChatMessage[] {
   return messages.map(m => {
-    // Обрезаем tool results в assistant сообщениях которые содержат [Использованные инструменты]
     if (m.role === 'assistant' && m.content.includes('[Использованные инструменты]')) {
       const parts = m.content.split('[Использованные инструменты]')
       const toolPart = parts[1] || ''
-      // Обрезаем каждый tool result до maxToolChars
       const prunedTools = toolPart.replace(/\[([^\]]+)\]: ([^\[]*)/g, (_, name, result) => {
-        const trimmed = result.trim().slice(0, maxToolChars)
-        return `[${name}]: ${trimmed}${result.trim().length > maxToolChars ? '…' : ''}`
+        // Используем умный summarize вместо механической обрезки
+        const summary = smartSummarizeToolResult(name.trim(), result.trim())
+        return summary
       })
       return { ...m, content: parts[0] + '[Использованные инструменты]' + prunedTools }
     }
@@ -213,12 +265,14 @@ export async function applyRollingWindowAsync(
   settings: Pick<ContextSettings, 'rollingKeepFirst' | 'rollingKeepLast' | 'rollingTriggerPct' | 'contextLimitTokens'>,
   summaryFn?: (prompt: string) => Promise<string>,
   prevSummary?: string,
+  forceCompress?: boolean,
 ): Promise<CompressResult> {
   const totalTokens = estimateMessagesTokens(messages)
   const limitTokens = settings.contextLimitTokens
   const triggerTokens = Math.floor(limitTokens * settings.rollingTriggerPct / 100)
 
-  if (totalTokens < triggerTokens || messages.length <= settings.rollingKeepFirst + settings.rollingKeepLast) {
+  // Сжимаем если превышен токенный порог ИЛИ форсированно по кол-ву сообщений
+  if (!forceCompress && (totalTokens < triggerTokens || messages.length <= settings.rollingKeepFirst + settings.rollingKeepLast)) {
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
   }
 
