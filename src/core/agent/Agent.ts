@@ -280,8 +280,9 @@ export class Agent {
         messages.push({ role: 'assistant', content: response.content || '', tool_calls: response.tool_calls })
 
         // Все tool_calls этой итерации — выполняем параллельно
-        // Результаты собираем в Map чтобы потом запушить в правильном порядке
         const resultMap = new Map<string, { contentForAI: string; callId: string; name: string }>()
+        // Мутации state (cache, fileMap, modifiedFiles) — применяем после Promise.all чтобы избежать race condition
+        const pendingMutations: Array<() => void> = []
 
         await Promise.all(response.tool_calls.map(async (call) => {
           const fn = (call as { function: { name: string; arguments: string } }).function
@@ -328,50 +329,53 @@ export class Agent {
 
           const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
 
-          // Трекаем изменённые файлы для авто-памяти + инвалидируем кэш + diff журнал + file map
+          // Трекаем изменённые файлы — через pendingMutations (race condition safe)
           if (result.success && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
             const p = args.path as string | undefined
             if (p) {
-              modifiedFiles.add(p)
-              // Инвалидируем кэш
-              for (const key of Array.from(this.readFileCache.keys())) {
-                if (key.startsWith(p + ':')) this.readFileCache.delete(key)
-              }
-              // Diff журнал
+              const diff = (result as { diff?: string }).diff
+              let diffSummary = ''
               if (ctxSettings.diffJournalEnabled) {
-                const diff = (result as { diff?: string }).diff
-                let summary = ''
                 if (diff) {
-                  // Берём первые N строк diff
-                  const diffLines = diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).slice(0, ctxSd.diffJournalLines)
-                  summary = diffLines.join(' | ').slice(0, 200)
+                  const diffLines = diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).slice(0, ctxSettings.diffJournalLines)
+                  diffSummary = diffLines.join(' | ').slice(0, 200)
                 } else {
-                  summary = fn.name === 'write_file' ? 'создан/перезаписан' : `изменён (${fn.name})`
+                  diffSummary = fn.name === 'write_file' ? 'создан/перезаписан' : `изменён (${fn.name})`
                 }
-                console.log('[agent] diff journal:', p, '->', summary)
-                this.pendingDiffEntries.push({ file: p, summary })
               }
-              // File Map
-              if (ctxSettings.fileMapEnabled) {
-                const existing = this.fileMap.get(p)
-                this.fileMap.set(p, { reads: existing?.reads ?? 0, writes: (existing?.writes ?? 0) + 1, note: existing?.note ?? '' })
-              }
+              const fnNameCopy = fn.name
+              pendingMutations.push(() => {
+                modifiedFiles.add(p)
+                // Инвалидируем кэш
+                for (const key of Array.from(this.readFileCache.keys())) {
+                  if (key.startsWith(p + ':')) this.readFileCache.delete(key)
+                }
+                if (ctxSettings.diffJournalEnabled && diffSummary) {
+                  console.log('[agent] diff journal:', p, '->', diffSummary)
+                  this.pendingDiffEntries.push({ file: p, summary: diffSummary })
+                }
+                if (ctxSettings.fileMapEnabled) {
+                  const existing = this.fileMap.get(p)
+                  this.fileMap.set(p, { reads: existing?.reads ?? 0, writes: (existing?.writes ?? 0) + 1, note: existing?.note ?? fnNameCopy })
+                }
+              })
             }
           }
           // File Map — трекаем read_file
           if (result.success && fn.name === 'read_file') {
             const p = args.path as string | undefined
             if (p && ctxSettings.fileMapEnabled) {
-              const existing = this.fileMap.get(p)
-              this.fileMap.set(p, { reads: (existing?.reads ?? 0) + 1, writes: existing?.writes ?? 0, note: existing?.note ?? '' })
+              pendingMutations.push(() => {
+                const existing = this.fileMap.get(p)
+                this.fileMap.set(p, { reads: (existing?.reads ?? 0) + 1, writes: existing?.writes ?? 0, note: existing?.note ?? '' })
+              })
             }
           }
 
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
           const imageUrl = imageMatch ? imageMatch[1] : undefined
 
-          // Tool result truncation
-          const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
+          // Tool result truncation — используем ctxSettings из внешнего scope
           const rawContent = imageUrl
             ? 'Изображение успешно сгенерировано и показано пользователю.'
             : (result.success ? result.output : `Ошибка: ${result.error}`)
@@ -396,6 +400,9 @@ export class Agent {
           resultMap.set(callId, { contentForAI, callId, name: fn.name })
           toolCallCount++
         }))
+
+        // Применяем мутации state после всех параллельных тулов — race condition safe
+        for (const mutation of pendingMutations) mutation()
 
         // Авто-память каждые N тулвызовов — сохраняем прогресс
         if (autoMemInterval > 0 && toolCallCount > 0 && toolCallCount % autoMemInterval === 0 &&
