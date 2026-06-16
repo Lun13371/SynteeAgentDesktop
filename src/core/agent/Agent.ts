@@ -192,9 +192,8 @@ export class Agent {
     this.readFileCache = useCache ? readFileCache : new Map()
     this.pendingDiffEntries = []
     this.fileMap = new Map()
-    const autoMemInterval = options?.autoMemoryInterval ?? 5
-    const useSummarization = options?.toolSummarization !== false
-    // Фикс 4: вынести getContextSettings из цикла — читаем store один раз
+    // Summarization — OFF по умолчанию, включается только явно
+    const useSummarization = options?.toolSummarization === true
     const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
 
     for (let step = 0; step < maxSteps; step++) {
@@ -395,20 +394,7 @@ export class Agent {
         // Применяем мутации state после всех параллельных тулов — race condition safe
         for (const mutation of pendingMutations) mutation()
 
-        // Авто-память каждые N тулвызовов — сохраняем прогресс
-        if (autoMemInterval > 0 && toolCallCount > 0 && toolCallCount % autoMemInterval === 0 &&
-            this.chatId && this.onUpdateWorkingMemory) {
-          const recentActions = Array.from(resultMap.values())
-            .slice(-autoMemInterval)
-            .filter(r => !r.contentForAI.startsWith('[кэш]'))  // фикс 7: не пишем кэш-хиты в память
-            .map(r => `- ${r.name}: ${r.contentForAI.slice(0, 100)}`)
-            .join('\n')
-          this.onUpdateWorkingMemory(
-            this.chatId,
-            `[авто, шаг ${toolCallCount}] Последние действия:\n${recentActions}`,
-            'append'
-          )
-        }
+        // autoMemory interval убран — memory обновляется только в onDone через structured memory
 
         // Пушим tool results в том же порядке что и tool_calls — важно для провайдеров
         for (const call of response.tool_calls) {
@@ -527,7 +513,8 @@ export class Agent {
         if (result.success) {
           this.readFileCache.set(cacheKey, result.output)
           // Обновляем file map с первыми 200 символами содержимого
-          if (ctxSettings.fileMapEnabled) {
+          const localCtx = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
+          if (localCtx.fileMapEnabled) {
             const existing = this.fileMap.get(filePath)
             this.fileMap.set(filePath, {
               reads: (existing?.reads ?? 0) + 1,

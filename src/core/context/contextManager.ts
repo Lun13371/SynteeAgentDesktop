@@ -90,40 +90,36 @@ export interface ContextSettings {
   // Token counter
   tokenCounterEnabled: boolean
 
-  // Structured working memory
-  structuredMemoryEnabled: boolean   // структурированная рабочая память вместо append строк
-
   // Diff journal
-  diffJournalEnabled: boolean        // сохранять diff правок в рабочую память
-  diffJournalLines: number           // сколько строк diff сохранять (дефолт 5)
+  diffJournalEnabled: boolean
+  diffJournalLines: number
 
   // Project Index
-  projectIndexEnabled: boolean       // авточтение AGENTS.md/package.json при старте
+  projectIndexEnabled: boolean
 
   // File Map
-  fileMapEnabled: boolean            // карта файлов которые AI трогал в этом чате
+  fileMapEnabled: boolean
 
-  // Compressed tool history
-  toolHistorySessions: number        // сколько прошлых сессий включать (дефолт 2, макс 5)
-  toolHistoryChars: number           // символов на result (дефолт 300)
+  // Tool history in rawHistory
+  toolHistorySessions: number   // оставляем в типе для обратной совместимости, дефолт 0
+  toolHistoryChars: number      // символов на result в rawHistory
 }
 
 export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
   toolTruncEnabled: true,
-  toolMaxChars: 4000,
+  toolMaxChars: 8000,          // было 4000 — больше контента файлов
   rollingEnabled: true,
-  rollingTriggerPct: 75,
+  rollingTriggerPct: 85,       // было 75 — меньше ненужных сжатий
   rollingKeepFirst: 2,
-  rollingKeepLast: 12,
+  rollingKeepLast: 20,         // было 12 — больше свежей истории
   contextLimitTokens: 200_000,
   tokenCounterEnabled: true,
-  structuredMemoryEnabled: true,
   diffJournalEnabled: true,
   diffJournalLines: 5,
   projectIndexEnabled: true,
   fileMapEnabled: true,
-  toolHistorySessions: 3,
-  toolHistoryChars: 600,
+  toolHistorySessions: 0,
+  toolHistoryChars: 2000,
 }
 
 export function getContextSettings(input: Record<string, unknown> | Partial<ContextSettings>): ContextSettings {

@@ -150,39 +150,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       return { role: m.role as ChatMessage['role'], content: m.content }
     })
 
-    // ── Compressed tool history — последние N агентных сессий ─────────────────
-    if (!params.incognito && ctxSettings.toolHistorySessions > 0) {
-      try {
-        const allMsgs = getMessages(params.chatId)
-        const toolMsgs = allMsgs
-          .filter(m => m.role === 'assistant' && m.toolSteps && (m.toolSteps as unknown[]).length > 0)
-          .slice(-ctxSettings.toolHistorySessions)
-
-        const compressedToolHistory: ChatMessage[] = []
-        for (const m of toolMsgs) {
-          const steps = (m.toolSteps ?? []) as Array<{ type: string; toolName?: string; content?: string }>
-          const calls = steps.filter(s => s.type === 'tool_call')
-          const results = steps.filter(s => s.type === 'tool_result')
-          if (calls.length === 0) continue
-
-          const summary = calls.map((c, i) => {
-            const r = results[i]
-            const maxChars = ctxSettings.toolHistoryChars  // настраиваемый размер
-            const resultShort = r?.content ? r.content.slice(0, maxChars) + (r.content.length > maxChars ? '…' : '') : '(нет результата)'
-            return `[${c.toolName}] → ${resultShort}`
-          }).join('\n')
-
-          compressedToolHistory.push({ role: 'assistant', content: `[Предыдущие действия агента]\n${summary}` })
-        }
-
-        if (compressedToolHistory.length > 0) {
-          console.log('[chat.ipc] injecting tool history:', compressedToolHistory.length, 'sessions')
-          rawHistory.unshift(...compressedToolHistory)
-        }
-      } catch (e) {
-        console.warn('[chat.ipc] compressed tool history error:', e)
-      }
-    }
+    // rawHistory уже содержит [Использованные инструменты] для каждого агентного ответа
+    // compressed tool history убран — дублировал rawHistory
 
     // ── Project Index — только для первых 3 сообщений чата ────────────────────
     // Фикс 5: не добавлять при каждом запросе — только при старте сессии
