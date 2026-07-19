@@ -106,6 +106,33 @@
   color: var(--text-secondary);
 }
 
+/* Подсказка о рабочей директории в пустом чате */
+.chat-empty-workdir-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 14px;
+  background: var(--accent-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 480px;
+  text-align: left;
+  line-height: 1.4;
+}
+.chat-empty-workdir-hint strong {
+  color: var(--text-primary);
+  font-weight: 500;
+  word-break: break-all;
+}
+.chat-empty-workdir-hint--warn {
+  background: color-mix(in srgb, #facc15 8%, transparent);
+  border-color: color-mix(in srgb, #facc15 25%, transparent);
+  color: var(--text-secondary);
+}
+
 .chat-layout--embedded {
   height: 100%;
 }

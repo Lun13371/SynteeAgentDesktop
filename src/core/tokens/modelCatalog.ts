@@ -1,0 +1,306 @@
+/**
+ * Model Catalog — живой каталог лимитов/цен моделей через models.dev.
+ *
+ * Фетчит https://models.dev/api.json (бесплатный, без авторизации), кэширует
+ * уплощённую карту на диск. При старте main-процесса и worker-потока читает
+ * кэш синхронно в память, обновление происходит в фоне (только main).
+ *
+ * Модуль не зависит от electron — принимает путь к кэш-файлю параметром,
+ * чтобы быть доступным из worker_threads.
+ *
+ * Матчинг: 3 уровня — точный провайдер → vendor-sniff для прокси →
+ * глобальный поиск по всем провайдерам с приоритетом каноничных вендоров.
+ */
+
+// fs импортируется лениво внутри функций, чтобы renderer-бандл не пытался
+// статически резолвить Node-модули (getCatalogModel работает только с in-memory кэшем)
+
+const MODELS_DEV_URL = 'https://models.dev/api.json'
+const ONE_DAY_MS = 86_400_000
+
+export interface CatalogModelInfo {
+  contextWindow: number
+  maxOutput: number
+  inputPricePerM: number   // центы за 1M input токенов (для совместимости с ModelPricing)
+  outputPricePerM: number  // центы за 1M output токенов
+  cacheReadPerM?: number
+  cacheWritePerM?: number
+}
+
+interface CachedCatalog {
+  fetchedAt: number
+  models: Record<string, CatalogModelInfo>  // key: `${providerId}:${modelId}`
+}
+
+// ─── In-memory state ──────────────────────────────────────────────────────────
+
+let _cache: CachedCatalog | null = null
+let _cachePath: string | null = null
+let _lastFetchAt: number | null = null
+let _refreshing = false
+
+// ─── Provider remap: наш providerId → models.dev provider key ─────────────────
+// null = проксирующий/не-LLM провайдер, нет прямой записи в models.dev
+const PROVIDER_REMAP: Record<string, string | null> = {
+  openai: 'openai',
+  anthropic: 'anthropic',
+  google: 'google',
+  groq: 'groq',
+  mistral: 'mistral',
+  cohere: 'cohere',
+  together: 'togetherai',       // models.dev использует 'togetherai', не 'together'
+  fireworks: 'fireworks-ai',    // models.dev использует 'fireworks-ai', не 'fireworks'
+  deepseek: 'deepseek',
+  xai: 'xai',
+  xiaomi: 'xiaomi',
+  // проксирующие / не в models.dev — обрабатываются через vendor-sniff + global fallback
+  onlysq: null,
+  voidai: null,
+  bfl: null,
+  ollama: null,
+}
+
+// Каноничные вендоры — приоритет при глобальном поиске (их цены/лимиты самые точные)
+const CANONICAL_VENDORS = [
+  'openai', 'anthropic', 'google', 'xai', 'deepseek',
+  'mistral', 'cohere', 'groq', 'togetherai', 'fireworks-ai', 'xiaomi',
+]
+
+// Эвристика vendor-sniff для проксирующих провайдеров (onlysq и т.п.)
+function inferProviderFromModelId(modelId: string): string | null {
+  const id = modelId.toLowerCase()
+  if (id.includes('claude')) return 'anthropic'
+  if (id.startsWith('gpt') || id.startsWith('o3') || id.startsWith('o4') || id.startsWith('o1')) return 'openai'
+  if (id.includes('gemini') || id.includes('gemma')) return 'google'
+  if (id.includes('grok')) return 'xai'
+  if (id.includes('deepseek')) return 'deepseek'
+  if (id.includes('glm') || id.includes('mimo')) return 'xiaomi'
+  if (id.includes('qwen')) return 'togetherai'
+  if (id.includes('llama')) return 'togetherai'
+  if (id.includes('mistral') || id.includes('mixtral') || id.includes('codestral')) return 'mistral'
+  if (id.includes('gemma')) return 'google'
+  if (id.includes('kimi')) return 'togetherai'
+  if (id.includes('minimax')) return 'minimax'
+  return null
+}
+
+// Нормализация model id для матчинга (lowercase, срез после /, срез суффиксов даты,
+// срез trailing контекст-размеров вроде -32768)
+function normalizeModelId(id: string): string {
+  let s = id.toLowerCase()
+  // slash-пути (Together/Fireworks) — берём последнюю часть
+  const slashIdx = s.lastIndexOf('/')
+  if (slashIdx >= 0) s = s.slice(slashIdx + 1)
+  // срезаем суффиксы даты вроде -20241022
+  s = s.replace(/-\d{8}$/, '')
+  // срезаем trailing контекст-размеры (Groq: mixtral-8x7b-32768 → mixtral-8x7b)
+  s = s.replace(/-\d{4,}$/, '')
+  return s
+}
+
+// ─── Инициализация (читает диск-кэш синхронно) ────────────────────────────────
+
+export function initModelCatalog(cachePath: string): void {
+  _cachePath = cachePath
+  try {
+    const { existsSync, readFileSync } = require('fs') as typeof import('fs')
+    if (existsSync(cachePath)) {
+      const raw = readFileSync(cachePath, 'utf-8')
+      const parsed = JSON.parse(raw) as CachedCatalog
+      if (parsed && parsed.models && typeof parsed.fetchedAt === 'number') {
+        _cache = parsed
+        _lastFetchAt = parsed.fetchedAt
+      }
+    }
+  } catch {
+    // битый кэш — не критично, работаем без него
+    _cache = null
+  }
+}
+
+// ─── Основной lookup ───────────────────────────────────────────────────────────
+
+export function getCatalogModel(providerId: string, modelId: string): CatalogModelInfo | null {
+  if (!_cache) return null
+
+  // 1. Прямой провайдер (если замапплен в models.dev)
+  const providerKey = PROVIDER_REMAP[providerId]
+  if (providerKey) {
+    const hit = lookupInProvider(providerKey, modelId)
+    if (hit) return hit
+  }
+
+  // 2. Проксирующий провайдер — vendor-sniff по modelId
+  if (providerKey === null || providerKey === undefined) {
+    const inferred = inferProviderFromModelId(modelId)
+    if (inferred) {
+      const hit = lookupInProvider(inferred, modelId)
+      if (hit) return hit
+    }
+  }
+
+  // 3. Глобальный fallback — ищем по ВСЕМ провайдерам
+  //    Предпочитаем каноничных вендоров (openai, anthropic, google...)
+  //    Это ловит любые модели, которые проксируются под чужими именами
+  return globalSearch(modelId)
+}
+
+function lookupInProvider(providerKey: string, modelId: string): CatalogModelInfo | null {
+  if (!_cache) return null
+
+  // Точное совпадение
+  const exactKey = `${providerKey}:${modelId}`
+  if (_cache.models[exactKey]) return _cache.models[exactKey]
+
+  // Нормализованное совпадение
+  const normId = normalizeModelId(modelId)
+  const normKey = `${providerKey}:${normId}`
+  if (_cache.models[normKey]) return _cache.models[normKey]
+
+  // Substring fallback в рамках того же провайдера
+  const prefix = `${providerKey}:`
+  for (const [key, val] of Object.entries(_cache.models)) {
+    if (!key.startsWith(prefix)) continue
+    const catalogModelId = key.slice(prefix.length)
+    const normCatalog = normalizeModelId(catalogModelId)
+    if (normCatalog === normId || normCatalog.includes(normId) || normId.includes(normCatalog)) {
+      return val
+    }
+  }
+
+  return null
+}
+
+/**
+ * Глобальный поиск модели по всем провайдерам в каталоге.
+ * Возвращает лучшее совпадение, предпочитая каноничных вендоров.
+ * 3 уровня: точное совпадение → нормализованное → substring (для вариантов имён).
+ */
+function globalSearch(modelId: string): CatalogModelInfo | null {
+  if (!_cache) return null
+
+  const normId = normalizeModelId(modelId)
+
+  // Собираем совпадения по уровням
+  const exactMatches: Array<{ providerKey: string; info: CatalogModelInfo }> = []
+  const normMatches: Array<{ providerKey: string; info: CatalogModelInfo }> = []
+  const substringMatches: Array<{ providerKey: string; info: CatalogModelInfo }> = []
+
+  for (const [key, val] of Object.entries(_cache.models)) {
+    const colonIdx = key.indexOf(':')
+    if (colonIdx < 0) continue
+    const provKey = key.slice(0, colonIdx)
+    const catalogModelId = key.slice(colonIdx + 1)
+    const normCatalog = normalizeModelId(catalogModelId)
+
+    if (catalogModelId === modelId) {
+      exactMatches.push({ providerKey: provKey, info: val })
+    } else if (normCatalog === normId) {
+      normMatches.push({ providerKey: provKey, info: val })
+    } else if (normCatalog.includes(normId) || normId.includes(normCatalog)) {
+      // Substring fallback — ловит варианты имён вроде
+      // 'Qwen2.5-72B-Instruct-Turbo' → 'Qwen2.5-72B-Instruct'
+      // 'mixtral-8x7b-32768' → 'mixtral-8x7b'
+      substringMatches.push({ providerKey: provKey, info: val })
+    }
+  }
+
+  // Приоритет: точное → нормализованное → substring
+  for (const candidates of [exactMatches, normMatches, substringMatches]) {
+    if (candidates.length === 0) continue
+    // Если есть совпадение у каноничного вендора — возвращаем его
+    for (const vendor of CANONICAL_VENDORS) {
+      const hit = candidates.find(c => c.providerKey === vendor)
+      if (hit) return hit.info
+    }
+    // Иначе — первое попавшееся
+    return candidates[0].info
+  }
+
+  return null
+}
+
+// ─── Фоновое обновление (только main-процесс) ─────────────────────────────────
+
+export async function refreshCatalog(cachePath?: string, force?: boolean): Promise<{ ok: boolean; error?: string; modelCount: number }> {
+  const path = cachePath ?? _cachePath
+  if (!path) return { ok: false, error: 'No cache path set', modelCount: 0 }
+  _cachePath = path
+
+  if (_refreshing && !force) {
+    return { ok: true, modelCount: _cache?.models ? Object.keys(_cache.models).length : 0 }
+  }
+  _refreshing = true
+
+  try {
+    const res = await fetch(MODELS_DEV_URL)
+    if (!res.ok) {
+      _refreshing = false
+      return { ok: false, error: `HTTP ${res.status}`, modelCount: 0 }
+    }
+
+    const data = await res.json() as Record<string, {
+      models?: Record<string, {
+        limit?: { context?: number; output?: number }
+        cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number }
+      }>
+    }>
+
+    const flattened: Record<string, CatalogModelInfo> = {}
+
+    for (const [provKey, prov] of Object.entries(data)) {
+      if (!prov.models) continue
+      for (const [modelKey, model] of Object.entries(prov.models)) {
+        const ctx = model.limit?.context ?? 0
+        const out = model.limit?.output ?? 0
+        // models.dev цены в $ за 1M токенов → переводим в центы за 1M (×100)
+        const inputCents = model.cost?.input != null ? Math.round(model.cost.input * 100) : 0
+        const outputCents = model.cost?.output != null ? Math.round(model.cost.output * 100) : 0
+        if (ctx === 0 && inputCents === 0 && outputCents === 0) continue
+        flattened[`${provKey}:${modelKey}`] = {
+          contextWindow: ctx,
+          maxOutput: out,
+          inputPricePerM: inputCents,
+          outputPricePerM: outputCents,
+          cacheReadPerM: model.cost?.cache_read != null ? Math.round(model.cost.cache_read * 100) : undefined,
+          cacheWritePerM: model.cost?.cache_write != null ? Math.round(model.cost.cache_write * 100) : undefined,
+        }
+      }
+    }
+
+    const newCache: CachedCatalog = {
+      fetchedAt: Date.now(),
+      models: flattened,
+    }
+
+    // Записываем на диск
+    try {
+      const { writeFileSync } = require('fs') as typeof import('fs')
+      writeFileSync(path, JSON.stringify(newCache), 'utf-8')
+    } catch {
+      // диск недоступен — обновляем только память
+    }
+
+    _cache = newCache
+    _lastFetchAt = newCache.fetchedAt
+    _refreshing = false
+
+    return { ok: true, modelCount: Object.keys(flattened).length }
+  } catch (e: unknown) {
+    _refreshing = false
+    return { ok: false, error: e instanceof Error ? e.message : String(e), modelCount: 0 }
+  }
+}
+
+export function getCatalogStatus(): { lastFetch: number | null; modelCount: number; stale: boolean } {
+  return {
+    lastFetch: _lastFetchAt,
+    modelCount: _cache?.models ? Object.keys(_cache.models).length : 0,
+    stale: _lastFetchAt != null ? (Date.now() - _lastFetchAt) > ONE_DAY_MS : true,
+  }
+}
+
+/** true если каталог инициализирован и непустой */
+export function isCatalogReady(): boolean {
+  return _cache != null && Object.keys(_cache.models).length > 0
+}

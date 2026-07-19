@@ -17,9 +17,10 @@ import { registerVoiceIPC } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
-import { registerContextIPC } from './ipc/context.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
+import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
+import { ipcMain } from 'electron'
 
 // Имя приложения — ДОЛЖНО быть ДО создания Store и app.whenReady
 app.setName('SynteeHelper')
@@ -73,6 +74,13 @@ app.whenReady().then(async () => {
   })
   hotkeyManager.registerAll()
 
+  // Каталог моделей (models.dev) — инициализируем из диск-кэша синхронно ДО IPC
+  const catalogCachePath = join(app.getPath('userData'), 'modelsCatalog.json')
+  initModelCatalog(catalogCachePath)
+  // Фоновое обновление (не блокирует старт). Периодически — раз в 24ч.
+  refreshCatalog(catalogCachePath).catch(() => { /* ok — работаем на кэше/fallback */ })
+  setInterval(() => { refreshCatalog(catalogCachePath).catch(() => {}) }, 86_400_000)
+
   // IPC
   registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow })
   registerChatIPC(store, mainWindow)
@@ -81,9 +89,19 @@ app.whenReady().then(async () => {
   registerAgentIPC(store, () => mainWindow.getWindow())
   registerMemoryIPC(store)
   registerProviderIPC(store)
-  registerContextIPC(store)
   registerDebugIPC(store)
   registerImageIPC(store, mainWindow)
+
+  // Лёгкий обработчик оценки токенов текущего ввода (для live-обновления кольца при печати)
+  ipcMain.handle('context:estimateInput', (_e, params: { text: string }) => {
+    try {
+      // estimateTokens импортируется ленично, чтобы не тащить tiktoken в main-бандл раньше времени
+      const { estimateTokens } = require('../core/tokens/usageTracker') as typeof import('../core/tokens/usageTracker')
+      return { tokens: estimateTokens(params.text || '') }
+    } catch {
+      return { tokens: 0 }
+    }
+  })
 
   // Первый запуск
   if (!store.get('firstRunComplete')) {
@@ -123,6 +141,12 @@ async function onFirstRun(): Promise<void> {
 // Не закрывать при закрытии всех окон — живём в трее
 app.on('window-all-closed', (e) => {
   e.preventDefault()
+})
+
+// Реальный выход (а не скрытие в трей) — сохраняем размер/позицию главного окна.
+// 'close' на окне перехватывается для hide(), поэтому persistим здесь.
+app.on('before-quit', () => {
+  mainWindow?.flushBounds()
 })
 
 app.on('will-quit', () => {

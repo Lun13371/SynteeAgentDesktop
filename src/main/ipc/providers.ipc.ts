@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import type Store from 'electron-store'
 import type { Provider, ModelMeta, ModelAssignment, ModelParams, ModelCapability } from '../../shared/types'
 import { BUILTIN_MODELS, BUILTIN_PROVIDERS_META } from '../../shared/data/builtinModels'
+import { getCatalogModel } from '../../core/tokens/modelCatalog'
 
 const DEFAULT_PARAMS: ModelParams = {
   temperature: 0.7,
@@ -112,10 +113,14 @@ export function registerProviderIPC(store: Store): void {
         fetched = ids.map(id => {
           const known = BUILTIN_MODELS.find(b => b.id === id)
           if (known) return { ...known, providerId }
+          // Пытаемся получить contextWindow из каталога models.dev
+          const fromCatalog = getCatalogModel(providerId, id)
           return {
             id, providerId,
             name: id,
-            contextWindow: 0,
+            contextWindow: fromCatalog?.contextWindow ?? 0,
+            inputPrice: fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined,
+            outputPrice: fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined,
             speed: 'medium' as const,
             capabilities: [] as ModelCapability[],
             description: '',
@@ -142,7 +147,8 @@ export function registerProviderIPC(store: Store): void {
     const overrides = provider.modelsOverride || []
     for (const id of overrides) {
       if (!fetched.find(m => m.id === id)) {
-        fetched.push({ id, providerId, name: id, contextWindow: 0, speed: 'medium', capabilities: [] })
+        const fromCatalog = getCatalogModel(providerId, id)
+        fetched.push({ id, providerId, name: id, contextWindow: fromCatalog?.contextWindow ?? 0, speed: 'medium', capabilities: [] })
       }
     }
 
@@ -174,7 +180,8 @@ export function registerProviderIPC(store: Store): void {
     for (const p of providers) {
       for (const id of (p.modelsOverride || [])) {
         if (!all.find(x => x.id === id && x.providerId === p.id)) {
-          all.push({ id, providerId: p.id, name: id, contextWindow: 0, speed: 'medium', capabilities: [] })
+          const fromCatalog = getCatalogModel(p.id, id)
+          all.push({ id, providerId: p.id, name: id, contextWindow: fromCatalog?.contextWindow ?? 0, speed: 'medium', capabilities: [] })
         }
       }
     }

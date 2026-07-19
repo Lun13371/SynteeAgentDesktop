@@ -3,6 +3,7 @@ import type Store from 'electron-store'
 import { buildReasoningParams } from '../../shared/reasoningModels'
 import { getNextApiKey } from '../../shared/roundRobin'
 import type { Provider } from '../../shared/types'
+import { log } from '../logger'
 
 // Извлекает строку из любого формата reasoning токена
 // Провайдеры могут слать: string, {text: "..."}, {thinking: "..."}, {content: "..."}
@@ -37,8 +38,13 @@ async function sleep(ms: number): Promise<void> {
 function backoffDelay(attempt: number): number {
   const base = 1000 * Math.pow(2, attempt)
   const jitter = base * 0.3 * Math.random()
-  return Math.min(base + jitter, 120000)  // max 120с
+  return Math.min(base + jitter, 60000)  // max 60с
 }
+
+// Общий wall-clock deadline на все retry-попытки одного запроса.
+// Если суммарное время ожидания (с учётом backoff) превысит этот лимит,
+// цикл прерывается с понятным сообщением вместо тихого ожидания 8-10 минут.
+const OVERALL_TIMEOUT_MS = 4 * 60 * 1000  // 4 минуты
 
 export interface StreamCallbacks {
   onToken: (token: string) => void
@@ -141,6 +147,7 @@ export class AIClient {
 
     let attempt = 0
     let fullText = ''
+    const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
 
     while (attempt <= this.maxRetries) {
       try {
@@ -284,6 +291,10 @@ export class AIClient {
           const waitSec = Math.round(delay / 1000)
           callbacks.onRateLimit?.(waitSec)
           callbacks.onRetry?.(attempt + 1, 'rate_limit', waitSec)
+          if (Date.now() >= deadlineMs) {
+            callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
+            return
+          }
           await sleep(delay)
           attempt++
           continue
@@ -296,6 +307,10 @@ export class AIClient {
         if (isNetwork && attempt < this.maxRetries) {
           const delay = backoffDelay(attempt)
           callbacks.onRetry?.(attempt + 1, 'network')
+          if (Date.now() >= deadlineMs) {
+            callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
+            return
+          }
           await sleep(delay)
           attempt++
           continue
@@ -320,6 +335,7 @@ export class AIClient {
     allMessages.push(...messages)
 
     let attempt = 0
+    const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt <= this.maxRetries) {
       try {
         const res = await client.chat.completions.create({
@@ -329,7 +345,12 @@ export class AIClient {
         return res.choices[0]?.message?.content || ''
       } catch (err: unknown) {
         const error = err as { status?: number }
-        if (error?.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }
+        if (error?.status === 429) {
+          if (Date.now() >= deadlineMs) {
+            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+          }
+          await sleep(backoffDelay(attempt)); attempt++; continue
+        }
         throw err
       }
     }
@@ -359,6 +380,8 @@ export class AIClient {
     onRateLimit?: (waitSec: number) => void,
     onRetry?: (attempt: number, reason: string, waitSec?: number) => void,
     onUsage?: (promptTokens: number, completionTokens: number) => void,
+    onThinkingToken?: (token: string) => void,
+    onThinkingDone?: (ms: number) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
@@ -366,9 +389,20 @@ export class AIClient {
     const model = this.getModel(resolvedRole) || this.getModel('main')
     const client = this.getClientForRole(resolvedRole)
     const temperature = (this.store.get('temperature') as number) || 0.7
-    const maxTokens = (this.store.get('maxTokens') as number) || 4096
+    const maxTokensRaw = (this.store.get('maxTokens') as number) || 4096
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
     const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue) : {}
+
+    // Для Anthropic extended thinking: max_tokens ВКЛЮЧАЕТ reasoning токены.
+    // Если budget_tokens > max_tokens, API обрежет на max_tokens и ответ будет пустой.
+    // Решение: max_tokens = max(budget_tokens + maxTokensRaw, maxTokensRaw)
+    let maxTokens = maxTokensRaw
+    if (reasoningExtra.thinking && typeof reasoningExtra.thinking === 'object') {
+      const budget = (reasoningExtra.thinking as { budget_tokens?: number }).budget_tokens
+      if (budget && budget > 0) {
+        maxTokens = budget + maxTokensRaw
+      }
+    }
 
     // Считаем реальный контекст через tiktoken перед каждым раундом агента
     if (onContextCounted) {
@@ -386,7 +420,8 @@ export class AIClient {
     }
 
     let attempt = 0
-    const maxAttempts = 10
+    const maxAttempts = 15
+    const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt < maxAttempts) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
@@ -405,6 +440,8 @@ export class AIClient {
 
         let content = ''
         let reasoning = ''
+        let thinkingStartMs = 0
+        let thinkingDoneSent = false
         const toolCallMap: Record<number, { id: string; name: string; arguments: string }> = {}
         const tokenBuffer: string[] = []
         let hasToolCalls = false
@@ -429,10 +466,18 @@ export class AIClient {
             }
           }
 
-          // Reasoning токены
+          // Reasoning токены — стримим в реальном времени
           const rTok = delta.reasoning_content ?? delta.thinking ?? delta.reasoning_summary
           const reasoningChunk = extractReasoningText(rTok)
-          if (reasoningChunk) reasoning += reasoningChunk
+          if (reasoningChunk) {
+            if (!thinkingStartMs) thinkingStartMs = Date.now()
+            reasoning += reasoningChunk
+            onThinkingToken?.(reasoningChunk)
+          } else if (thinkingStartMs && !thinkingDoneSent && (delta.content || delta.tool_calls)) {
+            // Reasoning закончился, пошёл контент или tool_calls
+            thinkingDoneSent = true
+            onThinkingDone?.(Date.now() - thinkingStartMs)
+          }
 
           // Tool call чанки — собираем по index
           if (delta.tool_calls) {
@@ -454,6 +499,11 @@ export class AIClient {
               // onToolCallChunk удалён
             }
           }
+        }
+
+        // Финализация thinking — если стрим закончился, а done не был отправлен
+        if (thinkingStartMs && !thinkingDoneSent) {
+          onThinkingDone?.(Date.now() - thinkingStartMs)
         }
 
         // Собираем tool_calls в финальный формат
@@ -479,8 +529,12 @@ export class AIClient {
         if (error?.status === 429) {
           const delay = backoffDelay(attempt)
           const waitSec = Math.round(delay / 1000)
+          log('[AIClient] 429 rate-limit, retry %d/%d через %ds (model=%s)', attempt + 1, maxAttempts, waitSec, model)
           onRateLimit?.(waitSec)
           onRetry?.(attempt + 1, 'rate_limit', waitSec)
+          if (Date.now() >= deadlineMs) {
+            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+          }
           await sleep(delay)
           attempt++
           continue
@@ -493,12 +547,23 @@ export class AIClient {
           msg.includes('network') || msg.includes('socket')
         if (isNetwork && attempt < maxAttempts - 1) {
           const delay = backoffDelay(attempt)
+          // Это единственная точка, где видна сырая причина обрыва стрима/
+          // сетевого сбоя до того, как она превратится в обезличенный текст
+          // статуса для UI. Логируем для последующей диагностики инцидентов
+          // вида «зависло и само перезапустилось».
+          log('[AIClient] сетевая ошибка, retry %d/%d (model=%s status=%s): %s',
+            attempt + 1, maxAttempts, model, error?.status ?? '—', error?.message ?? String(err))
           onRetry?.(attempt + 1, 'network')
+          if (Date.now() >= deadlineMs) {
+            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+          }
           await sleep(delay)
           attempt++
           continue
         }
         // Фатальная ошибка (4xx, неизвестная) — бросаем сразу
+        log('[AIClient] фатальная ошибка API (model=%s status=%s): %s',
+          model, error?.status ?? '—', error?.message ?? String(err))
         throw err
       }
     }
@@ -509,6 +574,7 @@ export class AIClient {
     const model = this.getModel('vision')
     const client = this.getClientForRole('vision')
     let attempt = 0
+    const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt <= this.maxRetries) {
       try {
         const stream = await client.chat.completions.create({
@@ -531,6 +597,10 @@ export class AIClient {
         if (error?.status === 429) {
           const delay = backoffDelay(attempt)
           callbacks.onRateLimit?.(Math.round(delay / 1000))
+          if (Date.now() >= deadlineMs) {
+            callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
+            return
+          }
           await sleep(delay); attempt++; continue
         }
         callbacks.onError(err as Error)
@@ -542,13 +612,19 @@ export class AIClient {
   async embed(text: string): Promise<number[]> {
     const model = (this.store.get('embeddingModel') as string) || 'gemini-embedding-2'
     let attempt = 0
+    const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt <= this.maxRetries) {
       try {
         const res = await this.client.embeddings.create({ model, input: text })
         return res.data[0].embedding
       } catch (err: unknown) {
         const error = err as { status?: number }
-        if (error?.status === 429) { await sleep(backoffDelay(attempt)); attempt++; continue }
+        if (error?.status === 429) {
+          if (Date.now() >= deadlineMs) {
+            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+          }
+          await sleep(backoffDelay(attempt)); attempt++; continue
+        }
         throw err
       }
     }

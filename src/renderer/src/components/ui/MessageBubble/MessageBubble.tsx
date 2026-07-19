@@ -11,6 +11,7 @@ import type { Message, ToolOutputMode } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
+import TodoChecklist from '../TodoChecklist/TodoChecklist'
 import AgentCard from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
@@ -207,7 +208,7 @@ const WAITING_PHRASES = [
   'Формулирую...',
 ]
 
-function WaitingIndicator({ rateLimitSec, agentStatus }: { rateLimitSec?: number; agentStatus?: string | null }) {
+function WaitingIndicator({ rateLimitSec, agentStatus, filesChanged, commandsRun }: { rateLimitSec?: number; agentStatus?: string | null; filesChanged?: number; commandsRun?: number }) {
   const [phraseIdx, setPhraseIdx] = useState(0)
   const [visible, setVisible] = useState(true)
 
@@ -233,14 +234,31 @@ function WaitingIndicator({ rateLimitSec, agentStatus }: { rateLimitSec?: number
       ? ' msg-waiting-shimmer--status'
       : ''
 
+  // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
+  const counterParts: string[] = []
+  if (filesChanged && filesChanged > 0) counterParts.push(`${filesChanged} ${plural(filesChanged, 'файл', 'файла', 'файлов')}`)
+  if (commandsRun && commandsRun > 0) counterParts.push(`${commandsRun} ${plural(commandsRun, 'команда', 'команды', 'команд')}`)
+  const counter = counterParts.length > 0 ? counterParts.join(' · ') : null
+
   return (
-    <span
-      className={`msg-waiting-shimmer${cls}`}
-      style={{ opacity: visible ? 1 : 0, transition: 'opacity 0.3s ease' }}
-    >
-      {text}
+    <span className="msg-waiting-wrap">
+      <span
+        className={`msg-waiting-shimmer${cls}`}
+        style={{ opacity: visible ? 1 : 0, transition: 'opacity 0.3s ease' }}
+      >
+        {text}
+      </span>
+      {counter && <span className="msg-waiting-counter">{counter}</span>}
     </span>
   )
+}
+
+function plural(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return one
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
+  return many
 }
 
 // Мемоизированный тяжёлый контент сообщения
@@ -258,7 +276,7 @@ const MessageContent = memo(function MessageContent({
   liveThinking?: { text: string; isLive: boolean; ms?: number }
   isStreaming?: boolean
   isWaiting?: boolean
-  liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }>
+  liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }>
   liveTextAfter?: string
   rateLimitSec?: number
   userMarkdown?: boolean
@@ -276,6 +294,19 @@ const MessageContent = memo(function MessageContent({
         : parseContent(content),
     [content, isUser, userMarkdown]
   )
+
+  // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
+  const agentCounts = useMemo(() => {
+    if (!toolSteps) return { filesChanged: 0, commandsRun: 0 }
+    const filesChanged = toolSteps.filter(s =>
+      s.type === 'tool_result' && s.success &&
+      ['write_file', 'edit_file', 'multi_edit_file'].includes(s.toolName || '')
+    ).length
+    const commandsRun = toolSteps.filter(s =>
+      s.type === 'tool_call' && s.toolName === 'run_command'
+    ).length
+    return { filesChanged, commandsRun }
+  }, [toolSteps])
 
   // Мемоизированные remarkPlugins — не создаём новый массив при каждом рендере
   const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], [])
@@ -374,13 +405,16 @@ const MessageContent = memo(function MessageContent({
 
         {/* Финальный рендер итераций из БД — точно как live, каждая итерация отдельно */}
         {!isUser && !liveIters?.length && (() => {
-          type Iter = { label?: string; textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }
+          type Iter = { label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }
           const iters = (message as Message & { iterations?: Iter[] }).iterations
           if (!iters?.length) return null
           return (
             <div className="message-iters">
               {iters.map((iter, i) => (
                 <div key={i} className="message-iteration">
+                  {iter.thinking && (
+                    <ThinkingBlock text={iter.thinking} thinkingMs={iter.thinkingMs} />
+                  )}
                   {iter.textBefore && (
                     <div className="message-content selectable">
                       <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{iter.textBefore}</ReactMarkdown>
@@ -445,8 +479,9 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
-        {/* Thinking block — сохранённый или live */}
-        {!isUser && (message.thinking || liveThinking) && (
+        {/* Thinking block — только для обычного чата (без итераций).
+            В agent mode thinking рендерится внутри итераций и как liveThinking. */}
+        {!isUser && !liveIters?.length && (message.thinking || liveThinking) && (
           <ThinkingBlock
             text={message.thinking}
             liveText={liveThinking?.text}
@@ -457,7 +492,12 @@ const MessageContent = memo(function MessageContent({
 
         {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
         {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && !liveIters?.length && (
-          <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
+          <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
+        )}
+
+        {/* §4.3 — видимый чек-лист плана (todo list) */}
+        {!isUser && (message as Message & { liveTodo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> }).liveTodo?.length > 0 && (
+          <TodoChecklist items={(message as Message & { liveTodo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> }).liveTodo!} />
         )}
 
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
@@ -468,6 +508,10 @@ const MessageContent = memo(function MessageContent({
               const lastStepIsResult = iter.steps[iter.steps.length - 1]?.type === 'tool_result'
               return (
                 <div key={ii} className="message-segment">
+                  {/* Thinking блок этой итерации — на своей позиции */}
+                  {iter.thinking && (
+                    <ThinkingBlock text={iter.thinking} thinkingMs={iter.thinkingMs} />
+                  )}
                   {/* Текст ДО тулчейна */}
                   {iter.textBefore && (
                     <div className="message-content selectable">
@@ -491,12 +535,21 @@ const MessageContent = memo(function MessageContent({
                     />
                   )}
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
-                  {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && (
-                    <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} />
+                  {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && !liveThinking && (
+                    <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
                   )}
                 </div>
               )
             })}
+            {/* Live thinking — текущий стримящийся блок рассуждения,
+                на позиции после последней итерации, перед текстом ответа */}
+            {liveThinking && (liveThinking.text || liveThinking.isLive) && (
+              <ThinkingBlock
+                liveText={liveThinking.text}
+                thinkingMs={liveThinking.ms}
+                isLive={liveThinking.isLive}
+              />
+            )}
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
             {liveTextAfter && (
               <div className="message-content selectable">
@@ -513,31 +566,39 @@ const MessageContent = memo(function MessageContent({
             )}
           </div>
         ) : (
-          /* ── ОБЫЧНЫЙ РЕНДЕР (нет итераций — обычный чат или финальное сообщение) ── */
-          <div className="message-content selectable">
-            {isUser && !userMarkdown ? (
-              <p>{content}</p>
-            ) : (
-              segments.map((seg, si) =>
-                seg.type === 'admonition' ? (
-                  <AdmonitionBlock key={si} kind={seg.kind!} title={seg.title}>
-                    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
-                      {seg.content}
-                    </ReactMarkdown>
-                  </AdmonitionBlock>
+          /* ── ОБЫЧНЫЙ РЕНДЕР (нет live итераций — обычный чат или финальное сообщение) ── */
+          /* Если есть сохранённые iterations — content уже покрыт ими, не дублируем */
+          (() => {
+            type Iter = { label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }
+            const savedIters = (message as Message & { iterations?: Iter[] }).iterations
+            if (!isUser && savedIters?.length) return null
+            return (
+              <div className="message-content selectable">
+                {isUser && !userMarkdown ? (
+                  <p>{content}</p>
                 ) : (
-                  <ReactMarkdown
-                    key={si}
-                    remarkPlugins={remarkPlugins}
-                    rehypePlugins={rehypePlugins}
-                    components={mdComponents}
-                  >
-                    {seg.content}
-                  </ReactMarkdown>
-                )
-              )
-            )}
-          </div>
+                  segments.map((seg, si) =>
+                    seg.type === 'admonition' ? (
+                      <AdmonitionBlock key={si} kind={seg.kind!} title={seg.title}>
+                        <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+                          {seg.content}
+                        </ReactMarkdown>
+                      </AdmonitionBlock>
+                    ) : (
+                      <ReactMarkdown
+                        key={si}
+                        remarkPlugins={remarkPlugins}
+                        rehypePlugins={rehypePlugins}
+                        components={mdComponents}
+                      >
+                        {seg.content}
+                      </ReactMarkdown>
+                    )
+                  )
+                )}
+              </div>
+            )
+          })()
         )}
 
         {timeEl}
@@ -638,7 +699,7 @@ const MessageBubble = memo(function MessageBubble({
               liveThinking={liveThinking}
               isStreaming={isStreaming}
               isWaiting={isWaiting}
-              liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
+              liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
               liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
               rateLimitSec={rateLimitSec}
               userMarkdown={isUser ? userMarkdown : true}

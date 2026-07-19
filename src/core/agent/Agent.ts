@@ -5,12 +5,15 @@ import { updateStructuredMemory } from '../context/structuredMemory'
 import type { DiffEntry } from '../context/structuredMemory'
 import {
   runCommand, readFile, writeFile, listDirectory,
-  findFiles, getFileOutline,
-  getClipboard, setClipboard, searchWeb, getSystemInfo, generateImage,
+  findFiles,
+  searchWeb, getSystemInfo, generateImage,
   readFiles, searchCode, analyzeProject,
+  httpRequest,
   TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
 } from '../tools'
-import { truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD } from '../context/contextManager'
+import { truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD, getModelContextWindow } from '../context/contextManager'
+import type { FileCacheEntry } from '../context/fileCacheTypes'
+import { statSync } from 'fs'
 
 export interface AgentStep {
   type: 'thought' | 'tool_call' | 'tool_result' | 'answer'
@@ -26,19 +29,30 @@ export interface AgentStep {
 
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
-  onDone: (answer: string) => void
+  onDone: (answer: string, details?: AgentSummaryDetails) => void
   onError: (error: Error) => void
   onPlanSaved?: (plan: { title: string; content: string; summary: string; filePath: string }) => void
   onStatus?: (text: string) => void
   onRateLimit?: (waitSec: number) => void
   onRetry?: (attempt: number, reason: string, waitSec?: number) => void
   onContextUpdate?: (tokens: number) => void
+  onUsage?: (promptTokens: number, completionTokens: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
-  onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string }) => Promise<{ summary: string; error?: string }>
+  onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string; approvalMode?: 'auto' | 'ask' | 'full' }) => Promise<{ summary: string; error?: string }>
   onWaitAgents?: (agentIds: string[]) => Promise<Array<{ summary: string; error?: string }>>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   onContextCounted?: (promptTokens: number) => void
+  onTodoUpdate?: (items: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>) => void
+  onThinkingToken?: (token: string) => void
+  onThinkingDone?: (ms: number) => void
+}
+
+export interface AgentSummaryDetails {
+  modifiedFiles: string[]
+  diffs: Array<{ file: string; summary: string }>
+  commandsRun: Array<{ command: string; exitCode?: string; success: boolean }>
+  filesRead: string[]
 }
 
 const FALLBACK_SYSTEM_PROMPT = 'You are a capable coding agent. Follow the provided system prompt and use tools when needed.'
@@ -62,11 +76,9 @@ type NormalizedToolCall = {
 type AgentRuntimeOptions = {
   autoMemoryInterval?: number
   readFileCache?: boolean
-  toolSummarization?: boolean
   maxRepeatedToolCalls?: number
   maxRepeatedErrors?: number
-  contextCompactionPct?: number
-  preserveRecentToolRounds?: number
+  fileCacheSnapshot?: Record<string, FileCacheEntry>
 }
 
 type AgentToolCallFingerprint = {
@@ -118,6 +130,15 @@ function getToolErrorHint(toolName: string, error: string): string {
       return '\n\n[Hint: the command likely needs different permissions or a safer target path.]'
     }
   }
+  if (toolName === 'search_code' && (e.includes('rg') || e.includes('ripgrep') || e.includes('not found'))) {
+    return '\n\n[Hint: ripgrep may be missing — try run_command with grep/Select-String as alternative.]'
+  }
+  if (toolName === 'http_request' && e.includes('timed out')) {
+    return '\n\n[Hint: increase the timeout parameter or try a different endpoint.]'
+  }
+  if (toolName === 'find_files' && e.includes('not found') && e.includes('pattern')) {
+    return '\n\n[Hint: use a simpler glob pattern like *.ts or a partial filename.]'
+  }
   return ''
 }
 
@@ -125,8 +146,7 @@ function isSequentialTool(name: string): boolean {
   return name === 'write_file' ||
     name === 'edit_file' ||
     name === 'multi_edit_file' ||
-    name === 'run_command' ||
-    name === 'set_clipboard'
+    name === 'run_command'
 }
 
 function stableStringify(value: unknown): string {
@@ -139,25 +159,6 @@ function stableStringify(value: unknown): string {
     return `{${entries.join(',')}}`
   }
   return String(value)
-}
-
-function summarizeToolResultForMemory(toolName: string, content: string, success: boolean): string {
-  const normalized = content.replace(/\s+/g, ' ').trim()
-  const short = normalized.slice(0, 180)
-  const status = success ? 'ok' : 'error'
-
-  if (toolName === 'read_file' || toolName === 'read_files') {
-    const fileMatch = content.match(/\[Файл: ([^\]|]+)/)
-    const file = fileMatch?.[1]?.trim()
-    return `${toolName}:${status}${file ? ` ${file}` : ''}`
-  }
-
-  if (toolName === 'run_command') {
-    const exitMatch = content.match(/\[exit: (\d+)\]/)
-    return `${toolName}:${status} exit=${exitMatch?.[1] ?? '?'}`
-  }
-
-  return `${toolName}:${status} ${short}`
 }
 
 function buildToolFingerprint(toolName: string, args: Record<string, unknown>): AgentToolCallFingerprint {
@@ -193,55 +194,46 @@ function getToolRounds(messages: AgentMessage[]): ToolRound[] {
   return rounds
 }
 
-function summarizeToolRound(messages: AgentMessage[], round: ToolRound): string {
-  const parts = round.toolIndices.map(toolIndex => {
-    const toolMsg = messages[toolIndex]
-    const toolName = toolMsg.name || 'tool'
-    const success = !toolMsg.content.startsWith('Ошибка:')
-    return summarizeToolResultForMemory(toolName, toolMsg.content || '', success)
-  }).filter(Boolean)
-
-  return parts.length > 0
-    ? `[${round.toolNames.join(', ')}] ${parts.join(' | ')}`
-    : `[${round.toolNames.join(', ')}]`
-}
-
-function compactAgentMessages(
+/**
+ * Аварийный клапан: если токены сообщений реально подбираются к 97% лимита
+ * модели — физически удаляем самые старые целые tool-раунды (assistant+tool
+ * сообщения целиком), без замены на текст-резюме. Это защита от hard-fail API,
+ * а не проактивное сжатие: срабатывает исключительно на грани реального предела.
+ */
+function dropOldestRoundsIfOverflow(
   messages: AgentMessage[],
-  maxPromptTokens: number,
-  preserveRecentRounds: number,
+  hardLimitTokens: number,
 ): AgentMessage[] {
   const estimated = messages.reduce((sum, msg) => sum + estimateTokens(msg.content || '') + 4, TOOL_SCHEMAS_OVERHEAD)
-  if (estimated <= maxPromptTokens) return messages
+  if (estimated <= hardLimitTokens) return messages
 
   const rounds = getToolRounds(messages)
-  if (rounds.length <= preserveRecentRounds) return messages
+  if (rounds.length === 0) return messages
 
-  const splitIndex = Math.max(0, rounds.length - preserveRecentRounds)
-  const roundsToCompress = rounds.slice(0, splitIndex)
-  if (roundsToCompress.length === 0) return messages
-
-  const compressedLines = roundsToCompress
-    .map(round => summarizeToolRound(messages, round))
-    .filter(Boolean)
-  if (compressedLines.length === 0) return messages
-
+  // Удаляем раунды с начала (самые старые), пока не уложимся в лимит.
+  // Сохраняем system-сообщения и последнее user-сообщение.
   const removeIndices = new Set<number>()
-  for (const round of roundsToCompress) {
+  let currentEstimate = estimated
+  for (const round of rounds) {
+    if (currentEstimate <= hardLimitTokens) break
     removeIndices.add(round.assistantIndex)
     for (const toolIndex of round.toolIndices) removeIndices.add(toolIndex)
+    for (const idx of [round.assistantIndex, ...round.toolIndices]) {
+      currentEstimate -= estimateTokens(messages[idx].content || '') + 4
+    }
   }
 
-  const summaryMessage: AgentMessage = {
+  if (removeIndices.size === 0) return messages
+
+  const result = messages.filter((_, index) => !removeIndices.has(index))
+  // Вставляем короткую метку чтобы модель знала что старые раунды были удалены
+  const firstNonSystem = result.findIndex(msg => msg.role !== 'system')
+  const insertAt = firstNonSystem === -1 ? result.length : firstNonSystem
+  result.splice(insertAt, 0, {
     role: 'system',
-    content: `[Agent scratch summary]\n${compressedLines.join('\n')}\n[/Agent scratch summary]`,
-  }
-
-  const compacted = messages.filter((_, index) => !removeIndices.has(index))
-  const firstNonSystem = compacted.findIndex(msg => msg.role !== 'system')
-  const insertAt = firstNonSystem === -1 ? compacted.length : firstNonSystem
-  compacted.splice(insertAt, 0, summaryMessage)
-  return compacted
+    content: `[Старые tool-раунды удалены для экономии контекста — ${removeIndices.size} сообщений]`,
+  })
+  return result
 }
 
 export class Agent {
@@ -249,13 +241,31 @@ export class Agent {
   private client: AIClient
   private role: 'main' | 'subagent'
   chatId?: string
+  /**
+   * Рабочая директория чата (режим "Код"). Когда задана, файловые тулы
+   * и run_command резолвят относительные пути относительно неё вместо
+   * process.cwd()/homedir(). Не задана для Work-режима и старых чатов
+   * (созданных до фичи workdir) — в этом случае поведение прежнее.
+   */
+  workdir?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
   onGetWorkingMemory?: (chatId: string) => string
   pendingDiffEntries: DiffEntry[] = []
   private readFileCache = new Map<string, string>()
+  private readFileCacheEnabled = true
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
   private recentToolFingerprints: AgentToolCallFingerprint[] = []
   private recentErrorFingerprints: string[] = []
+  // §1.8 — undo/rollback: стек {path, originalContent} для отмены последних изменений
+  private undoStack: Array<{ path: string; originalContent: string | null }> = []
+
+  // Персистентный кэш read_file — переживает несколько run() вызовов,
+  // инвалидация по mtime+size файла на диске.
+  private fileCache = new Map<string, FileCacheEntry>()
+  private dirtyFileCacheKeys = new Set<string>()
+
+  // Журнал выполненных команд — для структурированного результата суб-агента
+  private commandsRun: Array<{ command: string; exitCode?: string; success: boolean }> = []
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
@@ -269,35 +279,48 @@ export class Agent {
     maxSteps = 8,
     signal?: AbortSignal,
     systemPrompt?: string,
-    history?: Array<{ role: string; content: string }>,
+    history?: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     toolSchemas?: typeof TOOL_SCHEMAS,
     options?: AgentRuntimeOptions
   ): Promise<void> {
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt || FALLBACK_SYSTEM_PROMPT },
-      ...(history ?? []).map(m => ({ role: m.role, content: m.content })),
+      ...(history ?? []).map(m => ({
+        role: m.role,
+        content: m.content,
+        ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+        ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+        ...(m.name ? { name: m.name } : {}),
+      })),
       { role: 'user', content: userMessage },
     ]
 
     const tavilyKey = (this.store.get('integrations') as { tavily?: { key: string } } | undefined)?.tavily?.key
     const pendingParallelAgents = new Set<string>()
     const modifiedFiles = new Set<string>()
-    const useCache = options?.readFileCache !== false
-    this.readFileCache = useCache ? new Map<string, string>() : new Map()
+    this.readFileCacheEnabled = options?.readFileCache !== false
+    this.readFileCache = new Map<string, string>()
     this.pendingDiffEntries = []
     this.fileMap = new Map()
     this.recentToolFingerprints = []
     this.recentErrorFingerprints = []
-    const useSummarization = options?.toolSummarization === true
+    this.commandsRun = []
+    // Инициализируем персистентный кэш из снимка (передаётся из main через worker)
+    this.fileCache = new Map(Object.entries(options?.fileCacheSnapshot ?? {}))
+    this.dirtyFileCacheKeys = new Set()
     const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
     const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string } }>
     const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
     const maxRepeatedToolCalls = Math.max(2, options?.maxRepeatedToolCalls ?? 3)
     const maxRepeatedErrors = Math.max(2, options?.maxRepeatedErrors ?? 2)
-    const contextWindow = Math.max(32_000, ctxSettings.contextLimitTokens)
-    const contextCompactionPct = Math.min(95, Math.max(50, options?.contextCompactionPct ?? 75))
-    const preserveRecentToolRounds = Math.max(2, options?.preserveRecentToolRounds ?? 8)
-    const maxPromptTokensBeforeCompact = Math.floor(contextWindow * contextCompactionPct / 100)
+    // Реальный лимит контекста активной модели — для аварийного клапана.
+    const realContextWindow = getModelContextWindow({
+      modelAssignments: this.store.get('modelAssignments'),
+      customModels: this.store.get('customModels'),
+    }, this.role)
+    const contextWindow = Math.max(32_000, realContextWindow)
+    // Аварийный клапан: 97% реального лимита — только отбрасывание старых раундов
+    const hardLimitTokens = Math.floor(contextWindow * 0.97)
 
     const flushWorkingMemory = (label: string) => {
       if (!this.chatId || !this.onUpdateWorkingMemory || this.role !== 'main') return
@@ -313,7 +336,7 @@ export class Agent {
       this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
     }
 
-    for (let step = 0; step < maxSteps; step++) {
+    for (let step = 0; ; step++) {
       if (signal?.aborted) {
         callbacks.onDone('')
         return
@@ -338,6 +361,9 @@ export class Agent {
               : `Ошибка сети, повтор ${attempt}...`)
             callbacks.onRetry?.(attempt, reason, waitSec)
           },
+          callbacks.onUsage,
+          callbacks.onThinkingToken,
+          callbacks.onThinkingDone,
         )
 
         if (signal?.aborted) {
@@ -348,6 +374,32 @@ export class Agent {
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
 
+          // ── Защита от пустого ответа после reasoning ──
+          // Модель (например GLM) может стримить reasoning 80+ секунд,
+          // исчерпать лимит и завершить стрим с пустым content.
+          // В этом случае НЕ завершаем — продолжаем цикл, даём модели
+          // шанс дать ответ, добавив assistant-сообщение с reasoning
+          // и user-промпт "продолжи".
+          if (!answer.trim() && !signal?.aborted) {
+            // Считаем, сколько раз уже пытались продолжить — чтобы не зациклиться
+            const emptyRetries = (messages.filter(m =>
+              m.role === 'user' && typeof m.content === 'string' &&
+              m.content.startsWith('[empty-reasoning-retry]')
+            ).length)
+            if (emptyRetries < 2) {
+              // Добавляем assistant-сообщение (чтобы модель видела свой reasoning)
+              messages.push({ role: 'assistant', content: response.reasoning || '(reasoning)' })
+              messages.push({
+                role: 'user',
+                content: '[empty-reasoning-retry] Твой предыдущий ответ содержал только рассуждение, но не содержал финального ответа. Дай краткий ответ на задачу без повторного рассуждения.',
+              })
+              continue
+            }
+            // Если уже дважды пытались — завершаем с пустым ответом
+            callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
+            return
+          }
+
           if (pendingParallelAgents.size > 0 && callbacks.onWaitAgents) {
             const results = await callbacks.onWaitAgents(Array.from(pendingParallelAgents))
             pendingParallelAgents.clear()
@@ -356,7 +408,9 @@ export class Agent {
             continue
           }
 
-          if (response.reasoning) {
+          // Reasoning уже стримится через onThinkingToken/onThinkingDone.
+          // Fallback: если стриминг не настроен, шлём одним блоком.
+          if (response.reasoning && !callbacks.onThinkingToken) {
             callbacks.onStep({ type: 'thought', content: response.reasoning })
           }
 
@@ -371,7 +425,7 @@ export class Agent {
             }
           }
 
-          callbacks.onDone(answer)
+          callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
 
           if (this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {
             const existing = this.onGetWorkingMemory ? this.onGetWorkingMemory(this.chatId) : ''
@@ -447,7 +501,18 @@ export class Agent {
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool })
 
           const mode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
-          const approval = needsApproval(fn.name, args, mode)
+          // Читаем agentPermissions из store — раньше они были объявлены в
+          // DEFAULT_SETTINGS и показаны в UI, но нигде не использовались.
+          const agentPerms = (this.store.get('agentPermissions') as {
+            confirmDangerous?: boolean
+            dryRunMode?: boolean
+            forbiddenPaths?: string[]
+          } | undefined) ?? {}
+          const dryRunMode = agentPerms.dryRunMode === true
+          const approval = needsApproval(fn.name, args, mode, {
+            confirmDangerous: agentPerms.confirmDangerous,
+            forbiddenPaths: agentPerms.forbiddenPaths,
+          })
           const effectiveApproval = isHiddenTool ? { confirm: false, block: false, reason: '' } : approval
 
           if (effectiveApproval.block) {
@@ -467,12 +532,13 @@ export class Agent {
           }
 
           callbacks.onStatus?.(`${fn.name}...`)
-          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents)
+          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents, dryRunMode)
 
-          if (result.success && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
+          if (result.success && !dryRunMode && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
             const p = args.path as string | undefined
             if (p) {
               const diff = (result as { diff?: string }).diff
+              const origContent = (result as { originalContent?: string }).originalContent
               let diffSummary = ''
               if (ctxSettings.diffJournalEnabled) {
                 if (diff) {
@@ -485,8 +551,15 @@ export class Agent {
               const fnNameCopy = fn.name
               pendingMutations.push(() => {
                 modifiedFiles.add(p)
+                // §1.8 — сохраняем оригинал для undo (null = файл был создан заново)
+                this.undoStack.push({ path: p, originalContent: origContent ?? null })
+                if (this.undoStack.length > 50) this.undoStack.shift()  // ограничиваем стек
                 for (const key of Array.from(this.readFileCache.keys())) {
                   if (key.startsWith(p + ':')) this.readFileCache.delete(key)
+                }
+                // Инвалидируем персистентный кэш — mtime изменился, следующий read возьмёт свежие данные
+                for (const fckey of Array.from(this.fileCache.keys())) {
+                  if (fckey.startsWith(p + ':')) this.fileCache.delete(fckey)
                 }
                 if (ctxSettings.diffJournalEnabled && diffSummary) {
                   this.pendingDiffEntries.push({ file: p, summary: diffSummary })
@@ -569,19 +642,12 @@ export class Agent {
           flushWorkingMemory(`Intermediate progress after ${step + 1} agent steps`)
         }
 
-        const compactedMessages = compactAgentMessages(messages, maxPromptTokensBeforeCompact, preserveRecentToolRounds)
-        if (compactedMessages !== messages) {
+        // Аварийный клапан: только если реальные токены подбираются к 97% лимита.
+        // Никакой проактивной суммаризации — модель видит свои tool-раунды как есть.
+        const overflowedMessages = dropOldestRoundsIfOverflow(messages, hardLimitTokens)
+        if (overflowedMessages !== messages) {
           messages.length = 0
-          messages.push(...compactedMessages)
-        }
-
-        const toolMsgCount = messages.filter(m => m.role === 'tool' || (m.role === 'assistant' && (m as { tool_calls?: unknown[] }).tool_calls?.length)).length
-        if (useSummarization && toolMsgCount > preserveRecentToolRounds * 2) {
-          const summarized = compactAgentMessages(messages, maxPromptTokensBeforeCompact, preserveRecentToolRounds)
-          if (summarized !== messages) {
-            messages.length = 0
-            messages.push(...summarized)
-          }
+          messages.push(...overflowedMessages)
         }
 
         if (callbacks.onContextUpdate) {
@@ -596,23 +662,30 @@ export class Agent {
         }
         const status = error?.status ?? 0
         if (status >= 400 && status < 500 && status !== 429) {
-          callbacks.onError(err instanceof Error ? err : new Error(`API error ${status}: ${error?.message}`))
-          return
+          // 401/403/404 — конфиг/авторизация, нет смысла продолжать
+          if (status === 401 || status === 403 || status === 404) {
+            callbacks.onError(err instanceof Error ? err : new Error(`API error ${status}: ${error?.message}`))
+            return
+          }
+          // 400/413/422 и прочие 4xx — часто это context_length_exceeded или
+          // временная ошибка формата. Не останавливаем агента, даём шанс
+          // продолжить — модель получит сообщение об ошибке и может
+          // переформулировать запрос или обойтись без этого раунда.
+          callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `API error ${status}: ${error?.message || String(err)}`, success: false })
+          messages.push({ role: 'user', content: `Произошла ошибка API (${status}): ${error?.message}. Продолжи работу, возможно нужно упростить запрос.` })
+          continue
         }
         if (error?.message?.includes('превышено число попыток') || error?.message?.includes('number of retries')) {
-          callbacks.onError(new Error('Не удалось получить ответ от AI после нескольких попыток.'))
-          return
+          // Не останавливаем агента — просто сообщаем об ошибке и продолжаем
+          // цикл. Сетевые проблемы провайдера не должны обрывать работу агента.
+          callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Не удалось получить ответ после нескольких попыток. Продолжаю.`, success: false })
+          messages.push({ role: 'user', content: 'Произошла сетевая ошибка: не удалось получить ответ от API после нескольких попыток. Продолжи работу.' })
+          continue
         }
         callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Ошибка: ${error?.message || String(err)}`, success: false })
-        if (step >= maxSteps - 1) {
-          callbacks.onError(new Error(`Агент завершился с ошибкой: ${error?.message || String(err)}`))
-          return
-        }
         messages.push({ role: 'user', content: `Произошла сетевая ошибка: ${error?.message}. Продолжи работу.` })
       }
     }
-
-    callbacks.onError(new Error('Превышено максимальное количество шагов агента'))
   }
 
   private async executeTool(
@@ -620,7 +693,8 @@ export class Agent {
     args: Record<string, unknown>,
     tavilyKey?: string,
     callbacks?: AgentCallbacks,
-    pendingParallelAgents?: Set<string>
+    pendingParallelAgents?: Set<string>,
+    dryRun?: boolean
   ): Promise<ToolResult> {
     switch (name) {
       case 'run_command': {
@@ -628,48 +702,99 @@ export class Agent {
         if (!cmd || typeof cmd !== 'string') {
           return { success: false, output: '', error: `run_command: missing "command". Received: ${JSON.stringify(args)}` }
         }
-        return runCommand(cmd, args.cwd as string | undefined, args.shell as string | undefined, args.timeout as number | undefined)
+        if (dryRun) {
+          return { success: true, output: `[DRY RUN] Команда не выполнена. Была бы запущена:\n${cmd}`.slice(0, 4000) }
+        }
+        // cwd модели → workdir чата → (внутри runCommand) homedir()
+        // Модель может явно переопределить cwd; иначе берём workdir чата.
+        const cmdResult = await runCommand(cmd, (args.cwd as string | undefined) ?? this.workdir, args.shell as string | undefined, args.timeout as number | undefined)
+        // Трекаем для структурированного результата суб-агента
+        const exitMatch = cmdResult.output.match(/\[exit: (\d+)\]/)
+        this.commandsRun.push({
+          command: cmd,
+          exitCode: exitMatch?.[1],
+          success: cmdResult.success,
+        })
+        return cmdResult
       }
       case 'read_file': {
         const filePath = args.path as string
-        const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}`
-        if (this.readFileCache.has(cacheKey)) {
+        const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}:${args.outline_only ? 'outline' : 'full'}`
+
+        // 1. Быстрый in-session кэш (в рамках одного run())
+        if (this.readFileCacheEnabled && this.readFileCache.has(cacheKey)) {
           return { success: true, output: this.readFileCache.get(cacheKey)! }
         }
-        const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined)
+
+        // 2. Персистентный кэш на весь чат — проверка по mtime+size файла на диске.
+        // Ключ составной (path:offset:limit:outline) — один файл может читаться
+        // разными кусками, каждый кусок кэшируется отдельно.
+        if (this.readFileCacheEnabled) {
+          const cached = this.fileCache.get(cacheKey)
+          if (cached) {
+            try {
+              const stat = statSync(filePath)
+              if (stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
+                // Кэш-хит — файл не менялся, отдаём закэшированный результат
+                this.readFileCache.set(cacheKey, cached.output)
+                return { success: true, output: cached.output }
+              }
+            } catch {
+              // statSync упал (файл удалён?) — продолжаем к обычному чтению
+            }
+          }
+        }
+
+        const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined, this.workdir)
         if (result.success) {
-          this.readFileCache.set(cacheKey, result.output)
+          if (this.readFileCacheEnabled) this.readFileCache.set(cacheKey, result.output)
+          // Обновляем персистентный кэш — ключ составной
+          if (this.readFileCacheEnabled) {
+            try {
+              const stat = statSync(filePath)
+              this.fileCache.set(cacheKey, {
+                mtimeMs: stat.mtimeMs,
+                size: stat.size,
+                output: result.output,
+                cachedAt: Date.now(),
+              })
+              this.dirtyFileCacheKeys.add(cacheKey)
+            } catch { /* ok — не критично */ }
+          }
           const localCtx = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
           if (localCtx.fileMapEnabled) {
             const existing = this.fileMap.get(filePath)
             this.fileMap.set(filePath, {
               reads: (existing?.reads ?? 0) + 1,
               writes: existing?.writes ?? 0,
-              note: existing?.note || result.output.slice(0, 200).replace(/\n/g, ' '),
+              note: existing?.note || result.output.slice(0, 400).replace(/\n/g, ' '),
             })
           }
         }
         return result
       }
       case 'find_files':
-        return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined })
-      case 'get_file_outline':
-        return getFileOutline(args.path as string)
+        return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined, workdir: this.workdir })
+      case 'http_request':
+        return httpRequest({
+          url: args.url as string,
+          method: args.method as string | undefined,
+          headers: args.headers as Record<string, string> | undefined,
+          body: args.body as string | undefined,
+          timeout: args.timeout as number | undefined,
+        })
       case 'write_file':
-        return writeFile(args.path as string, args.content as string)
+        return writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir })
       case 'edit_file':
-        return editFile(args as Parameters<typeof editFile>[0])
+        return editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun, workdir: this.workdir })
       case 'multi_edit_file':
-        return multiEditFile(args as Parameters<typeof multiEditFile>[0])
+        return multiEditFile({ ...(args as Parameters<typeof multiEditFile>[0]), dryRun, workdir: this.workdir })
       case 'list_directory':
         return listDirectory(args.path as string, {
           recursive: args.recursive as boolean | undefined,
           depth: args.depth as number | undefined,
+          workdir: this.workdir,
         })
-      case 'get_clipboard':
-        return getClipboard()
-      case 'set_clipboard':
-        return setClipboard(args.text as string)
       case 'search_web':
         return searchWeb(args.query as string, tavilyKey)
       case 'get_system_info':
@@ -677,15 +802,15 @@ export class Agent {
       case 'generate_image':
         return generateImage(args as { prompt: string; model?: string; size?: string; quality?: string; style?: string }, this.store)
       case 'read_files':
-        return readFiles(args.paths as string[])
+        return readFiles(args.paths as string[], this.workdir)
       case 'search_code':
         return searchCode(
           args.pattern as string,
           args.path as string,
-          { fileGlob: args.file_glob as string | undefined, ignoreCase: args.ignore_case as boolean | undefined, maxResults: args.max_results as number | undefined }
+          { fileGlob: args.file_glob as string | undefined, ignoreCase: args.ignore_case as boolean | undefined, maxResults: args.max_results as number | undefined, workdir: this.workdir }
         )
       case 'analyze_project':
-        return analyzeProject(args.path as string)
+        return analyzeProject((args.path as string) ?? this.workdir ?? '.', this.workdir)
       case 'spawn_agent': {
         if (!callbacks?.onSpawnAgent) {
           return { success: false, output: '', error: 'spawn_agent is not supported in this context' }
@@ -697,6 +822,7 @@ export class Agent {
           task: args.task as string,
           parallel: isParallel,
           model: args.model as string | undefined,
+          approvalMode: args.approval_mode as 'auto' | 'ask' | 'full' | undefined,
         })
         if (result.error) return { success: false, output: '', error: result.error }
         if (isParallel) pendingParallelAgents?.add(agentId)
@@ -734,9 +860,46 @@ export class Agent {
         if (!thought) return { success: false, output: '', error: 'thought is required' }
         return { success: true, output: 'OK. Continue with the plan.', hidden: true }
       }
+      case 'revert_last_change': {
+        // §1.8 — undo/rollback: восстанавливаем последний изменённый файл
+        const steps = args.steps as number | undefined ?? 1
+        if (this.undoStack.length === 0) {
+          return { success: false, output: '', error: 'Нет изменений для отката (undo-стек пуст)' }
+        }
+        const { writeFileSync, unlinkSync } = await import('fs')
+        const reverted: string[] = []
+        for (let i = 0; i < Math.min(steps, this.undoStack.length); i++) {
+          const entry = this.undoStack.pop()!
+          if (entry.originalContent === null) {
+            // Файл был создан — удаляем
+            try { unlinkSync(entry.path); reverted.push(`удалён: ${entry.path}`) }
+            catch { reverted.push(`не удалось удалить: ${entry.path}`) }
+          } else {
+            try {
+              writeFileSync(entry.path, entry.originalContent, 'utf-8')
+              reverted.push(`восстановлен: ${entry.path}`)
+            } catch (e: any) {
+              reverted.push(`ошибка восстановления ${entry.path}: ${e.message}`)
+            }
+          }
+          // Чистим кэш чтения для этого файла
+          for (const key of Array.from(this.readFileCache.keys())) {
+            if (key.startsWith(entry.path + ':')) this.readFileCache.delete(key)
+          }
+        }
+        return { success: true, output: `Откат ${reverted.length} изменений:\n${reverted.join('\n')}` }
+      }
+      case 'update_todo': {
+        // §3.1/§4.3 — видимый чек-лист для многошаговых задач
+        const items = (args.items as Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>) ?? []
+        if (callbacks?.onTodoUpdate) callbacks.onTodoUpdate(items)
+        const done = items.filter(i => i.status === 'done').length
+        const total = items.length
+        return { success: true, output: `Todo updated: ${done}/${total} done`, hidden: true }
+      }
       case 'save_plan': {
         const { savePlan } = await import('../tools/index')
-        const result = savePlan(args as { title: string; content: string; summary: string })
+        const result = await savePlan(args as { title: string; content: string; summary: string })
         if (result.success && callbacks?.onPlanSaved) {
           callbacks.onPlanSaved({
             title: args.title as string,
@@ -749,6 +912,33 @@ export class Agent {
       }
       default:
         return { success: false, output: '', error: `Unknown tool: ${name}` }
+    }
+  }
+
+  /**
+   * Возвращает только изменённые/новые записи персистентного кэша —
+   * для передачи обратно в main-процесс через postMessage.
+   */
+  getFileCacheUpdates(): Record<string, FileCacheEntry> {
+    const result: Record<string, FileCacheEntry> = {}
+    for (const key of this.dirtyFileCacheKeys) {
+      const entry = this.fileCache.get(key)
+      if (entry) result[key] = entry
+    }
+    this.dirtyFileCacheKeys.clear()
+    return result
+  }
+
+  /**
+   * Структурированная выжимка действий агента — для передачи родительскому
+   * агенту при spawn_agent, вместо обрезанного 500-символьного текста.
+   */
+  private buildSummaryDetails(modifiedFiles: Set<string>): AgentSummaryDetails {
+    return {
+      modifiedFiles: Array.from(modifiedFiles),
+      diffs: [...this.pendingDiffEntries],
+      commandsRun: [...this.commandsRun],
+      filesRead: Array.from(this.fileMap.keys()),
     }
   }
 }

@@ -9,8 +9,8 @@ export interface IPCChannels {
   'settings:set': (key: string, value: unknown) => void
   'settings:getAll': () => Record<string, unknown>
   // Chat
-  'chat:send': (params: { chatId: string; content: string; incognito?: boolean }) => void
-  'chat:create': (incognito?: boolean) => string
+  'chat:send': (params: { chatId: string; content: string; incognito?: boolean; mode?: ChatMode }) => void
+  'chat:create': (incognito?: boolean, mode?: ChatMode) => string
   'chat:getAll': () => Chat[]
   'chat:getMessages': (chatId: string) => Message[]
   'chat:delete': (chatId: string) => void
@@ -39,9 +39,21 @@ export interface Chat {
   isIncognito: number
   isPinned: number
   isArchived: number
+  mode: ChatMode
   color?: string
+  workdir?: string  // денормализованный кэш из projects (обратная совместимость)
+  projectId?: string  // FK на projects.id; NULL = «Без проекта»
   lastMessage?: string
   messageCount?: number
+}
+
+export interface Project {
+  id: string
+  name: string
+  workdir: string
+  projectContext?: string  // результат analyzeProject при создании; не гоняем по IPC в каждый chats.list
+  createdAt: number
+  lastUsed: number
 }
 
 export interface Message {
@@ -56,7 +68,7 @@ export interface Message {
   thinking?: string
   thinkingMs?: number
   slashCommand?: { name: string; args: string }
-  iterations?: Array<{ label?: string; textBefore: string; steps: ToolStep[] }>
+  iterations?: Array<{ label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: ToolStep[] }>
   liveSegments?: Array<{ text: string; steps: ToolStep[] }>
   imageUrl?: string
   planData?: { title: string; content: string; summary: string; filePath: string }
@@ -72,6 +84,7 @@ export interface ToolStep {
   timestamp: number
   imageUrl?: string  // путь к сгенерированному изображению
   diff?: string      // unified diff для edit_file / multi_edit_file
+  callId?: string    // ID tool_call для связи call→result (реконструкция истории)
 }
 
 export interface DisplayInfo {
@@ -161,6 +174,7 @@ export interface ModelParams {
 
 export type ApprovalMode = 'ask' | 'auto' | 'full'
 export type ToolOutputMode = 'compact' | 'normal' | 'detailed'
+export type ChatMode = 'code' | 'work'
 
 export interface AgentSettings {
   approvalMode: ApprovalMode
@@ -169,12 +183,9 @@ export interface AgentSettings {
   enableThinking: boolean
   maxParallelSubAgents: number
   readFileCache: boolean
-  toolSummarization: boolean
   autoMemoryInterval: number
   maxRepeatedToolCalls: number
   maxRepeatedErrors: number
-  contextCompactionPct: number
-  preserveRecentToolRounds: number
 }
 
 // IPC channels для провайдеров/моделей

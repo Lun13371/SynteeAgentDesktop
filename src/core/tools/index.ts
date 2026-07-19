@@ -1,15 +1,64 @@
 import { exec, execFile } from 'child_process'
 import { promisify } from 'util'
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs'
+import { existsSync } from 'fs'
+import { readFile as fsReadFile, writeFile as fsWriteFile, readdir as fsReaddir, stat as fsStat, mkdir as fsMkdir, open as fsOpen } from 'fs/promises'
 import { tmpdir, homedir } from 'os'
-import { join, resolve as pathResolve } from 'path'
-import { clipboard } from 'electron'
+import { join, dirname, resolve as pathResolve } from 'path'
 import OpenAI from 'openai'
 import type Store from 'electron-store'
 import type { Provider } from '../../shared/types'
 import * as Diff from 'diff'
 
 const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
+
+// ── Общие хелперы (дедуплицированы из多处) ───────────────────────────────
+
+// Единый список игнорируемых директорий для list_directory/find_files/search_code/analyze_project
+const DEFAULT_IGNORE_DIRS = ['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage']
+
+// Нормализация CRLF→LF (используется в edit_file/applySearchReplacePatch)
+function normalizeLineEndings(s: string): string {
+  return s.replace(/\r\n/g, '\n')
+}
+
+// Создаёт родительскую директорию для файла, если её нет
+async function ensureDirFor(filePath: string): Promise<void> {
+  const dir = dirname(filePath)
+  if (!existsSync(dir)) await fsMkdir(dir, { recursive: true })
+}
+
+// Подсчёт изменённых строк в unified diff
+function countChangedLines(diff: string): number {
+  return diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).length
+}
+
+// Детекция бинарного файла: проверяем первые 8KB на наличие null-байтов.
+// Если есть — файл бинарный, текстовое чтение бессмысленно.
+// Используем FileHandle API правильно: fsOpen возвращает FileHandle,
+// у которого есть методы .read() и .close() — а не fsPromises.close(fd),
+// которого в некоторых версиях Node нет (отсюда "promises.close is not a function").
+async function isBinaryFile(filePath: string): Promise<boolean> {
+  let handle: { read: (buf: Buffer, offset: number, length: number, position: number) => Promise<{ bytesRead: number }>; close: () => Promise<void> } | undefined
+  try {
+    handle = await fsOpen(filePath, 'r') as unknown as { read: (buf: Buffer, offset: number, length: number, position: number) => Promise<{ bytesRead: number }>; close: () => Promise<void> }
+    const buf = Buffer.alloc(8192)
+    const { bytesRead } = await handle.read(buf, 0, 8192, 0)
+    return buf.slice(0, bytesRead).includes(0)
+  } catch {
+    return false  // если не можем открыть — пусть чтение выдаст свою ошибку
+  } finally {
+    if (handle) await handle.close()
+  }
+}
+
+// Единая резолюция путей: относительные пути резолвятся через workdir
+// (если задан) или process.cwd() (для обратной совместимости — старые чаты
+// без workdir, Work-режим, вызовы вне контекста чата), абсолютные остаются как есть.
+// Применяется во всех файловых тулах для единообразия.
+function resolveToolPath(p: string, workdir?: string): string {
+  return pathResolve(workdir ?? process.cwd(), p)
+}
 
 export interface ToolResult {
   success: boolean
@@ -17,12 +66,14 @@ export interface ToolResult {
   error?: string
   diff?: string
   hidden?: boolean  // скрытые тулы (think, update_working_memory) — не показываются в UI
+  originalContent?: string  // §1.8 — для undo/rollback: содержимое до записи
 }
 
 export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
   try {
     const isWin = process.platform === 'win32'
     const timeoutMs = (timeout || 60) * 1000
+    const maxBuffer = 10 * 1024 * 1024  // 10MB — иначе Node падает с ERR_CHILD_PROCESS_STDOUT_MAXBUFFER до smartTrimOutput
 
     let execCmd: string
     let execOpts: Parameters<typeof execAsync>[1]
@@ -37,16 +88,22 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
           timeout: timeoutMs,
           shell: 'cmd.exe',
           encoding: 'utf8',
+          maxBuffer,
           env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
         }
       } else {
-        // PowerShell: utf-8 output, понимает большинство unix-команд
-        const escaped = cmd.replace(/"/g, '\\"')
-        execCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${escaped}"`
+        // PowerShell: используем -EncodedCommand (base64 UTF-16LE) вместо
+        // встраивания команды в двойные кавычки. Это полностью устраняет
+        // проблему экранирования (", $(), backtick и т.д.) — команда передаётся
+        // как данные, а не как часть shell-строки.
+        const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${cmd}`
+        const encoded = Buffer.from(psScript, 'utf16le').toString('base64')
+        execCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
         execOpts = {
           cwd: cwd || homedir(),
           timeout: timeoutMs,
           encoding: 'utf8',
+          maxBuffer,
           env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
         }
       }
@@ -58,6 +115,7 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         timeout: timeoutMs,
         shell: '/bin/bash',
         encoding: 'utf8',
+        maxBuffer,
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
       }
     }
@@ -92,16 +150,25 @@ function smartTrimOutput(text: string, maxChars = 4000): string {
   return `${text.slice(0, head)}\n\n...[обрезано ${removed} символов, показано начало и конец]...\n\n${text.slice(-tail)}`
 }
 
-export function readFile(path: string, offset?: number, limit?: number, outlineOnly?: boolean): ToolResult {
+const MAX_READ_FILE_SIZE = 20 * 1024 * 1024  // 20MB — больше не читаем целиком
+
+export async function readFile(path: string, offset?: number, limit?: number, outlineOnly?: boolean, workdir?: string): Promise<ToolResult> {
   try {
+    path = resolveToolPath(path, workdir)
     if (!existsSync(path)) return { success: false, output: '', error: 'Файл не найден: ' + path }
-    const content = readFileSync(path, 'utf-8')
+    // Проверяем размер — не читаем огромные файлы целиком в память
+    const fileStat = await fsStat(path)
+    if (fileStat.size > MAX_READ_FILE_SIZE) {
+      return { success: false, output: '', error: `Файл слишком большой (${formatSize(fileStat.size)}). Используйте offset/limit для чтения по частям или run_command для просмотра.` }
+    }
+    if (await isBinaryFile(path)) return { success: false, output: '', error: 'Файл выглядит как бинарный, текстовое чтение не поддерживается: ' + path }
+    const content = await fsReadFile(path, 'utf-8')
     const lines = content.split('\n')
     const totalLines = lines.length
 
     // outline_only — возвращаем только структуру файла
     if (outlineOnly) {
-      const outlineResult = getFileOutline(path)
+      const outlineResult = await getFileOutline(path)
       return outlineResult
     }
 
@@ -132,7 +199,7 @@ export function readFile(path: string, offset?: number, limit?: number, outlineO
       // Авто-outline для больших файлов — агент сразу видит структуру
       const ext = path.split('.').pop()?.toLowerCase()
       if (['ts', 'tsx', 'js', 'jsx', 'py'].includes(ext ?? '')) {
-        const outlineResult = getFileOutline(path)
+        const outlineResult = await getFileOutline(path)
         if (outlineResult.success) suffix += `\n\n${outlineResult.output}`
       }
     }
@@ -145,19 +212,25 @@ export function readFile(path: string, offset?: number, limit?: number, outlineO
   }
 }
 
-export function writeFile(path: string, content: string): ToolResult {
+export async function writeFile(path: string, content: string, opts?: { dryRun?: boolean; workdir?: string }): Promise<ToolResult> {
   try {
-    const dir = join(path, '..')
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    path = resolveToolPath(path, opts?.workdir)
+    await ensureDirFor(path)
     // Читаем оригинал для diff (если файл существует)
     let original = ''
-    try { original = existsSync(path) ? readFileSync(path, 'utf-8') : '' } catch { /* ok */ }
-    writeFileSync(path, content, 'utf-8')
+    try { original = existsSync(path) ? await fsReadFile(path, 'utf-8') : '' } catch { /* ok */ }
+    // dryRun — не записываем, только возвращаем diff-превью
+    if (opts?.dryRun) {
+      const diff = makeDiff(original, content, path)
+      const action = original ? 'ПЕРЕЗАПИСЬ существующего файла' : 'СОЗДАНИЕ нового файла'
+      return { success: true, output: `[DRY RUN] ${action}: ${path}\n${diff}`.slice(0, 4000), diff }
+    }
+    await fsWriteFile(path, content, 'utf-8')
     const lines = content.split('\n').length
     // Генерируем diff как у edit_file
     const diff = makeDiff(original, content, path)
-    const changedLines = diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).length
-    return { success: true, output: `Файл записан: ${path} (${lines} строк, ${changedLines} строк изменено)`, diff }
+    const changedLines = countChangedLines(diff)
+    return { success: true, output: `Файл записан: ${path} (${lines} строк, ${changedLines} строк изменено)`, diff, originalContent: original }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
@@ -176,39 +249,123 @@ export interface EditResult extends ToolResult {
   diff?: string
 }
 
-export function editFile(params: {
+// §3.2 — Парсер search/replace patch формата (Codex-style).
+// Формат: один или несколько блоков, разделённых маркерами:
+//   <<<<<<< SEARCH
+//   <точный текст для поиска>
+//   =======
+//   <новый текст>
+//   >>>>>>> REPLACE
+// Каждый блок заменяет ровно одно вхождение. Если SEARCH не найден — ошибка.
+function applySearchReplacePatch(original: string, patch: string): string {
+  const SEARCH_START = '<<<<<<< SEARCH'
+  const SEPARATOR = '======='
+  const REPLACE_END = '>>>>>>> REPLACE'
+
+  const lines = patch.split('\n')
+  let result = original
+  let i = 0
+  const errors: string[] = []
+
+  while (i < lines.length) {
+    // Ищем начало блока SEARCH
+    const searchStartIdx = lines.indexOf(SEARCH_START, i)
+    if (searchStartIdx === -1) break
+
+    const sepIdx = lines.indexOf(SEPARATOR, searchStartIdx + 1)
+    if (sepIdx === -1) {
+      errors.push('Найден SEARCH без ======= сепаратора')
+      break
+    }
+
+    const replaceEndIdx = lines.indexOf(REPLACE_END, sepIdx + 1)
+    if (replaceEndIdx === -1) {
+      errors.push('Найден SEARCH/SEPARATOR без >>>>>>> REPLACE')
+      break
+    }
+
+    const searchText = lines.slice(searchStartIdx + 1, sepIdx).join('\n')
+    const replaceText = lines.slice(sepIdx + 1, replaceEndIdx).join('\n')
+
+    if (!searchText) {
+      errors.push(`Пустой SEARCH в блоке ${searchStartIdx + 1}`)
+      i = replaceEndIdx + 1
+      continue
+    }
+
+    // Нормализуем CRLF → LF для сравнения
+    const normResult = normalizeLineEndings(result)
+    const normSearch = normalizeLineEndings(searchText)
+
+    if (!normResult.includes(normSearch)) {
+      errors.push(`SEARCH не найден (строки ${searchStartIdx + 2}-${sepIdx}): "${searchText.slice(0, 80)}..."`)
+      i = replaceEndIdx + 1
+      continue
+    }
+
+    // Заменяем только первое вхождение
+    result = normResult.replace(normSearch, replaceText)
+    i = replaceEndIdx + 1
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`apply_patch ошибки (${errors.length}):\n${errors.join('\n')}`)
+  }
+
+  return result
+}
+
+export async function editFile(params: {
   path: string
-  mode: 'replace' | 'insert' | 'overwrite'
+  mode: 'replace' | 'insert' | 'overwrite' | 'apply_patch'
   old_str?: string
   new_str?: string
   after_line?: number
   content?: string
   create_if_not_exists?: boolean
-}): EditResult {
+  dryRun?: boolean
+  patch?: string
+  workdir?: string
+}): Promise<EditResult> {
   try {
+    params.path = resolveToolPath(params.path, params.workdir)
     const fileExists = existsSync(params.path)
 
     // create_if_not_exists — создать файл если не существует (только overwrite/insert)
     if (!fileExists) {
       if (params.create_if_not_exists) {
-        const dir = join(params.path, '..')
-        if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+        if (params.dryRun) {
+          const initial = params.content ?? params.new_str ?? ''
+          return { success: true, output: `[DRY RUN] СОЗДАНИЕ нового файла: ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}`.slice(0, 4000), diff: `+++ ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}` }
+        }
+        await ensureDirFor(params.path)
         const initial = params.content ?? params.new_str ?? ''
-        writeFileSync(params.path, initial, 'utf-8')
+        await fsWriteFile(params.path, initial, 'utf-8')
         return { success: true, output: `Файл создан: ${params.path}`, diff: `+++ ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}` }
       }
       return { success: false, output: '', error: 'Файл не найден: ' + params.path }
     }
 
-    const original = readFileSync(params.path, 'utf-8')
+    const original = await fsReadFile(params.path, 'utf-8')
     let updated = original
 
-    if (params.mode === 'replace') {
+    if (params.mode === 'apply_patch') {
+      // §3.2 — Codex-style apply_patch: надёжная замена по точным ханкам.
+      // patch содержит серию "*** [file]" / "--- old" / "+++ new" блоков или
+      // просто пары old_str→new_str разделённые маркерами.
+      // Поддерживаем упрощённый формат: блоки вида:
+      //   <<<<<<< SEARCH
+      //   точный текст для поиска
+      //   =======
+      //   новый текст
+      //   >>>>>>> REPLACE
+      if (!params.patch) return { success: false, output: '', error: 'edit_file apply_patch: нужен patch' }
+      updated = applySearchReplacePatch(original, params.patch)
+    } else if (params.mode === 'replace') {
       if (!params.old_str) return { success: false, output: '', error: 'edit_file replace: нужен old_str' }
       // Нормализуем CRLF → LF для сравнения
-      const normStr = (s: string) => s.split('\r\n').join('\n').split('\r').join('\n')
-      const normOrig = normStr(original)
-      const normOld = normStr(params.old_str)
+      const normOrig = normalizeLineEndings(original)
+      const normOld = normalizeLineEndings(params.old_str)
       if (!normOrig.includes(normOld)) {
         // Попытка fuzzy: игнорируем ведущие пробелы строк
         const stripIndent = (s: string) => s.split('\n').map(l => l.trimStart()).join('\n')
@@ -243,22 +400,30 @@ export function editFile(params: {
       updated = params.content
     }
 
-    writeFileSync(params.path, updated, 'utf-8')
     const diff = makeDiff(original, updated, params.path)
-    const changedLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length
-    return { success: true, output: `Файл обновлён: ${params.path} (${changedLines} строк изменено)`, diff }
+    // dryRun — не записываем, только diff-превью
+    if (params.dryRun) {
+      const changedLines = countChangedLines(diff)
+      return { success: true, output: `[DRY RUN] Правка ${params.mode} для: ${params.path} (${changedLines} строк изменено)\n${diff}`.slice(0, 4000), diff }
+    }
+    await fsWriteFile(params.path, updated, 'utf-8')
+    const changedLines2 = countChangedLines(diff)
+    return { success: true, output: `Файл обновлён: ${params.path} (${changedLines2} строк изменено)`, diff, originalContent: original }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
 }
 
-export function multiEditFile(params: {
+export async function multiEditFile(params: {
   path: string
   edits: Array<{ old_str: string; new_str: string }>
-}): EditResult {
+  dryRun?: boolean
+  workdir?: string
+}): Promise<EditResult> {
   try {
+    params.path = resolveToolPath(params.path, params.workdir)
     if (!existsSync(params.path)) return { success: false, output: '', error: 'Файл не найден: ' + params.path }
-    const original = readFileSync(params.path, 'utf-8')
+    const original = await fsReadFile(params.path, 'utf-8')
     let updated = original
     const failed: string[] = []
 
@@ -270,51 +435,58 @@ export function multiEditFile(params: {
       }
     }
 
-    writeFileSync(params.path, updated, 'utf-8')
     const diff = makeDiff(original, updated, params.path)
-    const changedLines = diff.split('\n').filter(l => l.startsWith('+') || l.startsWith('-')).length
+    const changedLines = countChangedLines(diff)
     const warn = failed.length ? `\nНе найдено ${failed.length} фрагментов: ${failed.join('; ')}` : ''
-    return { success: true, output: `Файл обновлён: ${params.path} (${changedLines} строк изменено)${warn}`, diff }
+    // dryRun — не записываем
+    if (params.dryRun) {
+      return { success: true, output: `[DRY RUN] Мульти-правка для: ${params.path} (${changedLines} строк изменено)${warn}\n${diff}`.slice(0, 4000), diff }
+    }
+    await fsWriteFile(params.path, updated, 'utf-8')
+    return { success: true, output: `Файл обновлён: ${params.path} (${changedLines} строк изменено)${warn}`, diff, originalContent: original }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
 }
 
-export function listDirectory(path: string, opts?: { recursive?: boolean; depth?: number; ignore?: string[] }): ToolResult {
+export async function listDirectory(path: string, opts?: { recursive?: boolean; depth?: number; ignore?: string[]; workdir?: string }): Promise<ToolResult> {
   try {
+    path = resolveToolPath(path, opts?.workdir)
     if (!existsSync(path)) return { success: false, output: '', error: 'Папка не найдена: ' + path }
     const maxDepth = opts?.depth ?? (opts?.recursive ? 3 : 0)
-    const defaultIgnore = ['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage']
-    const ignore = [...defaultIgnore, ...(opts?.ignore ?? [])]
+    const ignore = [...DEFAULT_IGNORE_DIRS, ...(opts?.ignore ?? [])]
     const lines: string[] = []
 
-    const walk = (dir: string, level: number, prefix: string) => {
+    const walk = async (dir: string, level: number, prefix: string): Promise<void> => {
       if (level > maxDepth) return
       let entries: string[]
-      try { entries = readdirSync(dir) } catch { return }
-      entries.sort((a, b) => {
-        const aIsDir = statSync(join(dir, a)).isDirectory()
-        const bIsDir = statSync(join(dir, b)).isDirectory()
-        if (aIsDir !== bIsDir) return aIsDir ? -1 : 1
-        return a.localeCompare(b)
+      try { entries = await fsReaddir(dir) } catch { return }
+      // Сортировка: директории первыми
+      const entryInfos = await Promise.all(entries.map(async (name) => {
+        let isDir = false, size = 0
+        try { const s = await fsStat(join(dir, name)); isDir = s.isDirectory(); size = s.size } catch { /* skip */ }
+        return { name, isDir, size }
+      }))
+      entryInfos.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+        return a.name.localeCompare(b.name)
       })
-      entries.forEach((name, i) => {
-        if (ignore.includes(name)) return
+      for (let i = 0; i < entryInfos.length; i++) {
+        const { name, isDir, size } = entryInfos[i]
+        if (ignore.includes(name)) continue
         const full = join(dir, name)
-        const isLast = i === entries.length - 1 || entries.slice(i + 1).every(n => ignore.includes(n))
-        const stat = statSync(full)
-        const isDir = stat.isDirectory()
+        const isLast = i === entryInfos.length - 1 || entryInfos.slice(i + 1).every(n => ignore.includes(n.name))
         const connector = isLast ? '└── ' : '├── '
-        const size = isDir ? '' : ` (${formatSize(stat.size)})`
-        lines.push(`${prefix}${connector}${name}${isDir ? '/' : size}`)
+        const sizeStr = isDir ? '' : ` (${formatSize(size)})`
+        lines.push(`${prefix}${connector}${name}${isDir ? '/' : sizeStr}`)
         if (isDir && level < maxDepth) {
-          walk(full, level + 1, prefix + (isLast ? '    ' : '│   '))
+          await walk(full, level + 1, prefix + (isLast ? '    ' : '│   '))
         }
-      })
+      }
     }
 
     lines.push(path + '/')
-    walk(path, 0, '')
+    await walk(path, 0, '')
     if (lines.length > 300) {
       return { success: true, output: lines.slice(0, 300).join('\n') + `\n...[обрезано, показано 300 из ${lines.length} записей]` }
     }
@@ -324,15 +496,10 @@ export function listDirectory(path: string, opts?: { recursive?: boolean; depth?
   }
 }
 
-export function getClipboard(): ToolResult {
-  const text = clipboard.readText()
-  return { success: true, output: text || '(буфер обмена пуст)' }
-}
-
 // ── find_files — поиск файлов по имени/паттерну ───────────────────────────
-export function findFiles(pattern: string, searchPath: string, opts?: { maxResults?: number }): ToolResult {
+export async function findFiles(pattern: string, searchPath: string, opts?: { maxResults?: number; workdir?: string }): Promise<ToolResult> {
   const maxResults = opts?.maxResults ?? 50
-  const defaultIgnore = ['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage']
+  searchPath = resolveToolPath(searchPath, opts?.workdir)
   const results: string[] = []
   const rx = (() => {
     try { return new RegExp(pattern, 'i') } catch {
@@ -340,29 +507,29 @@ export function findFiles(pattern: string, searchPath: string, opts?: { maxResul
       return new RegExp(escaped, 'i')
     }
   })()
-  const walk = (dir: string) => {
+  const walk = async (dir: string): Promise<void> => {
     if (results.length >= maxResults) return
     let entries: string[]
-    try { entries = readdirSync(dir) } catch { return }
+    try { entries = await fsReaddir(dir) } catch { return }
     for (const name of entries) {
-      if (defaultIgnore.includes(name)) continue
+      if (DEFAULT_IGNORE_DIRS.includes(name)) continue
       const full = join(dir, name)
-      let stat; try { stat = statSync(full) } catch { continue }
-      if (stat.isDirectory()) walk(full)
+      let stat; try { stat = await fsStat(full) } catch { continue }
+      if (stat.isDirectory()) await walk(full)
       else if (rx.test(name)) { results.push(full); if (results.length >= maxResults) return }
     }
   }
   if (!existsSync(searchPath)) return { success: false, output: '', error: 'Путь не найден: ' + searchPath }
-  walk(searchPath)
+  await walk(searchPath)
   if (results.length === 0) return { success: true, output: 'Файлов не найдено' }
   return { success: true, output: results.join('\n') + (results.length >= maxResults ? `\n...[показано ${maxResults}, есть ещё]` : `\n[Найдено: ${results.length}]`) }
 }
 
 // ── get_file_outline — структура файла (функции/классы/экспорты) ──────────
-export function getFileOutline(filePath: string): ToolResult {
+export async function getFileOutline(filePath: string): Promise<ToolResult> {
   if (!existsSync(filePath)) return { success: false, output: '', error: 'Файл не найден: ' + filePath }
   try {
-    const content = readFileSync(filePath, 'utf-8')
+    const content = await fsReadFile(filePath, 'utf-8')
     const lines = content.split('\n')
     const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     const outline: string[] = [`[Outline: ${filePath} | ${lines.length} строк]`]
@@ -407,25 +574,27 @@ export function getFileOutline(filePath: string): ToolResult {
   }
 }
 
-export function setClipboard(text: string): ToolResult {
-  clipboard.writeText(text)
-  return { success: true, output: 'Скопировано в буфер обмена' }
-}
-
 export async function searchWeb(query: string, apiKey?: string): Promise<ToolResult> {
   if (!apiKey) return { success: false, output: '', error: 'Нет Tavily API ключа. Добавьте в Настройки → Интеграции' }
   try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 15000)  // 15с таймаут
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ api_key: apiKey, query, max_results: 5, search_depth: 'basic' }),
+      signal: controller.signal,
     })
+    clearTimeout(timer)
     const data = await res.json() as { results: Array<{ title: string; url: string; content: string }> }
     const formatted = data.results.map((r, i) =>
       '[' + (i+1) + '] ' + r.title + '\nURL: ' + r.url + '\n' + r.content.slice(0, 300) + '...'
     ).join('\n\n')
     return { success: true, output: formatted }
   } catch (e: any) {
+    if (e.name === 'AbortError') {
+      return { success: false, output: '', error: 'Веб-поиск превысил таймаут (15с). Попробуйте позже или уточните запрос.' }
+    }
     return { success: false, output: '', error: e.message }
   }
 }
@@ -443,6 +612,84 @@ export function getSystemInfo(): ToolResult {
   return { success: true, output: info }
 }
 
+// ── http_request — прямой HTTP-клиент без shell ──────────────────────────
+export async function httpRequest(params: {
+  url: string
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+  timeout?: number
+}): Promise<ToolResult> {
+  const { url: urlStr, method = 'GET', headers = {}, body, timeout = 30 } = params
+
+  if (!urlStr) return { success: false, output: '', error: 'url is required' }
+
+  let url: URL
+  try {
+    url = new URL(urlStr)
+  } catch {
+    return { success: false, output: '', error: `Invalid URL: ${urlStr}` }
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { success: false, output: '', error: `Only http/https supported, got: ${url.protocol}` }
+  }
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeout * 1000)
+
+    const fetchOpts: RequestInit = {
+      method,
+      headers,
+      signal: controller.signal,
+    }
+    if (body && method !== 'GET' && method !== 'HEAD') {
+      fetchOpts.body = body
+    }
+
+    const res = await fetch(urlStr, fetchOpts)
+    clearTimeout(timer)
+
+    const status = res.status
+    const resHeaders: Record<string, string> = {}
+    res.headers.forEach((v, k) => { resHeaders[k] = v })
+
+    const contentType = res.headers.get('content-type') || ''
+    let resBody: string
+    const rawText = await res.text()
+
+    // Обрезаем очень длинные ответы
+    const maxChars = 8000
+    if (rawText.length > maxChars) {
+      resBody = rawText.slice(0, maxChars) + `\n\n...[обрезано ${rawText.length - maxChars} символов]`
+    } else {
+      resBody = rawText
+    }
+
+    const headerStr = Object.entries(resHeaders)
+      .map(([k, v]) => `  ${k}: ${v}`)
+      .join('\n')
+
+    const output = [
+      `[HTTP ${method} ${urlStr}]`,
+      `Status: ${status} ${res.statusText}`,
+      `Headers:`,
+      headerStr,
+      ``,
+      `Body:`,
+      resBody,
+    ].join('\n')
+
+    return { success: true, output }
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      return { success: false, output: '', error: `Request timed out after ${timeout}s` }
+    }
+    return { success: false, output: '', error: e.message }
+  }
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + 'B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'
@@ -450,15 +697,20 @@ function formatSize(bytes: number): string {
 }
 
 // ── read_files — читать несколько файлов за раз ──────────────────────────
-export function readFiles(paths: string[]): ToolResult {
+export async function readFiles(paths: string[], workdir?: string): Promise<ToolResult> {
   const results: string[] = []
   for (const p of paths.slice(0, 10)) {
-    if (!existsSync(p)) {
+    const rp = resolveToolPath(p, workdir)
+    if (!existsSync(rp)) {
       results.push(`=== ${p} ===\n[Файл не найден]`)
       continue
     }
     try {
-      const content = readFileSync(p, 'utf-8')
+      if (await isBinaryFile(rp)) {
+        results.push(`=== ${p} ===\n[Бинарный файл, текстовое чтение не поддерживается]`)
+        continue
+      }
+      const content = await fsReadFile(rp, 'utf-8')
       const truncated = content.length > 6000
       results.push(`=== ${p} ===\n${content.slice(0, 6000)}${truncated ? '\n...[обрезано]' : ''}`)
     } catch (e: any) {
@@ -485,29 +737,30 @@ async function findRg(): Promise<string | null> {
 export async function searchCode(
   pattern: string,
   searchPath: string,
-  opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number; maxChars?: number }
+  opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number; maxChars?: number; workdir?: string }
 ): Promise<ToolResult> {
   const maxResults = opts?.maxResults ?? 50
   const contextLines = opts?.context ?? 2
   const maxChars = opts?.maxChars ?? 12000
 
-  // Нормализуем путь — относительный → абсолютный
-  const absPath = pathResolve(process.cwd(), searchPath)
+  // Нормализуем путь — относительный → абсолютный (через workdir чата если задан)
+  const absPath = pathResolve(opts?.workdir ?? process.cwd(), searchPath)
 
-  const ignoreGlobs = ['!node_modules', '!dist', '!out', '!.git', '!__pycache__', '!.venv', '!build', '!*.min.js', '!*.map']
-  const ignoreFlag = ignoreGlobs.map(g => `--glob "${g}"`).join(' ')
+  const ignoreGlobs = [...DEFAULT_IGNORE_DIRS, '*.min.js', '*.map']
   const caseFlag = opts?.ignoreCase ? '-i' : '-s'
-  const globFlag = opts?.fileGlob ? `--glob "${opts.fileGlob}"` : ''
 
   const rg = await findRg()
 
   if (rg) {
-    // Используем spawn-стиль через --json для надёжного парсинга на Windows
-    // Но execAsync с правильным экранированием проще — используем одинарные кавычки внутри
-    const escaped = pattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    const cmd = `"${rg}" --line-number --no-heading ${caseFlag} ${globFlag} ${ignoreFlag} -C ${contextLines} -m ${maxResults} "${escaped}" "${absPath}"`
+    // Используем execFile с массивом аргументов вместо exec со строкой —
+    // это полностью исключает command injection (pattern передаётся как
+    // отдельный аргумент, shell не вызывается, метасимволы не интерпретируются).
+    const args = ['--line-number', '--no-heading', caseFlag]
+    if (opts?.fileGlob) args.push('--glob', opts.fileGlob)
+    for (const g of ignoreGlobs) args.push('--glob', `!${g}`)
+    args.push('-C', String(contextLines), '-m', String(maxResults), pattern, absPath)
     try {
-      const { stdout } = await execAsync(cmd, { timeout: 15000 })
+      const { stdout } = await execFileAsync(rg, args, { timeout: 15000, maxBuffer: 10 * 1024 * 1024 })
       const out = formatRgOutput(stdout.trim(), maxResults)
       if (out) {
         const truncated = out.length > maxChars
@@ -539,19 +792,24 @@ async function searchCodePowerShell(
   opts?: { fileGlob?: string; ignoreCase?: boolean; maxResults?: number; context?: number }
 ): Promise<ToolResult> {
   const maxResults = opts?.maxResults ?? 50
-  const psPattern = pattern.replace(/'/g, "''").replace(/\\/g, '\\')
   const psGlob = opts?.fileGlob ?? '*.*'
   const psCase = opts?.ignoreCase ? '' : '-CaseSensitive'
   const context = opts?.context ?? 2
+  // Строим regex игнор-директорий из единого списка
+  const ignoreRegex = DEFAULT_IGNORE_DIRS.map(d => d.replace(/\./g, '\\.')).join('|')
 
-  const psCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "` +
+  // Используем -EncodedCommand (base64 UTF-16LE) — команда передаётся как данные,
+  // что полностью устраняет проблему экранирования (кавычки, $(), backtick и т.д.)
+  const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ` +
     `$r = Get-ChildItem -Path '${absPath}' -Recurse -Filter '${psGlob}' -ErrorAction SilentlyContinue | ` +
-    `Where-Object { $_.FullName -notmatch 'node_modules|dist|out|\\.git|__pycache__|\\.venv|build' } | ` +
-    `Select-String ${psCase} -Pattern '${psPattern}' -Context ${context},${context} -ErrorAction SilentlyContinue | ` +
+    `Where-Object { $_.FullName -notmatch '${ignoreRegex}' } | ` +
+    `Select-String ${psCase} -Pattern '${pattern}' -Context ${context},${context} -ErrorAction SilentlyContinue | ` +
     `Select-Object -First ${maxResults}; ` +
-    `if ($r) { $r | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ': ' + $_.Line.Trim() } } else { 'Совпадений не найдено' }"`
+    `if ($r) { $r | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ': ' + $_.Line.Trim() } } else { 'Совпадений не найдено' }`
+  const encoded = Buffer.from(psScript, 'utf16le').toString('base64')
+  const psCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
   try {
-    const { stdout } = await execAsync(psCmd, { timeout: 25000 })
+    const { stdout } = await execAsync(psCmd, { timeout: 25000, maxBuffer: 10 * 1024 * 1024 })
     return { success: true, output: stdout.trim() || 'Совпадений не найдено' }
   } catch (e: any) {
     return { success: false, output: '', error: 'search_code: ' + e.message }
@@ -565,16 +823,15 @@ function formatRgOutput(raw: string, max: number): string {
   const files = new Map<string, string[]>()
   for (const line of lines) {
     if (line === '--') continue  // разделитель контекста
-    // Windows: C:\path\file.ts:42:content — берём всё до последнего :digit:
+    // rg выводит: путь:номер_строки:содержимое
+    // Non-greedy (.+?) с backtracking-ом корректно парсит как Unix (/path/file.ts:42:...)
+    // так и Windows (C:\path\file.ts:42:...) пути — \d+ требует цифры после двоеточия,
+    // поэтому движок пропускает двоеточия внутри пути и находит :номер:содержимое.
     const m = line.match(/^(.+?):(\d+)[:-](.*)$/)
     if (m) {
       const [, file, lineNum, content] = m
-      // Фикс Windows путей: если file = "C" и следующий символ был ":", восстанавливаем
-      const realFile = file.length === 1 && /^[a-zA-Z]$/.test(file)
-        ? line.match(/^([a-zA-Z]:[^:]+):(\d+)[:-](.*)$/)?.[1] ?? file
-        : file
-      if (!files.has(realFile)) files.set(realFile, [])
-      files.get(realFile)!.push(`  ${lineNum}: ${content}`)
+      if (!files.has(file)) files.set(file, [])
+      files.get(file)!.push(`  ${lineNum}: ${content}`)
     } else if (line.trim()) {
       const last = Array.from(files.keys()).pop()
       if (last) files.get(last)!.push(`  ${line}`)
@@ -590,7 +847,8 @@ function formatRgOutput(raw: string, max: number): string {
 }
 
 // ── analyze_project — полный анализ проекта ──────────────────────────────
-export async function analyzeProject(projectPath: string): Promise<ToolResult> {
+export async function analyzeProject(projectPath: string, workdir?: string): Promise<ToolResult> {
+  projectPath = resolveToolPath(projectPath, workdir)
   if (!existsSync(projectPath)) {
     return { success: false, output: '', error: 'Папка не найдена: ' + projectPath }
   }
@@ -602,9 +860,10 @@ export async function analyzeProject(projectPath: string): Promise<ToolResult> {
 
   // 2. Дерево файлов (2 уровня, без node_modules/dist/etc)
   try {
+    const ignoreRegex = DEFAULT_IGNORE_DIRS.map(d => d.replace(/\./g, '\\.')).join('|')
     const treeCmd = process.platform === 'win32'
-      ? `powershell -Command "Get-ChildItem -Path '${projectPath}' -Recurse -Depth 2 | Where-Object { $_.FullName -notmatch 'node_modules|dist|out|\\.git|\\.next|__pycache__|\\.venv' } | ForEach-Object { $_.FullName.Replace('${projectPath}', '') }"`
-      : `find "${projectPath}" -maxdepth 3 -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/out/*" -not -path "*/__pycache__/*"`
+      ? `powershell -Command "Get-ChildItem -Path '${projectPath}' -Recurse -Depth 2 | Where-Object { $_.FullName -notmatch '${ignoreRegex}' } | ForEach-Object { $_.FullName.Replace('${projectPath}', '') }"`
+      : `find "${projectPath}" -maxdepth 3 ${DEFAULT_IGNORE_DIRS.map(d => `-not -path "*/${d}/*"`).join(' ')}`
     const { stdout: tree } = await execAsync(treeCmd, { timeout: 10000 })
     const lines = tree.trim().split('\n').slice(0, 80)
     sections.push(`## Структура файлов\n${lines.join('\n')}${lines.length >= 80 ? '\n...[обрезано]' : ''}`)
@@ -616,7 +875,7 @@ export async function analyzeProject(projectPath: string): Promise<ToolResult> {
   const pkgPath = join(projectPath, 'package.json')
   if (existsSync(pkgPath)) {
     try {
-      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+      const pkg = JSON.parse(await fsReadFile(pkgPath, 'utf-8'))
       const info = {
         name: pkg.name,
         version: pkg.version,
@@ -634,7 +893,7 @@ export async function analyzeProject(projectPath: string): Promise<ToolResult> {
     const fp = join(projectPath, f)
     if (existsSync(fp)) {
       try {
-        const content = readFileSync(fp, 'utf-8').slice(0, 1500)
+        const content = (await fsReadFile(fp, 'utf-8')).slice(0, 1500)
         sections.push(`## ${f}\n\`\`\`\n${content}\n\`\`\``)
       } catch { /* ignore */ }
     }
@@ -645,7 +904,7 @@ export async function analyzeProject(projectPath: string): Promise<ToolResult> {
     const fp = join(projectPath, f)
     if (existsSync(fp)) {
       try {
-        const content = readFileSync(fp, 'utf-8').slice(0, 2000)
+        const content = (await fsReadFile(fp, 'utf-8')).slice(0, 2000)
         sections.push(`## README\n${content}`)
       } catch { /* ignore */ }
       break
@@ -672,14 +931,16 @@ export async function analyzeProject(projectPath: string): Promise<ToolResult> {
   // 7. Статистика кода
   try {
     const extCount: Record<string, number> = {}
-    const countFiles = (dir: string, depth = 0) => {
+    const countFiles = async (dir: string, depth = 0): Promise<void> => {
       if (depth > 4) return
-      for (const name of readdirSync(dir)) {
-        if (['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build'].includes(name)) continue
+      let entries: string[]
+      try { entries = await fsReaddir(dir) } catch { return }
+      for (const name of entries) {
+        if (DEFAULT_IGNORE_DIRS.includes(name)) continue
         const full = join(dir, name)
         try {
-          const s = statSync(full)
-          if (s.isDirectory()) countFiles(full, depth + 1)
+          const s = await fsStat(full)
+          if (s.isDirectory()) await countFiles(full, depth + 1)
           else {
             const ext = name.includes('.') ? '.' + name.split('.').pop()! : 'other'
             extCount[ext] = (extCount[ext] || 0) + 1
@@ -687,7 +948,7 @@ export async function analyzeProject(projectPath: string): Promise<ToolResult> {
         } catch { /* ignore */ }
       }
     }
-    countFiles(projectPath)
+    await countFiles(projectPath)
     const sorted = Object.entries(extCount).sort((a, b) => b[1] - a[1]).slice(0, 12)
     sections.push(`## Статистика файлов\n${sorted.map(([ext, n]) => `${ext}: ${n} файл(ов)`).join('\n')}`)
   } catch { /* ignore */ }
@@ -781,9 +1042,9 @@ export async function generateImage(
       const b64 = data.files[0]
       // Сохраняем в temp файл — не кидаем base64 в контекст AI
       const imgDir = join(tmpdir(), 'syntee-generated')
-      if (!existsSync(imgDir)) mkdirSync(imgDir, { recursive: true })
       const imgPath = join(imgDir, `img_${Date.now()}.png`)
-      writeFileSync(imgPath, Buffer.from(b64, 'base64'))
+      await ensureDirFor(imgPath)
+      await fsWriteFile(imgPath, Buffer.from(b64, 'base64'))
       return {
         success: true,
         output: `[IMAGE:${imgPath}]`,
@@ -817,21 +1078,20 @@ export async function generateImage(
 }
 
 // ── save_plan — только в режиме планирования ─────────────────────────────────
-export function savePlan(params: { title: string; content: string; summary: string }): ToolResult {
+export async function savePlan(params: { title: string; content: string; summary: string }): Promise<ToolResult> {
   try {
     const os = require('os')
-    const fs = require('fs')
     const path = require('path')
     const plansDir = path.join(os.homedir(), 'Documents', 'Syntee', 'Plans')
-    fs.mkdirSync(plansDir, { recursive: true })
     // Санитизируем имя файла
     const safeName = params.title
       .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
       .replace(/\s+/g, '_')
       .slice(0, 80) || 'plan'
     const filePath = path.join(plansDir, `plan_${safeName}.md`)
+    await ensureDirFor(filePath)
     const fullContent = `# ${params.title}\n\n> ${params.summary}\n\n${params.content}`
-    fs.writeFileSync(filePath, fullContent, 'utf-8')
+    await fsWriteFile(filePath, fullContent, 'utf-8')
     return { success: true, output: filePath }
   } catch (e: unknown) {
     return { success: false, output: '', error: String(e) }
@@ -860,16 +1120,17 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'edit_file',
-      description: 'Редактировать файл. replace — заменить фрагмент (с fuzzy по отступам), insert — вставить после строки, overwrite — перезаписать. create_if_not_exists=true создаёт файл и директории. Возвращает diff.',
+      description: 'Редактировать файл. replace — заменить фрагмент (с fuzzy по отступам), insert — вставить после строки, overwrite — перезаписать, apply_patch — надёжная замена по search/replace блокам (Codex-style, для множественных правок). create_if_not_exists=true создаёт файл и директории. Возвращает diff.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Путь к файлу' },
-          mode: { type: 'string', enum: ['replace', 'insert', 'overwrite'], description: 'Режим редактирования' },
+          mode: { type: 'string', enum: ['replace', 'insert', 'overwrite', 'apply_patch'], description: 'Режим редактирования' },
           old_str: { type: 'string', description: '[replace] Уникальный фрагмент для замены. Включай 2-3 строки контекста.' },
           new_str: { type: 'string', description: '[replace] Новый фрагмент (пустая строка = удалить)' },
           after_line: { type: 'number', description: '[insert] Вставить после этой строки (1-indexed)' },
           content: { type: 'string', description: '[insert/overwrite] Контент для вставки или перезаписи' },
+          patch: { type: 'string', description: '[apply_patch] Search/replace патч. Формат: блоки <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Каждый блок заменяет одно точное вхождение. Надёжнее чем replace для множественных правок.' },
           create_if_not_exists: { type: 'boolean', description: 'Создать файл (и директории) если не существует' },
         },
         required: ['path', 'mode'],
@@ -923,7 +1184,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: 'Читает файл. Без offset — первые 100 строк + авто-outline структуры если файл > 100 строк. С offset/limit — точный диапазон строк. Всегда показывает [total_lines] и подсказку если файл обрезан.',
+      description: 'Читает файл. Без offset — первые 100 строк + авто-outline структуры если файл > 100 строк. С offset/limit — точный диапазон строк. outline_only=true — только структура (функции, классы, экспорты) без содержимого — быстро сориентироваться в большом файле. Всегда показывает [total_lines] и подсказку если файл обрезан.',
       parameters: {
         type: 'object',
         properties: {
@@ -970,32 +1231,30 @@ export const TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
-      name: 'get_clipboard',
-      description: 'Получить текст из буфера обмена.',
-      parameters: { type: 'object', properties: {} },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'set_clipboard',
-      description: 'Скопировать текст в буфер обмена.',
+      name: 'search_web',
+      description: 'Поиск в интернете через Tavily API. Используй для актуальной информации — новости, документация, ответы на вопросы.',
       parameters: {
         type: 'object',
-        properties: { text: { type: 'string', description: 'Текст для копирования' } },
-        required: ['text'],
+        properties: { query: { type: 'string', description: 'Поисковый запрос' } },
+        required: ['query'],
       },
     },
   },
   {
     type: 'function' as const,
     function: {
-      name: 'search_web',
-      description: 'Поиск в интернете. Используй для актуальной информации.',
+      name: 'http_request',
+      description: 'Прямой HTTP-запрос к API или веб-странице. GET/POST/PUT/DELETE/PATCH с заголовками и телом. Возвращает status, headers, body. Быстрее и надёжнее чем curl через run_command — нет проблем с экранированием. Используй для: API-вызовы, вебхуки, скачивание JSON/XML, проверка эндпоинтов. ВАЖНО: success=true означает что запрос выполнился, а не что HTTP-статус успешный — всегда проверяй Status в выводе (404/500 тоже success=true).',
       parameters: {
         type: 'object',
-        properties: { query: { type: 'string', description: 'Поисковый запрос' } },
-        required: ['query'],
+        properties: {
+          url: { type: 'string', description: 'Полный URL (http:// или https://)' },
+          method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'], description: 'HTTP-метод (по умолч. GET)' },
+          headers: { type: 'object', description: 'Заголовки запроса. Например: {"Authorization": "Bearer ...", "Content-Type": "application/json"}', additionalProperties: { type: 'string' } },
+          body: { type: 'string', description: 'Тело запроса (для POST/PUT/PATCH). JSON-строка, XML, plain text — что угодно.' },
+          timeout: { type: 'number', description: 'Таймаут в секундах (по умолч. 30)' },
+        },
+        required: ['url'],
       },
     },
   },
@@ -1102,6 +1361,7 @@ export const TOOL_SCHEMAS = [
         properties: {
           task: { type: 'string', description: 'Подробное описание задачи для суб-агента' },
           parallel: { type: 'boolean', description: 'true — запустить параллельно (не ждать результата), false — ждать завершения и получить итог' },
+          approval_mode: { type: 'string', enum: ['auto', 'ask', 'full'], description: 'Режим подтверждения суб-агента (по умолч. наследуется от родителя). full — без подтверждений, ask — на каждый тул, auto — умная детекция' },
         },
         required: ['task'],
       },
@@ -1135,6 +1395,44 @@ export const TOOL_SCHEMAS = [
           },
         },
         required: ['thought'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'revert_last_change',
+      description: 'Откатить последние изменения файлов (undo/rollback). Восстанавливает оригинальное содержимое. Используй когда понял, что сделал неправильную правку.',
+      parameters: {
+        type: 'object',
+        properties: {
+          steps: { type: 'number', description: 'Сколько последних изменений откатить (по умолч. 1)' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'update_todo',
+      description: 'Обновить чек-лист задачи (todo list). Используй для многошаговых задач — пользователь видит прогресс в чате. Вызывай в начале (с планом) и после каждого завершённого шага.',
+      parameters: {
+        type: 'object',
+        properties: {
+          items: {
+            type: 'array',
+            description: 'Список шагов. Каждый шаг: { text, status }.',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'Описание шага' },
+                status: { type: 'string', enum: ['pending', 'in_progress', 'done', 'skipped'], description: 'Статус шага' },
+              },
+              required: ['text', 'status'],
+            },
+          },
+        },
+        required: ['items'],
       },
     },
   },
@@ -1178,6 +1476,7 @@ export function getToolSchemas(options: {
   webMode?: boolean
   imageMode?: boolean
   multiAgentMode?: boolean
+  mode?: 'code' | 'work'  // deprecated — игнорируется; work-режим удалён
 } = {}) {
   const {
     planningMode = false,
@@ -1186,25 +1485,35 @@ export function getToolSchemas(options: {
     multiAgentMode = false,
   } = options
 
-  const names = [
+  // Work-режим удалён — всегда полный Code-набор инструментов.
+  const names: string[] = [
     'read_file',
     'read_files',
     'find_files',
     'search_code',
     'list_directory',
-    'get_file_outline',
     'edit_file',
     'multi_edit_file',
     'write_file',
     'run_command',
     'think',
     'update_working_memory',
+    'revert_last_change',
+    'update_todo',
+    // Веб-поиск, HTTP и суб-агенты — всегда доступны агенту, модель сама решает
+    // когда их использовать.
+    'search_web',
+    'http_request',
+    'spawn_agent',
+    'get_agent_status',
   ]
 
   if (!planningMode) names.push('analyze_project')
-  if (webMode) names.push('search_web')
   if (imageMode) names.push('generate_image')
-  if (multiAgentMode) names.push('spawn_agent', 'get_agent_status')
+  // multiAgentMode/webMode больше не нужны для включения — оставлены как
+  // параметры функции для совместимости с вызывающим кодом.
+  void webMode
+  void multiAgentMode
 
   const schemas = pickTools(names)
   if (planningMode) schemas.push(PLAN_TOOL_SCHEMA as any)

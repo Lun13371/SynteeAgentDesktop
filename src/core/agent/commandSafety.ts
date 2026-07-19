@@ -1,5 +1,8 @@
 /**
- * commandSafety.ts — автономная система классификации опасности команд
+ * commandSafety.ts — единый источник правды для классификации опасности
+ * действий агента. Покрывает как run_command, так и файловые тулы
+ * (write_file/edit_file/multi_edit_file). UI (AgentConfirmDialog) должен
+ * импортировать классификацию отсюда, а не дублировать шаблоны.
  *
  * Уровни опасности:
  *   SAFE      — безопасно, выполнять без подтверждения
@@ -14,6 +17,55 @@ export interface SafetyResult {
   level: DangerLevel
   reason: string
   matchedPattern?: string
+}
+
+// ─── Опции классификации ────────────────────────────────────────────────────
+
+export interface ClassifyOpts {
+  /** Список запрещённых путей из agentPermissions.forbiddenPaths */
+  forbiddenPaths?: string[]
+}
+
+// ─── Path guard: проверка пути against forbiddenPaths (sandbox) ──────────────
+
+/** Нормализует путь для сравнения (lowercase, обратные слеши, без trailing sep). */
+function normalizePath(p: string): string {
+  return p
+    .toLowerCase()
+    .replace(/\//g, '\\')
+    .replace(/\\+$/, '')
+    .trim()
+}
+
+/**
+ * Проверяет, попадает ли путь в список запрещённых.
+ * Сравнение по префиксу: путь запрещён, если он равен или находится внутри
+ * одной из forbiddenPaths. Например forbiddenPath "C:\Windows" блокирует
+ * "C:\Windows\System32\drivers\etc\hosts".
+ */
+export function isPathForbidden(path: string, forbiddenPaths?: string[]): boolean {
+  if (!forbiddenPaths || forbiddenPaths.length === 0) return false
+  const norm = normalizePath(path)
+  if (!norm) return false
+  return forbiddenPaths.some(fp => {
+    const nfp = normalizePath(fp)
+    if (!nfp) return false
+    // Точное совпадение или путь внутри запрещённой директории
+    return norm === nfp || norm.startsWith(nfp + '\\')
+  })
+}
+
+/**
+ * Эвристическая проверка: упоминается ли один из forbiddenPaths в команде.
+ * Грубо, но ловит очевидные случаи (rm C:\Windows\...).
+ */
+function commandTouchesForbiddenPath(cmd: string, forbiddenPaths?: string[]): boolean {
+  if (!forbiddenPaths || forbiddenPaths.length === 0) return false
+  const lowerCmd = cmd.toLowerCase()
+  return forbiddenPaths.some(fp => {
+    const nfp = fp.toLowerCase().replace(/\//g, '\\')
+    return nfp && lowerCmd.includes(nfp)
+  })
 }
 
 // ─── Нормализация ──────────────────────────────────────────────────────────
@@ -278,6 +330,93 @@ const WARN_CHECKS: Array<{ test: (cmd: string) => boolean; reason: string }> = [
   },
 ]
 
+// ─── Классификация файловых тулов ───────────────────────────────────────────
+
+/**
+ * Классифицирует опасность файлового тула (write_file/edit_file/multi_edit_file).
+ *
+ * Правила:
+ *   - Путь в forbiddenPaths → BLOCKED (нельзя трогать системные папки)
+ *   - write_file поверх существующего файла → WARN (полная перезапись)
+ *   - write_file нового файла → SAFE (создание)
+ *   - edit_file/multi_edit_file → SAFE (точечные правки, есть diff для отката)
+ */
+export function classifyFileTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  opts?: ClassifyOpts,
+): SafetyResult {
+  const path = String(args.path ?? '')
+
+  // 1. forbiddenPaths — всегда блок
+  if (path && isPathForbidden(path, opts?.forbiddenPaths)) {
+    return {
+      level: 'blocked',
+      reason: `Путь "${path}" в списке запрещённых (forbiddenPaths). Действие заблокировано.`,
+      matchedPattern: 'forbidden_path',
+    }
+  }
+
+  // 2. write_file поверх существующего файла — полная перезапись, warn
+  if (toolName === 'write_file') {
+    // Нельзя синхронно проверить existsSync здесь без импорта fs — оставляем
+    // подсказку для needsApproval: перезапись существующего = warn. Реальную
+    // проверку существования делает Agent (у него есть store/контекст), но
+    // для классификации по умолчанию считаем write_file потенциальной
+    // перезаписью — безопаснее спросить.
+    return {
+      level: 'warn',
+      reason: 'write_file может полностью перезаписать существующий файл. Используй edit_file для точечных правок.',
+      matchedPattern: 'write_overwrite',
+    }
+  }
+
+  // 3. edit_file / multi_edit_file — точечные правки, безопасны (есть diff)
+  return { level: 'safe', reason: 'Точечная правка файла (есть diff для отката)' }
+}
+
+/**
+ * Единый диспетчер классификации любого тула. UI должен использовать эту
+ * функцию вместо дублирования шаблонов.
+ */
+export function classifyTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  opts?: ClassifyOpts,
+): SafetyResult {
+  if (toolName === 'run_command') {
+    const base = classifyCommand(String(args.command ?? ''))
+    // Дополнительно: команда затрагивает запрещённый путь → блок
+    if (base.level !== 'blocked' && commandTouchesForbiddenPath(String(args.command ?? ''), opts?.forbiddenPaths)) {
+      return {
+        level: 'blocked',
+        reason: 'Команда затрагивает запрещённый путь (forbiddenPaths)',
+        matchedPattern: 'forbidden_path',
+      }
+    }
+    return base
+  }
+
+  if (toolName === 'write_file' || toolName === 'edit_file' || toolName === 'multi_edit_file') {
+    return classifyFileTool(toolName, args, opts)
+  }
+
+  // http_request: GET/HEAD — безопасно (только чтение), POST/PUT/DELETE/PATCH — warn (отправляет данные)
+  if (toolName === 'http_request') {
+    const method = String(args.method ?? 'GET').toUpperCase()
+    if (method === 'GET' || method === 'HEAD') {
+      return { level: 'safe', reason: 'HTTP GET/HEAD — только чтение', matchedPattern: 'http_read' }
+    }
+    return { level: 'warn', reason: `HTTP ${method} — отправляет данные на ${String(args.url ?? '?')}`, matchedPattern: 'http_write' }
+  }
+
+  // Прочие тулы (read_file, search_web, и т.д.) — безопасны по умолчанию.
+  // read_file тоже проверяем against forbiddenPaths? План говорит про
+  // запись/удаление — чтение оставляем разрешённым (агент-ассистент должен
+  // уметь читать любой файл по запросу пользователя).
+  return { level: 'safe', reason: 'Инструмент только для чтения/без побочных эффектов' }
+}
+
 // ─── Главная функция классификации ────────────────────────────────────────
 
 export function classifyCommand(cmd: string): SafetyResult {
@@ -311,40 +450,47 @@ export function classifyCommand(cmd: string): SafetyResult {
  * Нужно ли подтверждение для данного тула и режима?
  *
  * blocked: блокировать везде независимо от режима
- * auto:    умный режим — dangerous+warn спрашивать, safe пропускать
+ * auto:    умный режим — dangerous+warn спрашивать, safe пропускать.
+ *          Если confirmDangerous=false, dangerous пропускается без подтверждения
+ *          (только blocked блокируется) — более перmissive режим.
  * ask:     спрашивать каждый тул
  * full:    полный доступ — всё пропускается без проверок
+ *
+ * Опции:
+ *   confirmDangerous — из agentPermissions.confirmDangerous (по умолч. true)
+ *   forbiddenPaths   — из agentPermissions.forbiddenPaths
  */
 export function needsApproval(
   toolName: string,
   args: Record<string, unknown>,
-  mode: 'auto' | 'ask' | 'full'
+  mode: 'auto' | 'ask' | 'full',
+  opts?: { confirmDangerous?: boolean; forbiddenPaths?: string[] },
 ): { confirm: boolean; block: boolean; reason: string } {
   // full — полный доступ, ничего не проверяем
   if (mode === 'full') {
     return { confirm: false, block: false, reason: '' }
   }
 
-  // ask — спрашивать каждый тул кроме скрытых
-  if (mode === 'ask') {
-    return { confirm: true, block: false, reason: 'Режим "спрашивать" — подтверждение на каждый тул' }
-  }
+  // Единая классификация (покрывает и run_command, и файловые тулы)
+  const result = classifyTool(toolName, args, { forbiddenPaths: opts?.forbiddenPaths })
+  const confirmDangerous = opts?.confirmDangerous !== false // по умолч. true
 
-  // auto — умная детекция только для run_command
-  if (toolName !== 'run_command') {
-    return { confirm: false, block: false, reason: '' }
-  }
-
-  const cmd = String(args.command ?? '')
-  const result = classifyCommand(cmd)
-
+  // blocked — блокировать везде, диалога нет
   if (result.level === 'blocked') {
-    // Блокировать везде — диалога нет
     return { confirm: false, block: true, reason: result.reason }
   }
 
-  if (result.level === 'dangerous' || result.level === 'warn') {
-    // auto — показываем диалог для dangerous и warn
+  // ask — спрашивать каждый тул кроме скрытых (вызывающий код фильтрует hidden)
+  if (mode === 'ask') {
+    return { confirm: true, block: false, reason: result.reason || 'Режим "спрашивать" — подтверждение на каждый тул' }
+  }
+
+  // auto — умная детекция
+  if (result.level === 'dangerous') {
+    // confirmDangerous=false → не спрашивать dangerous (только blocked ловим выше)
+    return { confirm: confirmDangerous, block: false, reason: result.reason }
+  }
+  if (result.level === 'warn') {
     return { confirm: true, block: false, reason: result.reason }
   }
 

@@ -6,12 +6,23 @@
 import { parentPort, workerData } from 'worker_threads'
 import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
+import { classifyTool } from '../core/agent/commandSafety'
+import { writeFile, editFile, multiEditFile } from '../core/tools/index'
 import { buildPlanningInjection } from '../core/prompts/buildSystemPrompt'
 import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '../core/context/contextManager'
+import { recordSessionCost, buildSnapshotFromReal } from '../core/tokens/usageTracker'
+import { initModelCatalog } from '../core/tokens/modelCatalog'
 import { getToolSchemas } from '../core/tools/index'
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
+const workerMode: 'code' | 'work' = ((workerData as Record<string, unknown>).mode as 'code' | 'work') ?? 'code'
+
+// Инициализируем каталог моделей из кэш-файла (записанного main-процессом)
+const catalogCachePath = (workerData as Record<string, unknown>).catalogCachePath as string | undefined
+if (catalogCachePath) {
+  try { initModelCatalog(catalogCachePath) } catch { /* ok — работаем без каталога */ }
+}
 
 // Кэш статусов суб-агентов — обновляется через agent_status_update от main
 const agentStatusCache = new Map<string, { status: string; stepsCount: number; currentStep?: string }>()
@@ -22,9 +33,15 @@ const replyHandlers = new Map<string, (msg: Record<string, unknown>) => void>()
 // Флаг — агент уже запущен (стартовое сообщение обработано)
 let agentStarted = false
 
+// set() мутирует локальную копию storeData — иначе API key round-robin
+// (AIClient.getClientForRole -> getNextApiKey -> store.set('providers', ...))
+// был no-op, и агент всегда брал один и тот же ключ провайдера на каждом
+// шаге, даже если пользователь настроил несколько ключей для балансировки.
+// Изменение не переживает воркер (не пишется в electron-store в main), но
+// хотя бы работает корректно внутри одного запуска агента.
 const fakeStore = {
   get: (key: string, def?: unknown) => (storeData[key] !== undefined ? storeData[key] : def),
-  set: (_key: string, _val: unknown) => {},
+  set: (key: string, val: unknown) => { storeData[key] = val },
 } as never
 
 const aiClient = new AIClient(fakeStore)
@@ -60,15 +77,19 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     systemPrompt, enableTools, incognito,
     agentSettings,
     toolSchemas,
+    modelId: resolvedModelId,
+    providerId: resolvedProviderId,
   } = msg as {
     chatId: string
     msgId: string
     content: string
-    history: Array<{ role: string; content: string }>
+    history: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>
     systemPrompt: string
     enableTools: boolean
     incognito: boolean
     toolSchemas?: unknown[]
+    modelId?: string
+    providerId?: string
     agentSettings: {
       enableTools: boolean
       maxSteps: number
@@ -77,11 +98,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       enableThinking: boolean
       autoMemoryInterval?: number
       readFileCache?: boolean
-      toolSummarization?: boolean
       maxRepeatedToolCalls?: number
       maxRepeatedErrors?: number
-      contextCompactionPct?: number
-      preserveRecentToolRounds?: number
     }
   }
 
@@ -91,46 +109,82 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   let thinkingMs: number | undefined
   const collectedSteps: unknown[] = []
 
-  // Итерации для сохранения в БД — {label?, textBefore, steps[]}
-  const collectedIters: Array<{ label?: string; textBefore: string; steps: unknown[] }> = []
+  // Итерации для сохранения в БД — {label?, textBefore, thinking?, thinkingMs?, steps[]}
+  const collectedIters: Array<{ label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: unknown[] }> = []
   let currentIterTextBefore = ''
   let currentIterSteps: unknown[] = []
   let pendingTextAfter = ''  // текст после последнего тулчейна
 
+  // Thinking для текущей итерации — прикрепляется к итерации при flush
+  let currentIterThinking = ''
+  let currentIterThinkingMs: number | undefined
+
+  // Pending thinking — накопленное reasoning текущего раунда, ждёт прикрепления к итерации
+  let pendingThinking = ''
+  let pendingThinkingMs: number | undefined
+
   // Live token counter — считаем накопленный контекст агента
-  const contextWindow = getModelContextWindow(storeData)
+  const isSubAgentWorker = !!(workerData as Record<string, unknown>).isSubAgent
+  const contextWindow = getModelContextWindow(storeData, isSubAgentWorker ? 'subagent' : 'main')
   const sysPromptTokens = estimateTokens(systemPrompt) + 4
   // Токены истории (начальный снапшот)
   const historyBaseTokens = history.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0)
   let toolResultTokensAccum = 0  // накопленные токены tool results за сессию
 
+  // Последний breakdown для мерджа с реальным usage
+  let lastBreakdown: Record<string, number> | undefined
+
   function sendLiveContextUsage() {
     const estimated = historyBaseTokens + sysPromptTokens + TOOL_SCHEMAS_OVERHEAD + toolResultTokensAccum + estimateTokens(fullText) + 100
     const pct = Math.min(100, Math.round(estimated / contextWindow * 100))
     const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+    const breakdown = {
+      history: historyBaseTokens,
+      system: sysPromptTokens,
+      tools: TOOL_SCHEMAS_OVERHEAD,
+      toolResults: toolResultTokensAccum,
+      answer: estimateTokens(fullText),
+    }
+    lastBreakdown = breakdown
     send({
       type: 'context_usage',
       pct, estimated, limit: contextWindow, status,
-      breakdown: {
-        history: historyBaseTokens,
-        system: sysPromptTokens,
-        tools: TOOL_SCHEMAS_OVERHEAD,
-        toolResults: toolResultTokensAccum,
-        answer: estimateTokens(fullText),
-      },
+      source: 'estimate',
+      breakdown,
     })
   }
 
   const flushIter = () => {
     if (currentIterSteps.length > 0) {
-      collectedIters.push({ textBefore: currentIterTextBefore, steps: currentIterSteps })
+      collectedIters.push({
+        textBefore: currentIterTextBefore,
+        thinking: currentIterThinking || undefined,
+        thinkingMs: currentIterThinkingMs,
+        steps: currentIterSteps,
+      })
       currentIterTextBefore = ''
       currentIterSteps = []
+      currentIterThinking = ''
+      currentIterThinkingMs = undefined
     }
   }
 
-  const finalize = () => {
+  let agent: Agent | null = null
+
+  const finalize = (details?: unknown) => {
     flushIter()
+    // Если после последней итерации остался thinking или текст — создаём финальную итерацию
+    if (collectedIters.length > 0 && (pendingThinking || pendingTextAfter.trim())) {
+      collectedIters.push({
+        textBefore: pendingTextAfter,
+        thinking: pendingThinking || undefined,
+        thinkingMs: pendingThinkingMs,
+        steps: [],
+      })
+      pendingThinking = ''
+      pendingTextAfter = ''
+    }
+    const fileCacheUpdates = agent ? agent.getFileCacheUpdates() : undefined
     send({
       type: 'done',
       chatId, msgId,
@@ -139,6 +193,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       thinkingMs,
       collectedSteps,
       collectedIters: collectedIters.length > 0 ? collectedIters : undefined,
+      // Round-robin индекс мутировался в этой копии storeData (см. fakeStore.set)
+      // — прокидываем обновлённых providers обратно в main, чтобы ротация
+      // ключей продолжалась со следующего сообщения, а не сбрасывалась.
+      updatedProviders: storeData.providers,
+      // Персистентный кэш файлов — обновлённые записи для main-процесса
+      fileCacheUpdates,
+      // Структурированный результат агента (файлы, diff-и, команды) — для суб-агентов
+      agentSummary: details,
       incognito,
       content,
     })
@@ -147,10 +209,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   try {
     if (enableTools && !incognito) {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
-      const agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
+      agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
       // Прокидываем chatId и колбэки рабочей памяти
       agent.chatId = chatId
+      // workdir чата (новые Code-чаты после фичи workdir; undefined для
+      // Work-режима и старых чатов — поведение остаётся прежним).
+      agent.workdir = (workerData as Record<string, unknown>).workdir as string | undefined
       agent.onUpdateWorkingMemory = (cid, content, mode) => {
         console.log('[ai-worker] update_working_memory:', cid, mode, content.length, 'chars')
         send({ type: 'update_working_memory', chatId: cid, content, mode })
@@ -166,13 +231,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       await agent.run(
         content,
         {
-          onContextCounted: (promptTokens) => {
-            const pct = Math.min(100, Math.round(promptTokens / contextWindow * 100))
+          onContextCounted: (promptTokens) => {            const pct = Math.min(100, Math.round(promptTokens / contextWindow * 100))
             const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            const breakdown = { history: promptTokens, system: 0, tools: 3800, current: 0 }
+            lastBreakdown = breakdown
             send({
               type: 'context_usage',
               pct, estimated: promptTokens, limit: contextWindow, status,
-              breakdown: { history: promptTokens, system: 0, tools: 3800, current: 0 },
+              source: 'estimate',
+              breakdown,
             })
           },
           onStep: (step) => {
@@ -193,10 +260,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 callId: step.callId,
               }
               collectedSteps.push(ts)
-              if (pendingTextAfter.trim()) {
+              if (pendingTextAfter.trim() || pendingThinking) {
                 flushIter()
                 currentIterTextBefore = pendingTextAfter
+                currentIterThinking = pendingThinking
+                currentIterThinkingMs = pendingThinkingMs
                 pendingTextAfter = ''
+                pendingThinking = ''
+                pendingThinkingMs = undefined
               } else if (currentIterSteps.length === 0) {
                 currentIterTextBefore = pendingTextAfter
                 pendingTextAfter = ''
@@ -226,11 +297,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               sendLiveContextUsage()
 
             } else if (step.type === 'thought') {
+              // Fallback — reasoning не стримился, пришёл одним блоком
               if (!thinkingStartMs) thinkingStartMs = Date.now()
               const thoughtStr = typeof step.content === 'string' ? step.content : String(step.content ?? '')
               thinkingText += thoughtStr
-              send({ type: 'thinking_token', chatId, msgId, token: thoughtStr })
+              pendingThinking += thoughtStr
               thinkingMs = Date.now() - thinkingStartMs
+              pendingThinkingMs = thinkingMs
+              send({ type: 'thinking_token', chatId, msgId, token: thoughtStr })
               send({ type: 'thinking_done', chatId, msgId, thinkingMs })
             } else if (step.type === 'answer') {
               fullText += step.content
@@ -238,17 +312,48 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'token', chatId, msgId, token: step.content })
             }
           },
-          onDone: () => finalize(),
+          onDone: (_answer: string, details?: unknown) => finalize(details),
           onError: (err) => {
-            send({ type: 'error', chatId, error: err.message })
+            flushIter()
+            send({
+              type: 'error', chatId, error: err.message,
+              fullText, thinkingText: thinkingText || undefined, thinkingMs,
+              collectedSteps, collectedIters: collectedIters.length > 0 ? collectedIters : undefined,
+              updatedProviders: storeData.providers,
+              fileCacheUpdates: agent?.getFileCacheUpdates(),
+            })
           },
           onContextUpdate: (tokens: number) => {
             const pct = Math.min(100, Math.round(tokens / contextWindow * 100))
             const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            const breakdown = { history: historyBaseTokens, system: sysPromptTokens, tools: 3800, current: tokens - historyBaseTokens - sysPromptTokens - 3800 }
+            lastBreakdown = breakdown
             send({
               type: 'context_usage',
               pct, estimated: tokens, limit: contextWindow, status,
-              breakdown: { history: historyBaseTokens, system: sysPromptTokens, tools: 3800, current: tokens - historyBaseTokens - sysPromptTokens - 3800 },
+              source: 'estimate',
+              breakdown,
+            })
+          },
+          onUsage: (promptTokens: number, completionTokens: number) => {
+            // Реальные токены от провайдера — приоритет над оценкой
+            const snapshot = buildSnapshotFromReal(
+              { promptTokens, completionTokens },
+              contextWindow,
+              lastBreakdown as { history: number; system: number; tools: number; current: number; toolResults?: number },
+            )
+            // Накапливаем стоимость сессии
+            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', promptTokens, completionTokens)
+            send({
+              type: 'context_usage',
+              pct: snapshot.pct,
+              estimated: snapshot.estimated,
+              limit: snapshot.limit,
+              status: snapshot.status,
+              source: 'real',
+              breakdown: snapshot.breakdown,
+              sessionCostCents: sess?.totalCents ?? null,
+              sessionRequests: sess?.requests ?? 0,
             })
           },
           onPlanSaved: (plan) => {
@@ -273,12 +378,36 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           },
           approvalMode: agentSettings.approvalMode as never,
           onConfirm: (toolName, args) => {
-            return new Promise((resolve) => {
+            return new Promise(async (resolve) => {
               const reqId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
               replyHandlers.set(`confirm-reply-${reqId}`, (reply) => {
                 resolve(reply.approved as boolean)
               })
-              send({ type: 'confirm', chatId, msgId, reqId, toolName, args })
+              // Единый источник правды: классификация из commandSafety (§1.4)
+              const agentPerms = (storeData.agentPermissions as {
+                forbiddenPaths?: string[]
+              } | undefined) ?? {}
+              const classification = classifyTool(toolName, args, { forbiddenPaths: agentPerms.forbiddenPaths })
+              // Diff-превью для файловых тулов (§4.1) — dryRun без записи
+              let previewDiff = ''
+              try {
+                if (toolName === 'write_file') {
+                  const r = await writeFile(args.path as string, args.content as string, { dryRun: true })
+                  previewDiff = r.diff ?? ''
+                } else if (toolName === 'edit_file') {
+                  const r = await editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun: true })
+                  previewDiff = r.diff ?? ''
+                } else if (toolName === 'multi_edit_file') {
+                  const r = await multiEditFile({ ...(args as Parameters<typeof multiEditFile>[0]), dryRun: true })
+                  previewDiff = r.diff ?? ''
+                }
+              } catch { /* превью опционально */ }
+              send({
+                type: 'confirm', chatId, msgId, reqId, toolName, args,
+                dangerLevel: classification.level,
+                dangerReason: classification.reason,
+                previewDiff,
+              })
             })
           },
           onSpawnAgent: (opts) => {
@@ -287,7 +416,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               replyHandlers.set(replyId, (reply) => {
                 resolve({ summary: reply.summary as string, error: reply.error as string | undefined })
               })
-              send({ type: 'spawn_agent', chatId, msgId, replyId, ...opts })
+              const { approvalMode, ...rest } = opts
+              send({ type: 'spawn_agent', chatId, msgId, replyId, ...rest, approval_mode: approvalMode })
             })
           },
           onWaitAgents: (agentIds) => {
@@ -308,20 +438,33 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'get_agent_status', chatId, msgId, replyId, agent_id: agentId })
             })
           },
+          onTodoUpdate: (items) => {
+            send({ type: 'todo_update', chatId, msgId, items })
+          },
+          onThinkingToken: (token) => {
+            if (!thinkingStartMs) thinkingStartMs = Date.now()
+            const tok = typeof token === 'string' ? token : ''
+            thinkingText += tok
+            pendingThinking += tok
+            send({ type: 'thinking_token', chatId, msgId, token: tok })
+          },
+          onThinkingDone: (ms) => {
+            thinkingMs = ms
+            pendingThinkingMs = ms
+            send({ type: 'thinking_done', chatId, msgId, thinkingMs: ms })
+          },
         },
         agentSettings.maxSteps,
         undefined,
         systemPrompt,
         planningMode ? [{ role: 'system', content: buildPlanningInjection() }, ...history] : history,
-        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({ planningMode }),
+        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({ planningMode, mode: workerMode }),
         {
           autoMemoryInterval: agentSettings.autoMemoryInterval ?? 5,
           readFileCache: agentSettings.readFileCache !== false,
-          toolSummarization: agentSettings.toolSummarization !== false,
           maxRepeatedToolCalls: agentSettings.maxRepeatedToolCalls ?? 3,
           maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,
-          contextCompactionPct: agentSettings.contextCompactionPct ?? 75,
-          preserveRecentToolRounds: agentSettings.preserveRecentToolRounds ?? 8,
+          fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, unknown> | undefined,
         }
       )
     } else {
@@ -338,10 +481,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onContextCounted: (promptTokens) => {
             const pct = Math.min(100, Math.round(promptTokens / contextWindow * 100))
             const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            const breakdown = { history: promptTokens, system: 0, tools: 0, current: 0 }
+            lastBreakdown = breakdown
             send({
               type: 'context_usage',
               pct, estimated: promptTokens, limit: contextWindow, status,
-              breakdown: { history: promptTokens, system: 0, tools: 0, current: 0, real: false },
+              source: 'estimate',
+              breakdown,
             })
           },
           onToken: (token) => {
@@ -360,25 +506,28 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           },
           onUsage: (usage) => {
             // Реальные токены от провайдера — обновляем counter точными данными
-            const contextWindow = getModelContextWindow(storeData)
-            const pct = Math.min(100, Math.round(usage.promptTokens / contextWindow * 100))
-            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+            const cw = getModelContextWindow(storeData)
+            const snapshot = buildSnapshotFromReal(usage, cw, lastBreakdown as { history: number; system: number; tools: number; current: number })
+            // Накапливаем стоимость сессии
+            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', usage.promptTokens, usage.completionTokens)
             send({
               type: 'context_usage',
-              pct, estimated: usage.promptTokens, limit: contextWindow, status,
-              breakdown: {
-                history: usage.promptTokens,
-                system: 0,
-                tools: 0,
-                current: 0,
-                real: true,  // флаг что это реальные данные от провайдера
-                completionTokens: usage.completionTokens,
-              },
+              pct: snapshot.pct,
+              estimated: snapshot.estimated,
+              limit: snapshot.limit,
+              status: snapshot.status,
+              source: 'real',
+              breakdown: snapshot.breakdown,
+              sessionCostCents: sess?.totalCents ?? null,
+              sessionRequests: sess?.requests ?? 0,
             })
           },
           onDone: () => finalize(),
           onError: (err) => {
-            send({ type: 'error', chatId, error: err.message })
+            send({
+              type: 'error', chatId, error: err.message,
+              fullText, thinkingText: thinkingText || undefined, thinkingMs,
+            })
           },
           onRateLimit: (waitSec) => {
             send({ type: 'rate_limit', chatId, waitSec })
@@ -403,6 +552,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    send({ type: 'error', chatId, error: errMsg })
+    flushIter()
+    send({
+      type: 'error', chatId, error: errMsg,
+      fullText, thinkingText: thinkingText || undefined, thinkingMs,
+      collectedSteps, collectedIters: collectedIters.length > 0 ? collectedIters : undefined,
+      updatedProviders: storeData.providers,
+      fileCacheUpdates: agent?.getFileCacheUpdates(),
+    })
   }
 })

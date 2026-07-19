@@ -77,6 +77,15 @@ export default function ChatContextMenu({ chat, pos, onClose, onRename, onPin, o
           <CtxItem icon="pin" label={chat.isPinned ? 'Открепить' : 'Закрепить'} onClick={() => { onPin(chat); onClose() }} />
           <CtxItem icon="archive" label={chat.isArchived ? 'Разархивировать' : 'Архивировать'} onClick={() => { onArchive(chat); onClose() }} />
           <CtxItem icon="copy" label="Дублировать" onClick={() => { onDuplicate(chat); onClose() }} />
+          {/* Открыть рабочую директорию в системном проводнике — только для
+              чатов с привязанной папкой (новые Code-чаты после фичи workdir). */}
+          {chat.workdir && (
+            <CtxItem
+              icon="folder"
+              label="Открыть папку в проводнике"
+              onClick={() => { window.syntee.shell.openPath(chat.workdir!); onClose() }}
+            />
+          )}
 
           <div className="ctx-divider" />
           <div className="ctx-submenu-label">Экспорт</div>

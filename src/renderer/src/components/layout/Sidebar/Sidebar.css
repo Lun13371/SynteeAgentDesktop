@@ -37,27 +37,6 @@
 }
 .sidebar-search-clear:hover { color: var(--text-primary); }
 
-/* Filters */
-.sidebar-filters {
-  display: flex; gap: 4px;
-  padding: 0 8px 8px;
-  flex-shrink: 0;
-}
-.sidebar-filter-btn {
-  flex: 1; padding: 4px 6px;
-  border-radius: var(--radius-sm);
-  font-size: 10px; font-weight: 500; cursor: pointer;
-  border: 1px solid var(--border);
-  background: none; color: var(--text-muted);
-  transition: all 0.15s;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.sidebar-filter-btn:hover { color: var(--text-primary); border-color: var(--border-strong); }
-.sidebar-filter-btn--active {
-  background: var(--accent-subtle); border-color: var(--accent);
-  color: var(--accent);
-}
-
 /* List */
 .sidebar-list {
   flex: 1; overflow-y: auto; padding: 0 4px 8px;
@@ -65,13 +44,60 @@
 .sidebar-list::-webkit-scrollbar { width: 3px; }
 .sidebar-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* Group */
-.sidebar-group { margin-bottom: 4px; }
-.sidebar-group-label {
-  font-size: 10px; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 6px 8px 2px;
+/* === Project (collapsible group) === */
+.sidebar-project {
+  margin-bottom: 2px;
+  border-radius: var(--radius-sm);
 }
+.sidebar-project--active {
+  background: var(--accent-subtle);
+}
+.sidebar-project-header {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 6px 4px 6px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s;
+}
+.sidebar-project-header:hover { background: var(--accent-subtle); }
+.sidebar-project-chevron {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); display: flex; padding: 2px;
+  flex-shrink: 0;
+}
+.sidebar-project-chevron:hover { color: var(--text-primary); }
+.sidebar-project-name {
+  flex: 1; font-size: 12px; font-weight: 600; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sidebar-project-rename-input {
+  flex: 1; background: var(--bg-primary);
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  padding: 2px 6px; font-size: 12px; color: var(--text-primary); outline: none;
+}
+.sidebar-project-add {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); display: flex; padding: 2px;
+  flex-shrink: 0; border-radius: var(--radius-sm);
+  transition: all 0.12s;
+}
+.sidebar-project-add:hover { color: var(--accent); background: var(--bg-primary); }
+.sidebar-project-workdir {
+  font-size: 10px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 0 8px 4px 24px;
+  opacity: 0.8;
+}
+.sidebar-project-chats {
+  overflow: hidden;
+  padding: 0 4px 4px 12px;
+}
+.sidebar-project-empty {
+  font-size: 11px; color: var(--text-muted);
+  padding: 4px 8px 6px 24px;
+  font-style: italic;
+}
+.sidebar-project--noproject .sidebar-project-name { color: var(--text-secondary); font-weight: 500; }
 
 /* Chat item */
 .sidebar-chat-item {
@@ -136,4 +162,19 @@
 .sidebar-empty {
   text-align: center; color: var(--text-muted);
   font-size: 12px; padding: 24px 16px;
+}
+.sidebar-empty--subtle {
+  padding: 12px 16px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* Responsive: при узком окне (1000–1100px) сжимаем Sidebar, чтобы чат
+   не уходил в overflow. Electron не даёт окну стать меньше 1000px,
+   поэтому это первый и единственный media breakpoint в проекте. */
+@media (max-width: 1100px) {
+  .sidebar {
+    width: 200px;
+    min-width: 200px;
+  }
 }

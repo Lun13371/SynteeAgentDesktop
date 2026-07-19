@@ -40,8 +40,8 @@ interface AgentPanelProps {
 
 const TOOL_ICONS: Record<string, IconName> = {
   run_command: 'terminal', read_file: 'fileText', write_file: 'edit',
-  list_directory: 'folder', search_web: 'globe', get_clipboard: 'clipboard',
-  set_clipboard: 'clipboard', get_system_info: 'monitor', generate_image: 'image',
+  list_directory: 'folder', search_web: 'globe',
+  get_system_info: 'monitor', generate_image: 'image',
   read_files: 'fileText', search_code: 'search', analyze_project: 'folder',
   spawn_agent: 'git-branch',
 }
