@@ -569,12 +569,9 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
     enableThinking: false,
     maxParallelSubAgents: 3,
     readFileCache: true,
-    toolSummarization: true,
     autoMemoryInterval: 5,
     maxRepeatedToolCalls: 3,
     maxRepeatedErrors: 2,
-    contextCompactionPct: 75,
-    preserveRecentToolRounds: 8,
   })
 
   useEffect(() => {
@@ -625,18 +622,6 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
             </button>
           ))}
         </div>
-      </Field>
-
-      <Field label="Максимум шагов агента" description="Сколько шагов может сделать агент за один запрос">
-        <select
-          className="settings-input"
-          value={agentSettings.maxSteps}
-          onChange={e => updateAgent({ maxSteps: Number(e.target.value) })}
-        >
-          {[4, 8, 12, 16, 24, 32, 48, 64, 96, 128].map(n => (
-            <option key={n} value={n}>{n} шагов</option>
-          ))}
-        </select>
       </Field>
 
       <Field label="Параллельных суб-агентов" description="Сколько дочерних агентов можно держать активными одновременно">

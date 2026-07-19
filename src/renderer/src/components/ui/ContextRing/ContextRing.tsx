@@ -105,6 +105,7 @@ export default function ContextRing({ info }: ContextRingProps) {
           className="ctx-tooltip"
           style={{ left: tooltipPos.x, top: tooltipPos.y - 40 }}
         >
+          {info.source === 'real' ? '✓ ' : '≈ '}
           {formatNum(info.total)} / {formatNum(info.limit)} tok
           <span className="ctx-tooltip-pct"> {percent.toFixed(1)}%</span>
         </div>,

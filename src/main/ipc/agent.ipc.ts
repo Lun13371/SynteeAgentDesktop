@@ -10,12 +10,9 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   enableThinking: false,
   maxParallelSubAgents: 3,
   readFileCache: true,
-  toolSummarization: true,
   autoMemoryInterval: 5,
   maxRepeatedToolCalls: 3,
   maxRepeatedErrors: 2,
-  contextCompactionPct: 75,
-  preserveRecentToolRounds: 8,
 }
 
 export function registerAgentIPC(store: Store, getWindow: () => BrowserWindow | null) {

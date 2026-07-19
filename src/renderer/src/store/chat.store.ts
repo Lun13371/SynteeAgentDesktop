@@ -1,16 +1,21 @@
 import { create } from 'zustand'
-import type { Chat, Message } from '../../../shared/types'
+import type { Chat, Message, ChatMode, Project } from '../../../shared/types'
 
 interface ChatStore {
   chats: Chat[]
+  projects: Project[]
+  activeProjectId: string | null
   currentChatId: string | null
   messages: Message[]
   isTyping: boolean
   streamingText: string
   pinnedMessages: Message[]
   isIncognito: boolean
+  activeMode: ChatMode  // оставлен как 'code' — Work-режим удалён, но поле нужно для обратной совместимости с IPC
   // Actions
   setChats: (chats: Chat[]) => void
+  setProjects: (projects: Project[]) => void
+  setActiveProject: (id: string | null) => void
   setCurrentChat: (id: string | null) => void
   setMessages: (messages: Message[]) => void
   addMessage: (message: Message) => void
@@ -20,18 +25,24 @@ interface ChatStore {
   pinMessage: (id: string) => void
   unpinMessage: (id: string) => void
   toggleIncognito: () => void
+  setActiveMode: (mode: ChatMode) => void
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
   chats: [],
+  projects: [],
+  activeProjectId: null,
   currentChatId: null,
   messages: [],
   isTyping: false,
   streamingText: '',
   pinnedMessages: [],
   isIncognito: false,
+  activeMode: 'code',
 
   setChats: (chats) => set({ chats }),
+  setProjects: (projects) => set({ projects }),
+  setActiveProject: (activeProjectId) => set({ activeProjectId }),
   setCurrentChat: (currentChatId) => set({ currentChatId }),
   setMessages: (messages) => set({ messages }),
   addMessage: (message) =>
@@ -52,4 +63,5 @@ export const useChatStore = create<ChatStore>((set) => ({
   unpinMessage: (id) =>
     set((s) => ({ pinnedMessages: s.pinnedMessages.filter((m) => m.id !== id) })),
   toggleIncognito: () => set((s) => ({ isIncognito: !s.isIncognito })),
+  setActiveMode: (activeMode) => set({ activeMode }),
 }))

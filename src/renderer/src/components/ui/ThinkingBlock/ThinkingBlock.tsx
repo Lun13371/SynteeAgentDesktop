@@ -27,6 +27,8 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const wordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  // Запоминаем, что пользователь сам закрыл/открыл — не перебиваем его выбор
+  const userToggledRef = useRef(false)
 
   useEffect(() => {
     if (isLive) {
@@ -50,6 +52,13 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
     }
   }, [isLive])
 
+  // Авто-раскрытие при появлении live текста — чтобы стримящийся текст был виден сразу
+  useEffect(() => {
+    if (isLive && liveText && !userToggledRef.current) {
+      setOpen(true)
+    }
+  }, [isLive, liveText])
+
   // Автоскролл текста при стриминге
   useEffect(() => {
     if (open && isLive && bodyRef.current) {
@@ -64,11 +73,16 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
   const label = isLive ? THINKING_WORDS[wordIdx] : 'Размышление'
   const timeStr = displayMs !== undefined ? ` · ${formatMs(displayMs)}` : ''
 
+  const handleToggle = () => {
+    userToggledRef.current = true
+    setOpen(v => !v)
+  }
+
   return (
     <div className={`tb ${isLive ? 'tb--live' : 'tb--done'} ${open ? 'tb--open' : ''}`}>
 
       {/* Заголовок — кликабельный */}
-      <button className="tb-header" onClick={() => setOpen(v => !v)}>
+      <button className="tb-header" onClick={handleToggle}>
 
         {/* Иконка — три точки live / искра done */}
         <span className="tb-icon">

@@ -3,31 +3,12 @@
  * Использует js-tiktoken для точного подсчёта токенов (cl100k_base — стандарт OpenAI/Anthropic/Gemini).
  */
 
-import { getEncoding } from 'js-tiktoken'
+// ─── ТОЧНЫЙ ПОДСЧЁТ ТОКЕНОВ — делегируем в usageTracker ──────────────────────
+// (encoder кэширован в одном месте, без дублирования)
 
-// Кешируем энкодер — инициализация ~50ms, потом мгновенно
-let _enc: ReturnType<typeof getEncoding> | null = null
-function getEncoder(): ReturnType<typeof getEncoding> {
-  if (!_enc) _enc = getEncoding('cl100k_base')
-  return _enc
-}
-
-// ─── ТОЧНЫЙ ПОДСЧЁТ ТОКЕНОВ через tiktoken ───────────────────────────────────
-
-export function estimateTokens(text: string): number {
-  if (!text) return 0
-  try {
-    return getEncoder().encode(text).length
-  } catch {
-    // fallback если tiktoken упал (очень редко)
-    return Math.ceil(text.length / 3.5)
-  }
-}
-
-export function estimateMessagesTokens(messages: Array<{ role: string; content: string }>): number {
-  // Каждое сообщение = ~4 служебных токена (role, разделители) + контент
-  return messages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0)
-}
+export { estimateTokens, estimateMessagesTokens } from '../tokens/usageTracker'
+import { estimateTokens, estimateMessagesTokens } from '../tokens/usageTracker'
+import { getCatalogModel } from '../tokens/modelCatalog'
 
 // ─── OVERHEAD: реальные постоянные расходы контекста ─────────────────────────
 
@@ -48,23 +29,31 @@ import { getContextLimit } from '../tokens/ModelContextLimits'
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import type { ModelMeta, ModelAssignment } from '../../shared/types'
 
-export function getModelContextWindow(storeData: Record<string, unknown>): number {
+export function getModelContextWindow(storeData: Record<string, unknown>, role: 'main' | 'subagent' = 'main'): number {
   const assignments = storeData.modelAssignments as ModelAssignment[] | undefined
-  const mainAssignment = assignments?.find(a => a.role === 'main')
+  // Суб-агент может иметь свою модель — если она не назначена, поведение
+  // совпадает с AIClient.chatWithTools (fallback на 'main').
+  const roleAssignment = role === 'subagent' ? assignments?.find(a => a.role === 'subagent') : undefined
+  const mainAssignment = (roleAssignment?.modelId ? roleAssignment : assignments?.find(a => a.role === 'main'))
   if (!mainAssignment?.modelId) return 128_000
 
   const modelId = mainAssignment.modelId
+  const providerId = mainAssignment.providerId ?? ''
 
   // 1. Кастомные модели — пользователь мог задать явно
   const customModels = storeData.customModels as ModelMeta[] | undefined
   const custom = customModels?.find(m => m.id === modelId)
   if (custom?.contextWindow && custom.contextWindow > 0) return custom.contextWindow
 
-  // 2. Builtin модели
+  // 2. Каталог models.dev (живые данные)
+  const fromCatalog = getCatalogModel(providerId, modelId)
+  if (fromCatalog?.contextWindow && fromCatalog.contextWindow > 0) return fromCatalog.contextWindow
+
+  // 3. Builtin модели
   const builtin = BUILTIN_MODELS.find(m => m.id === modelId)
   if (builtin?.contextWindow && builtin.contextWindow > 0) return builtin.contextWindow
 
-  // 3. Единая таблица ModelContextLimits (частичное совпадение)
+  // 4. Единая таблица ModelContextLimits (частичное совпадение)
   const limit = getContextLimit(modelId)
   if (limit > 0) return limit
 
@@ -100,13 +89,13 @@ export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
   toolTruncEnabled: true,
   toolMaxChars: 6000,          // было 8000 — достаточно, outline компенсирует
   rollingEnabled: true,
-  rollingTriggerPct: 85,       // было 75 — меньше ненужных сжатий
+  rollingTriggerPct: 92,       // было 85 — компакция только близко к реальному пределу
   rollingKeepFirst: 2,
   rollingKeepLast: 20,         // было 12 — больше свежей истории
   contextLimitTokens: 200_000,
   tokenCounterEnabled: true,
   diffJournalEnabled: true,
-  diffJournalLines: 5,
+  diffJournalLines: 15,        // было 5 — больше деталей о правках в рабочей памяти
   fileMapEnabled: true,
 }
 
@@ -132,8 +121,11 @@ export function truncateToolResult(output: string, maxChars: number): string {
 // ─── 2. ROLLING WINDOW + SUMMARY ─────────────────────────────────────────────
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+  tool_call_id?: string
+  name?: string
 }
 
 export interface CompressResult {
@@ -184,6 +176,12 @@ function smartSummarizeToolResult(toolName: string, content: string): string {
   if (toolName === 'search_web') {
     return `[search_web] ${lines} строк результатов`
   }
+  // http_request
+  if (toolName === 'http_request') {
+    const statusMatch = content.match(/Status: (\d+)/)
+    const urlMatch = content.match(/HTTP \w+ (\S+)\]/)
+    return `[http_request] ${statusMatch?.[1] ?? '?'} ${urlMatch?.[1] ?? '?'}`
+  }
   // find_files / list_directory
   if (toolName === 'find_files' || toolName === 'list_directory') {
     return `[${toolName}] ${lines} строк результатов`
@@ -223,7 +221,7 @@ export function buildSummaryPrompt(messages: ChatMessage[], prevSummary?: string
   const pruned = pruneToolOutputsForSummary(messages)
 
   const text = pruned
-    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 1200)}`)
+    .map(m => `${m.role === 'user' ? 'User' : m.role === 'tool' ? `Tool(${m.name ?? '?'})` : 'Assistant'}: ${m.content.slice(0, 1200)}`)
     .join('\n\n')
 
   const updateInstruction = prevSummary
@@ -279,9 +277,20 @@ export async function applyRollingWindowAsync(
 
   const keepFirst = settings.rollingKeepFirst
   const keepLast = settings.rollingKeepLast
-  const headMessages = messages.slice(0, keepFirst)
-  const tailMessages = messages.slice(messages.length - keepLast)
-  const middleMessages = messages.slice(keepFirst, messages.length - keepLast)
+  let headMessages = messages.slice(0, keepFirst)
+  let tailMessages = messages.slice(messages.length - keepLast)
+
+  // Не разрываем tool-раунды: если tail начинается с tool-сообщения без
+  // парного assistant с tool_calls — отбрасываем непарные tool-сообщения.
+  while (tailMessages.length > 0 && tailMessages[0].role === 'tool') {
+    tailMessages = tailMessages.slice(1)
+  }
+  // Если head заканчивается assistant с tool_calls без tool results — отбрасываем.
+  while (headMessages.length > 0 && headMessages[headMessages.length - 1].role === 'assistant' && headMessages[headMessages.length - 1].tool_calls) {
+    headMessages = headMessages.slice(0, -1)
+  }
+
+  const middleMessages = messages.slice(headMessages.length, messages.length - tailMessages.length)
 
   if (middleMessages.length === 0) {
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
@@ -294,13 +303,13 @@ export async function applyRollingWindowAsync(
       summaryContent = await summaryFn(prompt)
     } catch {
       summaryContent = middleMessages
-        .map(m => `${m.role === 'user' ? 'Пользователь' : 'AI'}: ${m.content.slice(0, 300)}`)
+        .map(m => `${m.role === 'user' ? 'Пользователь' : m.role === 'tool' ? `Tool(${m.name ?? '?'})` : 'AI'}: ${m.content.slice(0, 300)}`)
         .join('\n')
         .slice(0, 1500)
     }
   } else {
     summaryContent = middleMessages
-      .map(m => `${m.role === 'user' ? 'Пользователь' : 'AI'}: ${m.content.slice(0, 300)}`)
+      .map(m => `${m.role === 'user' ? 'Пользователь' : m.role === 'tool' ? `Tool(${m.name ?? '?'})` : 'AI'}: ${m.content.slice(0, 300)}`)
       .join('\n')
       .slice(0, 1500)
   }

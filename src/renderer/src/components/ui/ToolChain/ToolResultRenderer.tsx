@@ -142,12 +142,6 @@ function SearchCodeResult({ content }: { content: string }) {
   )
 }
 
-function QuoteResult({ content }: { content: string }) {
-  return (
-    <blockquote className="trr-quote">{content.slice(0, 300)}</blockquote>
-  )
-}
-
 // ── Главный компонент ──────────────────────────────────────────────────────
 
 interface Props {
@@ -239,9 +233,9 @@ function renderResult(toolName: string, content: string, args: Record<string, un
     return <KeyValueResult content={content} />
   }
 
-  // get_clipboard → цитата
-  if (toolName === 'get_clipboard') {
-    return <QuoteResult content={content} />
+  // http_request → key-value (status line + headers + body)
+  if (toolName === 'http_request') {
+    return <KeyValueResult content={content} />
   }
 
   // default → pre

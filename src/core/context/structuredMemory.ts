@@ -37,10 +37,10 @@ const SECTION = {
   ARCH: '## Архитектурные решения',
 }
 
-const MAX_DIFF_ENTRIES = 20
-const MAX_FILE_MAP = 30
+const MAX_DIFF_ENTRIES = 40
+const MAX_FILE_MAP = 50
 const MAX_ARCH_ENTRIES = 10
-const MAX_MEMORY_CHARS = 3000  // фикс 8: лимит на весь working memory
+const MAX_MEMORY_CHARS = 6000  // было 3000 — больше места для деталей о файлах
 
 // ─── Парсинг существующей памяти ──────────────────────────────────────────────
 
@@ -165,7 +165,7 @@ export function updateStructuredMemory(existing: string, update: StructuredMemor
 
   // Фикс 8: если память превысила лимит — сжимаем diff журнал
   if (result.length > MAX_MEMORY_CHARS) {
-    const trimmedDiff = mergedDiff.slice(-Math.floor(MAX_DIFF_ENTRIES / 2))
+    const trimmedDiff = mergedDiff.slice(-Math.floor(MAX_DIFF_ENTRIES / 3))
     const trimmedParts = parts.map(p =>
       p.startsWith(SECTION.DIFF) ? `${SECTION.DIFF}\n${renderDiffEntries(trimmedDiff)}` : p
     )

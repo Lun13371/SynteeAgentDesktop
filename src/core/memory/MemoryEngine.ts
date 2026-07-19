@@ -111,9 +111,13 @@ export function extractMemoriesFromConversation(
     })
   }
 
-  // Ищем имя пользователя
-  const nameMatch = userMessage.match(/меня зовут\s+(\w+)/i) ||
-                    assistantResponse.match(/(\w+)[,!]/i)
+  // Ищем имя пользователя — только явное "меня зовут X" в сообщении
+  // пользователя. Раньше здесь был fallback на первое слово перед запятой/!
+  // в ОТВЕТЕ АГЕНТА (assistantResponse.match(/(\w+)[,!]/i)) — это ловило
+  // случайные слова типа "Хорошо," или "Отлично!" и сохраняло их как имя
+  // пользователя с confidence 0.9, перезаписывая реальное имя и заставляя
+  // агента обращаться к пользователю неправильно в следующих сообщениях.
+  const nameMatch = userMessage.match(/меня зовут\s+(\w+)/i)
   if (nameMatch && nameMatch[1].length > 2) {
     memories.push({
       category: 'personal',

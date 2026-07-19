@@ -9,32 +9,24 @@ interface ConfirmRequest {
   reqId: string
   toolName: string
   args: Record<string, unknown>
+  dangerLevel?: string  // safe | warn | dangerous | blocked — из commandSafety (§1.4)
+  dangerReason?: string
+  previewDiff?: string  // diff-превью для файловых тулов (§4.1)
 }
 
-const TOOL_LABELS: Record<string, { label: string; icon: string; danger: boolean }> = {
-  run_command:    { label: 'Выполнить команду',   icon: 'terminal', danger: true },
-  write_file:     { label: 'Записать файл',        icon: 'fileText', danger: false },
-  edit_file:      { label: 'Редактировать файл',   icon: 'filePen',  danger: false },
-  multi_edit_file:{ label: 'Мульти-редактирование',icon: 'filePen',  danger: false },
-  read_file:      { label: 'Прочитать файл',       icon: 'fileText', danger: false },
-  list_directory: { label: 'Просмотр папки',       icon: 'folder',   danger: false },
-  search_web:     { label: 'Поиск в интернете',    icon: 'globe',    danger: false },
-  get_clipboard:  { label: 'Читать буфер обмена',  icon: 'clipboard',danger: false },
-  set_clipboard:  { label: 'Записать в буфер',     icon: 'clipboard',danger: true },
-  get_system_info:{ label: 'Инфо о системе',       icon: 'info',     danger: false },
-  generate_image: { label: 'Генерация изображения',icon: 'image',    danger: true },
-}
-
-const DANGEROUS_CMD_PATTERNS = [
-  'rm ', 'rmdir', 'del ', 'rd ', 'format', 'shutdown',
-  'taskkill', 'kill ', 'reg delete', 'reg add', 'netsh',
-  'bcdedit', 'diskpart', 'dd if=', 'shred', 'wipefs', 'mkfs',
-]
-
-function isDangerousCommand(toolName: string, args: Record<string, unknown>): boolean {
-  if (toolName !== 'run_command') return TOOL_LABELS[toolName]?.danger ?? false
-  const cmd = String(args.command ?? '').toLowerCase()
-  return DANGEROUS_CMD_PATTERNS.some(p => cmd.includes(p))
+// Метаданные тулов только для иконки/лейбла. Опасность больше не дублируем —
+// её считает commandSafety и присылает main-процесс (единый источник правды).
+const TOOL_LABELS: Record<string, { label: string; icon: string }> = {
+  run_command:    { label: 'Выполнить команду',   icon: 'terminal' },
+  write_file:     { label: 'Записать файл',        icon: 'fileText' },
+  edit_file:      { label: 'Редактировать файл',   icon: 'filePen'  },
+  multi_edit_file:{ label: 'Мульти-редактирование',icon: 'filePen'  },
+  read_file:      { label: 'Прочитать файл',       icon: 'fileText' },
+  list_directory: { label: 'Просмотр папки',       icon: 'folder'   },
+  search_web:     { label: 'Поиск в интернете',    icon: 'globe'    },
+  http_request:   { label: 'HTTP-запрос',          icon: 'globe'    },
+  get_system_info:{ label: 'Инфо о системе',       icon: 'info'     },
+  generate_image: { label: 'Генерация изображения',icon: 'image'    },
 }
 
 export default function AgentConfirmDialog() {
@@ -57,8 +49,11 @@ export default function AgentConfirmDialog() {
   }
 
   const current = queue[0]
-  const meta = current ? (TOOL_LABELS[current.toolName] || { label: current.toolName, icon: 'zap', danger: false }) : null
-  const isDanger = current ? isDangerousCommand(current.toolName, current.args) : false
+  const meta = current ? (TOOL_LABELS[current.toolName] || { label: current.toolName, icon: 'zap' }) : null
+  // Опасность из единого источника (commandSafety), не локальная эвристика
+  const level = current?.dangerLevel ?? 'safe'
+  const isDanger = level === 'dangerous' || level === 'blocked'
+  const isWarn = level === 'warn'
 
   return createPortal(
     <AnimatePresence>
@@ -76,15 +71,18 @@ export default function AgentConfirmDialog() {
             exit={{ opacity: 0, y: 16, scale: 0.97 }}
             transition={{ type: 'spring', stiffness: 420, damping: 30 }}
           >
-            <div className={`agent-confirm-icon ${isDanger ? 'agent-confirm-icon--danger' : 'agent-confirm-icon--safe'}`}>
+            <div className={`agent-confirm-icon ${isDanger ? 'agent-confirm-icon--danger' : isWarn ? 'agent-confirm-icon--warn' : 'agent-confirm-icon--safe'}`}>
               <AppIcon name={meta.icon as 'zap'} size="md" />
             </div>
 
             <div className="agent-confirm-body">
               <div className="agent-confirm-title">
-                {isDanger ? '⚠ Опасное действие' : 'Агент хочет выполнить действие'}
+                {isDanger ? '⚠ Опасное действие' : isWarn ? 'Требует подтверждения' : 'Агент хочет выполнить действие'}
               </div>
               <div className="agent-confirm-tool">{meta.label}</div>
+              {current.dangerReason && (
+                <div className="agent-confirm-reason">{current.dangerReason}</div>
+              )}
 
               {/* Аргументы */}
               <div className="agent-confirm-args">
@@ -97,6 +95,11 @@ export default function AgentConfirmDialog() {
                   </div>
                 ))}
               </div>
+
+              {/* Diff-превью для файловых тулов (§4.1) */}
+              {current.previewDiff && (
+                <pre className="agent-confirm-diff">{current.previewDiff.slice(0, 2000)}</pre>
+              )}
 
               {queue.length > 1 && (
                 <div className="agent-confirm-queue">Ещё {queue.length - 1} действий в очереди</div>

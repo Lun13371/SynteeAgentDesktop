@@ -2,6 +2,9 @@ import { BrowserWindow } from 'electron'
 import { Worker } from 'worker_threads'
 import { join } from 'path'
 import type Store from 'electron-store'
+import type { ChatMode } from '../shared/types'
+import { getToolSchemas } from '../core/tools'
+import { getFileCacheSnapshot, mergeFileCache } from '../core/context/fileReadCache'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -25,6 +28,7 @@ export interface AgentRecord {
   status: AgentStatus
   model: string
   parallel: boolean
+  mode: ChatMode
   steps: AgentStep[]
   result: string
   summary: string
@@ -37,6 +41,7 @@ export interface SubagentContext {
   systemPrompt?: string
   history?: Array<{ role: string; content: string }>
   workingMemory?: string
+  mode?: ChatMode
 }
 
 class AgentManager {
@@ -91,8 +96,10 @@ class AgentManager {
     task: string
     parallel: boolean
     model?: string
+    mode?: ChatMode
     storeData: Record<string, unknown>
     context?: SubagentContext
+    approvalMode?: 'auto' | 'ask' | 'full'  // §1.10 — override глобального режима
   }): Promise<{ summary: string; error?: string }> {
     const maxParallel = this.getMaxParallel()
     const running = this.getRunningCount()
@@ -115,6 +122,7 @@ class AgentManager {
       status: 'pending',
       model,
       parallel: opts.parallel,
+      mode: opts.mode ?? opts.context?.mode ?? 'code',
       steps: [],
       result: '',
       summary: '',
@@ -124,7 +132,7 @@ class AgentManager {
     this.agents.set(opts.id, record)
     this.broadcast('agent:update', record)
 
-    const promise = this._runWorker(record, opts.storeData, opts.context)
+    const promise = this._runWorker(record, opts.storeData, opts.context, opts.approvalMode)
 
     if (opts.parallel) {
       promise.catch(e => {
@@ -143,6 +151,7 @@ class AgentManager {
     record: AgentRecord,
     storeData: Record<string, unknown>,
     context?: SubagentContext,
+    approvalModeOverride?: 'auto' | 'ask' | 'full',
   ): Promise<{ summary: string; error?: string }> {
     return new Promise((resolve) => {
       const workerPath = join(__dirname, 'ai-worker.js')
@@ -150,7 +159,7 @@ class AgentManager {
 
       let worker: Worker
       try {
-        worker = new Worker(workerPath, { workerData: { storeData, isSubAgent: true }, env: process.env })
+        worker = new Worker(workerPath, { workerData: { storeData, isSubAgent: true, mode: record.mode, fileCacheSnapshot: getFileCacheSnapshot(record.chatId) }, env: process.env })
       } catch (e: any) {
         record.status = 'error'
         record.error = e.message
@@ -170,6 +179,14 @@ class AgentManager {
         toolOutputMode: 'normal',
         enableThinking: false,
       }
+      // §1.10 — позволяем суб-агенту иметь свой approval режим
+      if (approvalModeOverride) {
+        agentSettings.approvalMode = approvalModeOverride
+      }
+
+      // Work-режим удалён — всегда Code-формулировка для суб-агентов.
+      const subModeIntro = 'Работай только в рамках этой подзадачи.\nСначала пойми релевантный код и контекст, затем выполни работу.'
+      const subModeOutro = '- что найдено или сделано\n- какие файлы важны\n- какие есть риски или следующий шаг'
 
       worker.postMessage({
         chatId: `subagent:${record.id}`,
@@ -178,17 +195,15 @@ class AgentManager {
         history: context?.history ?? [],
         systemPrompt: context?.systemPrompt ?? `Ты суб-агент. Твоя задача: ${record.task}
 
-Работай только в рамках этой подзадачи.
-Сначала пойми релевантный код и контекст, затем выполни работу.
+${subModeIntro}
 Финальный ответ дай кратко:
-- что найдено или сделано
-- какие файлы важны
-- какие есть риски или следующий шаг`,
+${subModeOutro}`,
         enableTools: true,
         incognito: false,
         agentSettings,
         storeData,
         workingMemory: context?.workingMemory ?? '',
+        toolSchemas: getToolSchemas({ mode: record.mode }),
       })
 
       worker.on('message', (msg: Record<string, unknown>) => {
@@ -215,12 +230,17 @@ class AgentManager {
             record.result += msg.token as string
             break
           case 'done': {
+            // Персистим round-robin индекс ключей провайдера, обновлённый суб-агентом
+            if (msg.updatedProviders && this.store) {
+              this.store.set('providers', msg.updatedProviders)
+            }
+            // Мержим обновлённый кэш файлов в кэш родительского чата
+            if (msg.fileCacheUpdates) {
+              mergeFileCache(record.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
+            }
             record.status = 'done'
             record.finishedAt = Date.now()
-            const fullResult = record.result.trim()
-            record.summary = fullResult.length > 500
-              ? fullResult.slice(0, 500) + '...'
-              : fullResult
+            record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
             this.workers.delete(record.id)
             this.resolvers.delete(record.id)
             this.broadcast('agent:update', record)
@@ -228,13 +248,24 @@ class AgentManager {
             break
           }
           case 'error': {
+            // Персистим round-robin если суб-агент успел его обновить перед ошибкой
+            if (msg.updatedProviders && this.store) {
+              this.store.set('providers', msg.updatedProviders)
+            }
+            if (msg.fileCacheUpdates) {
+              mergeFileCache(record.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
+            }
             record.status = 'error'
             record.error = msg.error as string
             record.finishedAt = Date.now()
+            // Если суб-агент успел накопить текст/шаги до ошибки — отдаём это
+            // родителю как частичный summary вместо пустой строки, иначе
+            // родительский агент теряет весь прогресс суб-агента.
+            record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
             this.workers.delete(record.id)
             this.resolvers.delete(record.id)
             this.broadcast('agent:update', record)
-            resolve({ summary: '', error: record.error })
+            resolve({ summary: record.summary, error: record.error })
             break
           }
         }
@@ -292,6 +323,44 @@ class AgentManager {
       }
     })
   }
+}
+
+/**
+ * Строит расширенный summary суб-агента: финальный текст (до 3000 симв.) +
+ * структурированный хвост (изменённые файлы, diff-и, команды), общий кап ~4000 симв.
+ * Заменяет старый подход с обрезкой до 500 симв. без деталей.
+ */
+function buildSubagentSummary(text: string, details?: unknown): string {
+  const textPart = text.length > 3000 ? text.slice(0, 3000) + '...' : text
+
+  if (!details || typeof details !== 'object') return textPart
+
+  const d = details as {
+    modifiedFiles?: string[]
+    diffs?: Array<{ file: string; summary: string }>
+    commandsRun?: Array<{ command: string; exitCode?: string; success: boolean }>
+    filesRead?: string[]
+  }
+
+  const parts: string[] = [textPart]
+
+  if (d.modifiedFiles && d.modifiedFiles.length > 0) {
+    parts.push(`\n[Modified files]\n${d.modifiedFiles.map(f => `- ${f}`).join('\n')}`)
+  }
+  if (d.diffs && d.diffs.length > 0) {
+    const diffLines = d.diffs.slice(-15).map(e => `- ${e.file}: ${e.summary}`)
+    parts.push(`\n[Diffs]\n${diffLines.join('\n')}`)
+  }
+  if (d.commandsRun && d.commandsRun.length > 0) {
+    const cmdLines = d.commandsRun.slice(-15).map(c => `- ${c.command} → exit ${c.exitCode ?? '?'} (${c.success ? 'ok' : 'error'})`)
+    parts.push(`\n[Commands]\n${cmdLines.join('\n')}`)
+  }
+  if (d.filesRead && d.filesRead.length > 0) {
+    parts.push(`\n[Files read]\n${d.filesRead.map(f => `- ${f}`).join('\n')}`)
+  }
+
+  const result = parts.join('\n')
+  return result.length > 4000 ? result.slice(0, 4000) + '\n...' : result
 }
 
 export const agentManager = new AgentManager()

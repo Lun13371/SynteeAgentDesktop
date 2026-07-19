@@ -29,8 +29,6 @@ const TOOL_META: Record<string, { label: string; icon: string; color: string }> 
   list_directory:  { label: 'Папка',         icon: 'folder',    color: '#a78bfa' },
   search_web:      { label: 'Поиск в сети',  icon: 'globe',     color: '#34d399' },
   search_code:     { label: 'Поиск кода',    icon: 'code',      color: '#818cf8' },
-  get_clipboard:   { label: 'Буфер обмена',  icon: 'clipboard', color: '#94a3b8' },
-  set_clipboard:   { label: 'Буфер →',       icon: 'clipboard', color: '#94a3b8' },
   get_system_info: { label: 'Система',       icon: 'info',      color: '#38bdf8' },
   generate_image:  { label: 'Генерация',     icon: 'image',     color: '#fb923c' },
   analyze_project: { label: 'Анализ',        icon: 'folder',    color: '#c084fc' },

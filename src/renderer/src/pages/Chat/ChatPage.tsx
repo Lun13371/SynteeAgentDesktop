@@ -17,7 +17,7 @@ import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import { useChatStore } from '../../store/chat.store'
 import { parseSlashCommand } from '../../../../shared/slashCommands'
 import { IPC_EVENTS } from '../../../../shared/constants'
-import type { Chat, Message, ToolOutputMode } from '../../../../shared/types'
+import type { Chat, Message, ToolOutputMode, Project } from '../../../../shared/types'
 import './ChatPage.css'
 
 export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -26,6 +26,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setChats, setCurrentChat, setMessages, addMessage,
     appendStreamToken, clearStream, setTyping, pinMessage,
     isIncognito, toggleIncognito,
+    activeMode, setActiveMode,
+    projects, setProjects, activeProjectId, setActiveProject,
   } = useChatStore()
 
   const { add: toast } = useToast()
@@ -34,20 +36,19 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const streamMsgIdRef = useRef<string | null>(null)
   const [streamMsgId, setStreamMsgId] = useState<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
-  const [contextUsage, setContextUsage] = useState<{
-    pct: number; estimated: number; limit: number; status: string; compressed?: boolean
-    breakdown?: { history: number; system: number; tools: number; current: number; toolResults?: number; real?: boolean; completionTokens?: number }
-  } | null>(null)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isAgentRunning, setIsAgentRunning] = useState(false)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [showSkeleton, setShowSkeleton] = useState(false)
+  // §4.3 — видимый чек-лист плана (todo list)
+  const [liveTodo, setLiveTodo] = useState<Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>>([])
   const isInitialScrollRef = useRef(true)
   const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Агентские итерации: [{textBefore, steps[]}]
+  // Агентские итерации: [{textBefore, thinking?, thinkingMs?, steps[]}]
   // textBefore — текст который AI написал ДО вызова тулов в этой итерации
+  // thinking — reasoning блок этой итерации (на своей позиции)
   // steps — все tool_call+tool_result этой итерации
-  type LiveIter = { textBefore: string; steps: import('../../components/ui/ToolChain/ToolChain').ToolStep[] }
+  type LiveIter = { textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../../components/ui/ToolChain/ToolChain').ToolStep[] }
   const [liveIters, setLiveIters] = useState<LiveIter[]>([])
   // Ref для синхронного доступа — setState батчится, ref обновляется сразу
   const liveItersRef = useRef<LiveIter[]>([])
@@ -55,6 +56,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [liveTextAfter, setLiveTextAfter] = useState('')
   const liveTextAfterRef = useRef('')
   useEffect(() => { liveTextAfterRef.current = liveTextAfter }, [liveTextAfter])
+  // Pending thinking — накопленное reasoning текущего раунда, ждёт прикрепления к итерации
+  const pendingThinkingRef = useRef('')
+  const pendingThinkingMsRef = useRef<number | undefined>(undefined)
 
   // Throttle буфер для токенов — батчим через RAF вместо setState на каждый токен
   const tokenBufRef = useRef('')
@@ -88,6 +92,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null)
   const [inputText, setInputText] = useState('')
   const [planningMode, setPlanningMode] = useState(false)
+  const [imageMode, setImageMode] = useState(false)
 
   // Настройка показа счётчика контекста
   const [showContextRing, setShowContextRing] = useState(true)
@@ -176,8 +181,11 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  // Загрузка чатов при старте
+  // Загрузка чатов и проектов при старте
   useEffect(() => {
+    window.syntee.projects.getAll().then((all: Project[]) => {
+      setProjects(all)
+    })
     window.syntee.chat.getAll().then((all: Chat[]) => {
       setChats(all)
       // Открываем первый чат или создаём новый
@@ -204,11 +212,14 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
       if (data.thinkingToken) {
         const tok = typeof data.thinkingToken === 'string' ? data.thinkingToken : String(data.thinkingToken ?? '')
-        setLiveThinking(prev => ({ text: (prev?.text ?? '') + tok, isLive: true }))
+        pendingThinkingRef.current += tok
+        setLiveThinking({ text: pendingThinkingRef.current, isLive: true })
         return
       }
       if (data.thinkingDone) {
-        setLiveThinking(prev => prev ? { ...prev, isLive: false, ms: data.thinkingMs } : null)
+        const ms = data.thinkingMs as number | undefined
+        pendingThinkingMsRef.current = ms
+        setLiveThinking(prev => prev ? { ...prev, isLive: false, ms } : null)
         return
       }
       if (data.token) {
@@ -231,9 +242,12 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveIters([])
       liveTextAfterRef.current = ''
       setLiveTextAfter('')
+      pendingThinkingRef.current = ''
+      pendingThinkingMsRef.current = undefined
       playDoneSound()
       setLiveThinking(null)
       setAgentStatus(null)
+      setLiveTodo([])
       if (data.chatId === currentChatIdRef.current) {
         addMessage(data.message)
         window.syntee.chat.getAll().then((all: Chat[]) => setChats(all))
@@ -252,6 +266,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setLiveIters([])
       liveTextAfterRef.current = ''
       setLiveTextAfter('')
+      pendingThinkingRef.current = ''
+      pendingThinkingMsRef.current = undefined
       if (data.error !== 'stopped') toast('Ошибка: ' + data.error, 'error')
     })
 
@@ -270,8 +286,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }, 1000)
     })
 
-    const offContextUsage = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, (data: { pct: number; status: 'ok' | 'warn' | 'critical'; compressed: boolean }) => {
-      setContextUsage(data)
+    // §4.3 — чек-лист плана (todo list)
+    const offTodo = window.syntee.on('agent:todo', (data: { items: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>; msgId?: string }) => {
+      if (data.msgId && streamMsgIdRef.current && data.msgId !== streamMsgIdRef.current) return
+      setLiveTodo(data.items)
     })
 
     // Шаги агента — только от основного потока (фильтруем по msgId)
@@ -303,9 +321,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         const iters = [...liveItersRef.current]
         const last = iters[iters.length - 1]
         const textBetween = liveTextAfterRef.current
+        const thinkingNow = pendingThinkingRef.current
+        const thinkingMsNow = pendingThinkingMsRef.current
         let newIters: typeof iters
-        if (!last || textBetween.trim()) {
-          newIters = [...iters, { textBefore: textBetween, steps: [newStep] }]
+        if (!last || textBetween.trim() || thinkingNow) {
+          newIters = [...iters, {
+            textBefore: textBetween,
+            thinking: thinkingNow || undefined,
+            thinkingMs: thinkingMsNow,
+            steps: [newStep],
+          }]
         } else {
           iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
           newIters = iters
@@ -314,6 +339,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         setLiveIters(newIters)
         liveTextAfterRef.current = ''
         setLiveTextAfter('')
+        // Сбрасываем pending thinking — он прикреплён к итерации
+        pendingThinkingRef.current = ''
+        pendingThinkingMsRef.current = undefined
+        setLiveThinking(null)
       } else if (step.type === 'tool_result') {
         setIsAgentRunning(true)
         const newStep = {
@@ -359,7 +388,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setAgentStatus(data.text)
     })
 
-    return () => { offToken(); offDone(); offError(); offRateLimit(); offContextUsage(); offStep(); offStatus() }
+    return () => { offToken(); offDone(); offError(); offRateLimit(); offStep(); offStatus() }
   }, []) // [] — listener создаётся один раз, currentChatId читается через ref
 
   // ── АВТОСКРОЛЛ — плавный 60fps через rAF + ResizeObserver ──────────────────
@@ -448,14 +477,36 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setIsLoadingMessages(false)
   }
 
-  const createNewChat = async () => {
-    const chat: Chat = await window.syntee.chat.create(isIncognito)
+  const createNewChat = async (projectId?: string) => {
+    // projectId может прийти из Sidebar (кнопка + на проекте) или из активного проекта.
+    // Если не передан и нет activeProjectId — предлагаем создать проект через пикер.
+    let pid = projectId ?? activeProjectId
+    if (!pid) {
+      // Нет активного проекта — спросим папку и создадим проект.
+      const picked = await window.syntee.projects.pickWorkdir()
+      if (!picked) return  // отмена
+      const project: Project = await window.syntee.projects.create(picked)
+      const allProjects: Project[] = await window.syntee.projects.getAll()
+      setProjects(allProjects)
+      setActiveProject(project.id)
+      pid = project.id
+    }
+    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, pid)
     const all: Chat[] = await window.syntee.chat.getAll()
     setChats(all)
     setCurrentChat(chat.id)
     setMessages([])
     autoScrollRef.current = true
     isInitialScrollRef.current = true
+  }
+
+  const createNewProject = async () => {
+    const picked = await window.syntee.projects.pickWorkdir()
+    if (!picked) return
+    const project: Project = await window.syntee.projects.create(picked)
+    const allProjects: Project[] = await window.syntee.projects.getAll()
+    setProjects(allProjects)
+    setActiveProject(project.id)
   }
 
   const handleSend = async (text: string) => {
@@ -482,7 +533,19 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // ── Создаём чат если нет ────────────────────────────────────
     let chatId = currentChatId
     if (!chatId) {
-      const chat: Chat = await window.syntee.chat.create(isIncognito)
+      // Если есть активный проект — создаём чат в нём. Иначе — пикер папки
+      // и создание проекта, как в createNewChat.
+      let pid = activeProjectId
+      if (!pid) {
+        const picked = await window.syntee.projects.pickWorkdir()
+        if (!picked) return
+        const project: Project = await window.syntee.projects.create(picked)
+        const allProjects: Project[] = await window.syntee.projects.getAll()
+        setProjects(allProjects)
+        setActiveProject(project.id)
+        pid = project.id
+      }
+      const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, pid)
       chatId = chat.id
       setCurrentChat(chatId)
       setMessages([])
@@ -533,6 +596,8 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
       userMsgId: userMsg.id,
       planningMode,
+      imageMode,
+      mode: activeMode,
     })
     // Обновляем на реальный id из БД
     if (result?.assistantMsgId) {
@@ -558,6 +623,21 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Показываем пузырь сразу при отправке (isTyping), не ждём первого токена
   const showLiveBubble = (hasLiveContent || isTyping) && !!streamMsgId
   const isStreaming = showLiveBubble
+
+  // Workdir текущего чата — для бейджа над инпут-баром (как в Codex CLI).
+  // Источник: chat.workdir (денормализованный кэш из projects).
+  const currentWorkdir = useMemo(() => {
+    if (!currentChatId || isIncognito) return undefined
+    return chats.find(c => c.id === currentChatId)?.workdir
+  }, [chats, currentChatId, isIncognito])
+
+  // Активный проект для отображения в бейдже
+  const activeProject = useMemo(() => {
+    if (!currentChatId) return undefined
+    const chat = chats.find(c => c.id === currentChatId)
+    if (!chat?.projectId) return undefined
+    return projects.find(p => p.id === chat.projectId)
+  }, [chats, currentChatId, projects])
   const displayMessages = useMemo(() => showLiveBubble
     ? [...messages, {
         id: streamMsgId || 'streaming',
@@ -569,12 +649,13 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
         toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
         liveIters,
         liveTextAfter,
+        liveTodo,
         agentStatus,
         rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
       }]
     : messages
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  , [messages, showLiveBubble, streamingText, liveSteps, liveIters, liveTextAfter])
+  , [messages, showLiveBubble, streamingText, liveSteps, liveIters, liveTextAfter, liveTodo])
 
   // Virtualizer — рендерим только видимые сообщения
   const virtualizer = useVirtualizer({
@@ -592,10 +673,15 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       <div className="chat-body">
         <Sidebar
           chats={chats}
+          projects={projects}
+          activeProjectId={activeProjectId}
           currentChatId={currentChatId}
           onSelectChat={selectChat}
           onNewChat={createNewChat}
+          onNewProject={createNewProject}
           onChatsUpdate={setChats}
+          onProjectsUpdate={setProjects}
+          onSelectProject={setActiveProject}
         />
         <main className="chat-main">
           {/* Поиск по чату */}
@@ -643,6 +729,19 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                 <div className="incognito-hint">
                   <AppIcon name="lock" size="sm" tone="accent" />
                   <span>Режим инкогнито — чат не сохраняется</span>
+                </div>
+              )}
+              {/* Подсказка о рабочей директории проекта */}
+              {!isIncognito && activeProject && currentWorkdir && (
+                <div className="chat-empty-workdir-hint">
+                  <AppIcon name="folder" size="sm" tone="accent" />
+                  <span>Проект: <strong>{activeProject.name}</strong> · {currentWorkdir}</span>
+                </div>
+              )}
+              {!isIncognito && !activeProject && currentChatId && (
+                <div className="chat-empty-workdir-hint chat-empty-workdir-hint--warn">
+                  <AppIcon name="folder" size="sm" />
+                  <span>Чат без проекта. Файловые операции работают относительно текущей директории процесса.</span>
                 </div>
               )}
             </div>
@@ -695,26 +794,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             </div>
           )}
 
-          {contextUsage && contextUsage.status !== 'ok' && (
-            <div
-              className={`context-usage-bar context-usage-bar--${contextUsage.status}`}
-              title={contextUsage.breakdown
-                ? `${contextUsage.breakdown.real ? '✓ Реальные токены от провайдера' : '≈ Оценка (tiktoken)'}\nВход: ${contextUsage.estimated.toLocaleString()}${contextUsage.breakdown.completionTokens ? ` | Выход: ${contextUsage.breakdown.completionTokens.toLocaleString()}` : ''} / ${contextUsage.limit.toLocaleString()} токенов\nИстория: ${contextUsage.breakdown.history.toLocaleString()} | System: ${contextUsage.breakdown.system.toLocaleString()} | Tools: ${contextUsage.breakdown.tools.toLocaleString()}${contextUsage.breakdown.toolResults ? ` | Tool results: ${contextUsage.breakdown.toolResults.toLocaleString()}` : ''}`
-                : `${contextUsage.estimated?.toLocaleString()} / ${contextUsage.limit?.toLocaleString()} токенов`
-              }
-            >
-              <div className="context-usage-bar__fill" style={{ width: `${contextUsage.pct}%` }} />
-              <span className="context-usage-bar__label">
-                {contextUsage.compressed && '⚡ '}
-                Контекст: {contextUsage.pct}%
-                {contextUsage.estimated != null && contextUsage.limit != null && (
-                  <> ({contextUsage.estimated.toLocaleString()} / {contextUsage.limit.toLocaleString()} токенов)</>
-                )}
-                {contextUsage.status === 'critical' && ' — критично'}
-              </span>
-            </div>
-          )}
-
           <ChatInput
             onSend={handleSend}
             disabled={isTyping}
@@ -731,6 +810,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             onReasoningChange={handleReasoningChange}
             planningMode={planningMode}
             onPlanningModeChange={setPlanningMode}
+            imageMode={imageMode}
+            onImageModeChange={setImageMode}
+            liveTodo={isTyping ? liveTodo : []}
+            workdir={currentWorkdir}
           />
 
           {/* Selection reply popup — через portal чтобы fixed работал правильно */}

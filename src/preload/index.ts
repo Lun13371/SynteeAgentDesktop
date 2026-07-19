@@ -44,10 +44,10 @@ const synteeAPI = {
 
   // Чат
   chat: {
-    create: (incognito?: boolean) => ipcRenderer.invoke('chat:create', incognito),
+    create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string) => ipcRenderer.invoke('chat:create', incognito, mode, projectId),
     getAll: () => ipcRenderer.invoke('chat:getAll'),
     getMessages: (chatId: string) => ipcRenderer.invoke('chat:getMessages', chatId),
-    send: (params: { chatId: string; content: string; incognito?: boolean }) =>
+    send: (params: { chatId: string; content: string; incognito?: boolean; mode?: 'code' | 'work' }) =>
       ipcRenderer.invoke('chat:send', params),
     delete: (chatId: string) => ipcRenderer.invoke('chat:delete', chatId),
     rename: (chatId: string, title: string) => ipcRenderer.invoke('chat:rename', chatId, title),
@@ -60,6 +60,18 @@ const synteeAPI = {
     setColor: (chatId: string, color: string | null) => ipcRenderer.invoke('chat:setColor', chatId, color),
     duplicate: (chatId: string) => ipcRenderer.invoke('chat:duplicate', chatId),
     export: (chatId: string, format: 'txt' | 'md') => ipcRenderer.invoke('chat:export', chatId, format),
+  },
+
+  // Проекты (рабочие директории) — сущность верхнего уровня над чатами.
+  // Проект = папка + зафиксированный скан. Чаты создаются внутри проекта.
+  projects: {
+    pickWorkdir: () => ipcRenderer.invoke('projects:pickWorkdir'),
+    create: (workdir: string) => ipcRenderer.invoke('projects:create', workdir),
+    getAll: () => ipcRenderer.invoke('projects:getAll'),
+    rename: (id: string, name: string) => ipcRenderer.invoke('projects:rename', id, name),
+    delete: (id: string) => ipcRenderer.invoke('projects:delete', id),
+    getById: (id: string) => ipcRenderer.invoke('projects:getById', id),
+    touch: (id: string) => ipcRenderer.invoke('projects:touch', id),
   },
 
   // Память
@@ -80,8 +92,8 @@ const synteeAPI = {
     clearChat: (chatId: string) => ipcRenderer.invoke('agent:clearChat', chatId),
     getSettings: () => ipcRenderer.invoke('agent:getSettings'),
     setSettings: (s: unknown) => ipcRenderer.invoke('agent:setSettings', s),
-    onConfirm: (cb: (data: { reqId: string; toolName: string; args: unknown }) => void) => {
-      const wrapper = (_: unknown, data: unknown) => cb(data as { reqId: string; toolName: string; args: unknown })
+    onConfirm: (cb: (data: { reqId: string; toolName: string; args: unknown; dangerLevel?: string; dangerReason?: string; previewDiff?: string }) => void) => {
+      const wrapper = (_: unknown, data: unknown) => cb(data as { reqId: string; toolName: string; args: unknown; dangerLevel?: string; dangerReason?: string; previewDiff?: string })
       ipcRenderer.on('agent:confirm', wrapper)
       return wrapper  // возвращаем wrapper для последующего offConfirm
     },
@@ -104,8 +116,8 @@ const synteeAPI = {
 
   // Счётчик контекста
   context: {
-    calculate: (params: { chatId: string; currentInput: string; modelId: string; incognito?: boolean }) =>
-      ipcRenderer.invoke('context:calculate', params),
+    estimateInput: (params: { text: string }) =>
+      ipcRenderer.invoke('context:estimateInput', params),
   },
 
   models: {

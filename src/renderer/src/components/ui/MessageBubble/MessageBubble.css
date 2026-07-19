@@ -207,6 +207,23 @@
   animation: msg-shimmer 2s ease-in-out infinite;
 }
 
+/* Живой счётчик (§4.2) */
+.msg-waiting-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.msg-waiting-counter {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-secondary, rgba(255,255,255,0.06));
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 @keyframes msg-shimmer {
   0%   { background-position: 150% center; }
   100% { background-position: -150% center; }
