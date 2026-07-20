@@ -1,6 +1,5 @@
 import { Tray, Menu, nativeImage, app } from 'electron'
 import { join } from 'path'
-import type Store from 'electron-store'
 
 interface TrayCallbacks {
   showMain: () => void
@@ -14,7 +13,6 @@ export class TrayManager {
   private animationInterval: NodeJS.Timeout | null = null
 
   constructor(
-    private store: Store,
     private callbacks: TrayCallbacks
   ) {}
 

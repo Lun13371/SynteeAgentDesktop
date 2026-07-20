@@ -8,15 +8,22 @@ import {
   findFiles,
   searchWeb, getSystemInfo, generateImage,
   readFiles, searchCode, analyzeProject,
-  httpRequest,
+  httpRequest, getDiagnostics, smartTrimOutput,
   TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
 } from '../tools'
-import { truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD, getModelContextWindow } from '../context/contextManager'
+import {
+  truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD, getModelContextWindow,
+  getHardLimitTokens, getHardLimitTargetTokens,
+} from '../context/contextManager'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { statSync } from 'fs'
+import { log } from '../logger'
 
 export interface AgentStep {
-  type: 'thought' | 'tool_call' | 'tool_result' | 'answer'
+  // tool_call_pending — модель только начала генерировать этот вызов (имя
+  // уже известно, аргументы ещё стримятся) — ранний сигнал для UI, чтобы
+  // блок тула появлялся сразу, а не после долгой генерации большого diff/content.
+  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'answer'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -25,6 +32,10 @@ export interface AgentStep {
   diff?: string
   callId?: string
   hidden?: boolean
+  // Связывает финальный tool_call с более ранним tool_call_pending той же
+  // генерации (см. onToolCallStarted) — фронтенд заменяет pending-карточку
+  // на настоящую вместо создания второго блока.
+  pendingCallId?: string
 }
 
 export interface AgentCallbacks {
@@ -40,6 +51,13 @@ export interface AgentCallbacks {
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string; approvalMode?: 'auto' | 'ask' | 'full' }) => Promise<{ summary: string; error?: string }>
+  /**
+   * Персистентный shell (§1 GAP_ANALYSIS.md) — если задан, run_command
+   * выполняется через живую shell-сессию в main-процессе вместо
+   * одноразового exec(). cd/env переживают между вызовами. Не используется
+   * суб-агентами (короткоживущие/параллельные — общий shell создал бы гонки).
+   */
+  onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean }>
   onWaitAgents?: (agentIds: string[]) => Promise<Array<{ summary: string; error?: string }>>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   onContextCounted?: (promptTokens: number) => void
@@ -71,6 +89,7 @@ type NormalizedToolCall = {
   fn: { name: string; arguments: string }
   args: Record<string, unknown>
   isHiddenTool: boolean
+  pendingCallId: string
 }
 
 type AgentRuntimeOptions = {
@@ -114,6 +133,23 @@ function normalizeToolName(name: string, schemas: Array<{ function: { name: stri
   return name
 }
 
+// Универсальная проверка обязательных аргументов по TOOL_SCHEMAS.required —
+// одна проверка для всех тулов сразу, вместо точечных if-ов в executeTool.
+// Ловит случаи когда модель не передала обязательное поле или JSON.parse
+// аргументов тихо упал (args = {}) — раньше это доходило до низкоуровневых
+// ошибок вида `The "paths[1]" argument must be of type string. Received
+// undefined` внутри path.resolve(), непонятных и для модели, и для пользователя.
+function findMissingRequiredArgs(
+  name: string,
+  args: Record<string, unknown>,
+  schemas: Array<{ function: { name: string; parameters?: { required?: string[] } } }>,
+): string[] {
+  const schema = schemas.find(s => s.function.name === name)
+  const required = schema?.function.parameters?.required
+  if (!required?.length) return []
+  return required.filter(key => args[key] === undefined || args[key] === null || args[key] === '')
+}
+
 function getToolErrorHint(toolName: string, error: string): string {
   const e = error.toLowerCase()
   if ((toolName === 'edit_file' || toolName === 'multi_edit_file') && (e.includes('not found') || e.includes('old_str'))) {
@@ -141,6 +177,11 @@ function getToolErrorHint(toolName: string, error: string): string {
   }
   return ''
 }
+
+// Число успешных file-edit тулов между авто-верификациями (упрощённый
+// аналог PostToolUse-хука Claude Code) — фиксированное значение для MVP,
+// можно вынести в AgentSettings позже если понадобится настройка в UI.
+const VERIFICATION_INTERVAL = 3
 
 function isSequentialTool(name: string): boolean {
   return name === 'write_file' ||
@@ -188,21 +229,30 @@ function getToolRounds(messages: AgentMessage[]): ToolRound[] {
     rounds.push({
       assistantIndex: i,
       toolIndices,
-      toolNames: msg.tool_calls.map(tc => tc.function?.name || 'tool'),
+      toolNames: msg.tool_calls.map((tc: { function?: { name?: string } }) => tc.function?.name || 'tool'),
     })
   }
   return rounds
 }
 
 /**
- * Аварийный клапан: если токены сообщений реально подбираются к 97% лимита
- * модели — физически удаляем самые старые целые tool-раунды (assistant+tool
- * сообщения целиком), без замены на текст-резюме. Это защита от hard-fail API,
- * а не проактивное сжатие: срабатывает исключительно на грани реального предела.
+ * Аварийный клапан: если токены сообщений реально подбираются к лимиту модели
+ * (hardLimitTokens, см. getHardLimitTokens) — физически удаляем самые старые
+ * целые tool-раунды (assistant+tool сообщения целиком), без замены на
+ * текст-резюме. Это защита от hard-fail API, а не проактивное сжатие:
+ * срабатывает исключительно на грани реального предела.
+ *
+ * Гистерезис: при срабатывании дропаем НЕ до hardLimitTokens, а до
+ * targetTokens (значительно ниже) — иначе следующий же раунд тулов сразу
+ * снова превышает hardLimitTokens и клапан триггерится повторно на каждом
+ * шаге, давая пилообразный (то много, то мало) реальный prompt_tokens вместо
+ * плавного роста. targetTokens задаёт запас, в который новые раунды могут
+ * расти, прежде чем клапан сработает снова.
  */
 function dropOldestRoundsIfOverflow(
   messages: AgentMessage[],
   hardLimitTokens: number,
+  targetTokens: number,
 ): AgentMessage[] {
   const estimated = messages.reduce((sum, msg) => sum + estimateTokens(msg.content || '') + 4, TOOL_SCHEMAS_OVERHEAD)
   if (estimated <= hardLimitTokens) return messages
@@ -210,12 +260,13 @@ function dropOldestRoundsIfOverflow(
   const rounds = getToolRounds(messages)
   if (rounds.length === 0) return messages
 
-  // Удаляем раунды с начала (самые старые), пока не уложимся в лимит.
+  // Удаляем раунды с начала (самые старые), пока не уложимся в targetTokens
+  // (не hardLimitTokens — см. комментарий выше про гистерезис).
   // Сохраняем system-сообщения и последнее user-сообщение.
   const removeIndices = new Set<number>()
   let currentEstimate = estimated
   for (const round of rounds) {
-    if (currentEstimate <= hardLimitTokens) break
+    if (currentEstimate <= targetTokens) break
     removeIndices.add(round.assistantIndex)
     for (const toolIndex of round.toolIndices) removeIndices.add(toolIndex)
     for (const idx of [round.assistantIndex, ...round.toolIndices]) {
@@ -233,6 +284,8 @@ function dropOldestRoundsIfOverflow(
     role: 'system',
     content: `[Старые tool-раунды удалены для экономии контекста — ${removeIndices.size} сообщений]`,
   })
+  log('[Agent] dropOldestRoundsIfOverflow сработал: estimated=%s hardLimitTokens=%s targetTokens=%s removedMessages=%s остаток~=%s',
+    estimated, hardLimitTokens, targetTokens, removeIndices.size, currentEstimate)
   return result
 }
 
@@ -248,6 +301,12 @@ export class Agent {
    * (созданных до фичи workdir) — в этом случае поведение прежнее.
    */
   workdir?: string
+  /**
+   * Команда авто-верификации проекта (напр. "npm test"), запускаемая
+   * автоматически после VERIFICATION_INTERVAL успешных file-edit тулов —
+   * упрощённый аналог PostToolUse-хука Claude Code без полной hook-инфры.
+   */
+  verificationCommand?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
   onGetWorkingMemory?: (chatId: string) => string
   pendingDiffEntries: DiffEntry[] = []
@@ -298,6 +357,8 @@ export class Agent {
     const tavilyKey = (this.store.get('integrations') as { tavily?: { key: string } } | undefined)?.tavily?.key
     const pendingParallelAgents = new Set<string>()
     const modifiedFiles = new Set<string>()
+    let successfulEditCount = 0
+    let lastVerifiedEditCount = 0
     this.readFileCacheEnabled = options?.readFileCache !== false
     this.readFileCache = new Map<string, string>()
     this.pendingDiffEntries = []
@@ -309,18 +370,27 @@ export class Agent {
     this.fileCache = new Map(Object.entries(options?.fileCacheSnapshot ?? {}))
     this.dirtyFileCacheKeys = new Set()
     const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
-    const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string } }>
+    const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string; parameters?: { required?: string[] } } }>
     const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
     const maxRepeatedToolCalls = Math.max(2, options?.maxRepeatedToolCalls ?? 3)
     const maxRepeatedErrors = Math.max(2, options?.maxRepeatedErrors ?? 2)
     // Реальный лимит контекста активной модели — для аварийного клапана.
+    // Раньше здесь был Math.max(32_000, realContextWindow) — искусственный пол,
+    // который мог занижать эффективный лимит для моделей с честным большим
+    // окном (128k/200k/1M) до 32k, если резолвинг возвращал что-то маленькое,
+    // и заставлял клапан срабатывать намного раньше, чем должен. Убран:
+    // getModelContextWindow уже имеет собственный безопасный дефолт (128_000).
     const realContextWindow = getModelContextWindow({
       modelAssignments: this.store.get('modelAssignments'),
       customModels: this.store.get('customModels'),
     }, this.role)
-    const contextWindow = Math.max(32_000, realContextWindow)
-    // Аварийный клапан: 97% реального лимита — только отбрасывание старых раундов
-    const hardLimitTokens = Math.floor(contextWindow * 0.97)
+    log('[Agent] run() старт: role=%s realContextWindow=%s', this.role, realContextWindow)
+    // Аварийный клапан — последняя линия защиты от hard-fail API (см.
+    // getHardLimitTokens/getHardLimitTargetTokens в usageTracker.ts).
+    // targetTokens — куда дропаем при срабатывании (с запасом, гистерезис),
+    // чтобы клапан не срабатывал повторно на следующем же раунде тулов.
+    const hardLimitTokens = getHardLimitTokens(realContextWindow)
+    const hardLimitTargetTokens = getHardLimitTargetTokens(realContextWindow)
 
     const flushWorkingMemory = (label: string) => {
       if (!this.chatId || !this.onUpdateWorkingMemory || this.role !== 'main') return
@@ -339,6 +409,25 @@ export class Agent {
     for (let step = 0; ; step++) {
       if (signal?.aborted) {
         callbacks.onDone('')
+        return
+      }
+
+      // maxSteps раньше принимался как параметр, но никогда не проверялся —
+      // цикл был фактически бесконечным (агент мог гонять тулы неограниченно
+      // долго без реального прогресса, что выглядело как "зависание").
+      // Теперь это реальный потолок: по достижении отдаём частичный ответ.
+      if (step >= maxSteps) {
+        log('[Agent] run() достигнут maxSteps=%s, завершаю с частичным ответом', maxSteps)
+        callbacks.onStep({
+          type: 'tool_result',
+          toolName: '_limit',
+          content: `Достигнут лимит шагов агента (${maxSteps}). Работа остановлена, чтобы избежать бесконечного цикла — уточните задачу или продолжите в новом сообщении.`,
+          success: false,
+        })
+        callbacks.onDone(
+          `Достигнут лимит в ${maxSteps} шагов агента — остановился, чтобы не зависнуть. Уточните задачу или попросите продолжить.`,
+          this.buildSummaryDetails(modifiedFiles),
+        )
         return
       }
 
@@ -364,6 +453,17 @@ export class Agent {
           callbacks.onUsage,
           callbacks.onThinkingToken,
           callbacks.onThinkingDone,
+          (index, rawToolName) => {
+            const normalizedName = normalizeToolName(rawToolName, activeSchemas)
+            const isHidden = normalizedName === 'think' || normalizedName === 'update_working_memory' || normalizedName === 'update_todo'
+            if (isHidden) return
+            callbacks.onStep({
+              type: 'tool_call_pending',
+              toolName: normalizedName,
+              content: normalizedName,
+              callId: `pending-${step}-${index}`,
+            })
+          },
         )
 
         if (signal?.aborted) {
@@ -457,9 +557,13 @@ export class Agent {
         const resultMap = new Map<string, { contentForAI: string; callId: string; name: string }>()
         const pendingMutations: Array<() => void> = []
 
-        const normalizedCalls: NormalizedToolCall[] = response.tool_calls.map((call) => {
+        const normalizedCalls: NormalizedToolCall[] = response.tool_calls.map((call, callIndex) => {
           const fn = (call as { function: { name: string; arguments: string } }).function
           const callId = (call as { id: string }).id
+          // response.tool_calls собран из toolCallMap (AIClient.ts) через
+          // Object.values — числовые ключи объекта итерируются по возрастанию,
+          // так что callIndex здесь совпадает с tc.index из onToolCallStarted.
+          const pendingCallId = `pending-${step}-${callIndex}`
           const rawName = fn.name
           const normalizedName = normalizeToolName(rawName, activeSchemas)
           if (normalizedName !== rawName) {
@@ -468,19 +572,37 @@ export class Agent {
           fn.name = normalizedName
 
           let args: Record<string, unknown> = {}
-          try { args = JSON.parse(fn.arguments) } catch {}
+          try {
+            args = fn.arguments ? JSON.parse(fn.arguments) : {}
+          } catch (parseErr) {
+            // Раньше здесь был пустой catch {} — при битом/усечённом JSON
+            // (например, после серии сетевых ретраев или обрыва стрима у
+            // провайдера) args тихо становился {}, и дальше это выглядело
+            // как "модель не умеет пользоваться тулом", хотя проблема была
+            // в повреждённом ответе провайдера. Логируем сырые arguments,
+            // чтобы отличать "модель реально не передала path" от
+            // "JSON пришёл обрезанным/невалидным".
+            log('[Agent] JSON.parse tool arguments упал для %s: %s | raw=%s',
+              normalizedName, (parseErr as Error).message, (fn.arguments ?? '').slice(0, 500))
+          }
 
           return {
             call,
             callId,
             fn,
             args,
-            isHiddenTool: normalizedName === 'think' || normalizedName === 'update_working_memory',
+            // update_todo тоже всегда возвращает hidden:true результат (см. case
+            // 'update_todo' ниже) — если сам tool_call не помечен hidden, его
+            // блок навсегда остаётся в UI без результата (ai-worker.ts не шлёт
+            // hidden tool_result), и оставшийся "сирота" забирает чужую ошибку
+            // через fallback-матчинг в ToolChain.tsx.
+            isHiddenTool: normalizedName === 'think' || normalizedName === 'update_working_memory' || normalizedName === 'update_todo',
+            pendingCallId,
           }
         })
 
         const executeCall = async (item: NormalizedToolCall) => {
-          const { callId, fn, args, isHiddenTool } = item
+          const { callId, fn, args, isHiddenTool, pendingCallId } = item
           if (!isHiddenTool) {
             const fingerprint = buildToolFingerprint(fn.name, args)
             this.recentToolFingerprints.push(fingerprint)
@@ -498,7 +620,15 @@ export class Agent {
               })
             }
           }
-          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool })
+          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool, pendingCallId })
+
+          const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
+          if (missingArgs.length > 0) {
+            const missingMsg = `${fn.name}: отсутствуют обязательные аргументы: ${missingArgs.join(', ')}. Повтори вызов с полным набором аргументов.`
+            resultMap.set(callId, { contentForAI: missingMsg, callId, name: fn.name })
+            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: missingMsg, success: false, callId, hidden: isHiddenTool })
+            return
+          }
 
           const mode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
           // Читаем agentPermissions из store — раньше они были объявлены в
@@ -551,6 +681,7 @@ export class Agent {
               const fnNameCopy = fn.name
               pendingMutations.push(() => {
                 modifiedFiles.add(p)
+                successfulEditCount++
                 // §1.8 — сохраняем оригинал для undo (null = файл был создан заново)
                 this.undoStack.push({ path: p, originalContent: origContent ?? null })
                 if (this.undoStack.length > 50) this.undoStack.shift()  // ограничиваем стек
@@ -628,6 +759,23 @@ export class Agent {
 
         for (const mutation of pendingMutations) mutation()
 
+        if (
+          this.verificationCommand &&
+          this.workdir &&
+          successfulEditCount - lastVerifiedEditCount >= VERIFICATION_INTERVAL
+        ) {
+          lastVerifiedEditCount = successfulEditCount
+          const verifyResult = await runCommand(this.verificationCommand, this.workdir)
+          const verifyContent = `[Auto-verification after ${VERIFICATION_INTERVAL}+ file edits]\nCommand: ${this.verificationCommand}\n\n${verifyResult.output}`
+          messages.push({ role: 'user', content: verifyContent })
+          callbacks.onStep({
+            type: 'tool_result',
+            toolName: '_verification',
+            content: verifyResult.output,
+            success: verifyResult.success,
+          })
+        }
+
         for (const item of normalizedCalls) {
           const r = resultMap.get(item.callId)
           messages.push({
@@ -642,9 +790,10 @@ export class Agent {
           flushWorkingMemory(`Intermediate progress after ${step + 1} agent steps`)
         }
 
-        // Аварийный клапан: только если реальные токены подбираются к 97% лимита.
-        // Никакой проактивной суммаризации — модель видит свои tool-раунды как есть.
-        const overflowedMessages = dropOldestRoundsIfOverflow(messages, hardLimitTokens)
+        // Аварийный клапан: только если реальные токены подбираются к лимиту
+        // модели. Никакой проактивной суммаризации — модель видит свои
+        // tool-раунды как есть, пока не сработает клапан (с гистерезисом).
+        const overflowedMessages = dropOldestRoundsIfOverflow(messages, hardLimitTokens, hardLimitTargetTokens)
         if (overflowedMessages !== messages) {
           messages.length = 0
           messages.push(...overflowedMessages)
@@ -705,9 +854,27 @@ export class Agent {
         if (dryRun) {
           return { success: true, output: `[DRY RUN] Команда не выполнена. Была бы запущена:\n${cmd}`.slice(0, 4000) }
         }
-        // cwd модели → workdir чата → (внутри runCommand) homedir()
+        // cwd модели → workdir чата → (внутри runCommand/persistent shell) homedir()
         // Модель может явно переопределить cwd; иначе берём workdir чата.
-        const cmdResult = await runCommand(cmd, (args.cwd as string | undefined) ?? this.workdir, args.shell as string | undefined, args.timeout as number | undefined)
+        const effectiveCwd = (args.cwd as string | undefined) ?? this.workdir
+        const timeoutSec = (args.timeout as number | undefined) ?? 60
+        let cmdResult: ToolResult
+        // Persistent shell — только для главного агента (role === 'main') и
+        // только если явный shell не запрошен (powershell по умолч. на Windows
+        // соответствует тому, что запускает persistent сессия).
+        if (callbacks?.onShellExec && this.role === 'main' && !args.shell) {
+          const shellRes = await callbacks.onShellExec(cmd, effectiveCwd, timeoutSec)
+          if (shellRes.timedOut) {
+            cmdResult = { success: false, output: `[timeout после ${timeoutSec}с — shell-сессия перезапущена]`, error: 'Команда превысила таймаут' }
+          } else {
+            const out = smartTrimOutput(shellRes.output) || '(нет вывода)'
+            cmdResult = shellRes.exitCode === 0
+              ? { success: true, output: `[exit: 0]\n${out}` }
+              : { success: false, output: `[exit: ${shellRes.exitCode}]\n${out}`, error: out.slice(0, 500) || 'Команда завершилась с ошибкой' }
+          }
+        } else {
+          cmdResult = await runCommand(cmd, effectiveCwd, args.shell as string | undefined, timeoutSec)
+        }
         // Трекаем для структурированного результата суб-агента
         const exitMatch = cmdResult.output.match(/\[exit: (\d+)\]/)
         this.commandsRun.push({
@@ -775,6 +942,8 @@ export class Agent {
       }
       case 'find_files':
         return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined, workdir: this.workdir })
+      case 'get_diagnostics':
+        return getDiagnostics((args.cwd as string | undefined) ?? this.workdir)
       case 'http_request':
         return httpRequest({
           url: args.url as string,

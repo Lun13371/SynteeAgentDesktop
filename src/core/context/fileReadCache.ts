@@ -52,7 +52,7 @@ export function mergeFileCache(chatId: string, updates: Record<string, FileCache
   for (const [path, entry] of Object.entries(updates)) {
     m.set(path, entry)
   }
-  evictIfNeeded(chatId, m)
+  evictIfNeeded(m)
 }
 
 /**
@@ -66,7 +66,7 @@ export function clearFileCache(chatId: string): void {
  * LRU-эвикшен: если записей слишком много или суммарный размер слишком большой —
  * удаляем самые старые по cachedAt.
  */
-function evictIfNeeded(chatId: string, m: Map<string, FileCacheEntry>): void {
+function evictIfNeeded(m: Map<string, FileCacheEntry>): void {
   if (m.size <= MAX_ENTRIES_PER_CHAT) {
     let totalBytes = 0
     for (const entry of m.values()) totalBytes += entry.output.length

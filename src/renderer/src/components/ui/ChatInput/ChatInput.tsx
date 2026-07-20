@@ -6,6 +6,7 @@ import IconButton from '../IconButton/IconButton'
 import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
 import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
+import ModelSelector from '../ModelSelector/ModelSelector'
 import SlashMenu from '../SlashMenu/SlashMenu'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
@@ -29,6 +30,7 @@ interface ChatInputProps {
   showContextRing?: boolean
   onInputChange?: (text: string) => void
   mainModelId?: string
+  onMainModelChange?: (modelId: string, providerId: string) => void
   reasoningValue?: string
   onReasoningChange?: (value: string) => void
   planningMode?: boolean
@@ -48,6 +50,7 @@ export default function ChatInput({
   contextInfo, showContextRing = true,
   onInputChange,
   mainModelId = '',
+  onMainModelChange,
   reasoningValue = '',
   onReasoningChange,
   planningMode = false,
@@ -259,6 +262,13 @@ export default function ChatInput({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Селектор модели — справа в status-row. Минималистичный бейдж
+            с цветной точкой провайдера + именем модели; клик открывает
+            dropdown с поиском. Меняет main-назначение глобально. */}
+        {!isIncognito && mainModelId && onMainModelChange && (
+          <ModelSelector modelId={mainModelId} onChange={onMainModelChange} />
+        )}
       </div>
 
       {replyTo && replyTo.length > 0 && (
@@ -359,7 +369,6 @@ export default function ChatInput({
             ref={plusBtnRef}
             className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
             onClick={() => {
-              console.log('[PLUS] clicked, open was:', plusMenuOpen)
               if (!plusBtnRef.current) return
               const r = plusBtnRef.current.getBoundingClientRect()
               const menuH = 90 // примерная высота меню
@@ -377,65 +386,67 @@ export default function ChatInput({
             </svg>
           </button>
 
-          {plusMenuOpen && menuPos && createPortal(
+          {createPortal(
             <AnimatePresence>
-              <motion.div
-                ref={menuRef}
-                className="chat-input-plus-menu"
-                style={{ position: 'fixed', left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
-                initial={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
-                animate={{ opacity: 1, scale: 1, y: 0, transformOrigin: 'bottom left' }}
-                exit={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
-                transition={{ type: 'spring', stiffness: 480, damping: 28 }}
-                onMouseDown={e => e.stopPropagation()}
-              >
-                <button className="chat-input-plus-item" onClick={() => { onAttach?.(); setPlusMenuOpen(false) }}>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-                  </svg>
-                  Прикрепить файл
-                </button>
-                <div className="chat-input-plus-divider" />
-                <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onPlanningModeChange?.(!planningMode) }}>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
-                  </svg>
-                  Планирование
-                  <motion.button
-                    className={`plus-menu-toggle${planningMode ? ' plus-menu-toggle--on' : ''}`}
-                    onClick={e => { e.stopPropagation(); onPlanningModeChange?.(!planningMode) }}
-                    whileTap={{ scale: 0.93 }}
-                  >
-                    <motion.span
-                      className="plus-menu-toggle-thumb"
-                      animate={{ x: planningMode ? 16 : 2 }}
-                      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                    />
-                  </motion.button>
-                </div>
-                <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onImageModeChange?.(!imageMode) }}>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                    <circle cx="8.5" cy="8.5" r="1.5"/>
-                    <polyline points="21 15 16 10 5 21"/>
-                  </svg>
-                  Генерация изображений
-                  <motion.button
-                    className={`plus-menu-toggle${imageMode ? ' plus-menu-toggle--on' : ''}`}
-                    onClick={e => { e.stopPropagation(); onImageModeChange?.(!imageMode) }}
-                    whileTap={{ scale: 0.93 }}
-                  >
-                    <motion.span
-                      className="plus-menu-toggle-thumb"
-                      animate={{ x: imageMode ? 16 : 2 }}
-                      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                    />
-                  </motion.button>
-                </div>
-              </motion.div>
+              {plusMenuOpen && menuPos && (
+                <motion.div
+                  ref={menuRef}
+                  className="chat-input-plus-menu"
+                  style={{ position: 'fixed', left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
+                  initial={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
+                  animate={{ opacity: 1, scale: 1, y: 0, transformOrigin: 'bottom left' }}
+                  exit={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
+                  transition={{ type: 'spring', stiffness: 480, damping: 28 }}
+                  onMouseDown={e => e.stopPropagation()}
+                >
+                  <button className="chat-input-plus-item" onClick={() => { onAttach?.(); setPlusMenuOpen(false) }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                    </svg>
+                    Прикрепить файл
+                  </button>
+                  <div className="chat-input-plus-divider" />
+                  <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onPlanningModeChange?.(!planningMode) }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                    Планирование
+                    <motion.button
+                      className={`plus-menu-toggle${planningMode ? ' plus-menu-toggle--on' : ''}`}
+                      onClick={e => { e.stopPropagation(); onPlanningModeChange?.(!planningMode) }}
+                      whileTap={{ scale: 0.93 }}
+                    >
+                      <motion.span
+                        className="plus-menu-toggle-thumb"
+                        animate={{ x: planningMode ? 16 : 2 }}
+                        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                      />
+                    </motion.button>
+                  </div>
+                  <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onImageModeChange?.(!imageMode) }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/>
+                      <circle cx="8.5" cy="8.5" r="1.5"/>
+                      <polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                    Генерация изображений
+                    <motion.button
+                      className={`plus-menu-toggle${imageMode ? ' plus-menu-toggle--on' : ''}`}
+                      onClick={e => { e.stopPropagation(); onImageModeChange?.(!imageMode) }}
+                      whileTap={{ scale: 0.93 }}
+                    >
+                      <motion.span
+                        className="plus-menu-toggle-thumb"
+                        animate={{ x: imageMode ? 16 : 2 }}
+                        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                      />
+                    </motion.button>
+                  </div>
+                </motion.div>
+              )}
             </AnimatePresence>,
             document.body
           )}

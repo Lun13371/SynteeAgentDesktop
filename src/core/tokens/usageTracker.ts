@@ -38,6 +38,33 @@ export function estimateMessagesTokens(messages: Array<{ role: string; content: 
   return messages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0)
 }
 
+// ─── Единые пороги компакции контекста ────────────────────────────────────────
+// Раньше Agent.ts (аварийный клапан dropOldestRoundsIfOverflow) и
+// chat.ipc.ts (applyRollingWindowAsync) считали пороги по-разному и от разных
+// оценок contextWindow (Agent.ts занижал пол до 32k) — это давало пилообразные
+// скачки реального prompt_tokens. Теперь оба места берут проценты отсюда.
+
+// Аварийный клапан — последняя линия защиты от hard-fail API. Держим близко
+// к 100%, он не должен быть рабочим механизмом компакции (эту роль играет
+// rolling window).
+export const HARD_LIMIT_PCT = 99
+// После срабатывания клапана — целимся сюда (% от contextWindow, не от
+// hard-лимита), с явным запасом (гистерезис), чтобы клапан не триггерился
+// повторно на следующем же раунде из-за пары новых сообщений.
+export const HARD_LIMIT_TARGET_PCT = 80
+
+// Rolling window (между сообщениями пользователя, chat.ipc.ts) — срабатывает
+// раньше аварийного клапана, с summary вместо жёсткого дропа.
+export const ROLLING_TRIGGER_PCT = 92
+
+export function getHardLimitTokens(contextWindow: number): number {
+  return Math.floor(contextWindow * HARD_LIMIT_PCT / 100)
+}
+
+export function getHardLimitTargetTokens(contextWindow: number): number {
+  return Math.floor(contextWindow * HARD_LIMIT_TARGET_PCT / 100)
+}
+
 // ─── Снапшоты использования ───────────────────────────────────────────────────
 
 export interface RealUsage {
@@ -64,8 +91,10 @@ export interface UsageSnapshot {
   sessionRequests?: number
 }
 
-// Overhead константы (из contextManager.ts)
-const TOOL_SCHEMAS_OVERHEAD = 3800
+// Overhead константы — единственный источник истины. contextManager.ts и
+// Agent.ts импортируют TOOL_SCHEMAS_OVERHEAD отсюда (раньше значение было
+// продублировано в нескольких местах с риском рассинхрона).
+export const TOOL_SCHEMAS_OVERHEAD = 3800
 const API_OVERHEAD = 100
 
 export function buildSnapshotFromReal(

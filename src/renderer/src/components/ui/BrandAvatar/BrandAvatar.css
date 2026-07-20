@@ -1,0 +1,25 @@
+.brand-avatar {
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.brand-avatar--dot {
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+
+.brand-avatar--img {
+  border-radius: 50%;
+  object-fit: contain;
+}
+
+/* Однотонные логотипы (currentColor) — цвет через background, форма через mask */
+.brand-avatar--mono {
+  background-color: var(--text-primary, #f5f0e8);
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}

@@ -216,6 +216,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // workdir чата (новые Code-чаты после фичи workdir; undefined для
       // Work-режима и старых чатов — поведение остаётся прежним).
       agent.workdir = (workerData as Record<string, unknown>).workdir as string | undefined
+      agent.verificationCommand = (workerData as Record<string, unknown>).verificationCommand as string | undefined
       agent.onUpdateWorkingMemory = (cid, content, mode) => {
         console.log('[ai-worker] update_working_memory:', cid, mode, content.length, 'chars')
         send({ type: 'update_working_memory', chatId: cid, content, mode })
@@ -247,6 +248,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             if (step.hidden) {
               return
             }
+            if (step.type === 'tool_call_pending') {
+              // Ранний сигнал "модель начала вызывать тул X" — ЕЩЁ до того как
+              // JSON аргументов полностью собран. Не пишем в collectedSteps —
+              // это временное отображение, которое renderer заменит на
+              // настоящий tool_call (см. pendingCallId матчинг в ChatPage.tsx).
+              // Не персистится в БД само по себе.
+              send({ type: 'step', chatId, msgId, step })
+              return
+            }
             if (step.type === 'tool_call') {
               const ts = {
                 id: `${Date.now()}-${Math.random()}`,
@@ -258,6 +268,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 timestamp: Date.now(),
                 imageUrl: step.imageUrl,
                 callId: step.callId,
+                pendingCallId: step.pendingCallId,
               }
               collectedSteps.push(ts)
               if (pendingTextAfter.trim() || pendingThinking) {
@@ -420,6 +431,19 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'spawn_agent', chatId, msgId, replyId, ...rest, approval_mode: approvalMode })
             })
           },
+          onShellExec: (command, cwd, timeoutSec) => {
+            return new Promise((resolve) => {
+              const replyId = `shell-exec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve({
+                  output: (reply.output as string) ?? '',
+                  exitCode: (reply.exitCode as number) ?? 1,
+                  timedOut: reply.timedOut as boolean | undefined,
+                })
+              })
+              send({ type: 'shell_exec', chatId, msgId, replyId, command, cwd, timeoutSec })
+            })
+          },
           onWaitAgents: (agentIds) => {
             return new Promise((resolve) => {
               const replyId = `wait-agents-${Date.now()}`
@@ -464,7 +488,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           readFileCache: agentSettings.readFileCache !== false,
           maxRepeatedToolCalls: agentSettings.maxRepeatedToolCalls ?? 3,
           maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,
-          fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, unknown> | undefined,
+          fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, import('../core/context/fileCacheTypes').FileCacheEntry> | undefined,
         }
       )
     } else {

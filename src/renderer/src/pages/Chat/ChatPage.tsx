@@ -104,6 +104,18 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     window.syntee.settings.set('reasoningValue', value).catch(() => {})
   }
 
+  // Смена main-модели из селектора над инпутом. Обновляем назначение через
+  // IPC и локальное состояние (mainModelId нужно для ReasoningSelector и
+  // контекст-счётчика).
+  const handleMainModelChange = async (modelId: string, providerId: string) => {
+    try {
+      await window.syntee.models.setAssignment({ role: 'main', modelId, providerId })
+      setMainModelId(modelId)
+    } catch (e) {
+      console.error('[ChatPage] setAssignment error', e)
+    }
+  }
+
   useEffect(() => {
     window.syntee.settings.get('showContextRing').then((v: unknown) => {
       if (v !== null && v !== undefined) setShowContextRing(v as boolean)
@@ -288,18 +300,71 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     // §4.3 — чек-лист плана (todo list)
     const offTodo = window.syntee.on('agent:todo', (data: { items: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>; msgId?: string }) => {
+      if (streamMsgIdRef.current === 'streaming-pending' && data.msgId) {
+        streamMsgIdRef.current = data.msgId
+        setStreamMsgId(data.msgId)
+      }
       if (data.msgId && streamMsgIdRef.current && data.msgId !== streamMsgIdRef.current) return
       setLiveTodo(data.items)
     })
 
     // Шаги агента — только от основного потока (фильтруем по msgId)
     const offStep = window.syntee.on('agent:step', (step: {
-      type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string; msgId?: string
+      type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; imageUrl?: string; msgId?: string; callId?: string; pendingCallId?: string
     }) => {
       if (!streamMsgIdRef.current) return
+      // Гонка: streamMsgIdRef.current выставляется в 'streaming-pending' сразу
+      // при отправке, а на реальный assistantMsgId меняется только когда
+      // резолвится Promise chat.send(). Если модель вызывает тул первым шагом
+      // (без предшествующего токена), это событие может прийти раньше, чем
+      // Promise зарезолвится — тогда step.msgId (реальный) !== 'streaming-pending'
+      // и блок тула молча терялся. Усваиваем реальный id из первого события,
+      // как уже делает offToken.
+      if (streamMsgIdRef.current === 'streaming-pending' && step.msgId) {
+        streamMsgIdRef.current = step.msgId
+        setStreamMsgId(step.msgId)
+      }
       if (step.msgId && step.msgId !== streamMsgIdRef.current) return
 
-      if (step.type === 'tool_call') {
+      if (step.type === 'tool_call_pending') {
+        // Ранний сигнал: модель начала вызывать тул, аргументы ещё не готовы.
+        // Показываем карточку "готовится" сразу, не дожидаясь конца генерации
+        // JSON аргументов (может занимать заметное время для edit_file/write_file
+        // с большим content) — иначе в чате долго "ничего не происходит".
+        setIsAgentRunning(true)
+        const pendingStep = {
+          id: uuid(), type: 'tool_call' as const,
+          toolName: step.toolName, toolArgs: undefined,
+          content: step.content, success: undefined,
+          timestamp: Date.now(), imageUrl: undefined,
+          callId: step.callId,
+          pending: true,
+        }
+        const iters = [...liveItersRef.current]
+        const last = iters[iters.length - 1]
+        const textBetween = liveTextAfterRef.current
+        const thinkingNow = pendingThinkingRef.current
+        const thinkingMsNow = pendingThinkingMsRef.current
+        let newIters: typeof iters
+        if (!last || textBetween.trim() || thinkingNow) {
+          newIters = [...iters, {
+            textBefore: textBetween,
+            thinking: thinkingNow || undefined,
+            thinkingMs: thinkingMsNow,
+            steps: [pendingStep],
+          }]
+        } else {
+          iters[iters.length - 1] = { ...last, steps: [...last.steps, pendingStep] }
+          newIters = iters
+        }
+        liveItersRef.current = newIters
+        setLiveIters(newIters)
+        liveTextAfterRef.current = ''
+        setLiveTextAfter('')
+        pendingThinkingRef.current = ''
+        pendingThinkingMsRef.current = undefined
+        setLiveThinking(null)
+      } else if (step.type === 'tool_call') {
         // Сначала флашим буфер токенов синхронно
         if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
         if (tokenBufRef.current) {
@@ -318,25 +383,47 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           callId: step.callId,
         }
         setLiveSteps(prev => [...prev, newStep])
-        const iters = [...liveItersRef.current]
-        const last = iters[iters.length - 1]
-        const textBetween = liveTextAfterRef.current
-        const thinkingNow = pendingThinkingRef.current
-        const thinkingMsNow = pendingThinkingMsRef.current
-        let newIters: typeof iters
-        if (!last || textBetween.trim() || thinkingNow) {
-          newIters = [...iters, {
-            textBefore: textBetween,
-            thinking: thinkingNow || undefined,
-            thinkingMs: thinkingMsNow,
-            steps: [newStep],
-          }]
-        } else {
-          iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
-          newIters = iters
+
+        // Заменяем pending-карточку той же генерации in-place, вместо того
+        // чтобы добавлять второй блок — pendingCallId проставлен в Agent.ts
+        // и совпадает с callId, который был у tool_call_pending.
+        let replacedPending = false
+        if (step.pendingCallId) {
+          const itersForReplace = liveItersRef.current.map(iter => {
+            const stepIdx = iter.steps.findIndex(s => s.type === 'tool_call' && s.callId === step.pendingCallId)
+            if (stepIdx === -1) return iter
+            replacedPending = true
+            const nextSteps = [...iter.steps]
+            nextSteps[stepIdx] = newStep
+            return { ...iter, steps: nextSteps }
+          })
+          if (replacedPending) {
+            liveItersRef.current = itersForReplace
+            setLiveIters(itersForReplace)
+          }
         }
-        liveItersRef.current = newIters
-        setLiveIters(newIters)
+
+        if (!replacedPending) {
+          const iters = [...liveItersRef.current]
+          const last = iters[iters.length - 1]
+          const textBetween = liveTextAfterRef.current
+          const thinkingNow = pendingThinkingRef.current
+          const thinkingMsNow = pendingThinkingMsRef.current
+          let newIters: typeof iters
+          if (!last || textBetween.trim() || thinkingNow) {
+            newIters = [...iters, {
+              textBefore: textBetween,
+              thinking: thinkingNow || undefined,
+              thinkingMs: thinkingMsNow,
+              steps: [newStep],
+            }]
+          } else {
+            iters[iters.length - 1] = { ...last, steps: [...last.steps, newStep] }
+            newIters = iters
+          }
+          liveItersRef.current = newIters
+          setLiveIters(newIters)
+        }
         liveTextAfterRef.current = ''
         setLiveTextAfter('')
         // Сбрасываем pending thinking — он прикреплён к итерации
@@ -806,6 +893,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             showContextRing={showContextRing}
             onInputChange={setInputText}
             mainModelId={mainModelId}
+            onMainModelChange={handleMainModelChange}
             reasoningValue={reasoningValue}
             onReasoningChange={handleReasoningChange}
             planningMode={planningMode}

@@ -17,6 +17,10 @@ export interface ToolStep {
   imageUrl?: string
   diff?: string  // unified diff для edit_file / multi_edit_file
   callId?: string  // id tool_call из API — для матчинга call↔result при параллельных тулах
+  // true — модель только начала вызывать этот тул, аргументы ещё не собраны
+  // (см. tool_call_pending в Agent.ts). Карточка показывает "готовится" без
+  // аргументов, заменяется на обычный tool_call in-place когда придёт полный.
+  pending?: boolean
 }
 
 const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
@@ -123,15 +127,24 @@ function IterationBlock({
   const [open, setOpen] = useState(defaultOpen)
   const meta = getToolMeta(iter.call.toolName)
   const failed = iter.result?.success === false
-  const running = isLast && isRunning && !iter.result
+  // pending — модель ещё генерирует аргументы этого вызова (см. Agent.ts
+  // tool_call_pending). Отличаем от "running" (тул реально исполняется в
+  // Node), чтобы показать корректный текст, но визуально это тот же
+  // "идёт работа, не зависло" индикатор.
+  const pending = !!iter.call.pending
+  // Раньше проверяли isLast — но при параллельных тулах (Promise.all в Agent.ts)
+  // одновременно создаётся несколько итераций без результата, и спиннер/бейдж
+  // показывался только у последней. Теперь "выполняется" — у любого тула без
+  // результата, пока идёт живой стрим, независимо от позиции.
+  const running = isRunning && !iter.result && !pending
 
   const prevRunning = useRef(running)
   useEffect(() => {
-    if (running && !prevRunning.current) setOpen(true)
-    prevRunning.current = running
-  }, [running])
+    if ((running || pending) && !prevRunning.current) setOpen(true)
+    prevRunning.current = running || pending
+  }, [running, pending])
 
-  const statusColor = failed ? '#f87171' : running ? meta.color : meta.color
+  const statusColor = failed ? '#f87171' : (running || pending) ? meta.color : meta.color
 
   return (
     <motion.div
@@ -142,7 +155,7 @@ function IterationBlock({
     >
       <div className="tc2-rail">
         <div
-          className={`tc2-dot ${running ? 'tc2-dot--pulse' : ''}`}
+          className={`tc2-dot ${(running || pending) ? 'tc2-dot--pulse' : ''}`}
           style={{ background: statusColor }}
         />
         {!isLast && <div className="tc2-rail-line" />}
@@ -169,6 +182,7 @@ function IterationBlock({
 
           <span className="tc2-iter-spacer" />
 
+          {pending && <span className="tc2-badge tc2-badge--running">готовится</span>}
           {running && <span className="tc2-badge tc2-badge--running">выполняется</span>}
           {failed && <span className="tc2-badge tc2-badge--fail">ошибка</span>}
           {iter.result && !failed && <span className="tc2-badge tc2-badge--ok">✓</span>}
@@ -249,6 +263,13 @@ function IterationBlock({
                   />
                 )
               })()}
+
+              {pending && (
+                <div className="tc2-section tc2-section--running">
+                  <span className="tc2-spinner" />
+                  <span className="tc2-running-text">Готовится вызов…</span>
+                </div>
+              )}
 
               {running && (
                 <div className="tc2-section tc2-section--running">

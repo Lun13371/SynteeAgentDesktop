@@ -88,6 +88,18 @@
   padding: 0 8px 4px 24px;
   opacity: 0.8;
 }
+.sidebar-project-verifycmd {
+  font-size: 10px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 0 8px 4px 24px;
+  opacity: 0.7;
+}
+.sidebar-project-verifycmd-input {
+  display: block; width: calc(100% - 32px); margin: 0 8px 4px 24px;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  padding: 2px 6px; font-size: 11px; color: var(--text-primary); outline: none;
+}
 .sidebar-project-chats {
   overflow: hidden;
   padding: 0 4px 4px 12px;

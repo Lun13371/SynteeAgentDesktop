@@ -1,8 +1,30 @@
 import { ipcMain } from 'electron'
 import type Store from 'electron-store'
-import type { Provider, ModelMeta, ModelAssignment, ModelParams, ModelCapability } from '../../shared/types'
-import { BUILTIN_MODELS, BUILTIN_PROVIDERS_META } from '../../shared/data/builtinModels'
-import { getCatalogModel } from '../../core/tokens/modelCatalog'
+import type { Provider, ModelMeta, ModelAssignment, ModelParams } from '../../shared/types'
+import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
+import { getCatalogModel, inferSpeed, getCatalogStatus, type CatalogModelInfo } from '../../core/tokens/modelCatalog'
+
+// ── Кэш enrichment для models:getAll ────────────────────────────────────────
+// getCatalogModel() в худшем случае (проксирующие провайдеры) сканирует весь
+// кэш models.dev (globalSearch), что дорого при большом списке custom/cached
+// моделей. Кэшируем результат по паре providerId:modelId в памяти процесса
+// и сбрасываем кэш, когда каталог сам обновился (см. lastFetch ниже) —
+// иначе после refreshCatalog() (раз в 24ч) enrichment остался бы старым.
+const enrichCache = new Map<string, CatalogModelInfo | null>()
+let enrichCacheBuiltAtFetch: number | null = null
+
+function getCatalogModelCached(providerId: string, modelId: string): CatalogModelInfo | null {
+  const { lastFetch } = getCatalogStatus()
+  if (lastFetch !== enrichCacheBuiltAtFetch) {
+    enrichCache.clear()
+    enrichCacheBuiltAtFetch = lastFetch
+  }
+  const key = `${providerId}:${modelId}`
+  if (enrichCache.has(key)) return enrichCache.get(key) ?? null
+  const result = getCatalogModel(providerId, modelId)
+  enrichCache.set(key, result)
+  return result
+}
 
 const DEFAULT_PARAMS: ModelParams = {
   temperature: 0.7,
@@ -113,17 +135,17 @@ export function registerProviderIPC(store: Store): void {
         fetched = ids.map(id => {
           const known = BUILTIN_MODELS.find(b => b.id === id)
           if (known) return { ...known, providerId }
-          // Пытаемся получить contextWindow из каталога models.dev
+          // Пытаемся получить статы из каталога models.dev
           const fromCatalog = getCatalogModel(providerId, id)
           return {
             id, providerId,
-            name: id,
+            name: fromCatalog?.displayName ?? id,
             contextWindow: fromCatalog?.contextWindow ?? 0,
             inputPrice: fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined,
             outputPrice: fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined,
-            speed: 'medium' as const,
-            capabilities: [] as ModelCapability[],
-            description: '',
+            speed: inferSpeed(id),
+            capabilities: fromCatalog?.capabilities ?? [],
+            description: fromCatalog?.description ?? '',
           }
         })
 
@@ -148,7 +170,16 @@ export function registerProviderIPC(store: Store): void {
     for (const id of overrides) {
       if (!fetched.find(m => m.id === id)) {
         const fromCatalog = getCatalogModel(providerId, id)
-        fetched.push({ id, providerId, name: id, contextWindow: fromCatalog?.contextWindow ?? 0, speed: 'medium', capabilities: [] })
+        fetched.push({
+          id, providerId,
+          name: fromCatalog?.displayName ?? id,
+          contextWindow: fromCatalog?.contextWindow ?? 0,
+          inputPrice: fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined,
+          outputPrice: fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined,
+          speed: inferSpeed(id),
+          capabilities: fromCatalog?.capabilities ?? [],
+          description: fromCatalog?.description ?? '',
+        })
       }
     }
 
@@ -171,17 +202,43 @@ export function registerProviderIPC(store: Store): void {
 
     const all = [...builtin]
 
+    // Cached/custom модели. Если модель сохранена до расширения каталога
+    // (пустые capabilities + нет description) — дозаполняем статы «на лету».
     for (const m of [...cached, ...custom]) {
-      if (!all.find(x => x.id === m.id && x.providerId === m.providerId)) {
-        all.push(m)
+      if (all.find(x => x.id === m.id && x.providerId === m.providerId)) continue
+      const needsEnrich = m.capabilities.length === 0 && !m.description
+      if (needsEnrich) {
+        const fromCatalog = getCatalogModelCached(m.providerId, m.id)
+        if (fromCatalog) {
+          all.push({
+            ...m,
+            name: m.name === m.id ? (fromCatalog.displayName ?? m.name) : m.name,
+            contextWindow: m.contextWindow || fromCatalog.contextWindow,
+            inputPrice: m.inputPrice ?? (fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined),
+            outputPrice: m.outputPrice ?? (fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined),
+            capabilities: fromCatalog.capabilities ?? m.capabilities,
+            description: fromCatalog.description ?? m.description,
+          })
+          continue
+        }
       }
+      all.push(m)
     }
 
     for (const p of providers) {
       for (const id of (p.modelsOverride || [])) {
         if (!all.find(x => x.id === id && x.providerId === p.id)) {
-          const fromCatalog = getCatalogModel(p.id, id)
-          all.push({ id, providerId: p.id, name: id, contextWindow: fromCatalog?.contextWindow ?? 0, speed: 'medium', capabilities: [] })
+          const fromCatalog = getCatalogModelCached(p.id, id)
+          all.push({
+            id, providerId: p.id,
+            name: fromCatalog?.displayName ?? id,
+            contextWindow: fromCatalog?.contextWindow ?? 0,
+            inputPrice: fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined,
+            outputPrice: fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined,
+            speed: inferSpeed(id),
+            capabilities: fromCatalog?.capabilities ?? [],
+            description: fromCatalog?.description ?? '',
+          })
         }
       }
     }

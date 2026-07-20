@@ -6,16 +6,16 @@
 // ─── ТОЧНЫЙ ПОДСЧЁТ ТОКЕНОВ — делегируем в usageTracker ──────────────────────
 // (encoder кэширован в одном месте, без дублирования)
 
-export { estimateTokens, estimateMessagesTokens } from '../tokens/usageTracker'
-import { estimateTokens, estimateMessagesTokens } from '../tokens/usageTracker'
+export {
+  estimateTokens, estimateMessagesTokens, TOOL_SCHEMAS_OVERHEAD,
+  getHardLimitTokens, getHardLimitTargetTokens, ROLLING_TRIGGER_PCT,
+} from '../tokens/usageTracker'
+import { estimateTokens, estimateMessagesTokens, TOOL_SCHEMAS_OVERHEAD } from '../tokens/usageTracker'
 import { getCatalogModel } from '../tokens/modelCatalog'
 
 // ─── OVERHEAD: реальные постоянные расходы контекста ─────────────────────────
 
-// system prompt buildSystemPrompt ≈ 500-700 токенов (считаем точнее ниже)
-// tool schemas (20+ тулов) ≈ 3500-4000 токенов
 // служебные структуры OpenAI API ≈ 100 токенов
-export const TOOL_SCHEMAS_OVERHEAD = 3800  // токены на tool schemas (постоянный overhead)
 const API_OVERHEAD = 100            // служебные токены протокола
 
 export function calcSystemPromptTokens(systemPrompt: string): number {
@@ -200,7 +200,7 @@ function smartSummarizeToolResult(toolName: string, content: string): string {
 }
 
 // Pruning tool results перед суммаризацией — заменяем старые на умные 1-строчники
-function pruneToolOutputsForSummary(messages: ChatMessage[], maxToolChars = 300): ChatMessage[] {
+function pruneToolOutputsForSummary(messages: ChatMessage[]): ChatMessage[] {
   return messages.map(m => {
     if (m.role === 'assistant' && m.content.includes('[Использованные инструменты]')) {
       const parts = m.content.split('[Использованные инструменты]')

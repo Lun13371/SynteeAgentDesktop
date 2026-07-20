@@ -48,6 +48,7 @@ interface UseContextCounterOptions {
 }
 
 interface UsagePush {
+  chatId?: string
   pct: number
   estimated: number
   limit: number
@@ -65,6 +66,9 @@ interface UsagePush {
   }
   sessionCostCents?: number | null
   sessionRequests?: number
+  // Fix 6: метаданные для ContextRing (раньше захардкожены в 0)
+  historyMessages?: number
+  toolCallsCount?: number
 }
 
 export function useContextCounter({
@@ -82,12 +86,28 @@ export function useContextCounter({
   useEffect(() => {
     if (!enabled) return
     const handler = (data: UsagePush) => {
+      // Fix 6: игнорируем push от другого чата (защита от race-condition
+      // при быстрой смене чатов A→B→C, когда ответ от A приходит позже).
+      if (data.chatId && chatId && data.chatId !== chatId) return
       lastPushRef.current = data
       setInfo(buildContextInfo(data, inputTokensRef.current, modelId))
     }
     const off = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, handler as (...args: unknown[]) => void)
     return off
-  }, [enabled, modelId])
+  }, [enabled, modelId, chatId])
+
+  // Fix 6: сброс при смене чата + запросить свежий расчёт контекста из main.
+  // Без этого info висит пустым (или показывает данные предыдущего чата),
+  // пока пользователь не отправит первое сообщение — main эмитит CONTEXT_USAGE
+  // только в chat:send.
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    setInfo(null)
+    lastPushRef.current = null
+    inputTokensRef.current = 0
+    // Просим main пересчитать контекст для нового чата — он эмитит CONTEXT_USAGE
+    window.syntee.context.calculate(chatId).catch(() => { /* тихо — не критично */ })
+  }, [chatId, enabled])
 
   // Live-обновление при печати — лёгкий estimateInput (только текущий текст, без истории)
   useEffect(() => {
@@ -134,9 +154,9 @@ function buildContextInfo(push: UsagePush, inputTokens: number, modelId: string)
     critical: percent > 95,
     systemPrompt: breakdown.system,
     history: breakdown.history,
-    historyMessages: 0,
+    historyMessages: push.historyMessages ?? 0,
     toolCallsTokens: breakdown.tools,
-    toolCallsCount: 0,
+    toolCallsCount: push.toolCallsCount ?? 0,
     currentInput: inputTokens,
     reserved: 2000,
     pricing: null,

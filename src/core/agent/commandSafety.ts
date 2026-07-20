@@ -93,10 +93,6 @@ function hasWord(cmd: string, ...words: string[]): boolean {
   })
 }
 
-function startsWithAny(cmd: string, ...prefixes: string[]): boolean {
-  return prefixes.some(p => cmd.startsWith(p + ' ') || cmd.startsWith(p + '\t') || cmd === p)
-}
-
 // ─── BLOCKED — всегда отклонять ────────────────────────────────────────────
 
 const BLOCKED_CHECKS: Array<{ test: (cmd: string) => boolean; reason: string }> = [

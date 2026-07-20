@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import Store from 'electron-store'
@@ -12,7 +12,6 @@ import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
 import { registerChatIPC } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
-import { registerSettingsIPC } from './ipc/settings.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
@@ -20,13 +19,19 @@ import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
+import { shellSessionManager } from './ShellSessionManager'
 import { ipcMain } from 'electron'
 
 // Имя приложения — ДОЛЖНО быть ДО создания Store и app.whenReady
 app.setName('SynteeHelper')
 
-// Инициализируем store с дефолтными настройками
-const store = new Store({ defaults: DEFAULT_SETTINGS, name: 'config', cwd: undefined })
+// Инициализируем store с дефолтными настройками.
+// Явно указываем generic <Record<string, unknown>> — без него TS выводит тип
+// из DEFAULT_SETTINGS (конкретная форма объекта), и store перестаёт быть
+// совместим с сигнатурами register*IPC(store: Store), которые типизированы
+// через `import type Store from 'electron-store'` (дефолтный generic —
+// Record<string, unknown>).
+const store = new Store<Record<string, unknown>>({ defaults: DEFAULT_SETTINGS, name: 'config', cwd: undefined })
 
 // Глобальные окна
 let mainWindow: MainWindow
@@ -56,7 +61,7 @@ app.whenReady().then(async () => {
   spotlightWindow.create()
 
   // Трей
-  trayManager = new TrayManager(store, {
+  trayManager = new TrayManager({
     showMain: () => mainWindow.show(),
     showSpotlight: () => spotlightWindow.show(),
     showVoice: () => voiceWindow.show(),
@@ -85,7 +90,7 @@ app.whenReady().then(async () => {
   registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
-  registerVoiceIPC(store, () => mainWindow.getWindow(), () => voiceWindow.getWindow())
+  registerVoiceIPC(store, () => mainWindow.getWindow())
   registerAgentIPC(store, () => mainWindow.getWindow())
   registerMemoryIPC(store)
   registerProviderIPC(store)
@@ -138,15 +143,18 @@ async function onFirstRun(): Promise<void> {
   dirs.forEach(d => mkdirSync(d, { recursive: true }))
 }
 
-// Не закрывать при закрытии всех окон — живём в трее
-app.on('window-all-closed', (e) => {
-  e.preventDefault()
-})
+// Не закрывать при закрытии всех окон — живём в трее.
+// window-all-closed не передаёт Event и не имеет preventDefault (в отличие
+// от will-quit) — просто подписка на событие уже отключает Electron'овское
+// поведение "quit по умолчанию", вызывать preventDefault не нужно и раньше
+// это было опечаткой, из-за которой tsc не мог сматчить сигнатуру listener'а.
+app.on('window-all-closed', () => {})
 
 // Реальный выход (а не скрытие в трей) — сохраняем размер/позицию главного окна.
 // 'close' на окне перехватывается для hide(), поэтому persistим здесь.
 app.on('before-quit', () => {
   mainWindow?.flushBounds()
+  shellSessionManager.killAll()
 })
 
 app.on('will-quit', () => {

@@ -45,7 +45,10 @@
 .provider-card--add { justify-content: center; align-items: center; min-height: 80px; }
 
 .provider-card-header { display: flex; align-items: center; gap: 8px; }
-.provider-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.provider-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; }
+
+/* Аватар-логотип бренда провайдера — перекрывает цветную точку */
+.provider-logo { width: 18px; height: 18px; border-radius: 50%; object-fit: contain; flex-shrink: 0; }
 .provider-name { font-size: 13px; font-weight: 600; flex: 1; color: var(--text-primary); }
 .provider-status { font-size: 10px; color: var(--text-muted); }
 .provider-status--ok { color: #4ade80; }
