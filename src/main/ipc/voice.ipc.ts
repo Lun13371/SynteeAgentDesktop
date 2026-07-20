@@ -1,12 +1,10 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Store from 'electron-store'
 import { AIClient } from '../../core/ai/AIClient'
-import { IPC_EVENTS } from '../../shared/constants'
 
 export function registerVoiceIPC(
   store: Store,
-  getMainWin: () => BrowserWindow | null,
-  getVoiceWin: () => BrowserWindow | null
+  getMainWin: () => BrowserWindow | null
 ): void {
 
   // Текст → речь через OpenAI TTS endpoint

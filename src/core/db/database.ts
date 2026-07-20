@@ -97,6 +97,7 @@ function runMigrations(): void {
       name            TEXT NOT NULL,
       workdir         TEXT NOT NULL UNIQUE,
       project_context TEXT,
+      verification_command TEXT,
       created_at      INTEGER NOT NULL,
       last_used       INTEGER NOT NULL
     );
@@ -142,6 +143,13 @@ function runMigrations(): void {
   // project_id — FK на projects. Чаты без проекта (старые, инкогнито,
   // или созданные до этой фичи) имеют NULL → попадают в группу «Без проекта».
   if (!chatCols.find(c => c.name === 'project_id'))       db.prepare(`ALTER TABLE chats ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`).run()
+
+  // Миграция: verification_command на projects — команда авто-проверки
+  // (напр. "npm test"), запускаемая после серии успешных правок файлов.
+  const projectCols = db.prepare(`PRAGMA table_info(projects)`).all() as { name: string }[]
+  if (!projectCols.find(c => c.name === 'verification_command')) {
+    db.prepare(`ALTER TABLE projects ADD COLUMN verification_command TEXT`).run()
+  }
 
   // Индекс по project_id — создаём ПОСЛЕ миграции (колонка добавлена выше).
   // В db.exec() этот индекс создавать нельзя: на момент выполнения первого
@@ -241,22 +249,24 @@ export function getChatMode(chatId: string): ChatMode {
  * как fallback. project_context НЕ выносится в shared Chat-тип — это
  * потенциально большой текстовый блок, который нужен только main-процессу.
  */
-export function getChatWorkdirContext(chatId: string): { workdir?: string; projectContext?: string } {
+export function getChatWorkdirContext(chatId: string): { workdir?: string; projectContext?: string; verificationCommand?: string } {
   const row = db.prepare(`
     SELECT c.workdir as chatWorkdir, c.project_context as chatProjectContext,
-           p.workdir as projWorkdir, p.project_context as projProjectContext
+           p.workdir as projWorkdir, p.project_context as projProjectContext,
+           p.verification_command as verificationCommand
     FROM chats c
     LEFT JOIN projects p ON c.project_id = p.id
     WHERE c.id = ?
   `).get(chatId) as {
     chatWorkdir: string | null; chatProjectContext: string | null
     projWorkdir: string | null; projProjectContext: string | null
+    verificationCommand: string | null
   } | undefined
   if (!row) return {}
   // Предпочитаем project (источник правды), fallback на denormalized chats.workdir
   const workdir = row.projWorkdir ?? row.chatWorkdir ?? undefined
   const projectContext = row.projProjectContext ?? row.chatProjectContext ?? undefined
-  return { workdir, projectContext }
+  return { workdir, projectContext, verificationCommand: row.verificationCommand ?? undefined }
 }
 
 export function renameChat(id: string, title: string): void {
@@ -351,13 +361,18 @@ export function createProject(workdir: string, projectContext?: string): Project
 
 export function getAllProjects(): Project[] {
   return db.prepare(`
-    SELECT id, name, workdir, project_context as projectContext, created_at as createdAt, last_used as lastUsed
+    SELECT id, name, workdir, project_context as projectContext, verification_command as verificationCommand,
+           created_at as createdAt, last_used as lastUsed
     FROM projects ORDER BY last_used DESC
   `).all() as Project[]
 }
 
 export function renameProject(id: string, name: string): void {
   db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name, id)
+}
+
+export function setProjectVerificationCommand(id: string, command: string | null): void {
+  db.prepare('UPDATE projects SET verification_command = ? WHERE id = ?').run(command, id)
 }
 
 export function deleteProject(id: string): void {
@@ -367,7 +382,11 @@ export function deleteProject(id: string): void {
 }
 
 export function getProjectById(id: string): Project | undefined {
-  const row = db.prepare(`SELECT id, name, workdir, project_context as projectContext, created_at as createdAt, last_used as lastUsed FROM projects WHERE id = ?`).get(id) as Project | undefined
+  const row = db.prepare(`
+    SELECT id, name, workdir, project_context as projectContext, verification_command as verificationCommand,
+           created_at as createdAt, last_used as lastUsed
+    FROM projects WHERE id = ?
+  `).get(id) as Project | undefined
   return row
 }
 

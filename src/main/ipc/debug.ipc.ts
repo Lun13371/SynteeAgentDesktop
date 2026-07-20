@@ -6,9 +6,6 @@
  */
 import { ipcMain, BrowserWindow } from 'electron'
 import * as Store from 'electron-store'
-import * as https from 'https'
-import * as http from 'http'
-import { URL } from 'url'
 
 export function registerDebugIPC(store: Store): void {
   // Открыть DevTools для текущего окна

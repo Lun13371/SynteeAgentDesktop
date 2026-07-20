@@ -72,6 +72,7 @@ const synteeAPI = {
     delete: (id: string) => ipcRenderer.invoke('projects:delete', id),
     getById: (id: string) => ipcRenderer.invoke('projects:getById', id),
     touch: (id: string) => ipcRenderer.invoke('projects:touch', id),
+    setVerificationCommand: (id: string, command: string | null) => ipcRenderer.invoke('projects:setVerificationCommand', id, command),
   },
 
   // Память
@@ -118,6 +119,8 @@ const synteeAPI = {
   context: {
     estimateInput: (params: { text: string }) =>
       ipcRenderer.invoke('context:estimateInput', params),
+    calculate: (chatId: string) =>
+      ipcRenderer.invoke('context:calculate', chatId),
   },
 
   models: {
@@ -137,7 +140,10 @@ const synteeAPI = {
     return () => ipcRenderer.removeListener(channel, handler)
   },
 
-  off: (channel: string, callback: (...args: unknown[]) => void) => {
+  // callback не используется — removeAllListeners снимает все подписки на
+  // канал сразу, без разбора по конкретной функции. Параметр оставлен в
+  // сигнатуре для симметрии с on()/once() в публичном preload-контракте.
+  off: (channel: string, _callback: (...args: unknown[]) => void) => {
     ipcRenderer.removeAllListeners(channel)
   },
 

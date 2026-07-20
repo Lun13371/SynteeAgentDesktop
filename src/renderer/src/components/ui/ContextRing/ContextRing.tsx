@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import './ContextRing.css'
 
@@ -113,93 +114,101 @@ export default function ContextRing({ info }: ContextRingProps) {
       )}
 
       {/* Панель через портал — с проверкой правого и левого края */}
-      {panelOpen && info && createPortal(
-        <div
-          id="ctx-panel"
-          className="ctx-panel"
-          style={{ bottom: panelPos.bottom, left: panelPos.left }}
-        >
-          <div className="ctx-panel-header">
-            <span className="ctx-panel-title">Контекст</span>
-            <span className="ctx-panel-model">{info.modelId}</span>
-            <button className="ctx-panel-close" onClick={() => setPanelOpen(false)}>✕</button>
-          </div>
-
-          <div className="ctx-bar-wrap">
-            <div
-              className={`ctx-bar-fill${info.warning ? ' warn' : ''}${info.critical ? ' crit' : ''}`}
-              style={{ width: `${Math.min(100, percent)}%` }}
-            />
-          </div>
-          <div className="ctx-bar-label">
-            {formatNum(info.total)} / {formatNum(info.limit)} токенов ({percent.toFixed(1)}%)
-          </div>
-
-          <div className="ctx-rows">
-            <div className="ctx-row">
-              <span className="ctx-row-label">System prompt</span>
-              <span className="ctx-row-val">{formatNum(info.systemPrompt)} tok</span>
-            </div>
-            <div className="ctx-row">
-              <span className="ctx-row-label">История чата</span>
-              <span className="ctx-row-val">
-                {formatNum(info.history)} tok
-                {info.historyMessages > 0 && <span className="ctx-row-sub"> ({info.historyMessages} сообщ.)</span>}
-              </span>
-            </div>
-            {info.toolCallsTokens > 0 && (
-              <div className="ctx-row ctx-row-indent">
-                <span className="ctx-row-label">↳ Tool calls</span>
-                <span className="ctx-row-val">
-                  {formatNum(info.toolCallsTokens)} tok
-                  <span className="ctx-row-sub"> ({info.toolCallsCount} вызовов)</span>
-                </span>
+      {createPortal(
+        <AnimatePresence>
+          {panelOpen && info && (
+            <motion.div
+              id="ctx-panel"
+              className="ctx-panel"
+              style={{ bottom: panelPos.bottom, left: panelPos.left }}
+              initial={{ opacity: 0, y: 12, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.96 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+            >
+              <div className="ctx-panel-header">
+                <span className="ctx-panel-title">Контекст</span>
+                <span className="ctx-panel-model">{info.modelId}</span>
+                <button className="ctx-panel-close" onClick={() => setPanelOpen(false)}>✕</button>
               </div>
-            )}
-            <div className="ctx-row">
-              <span className="ctx-row-label">Текущий ввод</span>
-              <span className="ctx-row-val">{formatNum(info.currentInput)} tok</span>
-            </div>
-            <div className="ctx-row ctx-row-reserved">
-              <span className="ctx-row-label">Резерв ответа</span>
-              <span className="ctx-row-val">{formatNum(info.reserved)} tok</span>
-            </div>
-            <div className="ctx-row ctx-row-total">
-              <span className="ctx-row-label">Итого</span>
-              <span className="ctx-row-val">{formatNum(info.total)} / {formatNum(info.limit)}</span>
-            </div>
-          </div>
 
-          <div className="ctx-pricing">
-            {info.pricing ? (
-              <>
-                <div className="ctx-pricing-row">
-                  <span className="ctx-pricing-label">Этот запрос:</span>
-                  <span className="ctx-pricing-val">
-                    {info.estimatedCostCents != null ? formatCost(info.estimatedCostCents) : '—'}
+              <div className="ctx-bar-wrap">
+                <div
+                  className={`ctx-bar-fill${info.warning ? ' warn' : ''}${info.critical ? ' crit' : ''}`}
+                  style={{ width: `${Math.min(100, percent)}%` }}
+                />
+              </div>
+              <div className="ctx-bar-label">
+                {formatNum(info.total)} / {formatNum(info.limit)} токенов ({percent.toFixed(1)}%)
+              </div>
+
+              <div className="ctx-rows">
+                <div className="ctx-row">
+                  <span className="ctx-row-label">System prompt</span>
+                  <span className="ctx-row-val">{formatNum(info.systemPrompt)} tok</span>
+                </div>
+                <div className="ctx-row">
+                  <span className="ctx-row-label">История чата</span>
+                  <span className="ctx-row-val">
+                    {formatNum(info.history)} tok
+                    {info.historyMessages > 0 && <span className="ctx-row-sub"> ({info.historyMessages} сообщ.)</span>}
                   </span>
                 </div>
-                {info.sessionCostCents != null && info.sessionRequests > 0 && (
-                  <div className="ctx-pricing-row">
-                    <span className="ctx-pricing-label">Сессия ({info.sessionRequests} запр.):</span>
-                    <span className="ctx-pricing-val">{formatCost(info.sessionCostCents)}</span>
+                {info.toolCallsTokens > 0 && (
+                  <div className="ctx-row ctx-row-indent">
+                    <span className="ctx-row-label">↳ Tool calls</span>
+                    <span className="ctx-row-val">
+                      {formatNum(info.toolCallsTokens)} tok
+                      <span className="ctx-row-sub"> ({info.toolCallsCount} вызовов)</span>
+                    </span>
                   </div>
                 )}
-                <div className="ctx-pricing-rates">
-                  ${(info.pricing.inputPerM / 100).toFixed(2)}/M in · ${(info.pricing.outputPerM / 100).toFixed(2)}/M out
+                <div className="ctx-row">
+                  <span className="ctx-row-label">Текущий ввод</span>
+                  <span className="ctx-row-val">{formatNum(info.currentInput)} tok</span>
                 </div>
-              </>
-            ) : (
-              <span className="ctx-pricing-nodata">Нет данных о ценах</span>
-            )}
-          </div>
+                <div className="ctx-row ctx-row-reserved">
+                  <span className="ctx-row-label">Резерв ответа</span>
+                  <span className="ctx-row-val">{formatNum(info.reserved)} tok</span>
+                </div>
+                <div className="ctx-row ctx-row-total">
+                  <span className="ctx-row-label">Итого</span>
+                  <span className="ctx-row-val">{formatNum(info.total)} / {formatNum(info.limit)}</span>
+                </div>
+              </div>
 
-          {info.warning && (
-            <div className={`ctx-alert${info.critical ? ' ctx-alert-crit' : ''}`}>
-              {info.critical ? '⚠ Контекст почти заполнен!' : '⚠ Контекст заполнен более чем на 80%'}
-            </div>
+              <div className="ctx-pricing">
+                {info.pricing ? (
+                  <>
+                    <div className="ctx-pricing-row">
+                      <span className="ctx-pricing-label">Этот запрос:</span>
+                      <span className="ctx-pricing-val">
+                        {info.estimatedCostCents != null ? formatCost(info.estimatedCostCents) : '—'}
+                      </span>
+                    </div>
+                    {info.sessionCostCents != null && info.sessionRequests > 0 && (
+                      <div className="ctx-pricing-row">
+                        <span className="ctx-pricing-label">Сессия ({info.sessionRequests} запр.):</span>
+                        <span className="ctx-pricing-val">{formatCost(info.sessionCostCents)}</span>
+                      </div>
+                    )}
+                    <div className="ctx-pricing-rates">
+                      ${(info.pricing.inputPerM / 100).toFixed(2)}/M in · ${(info.pricing.outputPerM / 100).toFixed(2)}/M out
+                    </div>
+                  </>
+                ) : (
+                  <span className="ctx-pricing-nodata">Нет данных о ценах</span>
+                )}
+              </div>
+
+              {info.warning && (
+                <div className={`ctx-alert${info.critical ? ' ctx-alert-crit' : ''}`}>
+                  {info.critical ? '⚠ Контекст почти заполнен!' : '⚠ Контекст заполнен более чем на 80%'}
+                </div>
+              )}
+            </motion.div>
           )}
-        </div>,
+        </AnimatePresence>,
         document.body
       )}
     </>

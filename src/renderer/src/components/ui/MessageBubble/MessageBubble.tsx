@@ -417,7 +417,15 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{iter.textBefore}</ReactMarkdown>
+                      {parseContent(iter.textBefore).map((s, si) =>
+                        s.type === 'admonition' ? (
+                          <AdmonitionBlock key={si} kind={s.kind!} title={s.title}>
+                            <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{s.content}</ReactMarkdown>
+                          </AdmonitionBlock>
+                        ) : (
+                          <ReactMarkdown key={si} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={mdComponents}>{s.content}</ReactMarkdown>
+                        )
+                      )}
                     </div>
                   )}
                   {iter.steps.length > 0 && (
@@ -480,8 +488,10 @@ const MessageContent = memo(function MessageContent({
         )}
 
         {/* Thinking block — только для обычного чата (без итераций).
-            В agent mode thinking рендерится внутри итераций и как liveThinking. */}
-        {!isUser && !liveIters?.length && (message.thinking || liveThinking) && (
+            В agent mode thinking рендерится внутри итераций и как liveThinking.
+            Проверяем !iterations?.length чтобы не дублировать последний reasoning-блок,
+            который уже отрендерен внутри итераций выше. */}
+        {!isUser && !liveIters?.length && !(message as Message & { iterations?: unknown[] }).iterations?.length && (message.thinking || liveThinking) && (
           <ThinkingBlock
             text={message.thinking}
             liveText={liveThinking?.text}

@@ -61,7 +61,8 @@ export function registerImageIPC(store: Store, _mainWindow: { getWindow: () => B
         response_format: 'url',
       })
 
-      const img = response.data[0]
+      const img = response.data?.[0]
+      if (!img) return { error: 'Провайдер не вернул изображение' }
       return {
         url: img.url ?? undefined,
         b64: img.b64_json ?? undefined,

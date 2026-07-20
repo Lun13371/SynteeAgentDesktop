@@ -382,6 +382,12 @@ export class AIClient {
     onUsage?: (promptTokens: number, completionTokens: number) => void,
     onThinkingToken?: (token: string) => void,
     onThinkingDone?: (ms: number) => void,
+    // Вызывается один раз на каждый tool_call, как только известно его имя —
+    // ЕЩЁ ДО того, как модель полностью догенерирует JSON аргументов (который
+    // может быть большим для edit_file/write_file и занимать заметное время).
+    // index стабилен в рамках раунда (см. tc.index у провайдера) — по нему
+    // Agent.ts матчит этот ранний сигнал с финальным tool_call.
+    onToolCallStarted?: (index: number, toolName: string) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
@@ -484,6 +490,7 @@ export class AIClient {
             hasToolCalls = true
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
+              const isNewCall = !toolCallMap[idx]
               if (!toolCallMap[idx]) {
                 toolCallMap[idx] = {
                   id: tc.id ?? '',
@@ -495,8 +502,12 @@ export class AIClient {
                 if (tc.function?.name && !toolCallMap[idx].name) toolCallMap[idx].name = tc.function.name
                 if (tc.function?.arguments) toolCallMap[idx].arguments += tc.function.arguments
               }
-              // Стримим частичные аргументы в реальном времени — убрано
-              // onToolCallChunk удалён
+              // Имя тула обычно приходит целиком в первом чанке этого index —
+              // сигналим сразу, не дожидаясь аргументов (которые могут ещё
+              // долго стримиться для edit_file/write_file с большим content).
+              if (isNewCall && toolCallMap[idx].name) {
+                onToolCallStarted?.(idx, toolCallMap[idx].name)
+              }
             }
           }
         }

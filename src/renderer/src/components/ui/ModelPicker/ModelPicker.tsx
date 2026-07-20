@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import type { ModelMeta, ModelCapability } from '../../../../../shared/types'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import type { ModelMeta, ModelCapability, Provider } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
+import BrandAvatar from '../BrandAvatar/BrandAvatar'
+import { CAP_LABELS, SPEED_LABEL, SPEED_COLOR, formatCtx, formatPrice, getProviderColor, getBrandLogo } from '../../../utils/modelFormat'
 import './ModelPicker.css'
 
 interface ModelPickerProps {
@@ -13,33 +16,6 @@ interface ModelPickerProps {
   placeholder?: string
 }
 
-const CAP_LABELS: Record<ModelCapability, string> = {
-  vision: 'Vision', tools: 'Tools', reasoning: 'Reason',
-  code: 'Code', embedding: 'Embed', tts: 'TTS', stt: 'STT', image_gen: 'Image',
-}
-const SPEED_LABEL: Record<string, string> = { fast: 'Быстро', medium: 'Средне', slow: 'Медленно' }
-const SPEED_COLOR: Record<string, string> = { fast: '#4ade80', medium: '#facc15', slow: '#f87171' }
-
-function formatCtx(n: number): string {
-  if (!n) return '—'
-  if (n >= 1_000_000) return `${n / 1_000_000}M`
-  return `${n / 1_000}K`
-}
-function formatPrice(n?: number): string {
-  if (n === undefined) return '—'
-  return `$${n.toFixed(2)}`
-}
-function getProviderColor(pid: string): string {
-  const colors: Record<string, string> = {
-    openai: '#10a37f', anthropic: '#d4763b', google: '#4285f4',
-    groq: '#f55036', mistral: '#ff7000', ollama: '#aaaaaa',
-    cohere: '#39594d', together: '#7c3aed', fireworks: '#ef4444',
-    deepseek: '#2563eb', xai: '#ffffff', onlysq: '#a855f7', voidai: '#06b6d4',
-    bfl: '#e11d48',
-  }
-  return colors[pid] || '#888'
-}
-
 const DROP_H = 460
 const ALL_CAPS: ModelCapability[] = ['vision', 'tools', 'reasoning', 'code', 'image_gen', 'embedding', 'tts', 'stt']
 
@@ -47,17 +23,40 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [models, setModels] = useState<ModelMeta[]>([])
+  const [providers, setProviders] = useState<Provider[]>([])
   const [activeCaps, setActiveCaps] = useState<ModelCapability[]>(filterCaps ?? [])
   const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number; openUp: boolean } | null>(null)
   const [hovered, setHovered] = useState<ModelMeta | null>(null)
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 })
   const btnRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  // Map по providerId для быстрого доступа к provider.type при рендере пунктов.
+  const providerMap = useRef<Map<string, Provider>>(new Map())
+  providerMap.current = new Map(providers.map(p => [p.id, p]))
+
+  // Не гоняем IPC round-trip на каждое открытие — список моделей/провайдеров
+  // меняется редко. Перегружаем только один раз на маунт и если данные
+  // старше 5с при повторном открытии (защита от staleness).
+  const lastLoadedAtRef = useRef(0)
+  const loadData = () => {
+    Promise.all([
+      window.syntee.models.getAll() as Promise<ModelMeta[]>,
+      window.syntee.providers.getAll() as Promise<Provider[]>,
+    ])
+      .then(([all, provs]) => {
+        setModels(all)
+        setProviders(provs)
+        lastLoadedAtRef.current = Date.now()
+      })
+      .catch((e: unknown) => console.error('[ModelPicker] load error', e))
+  }
+
+  useEffect(() => { loadData() }, [])
 
   useEffect(() => {
-    window.syntee.models.getAll()
-      .then((all: ModelMeta[]) => setModels(all))
-      .catch((e: unknown) => console.error('[ModelPicker] getAll error', e))
+    if (open && Date.now() - lastLoadedAtRef.current > 5000) loadData()
   }, [open])
 
   useEffect(() => {
@@ -100,32 +99,79 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   }
 
   // Какие caps реально есть в текущих моделях — чтобы не показывать пустые кнопки
-  const availableCaps = ALL_CAPS.filter(c => models.some(m => m.capabilities.includes(c)))
+  const availableCaps = useMemo(
+    () => ALL_CAPS.filter(c => models.some(m => m.capabilities.includes(c))),
+    [models]
+  )
 
-  // Фильтрация
-  let filtered = models
-  if (activeCaps.length) filtered = filtered.filter(m => activeCaps.every(c => m.capabilities.includes(c)))
-  if (query.trim()) {
-    const q = query.toLowerCase()
-    filtered = filtered.filter(m =>
-      m.name.toLowerCase().includes(q) ||
-      m.id.toLowerCase().includes(q) ||
-      m.providerId.toLowerCase().includes(q)
-    )
-  }
+  // Фильтрация + группировка. Мемоизируем по [models, activeCaps, query] —
+  // иначе grouped был бы новым объектом на каждый рендер (включая
+  // hover/scroll), и useMemo(rows, [grouped]) ниже не давал бы эффекта,
+  // съедая пользу от виртуализации (Fix 7).
+  const grouped = useMemo(() => {
+    let filtered = models
+    if (activeCaps.length) filtered = filtered.filter(m => activeCaps.every(c => m.capabilities.includes(c)))
+    if (query.trim()) {
+      const q = query.toLowerCase()
+      filtered = filtered.filter(m =>
+        m.name.toLowerCase().includes(q) ||
+        m.id.toLowerCase().includes(q) ||
+        m.providerId.toLowerCase().includes(q)
+      )
+    }
+    return filtered.reduce<Record<string, ModelMeta[]>>((acc, m) => {
+      if (!acc[m.providerId]) acc[m.providerId] = []
+      acc[m.providerId].push(m)
+      return acc
+    }, {})
+  }, [models, activeCaps, query])
 
-  // Группировка
-  const grouped = filtered.reduce<Record<string, ModelMeta[]>>((acc, m) => {
-    if (!acc[m.providerId]) acc[m.providerId] = []
-    acc[m.providerId].push(m)
-    return acc
-  }, {})
+  // Fix 7: виртуализация списка. Плоский массив рядов (header | item),
+  // один useVirtualizer на весь список. Раньше рендерились ВСЕ модели с
+  // per-item motion.div + delay — лаг при большом количестве моделей.
+  type Row =
+    | { type: 'header'; providerId: string; key: string }
+    | { type: 'item'; model: ModelMeta; key: string }
+
+  const rows = useMemo<Row[]>(() => {
+    const out: Row[] = []
+    for (const [pid, mods] of Object.entries(grouped)) {
+      out.push({ type: 'header', providerId: pid, key: `h-${pid}` })
+      for (const m of mods) {
+        out.push({ type: 'item', model: m, key: `i-${m.id}-${m.providerId}` })
+      }
+    }
+    return out
+  }, [grouped])
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: (i) => rows[i].type === 'header' ? 26 : 34,
+    overscan: 8,
+  })
 
   const current = models.find(m => m.id === value && m.providerId === providerId)
+  const currentProvider = providerMap.current.get(providerId)
+  const currentLogo = currentProvider
+    ? getBrandLogo(currentProvider.type, value, current?.name ?? '', currentProvider.iconUrl)
+    : null
 
+  // Fix 2: clamp по вертикали — не уходить за низ экрана, при необходимости
+  // переворачивать тултип вверх (иначе нижние модели показывают тултип за viewport).
   const handleItemHover = (e: React.MouseEvent, m: ModelMeta) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setTooltipPos({ top: r.top, left: (dropPos?.left ?? 0) + (dropPos?.width ?? 320) + 8 })
+    const tooltipH = 280
+    const left = (dropPos?.left ?? 0) + (dropPos?.width ?? 320) + 8
+
+    const maxTop = window.innerHeight - tooltipH - 8
+    let top = Math.min(r.top, Math.max(8, maxTop))
+    if (r.top > maxTop) {
+      const topUp = r.bottom - tooltipH + Math.round(r.height / 2)
+      if (topUp > 8) top = topUp
+    }
+
+    setTooltipPos({ top, left })
     setHovered(m)
   }
 
@@ -138,7 +184,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
         whileTap={{ scale: 0.97 }}
         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
       >
-        <span className="model-picker-provider-dot" style={{ background: getProviderColor(providerId) }} />
+        <BrandAvatar logo={currentLogo} fallbackColor={getProviderColor(providerId)} size={18} className="model-picker-provider-logo" />
         <span className="model-picker-label">
           {current ? current.name : (placeholder || 'Выберите модель')}
         </span>
@@ -206,45 +252,84 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                   </div>
                 )}
 
-                {/* Список */}
-                <div className="model-picker-list">
-                  {Object.entries(grouped).length === 0 && (
+                {/* Список (виртуализированный — Fix 7) */}
+                <div
+                  className="model-picker-list"
+                  ref={listRef}
+                  onScroll={() => setHovered(null)}
+                >
+                  {rows.length === 0 && (
                     <div className="model-picker-empty">
                       {activeCaps.length ? 'Нет моделей с такими фильтрами' : 'Модели не найдены'}
                     </div>
                   )}
-                  {Object.entries(grouped).map(([pid, mods]) => (
-                    <div key={pid} className="model-picker-group">
-                      <div className="model-picker-group-label">
-                        <span className="model-picker-provider-dot" style={{ background: getProviderColor(pid) }} />
-                        {pid}
-                      </div>
-                      {mods.map((m, idx) => (
-                        <motion.div
-                          key={m.id + m.providerId}
-                          className={`model-picker-item ${m.id === value && m.providerId === providerId ? 'model-picker-item--active' : ''}`}
-                          initial={{ opacity: 0, x: -8 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ type: 'spring', stiffness: 400, damping: 28, delay: idx * 0.018 }}
-                          onClick={() => { onChange(m.id, m.providerId); setOpen(false); setQuery('') }}
-                          onMouseEnter={e => handleItemHover(e, m)}
-                          onMouseLeave={() => setHovered(null)}
-                        >
-                          <span className="model-picker-item-name">{m.name}</span>
-                          <div className="model-picker-item-caps">
-                            {m.capabilities.slice(0, 3).map(c => (
-                              <span key={c} className={`model-cap-badge ${activeCaps.includes(c) ? 'model-cap-badge--active' : ''}`}>
-                                {CAP_LABELS[c]}
-                              </span>
-                            ))}
+                  {rows.length > 0 && (
+                    <div
+                      style={{
+                        height: `${virtualizer.getTotalSize()}px`,
+                        width: '100%',
+                        position: 'relative',
+                      }}
+                    >
+                      {virtualizer.getVirtualItems().map(vRow => {
+                        const row = rows[vRow.index]
+                        const startY = vRow.start
+                        if (row.type === 'header') {
+                          const prov = providerMap.current.get(row.providerId)
+                          const groupLogo = prov ? getBrandLogo(prov.type, '', '', prov.iconUrl) : null
+                          return (
+                            <div
+                              key={row.key}
+                              className="model-picker-group-label"
+                              style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width: '100%',
+                                height: '26px',
+                                transform: `translateY(${startY}px)`,
+                              }}
+                            >
+                              <BrandAvatar logo={groupLogo} fallbackColor={getProviderColor(row.providerId)} size={16} className="model-picker-provider-logo" />
+                              {row.providerId}
+                            </div>
+                          )
+                        }
+                        const m = row.model
+                        const isActive = m.id === value && m.providerId === providerId
+                        const mProv = providerMap.current.get(m.providerId)
+                        const mLogo = mProv ? getBrandLogo(mProv.type, m.id, m.name, mProv.iconUrl) : null
+                        return (
+                          <div
+                            key={row.key}
+                            className={`model-picker-item ${isActive ? 'model-picker-item--active' : ''}`}
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%',
+                              height: '34px',
+                              transform: `translateY(${startY}px)`,
+                            }}
+                            onClick={() => { onChange(m.id, m.providerId); setOpen(false); setQuery('') }}
+                            onMouseEnter={e => handleItemHover(e, m)}
+                            onMouseLeave={() => setHovered(null)}
+                          >
+                            <BrandAvatar logo={mLogo} fallbackColor={getProviderColor(m.providerId)} size={16} className="model-picker-item-logo" />
+                            <span className="model-picker-item-name">{m.name}</span>
+                            <div className="model-picker-item-caps">
+                              {m.capabilities.slice(0, 3).map(c => (
+                                <span key={c} className={`model-cap-badge ${activeCaps.includes(c) ? 'model-cap-badge--active' : ''}`}>
+                                  {CAP_LABELS[c]}
+                                </span>
+                              ))}
+                            </div>
+                            {isActive && <AppIcon name="check" size="xs" tone="accent" />}
                           </div>
-                          {m.id === value && m.providerId === providerId && (
-                            <AppIcon name="check" size="xs" tone="accent" />
-                          )}
-                        </motion.div>
-                      ))}
+                        )
+                      })}
                     </div>
-                  ))}
+                  )}
                 </div>
               </motion.div>
             )}

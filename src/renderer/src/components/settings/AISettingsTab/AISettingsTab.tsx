@@ -4,6 +4,8 @@ import type { Provider, ModelAssignment, ModelParams, ModelRole, ModelCapability
 import { BUILTIN_PROVIDERS_META } from '../../../../../shared/data/builtinModels'
 import ModelPicker from '../../ui/ModelPicker/ModelPicker'
 import AppIcon from '../../ui/AppIcon/AppIcon'
+import BrandAvatar from '../../ui/BrandAvatar/BrandAvatar'
+import { getBrandLogo } from '../../../utils/modelFormat'
 import './AISettingsTab.css'
 
 const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; filterCaps?: ModelCapability[] }> = {
@@ -186,7 +188,12 @@ export default function AISettingsTab() {
                   style={{ willChange: 'transform' }}
                 >
                   <div className="provider-card-header">
-                    <span className="provider-dot" style={{ background: meta.color }} />
+                    <BrandAvatar
+                      logo={getBrandLogo(id, '', '', undefined)}
+                      fallbackColor={meta.color}
+                      size={18}
+                      className="provider-logo"
+                    />
                     <span className="provider-name">{meta.name}</span>
                     <span className={`provider-status ${configured ? 'provider-status--ok' : ''}`}>
                       {configured ? 'Настроен' : 'Не настроен'}
@@ -314,7 +321,12 @@ export default function AISettingsTab() {
             {providers.filter(p => p.isCustom).map(p => (
               <motion.div key={p.id} className="provider-card provider-card--custom glass" layout>
                 <div className="provider-card-header">
-                  <span className="provider-dot" style={{ background: '#888' }} />
+                  <BrandAvatar
+                    logo={getBrandLogo(p.type, '', '', p.iconUrl)}
+                    fallbackColor="#888"
+                    size={18}
+                    className="provider-logo"
+                  />
                   <span className="provider-name">{p.name}</span>
                   <span className="provider-status provider-status--ok">Кастомный</span>
                 </div>

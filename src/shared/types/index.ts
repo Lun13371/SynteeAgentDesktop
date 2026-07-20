@@ -52,6 +52,7 @@ export interface Project {
   name: string
   workdir: string
   projectContext?: string  // результат analyzeProject при создании; не гоняем по IPC в каждый chats.list
+  verificationCommand?: string  // команда авто-проверки после серии правок (напр. "npm test")
   createdAt: number
   lastUsed: number
 }

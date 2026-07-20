@@ -10,6 +10,7 @@ import {
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
   createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
+  setProjectVerificationCommand,
 } from '../../core/db/database'
 import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
@@ -24,6 +25,7 @@ import {
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usageTracker'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
+import { shellSessionManager } from '../ShellSessionManager'
 import { log } from '../../core/logger'
 import type { Message, AgentSettings, ChatMode } from '../../shared/types'
 
@@ -65,49 +67,6 @@ interface ActiveRun {
 }
 
 let activeRun: ActiveRun | null = null
-
-function compactForAgentTrace(value: unknown, max = 400): string {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim()
-  return text.length > max ? text.slice(0, max - 1) + '...' : text
-}
-
-function summarizeToolArgs(args?: Record<string, unknown>): string {
-  if (!args) return ''
-  const important = ['path', 'paths', 'command', 'cwd', 'pattern', 'file_glob', 'query', 'mode']
-  const parts = important
-    .filter(key => args[key] !== undefined)
-    .map(key => `${key}=${compactForAgentTrace(Array.isArray(args[key]) ? (args[key] as unknown[]).join(', ') : args[key], 90)}`)
-  if (parts.length > 0) return parts.join(', ')
-  return compactForAgentTrace(JSON.stringify(args), 120)
-}
-
-function buildAgentWorkTrace(message: Message): string {
-  const steps = message.toolSteps ?? []
-  if (message.role !== 'assistant' || steps.length === 0) return ''
-
-  const lines: string[] = []
-  let pendingCall: { name: string; args: string } | null = null
-
-  for (const step of steps) {
-    if (step.type === 'tool_call') {
-      pendingCall = {
-        name: step.toolName ?? 'tool',
-        args: summarizeToolArgs(step.toolArgs),
-      }
-      continue
-    }
-
-    if (step.type !== 'tool_result') continue
-    const name = pendingCall?.name ?? step.toolName ?? 'tool'
-    const args = pendingCall?.args ? `(${pendingCall.args})` : ''
-    const status = step.success === false ? 'failed' : 'ok'
-    const result = compactForAgentTrace(step.content, 400)
-    lines.push(`- ${name}${args}: ${status}${result ? ` - ${result}` : ''}`)
-    pendingCall = null
-  }
-
-  return lines.join('\n')
-}
 
 /**
  * Разворачивает Message с toolSteps в массив полноценных OpenAI-совместимых
@@ -286,6 +245,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   ipcMain.handle('projects:delete', (_, id: string) => deleteProject(id))
   ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))
   ipcMain.handle('projects:touch', (_, id: string) => touchProject(id))
+  ipcMain.handle('projects:setVerificationCommand', (_, id: string, command: string | null) => setProjectVerificationCommand(id, command))
 
   ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string) => {
     return createChat(isIncognito, mode, projectId)
@@ -297,10 +257,77 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     deleteChat(chatId)
     clearFileCache(chatId)
     agentManager.clearChat(chatId)
+    shellSessionManager.kill(chatId)
   })
   ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
   ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
   ipcMain.handle('chat:unpinMsg', (_, messageId: string) => unpinMessage(messageId))
+
+  // ── context:calculate — пересчёт контекста чата без отправки сообщения.
+  //    Вызывается renderer-хуком useContextCounter при смене activeChatId,
+  //    чтобы показатель контекста не был пустым до первого сообщения.
+  //    Эмитит CONTEXT_USAGE с тем же payload, что и chat:send.
+  ipcMain.handle('context:calculate', async (_, chatId: string) => {
+    try {
+      const win = mainWindow.getWindow()
+      if (!win) return
+
+      const storeData: Record<string, unknown> = {}
+      const storeKeys = [
+        'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'integrations',
+        'voiceId', 'embeddingModel',
+        'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
+        'contextSettings',
+      ]
+      for (const k of storeKeys) {
+        const v = store.get(k)
+        if (v !== undefined) storeData[k] = v
+      }
+
+      const ctxSettings = getContextSettings(storeData)
+      if (!ctxSettings.tokenCounterEnabled) return
+
+      const contextWindow = getModelContextWindow(storeData)
+      const sysPrompt = getSystemPrompt(chatId)
+
+      // Загружаем историю (как в chat:send) — для incognito-чатов она пуста
+      const history = getMessages(chatId)
+      const historyLimit = 40
+      const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
+
+      const snapshot = buildSnapshotFromEstimate(rawHistory, contextWindow, {
+        systemPrompt: sysPrompt,
+        currentMsgTokens: 0, // при смене чата ввод пуст
+        includeToolSchemas: true,
+      })
+      const sess = getSessionCost(chatId)
+
+      // Метаданные для legacy-полей ContextRing (historyMessages / toolCallsCount)
+      const historyMessagesCount = history.length
+      const toolCallsCount = history.reduce((sum, msg) => {
+        const steps = msg.toolSteps as Array<{ type: string }> | undefined
+        return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
+      }, 0)
+
+      win.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+        chatId,
+        pct: snapshot.pct,
+        estimated: snapshot.estimated,
+        limit: snapshot.limit,
+        status: snapshot.status,
+        source: 'estimate',
+        compressed: false,
+        breakdown: snapshot.breakdown,
+        sessionCostCents: sess?.totalCents ?? null,
+        sessionRequests: sess?.requests ?? 0,
+        historyMessages: historyMessagesCount,
+        toolCallsCount,
+      })
+    } catch (e) {
+      log('[context:calculate] error chatId=%s: %s', chatId, (e as Error).message)
+    }
+  })
 
   ipcMain.handle('chat:send', async (_, params: {
     chatId: string
@@ -440,6 +467,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       })
       const sess = getSessionCost(params.chatId)
       win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+        chatId: params.chatId,
         pct: snapshot.pct,
         estimated: snapshot.estimated,
         limit: snapshot.limit,
@@ -449,6 +477,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         breakdown: snapshot.breakdown,
         sessionCostCents: sess?.totalCents ?? null,
         sessionRequests: sess?.requests ?? 0,
+        historyMessages: history.length,
+        toolCallsCount: history.reduce((sum, msg) => {
+          const steps = msg.toolSteps as Array<{ type: string }> | undefined
+          return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
+        }, 0),
       })
     }
 
@@ -500,7 +533,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const catalogCachePath = path.join(app.getPath('userData'), 'modelsCatalog.json')
     // workdir чата нужен и в воркере — Agent.executeTool будет резолвить
     // относительные пути файловых тулов и cwd run_command относительно него.
-    const chatWorkdir = (() => { try { return getChatWorkdirContext(params.chatId).workdir } catch { return undefined } })()
+    // verificationCommand — команда авто-проверки проекта после серии правок.
+    const { workdir: chatWorkdir, verificationCommand } = (() => {
+      try { return getChatWorkdirContext(params.chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
+    })()
 
     const worker = new Worker(workerPath, {
       workerData: {
@@ -513,6 +549,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         providerId: mainAssignment?.providerId,
         fileCacheSnapshot: getFileCacheSnapshot(params.chatId),
         workdir: chatWorkdir,
+        verificationCommand,
       },
       env: process.env,
     })
@@ -546,7 +583,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           break
 
         case 'step':
-          run.bufferedSteps.push(msg.step)
+          // tool_call_pending — временный ранний сигнал для UI (см. Agent.ts
+          // onToolCallStarted), заменяется настоящим tool_call через
+          // pendingCallId матчинг на фронтенде. Не персистим его в
+          // bufferedSteps — иначе он попал бы в БД как "фантомный" шаг.
+          if ((msg.step as { type?: string }).type !== 'tool_call_pending') {
+            run.bufferedSteps.push(msg.step)
+          }
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId })
           break
 
@@ -607,6 +650,25 @@ ${subModeOutro}`,
               replyId: msg.replyId,
               summary: spawnResult.summary,
               error: spawnResult.error,
+            })
+          })()
+          break
+        }
+
+        case 'shell_exec': {
+          ;(async () => {
+            const result = await shellSessionManager.exec(
+              msg.chatId as string,
+              msg.command as string,
+              msg.cwd as string | undefined,
+              (msg.timeoutSec as number | undefined) ?? 60,
+            )
+            worker.postMessage({
+              type: 'shell_exec_reply',
+              replyId: msg.replyId,
+              output: result.output,
+              exitCode: result.exitCode,
+              timedOut: result.timedOut,
             })
           })()
           break
@@ -697,6 +759,7 @@ ${subModeOutro}`,
 
         case 'context_usage':
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+            chatId: params.chatId,
             pct: msg.pct,
             estimated: msg.estimated,
             limit: msg.limit,
@@ -706,6 +769,11 @@ ${subModeOutro}`,
             breakdown: msg.breakdown,
             sessionCostCents: msg.sessionCostCents ?? null,
             sessionRequests: msg.sessionRequests ?? 0,
+            historyMessages: history.length,
+            toolCallsCount: history.reduce((sum, m) => {
+              const steps = m.toolSteps as Array<{ type: string }> | undefined
+              return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
+            }, 0),
           })
           break
 

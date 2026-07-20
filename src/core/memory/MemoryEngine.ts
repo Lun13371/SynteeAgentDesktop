@@ -16,25 +16,25 @@ export interface MemoryEntry {
 let db: Database.Database | null = null
 
 function getDB(): Database.Database {
-  if (!db) {
-    const dataPath = app.getPath('userData')
-    db = new (require('better-sqlite3'))(join(dataPath, 'memory.db'))
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY,
-        category TEXT NOT NULL,
-        key TEXT NOT NULL,
-        value TEXT NOT NULL,
-        confidence REAL DEFAULT 1.0,
-        source TEXT DEFAULT 'user',
-        createdAt INTEGER NOT NULL,
-        updatedAt INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_category ON memories(category);
-      CREATE INDEX IF NOT EXISTS idx_key ON memories(key);
-    `)
-  }
-  return db
+  if (db) return db
+  const dataPath = app.getPath('userData')
+  const instance: Database.Database = new (require('better-sqlite3'))(join(dataPath, 'memory.db'))
+  instance.exec(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      category TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      confidence REAL DEFAULT 1.0,
+      source TEXT DEFAULT 'user',
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_category ON memories(category);
+    CREATE INDEX IF NOT EXISTS idx_key ON memories(key);
+  `)
+  db = instance
+  return instance
 }
 
 export function saveMemory(entry: Omit<MemoryEntry, 'id' | 'createdAt' | 'updatedAt'>): MemoryEntry {
@@ -95,7 +95,10 @@ export function getAllMemoriesForContext(): string {
 // Парсим ответ AI на предмет новых фактов для запоминания
 export function extractMemoriesFromConversation(
   userMessage: string,
-  assistantResponse: string
+  // Раньше использовался как fallback-источник имени пользователя (см.
+  // комментарий ниже) — оставлен в сигнатуре для совместимости с вызывающим
+  // кодом (chat.ipc.ts передаёт fullText), но больше не читается.
+  _assistantResponse: string
 ): Array<Omit<MemoryEntry, 'id' | 'createdAt' | 'updatedAt'>> {
   const memories: Array<Omit<MemoryEntry, 'id' | 'createdAt' | 'updatedAt'>> = []
 

@@ -15,6 +15,8 @@
 // fs импортируется лениво внутри функций, чтобы renderer-бандл не пытался
 // статически резолвить Node-модули (getCatalogModel работает только с in-memory кэшем)
 
+import type { ModelCapability, ModelSpeed } from '../../shared/types'
+
 const MODELS_DEV_URL = 'https://models.dev/api.json'
 const ONE_DAY_MS = 86_400_000
 
@@ -25,6 +27,10 @@ export interface CatalogModelInfo {
   outputPricePerM: number  // центы за 1M output токенов
   cacheReadPerM?: number
   cacheWritePerM?: number
+  // Расширенные статы из models.dev:
+  displayName?: string               // models.dev: model.name — отображаемое имя
+  description?: string               // models.dev: model.description
+  capabilities?: ModelCapability[]   // деривится из modalities/reasoning/tool_call
 }
 
 interface CachedCatalog {
@@ -64,6 +70,7 @@ const PROVIDER_REMAP: Record<string, string | null> = {
 const CANONICAL_VENDORS = [
   'openai', 'anthropic', 'google', 'xai', 'deepseek',
   'mistral', 'cohere', 'groq', 'togetherai', 'fireworks-ai', 'xiaomi',
+  'zai', 'zhipuai',
 ]
 
 // Эвристика vendor-sniff для проксирующих провайдеров (onlysq и т.п.)
@@ -74,7 +81,8 @@ function inferProviderFromModelId(modelId: string): string | null {
   if (id.includes('gemini') || id.includes('gemma')) return 'google'
   if (id.includes('grok')) return 'xai'
   if (id.includes('deepseek')) return 'deepseek'
-  if (id.includes('glm') || id.includes('mimo')) return 'xiaomi'
+  if (id.includes('mimo')) return 'xiaomi'
+  if (id.includes('glm')) return 'zai'
   if (id.includes('qwen')) return 'togetherai'
   if (id.includes('llama')) return 'togetherai'
   if (id.includes('mistral') || id.includes('mixtral') || id.includes('codestral')) return 'mistral'
@@ -96,6 +104,17 @@ function normalizeModelId(id: string): string {
   // срезаем trailing контекст-размеры (Groq: mixtral-8x7b-32768 → mixtral-8x7b)
   s = s.replace(/-\d{4,}$/, '')
   return s
+}
+
+/**
+ * Эвристический вывод скорости модели по id — models.dev не отдаёт speed.
+ * Используется для не-builtin моделей, у которых нет hand-curated статов.
+ */
+export function inferSpeed(modelId: string): ModelSpeed {
+  const id = modelId.toLowerCase()
+  if (/(flash|mini|haiku|schnell|instant|fast|small|nano|tiny|8b|7b)/.test(id)) return 'fast'
+  if (/(opus|pro|max|o3-|reason|ultra|large)/.test(id) && !/(flash|mini|haiku)/.test(id)) return 'slow'
+  return 'medium'
 }
 
 // ─── Инициализация (читает диск-кэш синхронно) ────────────────────────────────
@@ -241,6 +260,12 @@ export async function refreshCatalog(cachePath?: string, force?: boolean): Promi
 
     const data = await res.json() as Record<string, {
       models?: Record<string, {
+        name?: string
+        description?: string
+        reasoning?: boolean
+        tool_call?: boolean
+        attachment?: boolean
+        modalities?: { input?: string[]; output?: string[] }
         limit?: { context?: number; output?: number }
         cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number }
       }>
@@ -257,6 +282,13 @@ export async function refreshCatalog(cachePath?: string, force?: boolean): Promi
         const inputCents = model.cost?.input != null ? Math.round(model.cost.input * 100) : 0
         const outputCents = model.cost?.output != null ? Math.round(model.cost.output * 100) : 0
         if (ctx === 0 && inputCents === 0 && outputCents === 0) continue
+
+        // Деривим capabilities из modalities/reasoning/tool_call
+        const caps: ModelCapability[] = []
+        if (model.modalities?.input?.includes('image') || model.attachment) caps.push('vision')
+        if (model.reasoning) caps.push('reasoning')
+        if (model.tool_call) caps.push('tools')
+
         flattened[`${provKey}:${modelKey}`] = {
           contextWindow: ctx,
           maxOutput: out,
@@ -264,6 +296,9 @@ export async function refreshCatalog(cachePath?: string, force?: boolean): Promi
           outputPricePerM: outputCents,
           cacheReadPerM: model.cost?.cache_read != null ? Math.round(model.cost.cache_read * 100) : undefined,
           cacheWritePerM: model.cost?.cache_write != null ? Math.round(model.cost.cache_write * 100) : undefined,
+          displayName: model.name,
+          description: model.description,
+          capabilities: caps,
         }
       }
     }

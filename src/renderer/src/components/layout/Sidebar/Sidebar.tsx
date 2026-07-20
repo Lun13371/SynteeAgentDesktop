@@ -69,8 +69,11 @@ export default function Sidebar({
   const [renameVal, setRenameVal] = useState('')
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [renameProjectVal, setRenameProjectVal] = useState('')
+  const [editingVerifyCmdId, setEditingVerifyCmdId] = useState<string | null>(null)
+  const [verifyCmdVal, setVerifyCmdVal] = useState('')
   const renameRef = useRef<HTMLInputElement>(null)
   const renameProjectRef = useRef<HTMLInputElement>(null)
+  const verifyCmdRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const off = window.syntee.on('chat:renamed', ({ chatId, title }: { chatId: string; title: string }) => {
@@ -81,6 +84,7 @@ export default function Sidebar({
 
   useEffect(() => { if (renamingId) renameRef.current?.focus() }, [renamingId])
   useEffect(() => { if (renamingProjectId) renameProjectRef.current?.focus() }, [renamingProjectId])
+  useEffect(() => { if (editingVerifyCmdId) verifyCmdRef.current?.focus() }, [editingVerifyCmdId])
 
   // Закрытие контекстного меню проекта по клику вне его
   useEffect(() => {
@@ -200,6 +204,17 @@ export default function Sidebar({
     window.syntee.shell.openPath(project.workdir)
   }
 
+  const handleEditVerifyCmd = (project: Project) => {
+    setEditingVerifyCmdId(project.id); setVerifyCmdVal(project.verificationCommand ?? '')
+  }
+
+  const commitVerifyCmd = async (projectId: string) => {
+    const value = verifyCmdVal.trim() || null
+    await window.syntee.projects.setVerificationCommand(projectId, value)
+    onProjectsUpdate?.(projects.map(p => p.id === projectId ? { ...p, verificationCommand: value ?? undefined } : p))
+    setEditingVerifyCmdId(null)
+  }
+
   const renderChatItem = (chat: Chat) => (
     <motion.div
       key={chat.id}
@@ -300,6 +315,25 @@ export default function Sidebar({
         <div className="sidebar-project-workdir" title={project.workdir}>
           {shortWorkdir(project.workdir)}
         </div>
+        {editingVerifyCmdId === project.id ? (
+          <input
+            ref={verifyCmdRef}
+            className="sidebar-project-verifycmd-input"
+            placeholder="Команда проверки, напр. npm test"
+            value={verifyCmdVal}
+            onChange={e => setVerifyCmdVal(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            onBlur={() => commitVerifyCmd(project.id)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitVerifyCmd(project.id)
+              if (e.key === 'Escape') setEditingVerifyCmdId(null)
+            }}
+          />
+        ) : project.verificationCommand ? (
+          <div className="sidebar-project-verifycmd" title={project.verificationCommand}>
+            ✓ {project.verificationCommand}
+          </div>
+        ) : null}
         <AnimatePresence initial={false}>
           {!isCollapsed && (
             <motion.div
@@ -415,6 +449,7 @@ export default function Sidebar({
         onDelete: handleProjectDelete,
         onOpenFolder: handleProjectOpenFolder,
         onNewChat: (p) => { onNewChat?.(p.id); setProjectCtxMenu(null) },
+        onEditVerifyCmd: handleEditVerifyCmd,
       })}
     </aside>
   )
@@ -430,6 +465,7 @@ function createProjectContextMenu(
     onDelete: (p: Project) => void
     onOpenFolder: (p: Project) => void
     onNewChat: (p: Project) => void
+    onEditVerifyCmd: (p: Project) => void
   }
 ) {
   const { project, pos } = state
@@ -460,6 +496,10 @@ function createProjectContextMenu(
           <button className="ctx-item" onClick={() => { handlers.onOpenFolder(project); handlers.onClose() }}>
             <AppIcon name="folder" size="sm" />
             <span>Открыть папку</span>
+          </button>
+          <button className="ctx-item" onClick={() => { handlers.onEditVerifyCmd(project); handlers.onClose() }}>
+            <AppIcon name="terminal" size="sm" />
+            <span>Команда проверки</span>
           </button>
           <div className="ctx-divider" />
           <button className="ctx-item ctx-item--danger" onClick={() => { handlers.onDelete(project); handlers.onClose() }}>
