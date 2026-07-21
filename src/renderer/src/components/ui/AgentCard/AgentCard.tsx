@@ -9,7 +9,6 @@ export interface AgentCardData {
   task: string
   status: AgentStatus
   model: string
-  parallel: boolean
   stepsCount: number
   currentStep?: string
   summary?: string
@@ -61,9 +60,6 @@ export default function AgentCard({ agent, onClick }: AgentCardProps) {
           </div>
           <div className="agent-card__title-wrap">
             <span className="agent-card__title">{shortTask}</span>
-            {agent.parallel && (
-              <span className="agent-card__badge">параллельно</span>
-            )}
           </div>
           <div className={`agent-card__status agent-card__status--${agent.status}`}>
             <AppIcon

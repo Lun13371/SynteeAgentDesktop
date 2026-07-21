@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
-import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
 import './AgentPanel.css'
 
@@ -23,7 +22,6 @@ interface AgentRecord {
   task: string
   status: 'pending' | 'running' | 'done' | 'error' | 'cancelled'
   model: string
-  parallel: boolean
   steps: AgentStep[]
   result: string
   summary: string
@@ -33,7 +31,6 @@ interface AgentRecord {
 }
 
 interface AgentPanelProps {
-  onClose: () => void
   focusAgentId?: string | null
   currentChatId?: string | null
 }
@@ -56,7 +53,7 @@ function elapsed(a: AgentRecord) {
   return ms < 60000 ? (ms / 1000).toFixed(1) + 's' : (ms / 60000).toFixed(1) + 'm'
 }
 
-export default function AgentPanel({ onClose, focusAgentId, currentChatId }: AgentPanelProps) {
+export default function AgentPanel({ focusAgentId, currentChatId }: AgentPanelProps) {
   const [agents, setAgents] = useState<AgentRecord[]>([])
   const [selected, setSelected] = useState<string | null>(focusAgentId ?? null)
   const [filterChat, setFilterChat] = useState<string | null>(currentChatId ?? null)
@@ -111,21 +108,7 @@ export default function AgentPanel({ onClose, focusAgentId, currentChatId }: Age
   }
 
   return (
-    <div className="agent-panel">
-      {/* Хедер */}
-      <div className="agent-panel__header">
-        <div className="agent-panel__title">
-          <AppIcon name="git-branch" size="sm" />
-          <span>Агенты</span>
-          {agents.filter(a => a.status === 'running').length > 0 && (
-            <span className="agent-panel__running-badge">
-              {agents.filter(a => a.status === 'running').length}
-            </span>
-          )}
-        </div>
-        <IconButton icon="x" size="sm" onClick={onClose} />
-      </div>
-
+    <div className="agent-panel agent-panel--tab-content">
       {/* Фильтр по чатам */}
       {chatIds.length > 1 && (
         <div className="agent-panel__chat-filter">
@@ -161,8 +144,8 @@ export default function AgentPanel({ onClose, focusAgentId, currentChatId }: Age
           {agents.length === 0 ? (
             <div className="agent-panel__empty">
               <AppIcon name="git-branch" size="lg" tone="muted" />
-              <p>Нет активных агентов</p>
-              <p className="agent-panel__empty-hint">Агенты появятся когда AI запустит подзадачу через spawn_agent</p>
+              <p>Нет агентов</p>
+              <p className="agent-panel__empty-hint">Агенты ещё не запускались</p>
             </div>
           ) : (
             roots.map(agent => (
@@ -214,7 +197,6 @@ export default function AgentPanel({ onClose, focusAgentId, currentChatId }: Age
                 </span>
                 <span className="agent-detail__model">{selectedAgent.model}</span>
                 <span className="agent-detail__elapsed">{elapsed(selectedAgent)}</span>
-                {selectedAgent.parallel && <span className="agent-detail__badge">параллельно</span>}
               </div>
 
               {/* Шаги */}

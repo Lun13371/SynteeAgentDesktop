@@ -1,0 +1,50 @@
+.diff-block-shared {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-secondary, #1a1a1a);
+  border-radius: var(--radius-md, 8px);
+  overflow: auto;
+  max-height: 100%;
+  padding: 8px 0;
+}
+
+.diff-block-shared__line {
+  padding: 0 12px;
+  white-space: pre;
+  min-height: 18px;
+}
+
+.diff-block-shared__meta {
+  color: var(--text-secondary, #888);
+  font-weight: 600;
+}
+
+.diff-block-shared__add {
+  background: rgba(80, 200, 120, 0.12);
+  color: rgb(120, 220, 150);
+}
+
+.diff-block-shared__del {
+  background: rgba(240, 90, 90, 0.12);
+  color: rgb(240, 130, 130);
+}
+
+.diff-block-shared__hunk {
+  color: var(--accent, #6c8aff);
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-top: 1px solid var(--border, #333);
+}
+
+.diff-block-shared__ctx {
+  color: var(--text-secondary, #aaa);
+}
+
+.diff-block-shared--detailed {
+  padding: 12px;
+}
+
+.diff-block-shared--detailed .diff-block-shared__line {
+  padding: 1px 12px;
+}

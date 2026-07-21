@@ -52,7 +52,7 @@ function send(msg: Record<string, unknown>) {
 
 // ЕДИНЫЙ handler — все входящие сообщения через один on('message')
 parentPort?.on('message', async (msg: Record<string, unknown>) => {
-  // --- Reply от main (spawn_agent_reply, wait_agents_reply, get_agent_status_reply) ---
+  // --- Reply от main (spawn_agent_reply, get_agent_status_reply) ---
   if (msg.replyId) {
     const handler = replyHandlers.get(msg.replyId as string)
     if (handler) {
@@ -442,15 +442,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 })
               })
               send({ type: 'shell_exec', chatId, msgId, replyId, command, cwd, timeoutSec })
-            })
-          },
-          onWaitAgents: (agentIds) => {
-            return new Promise((resolve) => {
-              const replyId = `wait-agents-${Date.now()}`
-              replyHandlers.set(replyId, (reply) => {
-                resolve(reply.results as Array<{ summary: string; error?: string }>)
-              })
-              send({ type: 'wait_agents', chatId, msgId, replyId, agentIds })
             })
           },
           onGetAgentStatus: (agentId) => {

@@ -32,7 +32,7 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick 
 
       <div className="titlebar-right no-drag">
         {onMemoryClick && <IconButton icon="brain" label="Память" onClick={onMemoryClick} />}
-        {onAgentClick && <IconButton icon="bot" label="Агент" onClick={onAgentClick} />}
+        {onAgentClick && <IconButton icon="panelRight" label="Панель" onClick={onAgentClick} />}
         {onSettingsClick && <IconButton icon="settings" label="Настройки" onClick={onSettingsClick} />}
         <IconButton icon="minus" label="Свернуть" onClick={handleMinimize} />
         <IconButton icon="x" label="В трей" onClick={handleHide} danger className="titlebar-btn titlebar-btn--close" />

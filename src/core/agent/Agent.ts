@@ -50,15 +50,14 @@ export interface AgentCallbacks {
   onUsage?: (promptTokens: number, completionTokens: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
-  onSpawnAgent?: (opts: { id: string; task: string; parallel?: boolean; model?: string; approvalMode?: 'auto' | 'ask' | 'full' }) => Promise<{ summary: string; error?: string }>
+  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full' }) => Promise<{ summary: string; error?: string }>
   /**
    * Персистентный shell (§1 GAP_ANALYSIS.md) — если задан, run_command
    * выполняется через живую shell-сессию в main-процессе вместо
    * одноразового exec(). cd/env переживают между вызовами. Не используется
-   * суб-агентами (короткоживущие/параллельные — общий shell создал бы гонки).
+   * суб-агентами (короткоживущие — общий shell создал бы гонки).
    */
   onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean }>
-  onWaitAgents?: (agentIds: string[]) => Promise<Array<{ summary: string; error?: string }>>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   onContextCounted?: (promptTokens: number) => void
   onTodoUpdate?: (items: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>) => void
@@ -355,7 +354,6 @@ export class Agent {
     ]
 
     const tavilyKey = (this.store.get('integrations') as { tavily?: { key: string } } | undefined)?.tavily?.key
-    const pendingParallelAgents = new Set<string>()
     const modifiedFiles = new Set<string>()
     let successfulEditCount = 0
     let lastVerifiedEditCount = 0
@@ -498,14 +496,6 @@ export class Agent {
             // Если уже дважды пытались — завершаем с пустым ответом
             callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
             return
-          }
-
-          if (pendingParallelAgents.size > 0 && callbacks.onWaitAgents) {
-            const results = await callbacks.onWaitAgents(Array.from(pendingParallelAgents))
-            pendingParallelAgents.clear()
-            const summaries = results.map((r, i) => `Subagent ${i + 1}: ${r.summary || r.error || 'no result'}`).join('\n')
-            messages.push({ role: 'user', content: `Parallel subagent results:\n${summaries}\n\nContinue and give the final answer.` })
-            continue
           }
 
           // Reasoning уже стримится через onThinkingToken/onThinkingDone.
@@ -688,7 +678,7 @@ export class Agent {
           }
 
           callbacks.onStatus?.(`${fn.name}...`)
-          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, pendingParallelAgents, dryRunMode)
+          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, dryRunMode)
 
           if (result.success && !dryRunMode && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
             const p = args.path as string | undefined
@@ -868,7 +858,6 @@ export class Agent {
     args: Record<string, unknown>,
     tavilyKey?: string,
     callbacks?: AgentCallbacks,
-    pendingParallelAgents?: Set<string>,
     dryRun?: boolean
   ): Promise<ToolResult> {
     switch (name) {
@@ -1011,21 +1000,16 @@ export class Agent {
           return { success: false, output: '', error: 'spawn_agent is not supported in this context' }
         }
         const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-        const isParallel = !!(args.parallel ?? false)
         const result = await callbacks.onSpawnAgent({
           id: agentId,
           task: args.task as string,
-          parallel: isParallel,
           model: args.model as string | undefined,
           approvalMode: args.approval_mode as 'auto' | 'ask' | 'full' | undefined,
         })
         if (result.error) return { success: false, output: '', error: result.error }
-        if (isParallel) pendingParallelAgents?.add(agentId)
         return {
           success: true,
-          output: isParallel
-            ? `[AGENT:${agentId}] Subagent started in parallel: "${args.task}"`
-            : `[AGENT:${agentId}] Subagent finished: ${result.summary}`,
+          output: `[AGENT:${agentId}] Subagent finished: ${result.summary}`,
         }
       }
       case 'get_agent_status': {

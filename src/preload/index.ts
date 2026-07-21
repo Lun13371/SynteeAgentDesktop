@@ -178,6 +178,26 @@ const synteeAPI = {
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
   },
+
+  // Файловый просмотрщик (read-only) для правой панели
+  fs: {
+    getWorkdir: (chatId: string) => ipcRenderer.invoke('fs:getWorkdir', chatId),
+    listDirectory: (params: { root: string; relPath?: string; maxEntries?: number }) =>
+      ipcRenderer.invoke('fs:listDirectory', params),
+    readFile: (params: { root: string; relPath: string; maxBytes?: number }) =>
+      ipcRenderer.invoke('fs:readFile', params),
+  },
+
+  // Git-статус для правой панели
+  git: {
+    status: (workdir: string) => ipcRenderer.invoke('git:status', workdir),
+    diff: (params: { workdir: string; file?: string; staged?: boolean }) =>
+      ipcRenderer.invoke('git:diff', params),
+    log: (params: { workdir: string; limit?: number }) =>
+      ipcRenderer.invoke('git:log', params),
+    branch: (workdir: string) => ipcRenderer.invoke('git:branch', workdir),
+    isRepo: (workdir: string) => ipcRenderer.invoke('git:isRepo', workdir),
+  },
 }
 
 contextBridge.exposeInMainWorld('syntee', synteeAPI)

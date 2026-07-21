@@ -27,7 +27,6 @@ export interface AgentRecord {
   task: string
   status: AgentStatus
   model: string
-  parallel: boolean
   mode: ChatMode
   steps: AgentStep[]
   result: string
@@ -94,7 +93,6 @@ class AgentManager {
     parentId: string
     chatId: string
     task: string
-    parallel: boolean
     model?: string
     mode?: ChatMode
     storeData: Record<string, unknown>
@@ -121,7 +119,6 @@ class AgentManager {
       task: opts.task,
       status: 'pending',
       model,
-      parallel: opts.parallel,
       mode: opts.mode ?? opts.context?.mode ?? 'code',
       steps: [],
       result: '',
@@ -132,19 +129,7 @@ class AgentManager {
     this.agents.set(opts.id, record)
     this.broadcast('agent:update', record)
 
-    const promise = this._runWorker(record, opts.storeData, opts.context, opts.approvalMode)
-
-    if (opts.parallel) {
-      promise.catch(e => {
-        record.status = 'error'
-        record.error = String(e)
-        record.finishedAt = Date.now()
-        this.broadcast('agent:update', record)
-      })
-      return { summary: `Суб-агент "${opts.task}" запущен параллельно (id: ${opts.id})` }
-    }
-
-    return promise
+    return this._runWorker(record, opts.storeData, opts.context, opts.approvalMode)
   }
 
   private async _runWorker(

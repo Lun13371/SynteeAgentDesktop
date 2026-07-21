@@ -6,10 +6,14 @@ type Page = 'chat' | 'settings' | 'tasks' | 'notes' | 'stats'
 export type AvatarStyle = 'hex' | 'circle' | 'letter' | 'emoji' | 'none'
 export type ShowTime = 'always' | 'hover' | 'never'
 
+export const AGENT_PANEL_WIDTH_MIN = 280
+export const AGENT_PANEL_WIDTH_MAX = 720
+export const AGENT_PANEL_WIDTH_DEFAULT = 420
+
 interface UIStore {
   theme: Theme
   accentColor: string
-  sidebarOpen: boolean
+  agentPanelWidth: number
   animatedBackground: boolean
   bgStyle: string
   msgAnim: string
@@ -23,8 +27,7 @@ interface UIStore {
   // Actions
   setTheme: (theme: Theme) => void
   setAccentColor: (color: string) => void
-  toggleSidebar: () => void
-  setSidebarOpen: (open: boolean) => void
+  setAgentPanelWidth: (width: number) => void
   setCurrentPage: (page: Page) => void
   setLoading: (loading: boolean) => void
   setBgStyle: (style: string) => void
@@ -37,10 +40,15 @@ interface UIStore {
   setSendEffect: (v: boolean) => void
 }
 
+function clampAgentPanelWidth(w: number): number {
+  if (!Number.isFinite(w)) return AGENT_PANEL_WIDTH_DEFAULT
+  return Math.min(AGENT_PANEL_WIDTH_MAX, Math.max(AGENT_PANEL_WIDTH_MIN, Math.round(w)))
+}
+
 export const useUIStore = create<UIStore>((set) => ({
   theme: 'dark',
   accentColor: '#ffffff',
-  sidebarOpen: true,
+  agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
   animatedBackground: true,
   bgStyle: 'particles',
   msgAnim: 'slide',
@@ -54,8 +62,7 @@ export const useUIStore = create<UIStore>((set) => ({
 
   setTheme: (theme) => set({ theme }),
   setAccentColor: (accentColor) => set({ accentColor }),
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-  setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+  setAgentPanelWidth: (agentPanelWidth) => set({ agentPanelWidth: clampAgentPanelWidth(agentPanelWidth) }),
   setCurrentPage: (currentPage) => set({ currentPage }),
   setLoading: (isLoading) => set({ isLoading }),
   setBgStyle: (bgStyle) => set({ bgStyle }),
