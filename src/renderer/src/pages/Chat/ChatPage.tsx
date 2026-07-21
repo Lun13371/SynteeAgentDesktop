@@ -612,13 +612,27 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     isInitialScrollRef.current = true
   }
 
-  const createNewProject = async () => {
-    const picked = await window.syntee.projects.pickWorkdir()
+  const createNewProject = async (mode: 'empty' | 'existing' = 'existing') => {
+    const picked = mode === 'empty'
+      ? await window.syntee.projects.pickNewWorkdir()
+      : await window.syntee.projects.pickWorkdir()
     if (!picked) return
     const project: Project = await window.syntee.projects.create(picked)
     const allProjects: Project[] = await window.syntee.projects.getAll()
     setProjects(allProjects)
     setActiveProject(project.id)
+  }
+
+  // Создание чата без привязки к проекту — без пикера папки, без workdir.
+  // Чат попадёт в раздел «Без проекта» в сайдбаре.
+  const createChatWithoutProject = async () => {
+    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, undefined)
+    const all: Chat[] = await window.syntee.chat.getAll()
+    setChats(all)
+    setCurrentChat(chat.id)
+    setMessages([])
+    autoScrollRef.current = true
+    isInitialScrollRef.current = true
   }
 
   const handleSend = async (text: string) => {
@@ -790,6 +804,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           currentChatId={currentChatId}
           onSelectChat={selectChat}
           onNewChat={createNewChat}
+          onNewChatWithoutProject={createChatWithoutProject}
           onNewProject={createNewProject}
           onChatsUpdate={setChats}
           onProjectsUpdate={setProjects}

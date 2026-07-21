@@ -16,6 +16,31 @@
   font-size: 13px; font-weight: 600; color: var(--text-secondary);
   text-transform: uppercase; letter-spacing: 0.06em;
 }
+.sidebar-header-actions {
+  display: flex; align-items: center; gap: 2px;
+}
+
+/* Filter tabs: Все / Проекты / Избранные / Архив */
+.sidebar-filter {
+  display: flex; gap: 2px;
+  margin: 0 8px 6px;
+  padding: 2px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.sidebar-filter-btn {
+  flex: 1; background: none; border: none; cursor: pointer;
+  padding: 4px 6px; border-radius: calc(var(--radius-sm) - 2px);
+  font-size: 11px; font-weight: 500; color: var(--text-muted);
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.sidebar-filter-btn:hover { color: var(--text-primary); }
+.sidebar-filter-btn--active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
 
 /* Search */
 .sidebar-search {
