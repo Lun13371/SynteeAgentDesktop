@@ -6,7 +6,7 @@ import {
   Eye, EyeOff, Palette, Link2, Database, Volume2, LoaderCircle, Minus,
   Shield, Info, RefreshCw, ChevronUp, ChevronDown, Trash2, Zap,
   Archive, ChevronRight, Filter, Clock, CornerUpLeft, Image, GitBranch, Code, Layers, Cpu,
-  ListChecks, Briefcase,
+  ListChecks, Briefcase, MessageSquare,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -26,7 +26,7 @@ const ICONS = {
   trash: Trash2, zap: Zap, archive: Archive, chevronRight: ChevronRight,
   filter: Filter, clock: Clock, reply: CornerUpLeft, image: Image,
   'git-branch': GitBranch, gitBranch: GitBranch, code: Code, layers: Layers, cpu: Cpu,
-  listChecks: ListChecks, briefcase: Briefcase,
+  listChecks: ListChecks, briefcase: Briefcase, messageSquare: MessageSquare,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS

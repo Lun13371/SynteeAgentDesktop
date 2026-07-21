@@ -66,6 +66,7 @@ const synteeAPI = {
   // Проект = папка + зафиксированный скан. Чаты создаются внутри проекта.
   projects: {
     pickWorkdir: () => ipcRenderer.invoke('projects:pickWorkdir'),
+    pickNewWorkdir: () => ipcRenderer.invoke('projects:pickNewWorkdir'),
     create: (workdir: string) => ipcRenderer.invoke('projects:create', workdir),
     getAll: () => ipcRenderer.invoke('projects:getAll'),
     rename: (id: string, name: string) => ipcRenderer.invoke('projects:rename', id, name),

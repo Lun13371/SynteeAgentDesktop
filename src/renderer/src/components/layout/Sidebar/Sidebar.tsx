@@ -14,11 +14,21 @@ interface SidebarProps {
   currentChatId?: string | null
   onSelectChat?: (id: string) => void
   onNewChat?: (projectId?: string) => void
-  onNewProject?: () => void
+  onNewChatWithoutProject?: () => void
+  onNewProject?: (mode: 'empty' | 'existing') => void
   onChatsUpdate?: (chats: Chat[]) => void
   onProjectsUpdate?: (projects: Project[]) => void
   onSelectProject?: (id: string | null) => void
 }
+
+type ChatFilter = 'all' | 'projects' | 'favorites' | 'archive'
+
+const CHAT_FILTERS: { value: ChatFilter; label: string }[] = [
+  { value: 'all', label: 'Все' },
+  { value: 'projects', label: 'Проекты' },
+  { value: 'favorites', label: 'Избранные' },
+  { value: 'archive', label: 'Архив' },
+]
 
 function formatTime(ts: number): string {
   if (!ts || ts < 1000000) return ''
@@ -55,16 +65,20 @@ export default function Sidebar({
   currentChatId,
   onSelectChat,
   onNewChat,
+  onNewChatWithoutProject,
   onNewProject,
   onChatsUpdate,
   onProjectsUpdate,
   onSelectProject,
 }: SidebarProps) {
   const [search, setSearch] = useState('')
+  const [chatFilter, setChatFilter] = useState<ChatFilter>('all')
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set())
   const [ctxMenu, setCtxMenu] = useState<{ chat: Chat; pos: ContextMenuPos } | null>(null)
   const [projectCtxMenu, setProjectCtxMenu] = useState<{ project: Project; pos: ContextMenuPos } | null>(null)
   const projectCtxRef = useRef<HTMLDivElement>(null)
+  const [newProjectMenu, setNewProjectMenu] = useState<ContextMenuPos | null>(null)
+  const newProjectMenuRef = useRef<HTMLDivElement>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameVal, setRenameVal] = useState('')
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
@@ -98,17 +112,47 @@ export default function Sidebar({
     return () => document.removeEventListener('mousedown', handler)
   }, [projectCtxMenu])
 
-  // Фильтрация по поиску
+  // Закрытие меню «Новый проект» по клику вне его. Клик по самой кнопке +/—
+  // обрабатывается отдельно (через data-атрибут), чтобы не закрывать тут же.
+  useEffect(() => {
+    if (!newProjectMenu) return
+    const handler = (e: MouseEvent) => {
+      const t = e.target as HTMLElement
+      if (t.closest('[data-new-project-btn]')) return
+      if (newProjectMenuRef.current && !newProjectMenuRef.current.contains(t)) {
+        setNewProjectMenu(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [newProjectMenu])
+
+  // Фильтрация по поиску + активному селектору (Все/Проекты/Избранные/Архив).
+  // archive-чаты по умолчанию скрыты (filter = 'all' показывает только не-архивные);
+  // для просмотра архива пользователь явно выбирает «Архив».
   const searchLower = search.toLowerCase()
-  const filterChat = (c: Chat) => !search || c.title.toLowerCase().includes(searchLower)
-  const filterArchive = (c: Chat) => !c.isArchived
+  const matchesSearch = (c: Chat) => !search || c.title.toLowerCase().includes(searchLower)
+  const matchesFilter = (c: Chat) => {
+    switch (chatFilter) {
+      case 'all':       return !c.isArchived
+      case 'projects':  return !c.isArchived && !!c.projectId
+      case 'favorites': return !!c.isPinned && !c.isArchived
+      case 'archive':   return !!c.isArchived
+    }
+  }
 
   // Чаты по проектам
   const chatsByProject = (projectId: string | null) =>
-    chats.filter(c => (c.projectId ?? null) === projectId && filterArchive(c) && filterChat(c))
+    chats.filter(c => (c.projectId ?? null) === projectId && matchesFilter(c) && matchesSearch(c))
 
   const projectChats = (p: Project) => chatsByProject(p.id)
   const noProjectChats = chatsByProject(null)
+
+  // Для режимов «Избранные» и «Архив» группировка по проектам избыточна —
+  // показываем плоский список.
+  const flatChats = chatFilter === 'favorites' || chatFilter === 'archive'
+    ? chats.filter(c => matchesFilter(c) && matchesSearch(c))
+    : []
 
   const toggleCollapse = (id: string) => {
     setCollapsedProjects(prev => {
@@ -354,14 +398,31 @@ export default function Sidebar({
     )
   }
 
-  const hasAnyChats = chats.filter(filterArchive).length > 0
+  const hasAnyChats = chats.filter(c => !c.isArchived).length > 0
 
   return (
     <aside className="sidebar">
       {/* Шапка */}
       <div className="sidebar-header">
         <span className="sidebar-title">Проекты</span>
-        <IconButton icon="plus" label="Новый проект" onClick={onNewProject} />
+        <div className="sidebar-header-actions">
+          <IconButton
+            icon="messageSquare"
+            label="Новый чат без проекта"
+            onClick={() => onNewChatWithoutProject?.()}
+          />
+          <IconButton
+            icon="plus"
+            label="Новый проект"
+            data-new-project-btn
+            onClick={(e) => {
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+              // Меню шириной 240 — прижимаем к правому краю кнопки
+              const menuW = 240
+              setNewProjectMenu({ x: Math.max(8, rect.right - menuW), y: rect.bottom + 4 })
+            }}
+          />
+        </div>
       </div>
 
       {/* Поиск */}
@@ -380,52 +441,78 @@ export default function Sidebar({
         )}
       </div>
 
+      {/* Селектор: какие чаты показывать */}
+      <div className="sidebar-filter">
+        {CHAT_FILTERS.map(f => (
+          <button
+            key={f.value}
+            className={`sidebar-filter-btn ${chatFilter === f.value ? 'sidebar-filter-btn--active' : ''}`}
+            onClick={() => setChatFilter(f.value)}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       {/* Список */}
       <div className="sidebar-list">
-        {projects.length === 0 && noProjectChats.length === 0 && (
-          <div className="sidebar-empty">
-            {search ? 'Ничего не найдено' : 'Нет проектов. Нажмите + чтобы создать.'}
-          </div>
-        )}
-
-        {projects.map(renderProject)}
-
-        {/* Без проекта — чаты без project_id (старые, инкогнито) */}
-        {noProjectChats.length > 0 && (
-          <div className="sidebar-project sidebar-project--noproject">
-            <div
-              className="sidebar-project-header"
-              onClick={() => onSelectProject?.(null)}
-            >
-              <button
-                className="sidebar-project-chevron"
-                onClick={(e) => { e.stopPropagation(); toggleCollapse('__noproject__') }}
-              >
-                <AppIcon name={collapsedProjects.has('__noproject__') ? 'chevronRight' : 'chevronDown'} size="xs" />
-              </button>
-              <AppIcon name="layers" size="xs" tone="muted" />
-              <span className="sidebar-project-name">Без проекта</span>
+        {chatFilter === 'favorites' || chatFilter === 'archive' ? (
+          flatChats.length === 0 ? (
+            <div className="sidebar-empty">
+              {search ? 'Ничего не найдено' : chatFilter === 'favorites' ? 'Нет избранных чатов' : 'Архив пуст'}
             </div>
-            <AnimatePresence initial={false}>
-              {!collapsedProjects.has('__noproject__') && (
-                <motion.div
-                  className="sidebar-project-chats"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  {noProjectChats.map(renderChatItem)}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        )}
+          ) : (
+            flatChats.map(renderChatItem)
+          )
+        ) : (
+          <>
+            {projects.length === 0 && noProjectChats.length === 0 && (
+              <div className="sidebar-empty">
+                {search ? 'Ничего не найдено' : 'Нет проектов. Нажмите + чтобы создать.'}
+              </div>
+            )}
 
-        {!hasAnyChats && projects.length > 0 && (
-          <div className="sidebar-empty sidebar-empty--subtle">
-            Создайте чат кнопкой + рядом с проектом
-          </div>
+            {projects.map(renderProject)}
+
+            {/* Без проекта — чаты без project_id (старые, инкогнито).
+                Скрываем в режиме «Проекты», чтобы не было пустой группы. */}
+            {chatFilter !== 'projects' && noProjectChats.length > 0 && (
+              <div className="sidebar-project sidebar-project--noproject">
+                <div
+                  className="sidebar-project-header"
+                  onClick={() => onSelectProject?.(null)}
+                >
+                  <button
+                    className="sidebar-project-chevron"
+                    onClick={(e) => { e.stopPropagation(); toggleCollapse('__noproject__') }}
+                  >
+                    <AppIcon name={collapsedProjects.has('__noproject__') ? 'chevronRight' : 'chevronDown'} size="xs" />
+                  </button>
+                  <AppIcon name="layers" size="xs" tone="muted" />
+                  <span className="sidebar-project-name">Без проекта</span>
+                </div>
+                <AnimatePresence initial={false}>
+                  {!collapsedProjects.has('__noproject__') && (
+                    <motion.div
+                      className="sidebar-project-chats"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                    >
+                      {noProjectChats.map(renderChatItem)}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+
+            {!hasAnyChats && projects.length > 0 && (
+              <div className="sidebar-empty sidebar-empty--subtle">
+                Создайте чат кнопкой + рядом с проектом
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -442,8 +529,9 @@ export default function Sidebar({
         onColor={handleColor}
       />
 
-      {/* Контекстное меню проекта */}
-      {projectCtxMenu && createProjectContextMenu(projectCtxMenu, projectCtxRef, {
+      {/* Контекстное меню проекта. Рендерим всегда (без условия), чтобы
+          AnimatePresence оставался смонтированным и проигрывал exit-анимацию. */}
+      {createProjectContextMenu(projectCtxMenu, projectCtxRef, {
         onClose: () => setProjectCtxMenu(null),
         onRename: handleProjectRename,
         onDelete: handleProjectDelete,
@@ -451,13 +539,23 @@ export default function Sidebar({
         onNewChat: (p) => { onNewChat?.(p.id); setProjectCtxMenu(null) },
         onEditVerifyCmd: handleEditVerifyCmd,
       })}
+
+      {/* Меню «Новый проект»: создать пустой или выбрать существующую папку.
+          Тоже всегда смонтировано ради exit-анимации. */}
+      {createNewProjectMenu(newProjectMenu, newProjectMenuRef, {
+        onClose: () => setNewProjectMenu(null),
+        onEmpty: () => { onNewProject?.('empty'); setNewProjectMenu(null) },
+        onExisting: () => { onNewProject?.('existing'); setNewProjectMenu(null) },
+      })}
     </aside>
   )
 }
 
-// Контекстное меню для проекта — отдельный портал (аналог ChatContextMenu)
+// Контекстное меню для проекта — отдельный портал (аналог ChatContextMenu).
+// Функция вызывается всегда (даже когда state === null), чтобы AnimatePresence
+// оставался смонтированным и проигрывал exit-анимацию при закрытии.
 function createProjectContextMenu(
-  state: { project: Project; pos: ContextMenuPos },
+  state: { project: Project; pos: ContextMenuPos } | null,
   ref: React.RefObject<HTMLDivElement>,
   handlers: {
     onClose: () => void
@@ -468,13 +566,14 @@ function createProjectContextMenu(
     onEditVerifyCmd: (p: Project) => void
   }
 ) {
-  const { project, pos } = state
+  const project = state?.project
+  const pos = state?.pos
   const menuW = 220, menuH = 200
-  const left = Math.min(pos.x, window.innerWidth - menuW - 8)
-  const top = Math.min(pos.y, window.innerHeight - menuH - 8)
+  const left = pos ? Math.min(pos.x, window.innerWidth - menuW - 8) : 0
+  const top = pos ? Math.min(pos.y, window.innerHeight - menuH - 8) : 0
   return createPortal(
     <AnimatePresence>
-      {state && (
+      {project && pos && (
         <motion.div
           ref={ref}
           className="chat-ctx-menu"
@@ -505,6 +604,48 @@ function createProjectContextMenu(
           <button className="ctx-item ctx-item--danger" onClick={() => { handlers.onDelete(project); handlers.onClose() }}>
             <AppIcon name="trash" size="sm" />
             <span>Удалить проект</span>
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body
+  )
+}
+
+// Меню «Новый проект»: выбор между созданием пустой папки и выбором
+// существующей. Появляется по клику на + в шапке сайдбара.
+// Вызывается всегда (даже когда pos === null) ради exit-анимации.
+function createNewProjectMenu(
+  pos: ContextMenuPos | null,
+  ref: React.RefObject<HTMLDivElement>,
+  handlers: {
+    onClose: () => void
+    onEmpty: () => void
+    onExisting: () => void
+  }
+) {
+  const menuW = 240, menuH = 96
+  const left = pos ? Math.min(pos.x, window.innerWidth - menuW - 8) : 0
+  const top = pos ? Math.min(pos.y, window.innerHeight - menuH - 8) : 0
+  return createPortal(
+    <AnimatePresence>
+      {pos && (
+        <motion.div
+          ref={ref}
+          className="chat-ctx-menu"
+          style={{ position: 'fixed', left, top, zIndex: 9999 }}
+          initial={{ opacity: 0, scale: 0.95, y: -6 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 32 }}
+        >
+          <button className="ctx-item" onClick={handlers.onEmpty}>
+            <AppIcon name="plus" size="sm" />
+            <span>Создать пустой проект</span>
+          </button>
+          <button className="ctx-item" onClick={handlers.onExisting}>
+            <AppIcon name="folder" size="sm" />
+            <span>Выбрать существующую папку</span>
           </button>
         </motion.div>
       )}

@@ -224,6 +224,38 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     return result.filePaths[0]
   })
 
+  // Создание НОВОЙ пустой папки для проекта. Используем showSaveDialog, чтобы
+  // пользователь мог задать имя папки и выбрать родительский каталог; затем
+  // физически создаём каталог через mkdirSync. Если каталог уже существует и
+  // не пуст — отказываемся, чтобы не превращать «пустой проект» в скан
+  // существующего содержимого.
+  ipcMain.handle('projects:pickNewWorkdir', async () => {
+    const win = mainWindow.getWindow()
+    const result = await dialog.showSaveDialog(win ?? new BrowserWindow(), {
+      title: 'Создать папку для нового проекта',
+      buttonLabel: 'Создать проект',
+      defaultPath: 'new-project',
+      properties: ['createDirectory'],
+    })
+    if (result.canceled || !result.filePath) return null
+    try {
+      const fs = await import('fs')
+      if (fs.existsSync(result.filePath)) {
+        const entries = fs.readdirSync(result.filePath)
+        if (entries.length > 0) {
+          log('[projects:pickNewWorkdir] dir not empty, abort: %s', result.filePath)
+          return null
+        }
+      } else {
+        fs.mkdirSync(result.filePath, { recursive: true })
+      }
+    } catch (e) {
+      log('[projects:pickNewWorkdir] mkdir failed: %s', (e as Error).message)
+      return null
+    }
+    return result.filePath
+  })
+
   ipcMain.handle('projects:create', async (_, workdir: string) => {
     // Если проект с таким workdir уже существует — createProject вернёт его
     // (UNIQUE constraint). Скан запускаем только если project_context пуст.
