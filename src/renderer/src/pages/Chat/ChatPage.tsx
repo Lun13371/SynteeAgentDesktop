@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { v4 as uuid } from 'uuid'
 import { useContextCounter } from '../../hooks/useContextCounter'
-import { initChatSend, hydrateFromMain } from '../../hooks/useChatRunSubscription'
+import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../hooks/useChatRunSubscription'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
 import { playDoneSound } from '../../utils/sounds'
@@ -17,7 +17,7 @@ import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import { useChatStore, EMPTY_LIVE } from '../../store/chat.store'
 import { parseSlashCommand } from '../../../../shared/slashCommands'
-import type { Chat, Message, ToolOutputMode, Project } from '../../../../shared/types'
+import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta } from '../../../../shared/types'
 import './ChatPage.css'
 
 export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -39,7 +39,6 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const streamingText = live.text
 
   const { add: toast } = useToast()
-  const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const chatInputWrapRef = useRef<HTMLDivElement>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
@@ -189,23 +188,62 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
   }, [])
 
-  // АВТОСКРОЛЛ — плавный 60fps через rAF + ResizeObserver
-  const autoScrollRef    = useRef(true)
-  const scrollRafRef     = useRef<number | null>(null)
-  const lastScrollHeight = useRef(0)
+  // АВТОСКРОЛЛ — один источник истины (autoScrollRef), плавный RAF-loop
+  // АВТОСКРОЛЛ — максимально простая и надёжная модель.
+  //
+  // autoScrollRef меняется ТОЛЬКО в трёх случаях:
+  //   1. onWheel с deltaY < 0 (колесо вверх) → false (пользователь ушёл вверх)
+  //   2. handleSend / selectChat / initial scroll → true (принудительное закрепление)
+  //   3. handleScroll когда distFromBottom < 24 → true (пользователь сам доехал до низа)
+  //
+  // onScroll НЕ отключает autoScroll при отходе от низа — это была главная
+  // причина багов: virtualizer перемеряет элементы → scrollHeight меняется →
+  // scroll event → ложное отключение. Теперь отключение только через onWheel.
+  // onScroll используется исключительно для показа/скрытия кнопки "вниз".
+  const autoScrollRef           = useRef(true)
+  const scrollRafRef            = useRef<number | null>(null)
+  const [showScrollDownBtn, setShowScrollDownBtn] = useState(false)
+
+  const hasScroll = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return false
+    return el.scrollHeight - el.clientHeight > 24
+  }, [])
 
   const smoothScrollToBottom = useCallback(() => {
     const el = scrollContainerRef.current
     if (!el) return
-    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+    // Если loop уже активен — не перезапускаем. Loop в каждом кадре читает
+    // свежий scrollHeight и сам двигается к актуальному низу. Перезапуск
+    // (cancel + start) создавал "покадровый" дёрганый скролл.
+    if (scrollRafRef.current !== null) return
 
     const animate = () => {
       if (!el) return
+      // Пользователь скроллил вверх (onWheel выставил false) — останавливаемся.
+      if (!autoScrollRef.current) {
+        scrollRafRef.current = null
+        return
+      }
       const target = el.scrollHeight - el.clientHeight
       const current = el.scrollTop
       const diff = target - current
-      if (Math.abs(diff) < 1) { el.scrollTop = target; scrollRafRef.current = null; return }
-      el.scrollTop += diff * 0.18
+      if (diff <= 1) {
+        if (diff > 0) el.scrollTop = target
+        scrollRafRef.current = null
+        return
+      }
+      // Если отставание большое (>40px — контент вырос быстрее) — прыгаем
+      // мгновенно к низу. Это убирает "не успевает за ответом": при быстром
+      // стриминге скролл следует за контентом без отставания.
+      // Если diff маленький — плавный шаг для мягкого сближения у низа.
+      if (diff > 40) {
+        el.scrollTop = target
+      } else {
+        // Плавный шаг: Math.max(diff * 0.5, 4) — быстро сходится, минимум 4px.
+        const step = Math.max(diff * 0.5, 4)
+        el.scrollTop = current + Math.min(step, diff)
+      }
       scrollRafRef.current = requestAnimationFrame(animate)
     }
     scrollRafRef.current = requestAnimationFrame(animate)
@@ -214,27 +252,56 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const scrollToBottomInstant = useCallback(() => {
     const el = scrollContainerRef.current
     if (!el) return
-    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
+    if (scrollRafRef.current) {
+      cancelAnimationFrame(scrollRafRef.current)
+      scrollRafRef.current = null
+    }
     el.scrollTop = el.scrollHeight - el.clientHeight
   }, [])
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current
     if (!el) return
+    // onScroll используется ТОЛЬКО для кнопки и закрепления у низа.
+    // НЕ отключаем autoScroll здесь — это вызывало ложные отключения из-за
+    // virtualizer reflow (scrollHeight меняется после перемера элементов).
+    // Отключение только через onWheel (100% пользовательский сигнал).
+    if (!hasScroll()) {
+      setShowScrollDownBtn(false)
+      return
+    }
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distFromBottom > 80) autoScrollRef.current = false
-    if (distFromBottom < 20) autoScrollRef.current = true
+    // Закрепление: пользователь сам доехал до низа (drag scrollbar, тач).
+    if (distFromBottom < 24) {
+      autoScrollRef.current = true
+      setShowScrollDownBtn(false)
+      return
+    }
+    // Кнопку показываем если отошли от низа.
+    setShowScrollDownBtn(true)
+  }, [hasScroll])
+
+  // Колесо вверх → мгновенно отключаем авто-скролл.
+  // onWheel срабатывает ТОЛЬКО от пользователя, никогда от scrollTop=.
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY < 0) {
+      autoScrollRef.current = false
+      setShowScrollDownBtn(true)
+    }
   }, [])
+
+  // Плавный скролл вниз по клику на floating-кнопку + закрепление.
+  const handleScrollDownClick = useCallback(() => {
+    autoScrollRef.current = true
+    setShowScrollDownBtn(false)
+    smoothScrollToBottom()
+  }, [smoothScrollToBottom])
 
   useEffect(() => {
     const el = scrollContainerRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      const newHeight = el.scrollHeight
-      if (newHeight !== lastScrollHeight.current) {
-        lastScrollHeight.current = newHeight
-        if (autoScrollRef.current) smoothScrollToBottom()
-      }
+      if (autoScrollRef.current) smoothScrollToBottom()
     })
     const inner = el.firstElementChild
     if (inner) ro.observe(inner as Element)
@@ -262,17 +329,19 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (isInitialScrollRef.current) {
       requestAnimationFrame(() => { scrollToBottomInstant(); isInitialScrollRef.current = false })
       autoScrollRef.current = true
+      setShowScrollDownBtn(false)
     } else if (autoScrollRef.current) {
       smoothScrollToBottom()
     }
   }, [messages.length, isTyping, isLoadingMessages, smoothScrollToBottom, scrollToBottomInstant])
 
-  // Автоскролл при стриминге текста текущего чата
+  // Автоскролл при стриминге — единый путь через smoothScrollToBottom.
+  // (Раньше тут был прямой прыжок el.scrollTop = ... — конкурировал с
+  // RAF-loop из ResizeObserver и вызывал рывки/джиттер.)
   useEffect(() => {
     if (!autoScrollRef.current || !isTyping) return
-    const el = scrollContainerRef.current
-    if (el) el.scrollTop = el.scrollHeight - el.clientHeight
-  }, [streamingText, live.iters, live.steps, isTyping])
+    smoothScrollToBottom()
+  }, [streamingText, live.iters, live.steps, isTyping, smoothScrollToBottom])
 
   const selectChat = async (id: string) => {
     setIsLoadingMessages(true)
@@ -284,8 +353,15 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // Сбрасываем unread-бейдж этого чата (пользователь его увидел)
     markChatRead(id)
     // Гидрируем live-состояние из main — если в чате работает агент,
-    // показываем накопленный прогресс (текст/шаги/thinking), а не пустой пузырь
+    // показываем накопленный прогресс (текст/шаги/thinking), а не пустой пузырь.
+    // hydrateFromMain также подтягивает meta активного запуска для панели очереди.
     await hydrateFromMain(id)
+    // Подтягиваем очередь ожидающих запросов из main — чтобы бейдж очереди
+    // сразу показал счётчик при возврате в чат с queued-запросами.
+    try {
+      const queue = await window.syntee.chat.getQueue(id) as QueueItemMeta[]
+      useChatStore.getState().setQueue(id, queue)
+    } catch { /* ok — очередь пуста или ещё не загружена */ }
     const msgs: Message[] = await window.syntee.chat.getMessages(id)
     setMessages(msgs)
     if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
@@ -337,6 +413,12 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleSend = async (text: string) => {
     const raw = text.trim()
     const slash = parseSlashCommand(raw)
+
+    // При отправке сообщения — принудительно закрепляем авто-скролл.
+    // Пользователь ожидает увидеть своё сообщение и ответ, даже если до этого
+    // скроллил вверх по истории.
+    autoScrollRef.current = true
+    setShowScrollDownBtn(false)
 
     if (slash?.command.name === 'clear') {
       if (currentChatId) { setMessages([]); toast('Чат очищен', 'info') }
@@ -396,15 +478,16 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       isPinned: 0,
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
     }
-    addMessage(userMsg)
     setReplyTo([])
 
-    // Инициализируем live-буфер этого чата для нового запуска. Если в чате
-    // уже работает воркер — main поставит в очередь, а буфер останется
-    // нетронутым (initChatSend проверяет наличие активного буфера).
-    initChatSend(chatId)
-
-    await window.syntee.chat.send({
+    // Отправляем запрос. Если в чате уже идёт генерация — main поставит
+    // в очередь и вернёт { queued: true }. В этом случае НЕ добавляем
+    // user-сообщение сразу и НЕ инициализируем live-буфер — иначе все
+    // queued-сообщения появятся в чате подряд (user1 user2 user3), а
+    // ответы придут позже (assistant1 assistant2 assistant3). Вместо этого
+    // откладываем до статуса 'running' (когда запрос реально стартует) —
+    // порядок будет нормальным: user1 → assistant1 → user2 → assistant2.
+    const result = await window.syntee.chat.send({
       chatId,
       content: aiContent,
       displayContent: displayContent !== aiContent ? displayContent : undefined,
@@ -413,7 +496,24 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
       planningMode,
       imageMode,
       mode: activeMode,
-    })
+    }) as { queued?: boolean; assistantMsgId?: string }
+
+    if (result.queued && result.assistantMsgId) {
+      // Запрос поставлен в очередь — откладываем user-сообщение до старта.
+      enqueuePendingUserMsg(result.assistantMsgId, userMsg)
+    } else {
+      // Запрос стартовал сразу — показываем user-сообщение и live-пузырь.
+      addMessage(userMsg)
+      initChatSend(chatId)
+      // Принудительно скроллим вниз в следующем кадре — addMessage обновит
+      // DOM, и scrollHeight станет актуальным. Без этого в новом чате
+      // (где isInitialScrollRef=true) эффект мог не сработать вовремя.
+      requestAnimationFrame(() => {
+        autoScrollRef.current = true
+        setShowScrollDownBtn(false)
+        scrollToBottomInstant()
+      })
+    }
   }
 
   const handlePin = useCallback(async (id: string) => {
@@ -445,9 +545,44 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return projects.find(p => p.id === chat.projectId)
   }, [chats, currentChatId, projects])
 
+  // ── Оверлей-план (LiveTodoBar): показываем последний актуальный todo.
+  // Приоритет:
+  //  1) live.todo — текущий стримящийся план (или только что завершённый,
+  //     пока clearLiveState не сбросил состояние).
+  //  2) Самый свежий todo из истории сообщений (message.todo), сканируем
+  //     с конца. Берём ПЕРВЫЙ найденный todo — более свежий перекрывает
+  //     старые (решение "Заменить на новый" при конфликте). Если этот
+  //     todo незавершённый — показываем. Если завершён (все done/skipped)
+  //     — оверлей скрываем, даже если более старые todo висят незавершёнными.
+  //     Это исправляет баг: AI закрыл todo в новом сообщении, но оверлей
+  //     продолжал показывать старый незавершённый.
+  const overlayTodo = useMemo(() => {
+    type TodoItem = { text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }
+    if (live.todo.length > 0) return live.todo as TodoItem[]
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role !== 'assistant' || !m.todo?.length) continue
+      // Нашли самый свежий todo. Если незавершён — показываем.
+      // Если завершён — оверлей не нужен (возвращаем пустой массив,
+      // более старые todo перекрыты этим).
+      const unfinished = m.todo.some(it => it.status === 'pending' || it.status === 'in_progress')
+      return unfinished ? m.todo : []
+    }
+    return []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live.todo, messages])
+
+  const overlayActive = isTyping || overlayTodo.length > 0
+
   const displayMessages = useMemo(() => showLiveBubble
     ? [...messages, {
-        id: live.msgId || 'streaming',
+        // Фиксированный id/key для live-пузыря на весь период стриминга.
+        // Раньше id = live.msgId, который менялся 'streaming-pending' →
+        // реальному uuid при приходе первого токена/step — это вызывало
+        // размонтирование/монтирование элемента и скачок перемера высоты
+        // → рывок скролла в начале ответа. Фиксированный id сохраняет
+        // React-элемент между фазами, перемер проходит гладко.
+        id: 'live-streaming-bubble',
         chatId: currentChatId || '',
         role: 'assistant' as const,
         content: streamingText || '',
@@ -493,7 +628,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           onSelectProject={setActiveProject}
         />
         <main className="chat-main">
-          <LiveTodoBar items={isTyping ? live.todo : []} active={isTyping} />
+          <LiveTodoBar items={overlayTodo} active={overlayActive} />
 
           <AnimatePresence>
             {showSearch && (
@@ -559,6 +694,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               className="chat-messages"
               ref={scrollContainerRef}
               onScroll={handleScroll}
+              onWheel={handleWheel}
             >
               <div
                 style={{
@@ -569,7 +705,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
               >
                 {virtualizer.getVirtualItems().map(vItem => {
                   const msg = displayMessages[vItem.index]
-                  const isLive = msg.id === (live.msgId || 'streaming')
+                  const isLive = msg.id === 'live-streaming-bubble'
                   const liveThinking = isLive && live.thinking
                     ? { text: live.thinking, isLive: live.isThinkingLive, ms: live.thinkingMs }
                     : undefined
@@ -602,12 +738,33 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   )
                 })}
               </div>
-              <div ref={bottomRef} />
             </div>
           )}
 
+          {/* Floating-кнопка «прокрутить вниз» — компактная, по центру,
+              чуть выше инпут-бара. Появляется когда пользователь отошёл
+              от низа (autoScroll=false). Клик — плавный скролл + закрепление. */}
+          <AnimatePresence>
+            {showScrollDownBtn && (
+              <motion.button
+                className="chat-scroll-down-btn"
+                onClick={handleScrollDownClick}
+                initial={{ opacity: 0, y: 8, scale: 0.8 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.8 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                whileTap={{ scale: 0.9 }}
+                whileHover={{ scale: 1.08 }}
+                title="Прокрутить вниз"
+              >
+                <AppIcon name="chevronDown" size="sm" />
+              </motion.button>
+            )}
+          </AnimatePresence>
+
           <div ref={chatInputWrapRef} style={{ display: 'contents' }}>
             <ChatInput
+              chatId={currentChatId ?? undefined}
               onSend={handleSend}
               disabled={isTyping}
               isIncognito={isIncognito}

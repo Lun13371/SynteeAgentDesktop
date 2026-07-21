@@ -27,7 +27,7 @@ import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usa
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { shellSessionManager } from '../ShellSessionManager'
 import { log } from '../../core/logger'
-import type { Message, AgentSettings, ChatMode } from '../../shared/types'
+import type { Message, AgentSettings, ChatMode, QueueItemMeta } from '../../shared/types'
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   approvalMode: 'ask',
@@ -68,13 +68,23 @@ interface ActiveRun {
   bufferedAgentStatus: string | null
   bufferedRateLimitSec: number
   doneSent: boolean
-  sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[]) => void
+  sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[], todo?: unknown[]) => void
 }
 
 const activeRuns = new Map<string, ActiveRun>()
+// Метаданные активного запуска для UI очереди (preview/userMsgId/startedAt).
+// Дублирует часть ActiveRun, но хранится отдельно — т.к. ActiveRun содержит
+// тяжёлые буферы токенов/шагов, а meta нужна для лёгкого снапшота в renderer.
+const activeRunMeta = new Map<string, QueueItemMeta>()
+
 // FIFO-очередь запусков на один chatId. Новый chat:send в чат, где уже
 // работает воркер, ставится в очередь и стартует после завершения старого.
-type QueuedSend = () => Promise<void>
+// Каждый элемент хранит meta (queueId/msgId/preview/...) для отображения
+// в UI панели очереди и управления (cancel/reorder/remove).
+interface QueuedSend {
+  run: () => Promise<void>
+  meta: QueueItemMeta
+}
 const chatQueues = new Map<string, Array<QueuedSend>>()
 
 function emitRunStatus(
@@ -88,18 +98,33 @@ function emitRunStatus(
 }
 
 /**
+ * Эмитит снапшот текущей очереди chatId для UI (список ожидающих запросов).
+ * Вызывается при любом изменении: добавлении, удалении, reorder, drain.
+ */
+function emitQueueUpdate(win: BrowserWindow | null, chatId: string) {
+  const q = chatQueues.get(chatId) ?? []
+  const queue = q.map(item => item.meta)
+  win?.webContents.send(IPC_EVENTS.CHAT_QUEUE_UPDATED, { chatId, queue, ts: Date.now() })
+}
+
+/**
  * Запускает следующий chat:send из очереди chatId, если он есть.
  * Вызывается после терминального статуса предыдущего запуска (done/error/cancelled).
  */
-function drainQueue(chatId: string) {
+function drainQueue(win: BrowserWindow | null, chatId: string) {
   const q = chatQueues.get(chatId)
   if (!q || q.length === 0) {
     chatQueues.delete(chatId)
+    emitQueueUpdate(win, chatId)
     return
   }
   const next = q.shift()!
-  // Асинхронный запуск — ошибки внутри next() обрабатываются им самим.
-  void next().catch((e) => {
+  // Переносим meta из очереди в activeRunMeta — запрос стартовал.
+  // Добавляем startedAt для UI (отображение длительности выполнения).
+  activeRunMeta.set(chatId, { ...next.meta, startedAt: Date.now() })
+  emitQueueUpdate(win, chatId)
+  // Асинхронный запуск — ошибки внутри run() обрабатываются им самим.
+  void next.run().catch((e) => {
     log('[chat:send] queued run failed chatId=%s: %s', chatId, (e as Error).message)
   })
 }
@@ -122,9 +147,20 @@ function messageToContextMessages(message: Message): ChatMessage[] {
     }]
   }
 
-  // Нет toolSteps — обычное текстовое сообщение
   const steps = message.toolSteps ?? []
+
+  // Нет toolSteps — обычное текстовое сообщение
   if (message.role !== 'assistant' || steps.length === 0) {
+    // Даже для текстового сообщения без toolSteps — если есть todo,
+    // инжектим его (user-роль, после assistant) чтобы AI видел свой
+    // незавершённый план из прошлой итерации. Без этого AI не знает
+    // что todo сохраняется между сообщениями и не может продолжить.
+    if (message.role === 'assistant' && message.todo?.length) {
+      return [
+        { role: 'assistant' as const, content: message.content },
+        { role: 'user' as const, content: formatTodoForContext(message.todo) },
+      ]
+    }
     return [{ role: message.role as ChatMessage['role'], content: message.content }]
   }
 
@@ -169,8 +205,14 @@ function messageToContextMessages(message: Message): ChatMessage[] {
     }
   }
 
-  // Если итераций нет — просто текст
+  // Если итераций нет — просто текст (но мог быть todo)
   if (iterations.length === 0) {
+    if (message.todo?.length) {
+      return [
+        { role: 'assistant' as const, content: message.content },
+        { role: 'user' as const, content: formatTodoForContext(message.todo) },
+      ]
+    }
     return [{ role: 'assistant', content: message.content }]
   }
 
@@ -211,7 +253,34 @@ function messageToContextMessages(message: Message): ChatMessage[] {
     }
   }
 
+  // Если у assistant-сообщения есть todo — добавляем user-напоминание
+  // ПОСЛЕ всей цепочки assistant(tool_calls)→tool results. User-роль
+  // работает со всеми провайдерами (system в середине некоторые
+  // прокси отбрасывают). AI видит свой незавершённый план и может
+  // продолжить работу по нему в следующем ответе.
+  if (message.role === 'assistant' && message.todo?.length) {
+    result.push({ role: 'user' as const, content: formatTodoForContext(message.todo) })
+  }
+
   return result
+}
+
+// Форматирует todo-список для инжекции в контекст истории.
+// Используется в messageToContextMessages — AI видит это как user-сообщение
+// после своего прошлого ответа, чтобы понимать что осталось сделать.
+function formatTodoForContext(todo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>): string {
+  const lines = todo.map(t => {
+    const mark = t.status === 'done' ? '[x]'
+      : t.status === 'in_progress' ? '[~]'
+      : t.status === 'skipped' ? '[-]'
+      : '[ ]'
+    return `${mark} ${t.text}`
+  })
+  const unfinished = todo.filter(t => t.status === 'pending' || t.status === 'in_progress').length
+  const suffix = unfinished > 0
+    ? `\n\nЭто твой незавершённый план из предыдущего ответа (${unfinished} пункт(ов) осталось). Продолжи работу по нему — не создавай новый план, если этот ещё актуален.`
+    : '\n\nЭто твой завершённый план из предыдущего ответа (все пункты выполнены).'
+  return `[АКТУАЛЬНЫЙ ПЛАН ЗАДАЧИ — состояние на момент предыдущего сообщения]\n${lines.join('\n')}${suffix}`
 }
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
@@ -291,6 +360,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     try { currentWorkingMemory = getWorkingMemory(params.chatId) } catch { /* ok */ }
     try { storedSummary = getChatSummary(params.chatId) } catch { /* ok */ }
 
+    // Обновляем createdAt на момент реального старта. Для queued-запросов
+    // userMsg.createdAt был зафиксирован в chat:send при отправке (до очереди),
+    // а saveMessage происходит только сейчас. Без этого БД (сортировка по
+    // created_at ASC) поставит user2/user3 перед assistant1 — порядок
+    // диалога сломается при перезаходе в чат.
+    userMsg.createdAt = Date.now()
     if (!params.incognito) saveMessage(userMsg)
 
     const historyLimit = 40
@@ -376,7 +451,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       sendDone: () => { /* присваивается ниже после определения sendDone */ },
     }
 
-    const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[]) => {
+    const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[], todo?: unknown[]) => {
       if (run.doneSent) return
       run.doneSent = true
       // Снимаем ссылку на активный запуск этого чата — следующий chat:send
@@ -384,7 +459,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       if (activeRuns.get(params.chatId) === run) {
         activeRuns.delete(params.chatId)
       }
+      // Сбрасываем meta активного запуска — UI очереди уберёт Running-карточку.
+      activeRunMeta.delete(params.chatId)
 
+      const todoArr = (todo as Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> | undefined)
       const assistantMsg: Message & { iterations?: unknown } = {
         id: assistantMsgId,
         chatId: params.chatId,
@@ -399,6 +477,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         thinking: thinkingText || undefined,
         thinkingMs,
         planData: pendingPlan,
+        todo: todoArr && todoArr.length > 0 ? todoArr : undefined,
       }
 
       if (!params.incognito) saveMessage(assistantMsg)
@@ -420,7 +499,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       emitRunStatus(win, params.chatId, 'done', assistantMsgId)
 
       // Запускаем следующий запрос из очереди этого чата, если он есть.
-      drainQueue(params.chatId)
+      // drainQueue сам эмитит CHAT_QUEUE_UPDATED (очередь стала короче,
+      // а следующий элемент переехал в activeRunMeta).
+      drainQueue(win, params.chatId)
     }
     run.sendDone = sendDone
 
@@ -692,6 +773,7 @@ ${subModeOutro}`,
             (msg.thinkingMs as number) || run.bufferedThinkingMs,
             (msg.collectedSteps as unknown[]) || run.bufferedSteps,
             (msg.collectedIters as unknown[]) || undefined,
+            run.bufferedTodo,
           )
           break
 
@@ -717,12 +799,14 @@ ${subModeOutro}`,
               (msg.thinkingMs as number) || run.bufferedThinkingMs,
               errSteps,
               (msg.collectedIters as unknown[]) || undefined,
+              run.bufferedTodo,
             )
           } else {
             // Нет прогресса — просто помечаем запуск завершённым и дрейним очередь.
             run.doneSent = true
             if (activeRuns.get(params.chatId) === run) activeRuns.delete(params.chatId)
-            drainQueue(params.chatId)
+            activeRunMeta.delete(params.chatId)
+            drainQueue(win, params.chatId)
           }
           emitRunStatus(win, params.chatId, 'error', assistantMsgId, msg.error as string)
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
@@ -737,7 +821,7 @@ ${subModeOutro}`,
     worker.on('error', (err) => {
       log('[Worker] error chatId=%s: %s', params.chatId, err.message)
       console.error('[Worker] error:', err)
-      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters)
+      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters, run.bufferedTodo)
       emitRunStatus(win, params.chatId, 'error', assistantMsgId, err.message)
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
         chatId: params.chatId, error: err.message,
@@ -753,7 +837,7 @@ ${subModeOutro}`,
         if (!run.doneSent) {
           log('[Worker] exit без done — флешим накопленный прогресс chatId=%s (text=%d chars, steps=%d)',
             params.chatId, run.bufferedText.length, run.bufferedSteps.length)
-          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters)
+          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters, run.bufferedTodo)
         }
       })
     })
@@ -865,6 +949,7 @@ ${subModeOutro}`,
       run.doneSent = true
       activeRuns.delete(chatId)
     }
+    activeRunMeta.delete(chatId)
     chatQueues.delete(chatId)
     deleteChat(chatId)
     clearFileCache(chatId)
@@ -971,18 +1056,37 @@ ${subModeOutro}`,
     const history = params.incognito ? [] : getMessages(params.chatId)
     const assistantMsgId = uuid()
 
+    // Метаданные для UI очереди: preview первых ~80 симв. запроса.
+    const previewSrc = params.displayContent ?? params.content ?? ''
+    const preview = previewSrc.replace(/\s+/g, ' ').trim().slice(0, 80)
+    const meta: QueueItemMeta = {
+      queueId: uuid(),
+      chatId: params.chatId,
+      msgId: assistantMsgId,
+      userMsgId: userMsg.id,
+      preview,
+      enqueuedAt: Date.now(),
+    }
+
     // Если в этом чате уже работает воркер — ставим запрос в очередь и
-    // возвращаемся. Реальный запуск произойдёт после drainQueue(params.chatId).
+    // возвращаемся. Реальный запуск произойдёт после drainQueue(win, chatId).
     if (activeRuns.has(params.chatId)) {
       log('[chat:send] chatId=%s уже работает — ставим в очередь', params.chatId)
       emitRunStatus(win, params.chatId, 'queued', assistantMsgId)
-      const queued: QueuedSend = () => runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+      const queued: QueuedSend = {
+        run: async () => { await runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow) },
+        meta,
+      }
       const q = chatQueues.get(params.chatId) ?? []
       q.push(queued)
       chatQueues.set(params.chatId, q)
+      // Эмитим обновление очереди — UI покажет новый ожидающий запрос.
+      emitQueueUpdate(win, params.chatId)
       return { userMsg, assistantMsgId, queued: true }
     }
 
+    // Слот свободен — стартуем сразу. Запоминаем meta как активный запуск.
+    activeRunMeta.set(params.chatId, { ...meta, startedAt: Date.now() })
     return runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
   })
 
@@ -1006,6 +1110,7 @@ ${subModeOutro}`,
       bufferedTodo: run.bufferedTodo,
       bufferedAgentStatus: run.bufferedAgentStatus,
       bufferedRateLimitSec: run.bufferedRateLimitSec,
+      meta: activeRunMeta.get(chatId) ?? null,
     }
   })
 
@@ -1013,29 +1118,92 @@ ${subModeOutro}`,
   //    останавливаем только этот чат (новое поведение для параллельных чатов).
   //    Если chatId не передан — backward compat: останавливаем все активные.
   ipcMain.handle('chat:stop', (_, chatId?: string) => {
+    const win = mainWindow.getWindow()
     const stopRun = (run: ActiveRun) => {
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
       run.worker.terminate()
       // Флешим накопленный прогресс — пользователь увидит частичный ответ,
-      // сохранённый в историю.
-      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters)
-      emitRunStatus(mainWindow.getWindow(), run.chatId, 'cancelled', run.msgId)
+      // сохранённый в историю. sendDone также сбрасывает activeRunMeta и
+      // дрейнит очередь этого чата.
+      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters, run.bufferedTodo)
+      emitRunStatus(win, run.chatId, 'cancelled', run.msgId)
     }
     if (chatId) {
       const run = activeRuns.get(chatId)
       if (run) {
         stopRun(run)
+        // activeRuns/activeRunMeta уже сброшены в sendDone; этот delete —
+        // подстраховка на случай если sendDone был no-op (doneSent=true).
         activeRuns.delete(chatId)
-        drainQueue(chatId)
+        activeRunMeta.delete(chatId)
+        emitQueueUpdate(win, chatId)
+      } else {
+        // Активного запуска нет — но могла быть очередь. Чистим её целиком.
+        if (chatQueues.has(chatId)) {
+          chatQueues.delete(chatId)
+          emitQueueUpdate(win, chatId)
+        }
       }
     } else {
       // Legacy: останавливаем все активные запуски
+      const chatIds = new Set<string>()
       for (const [cid, run] of activeRuns) {
+        chatIds.add(cid)
         stopRun(run)
-        drainQueue(cid)
       }
       activeRuns.clear()
+      activeRunMeta.clear()
+      chatQueues.clear()
+      for (const cid of chatIds) emitQueueUpdate(win, cid)
     }
+  })
+
+  // ── chat:getQueue — снапшот очереди ожидающих запросов chatId.
+  //    Возвращает массив meta (без активного запуска — он доступен через
+  //    chat:getLiveState.meta). Используется UI-панелью очереди при
+  //    инициализации и смене чата.
+  ipcMain.handle('chat:getQueue', (_, chatId: string): QueueItemMeta[] => {
+    const q = chatQueues.get(chatId) ?? []
+    return q.map(item => item.meta)
+  })
+
+  // ── chat:queueRemove — убирает запрос из очереди по queueId.
+  //    Сам воркер не трогается (запрос ещё не стартовал). Если удаляемый
+  //    элемент был единственным — очередь очищается. Эмитит обновление.
+  ipcMain.handle('chat:queueRemove', (_, chatId: string, queueId: string) => {
+    const q = chatQueues.get(chatId)
+    if (!q) return false
+    const idx = q.findIndex(item => item.meta.queueId === queueId)
+    if (idx === -1) return false
+    q.splice(idx, 1)
+    if (q.length === 0) chatQueues.delete(chatId)
+    emitQueueUpdate(mainWindow.getWindow(), chatId)
+    return true
+  })
+
+  // ── chat:queueReorder — переставляет очередь под новый порядок queueId.
+  //    Элементы, не найденные в новом порядке, сохраняют свои позиции в конце.
+  //    Активный запуск (если есть) не затрагивается — он не в очереди.
+  ipcMain.handle('chat:queueReorder', (_, chatId: string, queueIds: string[]) => {
+    const q = chatQueues.get(chatId)
+    if (!q || q.length === 0) return false
+    const byId = new Map(q.map(item => [item.meta.queueId, item]))
+    const next: QueuedSend[] = []
+    const used = new Set<string>()
+    for (const id of queueIds) {
+      const item = byId.get(id)
+      if (item && !used.has(id)) {
+        next.push(item)
+        used.add(id)
+      }
+    }
+    // Дописываем элементы, не указанные в новом порядке (сохраняя порядок).
+    for (const item of q) {
+      if (!used.has(item.meta.queueId)) next.push(item)
+    }
+    chatQueues.set(chatId, next)
+    emitQueueUpdate(mainWindow.getWindow(), chatId)
+    return true
   })
 
   ipcMain.handle('chat:reloadClient', () => {})

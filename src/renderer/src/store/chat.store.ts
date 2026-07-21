@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Chat, Message, ChatMode, Project, ToolStep } from '../../../shared/types'
+import type { Chat, Message, ChatMode, Project, ToolStep, QueueItemMeta } from '../../../shared/types'
 
 // ── Per-chat live state ────────────────────────────────────────────────
 // Раньше всё live-состояние (стриминг-текст, шаги тулов, thinking, todo)
@@ -77,6 +77,14 @@ interface ChatStore {
   // Сбрасывается в markChatRead когда пользователь открыл чат.
   unreadStatusByChat: Record<string, RunStatus>
 
+  // ── Очередь запросов чата ──
+  // Ожидающие запросы (queued) по chatId — для UI-панели очереди.
+  queueByChat: Record<string, QueueItemMeta[]>
+  // Активный запуск (running) по chatId. null если ничего не выполняется.
+  // Отличается от runStatusByChat тем, что хранит preview/startedAt для
+  // отображения в панели; сбрасывается в null на терминальном статусе.
+  activeRunByChat: Record<string, QueueItemMeta | null>
+
   // Actions
   setChats: (chats: Chat[]) => void
   setProjects: (projects: Project[]) => void
@@ -99,6 +107,10 @@ interface ChatStore {
   setRunStatus: (chatId: string, status: RunStatus, error?: string, msgId?: string) => void
   markChatRead: (chatId: string) => void
   dropChatState: (chatId: string) => void
+
+  // ── Очередь запросов ──
+  setQueue: (chatId: string, queue: QueueItemMeta[]) => void
+  setActiveRun: (chatId: string, meta: QueueItemMeta | null) => void
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -116,6 +128,9 @@ export const useChatStore = create<ChatStore>((set) => ({
   liveByChat: {},
   runStatusByChat: {},
   unreadStatusByChat: {},
+
+  queueByChat: {},
+  activeRunByChat: {},
 
   setChats: (chats) => set({ chats }),
   setProjects: (projects) => set({ projects }),
@@ -199,13 +214,33 @@ export const useChatStore = create<ChatStore>((set) => ({
       const nextLive = { ...s.liveByChat }
       const nextRun = { ...s.runStatusByChat }
       const nextUnread = { ...s.unreadStatusByChat }
+      const nextQueue = { ...s.queueByChat }
+      const nextActive = { ...s.activeRunByChat }
       delete nextLive[chatId]
       delete nextRun[chatId]
       delete nextUnread[chatId]
+      delete nextQueue[chatId]
+      delete nextActive[chatId]
       return {
         liveByChat: nextLive,
         runStatusByChat: nextRun,
         unreadStatusByChat: nextUnread,
+        queueByChat: nextQueue,
+        activeRunByChat: nextActive,
       }
+    }),
+
+  setQueue: (chatId, queue) =>
+    set((s) => ({
+      queueByChat: { ...s.queueByChat, [chatId]: queue },
+    })),
+
+  setActiveRun: (chatId, meta) =>
+    set((s) => {
+      // Если meta === null — удаляем ключ, чтобы не плодить пустые записи.
+      const next = { ...s.activeRunByChat }
+      if (meta === null) delete next[chatId]
+      else next[chatId] = meta
+      return { activeRunByChat: next }
     }),
 }))

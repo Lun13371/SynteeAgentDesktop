@@ -61,6 +61,13 @@ const synteeAPI = {
     setColor: (chatId: string, color: string | null) => ipcRenderer.invoke('chat:setColor', chatId, color),
     duplicate: (chatId: string) => ipcRenderer.invoke('chat:duplicate', chatId),
     export: (chatId: string, format: 'txt' | 'md') => ipcRenderer.invoke('chat:export', chatId, format),
+    // ── Очередь запросов чата ──
+    // getQueue возвращает meta ожидающих запросов (без активного).
+    // queueRemove убирает запрос из очереди по queueId.
+    // queueReorder переставляет очередь под новый порядок queueId.
+    getQueue: (chatId: string) => ipcRenderer.invoke('chat:getQueue', chatId),
+    queueRemove: (chatId: string, queueId: string) => ipcRenderer.invoke('chat:queueRemove', chatId, queueId),
+    queueReorder: (chatId: string, queueIds: string[]) => ipcRenderer.invoke('chat:queueReorder', chatId, queueIds),
   },
 
   // Проекты (рабочие директории) — сущность верхнего уровня над чатами.

@@ -128,6 +128,9 @@ function runMigrations(): void {
   if (!cols.find(c => c.name === 'plan_data')) {
     db.prepare(`ALTER TABLE messages ADD COLUMN plan_data TEXT`).run()
   }
+  if (!cols.find(c => c.name === 'todo')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN todo TEXT`).run()
+  }
 
   // Миграция: добавляем поля чатов
   const chatCols = db.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[]
@@ -398,8 +401,8 @@ export function touchProject(id: string): void {
 
 export function saveMessage(msg: Message): void {
   db.prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
     msg.toolSteps ? JSON.stringify(msg.toolSteps) : null,
@@ -407,6 +410,7 @@ export function saveMessage(msg: Message): void {
     msg.slashCommand ? JSON.stringify(msg.slashCommand) : null,
     (msg as Message & { iterations?: unknown }).iterations ? JSON.stringify((msg as Message & { iterations?: unknown }).iterations) : null,
     msg.planData ? JSON.stringify(msg.planData) : null,
+    msg.todo ? JSON.stringify(msg.todo) : null,
   )
   touchChat(msg.chatId)
 }
@@ -415,18 +419,19 @@ export function getMessages(chatId: string): Message[] {
   const rows = db.prepare(`
     SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model,
            tool_steps as toolStepsJson, thinking, thinking_ms as thinkingMs, slash_command as slashCommandJson,
-           iterations as iterationsJson, plan_data as planDataJson
+           iterations as iterationsJson, plan_data as planDataJson, todo as todoJson
     FROM messages WHERE chat_id = ?
     ORDER BY created_at ASC
-  `).all(chatId) as (Message & { toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string; planDataJson?: string })[]
+  `).all(chatId) as (Message & { toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string; planDataJson?: string; todoJson?: string })[]
   return rows.map(r => {
-    const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, ...rest } = r
+    const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, ...rest } = r
     return {
       ...rest,
       toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined,
       slashCommand: slashCommandJson ? JSON.parse(slashCommandJson) : undefined,
       iterations: iterationsJson ? JSON.parse(iterationsJson) : undefined,
       planData: planDataJson ? JSON.parse(planDataJson) : undefined,
+      todo: todoJson ? JSON.parse(todoJson) : undefined,
     }
   })
 }
