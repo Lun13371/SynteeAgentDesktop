@@ -5,8 +5,8 @@ import {
   Folder, Clipboard, Terminal, Monitor, Pencil, Check, X, AlertCircle,
   Eye, EyeOff, Palette, Link2, Database, Volume2, LoaderCircle, Minus,
   Shield, Info, RefreshCw, ChevronUp, ChevronDown, Trash2, Zap,
-  Archive, ChevronRight, Filter, Clock, CornerUpLeft, Image, GitBranch, Code, Layers, Cpu,
-  ListChecks, Briefcase, MessageSquare, GripVertical,
+  Archive, ChevronRight, Filter, Clock, CornerUpLeft, Image, GitBranch, GitGraph, Code, Layers, Cpu,
+  ListChecks, Briefcase, MessageSquare, GripVertical, PanelRight,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -25,7 +25,8 @@ const ICONS = {
   refreshCw: RefreshCw, chevronUp: ChevronUp, chevronDown: ChevronDown,
   trash: Trash2, zap: Zap, archive: Archive, chevronRight: ChevronRight,
   filter: Filter, clock: Clock, reply: CornerUpLeft, image: Image,
-  'git-branch': GitBranch, gitBranch: GitBranch, code: Code, layers: Layers, cpu: Cpu,
+  'git-branch': GitBranch, gitBranch: GitBranch, git: GitGraph, code: Code, layers: Layers, cpu: Cpu,
+  panelRight: PanelRight,
   listChecks: ListChecks, briefcase: Briefcase, messageSquare: MessageSquare,
   gripVertical: GripVertical,
 } satisfies Record<string, IconComponent>

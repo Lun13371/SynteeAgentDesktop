@@ -1,0 +1,21 @@
+.code-preview {
+  height: 100%;
+  overflow: auto;
+  background: var(--bg-secondary, #1a1a1a);
+  border-radius: var(--radius-md, 8px);
+}
+
+.code-preview pre {
+  margin: 0 !important;
+  background: transparent !important;
+}
+
+.code-preview__truncated {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-secondary, #888);
+  background: var(--bg-tertiary, #222);
+  border-top: 1px solid var(--border, #333);
+  text-align: center;
+  font-style: italic;
+}

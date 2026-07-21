@@ -609,7 +609,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               parentId: msg.msgId as string,
               chatId: msg.chatId as string,
               task: msg.task as string,
-              parallel: !!msg.parallel,
               model: msg.model as string | undefined,
               approvalMode: msg.approval_mode as 'auto' | 'ask' | 'full' | undefined,
               mode: chatMode,
@@ -669,56 +668,6 @@ ${subModeOutro}`,
                 : undefined,
             } : null,
           })
-          break
-        }
-
-        case 'wait_agents': {
-          ;(async () => {
-            const agentIds = msg.agentIds as string[]
-            const timeout = 5 * 60 * 1000
-            const pollInterval = 1000
-            const start = Date.now()
-
-            while (Date.now() - start < timeout) {
-              const records = agentIds.map(id => agentManager.get(id))
-              const allDone = records.every(r => r && (r.status === 'done' || r.status === 'error' || r.status === 'cancelled'))
-              if (allDone) {
-                agentIds.forEach(id => {
-                  const r = agentManager.get(id)
-                  if (r) {
-                    worker.postMessage({ type: 'agent_status_update', agentId: id, statusData: { status: r.status, stepsCount: r.steps.length } })
-                  }
-                })
-                worker.postMessage({
-                  type: 'wait_agents_reply',
-                  replyId: msg.replyId,
-                  results: records.map(r => ({ summary: r?.result ?? '', error: r?.error })),
-                })
-                return
-              }
-
-              agentIds.forEach(id => {
-                const r = agentManager.get(id)
-                if (r) {
-                  worker.postMessage({
-                    type: 'agent_status_update',
-                    agentId: id,
-                    statusData: { status: r.status, stepsCount: r.steps.length, currentStep: r.steps.at(-1)?.content?.slice(0, 80) },
-                  })
-                }
-              })
-              await new Promise(resolve => setTimeout(resolve, pollInterval))
-            }
-
-            worker.postMessage({
-              type: 'wait_agents_reply',
-              replyId: msg.replyId,
-              results: agentIds.map(id => {
-                const r = agentManager.get(id)
-                return { summary: r?.result ?? '', error: r?.status !== 'done' ? `Таймаут (${r?.status})` : undefined }
-              }),
-            })
-          })()
           break
         }
 

@@ -152,10 +152,9 @@ function parseContent(raw: string): Array<{ type: 'md' | 'admonition'; content: 
 }
 
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
-function AgentCardLive({ agentId, task, parallel }: {
+function AgentCardLive({ agentId, task }: {
   agentId: string
   task: string
-  parallel: boolean
 }) {
   const [agent, setAgent] = useState<{
     id: string; status: string; model: string; steps: unknown[]
@@ -183,7 +182,6 @@ function AgentCardLive({ agentId, task, parallel }: {
         task,
         status,
         model: agent?.model ?? '…',
-        parallel,
         stepsCount: agent?.steps?.length ?? 0,
         currentStep: status === 'running' && currentTool ? currentTool : undefined,
         summary: agent?.summary,
@@ -454,7 +452,6 @@ const MessageContent = memo(function MessageContent({
                 key={agentId}
                 agentId={agentId}
                 task={(s.toolArgs?.task as string) ?? ''}
-                parallel={!!(s.toolArgs?.parallel)}
               />
             )
           })

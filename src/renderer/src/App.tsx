@@ -20,9 +20,9 @@ import './pages/Onboarding/OnboardingPage.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
 import AnimatedBackground from './components/ui/AnimatedBackground/AnimatedBackground'
-import AgentPanel from './components/ui/AgentPanel/AgentPanel'
+import RightPanel from './components/ui/RightPanel/RightPanel'
 import AgentConfirmDialog from './components/ui/AgentConfirmDialog/AgentConfirmDialog'
-import './components/ui/AgentPanel/AgentPanel.css'
+import './components/ui/RightPanel/RightPanel.css'
 
 type Route = 'chat' | 'overlay' | 'voice' | 'spotlight'
 type MainPage = 'chat' | 'settings' | 'memory'
@@ -201,7 +201,7 @@ export default function App() {
         </div>
         <AnimatePresence>
           {showAgent && (
-            <AgentPanel
+            <RightPanel
               onClose={() => { setShowAgent(false); setFocusAgentId(null) }}
               focusAgentId={focusAgentId}
               currentChatId={currentChatId}

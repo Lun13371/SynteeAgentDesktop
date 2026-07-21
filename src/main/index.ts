@@ -18,6 +18,8 @@ import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
+import { registerFsIPC } from './ipc/fs.ipc'
+import { registerGitIPC } from './ipc/git.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { shellSessionManager } from './ShellSessionManager'
 import { ipcMain } from 'electron'
@@ -96,6 +98,8 @@ app.whenReady().then(async () => {
   registerProviderIPC(store)
   registerDebugIPC(store)
   registerImageIPC(store, mainWindow)
+  registerFsIPC()
+  registerGitIPC()
 
   // Лёгкий обработчик оценки токенов текущего ввода (для live-обновления кольца при печати)
   ipcMain.handle('context:estimateInput', (_e, params: { text: string }) => {
