@@ -1,4 +1,4 @@
-.plan-card {
+﻿.plan-card {
   border: 1px solid var(--accent);
   border-radius: 12px;
   background: var(--bg-secondary);
@@ -132,13 +132,13 @@
 
 .plan-card-btn--primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent-strong);
   border-color: var(--accent);
 }
 
 .plan-card-btn--primary:hover {
   opacity: 0.85;
-  color: #fff;
+  color: var(--on-accent-strong);
 }
 
 .plan-card-btn--expand {

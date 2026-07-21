@@ -1,4 +1,4 @@
-.ai-settings { display: flex; flex-direction: column; gap: 16px; height: 100%; }
+﻿.ai-settings { display: flex; flex-direction: column; gap: 16px; height: 100%; }
 
 .ai-settings-tabs {
   display: flex;
@@ -52,7 +52,7 @@
 .provider-name { font-size: 13px; font-weight: 600; flex: 1; color: var(--text-primary); }
 .provider-status { font-size: 10px; color: var(--text-muted); }
 .provider-status--ok { color: #4ade80; }
-.provider-url { font-size: 11px; color: var(--text-muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-url { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .provider-form { display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
 .provider-form-label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
@@ -119,9 +119,9 @@
   align-self: flex-start;
   padding: 4px 10px;
   border-radius: 7px;
-  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border: 1px dashed var(--overlay-5);
   background: transparent;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s;
@@ -238,8 +238,8 @@
   margin-top: 24px;
   padding: 16px;
   border-radius: 12px;
-  border: 1px solid rgba(255,255,255,0.06);
-  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--overlay-3);
+  background: var(--overlay-1);
 }
 .image-gen-settings-header {
   display: flex;
@@ -248,12 +248,12 @@
   margin-bottom: 14px;
   font-size: 13px;
   font-weight: 600;
-  color: rgba(255,255,255,0.85);
+  color: var(--text-secondary);
 }
 .image-gen-settings-hint {
   font-size: 11px;
   font-weight: 400;
-  color: rgba(255,255,255,0.3);
+  color: var(--text-muted);
   margin-left: 4px;
 }
 .image-gen-row {
@@ -264,16 +264,16 @@
 }
 .image-gen-label {
   font-size: 12px;
-  color: rgba(255,255,255,0.5);
+  color: var(--text-muted);
   min-width: 140px;
   flex-shrink: 0;
 }
 .image-gen-select {
   flex: 1;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: var(--overlay-3);
+  border: 1px solid var(--overlay-4);
   border-radius: 8px;
-  color: rgba(255,255,255,0.85);
+  color: var(--text-secondary);
   font-size: 12px;
   padding: 6px 10px;
   outline: none;
@@ -283,7 +283,7 @@
 .image-gen-select option, .image-gen-select optgroup { background: #1a1a22; }
 .image-gen-notes {
   font-size: 11px;
-  color: rgba(255,255,255,0.25);
+  color: var(--overlay-6);
   margin: 8px 0 10px;
   line-height: 1.5;
 }

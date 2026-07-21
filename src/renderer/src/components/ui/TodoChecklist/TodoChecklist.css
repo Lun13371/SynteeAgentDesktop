@@ -1,6 +1,6 @@
-.todo-checklist {
-  background: var(--bg-secondary, rgba(255,255,255,0.04));
-  border: 1px solid var(--border, rgba(255,255,255,0.08));
+﻿.todo-checklist {
+  background: var(--bg-secondary, var(--overlay-2));
+  border: 1px solid var(--border, var(--overlay-4));
   border-radius: var(--radius-md, 12px);
   padding: 12px 14px;
   margin: 6px 0;
@@ -27,7 +27,7 @@
 
 .todo-bar {
   height: 3px;
-  background: rgba(255,255,255,0.08);
+  background: var(--overlay-4);
   border-radius: 2px;
   overflow: hidden;
 }

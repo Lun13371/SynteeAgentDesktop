@@ -1,11 +1,11 @@
-.brand-avatar {
+﻿.brand-avatar {
   flex-shrink: 0;
   display: inline-block;
 }
 
 .brand-avatar--dot {
   border-radius: 50%;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15);
+  box-shadow: 0 0 0 1px var(--overlay-6);
 }
 
 .brand-avatar--img {

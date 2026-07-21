@@ -1,4 +1,4 @@
-.chat-layout {
+﻿.chat-layout {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -74,7 +74,14 @@
   width: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 0 120px 0;
+  /* Синхронизировано с реальной высотой .chat-input-wrap через
+     ResizeObserver (ChatPage.tsx) — иначе при появлении todo-бара
+     или бейджей (workdir/planning) фиксированный 120px отступ не
+     хватало и инпут-бар наезжал на сообщения ("прыжок" списка).
+     transition УБРАН намеренно: ResizeObserver стреляет каждый кадр
+     во время анимации todo, а CSS-transition пытается "догнать"
+     меняющееся значение — возникает feedback-петля и рывки. */
+  padding: 0 0 var(--chat-input-h, 120px) 0;
 }
 
 .chat-empty-state {
@@ -90,7 +97,7 @@
 }
 
 .chat-empty-icon {
-  filter: drop-shadow(0 0 24px rgba(255,255,255,0.08));
+  filter: drop-shadow(0 0 24px var(--overlay-4));
   animation: pulse-ring 4s ease-in-out infinite;
 }
 
@@ -197,7 +204,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 4px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  box-shadow: 0 4px 20px rgba(var(--shadow-rgb), 0.4);
   animation: popup-in 0.12s ease;
   transform: translateX(-50%);
 }
@@ -217,7 +224,7 @@
 }
 .selection-reply-btn {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent-strong);
 }
 .selection-reply-btn:hover { background: var(--accent-hover, #9333ea); }
 .selection-reply-copy {
@@ -238,7 +245,7 @@
   align-items: center;
   gap: 6px;
   padding: 5px 14px;
-  background: rgba(255,255,255,0.04);
+  background: var(--overlay-2);
   border: 1px solid var(--border);
   border-radius: 20px;
   color: var(--text-secondary);

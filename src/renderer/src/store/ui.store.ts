@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-type Theme = 'dark' | 'light' | 'midnight' | 'forest'
+type Theme = 'dark' | 'light' | 'midnight' | 'forest' | 'amber' | 'rose' | 'paper' | 'slate' | 'crimson'
 type Page = 'chat' | 'settings' | 'tasks' | 'notes' | 'stats'
 
 export type AvatarStyle = 'hex' | 'circle' | 'letter' | 'emoji' | 'none'

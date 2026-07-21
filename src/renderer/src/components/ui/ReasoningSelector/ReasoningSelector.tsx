@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { motion, AnimatePresence } from 'framer-motion'
 import { getReasoningConfig } from '../../../../../shared/reasoningModels'
 import './ReasoningSelector.css'
 
@@ -95,32 +96,41 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
         document.body
       )}
 
-      {/* Дропдаун */}
-      {open && createPortal(
-        <div
-          id="rs-panel"
-          className="rs-panel"
-          style={{ bottom: panelPos.bottom, left: panelPos.left, width: PANEL_WIDTH }}
-        >
-          <div className="rs-panel-hint">{config.hint}</div>
-          <div className="rs-panel-param">{config.apiParam}</div>
-          <div className="rs-panel-options">
-            {config.options.map(opt => (
-              <button
-                key={opt.value}
-                className={`rs-option${opt.value === current.value ? ' rs-option--active' : ''}`}
-                onClick={() => { onChange(opt.value); setOpen(false) }}
-              >
-                <span className="rs-option-val">{opt.label}</span>
-                {opt.value === current.value && (
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M2 6l3 3 5-5" stroke="#a78bfa" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>,
+      {/* Дропдаун — AnimatePresence даёт анимацию и открытия, и закрытия
+          (раньше был обычный conditional render без exit-transition). */}
+      {createPortal(
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              id="rs-panel"
+              className="rs-panel"
+              style={{ bottom: panelPos.bottom, left: panelPos.left, width: PANEL_WIDTH }}
+              initial={{ opacity: 0, y: 6, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.97 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+            >
+              <div className="rs-panel-hint">{config.hint}</div>
+              <div className="rs-panel-param">{config.apiParam}</div>
+              <div className="rs-panel-options">
+                {config.options.map(opt => (
+                  <button
+                    key={opt.value}
+                    className={`rs-option${opt.value === current.value ? ' rs-option--active' : ''}`}
+                    onClick={() => { onChange(opt.value); setOpen(false) }}
+                  >
+                    <span className="rs-option-val">{opt.label}</span>
+                    {opt.value === current.value && (
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 6l3 3 5-5" stroke="#a78bfa" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
         document.body
       )}
     </>

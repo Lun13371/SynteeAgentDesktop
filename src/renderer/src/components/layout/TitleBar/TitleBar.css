@@ -1,4 +1,4 @@
-.titlebar {
+﻿.titlebar {
   height: 44px;
   display: flex;
   align-items: center;
@@ -18,7 +18,7 @@
 .titlebar-logo {
   display: flex;
   align-items: center;
-  filter: drop-shadow(0 0 6px rgba(255,255,255,0.15));
+  filter: drop-shadow(0 0 6px var(--overlay-6));
 }
 
 .titlebar-title {

@@ -1,4 +1,4 @@
-.message-wrap {
+﻿.message-wrap {
   display: flex;
   gap: 10px;
   padding: 4px 16px;
@@ -21,7 +21,7 @@
   justify-content: center;
   flex-shrink: 0;
   margin-top: 0;
-  filter: drop-shadow(0 0 6px rgba(255,255,255,0.08));
+  filter: drop-shadow(0 0 6px var(--overlay-4));
 }
 
 .message-avatar--user {
@@ -110,7 +110,7 @@
   color: rgba(167, 139, 250, 0.85);
 }
 .message-slash-pill-args {
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--text-muted);
   margin-left: 2px;
   max-width: 220px;
   overflow: hidden;
@@ -145,7 +145,7 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(255,255,255,0.3);
+  background: var(--text-muted);
   animation: msg-dot-pulse 1.2s ease-in-out infinite;
 }
 .msg-waiting-dots span:nth-child(1) { animation-delay: 0s; }
@@ -158,13 +158,13 @@
   padding: 2px 0 6px;
   font-size: 14px;
   font-style: italic;
-  color: rgba(255,255,255,0.35);
+  color: var(--text-muted);
   background: linear-gradient(90deg,
-    rgba(255,255,255,0.15) 0%,
-    rgba(255,255,255,0.15) 30%,
-    rgba(255,255,255,0.85) 50%,
-    rgba(255,255,255,0.15) 70%,
-    rgba(255,255,255,0.15) 100%
+    var(--overlay-6) 0%,
+    var(--overlay-6) 30%,
+    var(--on-accent) 50%,
+    var(--overlay-6) 70%,
+    var(--overlay-6) 100%
   );
   background-size: 300% auto;
   -webkit-background-clip: text;
@@ -217,7 +217,7 @@
 .msg-waiting-counter {
   font-size: 11px;
   color: var(--text-muted);
-  background: var(--bg-secondary, rgba(255,255,255,0.06));
+  background: var(--bg-secondary, var(--overlay-3));
   padding: 2px 8px;
   border-radius: 8px;
   font-weight: 500;
@@ -248,12 +248,12 @@
 .message-content li { margin: 2px 0; }
 
 .inline-code {
-  background: rgba(255,255,255,0.1);
+  background: var(--overlay-4);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 1px 5px;
   font-size: 12px;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
 }
 
 .code-block {
@@ -268,14 +268,14 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background: rgba(0,0,0,0.3);
+  background: rgba(var(--shadow-rgb), 0.3);
   border-bottom: 1px solid var(--border);
 }
 
 .code-lang {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: monospace;
+  font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -380,7 +380,7 @@
 
 /* Diff */
 .diff-block {
-  font-family: monospace; font-size: 13px; line-height: 1.6;
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
   background: #0d0d0f; border-radius: 8px;
   overflow-x: auto; margin: 4px 0;
 }

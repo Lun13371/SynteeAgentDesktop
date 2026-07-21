@@ -559,7 +559,17 @@ export class Agent {
 
         const normalizedCalls: NormalizedToolCall[] = response.tool_calls.map((call, callIndex) => {
           const fn = (call as { function: { name: string; arguments: string } }).function
-          const callId = (call as { id: string }).id
+          const callObj = call as { id: string }
+          // Если стрим оборвался до того, как провайдер прислал id этого
+          // tool_call, id остаётся пустой строкой — она тоже навсегда
+          // попадёт в историю (assistant.tool_calls[].id и следующее
+          // tool_call_id) и может быть отвергнута строгим провайдером как
+          // невалидный tool_call_id. Генерируем стабильный id и мутируем
+          // call.id — та же ссылка, что уже в messages.
+          if (!callObj.id) {
+            callObj.id = `call_${Date.now()}_${callIndex}`
+          }
+          const callId = callObj.id
           // response.tool_calls собран из toolCallMap (AIClient.ts) через
           // Object.values — числовые ключи объекта итерируются по возрастанию,
           // так что callIndex здесь совпадает с tc.index из onToolCallStarted.
@@ -585,6 +595,22 @@ export class Agent {
             log('[Agent] JSON.parse tool arguments упал для %s: %s | raw=%s',
               normalizedName, (parseErr as Error).message, (fn.arguments ?? '').slice(0, 500))
           }
+
+          // КРИТИЧНО: fn — та же ссылка, что уже лежит внутри объекта,
+          // запушенного в messages (строка выше, response.tool_calls).
+          // Если оставить сырой fn.arguments (пустая строка/битый JSON от
+          // обрыва стрима у провайдера), это НАВСЕГДА оседает в истории
+          // диалога — sendDone() сохраняет toolSteps в БД, а следующий
+          // chat:send разворачивает их обратно в такое же сообщение
+          // (messageToContextMessages в chat.ipc.ts). Строгие провайдеры
+          // (litellm-прокси для glm и т.п.) валидируют, что function.arguments
+          // — синтаксически валидный JSON, и после этого начинают отвечать
+          // 400 BadRequestError на КАЖДЫЙ следующий запрос в этом чате —
+          // чат становится непригодным без возможности восстановиться.
+          // Перезаписываем на гарантированно валидный JSON (то, что реально
+          // распарсили и на чём агент будет исполнять тул) — так история
+          // остаётся консистентной независимо от того, что вернул провайдер.
+          fn.arguments = JSON.stringify(args)
 
           return {
             call,

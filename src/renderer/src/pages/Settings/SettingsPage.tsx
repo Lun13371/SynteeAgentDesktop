@@ -9,6 +9,7 @@ import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
+import { applyFontToDOM, applyAccentToDOM } from '../../App'
 import type { AgentSettings as SharedAgentSettings } from '../../../../shared/types'
 import './SettingsPage.css'
 
@@ -50,6 +51,11 @@ export default function SettingsPage() {
     if (key === 'userMarkdown') setUserMarkdown(value as boolean)
     if (key === 'uiSounds') setUiSounds(value as boolean)
     if (key === 'sendEffect') setSendEffect(value as boolean)
+    // Применяем шрифт мгновенно к CSS-переменной — раньше select
+    // сохранял значение, но UI не менялся до перезапуска.
+    if (key === 'fontFamily') applyFontToDOM(value as string)
+    // Кастомный accent — применяется поверх темы.
+    if (key === 'accentColor') applyAccentToDOM(value as string)
   }
 
   const testApiKey = async () => {
@@ -332,31 +338,132 @@ const BG_STYLES = [
   { id: 'fireflies', label: 'Светлячки', icon: '✺', desc: 'Мерцающие огни' },
   { id: 'none',      label: 'Выкл',      icon: '✕', desc: 'Без анимации' },
 ]
+// 9 тем: 4 тёмных + 2 светлых + 3 цветных. Каждая — bg, surface, text,
+// accent цвета для мини-превью интерфейса в selector.
 const THEMES = [
-  { id: 'dark',     label: 'Тёмная',  color: '#1a1a1a' },
-  { id: 'light',    label: 'Светлая', color: '#faf8f5' },
-  { id: 'midnight', label: 'Полночь', color: '#0a0e1a' },
-  { id: 'forest',   label: 'Лес',     color: '#0d1a0f' },
+  { id: 'dark',     label: 'Тёмная',     group: 'dark',  colors: { bg: '#0e0e12', surface: '#1c1c24', text: '#e8e8ec', accent: '#e8e8ec' } },
+  { id: 'midnight', label: 'Полночь',    group: 'dark',  colors: { bg: '#060912', surface: '#0f1525', text: '#e0e8ff', accent: '#4d9fff' } },
+  { id: 'forest',   label: 'Лес',        group: 'dark',  colors: { bg: '#070e09', surface: '#122014', text: '#d4f0d8', accent: '#4caf60' } },
+  { id: 'slate',    label: 'Сталь',      group: 'dark',  colors: { bg: '#0a0d14', surface: '#1a1f2c', text: '#e2e8f0', accent: '#5b8def' } },
+  { id: 'amber',    label: 'Янтарь',     group: 'dark',  colors: { bg: '#100a05', surface: '#26190e', text: '#f5e6d3', accent: '#ff9b3d' } },
+  { id: 'rose',     label: 'Роза',       group: 'dark',  colors: { bg: '#120810', surface: '#2a1620', text: '#fce8ee', accent: '#ff6b9d' } },
+  { id: 'crimson',  label: 'Багровый',   group: 'dark',  colors: { bg: '#100406', surface: '#281012', text: '#ffe8ea', accent: '#ff5a4d' } },
+  { id: 'light',    label: 'Светлая',    group: 'light', colors: { bg: '#f4f1ec', surface: '#f3efe8', text: '#2a2620', accent: '#4a3f2f' } },
+  { id: 'paper',    label: 'Бумага',     group: 'light', colors: { bg: '#f6f8fa', surface: '#f0f3f6', text: '#1f2328', accent: '#0969da' } },
 ]
-const FONTS = ['Inter', 'Plus Jakarta Sans', 'Geist', 'DM Sans']
+
+// Preset цвета для accent picker — меняет только --accent, не всю тему.
+const ACCENT_PRESETS = [
+  '#4d9fff', // blue
+  '#4caf60', // green
+  '#ff6b9d', // pink
+  '#ff9b3d', // amber
+  '#ff5a4d', // red
+  '#a78bfa', // purple
+  '#facc15', // yellow
+  '#06b6d4', // cyan
+]
+// Только шрифты, подключённые локально в styles/fonts.css.
+// Plus Jakarta Sans / Geist / DM Sans убраны — грузились с Google Fonts
+// CDN (без интернета fallback), Geist ещё и без кириллицы.
+const FONTS = ['Inter', 'system']
 
 function AppearanceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   return (
     <>
       <SectionTitle>Внешний вид</SectionTitle>
-      <Field label="Тема">
-        <div className="settings-theme-grid">
-          {THEMES.map(t => (
-            <motion.button
-              key={t.id}
-              className={`settings-theme-btn ${settings['theme'] === t.id ? 'settings-theme-btn--active' : ''}`}
-              style={{ background: t.color }}
-              onClick={() => onSet('theme', t.id)}
-              whileTap={{ scale: 0.93 }}
-            >
-              {t.label}
-            </motion.button>
-          ))}
+      <Field label="Тема" description="Выберите цветовую палитру" block>
+        <div className="settings-theme-cards">
+          {THEMES.map(t => {
+            const isActive = settings['theme'] === t.id
+            return (
+              <motion.button
+                key={t.id}
+                type="button"
+                className={`settings-theme-card${isActive ? ' settings-theme-card--active' : ''}`}
+                onClick={() => onSet('theme', t.id)}
+                whileTap={{ scale: 0.96 }}
+                whileHover={{ y: -2 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+                title={t.label}
+              >
+                {/* Мини-превью интерфейса с реальными цветами темы */}
+                <div
+                  className="settings-theme-card__preview"
+                  style={{ background: t.colors.bg, borderColor: t.colors.accent + '22' }}
+                >
+                  {/* Имитация sidebar */}
+                  <div
+                    className="settings-theme-card__sidebar"
+                    style={{ background: t.colors.surface }}
+                  />
+                  {/* Имитация message bubbles */}
+                  <div className="settings-theme-card__content">
+                    <div
+                      className="settings-theme-card__bubble settings-theme-card__bubble--left"
+                      style={{ background: t.colors.surface, borderColor: t.colors.text + '18' }}
+                    />
+                    <div
+                      className="settings-theme-card__bubble settings-theme-card__bubble--right"
+                      style={{ background: t.colors.accent }}
+                    />
+                  </div>
+                  {/* Accent dot */}
+                  <div
+                    className="settings-theme-card__dot"
+                    style={{ background: t.colors.accent, boxShadow: `0 0 8px ${t.colors.accent}66` }}
+                  />
+                </div>
+                <div className="settings-theme-card__label">{t.label}</div>
+                {isActive && (
+                  <motion.div
+                    className="settings-theme-card__check"
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                    style={{ background: t.colors.accent }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  </motion.div>
+                )}
+              </motion.button>
+            )
+          })}
+        </div>
+      </Field>
+      <Field label="Цвет акцента" description="Дополнительный акцент поверх темы">
+        <div className="settings-accent-picker">
+          {ACCENT_PRESETS.map(c => {
+            const isActive = (settings['accentColor'] as string) === c
+            return (
+              <motion.button
+                key={c}
+                type="button"
+                className={`settings-accent-swatch${isActive ? ' settings-accent-swatch--active' : ''}`}
+                style={{ background: c }}
+                onClick={() => onSet('accentColor', c)}
+                whileTap={{ scale: 0.85 }}
+                whileHover={{ scale: 1.15 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                title={c}
+              >
+                {isActive && (
+                  <motion.svg
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                    width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke={c === '#facc15' ? '#000' : '#fff'}
+                    strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"
+                  >
+                    <polyline points="20 6 9 17 4 12"/>
+                  </motion.svg>
+                )}
+              </motion.button>
+            )
+          })}
         </div>
       </Field>
       <Field label="Шрифт">

@@ -1,0 +1,213 @@
+﻿/* ── LiveTodoBar — план-оверлей вверху чата ──────────────────────
+   Абсолютно позиционирован поверх сообщений вверху chat-main,
+   по центру. Компактный pill; по клику раскрывается в список. */
+
+.live-todo-bar-wrap {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+
+.live-todo-bar {
+  pointer-events: auto;
+  /* Фиксированная ширина — раньше min/max-width позволял контейнеру
+     расширяться при появлении items и резко сжиматься при закрытии
+     ("ривка ширины"). Теперь размер стабилен, анимируется только
+     высота + border-radius. */
+  width: 460px;
+  background: var(--bg-secondary, rgba(20, 20, 30, 0.82));
+  border: 1px solid var(--border, var(--overlay-4));
+  /* border-radius НЕ задаём в CSS — анимируется framer-motion
+     (999 → 14 при раскрытии). Раньше CSS transition на border-radius
+     конфликтовал с motion и "рвал" углы. */
+  overflow: hidden;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 4px 18px rgba(var(--shadow-rgb), 0.28);
+  /* transform-origin для scale-анимации пузыря — центр, иначе
+     при отскоке (overshoot) сдвигается. */
+  transform-origin: top center;
+}
+
+.live-todo-bar:hover {
+  border-color: color-mix(in srgb, var(--accent, #4ade80) 35%, var(--border, var(--overlay-4)));
+}
+
+/* При раскрытии — box-shadow сильнее (без CSS transition,
+   motion не анимирует box-shadow, поэтому ставим мгновенно
+   через класс — глаз не замечает смену тени на раскрытом). */
+.live-todo-bar--expanded {
+  box-shadow: 0 10px 36px rgba(var(--shadow-rgb), 0.4);
+  border-color: color-mix(in srgb, var(--accent, #4ade80) 30%, var(--border, var(--overlay-4)));
+}
+
+.live-todo-bar__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.live-todo-bar--expanded .live-todo-bar__header {
+  border-bottom: 1px solid var(--border, var(--overlay-3));
+}
+
+.live-todo-bar__icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--accent, #4ade80);
+  flex-shrink: 0;
+}
+
+.live-todo-bar__icon-spinner {
+  width: 13px;
+  height: 13px;
+  border: 1.6px solid color-mix(in srgb, var(--accent, #4ade80) 28%, transparent);
+  border-top-color: var(--accent, #4ade80);
+  border-radius: 50%;
+  display: inline-block;
+  animation: live-todo-spin 0.75s linear infinite;
+}
+
+.live-todo-bar__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #eee);
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+.live-todo-bar__progress {
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.live-todo-bar__bar {
+  flex: 1;
+  height: 3px;
+  background: var(--overlay-4);
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+  position: relative;
+}
+
+.live-todo-bar__bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--accent, #4ade80) 70%, transparent),
+    var(--accent, #4ade80));
+  border-radius: 2px;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent, #4ade80) 50%, transparent);
+}
+
+.live-todo-bar__chevron {
+  color: var(--text-muted, #888);
+  flex-shrink: 0;
+}
+
+.live-todo-bar__items {
+  overflow-y: auto;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 14px 10px;
+}
+
+.live-todo-bar__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  padding: 3px 0;
+  line-height: 1.4;
+}
+
+.live-todo-bar__item-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.live-todo-bar__item-text {
+  color: var(--text-secondary, #ccc);
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Статусы */
+.live-todo-bar__item--done .live-todo-bar__item-text {
+  text-decoration: line-through;
+  color: var(--text-muted, #888);
+  opacity: 0.55;
+}
+.live-todo-bar__item--done .live-todo-bar__item-icon {
+  color: var(--accent, #4ade80);
+}
+
+.live-todo-bar__item--in_progress .live-todo-bar__item-text {
+  color: var(--accent, #4ade80);
+  font-weight: 500;
+}
+
+.live-todo-bar__item--pending .live-todo-bar__item-text {
+  color: var(--text-secondary, #ccc);
+}
+
+.live-todo-bar__item--skipped .live-todo-bar__item-text {
+  color: var(--text-muted, #888);
+  opacity: 0.5;
+}
+
+.live-todo-bar__circle {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--text-muted, #888);
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.live-todo-bar__spinner {
+  width: 13px;
+  height: 13px;
+  border: 1.6px solid color-mix(in srgb, var(--accent, #4ade80) 28%, transparent);
+  border-top-color: var(--accent, #4ade80);
+  border-radius: 50%;
+  display: inline-block;
+  animation: live-todo-spin 0.75s linear infinite;
+}
+
+@keyframes live-todo-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Скроллбар — тонкий */
+.live-todo-bar__items::-webkit-scrollbar {
+  width: 6px;
+}
+.live-todo-bar__items::-webkit-scrollbar-thumb {
+  background: var(--overlay-5);
+  border-radius: 3px;
+}
+.live-todo-bar__items::-webkit-scrollbar-track {
+  background: transparent;
+}

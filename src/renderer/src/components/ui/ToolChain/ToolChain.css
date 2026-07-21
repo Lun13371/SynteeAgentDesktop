@@ -1,4 +1,4 @@
-/* ══════════════════════════════════════════════
+﻿/* ══════════════════════════════════════════════
    ToolChain 2.0 — итерационный агентский блок
    ══════════════════════════════════════════════ */
 
@@ -74,7 +74,7 @@
 /* Summary — финальный свёрнутый блок как в Codex */
 .tc2--summary {
   margin-top: 8px;
-  border-top: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid var(--overlay-3);
   padding-top: 6px;
 }
 .tc2--summary .tc2-header {
@@ -171,10 +171,10 @@
   transition: background 0.12s;
 }
 .tc2-iter-header:hover {
-  background: var(--bg-hover, rgba(255,255,255,0.04));
+  background: var(--bg-hover, var(--overlay-2));
 }
 .tc2-iter-header--open {
-  background: var(--bg-hover, rgba(255,255,255,0.04));
+  background: var(--bg-hover, var(--overlay-2));
 }
 
 .tc2-iter-icon {
@@ -187,7 +187,7 @@
   flex-shrink: 0;
 }
 .tc2-iter-name {
-  font-family: monospace; font-size: 11px;
+  font-family: var(--font-mono); font-size: 11px;
   color: var(--text-muted);
   background: var(--bg-tertiary);
   padding: 1px 5px; border-radius: 3px;
@@ -252,7 +252,7 @@
 }
 .tc2-arg-row:last-child { margin-bottom: 0; }
 .tc2-arg-key {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: #60a5fa;
   flex-shrink: 0;
@@ -260,7 +260,7 @@
   padding-top: 1px;
 }
 .tc2-arg-val {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
   margin: 0;
@@ -272,7 +272,7 @@
 }
 
 .tc2-result-pre {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
   background: var(--bg-tertiary);
@@ -288,7 +288,7 @@
 
 /* ── Diff блок ── */
 .tc2-diff-pre {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   background: #0d1117;
   border: 1px solid var(--border);
@@ -341,7 +341,7 @@
 .tc-streaming-name {
   font-weight: 500;
   color: var(--accent);
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .tc-streaming-dots {
@@ -368,7 +368,7 @@
 
 .tc-streaming-args {
   margin-top: 6px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
   white-space: pre-wrap;
