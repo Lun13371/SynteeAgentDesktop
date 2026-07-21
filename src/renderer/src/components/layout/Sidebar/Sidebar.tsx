@@ -5,6 +5,7 @@ import type { Chat, Project } from '../../../../../shared/types'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
+import { useChatStore } from '../../../store/chat.store'
 import './Sidebar.css'
 
 interface SidebarProps {
@@ -88,6 +89,13 @@ export default function Sidebar({
   const renameRef = useRef<HTMLInputElement>(null)
   const renameProjectRef = useRef<HTMLInputElement>(null)
   const verifyCmdRef = useRef<HTMLInputElement>(null)
+
+  // Статусы запусков чатов для индикаторов (spinner/✓/✗). Подписываемся на
+  // весь объект — Sidebar не большой, ре-рендер недорогой. Альтернатива
+  // (useSyncExternalStore + selector на каждый chatId) усложняет код.
+  const runStatusByChat = useChatStore(s => s.runStatusByChat)
+  const unreadStatusByChat = useChatStore(s => s.unreadStatusByChat)
+  const dropChatState = useChatStore(s => s.dropChatState)
 
   useEffect(() => {
     const off = window.syntee.on('chat:renamed', ({ chatId, title }: { chatId: string; title: string }) => {
@@ -204,6 +212,8 @@ export default function Sidebar({
 
   const handleDelete = async (chat: Chat) => {
     await window.syntee.chat.delete(chat.id)
+    // Чистим live-state и статусы удалённого чата из store
+    dropChatState(chat.id)
     const updated = await window.syntee.chat.getAll() as Chat[]
     onChatsUpdate?.(updated)
     if (chat.id === currentChatId) onSelectChat?.(updated[0]?.id ?? '')
@@ -259,7 +269,12 @@ export default function Sidebar({
     setEditingVerifyCmdId(null)
   }
 
-  const renderChatItem = (chat: Chat) => (
+  const renderChatItem = (chat: Chat) => {
+    // Индикатор статуса запуска: spinner пока агент работает, бейдж ✓/✗ после.
+    // Бейдж исчезает при открытии чата (markChatRead в selectChat).
+    const status = runStatusByChat[chat.id]?.status
+    const unread = unreadStatusByChat[chat.id]
+    return (
     <motion.div
       key={chat.id}
       initial={{ opacity: 0, x: -8 }}
@@ -301,6 +316,25 @@ export default function Sidebar({
             )}
           </div>
           <div className="sidebar-chat-meta">
+            {/* Индикатор статуса агента: spinner (работает) или бейдж ✓/✗ (завершено, непрочитано) */}
+            {(status === 'running' || status === 'queued') && (
+              <span className="sidebar-chat-spinner" title={status === 'queued' ? 'В очереди' : 'Работает'} />
+            )}
+            {unread === 'done' && (
+              <span className="sidebar-chat-status sidebar-chat-status--done" title="Завершено">
+                <AppIcon name="check" size="xs" tone="accent" />
+              </span>
+            )}
+            {unread === 'error' && (
+              <span className="sidebar-chat-status sidebar-chat-status--error" title="Ошибка">
+                <AppIcon name="x" size="xs" />
+              </span>
+            )}
+            {unread === 'cancelled' && (
+              <span className="sidebar-chat-status sidebar-chat-status--cancelled" title="Отменено">
+                <AppIcon name="minus" size="xs" />
+              </span>
+            )}
             <span className="sidebar-chat-time">
               {formatTime(chat.updatedAt)}
             </span>
@@ -311,7 +345,8 @@ export default function Sidebar({
         </button>
       )}
     </motion.div>
-  )
+    )
+  }
 
   const renderProject = (project: Project) => {
     const items = projectChats(project)
