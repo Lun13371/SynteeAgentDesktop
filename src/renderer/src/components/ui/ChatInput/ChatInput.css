@@ -421,6 +421,24 @@
   animation: send-burst 0.38s ease-out forwards;
 }
 
+/* Send-кнопка во время генерации — запрос уйдёт в очередь.
+   Subtle accent-кольцо + пульсация для визуального отличия. */
+.chat-input-action-btn--queue {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent),
+              0 0 12px color-mix(in srgb, var(--accent) 30%, transparent);
+  animation: queue-send-pulse 2s ease-in-out infinite;
+}
+@keyframes queue-send-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent),
+                0 0 10px color-mix(in srgb, var(--accent) 25%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 65%, transparent),
+                0 0 16px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+}
+
 
 .chat-input-hint {
   font-size: 11px;

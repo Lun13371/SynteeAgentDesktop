@@ -1,0 +1,310 @@
+/* ─────────────────────────────────────────────────────────────────────
+   Очередь запросов чата — бейдж-триггер + раскрывающаяся панель.
+   Бейдж сидит в .chat-input-status-row рядом с workdir-бейджем.
+   Панель раскрывается вверх (инпут внизу окна) через createPortal.
+   ───────────────────────────────────────────────────────────────────── */
+
+.queue-badge-wrap {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* ── Бейдж-триггер ──
+   По форме повторяет .chat-input-workdir-badge / .chat-input-planning-badge,
+   но интерактивный (hover/click) и с accent-тинтом когда есть active run. */
+.queue-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 25%, transparent);
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  color: var(--text-secondary);
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.queue-badge-pill:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+}
+/* Running-состояние — accent-тинт по умолчанию (не только на hover) */
+.queue-badge-pill--running {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+.queue-badge-pill--running:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.queue-badge-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 11px;
+  text-align: center;
+}
+.queue-badge-label {
+  opacity: 0.85;
+}
+
+/* ── Dropdown (открывается вверх) ── */
+.queue-dropdown {
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg, 16px);
+  overflow: hidden;
+  background: var(--glass-bg, rgba(18, 18, 28, 0.97));
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  will-change: opacity, transform;
+  transform-origin: bottom left;
+}
+
+/* Header панели */
+.queue-dropdown-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px 9px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.queue-dropdown-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+.queue-dropdown-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius-pill, 999px);
+  padding: 1px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Running карточка ── */
+.queue-running-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  margin: 8px 8px 4px;
+  border-radius: var(--radius-md, 12px);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  position: relative;
+  overflow: hidden;
+}
+/* Пульсирующая подсветка слева — индикатор активности */
+.queue-running-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  animation: queue-pulse 1.8s ease-in-out infinite;
+}
+@keyframes queue-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.queue-running-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+}
+.queue-running-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.queue-running-status {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+.queue-running-preview {
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
+}
+
+/* ── Список ожидающих ── */
+.queue-list-wrap {
+  padding: 4px 8px 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.queue-list-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 6px 8px 4px;
+}
+.queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Очередной элемент списка с drag-handle */
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm, 8px);
+  background: color-mix(in srgb, var(--text-secondary) 6%, transparent);
+  border: 1px solid transparent;
+  cursor: default;
+  user-select: none;
+  transition: background 0.12s, border-color 0.12s;
+  position: relative;
+}
+.queue-item:hover {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  border-color: color-mix(in srgb, var(--text-secondary) 18%, transparent);
+}
+
+.queue-item-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: grab;
+  opacity: 0.45;
+  padding: 2px 0;
+  transition: opacity 0.12s;
+}
+.queue-item:hover .queue-item-handle {
+  opacity: 0.9;
+}
+.queue-item-handle:active {
+  cursor: grabbing;
+}
+
+.queue-item-index {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 14px;
+  text-align: center;
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  border-radius: var(--radius-pill, 999px);
+  padding: 1px 5px;
+}
+
+.queue-item-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+/* Кнопки в элементах (Cancel / Remove) */
+.queue-item-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill, 999px);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  padding: 0;
+}
+.queue-item-btn:hover {
+  background: color-mix(in srgb, var(--text-secondary) 18%, transparent);
+  color: var(--text-primary);
+}
+.queue-item-btn--cancel:hover {
+  background: color-mix(in srgb, #ff5454 22%, transparent);
+  color: #ff7878;
+}
+.queue-item-btn--remove:hover {
+  background: color-mix(in srgb, #ff5454 18%, transparent);
+  color: #ff7878;
+}
+
+/* Empty state */
+.queue-empty {
+  padding: 24px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Подсказка снизу */
+.queue-dropdown-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 12px 9px;
+  font-size: 10px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* ── Скроллбар ── */
+.queue-list-wrap::-webkit-scrollbar {
+  width: 8px;
+}
+.queue-list-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.queue-list-wrap::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-secondary) 20%, transparent);
+  border-radius: 4px;
+}
+.queue-list-wrap::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-secondary) 35%, transparent);
+}

@@ -306,8 +306,8 @@ export default function Sidebar({
           )}
           <div className="sidebar-chat-content">
             <div className="sidebar-chat-title">
-              {chat.isPinned && <AppIcon name="pin" size="xs" tone="accent" />}
-              {chat.title}
+              {!!chat.isPinned && <AppIcon name="pin" size="xs" tone="accent" />}
+              <span className="sidebar-chat-title-text">{chat.title}</span>
             </div>
             {chat.lastMessage && cleanPreview(chat.lastMessage) && (
               <div className="sidebar-chat-preview">
@@ -338,9 +338,6 @@ export default function Sidebar({
             <span className="sidebar-chat-time">
               {formatTime(chat.updatedAt)}
             </span>
-            {!!chat.messageCount && (
-              <span className="sidebar-chat-count">{chat.messageCount}</span>
-            )}
           </div>
         </button>
       )}

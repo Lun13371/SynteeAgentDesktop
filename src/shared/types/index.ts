@@ -73,6 +73,7 @@ export interface Message {
   liveSegments?: Array<{ text: string; steps: ToolStep[] }>
   imageUrl?: string
   planData?: { title: string; content: string; summary: string; filePath: string }
+  todo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
 }
 
 export interface ToolStep {
@@ -86,6 +87,18 @@ export interface ToolStep {
   imageUrl?: string  // путь к сгенерированному изображению
   diff?: string      // unified diff для edit_file / multi_edit_file
   callId?: string    // ID tool_call для связи call→result (реконструкция истории)
+}
+
+// Метаданные одного запроса в очереди или активного запуска чата.
+// Используется UI-панелью очереди для отображения preview/управления.
+export interface QueueItemMeta {
+  queueId: string       // уникальный ID элемента (uuid)
+  chatId: string
+  msgId: string         // assistantMsgId (будущего ответа)
+  userMsgId: string     // id user-сообщения
+  preview: string       // первые ~80 симв. текста запроса
+  enqueuedAt: number    // ts постановки в очередь
+  startedAt?: number    // ts старта воркера (для active run)
 }
 
 export interface DisplayInfo {

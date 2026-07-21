@@ -505,10 +505,15 @@ const MessageContent = memo(function MessageContent({
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
         )}
 
-        {/* §4.3 — видимый чек-лист плана (todo list) */}
-        {!isUser && (message as Message & { liveTodo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> }).liveTodo?.length > 0 && (
-          <TodoChecklist items={(message as Message & { liveTodo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> }).liveTodo!} />
-        )}
+        {/* §4.3 — видимый чек-лист плана (todo list).
+            Для сохранённого сообщения — message.todo (из БД).
+            Для live-пузыря — liveTodo (пока стримится, до save). */}
+        {!isUser && (() => {
+          type TodoItem = { text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }
+          const liveTodo = (message as Message & { liveTodo?: TodoItem[] }).liveTodo
+          const todo = message.todo ?? liveTodo
+          return todo && todo.length > 0 ? <TodoChecklist items={todo} /> : null
+        })()}
 
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
         {!isUser && liveIters && liveIters.length > 0 ? (

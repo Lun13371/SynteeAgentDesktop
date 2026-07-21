@@ -2,12 +2,12 @@ import { useState, useRef, useEffect, KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
-import IconButton from '../IconButton/IconButton'
 import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
 import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
 import ModelSelector from '../ModelSelector/ModelSelector'
 import SlashMenu from '../SlashMenu/SlashMenu'
+import QueuePanel from '../QueuePanel/QueuePanel'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import type { ApprovalMode } from '../../../../../shared/types'
@@ -17,6 +17,8 @@ import { playSendSound } from '../../../utils/sounds'
 import './ChatInput.css'
 
 interface ChatInputProps {
+  /** ID текущего чата — для панели очереди запросов. */
+  chatId?: string
   onSend: (text: string) => void
   onAttach?: () => void
   disabled?: boolean
@@ -38,11 +40,12 @@ interface ChatInputProps {
   onImageModeChange?: (v: boolean) => void
   rateLimitSec?: number
   /** Рабочая директория текущего чата (режим "Код"). Показывается как
-   *  бейдж над инпутом — как cwd-indicator в Codex CLI. */
+    *  бейдж над инпутом — как cwd-indicator в Codex CLI. */
   workdir?: string
 }
 
 export default function ChatInput({
+  chatId,
   onSend, onAttach, disabled, isIncognito,
   replyTo, onCancelReply,
   isGenerating, onStop,
@@ -130,7 +133,9 @@ export default function ChatInput({
 
   const handleSend = () => {
     const text = value.trim()
-    if (!text || disabled) return
+    // Разрешаем отправку даже при disabled=true если идёт генерация —
+    // запрос уйдёт в очередь (main-процесс сериализует через chatQueues).
+    if (!text || (disabled && !isGenerating)) return
     onSend(text)
     setValue('')
     onInputChange?.('')
@@ -169,7 +174,13 @@ export default function ChatInput({
     }
   }
 
-  const btnMode = isGenerating ? 'stop' : value.trim() ? 'send' : 'mic'
+  // Логика кнопки: текст в поле → Send (даже при генерации — уйдёт в очередь).
+  // Пустое поле + генерация → Stop. Пустое поле + idle → Mic.
+  // Раньше Stop замещал Send при isGenerating, что блокировало постановку
+  // запросов в очередь во время выполнения.
+  const btnMode = value.trim() ? 'send' : isGenerating ? 'stop' : 'mic'
+  // Send во время генерации — подсветим кольцом, поменяем tooltip.
+  const sendToQueue = btnMode === 'send' && !!isGenerating
 
   // Breadcrumb пути рабочей директории: показываем последние 2 сегмента
   // с разделителем, если путь длиннее — добавляем многоточие спереди.
@@ -222,6 +233,10 @@ export default function ChatInput({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Бейдж очереди запросов — раскрывается в панель управления при
+            hover/клике. Показывается только когда есть active/queued запросы. */}
+        {chatId && <QueuePanel chatId={chatId} />}
 
         {/* Бейдж режима планирования — над инпут полем */}
         <AnimatePresence>
@@ -410,12 +425,12 @@ export default function ChatInput({
         )}
 
         <motion.button
-          className={`chat-input-action-btn chat-input-action-btn--${btnMode}${sendBurst ? ' chat-input-action-btn--burst' : ''}`}
+          className={`chat-input-action-btn chat-input-action-btn--${btnMode}${sendBurst ? ' chat-input-action-btn--burst' : ''}${sendToQueue ? ' chat-input-action-btn--queue' : ''}`}
           onClick={btnMode === 'stop' ? onStop : btnMode === 'send' ? handleSend : undefined}
           whileTap={{ scale: 0.88 }}
           whileHover={{ scale: 1.08 }}
           transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-          title={btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? 'Отправить (Enter)' : 'Голосовой ввод'}
+          title={btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? (sendToQueue ? 'Отправить в очередь (Enter)' : 'Отправить (Enter)') : 'Голосовой ввод'}
         >
           <AnimatePresence mode="wait" initial={false}>
             {btnMode === 'stop' ? (

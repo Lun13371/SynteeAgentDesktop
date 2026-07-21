@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { v4 as uuid } from 'uuid'
 import { IPC_EVENTS } from '../../../shared/constants'
 import { useChatStore, type LiveIter } from '../store/chat.store'
-import type { Message, ToolStep } from '../../../shared/types'
+import type { Message, ToolStep, QueueItemMeta } from '../../../shared/types'
 
 // Per-chat mutable буферы для высокочастотных обновлений (токены стриминга).
 // Не React-state — обновляется синхронно на каждый токен, а Zustand store
@@ -28,6 +28,30 @@ interface ChatBuffers {
 }
 
 const buffers = new Map<string, ChatBuffers>()
+
+// Отложенные user-сообщения для queued-запросов. Ключ — assistantMsgId
+// (будущий id ответа), значение — user-сообщение. Когда queued-запрос
+// стартует (статус 'running' с этим msgId), сообщение достаётся отсюда и
+// addMessage'ится в чат — это сохраняет порядок: user1 → assistant1 →
+// user2 → assistant2, вместо user1 user2 user3 → assistant1 assistant2 assistant3.
+const pendingUserMsgs = new Map<string, Message>()
+
+/**
+ * Регистрирует user-сообщение как отложенное для queued-запроса.
+ * Вызывается из ChatPage.handleSend когда chat:send вернул queued: true.
+ * Сообщение будет добавлено в чат когда запрос стартует (статус 'running').
+ */
+export function enqueuePendingUserMsg(assistantMsgId: string, userMsg: Message) {
+  pendingUserMsgs.set(assistantMsgId, userMsg)
+}
+
+/**
+ * Убирает отложенное user-сообщение (например, при cancel из очереди).
+ * Вызывается из QueuePanel при remove элемента очереди.
+ */
+export function removePendingUserMsg(assistantMsgId: string) {
+  pendingUserMsgs.delete(assistantMsgId)
+}
 
 function getBuf(chatId: string): ChatBuffers {
   let buf = buffers.get(chatId)
@@ -92,11 +116,13 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       bufferedSteps: unknown[]; bufferedIters: unknown[]
       bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
       bufferedAgentStatus: string | null; bufferedRateLimitSec: number
+      meta: QueueItemMeta | null
     } | null
     if (!live || !live.isRunning) {
       // В main нет активного запуска — чистим локальный буфер если был
       buffers.delete(chatId)
       useChatStore.getState().clearLiveState(chatId)
+      useChatStore.getState().setActiveRun(chatId, null)
       return false
     }
     const buf = getBuf(chatId)
@@ -125,6 +151,8 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       isTyping: true,
       isAgentRunning: buf.iters.length > 0 || buf.steps.length > 0,
     })
+    // Восстанавливаем meta активного запуска для UI-панели очереди.
+    if (live.meta) useChatStore.getState().setActiveRun(chatId, live.meta)
     return true
   } catch {
     return false
@@ -230,11 +258,38 @@ export function useChatRunSubscription() {
       msgId?: string; error?: string; ts: number
     }) => {
       useChatStore.getState().setRunStatus(data.chatId, data.status, data.error, data.msgId)
-      if (data.status === 'cancelled' || data.status === 'error') {
+      // Управляем activeRunByChat для UI-панели очереди.
+      // На 'running' — асинхронно подтягиваем meta из main (там она уже установлена).
+      // На терминальных — сбрасываем activeRun.
+      if (data.status === 'running') {
+        // Если это старт queued-запроса — достаём отложенное user-сообщение
+        // и добавляем его в чат + инициализируем live-буфер. Это сохраняет
+        // порядок диалога: предыдущий ответ уже добавлен (CHAT_STREAM_DONE),
+        // затем это user-сообщение, затем live-пузырь нового ответа.
+        const pending = data.msgId ? pendingUserMsgs.get(data.msgId) : undefined
+        if (pending) {
+          pendingUserMsgs.delete(data.msgId!)
+          useChatStore.getState().addMessage(pending)
+          initChatSend(data.chatId)
+        }
+        window.syntee.chat.getLiveState(data.chatId).then((live: { meta?: QueueItemMeta | null } | null) => {
+          if (live?.meta) useChatStore.getState().setActiveRun(data.chatId, live.meta)
+        }).catch(() => {})
+      } else if (data.status === 'done' || data.status === 'error' || data.status === 'cancelled') {
+        useChatStore.getState().setActiveRun(data.chatId, null)
         const buf = buffers.get(data.chatId)
         if (buf?.rafId !== null && buf?.rafId !== undefined) cancelAnimationFrame(buf.rafId)
         if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
       }
+    })
+
+    // CHAT_QUEUE_UPDATED — снапшот очереди ожидающих запросов chatId.
+    // Эмитится main-процессом при add/remove/reorder/drain. Обновляем store
+    // для UI-панели очереди.
+    const offQueue = window.syntee.on(IPC_EVENTS.CHAT_QUEUE_UPDATED, (data: {
+      chatId: string; queue: QueueItemMeta[]; ts: number
+    }) => {
+      useChatStore.getState().setQueue(data.chatId, data.queue)
     })
 
     // RATE_LIMIT — ожидание перед retry
@@ -451,7 +506,7 @@ export function useChatRunSubscription() {
     })
 
     return () => {
-      offToken(); offDone(); offError(); offRunStatus(); offRateLimit(); offTodo(); offStatus(); offStep()
+      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRateLimit(); offTodo(); offStatus(); offStep()
     }
   }, [])
 }
