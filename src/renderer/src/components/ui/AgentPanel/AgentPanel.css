@@ -1,4 +1,4 @@
-.agent-panel {
+﻿.agent-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -24,7 +24,7 @@
 }
 .agent-panel__running-badge {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent-strong);
   font-size: 10px;
   font-weight: 700;
   padding: 1px 6px;

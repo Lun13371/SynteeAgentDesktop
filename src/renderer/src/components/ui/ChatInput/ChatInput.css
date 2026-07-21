@@ -1,5 +1,4 @@
 .chat-input-wrap {
-  padding: 12px 16px 16px;
   flex-shrink: 0;
   width: 100%;
   position: absolute;
@@ -13,6 +12,13 @@
 
 .chat-input-wrap > * {
   pointer-events: auto;
+}
+
+/* ОСНОВНОЙ БЛОК — бейджи + инпут. Todo-план вынесен в отдельный
+    компонент LiveTodoBar вверху чата. */
+.chat-input-main {
+  padding: 0 16px 16px;
+  position: relative;
 }
 
 /* Rate limit бар над инпутом */
@@ -422,152 +428,4 @@
   text-align: center;
   margin-top: 6px;
   opacity: 0.6;
-}
-
-/* ── Live todo-чеклист над инпутом ────────────────────────────── */
-
-.live-todo-bar {
-  max-width: 720px;
-  margin: 0 auto 6px;
-  background: var(--bg-secondary, rgba(255,255,255,0.05));
-  border: 1px solid var(--border, rgba(255,255,255,0.1));
-  border-radius: 12px;
-  overflow: hidden;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
-}
-
-.live-todo-bar__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.15s;
-}
-.live-todo-bar__header:hover {
-  background: rgba(255,255,255,0.03);
-}
-
-.live-todo-bar__icon {
-  color: var(--accent, #4ade80);
-  flex-shrink: 0;
-}
-
-.live-todo-bar__title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary, #eee);
-  white-space: nowrap;
-}
-
-.live-todo-bar__progress {
-  font-size: 11px;
-  color: var(--text-muted, #888);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.live-todo-bar__bar {
-  flex: 1;
-  height: 3px;
-  background: rgba(255,255,255,0.08);
-  border-radius: 2px;
-  overflow: hidden;
-  min-width: 40px;
-}
-.live-todo-bar__bar-fill {
-  height: 100%;
-  background: var(--accent, #4ade80);
-  border-radius: 2px;
-}
-
-.live-todo-bar__chevron {
-  color: var(--text-muted, #888);
-  flex-shrink: 0;
-  transition: transform 0.2s;
-}
-
-.live-todo-bar__items {
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 0 12px 8px;
-}
-
-.live-todo-bar__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  padding: 2px 0;
-  line-height: 1.35;
-}
-
-.live-todo-bar__item-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-.live-todo-bar__item-text {
-  color: var(--text-secondary, #ccc);
-}
-
-/* Статусы */
-.live-todo-bar__item--done .live-todo-bar__item-text {
-  text-decoration: line-through;
-  color: var(--text-muted, #888);
-  opacity: 0.6;
-}
-.live-todo-bar__item--done .live-todo-bar__item-icon {
-  color: var(--accent, #4ade80);
-}
-
-.live-todo-bar__item--in_progress .live-todo-bar__item-text {
-  color: var(--accent, #4ade80);
-  font-weight: 500;
-}
-
-.live-todo-bar__item--pending .live-todo-bar__item-text {
-  color: var(--text-secondary, #ccc);
-}
-
-.live-todo-bar__item--skipped .live-todo-bar__item-text {
-  color: var(--text-muted, #888);
-  opacity: 0.5;
-}
-
-.live-todo-bar__circle {
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid var(--text-muted, #888);
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.live-todo-bar__spinner {
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid color-mix(in srgb, var(--accent, #4ade80) 30%, transparent);
-  border-top-color: var(--accent, #4ade80);
-  border-radius: 50%;
-  display: inline-block;
-  animation: live-todo-spin 0.8s linear infinite;
-}
-
-@keyframes live-todo-spin {
-  to { transform: rotate(360deg); }
-}
-
-/* Свернутый режим — только шапка */
-.live-todo-bar--collapsed .live-todo-bar__items {
-  display: none;
 }

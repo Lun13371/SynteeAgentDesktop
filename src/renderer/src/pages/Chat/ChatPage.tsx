@@ -9,6 +9,7 @@ import Sidebar from '../../components/layout/Sidebar/Sidebar'
 import { playDoneSound } from '../../utils/sounds'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
+import LiveTodoBar from '../../components/ui/LiveTodoBar/LiveTodoBar'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
@@ -33,6 +34,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const { add: toast } = useToast()
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const chatInputWrapRef = useRef<HTMLDivElement>(null)
   const streamMsgIdRef = useRef<string | null>(null)
   const [streamMsgId, setStreamMsgId] = useState<string | null>(null)
   const [rateLimitSec, setRateLimitSec] = useState(0)
@@ -537,6 +539,29 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => ro.disconnect()
   }, [smoothScrollToBottom])
 
+  // ── Динамический отступ под ChatInput ───────────────────────────────
+  // .chat-input-wrap абсолютно позиционирован (bottom:0). .chat-input-main
+  // — flex column с justify-content:flex-end, внутри него todo-zone +
+  // status-row + инпут. Высота wrap уже включает всё (todo в потоке),
+  // поэтому достаточно наблюдать только wrap. Чтобы последние сообщения
+  // не перекрывались ни инпут-баром, ни todo, --chat-input-h = высота
+  // wrap. Меняется при auto-resize textarea / появлении бейджей / todo.
+  useEffect(() => {
+    const holder = chatInputWrapRef.current
+    const container = holder?.parentElement
+    // .chat-input-wrap позиционирован absolute — реальный узел с высотой
+    // это первый ребёнок holder-обёртки (у holder 0 высоты).
+    const wrap = holder?.firstElementChild as HTMLElement | undefined
+    if (!wrap || !container) return
+    const apply = () => {
+      container.style.setProperty('--chat-input-h', `${wrap.offsetHeight}px`)
+    }
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(wrap)
+    return () => ro.disconnect()
+  }, [])
+
   // Скролл при новых сообщениях / начале стриминга
   useEffect(() => {
     if (isLoadingMessages || displayMessages.length === 0) return
@@ -771,6 +796,10 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
           onSelectProject={setActiveProject}
         />
         <main className="chat-main">
+          {/* Live-план задач — компактный pill вверху чата по центру.
+              Разворачивается по клику, авто-сворачивается когда всё готово. */}
+          <LiveTodoBar items={isTyping ? liveTodo : []} active={isTyping} />
+
           {/* Поиск по чату */}
           <AnimatePresence>
             {showSearch && (
@@ -881,28 +910,29 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
             </div>
           )}
 
-          <ChatInput
-            onSend={handleSend}
-            disabled={isTyping}
-            isIncognito={isIncognito}
-            replyTo={replyTo}
-            onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
-            isGenerating={isTyping || isAgentRunning}
-            onStop={() => window.syntee.chat.stop()}
-            contextInfo={contextInfo}
-            showContextRing={showContextRing}
-            onInputChange={setInputText}
-            mainModelId={mainModelId}
-            onMainModelChange={handleMainModelChange}
-            reasoningValue={reasoningValue}
-            onReasoningChange={handleReasoningChange}
-            planningMode={planningMode}
-            onPlanningModeChange={setPlanningMode}
-            imageMode={imageMode}
-            onImageModeChange={setImageMode}
-            liveTodo={isTyping ? liveTodo : []}
-            workdir={currentWorkdir}
-          />
+          <div ref={chatInputWrapRef} style={{ display: 'contents' }}>
+            <ChatInput
+              onSend={handleSend}
+              disabled={isTyping}
+              isIncognito={isIncognito}
+              replyTo={replyTo}
+              onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
+              isGenerating={isTyping || isAgentRunning}
+              onStop={() => window.syntee.chat.stop()}
+              contextInfo={contextInfo}
+              showContextRing={showContextRing}
+              onInputChange={setInputText}
+              mainModelId={mainModelId}
+              onMainModelChange={handleMainModelChange}
+              reasoningValue={reasoningValue}
+              onReasoningChange={handleReasoningChange}
+              planningMode={planningMode}
+              onPlanningModeChange={setPlanningMode}
+              imageMode={imageMode}
+              onImageModeChange={setImageMode}
+              workdir={currentWorkdir}
+            />
+          </div>
 
           {/* Selection reply popup — через portal чтобы fixed работал правильно */}
           {selectionPopup && createPortal(

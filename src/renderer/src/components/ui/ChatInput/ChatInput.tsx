@@ -25,7 +25,6 @@ interface ChatInputProps {
   onCancelReply?: (id: string) => void
   isGenerating?: boolean
   onStop?: () => void
-  liveTodo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
   contextInfo?: ContextInfo | null
   showContextRing?: boolean
   onInputChange?: (text: string) => void
@@ -58,7 +57,6 @@ export default function ChatInput({
   imageMode = false,
   onImageModeChange,
   rateLimitSec = 0,
-  liveTodo = [],
   workdir,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
@@ -67,7 +65,6 @@ export default function ChatInput({
   const [slashIdx, setSlashIdx] = useState(0)
   const [sendBurst, setSendBurst] = useState(false)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
-  const [todoCollapsed, setTodoCollapsed] = useState(false)
   const plusBtnRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
   const { uiSounds, sendEffect } = useUIStore()
@@ -187,16 +184,22 @@ export default function ChatInput({
     : ''
 
   return (
-    <div className={`chat-input-wrap ${isIncognito ? 'chat-input-wrap--incognito' : ''}`}>
+    // Контейнер .chat-input-wrap абсолютно позиционирован (bottom:0).
+    // .chat-input-main — бейджи + инпут. Todo-план вынесен наверх чата
+    // в отдельный компонент LiveTodoBar (в ChatPage).
+    <div
+      className={`chat-input-wrap ${isIncognito ? 'chat-input-wrap--incognito' : ''}`}>
 
-      {/* Слеш-меню */}
-      <SlashMenu
-        commands={slashCmds}
-        selectedIndex={slashIdx}
-        anchorRef={boxRef as React.RefObject<HTMLElement>}
-        onSelect={selectCommand}
-        onClose={() => setSlashCmds([])}
-      />
+      {/* ОСНОВНОЙ БЛОК — бейджи + инпут. */}
+      <div className="chat-input-main">
+        {/* Слеш-меню */}
+        <SlashMenu
+          commands={slashCmds}
+          selectedIndex={slashIdx}
+          anchorRef={boxRef as React.RefObject<HTMLElement>}
+          onSelect={selectCommand}
+          onClose={() => setSlashCmds([])}
+        />
 
       {/* Строка статуса над инпутом: workdir-бейдж + planning/image-бейджи.
           Workdir показываем как cwd-indicator (как в Codex CLI) — иконка
@@ -292,75 +295,6 @@ export default function ChatInput({
           <span>Rate limit — жду {rateLimitSec}с</span>
         </div>
       )}
-
-      {/* Live todo-чеклист агента — над инпутом, сворачиваемый */}
-      <AnimatePresence>
-        {liveTodo.length > 0 && (
-          <motion.div
-            className={`live-todo-bar${todoCollapsed ? ' live-todo-bar--collapsed' : ''}`}
-            initial={{ opacity: 0, y: 8, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: 'auto' }}
-            exit={{ opacity: 0, y: 8, height: 0 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 32 }}
-          >
-            <div className="live-todo-bar__header" onClick={() => setTodoCollapsed(v => !v)}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="live-todo-bar__icon">
-                <path d="M9 11l3 3L22 4"/>
-                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-              </svg>
-              <span className="live-todo-bar__title">План</span>
-              <span className="live-todo-bar__progress">
-                {liveTodo.filter(i => i.status === 'done').length}/{liveTodo.length}
-              </span>
-              <div className="live-todo-bar__bar">
-                <motion.div
-                  className="live-todo-bar__bar-fill"
-                  animate={{ width: `${liveTodo.length > 0 ? Math.round((liveTodo.filter(i => i.status === 'done').length / liveTodo.length) * 100) : 0}%` }}
-                  transition={{ type: 'spring', stiffness: 200, damping: 24 }}
-                />
-              </div>
-              <svg
-                className="live-todo-bar__chevron"
-                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                style={{ transform: todoCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
-              >
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
-            </div>
-            <AnimatePresence>
-              {!todoCollapsed && (
-                <motion.div
-                  className="live-todo-bar__items"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.18 }}
-                >
-                  {liveTodo.map((item, i) => (
-                    <div key={i} className={`live-todo-bar__item live-todo-bar__item--${item.status}`}>
-                      <span className="live-todo-bar__item-icon">
-                        {item.status === 'done' && (
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="20 6 9 17 4 12"/>
-                          </svg>
-                        )}
-                        {item.status === 'in_progress' && <span className="live-todo-bar__spinner" />}
-                        {item.status === 'pending' && <span className="live-todo-bar__circle" />}
-                        {item.status === 'skipped' && (
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                            <line x1="5" y1="12" x2="19" y2="12"/>
-                          </svg>
-                        )}
-                      </span>
-                      <span className="live-todo-bar__item-text">{item.text}</span>
-                    </div>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       <div className="chat-input-box" ref={boxRef}>
         {/* + кнопка с меню */}
@@ -500,6 +434,7 @@ export default function ChatInput({
       </div>
 
       <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды</p>
+      </div>
     </div>
   )
 }

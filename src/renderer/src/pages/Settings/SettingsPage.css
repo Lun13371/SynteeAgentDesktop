@@ -1,4 +1,4 @@
-.settings-root {
+﻿.settings-root {
   display: flex;
   height: 100%;
   overflow: hidden;
@@ -142,7 +142,7 @@
 
 .settings-input:focus { border-color: var(--border-strong); }
 .settings-input--sm { min-width: 80px; }
-.settings-input--mono { font-family: monospace; font-size: 12px; }
+.settings-input--mono { font-family: var(--font-mono); font-size: 12px; }
 
 .settings-chip {
   padding: 5px 12px; border-radius: var(--radius-sm);
@@ -195,20 +195,24 @@
 }
 
 .settings-toggle--on { background: var(--accent); }
-[data-theme="dark"] .settings-toggle--on { background: rgba(255,255,255,0.8); }
 
 .settings-toggle-thumb {
   position: absolute;
   top: 2px;
+  /* x позиция анимируется framer-motion (animate={{ x: value ? 20 : 2 }}).
+     CSS transform не трогаем — конфликтует с inline style. */
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: white;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  background: var(--on-accent-strong);
+  /* Двойная тень: наружная для объёма + тонкий inset-ring для глубины.
+     Раньше была одна слабая тень — кружок выглядил плоским пятном. */
+  box-shadow:
+    0 2px 6px rgba(var(--shadow-rgb), 0.35),
+    0 1px 2px rgba(var(--shadow-rgb), 0.2),
+    inset 0 0 0 0.5px rgba(var(--shadow-rgb), 0.08);
   display: block;
 }
-
-[data-theme="dark"] .settings-toggle--on .settings-toggle-thumb { background: #1a1a1a; }
 
 /* Buttons */
 .settings-btn {
@@ -254,10 +258,170 @@
   gap: 6px;
 }
 
-/* Theme grid */
+/* Простой grid для мелких опций (аватар, время, фон) — кнопки в ряд */
 .settings-theme-grid {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-theme-btn {
+  min-width: 64px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.settings-theme-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.settings-theme-btn--active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+/* Theme grid — мини-превью интерфейса в карточках.
+   flex-wrap как у .anim-preview-grid — карточки идут в ряд и
+   переносятся на следующую строку, а не вниз в колонку. */
+.settings-theme-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-theme-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 5px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--border);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: border-color 0.18s, transform 0.18s;
+  width: 92px;
+}
+
+.settings-theme-card:hover {
+  border-color: var(--border-strong);
+}
+
+.settings-theme-card--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.settings-theme-card__preview {
+  position: relative;
+  height: 48px;
+  border-radius: 7px;
+  overflow: hidden;
+  border: 1px solid var(--overlay-4);
+  display: flex;
+}
+
+.settings-theme-card__sidebar {
+  width: 14px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--overlay-2);
+}
+
+.settings-theme-card__content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 5px;
+}
+
+.settings-theme-card__bubble {
+  height: 5px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.settings-theme-card__bubble--left {
+  width: 60%;
+  align-self: flex-start;
+}
+
+.settings-theme-card__bubble--right {
+  width: 45%;
+  align-self: flex-end;
+}
+
+.settings-theme-card__dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.settings-theme-card__label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 0 2px 2px;
+}
+
+.settings-theme-card--active .settings-theme-card__label {
+  color: var(--text-primary);
+}
+
+.settings-theme-card__check {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--on-accent-strong);
+  box-shadow: 0 2px 8px rgba(var(--shadow-rgb), 0.3);
+  border: 2px solid var(--bg-primary);
+}
+
+/* Accent color picker */
+.settings-accent-picker {
+  display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-accent-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.18s, transform 0.18s;
+}
+
+.settings-accent-swatch:hover {
+  border-color: var(--border-strong);
+}
+
+.settings-accent-swatch--active {
+  border-color: var(--text-primary);
 }
 
 .settings-bg-grid {
@@ -301,23 +465,6 @@
   font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
-}
-
-.settings-theme-btn {
-  width: 72px;
-  height: 44px;
-  border-radius: var(--radius-md);
-  border: 2px solid transparent;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 500;
-  color: rgba(255,255,255,0.8);
-  transition: all var(--transition);
-}
-
-.settings-theme-btn--active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
 /* Hotkeys */
@@ -381,7 +528,7 @@
   border-radius: 4px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-strong);
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 600;
   color: var(--text-primary);

@@ -1,4 +1,4 @@
-.model-selector {
+﻿.model-selector {
   display: inline-flex;
   margin-left: auto;  /* прижимаем к правому краю status-row */
   flex-shrink: 0;
@@ -34,7 +34,7 @@
   height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.15);
+  box-shadow: 0 0 0 1px var(--overlay-6);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -65,7 +65,7 @@
   overflow: hidden;
   background: var(--glass-bg, rgba(18,18,28,0.97));
   border: 1px solid var(--border);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.5);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   will-change: opacity, transform;
@@ -197,14 +197,14 @@
   border-radius: var(--radius-md);
   background: var(--bg-elevated, #222);
   border: 1px solid var(--border);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.45);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   pointer-events: none;
 }
 
 .mpt-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
-.mpt-id { font-size: 10px; color: var(--text-muted); margin-bottom: 10px; font-family: monospace; }
+.mpt-id { font-size: 10px; color: var(--text-muted); margin-bottom: 10px; font-family: var(--font-mono); }
 .mpt-row {
   display: flex;
   justify-content: space-between;

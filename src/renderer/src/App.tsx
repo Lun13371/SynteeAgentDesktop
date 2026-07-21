@@ -34,6 +34,48 @@ function getRoute(): Route {
   return 'chat'
 }
 
+// Доступные UI-шрифты. Только те, что подключены локально в fonts.css.
+// Моноширинный (--font-mono) не настраивается пользователем — всегда
+// JetBrains Mono для кода/путей.
+const UI_FONTS: Record<string, string> = {
+  'Inter': "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  'system': '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+}
+
+// Применяет выбранный шрифт к CSS-переменной --font-family на :root.
+// Раньше select в Settings сохранял значение, но не менял реальный
+// шрифт — CSS-переменная оставалась дефолтной.
+export function applyFontToDOM(fontId: string) {
+  const stack = UI_FONTS[fontId] ?? UI_FONTS['Inter']
+  document.documentElement.style.setProperty('--font-family', stack)
+}
+
+// Применяет кастомный accent цвет поверх темы. Меняет --accent и
+// связанные переменные (--accent-hover, --accent-subtle, --border,
+// --border-strong, --overlay-4/5/6, --glass-bg). Если color пустой —
+// сбрасывает к теме (удаляет inline overrides).
+export function applyAccentToDOM(color?: string) {
+  const root = document.documentElement
+  if (!color) {
+    // Сброс к теме — удаляем все inline overrides
+    root.style.removeProperty('--accent')
+    root.style.removeProperty('--accent-hover')
+    root.style.removeProperty('--accent-subtle')
+    root.style.removeProperty('--accent-rgb')
+    return
+  }
+  // Парсим hex → rgb components для rgba-конструкций
+  const hex = color.replace('#', '')
+  const r = parseInt(hex.slice(0, 2), 16)
+  const g = parseInt(hex.slice(2, 4), 16)
+  const b = parseInt(hex.slice(4, 6), 16)
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return
+  root.style.setProperty('--accent', color)
+  root.style.setProperty('--accent-hover', `rgba(${r}, ${g}, ${b}, 0.85)`)
+  root.style.setProperty('--accent-subtle', `rgba(${r}, ${g}, ${b}, 0.1)`)
+  root.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`)
+}
+
 export default function App() {
   const [route, setRoute] = useState<Route>(getRoute())
   const [mainPage, setMainPage] = useState<MainPage>('chat')
@@ -49,7 +91,8 @@ export default function App() {
     const applyVisualSettings = async () => {
       try {
         const [theme, bgStyle, msgAnim, accentColor, animatedBg,
-          avatarStyle, showTime, userMarkdown, uiSounds, sendEffect] = await Promise.all([
+          avatarStyle, showTime, userMarkdown, uiSounds, sendEffect,
+          fontFamily] = await Promise.all([
           window.syntee.settings.get('theme'),
           window.syntee.settings.get('bgStyle'),
           window.syntee.settings.get('msgAnim'),
@@ -60,6 +103,7 @@ export default function App() {
           window.syntee.settings.get('userMarkdown'),
           window.syntee.settings.get('uiSounds'),
           window.syntee.settings.get('sendEffect'),
+          window.syntee.settings.get('fontFamily'),
         ])
         if (theme) setTheme(theme as any)
         if (bgStyle) setBgStyle(bgStyle as string)
@@ -74,6 +118,12 @@ export default function App() {
           setUiSoundsFlag(uiSounds as boolean)
         }
         if (sendEffect !== undefined && sendEffect !== null) setSendEffect(sendEffect as boolean)
+        // Применяем шрифт к CSS-переменной. Раньше настройка вообще
+        // не работала — значения сохранялись, но --font-family в :root
+        // оставался 'Inter' и select не менял реальный шрифт.
+        if (fontFamily) applyFontToDOM(fontFamily as string)
+        // Кастомный accent применяется поверх темы.
+        if (accentColor) applyAccentToDOM(accentColor as string)
       } catch { /* ok */ }
     }
     applyVisualSettings()

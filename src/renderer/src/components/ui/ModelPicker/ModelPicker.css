@@ -1,4 +1,4 @@
-.model-picker {
+﻿.model-picker {
   width: 100%;
 }
 
@@ -49,7 +49,7 @@
   overflow: hidden;
   background: var(--bg-elevated, #222);
   border: 1px solid var(--border);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.45);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   will-change: opacity, transform;
@@ -163,7 +163,7 @@
   flex-wrap: wrap;
   gap: 4px;
   padding: 6px 10px 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--overlay-3);
 }
 .model-picker-cap-pill {
   display: inline-flex;
@@ -171,9 +171,9 @@
   gap: 3px;
   padding: 3px 8px;
   border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(255, 255, 255, 0.4);
+  border: 1px solid var(--overlay-4);
+  background: var(--overlay-1);
+  color: var(--text-muted);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -199,9 +199,9 @@
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--overlay-4);
   background: transparent;
-  color: rgba(255, 255, 255, 0.3);
+  color: var(--text-muted);
   cursor: pointer;
   transition: all 0.12s;
   margin-left: 2px;
@@ -220,7 +220,7 @@
   border-radius: var(--radius-md);
   background: var(--bg-elevated, #222);
   border: 1px solid var(--border);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.45);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   pointer-events: none;
@@ -228,7 +228,7 @@
 
 
 .mpt-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
-.mpt-id { font-size: 10px; color: var(--text-muted); margin-bottom: 10px; font-family: monospace; }
+.mpt-id { font-size: 10px; color: var(--text-muted); margin-bottom: 10px; font-family: var(--font-mono); }
 .mpt-row {
   display: flex;
   justify-content: space-between;

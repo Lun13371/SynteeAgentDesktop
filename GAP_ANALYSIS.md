@@ -13,7 +13,7 @@
 
 ## 1. Критично — подтверждено документацией, реально есть у Claude Code
 
-- [ ] **Нет пост-эдит верификации через LSP.** У Claude Code это официальный built-in tool
+- [x] **Нет пост-эдит верификации через LSP.** У Claude Code это официальный built-in tool
   `LSP` — "Code intelligence via language servers: jump to definitions, find references,
   report type errors and warnings". У нас `edit_file`/`write_file`/`multi_edit_file`
   (`tools/index.ts`) просто пишут на диск и отдают diff — 0 совпадений по
@@ -23,7 +23,7 @@
   Python и т.д.), либо на первом шаге проще — обёртка над `tsc --noEmit`/`eslint --format json`,
   парсинг в структурированный список ошибок с file:line.
 
-- [ ] **Нет системы hooks (жизненный цикл агента).** У Claude Code это отдельная развитая
+- [x] **Нет системы hooks (жизненный цикл агента).** У Claude Code это отдельная развитая
   подсистема: `PreToolUse`/`PostToolUse`/`Stop`/`SessionStart` и т.д. — пользовательские shell-
   команды/HTTP/MCP-tool/LLM-prompt хендлеры, которые можно вешать на конкретные тулы (matcher
   `Edit|Write`) и получать structured JSON-решение (allow/deny/доп. контекст). Именно через
@@ -34,7 +34,7 @@
   автоматически запускаемая после N-й правки файла, результат подмешивается в контекст —
   упрощённый аналог `PostToolUse`-хука без полной hook-инфраструктуры.
 
-- [ ] **Нет persistent shell-сессии.** У Claude Code Bash tool сохраняет состояние процесса
+- [x] **Нет persistent shell-сессии.** У Claude Code Bash tool сохраняет состояние процесса
   между вызовами внутри одной сессии. У нас каждый `run_command` (`tools/index.ts:72-142`) —
   новый `exec()`/PowerShell-процесс с нуля. `cd`, активированный venv, экспортированные
   переменные не переживают между вызовами (сохраняется только `Agent.workdir` — рабочая
