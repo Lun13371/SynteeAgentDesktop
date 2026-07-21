@@ -3,6 +3,7 @@ import { AnimatePresence } from 'framer-motion'
 import { useUIStore } from './store/ui.store'
 import { useChatStore } from './store/chat.store'
 import { setUiSoundsFlag } from './utils/sounds'
+import { useChatRunSubscription } from './hooks/useChatRunSubscription'
 import ChatPage from './pages/Chat/ChatPage'
 import OverlayPage from './pages/Overlay/OverlayPage'
 import './pages/Overlay/OverlayPage.css'
@@ -85,6 +86,11 @@ export default function App() {
   const { theme, setTheme, setBgStyle, setMsgAnim, setAccentColor, setAnimatedBackground,
     setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect } = useUIStore()
   const { currentChatId } = useChatStore()
+
+  // Глобальная IPC-подписка на события чатов (токены, шаги, статусы).
+  // Монтируется один раз — пишет в Zustand store по chatId, чтобы
+  // параллельные чаты каждый имели свой LiveState.
+  useChatRunSubscription()
 
   // Загружаем визуальные настройки из electron-store при старте
   useEffect(() => {

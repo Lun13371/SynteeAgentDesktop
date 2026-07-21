@@ -51,22 +51,58 @@ const DEFAULT_AGENT_SETTINGS: AgentSettings = {
  * мгновенно, единственная точка персистентности — sendDone → saveMessage).
  *
  * Теперь каждый запуск держит свой собственный экземпляр ActiveRun, а
- * module-level `activeRun` указывает на текущий. При вытеснении старого
- * запуска новым мы сначала флешим его прогресс через его собственный
- * sendDone (сохранив частичный ответ в БД), и только потом terminate().
+ * module-level `activeRuns` — это Map по chatId. Несколько чатов могут
+ * работать параллельно, каждый со своим воркером и буферами. В пределах
+ * одного chatId запуски сериализуются через chatQueues (FIFO).
  */
 interface ActiveRun {
   worker: Worker
   chatId: string
+  msgId: string
   bufferedText: string
   bufferedThinking: string
   bufferedThinkingMs?: number
   bufferedSteps: unknown[]
+  bufferedIters: unknown[]
+  bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
+  bufferedAgentStatus: string | null
+  bufferedRateLimitSec: number
   doneSent: boolean
   sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[]) => void
 }
 
-let activeRun: ActiveRun | null = null
+const activeRuns = new Map<string, ActiveRun>()
+// FIFO-очередь запусков на один chatId. Новый chat:send в чат, где уже
+// работает воркер, ставится в очередь и стартует после завершения старого.
+type QueuedSend = () => Promise<void>
+const chatQueues = new Map<string, Array<QueuedSend>>()
+
+function emitRunStatus(
+  win: BrowserWindow | null,
+  chatId: string,
+  status: 'running' | 'done' | 'error' | 'cancelled' | 'queued',
+  msgId?: string,
+  error?: string,
+) {
+  win?.webContents.send(IPC_EVENTS.CHAT_RUN_STATUS, { chatId, status, msgId, error, ts: Date.now() })
+}
+
+/**
+ * Запускает следующий chat:send из очереди chatId, если он есть.
+ * Вызывается после терминального статуса предыдущего запуска (done/error/cancelled).
+ */
+function drainQueue(chatId: string) {
+  const q = chatQueues.get(chatId)
+  if (!q || q.length === 0) {
+    chatQueues.delete(chatId)
+    return
+  }
+  const next = q.shift()!
+  // Асинхронный запуск — ошибки внутри next() обрабатываются им самим.
+  void next().catch((e) => {
+    log('[chat:send] queued run failed chatId=%s: %s', chatId, (e as Error).message)
+  })
+}
 
 /**
  * Разворачивает Message с toolSteps в массив полноценных OpenAI-совместимых
@@ -209,224 +245,33 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     return buildSystemPrompt({ userName, memoryContext, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext })
   }
 
-  // ── Проекты (рабочие директории) ────────────────────────────────────
-  // Проект = именованная привязка к папке + зафиксированный при создании
-  // контекст (analyzeProject). Чаты создаются внутри проекта и наследуют
-  // его workdir. Пикер папки теперь часть создания проекта, а не чата.
-
-  ipcMain.handle('projects:pickWorkdir', async () => {
-    const win = mainWindow.getWindow()
-    const result = await dialog.showOpenDialog(win ?? new BrowserWindow(), {
-      properties: ['openDirectory'],
-      title: 'Выберите папку проекта',
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
-  })
-
-  // Создание НОВОЙ пустой папки для проекта. Используем showSaveDialog, чтобы
-  // пользователь мог задать имя папки и выбрать родительский каталог; затем
-  // физически создаём каталог через mkdirSync. Если каталог уже существует и
-  // не пуст — отказываемся, чтобы не превращать «пустой проект» в скан
-  // существующего содержимого.
-  ipcMain.handle('projects:pickNewWorkdir', async () => {
-    const win = mainWindow.getWindow()
-    const result = await dialog.showSaveDialog(win ?? new BrowserWindow(), {
-      title: 'Создать папку для нового проекта',
-      buttonLabel: 'Создать проект',
-      defaultPath: 'new-project',
-      properties: ['createDirectory'],
-    })
-    if (result.canceled || !result.filePath) return null
-    try {
-      const fs = await import('fs')
-      if (fs.existsSync(result.filePath)) {
-        const entries = fs.readdirSync(result.filePath)
-        if (entries.length > 0) {
-          log('[projects:pickNewWorkdir] dir not empty, abort: %s', result.filePath)
-          return null
-        }
-      } else {
-        fs.mkdirSync(result.filePath, { recursive: true })
-      }
-    } catch (e) {
-      log('[projects:pickNewWorkdir] mkdir failed: %s', (e as Error).message)
-      return null
-    }
-    return result.filePath
-  })
-
-  ipcMain.handle('projects:create', async (_, workdir: string) => {
-    // Если проект с таким workdir уже существует — createProject вернёт его
-    // (UNIQUE constraint). Скан запускаем только если project_context пуст.
-    const existing = getAllProjects().find(p => p.workdir === workdir)
-    if (existing && existing.projectContext) return existing
-    let projectContext: string | undefined
-    try {
-      const scan = await analyzeProject(workdir)
-      if (scan.success && scan.output) projectContext = scan.output
-      else log('[projects:create] analyzeProject не удался для workdir=%s: %s', workdir, scan.error ?? 'no output')
-    } catch (e) {
-      log('[projects:create] analyzeProject exception для workdir=%s: %s', workdir, (e as Error).message)
-    }
-    return createProject(workdir, projectContext)
-  })
-
-  ipcMain.handle('projects:getAll', () => getAllProjects())
-  ipcMain.handle('projects:rename', (_, id: string, name: string) => renameProject(id, name))
-  ipcMain.handle('projects:delete', (_, id: string) => deleteProject(id))
-  ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))
-  ipcMain.handle('projects:touch', (_, id: string) => touchProject(id))
-  ipcMain.handle('projects:setVerificationCommand', (_, id: string, command: string | null) => setProjectVerificationCommand(id, command))
-
-  ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string) => {
-    return createChat(isIncognito, mode, projectId)
-  })
-
-  ipcMain.handle('chat:getAll', () => getAllChats())
-  ipcMain.handle('chat:getMessages', (_, chatId: string) => getMessages(chatId))
-  ipcMain.handle('chat:delete', (_, chatId: string) => {
-    deleteChat(chatId)
-    clearFileCache(chatId)
-    agentManager.clearChat(chatId)
-    shellSessionManager.kill(chatId)
-  })
-  ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
-  ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
-  ipcMain.handle('chat:unpinMsg', (_, messageId: string) => unpinMessage(messageId))
-
-  // ── context:calculate — пересчёт контекста чата без отправки сообщения.
-  //    Вызывается renderer-хуком useContextCounter при смене activeChatId,
-  //    чтобы показатель контекста не был пустым до первого сообщения.
-  //    Эмитит CONTEXT_USAGE с тем же payload, что и chat:send.
-  ipcMain.handle('context:calculate', async (_, chatId: string) => {
-    try {
-      const win = mainWindow.getWindow()
-      if (!win) return
-
-      const storeData: Record<string, unknown> = {}
-      const storeKeys = [
-        'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'integrations',
-        'voiceId', 'embeddingModel',
-        'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
-        'contextSettings',
-      ]
-      for (const k of storeKeys) {
-        const v = store.get(k)
-        if (v !== undefined) storeData[k] = v
-      }
-
-      const ctxSettings = getContextSettings(storeData)
-      if (!ctxSettings.tokenCounterEnabled) return
-
-      const contextWindow = getModelContextWindow(storeData)
-      const sysPrompt = getSystemPrompt(chatId)
-
-      // Загружаем историю (как в chat:send) — для incognito-чатов она пуста
-      const history = getMessages(chatId)
-      const historyLimit = 40
-      const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
-
-      const snapshot = buildSnapshotFromEstimate(rawHistory, contextWindow, {
-        systemPrompt: sysPrompt,
-        currentMsgTokens: 0, // при смене чата ввод пуст
-        includeToolSchemas: true,
-      })
-      const sess = getSessionCost(chatId)
-
-      // Метаданные для legacy-полей ContextRing (historyMessages / toolCallsCount)
-      const historyMessagesCount = history.length
-      const toolCallsCount = history.reduce((sum, msg) => {
-        const steps = msg.toolSteps as Array<{ type: string }> | undefined
-        return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
-      }, 0)
-
-      win.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-        chatId,
-        pct: snapshot.pct,
-        estimated: snapshot.estimated,
-        limit: snapshot.limit,
-        status: snapshot.status,
-        source: 'estimate',
-        compressed: false,
-        breakdown: snapshot.breakdown,
-        sessionCostCents: sess?.totalCents ?? null,
-        sessionRequests: sess?.requests ?? 0,
-        historyMessages: historyMessagesCount,
-        toolCallsCount,
-      })
-    } catch (e) {
-      log('[context:calculate] error chatId=%s: %s', chatId, (e as Error).message)
-    }
-  })
-
-  ipcMain.handle('chat:send', async (_, params: {
-    chatId: string
-    content: string
-    displayContent?: string
-    slashCommand?: { name: string; args: string }
-    incognito?: boolean
-    userMsgId?: string
-    planningMode?: boolean
-    imageMode?: boolean
-    mode?: ChatMode
-  }) => {
-    const win = mainWindow.getWindow()
-
-    // ── Завершаем предыдущий активный запуск, если он ещё жив ──────────
-    // ВАЖНО: сначала сохраняем накопленный прогресс старого прогона в БД
-    // (как частичный ответ ассистента), и только потом убиваем воркер.
-    // Иначе весь контекст оборванного прогона теряется безвозвратно, а
-    // следующий запрос стартует с историей, в которой этого прогона нет
-    // (именно так 27k накопленного контекста превращались в 7k).
-    if (activeRun) {
-      const old = activeRun
-      ;(old.worker as unknown as { _terminated?: boolean })._terminated = true
-      old.worker.terminate()
-      if (!old.doneSent) {
-        log('[chat:send] вытеснение активного запуска chatId=%s — флешим прогресс (text=%d chars, steps=%d) перед стартом нового',
-          old.chatId, old.bufferedText.length, old.bufferedSteps.length)
-        old.sendDone(
-          old.bufferedText,
-          old.bufferedThinking || undefined,
-          old.bufferedThinkingMs,
-          old.bufferedSteps,
-        )
-      }
-      activeRun = null
-    }
-
-    // Читаем режим из БД — надёжнее чем доверять клиенту (защита от рассинхрона)
-    const chatMode: ChatMode = params.mode ?? (() => { try { return getChatMode(params.chatId) } catch { return 'code' } })()
-
-    // Request-scoped состояние этого запуска. Каждый chat:send имеет свой
-    // собственный экземпляр — буферы не пересекаются между запусками.
-    const run: ActiveRun = {
-      worker: undefined as unknown as Worker,
-      chatId: params.chatId,
-      bufferedText: '',
-      bufferedThinking: '',
-      bufferedThinkingMs: undefined,
-      bufferedSteps: [],
-      doneSent: false,
-      sendDone: () => { /* присваивается ниже после определения sendDone */ },
-    }
-
-    const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
-
-    const userMsg: Message = {
-      id: params.userMsgId ?? uuid(),
-      chatId: params.chatId,
-      role: 'user',
-      content: params.displayContent ?? params.content,
-      createdAt: Date.now(),
-      isPinned: 0,
-      slashCommand: params.slashCommand,
-    }
-    const history = params.incognito ? [] : getMessages(params.chatId)
-    const assistantMsgId = uuid()
-
+  /**
+   * Реальный запуск воркера для chat:send. Вынесено из ipcMain.handle чтобы
+   *  можно было ставить запросы в очередь на один chatId (если воркер уже
+   *  работает) и вызывать drainQueue после терминального статуса.
+   *
+   *  Все ссылки на глобальные синглтоны (activeRuns, chatQueues) — module-level.
+   *  store / mainWindow / getSystemPrompt — из замыкания registerChatIPC.
+   */
+  async function runChatSend(
+    params: {
+      chatId: string
+      content: string
+      displayContent?: string
+      slashCommand?: { name: string; args: string }
+      incognito?: boolean
+      userMsgId?: string
+      planningMode?: boolean
+      imageMode?: boolean
+      mode?: ChatMode
+    },
+    win: BrowserWindow | null,
+    chatMode: ChatMode,
+    agentSettings: AgentSettings,
+    userMsg: Message,
+    history: Message[],
+    assistantMsgId: string,
+  ): Promise<{ userMsg: Message; assistantMsgId: string }> {
     const storeData: Record<string, unknown> = {}
     const storeKeys = [
       'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
@@ -449,10 +294,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     if (!params.incognito) saveMessage(userMsg)
 
     const historyLimit = 40
-    // messageToContextMessages() разворачивает toolSteps ассистента в полные
-    // OpenAI-совместимые сообщения (assistant с tool_calls + tool results),
-    // чтобы следующий запрос видел полные результаты предыдущих tool-вызовов
-    // (содержимое файлов, результаты команд) — без агрегрессивного сжатия.
     const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
 
     let processedHistory = rawHistory
@@ -474,8 +315,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, false)
       if (result.compressed) {
-        // Логируем срабатывание компакции, чтобы отличать «компакция» от
-        // «потеря по race condition» в будущих инцидентах вида 27k → 7k.
         const triggerTokens = Math.floor(realContextWindow * ctxSettings.rollingTriggerPct / 100)
         log('[chat:send] rolling-window компакция chatId=%s: contextWindow=%d triggerTokens=%d(=%d%%) removed=%d сообщений',
           params.chatId, realContextWindow, triggerTokens, ctxSettings.rollingTriggerPct, result.removedCount)
@@ -519,12 +358,32 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     let pendingPlan: { title: string; content: string; summary: string; filePath: string } | undefined
 
+    // Request-scoped состояние этого запуска. Каждый chat:send имеет свой
+    // собственный экземпляр — буферы не пересекаются между запусками.
+    const run: ActiveRun = {
+      worker: undefined as unknown as Worker,
+      chatId: params.chatId,
+      msgId: assistantMsgId,
+      bufferedText: '',
+      bufferedThinking: '',
+      bufferedThinkingMs: undefined,
+      bufferedSteps: [],
+      bufferedIters: [],
+      bufferedTodo: [],
+      bufferedAgentStatus: null,
+      bufferedRateLimitSec: 0,
+      doneSent: false,
+      sendDone: () => { /* присваивается ниже после определения sendDone */ },
+    }
+
     const sendDone = (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[]) => {
       if (run.doneSent) return
       run.doneSent = true
-      // Снимаем ссылку на активный запуск, если это он — следующий chat:send
-      // увидит activeRun === null и не будет пытаться вытеснить уже завершённый.
-      if (activeRun === run) activeRun = null
+      // Снимаем ссылку на активный запуск этого чата — следующий chat:send
+      // увидит, что слот свободен, и стартует (или дрейнит очередь).
+      if (activeRuns.get(params.chatId) === run) {
+        activeRuns.delete(params.chatId)
+      }
 
       const assistantMsg: Message & { iterations?: unknown } = {
         id: assistantMsgId,
@@ -556,6 +415,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         msgId: assistantMsgId,
         message: assistantMsg,
       })
+
+      // Эмитим терминальный статус для сайдбара (бейдж ✓).
+      emitRunStatus(win, params.chatId, 'done', assistantMsgId)
+
+      // Запускаем следующий запрос из очереди этого чата, если он есть.
+      drainQueue(params.chatId)
     }
     run.sendDone = sendDone
 
@@ -563,9 +428,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const mainAssignment = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined)
       ?.find(a => a.role === 'main')
     const catalogCachePath = path.join(app.getPath('userData'), 'modelsCatalog.json')
-    // workdir чата нужен и в воркере — Agent.executeTool будет резолвить
-    // относительные пути файловых тулов и cwd run_command относительно него.
-    // verificationCommand — команда авто-проверки проекта после серии правок.
     const { workdir: chatWorkdir, verificationCommand } = (() => {
       try { return getChatWorkdirContext(params.chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
     })()
@@ -586,7 +448,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       env: process.env,
     })
     run.worker = worker
-    activeRun = run
+    activeRuns.set(params.chatId, run)
+
+    // Эмитим стартовый статус для сайдбара (spinner).
+    emitRunStatus(win, params.chatId, 'running', assistantMsgId)
 
     worker.on('message', (msg: Record<string, unknown>) => {
       switch (msg.type) {
@@ -622,7 +487,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           if ((msg.step as { type?: string }).type !== 'tool_call_pending') {
             run.bufferedSteps.push(msg.step)
           }
-          win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId })
+          // chatId добавлен чтобы глобальный хук useChatRunSubscription мог
+          // маршрутизировать шаг в нужный чат (раньше фильтрация шла по msgId
+          // в локальном стейте ChatPage — не работало для параллельных чатов).
+          win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId, chatId: msg.chatId })
           break
 
         case 'confirm': {
@@ -640,10 +508,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         }
 
         case 'agent_status':
+          run.bufferedAgentStatus = msg.text as string
           win?.webContents.send('agent:status', { msgId: msg.msgId, chatId: msg.chatId, text: msg.text })
           break
 
         case 'todo_update':
+          run.bufferedTodo = msg.items as typeof run.bufferedTodo
           win?.webContents.send('agent:todo', { msgId: msg.msgId, chatId: msg.chatId, items: msg.items })
           break
 
@@ -651,7 +521,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           ;(async () => {
             const parentSummary = getChatSummary(msg.chatId as string)
             const parentWorkingMemory = getWorkingMemory(msg.chatId as string)
-            // Work-режим удалён — всегда Code-формулировка для суб-агентов.
             const subModeIntro = 'Сначала пойми релевантный код и ограничения, потом выполни только свою часть работы.'
             const subModeOutro = 'Финальный ответ дай кратко: что найдено или сделано, важные файлы, риски или следующий шаг.'
             const spawnResult = await agentManager.spawn({
@@ -773,7 +642,8 @@ ${subModeOutro}`,
         }
 
         case 'rate_limit':
-          win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec })
+          run.bufferedRateLimitSec = msg.waitSec as number
+          win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec, chatId: params.chatId })
           break
 
         case 'update_working_memory': {
@@ -810,8 +680,6 @@ ${subModeOutro}`,
           break
 
         case 'done':
-          // Персистим round-robin индекс ключей провайдера, обновлённый воркером,
-          // чтобы ротация продолжалась со следующего сообщения (см. ai-worker.ts finalize).
           if (msg.updatedProviders) {
             store.set('providers', msg.updatedProviders)
           }
@@ -834,8 +702,6 @@ ${subModeOutro}`,
         case 'error': {
           // Если агент успел что-то сделать (текст/тулы) до ошибки — сохраняем
           // это в историю чата вместо того чтобы просто выбросить прогресс.
-          // Без этого, например, "превышено максимальное количество шагов
-          // агента" на 31-м шаге из 32 стирал бы все изменения файлов и текст.
           if (msg.updatedProviders) {
             store.set('providers', msg.updatedProviders)
           }
@@ -852,7 +718,13 @@ ${subModeOutro}`,
               errSteps,
               (msg.collectedIters as unknown[]) || undefined,
             )
+          } else {
+            // Нет прогресса — просто помечаем запуск завершённым и дрейним очередь.
+            run.doneSent = true
+            if (activeRuns.get(params.chatId) === run) activeRuns.delete(params.chatId)
+            drainQueue(params.chatId)
           }
+          emitRunStatus(win, params.chatId, 'error', assistantMsgId, msg.error as string)
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
             chatId: msg.chatId,
             error: msg.error,
@@ -865,7 +737,8 @@ ${subModeOutro}`,
     worker.on('error', (err) => {
       log('[Worker] error chatId=%s: %s', params.chatId, err.message)
       console.error('[Worker] error:', err)
-      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps)
+      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters)
+      emitRunStatus(win, params.chatId, 'error', assistantMsgId, err.message)
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
         chatId: params.chatId, error: err.message,
       })
@@ -873,14 +746,14 @@ ${subModeOutro}`,
 
     worker.on('exit', () => {
       setImmediate(() => {
-        // Если воркер был вытеснен новым chat:send или остановлен кнопкой
-        // Стоп — sendDone уже вызван до terminate(), doneSent=true и flush
-        // здесь будет no-op. Если же воркер упал/завершился сам, не дойдя до
-        // 'done' — сохраняем накопленный прогресс, чтобы не потерять его.
+        // Если воркер был остановлен кнопкой Стоп или terminated — sendDone
+        // уже вызван до terminate(), doneSent=true и flush здесь будет no-op.
+        // Если же воркер упал/завершился сам, не дойдя до 'done' — сохраняем
+        // накопленный прогресс, чтобы не потерять его.
         if (!run.doneSent) {
           log('[Worker] exit без done — флешим накопленный прогресс chatId=%s (text=%d chars, steps=%d)',
             params.chatId, run.bufferedText.length, run.bufferedSteps.length)
-          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps)
+          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters)
         }
       })
     })
@@ -899,25 +772,269 @@ ${subModeOutro}`,
       providerId: mainAssignment?.providerId,
       toolSchemas: getToolSchemas({
         planningMode: !!params.planningMode,
-        // imageMode включается либо разово командой /image, либо постоянным
-        // тогглом "Генерация изображений" в меню "+" (imageMode из клиента)
         imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
         mode: chatMode,
       }),
     })
 
     return { userMsg, assistantMsgId }
+  }
+
+  // ── Проекты (рабочие директории) ────────────────────────────────────
+  // Проект = именованная привязка к папке + зафиксированный при создании
+  // контекст (analyzeProject). Чаты создаются внутри проекта и наследуют
+  // его workdir. Пикер папки теперь часть создания проекта, а не чата.
+
+  ipcMain.handle('projects:pickWorkdir', async () => {
+    const win = mainWindow.getWindow()
+    const result = await dialog.showOpenDialog(win ?? new BrowserWindow(), {
+      properties: ['openDirectory'],
+      title: 'Выберите папку проекта',
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
   })
 
-  ipcMain.handle('chat:stop', () => {
-    if (activeRun) {
-      const run = activeRun
+  // Создание НОВОЙ пустой папки для проекта. Используем showSaveDialog, чтобы
+  // пользователь мог задать имя папки и выбрать родительский каталог; затем
+  // физически создаём каталог через mkdirSync. Если каталог уже существует и
+  // не пуст — отказываемся, чтобы не превращать «пустой проект» в скан
+  // существующего содержимого.
+  ipcMain.handle('projects:pickNewWorkdir', async () => {
+    const win = mainWindow.getWindow()
+    const result = await dialog.showSaveDialog(win ?? new BrowserWindow(), {
+      title: 'Создать папку для нового проекта',
+      buttonLabel: 'Создать проект',
+      defaultPath: 'new-project',
+      properties: ['createDirectory'],
+    })
+    if (result.canceled || !result.filePath) return null
+    try {
+      const fs = await import('fs')
+      if (fs.existsSync(result.filePath)) {
+        const entries = fs.readdirSync(result.filePath)
+        if (entries.length > 0) {
+          log('[projects:pickNewWorkdir] dir not empty, abort: %s', result.filePath)
+          return null
+        }
+      } else {
+        fs.mkdirSync(result.filePath, { recursive: true })
+      }
+    } catch (e) {
+      log('[projects:pickNewWorkdir] mkdir failed: %s', (e as Error).message)
+      return null
+    }
+    return result.filePath
+  })
+
+  ipcMain.handle('projects:create', async (_, workdir: string) => {
+    // Если проект с таким workdir уже существует — createProject вернёт его
+    // (UNIQUE constraint). Скан запускаем только если project_context пуст.
+    const existing = getAllProjects().find(p => p.workdir === workdir)
+    if (existing && existing.projectContext) return existing
+    let projectContext: string | undefined
+    try {
+      const scan = await analyzeProject(workdir)
+      if (scan.success && scan.output) projectContext = scan.output
+      else log('[projects:create] analyzeProject не удался для workdir=%s: %s', workdir, scan.error ?? 'no output')
+    } catch (e) {
+      log('[projects:create] analyzeProject exception для workdir=%s: %s', workdir, (e as Error).message)
+    }
+    return createProject(workdir, projectContext)
+  })
+
+  ipcMain.handle('projects:getAll', () => getAllProjects())
+  ipcMain.handle('projects:rename', (_, id: string, name: string) => renameProject(id, name))
+  ipcMain.handle('projects:delete', (_, id: string) => deleteProject(id))
+  ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))
+  ipcMain.handle('projects:touch', (_, id: string) => touchProject(id))
+  ipcMain.handle('projects:setVerificationCommand', (_, id: string, command: string | null) => setProjectVerificationCommand(id, command))
+
+  ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string) => {
+    return createChat(isIncognito, mode, projectId)
+  })
+
+  ipcMain.handle('chat:getAll', () => getAllChats())
+  ipcMain.handle('chat:getMessages', (_, chatId: string) => getMessages(chatId))
+  ipcMain.handle('chat:delete', (_, chatId: string) => {
+    // Если в удаляемом чате работает воркер — убиваем его и чистим очередь.
+    const run = activeRuns.get(chatId)
+    if (run) {
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
       run.worker.terminate()
-      // Флешим накопленный прогресс (как и раньше) — пользователь увидит
-      // частичный ответ ассистента, сохранённый в историю.
-      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps)
-      activeRun = null
+      run.doneSent = true
+      activeRuns.delete(chatId)
+    }
+    chatQueues.delete(chatId)
+    deleteChat(chatId)
+    clearFileCache(chatId)
+    agentManager.clearChat(chatId)
+    shellSessionManager.kill(chatId)
+  })
+  ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
+  ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
+  ipcMain.handle('chat:unpinMsg', (_, messageId: string) => unpinMessage(messageId))
+
+  // ── context:calculate — пересчёт контекста чата без отправки сообщения.
+  //    Вызывается renderer-хуком useContextCounter при смене activeChatId,
+  //    чтобы показатель контекста не был пустым до первого сообщения.
+  //    Эмитит CONTEXT_USAGE с тем же payload, что и chat:send.
+  ipcMain.handle('context:calculate', async (_, chatId: string) => {
+    try {
+      const win = mainWindow.getWindow()
+      if (!win) return
+
+      const storeData: Record<string, unknown> = {}
+      const storeKeys = [
+        'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'integrations',
+        'voiceId', 'embeddingModel',
+        'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
+        'contextSettings',
+      ]
+      for (const k of storeKeys) {
+        const v = store.get(k)
+        if (v !== undefined) storeData[k] = v
+      }
+
+      const ctxSettings = getContextSettings(storeData)
+      if (!ctxSettings.tokenCounterEnabled) return
+
+      const contextWindow = getModelContextWindow(storeData)
+      const sysPrompt = getSystemPrompt(chatId)
+
+      // Загружаем историю (как в chat:send) — для incognito-чатов она пуста
+      const history = getMessages(chatId)
+      const historyLimit = 40
+      const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
+
+      const snapshot = buildSnapshotFromEstimate(rawHistory, contextWindow, {
+        systemPrompt: sysPrompt,
+        currentMsgTokens: 0, // при смене чата ввод пуст
+        includeToolSchemas: true,
+      })
+      const sess = getSessionCost(chatId)
+
+      // Метаданные для legacy-полей ContextRing (historyMessages / toolCallsCount)
+      const historyMessagesCount = history.length
+      const toolCallsCount = history.reduce((sum, msg) => {
+        const steps = msg.toolSteps as Array<{ type: string }> | undefined
+        return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
+      }, 0)
+
+      win.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+        chatId,
+        pct: snapshot.pct,
+        estimated: snapshot.estimated,
+        limit: snapshot.limit,
+        status: snapshot.status,
+        source: 'estimate',
+        compressed: false,
+        breakdown: snapshot.breakdown,
+        sessionCostCents: sess?.totalCents ?? null,
+        sessionRequests: sess?.requests ?? 0,
+        historyMessages: historyMessagesCount,
+        toolCallsCount,
+      })
+    } catch (e) {
+      log('[context:calculate] error chatId=%s: %s', chatId, (e as Error).message)
+    }
+  })
+
+  ipcMain.handle('chat:send', async (_, params: {
+    chatId: string
+    content: string
+    displayContent?: string
+    slashCommand?: { name: string; args: string }
+    incognito?: boolean
+    userMsgId?: string
+    planningMode?: boolean
+    imageMode?: boolean
+    mode?: ChatMode
+  }) => {
+    const win = mainWindow.getWindow()
+
+    // Читаем режим из БД — надёжнее чем доверять клиенту (защита от рассинхрона)
+    const chatMode: ChatMode = params.mode ?? (() => { try { return getChatMode(params.chatId) } catch { return 'code' } })()
+
+    const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
+
+    const userMsg: Message = {
+      id: params.userMsgId ?? uuid(),
+      chatId: params.chatId,
+      role: 'user',
+      content: params.displayContent ?? params.content,
+      createdAt: Date.now(),
+      isPinned: 0,
+      slashCommand: params.slashCommand,
+    }
+    const history = params.incognito ? [] : getMessages(params.chatId)
+    const assistantMsgId = uuid()
+
+    // Если в этом чате уже работает воркер — ставим запрос в очередь и
+    // возвращаемся. Реальный запуск произойдёт после drainQueue(params.chatId).
+    if (activeRuns.has(params.chatId)) {
+      log('[chat:send] chatId=%s уже работает — ставим в очередь', params.chatId)
+      emitRunStatus(win, params.chatId, 'queued', assistantMsgId)
+      const queued: QueuedSend = () => runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+      const q = chatQueues.get(params.chatId) ?? []
+      q.push(queued)
+      chatQueues.set(params.chatId, q)
+      return { userMsg, assistantMsgId, queued: true }
+    }
+
+    return runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+  })
+
+  // ── chat:getLiveState — снапшот накопленного прогресса активного запуска.
+  //    Используется renderer-ом при смене чата, чтобы гидрировать live-пузырь
+  //    (текст/шаги/thinking) из main-буферов. Без этого при возврате в чат
+  //    с активным агентом пользователь видел бы пустой пузырь и только новые
+  //    токены, накопленные уже после переключения.
+  ipcMain.handle('chat:getLiveState', (_, chatId: string) => {
+    const run = activeRuns.get(chatId)
+    if (!run) return null
+    return {
+      chatId,
+      msgId: run.msgId,
+      isRunning: !run.doneSent,
+      bufferedText: run.bufferedText,
+      bufferedThinking: run.bufferedThinking,
+      bufferedThinkingMs: run.bufferedThinkingMs,
+      bufferedSteps: run.bufferedSteps,
+      bufferedIters: run.bufferedIters,
+      bufferedTodo: run.bufferedTodo,
+      bufferedAgentStatus: run.bufferedAgentStatus,
+      bufferedRateLimitSec: run.bufferedRateLimitSec,
+    }
+  })
+
+  // ── chat:stop — остановка активного запуска. Если передан chatId,
+  //    останавливаем только этот чат (новое поведение для параллельных чатов).
+  //    Если chatId не передан — backward compat: останавливаем все активные.
+  ipcMain.handle('chat:stop', (_, chatId?: string) => {
+    const stopRun = (run: ActiveRun) => {
+      ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
+      run.worker.terminate()
+      // Флешим накопленный прогресс — пользователь увидит частичный ответ,
+      // сохранённый в историю.
+      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters)
+      emitRunStatus(mainWindow.getWindow(), run.chatId, 'cancelled', run.msgId)
+    }
+    if (chatId) {
+      const run = activeRuns.get(chatId)
+      if (run) {
+        stopRun(run)
+        activeRuns.delete(chatId)
+        drainQueue(chatId)
+      }
+    } else {
+      // Legacy: останавливаем все активные запуски
+      for (const [cid, run] of activeRuns) {
+        stopRun(run)
+        drainQueue(cid)
+      }
+      activeRuns.clear()
     }
   })
 
