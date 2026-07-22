@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { v4 as uuid } from 'uuid'
 import { IPC_EVENTS } from '../../../shared/constants'
-import { useChatStore, type LiveIter } from '../store/chat.store'
+import { useChatStore, type LiveIter, type ChatLiveState } from '../store/chat.store'
 import type { Message, ToolStep, QueueItemMeta } from '../../../shared/types'
 
 // Per-chat mutable буферы для высокочастотных обновлений (токены стриминга).
@@ -22,8 +22,9 @@ interface ChatBuffers {
   agentStatus: string | null
   rateLimitSec: number
   rateLimitCountdown?: ReturnType<typeof setInterval>
-  tokenBuf: string           // RAF throttle буфер
-  rafId: number | null       // id requestAnimationFrame для флеша токенов
+  tokenBuf: string           // time-based throttle буфер для text-токенов
+  thinkingBuf: string        // time-based throttle буфер для thinking-токенов
+  flushTimer: ReturnType<typeof setTimeout> | null  // id setTimeout для батч-флеша
   streamMsgId: string | null // msgId текущего стрима (для матчинга step→итерация)
 }
 
@@ -59,7 +60,7 @@ function getBuf(chatId: string): ChatBuffers {
     buf = {
       text: '', thinking: '', thinkingMs: undefined, isThinkingLive: false,
       iters: [], steps: [], todo: [], agentStatus: null, rateLimitSec: 0,
-      tokenBuf: '', rafId: null, streamMsgId: null,
+      tokenBuf: '', thinkingBuf: '', flushTimer: null, streamMsgId: null,
     }
     buffers.set(chatId, buf)
   }
@@ -88,6 +89,7 @@ export function initChatSend(chatId: string) {
   buf.agentStatus = null
   buf.rateLimitSec = 0
   buf.tokenBuf = ''
+  buf.thinkingBuf = ''
   useChatStore.getState().hydrateLiveState(chatId, {
     msgId: 'streaming-pending',
     text: '',
@@ -168,20 +170,69 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
 // 3. Sidebar мог показывать статус чата (spinner/✓/✗)
 export function useChatRunSubscription() {
   useEffect(() => {
+    // ── Time-based throttle (50мс / ~20fps) ────────────────────────────
+    // Раньше использовался requestAnimationFrame (~16мс / 60fps): каждый
+    // кадр ре-парсил ВЕСЬ накопленный markdown (ReactMarkdown + SyntaxHighlighter),
+    // стоимость росла O(n) на кадр → main thread блокировался на длинных
+    // ответах → падение FPS всего приложения. 50мс визуально неотличимо от
+    // 60fps (токены и так приходят кусками), но ре-парс в 3 раза реже.
+    // Финальный flush при done/tool_call — синхронный, ничего не теряется.
+    const FLUSH_MS = 50
+
     const flushTokens = (chatId: string) => {
       const buf = getBuf(chatId)
-      buf.rafId = null
-      if (!buf.tokenBuf) return
-      const chunk = buf.tokenBuf
-      buf.tokenBuf = ''
-      buf.text += chunk
-      useChatStore.getState().setLiveState(chatId, { text: buf.text })
+      buf.flushTimer = null
+      const partial: Partial<ChatLiveState> = {}
+      if (buf.tokenBuf) {
+        buf.text += buf.tokenBuf
+        buf.tokenBuf = ''
+        partial.text = buf.text
+      }
+      if (buf.thinkingBuf) {
+        buf.thinking += buf.thinkingBuf
+        buf.thinkingBuf = ''
+        partial.thinking = buf.thinking
+      }
+      if (Object.keys(partial).length > 0) {
+        useChatStore.getState().setLiveState(chatId, partial)
+      }
     }
 
     const scheduleFlush = (chatId: string) => {
       const buf = getBuf(chatId)
-      if (buf.rafId !== null) return
-      buf.rafId = requestAnimationFrame(() => flushTokens(chatId))
+      if (buf.flushTimer !== null) return
+      buf.flushTimer = setTimeout(() => flushTokens(chatId), FLUSH_MS)
+    }
+
+    // Синхронный drain буферов в buf.text/buf.thinking БЕЗ store-обновления.
+    // Возвращает partial для последующего батч-коммита. Используется в
+    // tool_call/tool_call_pending перед захватом text/thinking в итерацию,
+    // чтобы ничего не потерялось (точное поведение как раньше).
+    const drainBufs = (chatId: string): Partial<ChatLiveState> => {
+      const buf = getBuf(chatId)
+      const partial: Partial<ChatLiveState> = {}
+      if (buf.tokenBuf) {
+        buf.text += buf.tokenBuf
+        buf.tokenBuf = ''
+        partial.text = buf.text
+      }
+      if (buf.thinkingBuf) {
+        buf.thinking += buf.thinkingBuf
+        buf.thinkingBuf = ''
+        partial.thinking = buf.thinking
+      }
+      return partial
+    }
+
+    // Промоут msgId из 'streaming-pending' → реальный id — один раз.
+    // Раньше setLiveState({ msgId, isTyping: true }) звался на КАЖДЫЙ токен,
+    // хотя значения не меняются после первого. Теперь только при промоуте.
+    const promoteMsgId = (chatId: string, msgId: string) => {
+      const buf = getBuf(chatId)
+      if (buf.streamMsgId === 'streaming-pending') {
+        buf.streamMsgId = msgId
+        useChatStore.getState().setLiveState(chatId, { msgId, isTyping: true })
+      }
     }
 
     // CHAT_STREAM_TOKEN — токены ответа и reasoning
@@ -191,19 +242,18 @@ export function useChatRunSubscription() {
     }) => {
       const buf = getBuf(data.chatId)
       buf.streamMsgId = data.msgId
-      useChatStore.getState().setLiveState(data.chatId, {
-        msgId: data.msgId,
-        isTyping: true,
-      })
 
       if (data.thinkingToken) {
         const tok = typeof data.thinkingToken === 'string' ? data.thinkingToken : String(data.thinkingToken ?? '')
-        buf.thinking += tok
+        buf.thinkingBuf += tok
         buf.isThinkingLive = true
-        useChatStore.getState().setLiveState(data.chatId, {
-          thinking: buf.thinking,
-          isThinkingLive: true,
-        })
+        // Промоут msgId один раз (thinking приходит раньше text).
+        // isThinkingLive обновляем через throttle-флеш (ниже) вместе с text.
+        if (buf.streamMsgId === 'streaming-pending') {
+          promoteMsgId(data.chatId, data.msgId)
+          useChatStore.getState().setLiveState(data.chatId, { isThinkingLive: true })
+        }
+        scheduleFlush(data.chatId)
         return
       }
       if (data.thinkingDone) {
@@ -216,6 +266,10 @@ export function useChatRunSubscription() {
         return
       }
       if (data.token) {
+        // Промоут msgId один раз (только при первом text-токене).
+        if (buf.streamMsgId === 'streaming-pending') {
+          promoteMsgId(data.chatId, data.msgId)
+        }
         buf.tokenBuf += data.token
         scheduleFlush(data.chatId)
       }
@@ -224,12 +278,14 @@ export function useChatRunSubscription() {
     // CHAT_STREAM_DONE — финал стрима, сохранение в БД
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
       const buf = buffers.get(data.chatId)
-      if (buf?.rafId !== null && buf?.rafId !== undefined) {
-        cancelAnimationFrame(buf.rafId)
+      // Синхронный финальный flush — ничего не теряется.
+      if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) {
+        clearTimeout(buf.flushTimer)
       }
       if (buf) {
         buf.tokenBuf = ''
-        buf.rafId = null
+        buf.thinkingBuf = ''
+        buf.flushTimer = null
       }
       if (buf?.rateLimitCountdown) {
         clearInterval(buf.rateLimitCountdown)
@@ -244,8 +300,8 @@ export function useChatRunSubscription() {
     // CHAT_STREAM_ERROR — ошибка/остановка
     const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { chatId: string; error: string }) => {
       const buf = buffers.get(data.chatId)
-      if (buf?.rafId !== null && buf?.rafId !== undefined) {
-        cancelAnimationFrame(buf.rafId)
+      if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) {
+        clearTimeout(buf.flushTimer)
       }
       if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
       useChatStore.getState().clearLiveState(data.chatId)
@@ -278,7 +334,7 @@ export function useChatRunSubscription() {
       } else if (data.status === 'done' || data.status === 'error' || data.status === 'cancelled') {
         useChatStore.getState().setActiveRun(data.chatId, null)
         const buf = buffers.get(data.chatId)
-        if (buf?.rafId !== null && buf?.rafId !== undefined) cancelAnimationFrame(buf.rafId)
+        if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) clearTimeout(buf.flushTimer)
         if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
       }
     })
@@ -358,18 +414,17 @@ export function useChatRunSubscription() {
       }
       if (step.msgId && step.msgId !== buf.streamMsgId) return
 
-      const commitIters = () => {
-        useChatStore.getState().setLiveState(chatId, {
-          iters: [...buf.iters],
-          isAgentRunning: true,
-          isTyping: true,
-        })
-      }
-      const commitSteps = () => {
-        useChatStore.getState().setLiveState(chatId, { steps: [...buf.steps] })
-      }
-
+      // ── Батчинг setLiveState ──────────────────────────────────────────
+      // Раньше каждая ветка звала 2-4 последовательных setLiveState (commitIters,
+      // commitSteps, reset, drain-text) — каждый триггерил отдельный ре-рендер.
+      // Теперь ОДИН setLiveState на шаг с финальным состоянием. Логика
+      // группировки/матчинга не изменилась — только количество store-обновлений.
       if (step.type === 'tool_call_pending') {
+        // Синхронный drain pending-токенов в buf.text/buf.thinking перед
+        // захватом в итерацию (чтобы ничего не потерялось).
+        if (buf.flushTimer !== null) { clearTimeout(buf.flushTimer); buf.flushTimer = null }
+        drainBufs(chatId)
+
         const pendingStep: ToolStep = {
           id: uuid(), type: 'tool_call' as const,
           toolName: step.toolName, toolArgs: undefined,
@@ -400,22 +455,21 @@ export function useChatRunSubscription() {
         buf.thinking = ''
         buf.thinkingMs = undefined
         buf.isThinkingLive = false
-        commitIters()
+        // ОДИН setLiveState вместо двух (commitIters + reset).
         useChatStore.getState().setLiveState(chatId, {
-          text: '', thinking: '', thinkingMs: undefined, isThinkingLive: false,
+          iters: [...buf.iters],
+          isAgentRunning: true,
+          isTyping: true,
+          text: '',
+          thinking: '',
+          thinkingMs: undefined,
+          isThinkingLive: false,
         })
       } else if (step.type === 'tool_call') {
-        // Сначала синхронно флешим буфер токенов
-        if (buf.rafId !== null) {
-          cancelAnimationFrame(buf.rafId)
-          buf.rafId = null
-        }
-        if (buf.tokenBuf) {
-          const chunk = buf.tokenBuf
-          buf.tokenBuf = ''
-          buf.text += chunk
-          useChatStore.getState().setLiveState(chatId, { text: buf.text })
-        }
+        // Синхронный drain pending-токенов перед захватом в итерацию.
+        if (buf.flushTimer !== null) { clearTimeout(buf.flushTimer); buf.flushTimer = null }
+        drainBufs(chatId)
+
         const newStep: ToolStep = {
           id: uuid(), type: 'tool_call' as const,
           toolName: step.toolName, toolArgs: step.toolArgs,
@@ -465,10 +519,16 @@ export function useChatRunSubscription() {
         buf.thinking = ''
         buf.thinkingMs = undefined
         buf.isThinkingLive = false
-        commitIters()
-        commitSteps()
+        // ОДИН setLiveState вместо четырёх (drain-text + commitIters + commitSteps + reset).
         useChatStore.getState().setLiveState(chatId, {
-          text: '', thinking: '', thinkingMs: undefined, isThinkingLive: false,
+          iters: [...buf.iters],
+          steps: [...buf.steps],
+          isAgentRunning: true,
+          isTyping: true,
+          text: '',
+          thinking: '',
+          thinkingMs: undefined,
+          isThinkingLive: false,
         })
       } else if (step.type === 'tool_result') {
         const newStep: ToolStep = {
@@ -481,7 +541,7 @@ export function useChatRunSubscription() {
         }
         buf.steps = [...buf.steps, newStep]
         if (buf.iters.length === 0) {
-          commitSteps()
+          useChatStore.getState().setLiveState(chatId, { steps: [...buf.steps] })
           return
         }
         const iters = buf.iters
@@ -500,8 +560,13 @@ export function useChatRunSubscription() {
           if (idx !== -1) targetIterIdx = idx
         }
         iters[targetIterIdx] = { ...iters[targetIterIdx], steps: [...iters[targetIterIdx].steps, newStep] }
-        commitIters()
-        commitSteps()
+        // ОДИН setLiveState вместо двух (commitIters + commitSteps).
+        useChatStore.getState().setLiveState(chatId, {
+          iters: [...buf.iters],
+          steps: [...buf.steps],
+          isAgentRunning: true,
+          isTyping: true,
+        })
       }
     })
 

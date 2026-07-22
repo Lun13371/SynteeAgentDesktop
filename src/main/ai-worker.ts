@@ -346,15 +346,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               breakdown,
             })
           },
-          onUsage: (promptTokens: number, completionTokens: number) => {
+          onUsage: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => {
             // Реальные токены от провайдера — приоритет над оценкой
             const snapshot = buildSnapshotFromReal(
-              { promptTokens, completionTokens },
+              { promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens },
               contextWindow,
-              lastBreakdown as { history: number; system: number; tools: number; current: number; toolResults?: number },
+              lastBreakdown as { history: number; system: number; tools: number; current: number; toolResults?: number; cacheReadTokens?: number; cacheWriteTokens?: number },
             )
-            // Накапливаем стоимость сессии
-            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', promptTokens, completionTokens)
+            // Накапливаем стоимость сессии (cache-токены тарифицируются отдельно)
+            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens)
             send({
               type: 'context_usage',
               pct: snapshot.pct,

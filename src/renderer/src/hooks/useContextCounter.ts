@@ -18,6 +18,8 @@ export interface ContextInfo {
     current: number
     toolResults?: number
     completionTokens?: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
   }
   sessionCostCents: number | null
   sessionRequests: number
@@ -63,6 +65,8 @@ interface UsagePush {
     toolResults?: number
     completionTokens?: number
     real?: boolean
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
   }
   sessionCostCents?: number | null
   sessionRequests?: number
