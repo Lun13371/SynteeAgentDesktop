@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useUIStore } from '../../../store/ui.store'
 import './AnimatedBackground.css'
 
@@ -45,7 +46,11 @@ function drawParticles(
 
 export default function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { animatedBackground, bgStyle, theme } = useUIStore()
+  const { animatedBackground, bgStyle, theme } = useUIStore(useShallow(s => ({
+    animatedBackground: s.animatedBackground,
+    bgStyle: s.bgStyle,
+    theme: s.theme,
+  })))
   const style: BgStyle = (bgStyle as BgStyle) || 'particles'
 
   useEffect(() => {

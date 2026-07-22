@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import DiffBlock from '../DiffBlock/DiffBlock'
+import CodePreview from '../CodePreview/CodePreview'
 import './GitPanel.css'
 
 interface GitFileStatus {
@@ -31,6 +32,14 @@ interface GitPanelProps {
   workdir: string | null
 }
 
+interface FileTreeNode {
+  name: string
+  path: string
+  isDir: boolean
+  children: FileTreeNode[]
+  file?: GitFileStatus
+}
+
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   M: { label: 'M', cls: 'git-status-modified' },
   A: { label: 'A', cls: 'git-status-added' },
@@ -58,6 +67,37 @@ function getFileBadge(file: GitFileStatus): { label: string; cls: string; title:
   return { label: meta.label, cls: meta.cls, title: file.raw }
 }
 
+function buildFileTree(files: GitFileStatus[]): FileTreeNode[] {
+  const root: FileTreeNode = { name: '', path: '', isDir: true, children: [] }
+  for (const file of files) {
+    const parts = file.path.split(/[\\/]/)
+    let current = root
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      const isLast = i === parts.length - 1
+      if (isLast) {
+        current.children.push({ name: part, path: file.path, isDir: false, children: [], file })
+      } else {
+        let child = current.children.find(c => c.isDir && c.name === part)
+        if (!child) {
+          child = { name: part, path: parts.slice(0, i + 1).join('/'), isDir: true, children: [] }
+          current.children.push(child)
+        }
+        current = child
+      }
+    }
+  }
+  function sortTree(nodes: FileTreeNode[]) {
+    nodes.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    nodes.forEach(n => sortTree(n.children))
+  }
+  sortTree(root.children)
+  return root.children
+}
+
 export default function GitPanel({ workdir }: GitPanelProps) {
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [log, setLog] = useState<GitLogEntry[]>([])
@@ -65,9 +105,14 @@ export default function GitPanel({ workdir }: GitPanelProps) {
   const [error, setError] = useState<string | null>(null)
   const [notARepo, setNotARepo] = useState(false)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [selectedCommit, setSelectedCommit] = useState<{ hash: string; message: string } | null>(null)
   const [diff, setDiff] = useState<string | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
   const [diffError, setDiffError] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<'diff' | 'file'>('diff')
+  const [fileContent, setFileContent] = useState<{ path: string; content: string; isBinary: boolean } | null>(null)
+  const [fileLoading, setFileLoading] = useState(false)
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
 
   const refresh = useCallback(async () => {
     if (!workdir) return
@@ -107,10 +152,6 @@ export default function GitPanel({ workdir }: GitPanelProps) {
     }
   }, [workdir])
 
-  // NOTE: сброс состояния при смене workdir выполняется через key prop
-  // в RightPanel — React полностью перемонтирует компонент.
-
-  // Загрузка при монтировании
   useEffect(() => {
     if (workdir) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -119,7 +160,6 @@ export default function GitPanel({ workdir }: GitPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workdir])
 
-  // Авто-refresh каждые 30 секунд
   useEffect(() => {
     if (!workdir) return
     const interval = setInterval(refresh, 30_000)
@@ -129,9 +169,11 @@ export default function GitPanel({ workdir }: GitPanelProps) {
   const loadDiff = useCallback(async (file: GitFileStatus) => {
     if (!workdir) return
     setSelectedFile(file.path)
+    setSelectedCommit(null)
     setDiff(null)
     setDiffError(null)
     setDiffLoading(true)
+    setViewMode('diff')
     try {
       const isUntracked = file.indexStatus === '?' && file.worktreeStatus === '?'
       const result = isUntracked
@@ -155,6 +197,103 @@ export default function GitPanel({ workdir }: GitPanelProps) {
       setDiffLoading(false)
     }
   }, [workdir])
+
+  const loadFileContent = useCallback(async (filePath: string) => {
+    if (!workdir) return
+    if (fileContent?.path === filePath) return
+    setFileLoading(true)
+    setFileContent(null)
+    try {
+      const result = await window.syntee.fs.readFile({ root: workdir, relPath: filePath }) as { success: boolean; content: string; error?: string; isBinary?: boolean }
+      if (result.success) {
+        setFileContent({ path: filePath, content: result.content, isBinary: result.isBinary ?? false })
+      } else {
+        setDiffError(result.error ?? 'Failed to read file')
+      }
+    } catch (e) {
+      setDiffError(String((e as Error)?.message ?? e))
+    } finally {
+      setFileLoading(false)
+    }
+  }, [workdir, fileContent])
+
+  const loadCommit = useCallback(async (entry: GitLogEntry) => {
+    if (!workdir) return
+    setSelectedCommit({ hash: entry.hash, message: entry.message.split('\n')[0] })
+    setSelectedFile(null)
+    setDiff(null)
+    setDiffError(null)
+    setDiffLoading(true)
+    try {
+      const result = await window.syntee.git.show({ workdir, hash: entry.hash }) as { success: boolean; diff: string; error?: string }
+      if (result.success) {
+        setDiff(result.diff || 'Нет изменений в этом коммите')
+      } else {
+        setDiffError(result.error ?? 'Failed to load commit')
+      }
+    } catch (e) {
+      setDiffError(String((e as Error)?.message ?? e))
+    } finally {
+      setDiffLoading(false)
+    }
+  }, [workdir])
+
+  const toggleDir = (path: string) => {
+    setExpandedDirs(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  const handleOpenInEditor = () => {
+    if (!workdir || !selectedFile) return
+    const fullpath = workdir.replace(/[\\/]+$/, '') + '\\' + selectedFile.replace(/\//g, '\\')
+    window.syntee.shell.openPath(fullpath)
+  }
+
+  const fileTree = status?.files ? buildFileTree(status.files) : []
+
+  const renderTreeNodes = (nodes: FileTreeNode[], level: number): React.ReactNode => {
+    return nodes.map(node => {
+      if (node.isDir) {
+        const expanded = expandedDirs.has(node.path)
+        return (
+          <div key={node.path}>
+            <button
+              className="git-tree-dir"
+              style={{ paddingLeft: 8 + level * 14 }}
+              onClick={() => toggleDir(node.path)}
+              title={node.path}
+            >
+              <AppIcon name={expanded ? 'chevronDown' : 'chevronRight'} size="xs" />
+              <AppIcon name="folder" size="xs" />
+              <span className="git-tree-dir__name">{node.name}</span>
+            </button>
+            {expanded && node.children.length > 0 && (
+              <div className="git-tree-children">
+                {renderTreeNodes(node.children, level + 1)}
+              </div>
+            )}
+          </div>
+        )
+      }
+      const badge = node.file ? getFileBadge(node.file) : null
+      return (
+        <button
+          key={node.path}
+          className={`git-file-item ${selectedFile === node.path ? 'git-file-item--selected' : ''}`}
+          style={{ paddingLeft: 8 + level * 14 + 18 }}
+          onClick={() => node.file && loadDiff(node.file)}
+          title={node.path}
+        >
+          {badge && <span className={`git-file-item__badge ${badge.cls}`}>{badge.label}</span>}
+          <span className="git-file-item__name">{node.name}</span>
+        </button>
+      )
+    })
+  }
 
   if (!workdir) {
     return (
@@ -233,27 +372,7 @@ export default function GitPanel({ workdir }: GitPanelProps) {
             </div>
           ) : (
             <div className="git-panel__file-list">
-              {status?.files.map((file, i) => {
-                const badge = getFileBadge(file)
-                const fileName = file.path.split(/[\\/]/).pop() ?? file.path
-                const dir = file.path.includes('/') || file.path.includes('\\')
-                  ? file.path.replace(/[\\/][^\\/]+$/, '')
-                  : ''
-                return (
-                  <button
-                    key={`${file.path}-${i}`}
-                    className={`git-file-item ${selectedFile === file.path ? 'git-file-item--selected' : ''}`}
-                    onClick={() => loadDiff(file)}
-                    title={file.path}
-                  >
-                    <span className={`git-file-item__badge ${badge.cls}`}>{badge.label}</span>
-                    <div className="git-file-item__info">
-                      <span className="git-file-item__name">{fileName}</span>
-                      {dir && <span className="git-file-item__dir">{dir}</span>}
-                    </div>
-                  </button>
-                )
-              })}
+              {renderTreeNodes(fileTree, 0)}
             </div>
           )}
         </div>
@@ -266,11 +385,16 @@ export default function GitPanel({ workdir }: GitPanelProps) {
             </div>
             <div className="git-panel__log-list">
               {log.map(entry => (
-                <div key={entry.hash} className="git-log-item" title={entry.message}>
+                <button
+                  key={entry.hash}
+                  className={`git-log-item ${selectedCommit?.hash === entry.hash ? 'git-log-item--selected' : ''}`}
+                  title={entry.message}
+                  onClick={() => loadCommit(entry)}
+                >
                   <span className="git-log-item__hash">{entry.shortHash}</span>
                   <span className="git-log-item__msg">{entry.message.split('\n')[0]}</span>
                   <span className="git-log-item__date">{entry.date}</span>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -291,12 +415,89 @@ export default function GitPanel({ workdir }: GitPanelProps) {
               <div className="git-panel__diff-header">
                 <AppIcon name="fileText" size="xs" />
                 <span className="git-panel__diff-path" title={selectedFile}>{selectedFile}</span>
+                <div className="git-panel__diff-actions">
+                  <div className="git-panel__view-toggle">
+                    <button
+                      className={`git-panel__view-btn ${viewMode === 'diff' ? 'git-panel__view-btn--active' : ''}`}
+                      onClick={() => setViewMode('diff')}
+                      title="Показать diff"
+                    >
+                      <AppIcon name="git" size="xs" />
+                    </button>
+                    <button
+                      className={`git-panel__view-btn ${viewMode === 'file' ? 'git-panel__view-btn--active' : ''}`}
+                      onClick={() => { setViewMode('file'); loadFileContent(selectedFile) }}
+                      title="Показать весь файл"
+                    >
+                      <AppIcon name="fileText" size="xs" />
+                    </button>
+                  </div>
+                  <button
+                    className="git-panel__action-btn"
+                    onClick={handleOpenInEditor}
+                    title="Открыть в редакторе"
+                  >
+                    <AppIcon name="filePen" size="xs" />
+                  </button>
+                </div>
+              </div>
+              <div className="git-panel__diff-body">
+                {viewMode === 'diff' ? (
+                  <>
+                    {diffLoading ? (
+                      <div className="git-panel__diff-loading">
+                        <AppIcon name="loader" size="sm" animation="spin" />
+                        <span>Загрузка diff...</span>
+                      </div>
+                    ) : diffError ? (
+                      <div className="git-panel__diff-error">
+                        <AppIcon name="x" size="lg" tone="danger" />
+                        <p>{diffError}</p>
+                      </div>
+                    ) : diff ? (
+                      <DiffBlock code={diff} variant="detailed" highlight wrap />
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    {fileLoading ? (
+                      <div className="git-panel__diff-loading">
+                        <AppIcon name="loader" size="sm" animation="spin" />
+                        <span>Загрузка файла...</span>
+                      </div>
+                    ) : fileContent?.isBinary ? (
+                      <div className="git-panel__diff-error">
+                        <AppIcon name="fileText" size="lg" tone="muted" />
+                        <p>Бинарный файл</p>
+                      </div>
+                    ) : fileContent ? (
+                      <CodePreview content={fileContent.content} path={selectedFile} />
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </motion.div>
+          )}
+          {selectedCommit && (
+            <motion.div
+              key={selectedCommit.hash}
+              className="git-panel__diff-content"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.12 }}
+            >
+              <div className="git-panel__diff-header">
+                <AppIcon name="git" size="xs" />
+                <span className="git-panel__diff-path" title={selectedCommit.message}>
+                  {selectedCommit.hash.slice(0, 7)} · {selectedCommit.message}
+                </span>
               </div>
               <div className="git-panel__diff-body">
                 {diffLoading ? (
                   <div className="git-panel__diff-loading">
                     <AppIcon name="loader" size="sm" animation="spin" />
-                    <span>Загрузка diff...</span>
+                    <span>Загрузка коммита...</span>
                   </div>
                 ) : diffError ? (
                   <div className="git-panel__diff-error">
@@ -304,12 +505,12 @@ export default function GitPanel({ workdir }: GitPanelProps) {
                     <p>{diffError}</p>
                   </div>
                 ) : diff ? (
-                  <DiffBlock code={diff} variant="detailed" />
+                  <DiffBlock code={diff} variant="detailed" highlight wrap />
                 ) : null}
               </div>
             </motion.div>
           )}
-          {!selectedFile && (
+          {!selectedFile && !selectedCommit && (
             <motion.div
               key="empty"
               className="git-panel__diff-empty"
@@ -318,7 +519,7 @@ export default function GitPanel({ workdir }: GitPanelProps) {
               exit={{ opacity: 0 }}
             >
               <AppIcon name="git" size="lg" tone="muted" />
-              <p>Выберите файл, чтобы увидеть diff</p>
+              <p>Выберите файл или коммит, чтобы увидеть изменения</p>
             </motion.div>
           )}
         </AnimatePresence>

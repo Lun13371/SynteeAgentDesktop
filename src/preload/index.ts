@@ -68,6 +68,20 @@ const synteeAPI = {
     getQueue: (chatId: string) => ipcRenderer.invoke('chat:getQueue', chatId),
     queueRemove: (chatId: string, queueId: string) => ipcRenderer.invoke('chat:queueRemove', chatId, queueId),
     queueReorder: (chatId: string, queueIds: string[]) => ipcRenderer.invoke('chat:queueReorder', chatId, queueIds),
+    // ── Checkpoint / rewind ──
+    // getSessionTimeline — список всех точек отката чата (для правой панели).
+    // getLastTurnFilesChanged — кол-во файлов в последнем turn'е (для badge).
+    // rewindTo — откатить сессию к указанному user-сообщению.
+    getSessionTimeline: (chatId: string) => ipcRenderer.invoke('chat:getSessionTimeline', chatId),
+    getLastTurnFilesChanged: (chatId: string) => ipcRenderer.invoke('chat:getLastTurnFilesChanged', chatId),
+    rewindTo: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:rewindTo', chatId, userMessageId),
+    redo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:redo', chatId, rewindMessageId),
+    canRedo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:canRedo', chatId, rewindMessageId),
+    // ── Параллельный доп-чат (side chat) ──
+    // Эфемерный чат-в-чате: incognito, не пишется в БД. ИИ получает сводку
+    // родителя + тул get_main_chat_messages. chatId = 'sidechat:'+parentChatId.
+    sideSend: (params: { parentChatId: string; content: string; sideMessages: unknown[] }) =>
+      ipcRenderer.invoke('chat:sideSend', params),
   },
 
   // Проекты (рабочие директории) — сущность верхнего уровня над чатами.
@@ -193,6 +207,8 @@ const synteeAPI = {
     status: (workdir: string) => ipcRenderer.invoke('git:status', workdir),
     diff: (params: { workdir: string; file?: string; staged?: boolean }) =>
       ipcRenderer.invoke('git:diff', params),
+    show: (params: { workdir: string; hash: string; file?: string }) =>
+      ipcRenderer.invoke('git:show', params),
     log: (params: { workdir: string; limit?: number }) =>
       ipcRenderer.invoke('git:log', params),
     branch: (workdir: string) => ipcRenderer.invoke('git:branch', workdir),

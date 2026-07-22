@@ -48,6 +48,8 @@ export const DEFAULT_SETTINGS = {
   },
   backupEnabled: true,
   backupPath: '',
+  agentPanelWidth: 420,
+  agentPanelOpen: false,
   hotkeys: DEFAULT_HOTKEYS,
   integrations: {
     telegram: { token: '', chatId: '' },
@@ -73,6 +75,8 @@ export const IPC_EVENTS = {
   CHAT_STREAM_ERROR: 'chat:stream:error',
   CHAT_RUN_STATUS: 'chat:run:status',
   CHAT_QUEUE_UPDATED: 'chat:queue:updated',
+  CHAT_CHECKPOINT_CREATED: 'chat:checkpoint:created',
+  CHAT_REWOUND: 'chat:rewound',
   CONTEXT_USAGE: 'context:usage',
   MEMORY_MEMORIZED: 'memory:memorized',
   AGENT_ACTION: 'agent:action',

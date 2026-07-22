@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { memo, useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -20,7 +20,7 @@ import { parseSlashCommand } from '../../../../shared/slashCommands'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta } from '../../../../shared/types'
 import './ChatPage.css'
 
-export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
+function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const {
     chats, currentChatId, messages,
     setChats, setCurrentChat, setMessages, addMessage,
@@ -528,6 +528,19 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setReplyTo(prev => prev.find(r => r.id === msg.id) ? prev : [...prev, msg])
   }, [])
 
+  const handleRewind = useCallback(async (userMessageId: string) => {
+    if (!currentChatId) return
+    const result = await window.syntee.chat.rewindTo(currentChatId, userMessageId) as { messages?: Message[]; error?: string }
+    if (result.error) {
+      toast(result.error, 'error')
+      return
+    }
+    if (result.messages) {
+      setMessages(result.messages)
+      toast('Сессия откатана', 'success')
+    }
+  }, [currentChatId, setMessages, toast])
+
   // Собираем отображаемые сообщения (включая live-пузырь текущего чата)
   const hasLiveContent = !!streamingText || !!live.thinking || live.steps.length > 0 ||
     live.iters.length > 0 || !!live.text
@@ -728,6 +741,7 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
                         onPin={handlePin}
                         onCopy={handleCopy}
                         onReply={handleReply}
+                        onRewind={handleRewind}
                         searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
                         liveThinking={liveThinking}
                         isStreaming={isLive && isTyping}
@@ -824,3 +838,9 @@ export default function ChatPage({ embedded = false }: { embedded?: boolean }) {
     </div>
   )
 }
+
+// React.memo — ChatPage ре-рендерится только когда меняются его props
+// (embedded всегда true, константа). Без этого любое изменение в App
+// (например agentPanelOpen при открытии/закрытии правой панели) вызывало
+// ре-рендер ChatPage с виртуализацией и MessageBubble → подвисание.
+export default memo(ChatPage)

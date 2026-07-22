@@ -1,5 +1,3 @@
-import { motion } from 'framer-motion'
-import AppIcon from '../../ui/AppIcon/AppIcon'
 import IconButton from '../../ui/IconButton/IconButton'
 import './TitleBar.css'
 
@@ -7,6 +5,7 @@ interface TitleBarProps {
   onSettingsClick?: () => void
   onAgentClick?: () => void
   onMemoryClick?: () => void
+  currentChatId?: string | null
 }
 
 export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick }: TitleBarProps) {

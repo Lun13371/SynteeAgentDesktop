@@ -56,6 +56,23 @@ export const EMPTY_LIVE: ChatLiveState = {
   isAgentRunning: false,
 }
 
+// ── Side chat (параллельный доп-чат в правой панели) ───────────────────
+// Эфемерный чат-в-чате: хранится только в памяти (Zustand), не пишется в БД.
+// Ключ — parentId (id основного чата). Один side-чат на основной чат.
+// ИИ side-чата получает сводку основного чата в системном промпте + тул
+// get_main_chat_messages для запроса конкретных сообщений по мере нужды.
+export interface SideChatState {
+  messages: Message[]
+  live: ChatLiveState
+  runStatus: RunStatus | null
+}
+
+export const EMPTY_SIDE_CHAT: SideChatState = {
+  messages: [],
+  live: { ...EMPTY_LIVE },
+  runStatus: null,
+}
+
 interface ChatStore {
   chats: Chat[]
   projects: Project[]
@@ -111,6 +128,15 @@ interface ChatStore {
   // ── Очередь запросов ──
   setQueue: (chatId: string, queue: QueueItemMeta[]) => void
   setActiveRun: (chatId: string, meta: QueueItemMeta | null) => void
+
+  // ── Side chat (параллельный доп-чат) ──
+  sideChatByChat: Record<string, SideChatState>
+  addSideMessage: (parentId: string, message: Message) => void
+  setSideLiveState: (parentId: string, partial: Partial<ChatLiveState>) => void
+  hydrateSideLiveState: (parentId: string, full: Partial<ChatLiveState> & { msgId: string | null }) => void
+  clearSideLiveState: (parentId: string) => void
+  setSideRunStatus: (parentId: string, status: RunStatus | null) => void
+  resetSideChat: (parentId: string) => void
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -131,6 +157,8 @@ export const useChatStore = create<ChatStore>((set) => ({
 
   queueByChat: {},
   activeRunByChat: {},
+
+  sideChatByChat: {},
 
   setChats: (chats) => set({ chats }),
   setProjects: (projects) => set({ projects }),
@@ -216,17 +244,20 @@ export const useChatStore = create<ChatStore>((set) => ({
       const nextUnread = { ...s.unreadStatusByChat }
       const nextQueue = { ...s.queueByChat }
       const nextActive = { ...s.activeRunByChat }
+      const nextSide = { ...s.sideChatByChat }
       delete nextLive[chatId]
       delete nextRun[chatId]
       delete nextUnread[chatId]
       delete nextQueue[chatId]
       delete nextActive[chatId]
+      delete nextSide[chatId]
       return {
         liveByChat: nextLive,
         runStatusByChat: nextRun,
         unreadStatusByChat: nextUnread,
         queueByChat: nextQueue,
         activeRunByChat: nextActive,
+        sideChatByChat: nextSide,
       }
     }),
 
@@ -237,10 +268,74 @@ export const useChatStore = create<ChatStore>((set) => ({
 
   setActiveRun: (chatId, meta) =>
     set((s) => {
-      // Если meta === null — удаляем ключ, чтобы не плодить пустые записи.
       const next = { ...s.activeRunByChat }
       if (meta === null) delete next[chatId]
       else next[chatId] = meta
       return { activeRunByChat: next }
+    }),
+
+  // ── Side chat actions ──
+  addSideMessage: (parentId, message) =>
+    set((s) => {
+      const prev = s.sideChatByChat[parentId] ?? EMPTY_SIDE_CHAT
+      if (prev.messages.some(m => m.id === message.id)) return s
+      return {
+        sideChatByChat: {
+          ...s.sideChatByChat,
+          [parentId]: { ...prev, messages: [...prev.messages, message] },
+        },
+      }
+    }),
+
+  setSideLiveState: (parentId, partial) =>
+    set((s) => {
+      const prev = s.sideChatByChat[parentId] ?? EMPTY_SIDE_CHAT
+      return {
+        sideChatByChat: {
+          ...s.sideChatByChat,
+          [parentId]: { ...prev, live: { ...prev.live, ...partial } },
+        },
+      }
+    }),
+
+  hydrateSideLiveState: (parentId, full) =>
+    set((s) => {
+      const prev = s.sideChatByChat[parentId] ?? EMPTY_SIDE_CHAT
+      return {
+        sideChatByChat: {
+          ...s.sideChatByChat,
+          [parentId]: { ...prev, live: { ...EMPTY_LIVE, ...full } },
+        },
+      }
+    }),
+
+  clearSideLiveState: (parentId) =>
+    set((s) => {
+      const prev = s.sideChatByChat[parentId]
+      if (!prev) return s
+      return {
+        sideChatByChat: {
+          ...s.sideChatByChat,
+          [parentId]: { ...prev, live: { ...EMPTY_LIVE } },
+        },
+      }
+    }),
+
+  setSideRunStatus: (parentId, status) =>
+    set((s) => {
+      const prev = s.sideChatByChat[parentId] ?? EMPTY_SIDE_CHAT
+      return {
+        sideChatByChat: {
+          ...s.sideChatByChat,
+          [parentId]: { ...prev, runStatus: status },
+        },
+      }
+    }),
+
+  resetSideChat: (parentId) =>
+    set((s) => {
+      const next = { ...s.sideChatByChat }
+      delete next[parentId]
+      return { sideChatByChat: next }
     }),
 }))

@@ -332,6 +332,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               collectedSteps, collectedIters: collectedIters.length > 0 ? collectedIters : undefined,
               updatedProviders: storeData.providers,
               fileCacheUpdates: agent?.getFileCacheUpdates(),
+              fileSnapshots: agent?.getFileSnapshots(),
             })
           },
           onContextUpdate: (tokens: number) => {
@@ -467,6 +468,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             thinkingMs = ms
             pendingThinkingMs = ms
             send({ type: 'thinking_done', chatId, msgId, thinkingMs: ms })
+          },
+          onGetMainChatMessages: (params) => {
+            return new Promise((resolve) => {
+              const replyId = `get-main-chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve((reply.result as string) ?? '')
+              })
+              send({ type: 'get_main_chat_messages', chatId, msgId, replyId, limit: params.limit, search: params.search })
+            })
           },
         },
         agentSettings.maxSteps,

@@ -89,6 +89,27 @@ export interface ToolStep {
   callId?: string    // ID tool_call для связи call→result (реконструкция истории)
 }
 
+// ─── Checkpoint / Rewind ─────────────────────────────────────────────────────
+// Точка отката сессии: пара (user_message_id, assistant_message_id) одного turn'а.
+// Используется правой панелью "Сессия" для таймлайна и кнопкой "Откатить" на
+// user-сообщениях.
+export interface CheckpointMeta {
+  id: string
+  chatId: string
+  userMessageId: string
+  assistantMessageId: string | null
+  userPromptPreview: string  // первые 120 символов user-промпта
+  filesChanged: number       // кол-во файлов, изменённых в этом turn'е
+  filePaths: string[]        // список путей изменённых файлов
+  createdAt: number
+}
+
+// Результат chat:rewindTo — либо обновлённый массив сообщений, либо ошибка.
+export interface RewindResult {
+  messages?: Message[]
+  error?: string
+}
+
 // Метаданные одного запроса в очереди или активного запуска чата.
 // Используется UI-панелью очереди для отображения preview/управления.
 export interface QueueItemMeta {

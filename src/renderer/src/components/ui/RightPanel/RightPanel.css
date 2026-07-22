@@ -8,14 +8,16 @@
 .right-panel-inner {
   display: flex;
   height: 100%;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 .right-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
   background: var(--bg-primary);
   border-left: 1px solid var(--border);
   overflow: hidden;

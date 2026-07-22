@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { v4 as uuid } from 'uuid'
 import { IPC_EVENTS } from '../../../shared/constants'
-import { useChatStore, type LiveIter, type ChatLiveState } from '../store/chat.store'
+import { useChatStore, type LiveIter, type ChatLiveState, type RunStatus } from '../store/chat.store'
 import type { Message, ToolStep, QueueItemMeta } from '../../../shared/types'
 
 // Per-chat mutable буферы для высокочастотных обновлений (токены стриминга).
@@ -161,6 +161,49 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
   }
 }
 
+// ── Side chat helpers ──────────────────────────────────────────────────
+// Side-чат имеет chatId = 'sidechat:'+parentChatId. События стриминга
+// приходят с этим chatId — нужно маршрутизировать их в sideChatByChat
+// вместо обычных messages/liveByChat.
+const SIDE_PREFIX = 'sidechat:'
+function isSideChat(chatId: string): boolean { return chatId.startsWith(SIDE_PREFIX) }
+function sideParent(chatId: string): string { return chatId.slice(SIDE_PREFIX.length) }
+
+/**
+ * Инициализация live-буфера для side-чата. Вызывается из SideChatPanel
+ * перед отправкой сообщения. Аналог initChatSend, но пишет в sideChatByChat.
+ */
+export function initSideChatSend(parentChatId: string) {
+  const sideChatId = SIDE_PREFIX + parentChatId
+  if (buffers.has(sideChatId)) return
+  const buf = getBuf(sideChatId)
+  buf.streamMsgId = 'streaming-pending'
+  buf.text = ''
+  buf.thinking = ''
+  buf.thinkingMs = undefined
+  buf.isThinkingLive = false
+  buf.iters = []
+  buf.steps = []
+  buf.todo = []
+  buf.agentStatus = null
+  buf.rateLimitSec = 0
+  buf.tokenBuf = ''
+  buf.thinkingBuf = ''
+  useChatStore.getState().hydrateSideLiveState(parentChatId, {
+    msgId: 'streaming-pending',
+    text: '',
+    thinking: '',
+    isThinkingLive: false,
+    iters: [],
+    steps: [],
+    todo: [],
+    agentStatus: null,
+    rateLimitSec: 0,
+    isTyping: true,
+    isAgentRunning: false,
+  })
+}
+
 // Глобальная подписка на все IPC-события чатов. Монтируется ОДИН раз
 // в App.tsx. Пишет в Zustand store по chatId — параллельные чаты каждый
 // имеют свой LiveState, не перетирая друг друга.
@@ -194,7 +237,7 @@ export function useChatRunSubscription() {
         partial.thinking = buf.thinking
       }
       if (Object.keys(partial).length > 0) {
-        useChatStore.getState().setLiveState(chatId, partial)
+        liveSet(chatId, partial)
       }
     }
 
@@ -202,6 +245,24 @@ export function useChatRunSubscription() {
       const buf = getBuf(chatId)
       if (buf.flushTimer !== null) return
       buf.flushTimer = setTimeout(() => flushTokens(chatId), FLUSH_MS)
+    }
+
+    // ── Side-chat-aware wrappers ──────────────────────────────────────
+    // Детектят 'sidechat:' префикс и маршрутизируют в sideChatByChat
+    // вместо обычных messages/liveByChat.
+    const liveSet = (chatId: string, partial: Partial<ChatLiveState>) => {
+      if (isSideChat(chatId)) {
+        useChatStore.getState().setSideLiveState(sideParent(chatId), partial)
+      } else {
+        liveSet(chatId, partial)
+      }
+    }
+    const liveClear = (chatId: string) => {
+      if (isSideChat(chatId)) {
+        useChatStore.getState().clearSideLiveState(sideParent(chatId))
+      } else {
+        useChatStore.getState().clearLiveState(chatId)
+      }
     }
 
     // Синхронный drain буферов в buf.text/buf.thinking БЕЗ store-обновления.
@@ -231,7 +292,7 @@ export function useChatRunSubscription() {
       const buf = getBuf(chatId)
       if (buf.streamMsgId === 'streaming-pending') {
         buf.streamMsgId = msgId
-        useChatStore.getState().setLiveState(chatId, { msgId, isTyping: true })
+        liveSet(chatId, { msgId, isTyping: true })
       }
     }
 
@@ -251,7 +312,7 @@ export function useChatRunSubscription() {
         // isThinkingLive обновляем через throttle-флеш (ниже) вместе с text.
         if (buf.streamMsgId === 'streaming-pending') {
           promoteMsgId(data.chatId, data.msgId)
-          useChatStore.getState().setLiveState(data.chatId, { isThinkingLive: true })
+          liveSet(data.chatId, { isThinkingLive: true })
         }
         scheduleFlush(data.chatId)
         return
@@ -259,7 +320,7 @@ export function useChatRunSubscription() {
       if (data.thinkingDone) {
         buf.thinkingMs = data.thinkingMs
         buf.isThinkingLive = false
-        useChatStore.getState().setLiveState(data.chatId, {
+        liveSet(data.chatId, {
           thinkingMs: data.thinkingMs,
           isThinkingLive: false,
         })
@@ -290,11 +351,17 @@ export function useChatRunSubscription() {
       if (buf?.rateLimitCountdown) {
         clearInterval(buf.rateLimitCountdown)
       }
-      useChatStore.getState().clearLiveState(data.chatId)
+      liveClear(data.chatId)
       buffers.delete(data.chatId)
 
-      useChatStore.getState().addMessage(data.message)
-      window.syntee.chat.getAll().then((all) => useChatStore.getState().setChats(all))
+      if (isSideChat(data.chatId)) {
+        const parentId = sideParent(data.chatId)
+        useChatStore.getState().addSideMessage(parentId, data.message)
+        useChatStore.getState().setSideRunStatus(parentId, 'done')
+      } else {
+        useChatStore.getState().addMessage(data.message)
+        window.syntee.chat.getAll().then((all) => useChatStore.getState().setChats(all))
+      }
     })
 
     // CHAT_STREAM_ERROR — ошибка/остановка
@@ -304,8 +371,11 @@ export function useChatRunSubscription() {
         clearTimeout(buf.flushTimer)
       }
       if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
-      useChatStore.getState().clearLiveState(data.chatId)
+      liveClear(data.chatId)
       buffers.delete(data.chatId)
+      if (isSideChat(data.chatId)) {
+        useChatStore.getState().setSideRunStatus(sideParent(data.chatId), 'error')
+      }
     })
 
     // CHAT_RUN_STATUS — статус запуска для сайдбара
@@ -313,6 +383,17 @@ export function useChatRunSubscription() {
       chatId: string; status: 'queued' | 'running' | 'done' | 'error' | 'cancelled'
       msgId?: string; error?: string; ts: number
     }) => {
+      // Side chat: обновляем только runStatus, без логики очереди/pending.
+      if (isSideChat(data.chatId)) {
+        const parentId = sideParent(data.chatId)
+        useChatStore.getState().setSideRunStatus(parentId, data.status as RunStatus)
+        if (data.status === 'done' || data.status === 'error' || data.status === 'cancelled') {
+          const buf = buffers.get(data.chatId)
+          if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) clearTimeout(buf.flushTimer)
+          if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
+        }
+        return
+      }
       useChatStore.getState().setRunStatus(data.chatId, data.status, data.error, data.msgId)
       // Управляем activeRunByChat для UI-панели очереди.
       // На 'running' — асинхронно подтягиваем meta из main (там она уже установлена).
@@ -348,12 +429,28 @@ export function useChatRunSubscription() {
       useChatStore.getState().setQueue(data.chatId, data.queue)
     })
 
+    // CHAT_REWOUND — откат сессии (из правой панели или кнопки на сообщении).
+    // Перезагружаем messages из БД — main уже всё удалил/вставил.
+    // Также сбрасываем live state — иначе isTyping/isAgentRunning могут
+    // остаться true и input bar будет disabled после отката.
+    const offRewound = window.syntee.on(IPC_EVENTS.CHAT_REWOUND, async (data: { chatId: string; userMessageId: string }) => {
+      liveClear(data.chatId)
+      const buf = buffers.get(data.chatId)
+      if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) {
+        clearTimeout(buf.flushTimer)
+      }
+      if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
+      buffers.delete(data.chatId)
+      const msgs = await window.syntee.chat.getMessages(data.chatId) as Message[]
+      useChatStore.getState().setMessages(msgs)
+    })
+
     // RATE_LIMIT — ожидание перед retry
     const offRateLimit = window.syntee.on(IPC_EVENTS.RATE_LIMIT, (data: { waitSec: number; chatId?: string }) => {
       if (!data.chatId) return
       const buf = getBuf(data.chatId)
       buf.rateLimitSec = data.waitSec
-      useChatStore.getState().setLiveState(data.chatId, { rateLimitSec: data.waitSec })
+      liveSet(data.chatId, { rateLimitSec: data.waitSec })
       let remaining = data.waitSec
       if (buf.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
       buf.rateLimitCountdown = setInterval(() => {
@@ -361,10 +458,10 @@ export function useChatRunSubscription() {
         if (remaining <= 0) {
           clearInterval(buf.rateLimitCountdown!)
           buf.rateLimitSec = 0
-          useChatStore.getState().setLiveState(data.chatId, { rateLimitSec: 0 })
+          liveSet(data.chatId, { rateLimitSec: 0 })
         } else {
           buf.rateLimitSec = remaining
-          useChatStore.getState().setLiveState(data.chatId, { rateLimitSec: remaining })
+          liveSet(data.chatId, { rateLimitSec: remaining })
         }
       }, 1000)
     })
@@ -378,11 +475,11 @@ export function useChatRunSubscription() {
       const buf = getBuf(data.chatId)
       if (buf.streamMsgId === 'streaming-pending' && data.msgId) {
         buf.streamMsgId = data.msgId
-        useChatStore.getState().setLiveState(data.chatId, { msgId: data.msgId })
+        liveSet(data.chatId, { msgId: data.msgId })
       }
       if (data.msgId && buf.streamMsgId && data.msgId !== buf.streamMsgId) return
       buf.todo = data.items
-      useChatStore.getState().setLiveState(data.chatId, { todo: data.items })
+      liveSet(data.chatId, { todo: data.items })
     })
 
     // agent:status — текущий статус агента
@@ -390,7 +487,7 @@ export function useChatRunSubscription() {
       if (!data.chatId) return
       const buf = getBuf(data.chatId)
       buf.agentStatus = data.text
-      useChatStore.getState().setLiveState(data.chatId, { agentStatus: data.text })
+      liveSet(data.chatId, { agentStatus: data.text })
     })
 
     // agent:step — шаги тулов (tool_call_pending/tool_call/tool_result).
@@ -410,7 +507,7 @@ export function useChatRunSubscription() {
       // Усваиваем реальный msgId из первого события (как в offToken)
       if (buf.streamMsgId === 'streaming-pending' && step.msgId) {
         buf.streamMsgId = step.msgId
-        useChatStore.getState().setLiveState(chatId, { msgId: step.msgId })
+        liveSet(chatId, { msgId: step.msgId })
       }
       if (step.msgId && step.msgId !== buf.streamMsgId) return
 
@@ -456,7 +553,7 @@ export function useChatRunSubscription() {
         buf.thinkingMs = undefined
         buf.isThinkingLive = false
         // ОДИН setLiveState вместо двух (commitIters + reset).
-        useChatStore.getState().setLiveState(chatId, {
+        liveSet(chatId, {
           iters: [...buf.iters],
           isAgentRunning: true,
           isTyping: true,
@@ -520,7 +617,7 @@ export function useChatRunSubscription() {
         buf.thinkingMs = undefined
         buf.isThinkingLive = false
         // ОДИН setLiveState вместо четырёх (drain-text + commitIters + commitSteps + reset).
-        useChatStore.getState().setLiveState(chatId, {
+        liveSet(chatId, {
           iters: [...buf.iters],
           steps: [...buf.steps],
           isAgentRunning: true,
@@ -541,7 +638,7 @@ export function useChatRunSubscription() {
         }
         buf.steps = [...buf.steps, newStep]
         if (buf.iters.length === 0) {
-          useChatStore.getState().setLiveState(chatId, { steps: [...buf.steps] })
+          liveSet(chatId, { steps: [...buf.steps] })
           return
         }
         const iters = buf.iters
@@ -561,7 +658,7 @@ export function useChatRunSubscription() {
         }
         iters[targetIterIdx] = { ...iters[targetIterIdx], steps: [...iters[targetIterIdx].steps, newStep] }
         // ОДИН setLiveState вместо двух (commitIters + commitSteps).
-        useChatStore.getState().setLiveState(chatId, {
+        liveSet(chatId, {
           iters: [...buf.iters],
           steps: [...buf.steps],
           isAgentRunning: true,
@@ -571,7 +668,7 @@ export function useChatRunSubscription() {
     })
 
     return () => {
-      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRateLimit(); offTodo(); offStatus(); offStep()
+      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offStep()
     }
   }, [])
 }

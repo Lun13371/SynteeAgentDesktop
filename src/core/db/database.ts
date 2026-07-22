@@ -159,6 +159,62 @@ function runMigrations(): void {
   // блока колонки project_id ещё нет, и CREATE INDEX роняет всю миграцию.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);`)
 
+  // === Checkpoint/rewind: file_snapshots + context_snapshots + chat_checkpoints ===
+  // Три таблицы для отката сессии к произвольному user-сообщению:
+  //  - file_snapshots: {path, content_before} для каждого файла, изменённого
+  //    в turn'е. content_before NULL = файл был создан этим turn'ом.
+  //  - context_snapshots: состояние chat_working_memory/chat_summaries НА
+  //    МОМЕНТ ДО turn'а — чтобы rewind восстановил контекст корректно.
+  //  - chat_checkpoints: плоский список точек отката для UI-таймлайна.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS file_snapshots (
+      id              TEXT PRIMARY KEY,
+      chat_id         TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      message_id      TEXT NOT NULL,
+      user_message_id TEXT NOT NULL,
+      path            TEXT NOT NULL,
+      content_before  TEXT,
+      created_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fs_chat ON file_snapshots(chat_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_fs_user ON file_snapshots(chat_id, user_message_id);
+
+    CREATE TABLE IF NOT EXISTS context_snapshots (
+      id              TEXT PRIMARY KEY,
+      chat_id         TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      user_message_id TEXT NOT NULL,
+      working_memory  TEXT,
+      chat_summary    TEXT,
+      message_count   INTEGER,
+      created_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cs_user ON context_snapshots(chat_id, user_message_id);
+
+    CREATE TABLE IF NOT EXISTS chat_checkpoints (
+      id                  TEXT PRIMARY KEY,
+      chat_id             TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      user_message_id     TEXT NOT NULL,
+      assistant_message_id TEXT,
+      user_prompt_preview TEXT,
+      files_changed       INTEGER NOT NULL DEFAULT 0,
+      file_paths          TEXT,
+      created_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cc_chat ON chat_checkpoints(chat_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS rewind_history (
+      id                  TEXT PRIMARY KEY,
+      chat_id             TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      rewind_message_id   TEXT NOT NULL,
+      deleted_messages    TEXT NOT NULL,
+      file_changes        TEXT NOT NULL,
+      restored_checkpoint_user_msg_id TEXT NOT NULL,
+      created_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_rh_chat ON rewind_history(chat_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_rh_rewind ON rewind_history(rewind_message_id);
+  `)
+
   // Автомиграция: для каждого уникального workdir из chats создаём проект
   // и привязываем чаты к нему. workdir на chats остаётся как денормализованный
   // кэш для обратной совместимости, но источник правды теперь — projects.
@@ -540,4 +596,278 @@ export function setChatSummary(chatId: string, content: string): void {
 
 export function clearChatSummary(chatId: string): void {
   db.prepare('DELETE FROM chat_summaries WHERE chat_id = ?').run(chatId)
+}
+
+// === CHECKPOINTS / REWIND ===
+//
+// Точка отката = пара (user_message_id, assistant_message_id) одного turn'а.
+// На каждый turn пишем (в sendDone, после всех мутаций агента):
+//   1. file_snapshots — {path, content_before} для каждого файла, изменённого
+//      в этом turn'е. content_before NULL = файл был создан этим turn'ом.
+//   2. context_snapshots — слепок chat_working_memory + chat_summaries ПОСЛЕ
+//      этого turn'а (т.е. состояние, в котором следующий turn стартует).
+//   3. chat_checkpoints — плоский список точек отката для UI-таймлайна.
+//
+// rewind(chatId, userMessageId) = "вернуться к состоянию ПОСЛЕ этого turn'а":
+//   - восстановить файлы из file_snapshots всех turn'ов ПОСЛЕ указанного
+//     (строго после — сам указанный turn оставляем, откатываются только
+//     последующие)
+//   - восстановить context_snapshot этого turn'а (post-turn состояние)
+//   - удалить сообщения после assistant-сообщения этого turn'а
+//   - удалить чекпоинты откатнутых (последующих) turn'ов
+
+export interface FileSnapshotEntry {
+  path: string
+  contentBefore: string | null
+}
+
+export interface CheckpointMeta {
+  id: string
+  chatId: string
+  userMessageId: string
+  assistantMessageId: string | null
+  userPromptPreview: string
+  filesChanged: number
+  filePaths: string[]
+  createdAt: number
+}
+
+export function saveFileSnapshots(
+  chatId: string,
+  messageId: string,
+  userMessageId: string,
+  entries: FileSnapshotEntry[],
+): void {
+  if (entries.length === 0) return
+  const now = Date.now()
+  const stmt = db.prepare(`
+    INSERT INTO file_snapshots (id, chat_id, message_id, user_message_id, path, content_before, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  const tx = db.transaction((items: FileSnapshotEntry[]) => {
+    for (const e of items) {
+      stmt.run(uuid(), chatId, messageId, userMessageId, e.path, e.contentBefore, now)
+    }
+  })
+  tx(entries)
+}
+
+export function saveContextSnapshot(
+  chatId: string,
+  userMessageId: string,
+  workingMemory: string,
+  chatSummary: string,
+  messageCount: number,
+): void {
+  // POST-turn состояние: working_memory и summary уже обновлены агентом
+  // (update_working_memory tool) и компакцией (applyRollingWindowAsync).
+  // Это состояние, в котором следующий turn стартует — именно его нужно
+  // восстановить при rewind к этому turn'у.
+  db.prepare(`
+    INSERT INTO context_snapshots (id, chat_id, user_message_id, working_memory, chat_summary, message_count, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(uuid(), chatId, userMessageId, workingMemory, chatSummary, messageCount, Date.now())
+}
+
+export function saveCheckpointMeta(
+  chatId: string,
+  userMessageId: string,
+  assistantMessageId: string | null,
+  userPrompt: string,
+  filePaths: string[],
+): void {
+  const preview = userPrompt.length > 120 ? userPrompt.slice(0, 120) + '…' : userPrompt
+  db.prepare(`
+    INSERT INTO chat_checkpoints (id, chat_id, user_message_id, assistant_message_id, user_prompt_preview, files_changed, file_paths, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    uuid(), chatId, userMessageId, assistantMessageId, preview,
+    filePaths.length, JSON.stringify(filePaths), Date.now(),
+  )
+}
+
+export function getCheckpoints(chatId: string): CheckpointMeta[] {
+  const rows = db.prepare(`
+    SELECT id, chat_id as chatId, user_message_id as userMessageId,
+           assistant_message_id as assistantMessageId,
+           user_prompt_preview as userPromptPreview,
+           files_changed as filesChanged, file_paths as filePathsJson,
+           created_at as createdAt
+    FROM chat_checkpoints WHERE chat_id = ?
+    ORDER BY created_at ASC
+  `).all(chatId) as (Omit<CheckpointMeta, 'filePaths'> & { filePathsJson: string })[]
+  return rows.map(r => ({
+    id: r.id, chatId: r.chatId, userMessageId: r.userMessageId,
+    assistantMessageId: r.assistantMessageId, userPromptPreview: r.userPromptPreview,
+    filesChanged: r.filesChanged, filePaths: JSON.parse(r.filePathsJson) as string[],
+    createdAt: r.createdAt,
+  }))
+}
+
+export function getLastCheckpoint(chatId: string): CheckpointMeta | null {
+  const rows = getCheckpoints(chatId)
+  return rows.length > 0 ? rows[rows.length - 1] : null
+}
+
+/**
+ * Все file_snapshots для turn'ов ПОСЛЕ указанного user_message_id (строго
+ * после, не включая сам указанный turn). Используется при rewind: восстанав-
+ * ливаем content_before в обратном порядке (последняя правка первой).
+ *
+ * "Rewind to turn N" = сохранить изменения turn'а N, откатить только
+ * последующие turn'ы.
+ */
+export function getSnapshotsAfter(chatId: string, userMessageId: string): FileSnapshotEntry[] {
+  const cp = db.prepare(`
+    SELECT created_at as createdAt FROM chat_checkpoints
+    WHERE chat_id = ? AND user_message_id = ?
+  `).get(chatId, userMessageId) as { createdAt: number } | undefined
+  if (!cp) return []
+
+  // created_at > порог — строго после, исключает сам указанный turn.
+  // Сортировка DESC — последние правки первыми (LIFO восстановление).
+  const rows = db.prepare(`
+    SELECT path, content_before as contentBefore
+    FROM file_snapshots
+    WHERE chat_id = ? AND created_at > ?
+    ORDER BY created_at DESC, id DESC
+  `).all(chatId, cp.createdAt) as FileSnapshotEntry[]
+  return rows
+}
+
+export function getContextSnapshot(chatId: string, userMessageId: string): {
+  workingMemory: string | null
+  chatSummary: string | null
+  messageCount: number | null
+} | null {
+  const row = db.prepare(`
+    SELECT working_memory as workingMemory, chat_summary as chatSummary, message_count as messageCount
+    FROM context_snapshots
+    WHERE chat_id = ? AND user_message_id = ?
+  `).get(chatId, userMessageId) as { workingMemory: string | null; chatSummary: string | null; messageCount: number | null } | undefined
+  return row ?? null
+}
+
+/**
+ * Удаляет все чекпоинты и снапшоты для turn'ов ПОСЛЕ указанного user_message_id
+ * (не включая сам указанный). Используется при rewind: откатнутые turn'ы
+ * больше не валидны, их метаданные чистим.
+ */
+export function deleteCheckpointsAfter(chatId: string, userMessageId: string): void {
+  const cp = db.prepare(`
+    SELECT created_at as createdAt FROM chat_checkpoints
+    WHERE chat_id = ? AND user_message_id = ?
+  `).get(chatId, userMessageId) as { createdAt: number } | undefined
+  if (!cp) return
+
+  // Удаляем чекпоинты и снапшоты created_at > порога (строго больше — сам
+  // указанный turn оставляем в истории, откатываются только последующие).
+  db.prepare(`DELETE FROM chat_checkpoints WHERE chat_id = ? AND created_at > ?`).run(chatId, cp.createdAt)
+  db.prepare(`DELETE FROM file_snapshots WHERE chat_id = ? AND created_at > ?`).run(chatId, cp.createdAt)
+  db.prepare(`DELETE FROM context_snapshots WHERE chat_id = ? AND created_at > ?`).run(chatId, cp.createdAt)
+}
+
+/**
+ * Ограничивает количество чекпоинтов в чате последними N turn'ами (по умолч.
+ * 100, как Claude Code). Старые чекпоинты и их снапшоты удаляются.
+ */
+export function pruneOldCheckpoints(chatId: string, limit = 100): void {
+  const rows = db.prepare(`
+    SELECT id, created_at as createdAt FROM chat_checkpoints
+    WHERE chat_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(chatId, limit) as { id: string; createdAt: number }[]
+  if (rows.length < limit) return
+
+  // rows отсортированы DESC — последний элемент это самый старый из оставшихся.
+  const oldestKeptCreatedAt = rows[rows.length - 1].createdAt
+  db.prepare(`DELETE FROM chat_checkpoints WHERE chat_id = ? AND created_at < ?`).run(chatId, oldestKeptCreatedAt)
+  db.prepare(`DELETE FROM file_snapshots WHERE chat_id = ? AND created_at < ?`).run(chatId, oldestKeptCreatedAt)
+  db.prepare(`DELETE FROM context_snapshots WHERE chat_id = ? AND created_at < ?`).run(chatId, oldestKeptCreatedAt)
+}
+
+/**
+ * Кол-во сообщений в чате (для snapshot'а context_snapshot).
+ */
+export function getMessageCount(chatId: string): number {
+  const row = db.prepare(`SELECT COUNT(*) as cnt FROM messages WHERE chat_id = ?`).get(chatId) as { cnt: number }
+  return row.cnt
+}
+
+/**
+ * Удаляет все сообщения чата с created_at > порога (используется при rewind
+ * для очистки откатнутых сообщений). Возвращает кол-во удалённых.
+ */
+export function deleteMessagesAfter(chatId: string, createdAt: number): number {
+  const info = db.prepare(`DELETE FROM messages WHERE chat_id = ? AND created_at > ?`).run(chatId, createdAt)
+  return info.changes
+}
+
+// === REWIND HISTORY (redo) ===
+//
+// При каждом rewind сохраняем "redo-точку": удалённые сообщения (serialized) +
+// состояние файлов ДО отката (contentAfter — то что было на диске перед
+// восстановлением contentBefore). Позволяет отменить откат — вернуть всё назад.
+
+export interface RewindHistoryEntry {
+  id: string
+  chatId: string
+  rewindMessageId: string
+  deletedMessages: Message[]
+  fileChanges: Array<{ path: string; contentAfter: string | null }>
+  restoredCheckpointUserMsgId: string
+  createdAt: number
+}
+
+export function saveRewindHistory(
+  chatId: string,
+  rewindMessageId: string,
+  deletedMessages: Message[],
+  fileChanges: Array<{ path: string; contentAfter: string | null }>,
+  restoredCheckpointUserMsgId: string,
+): void {
+  db.prepare(`
+    INSERT INTO rewind_history (id, chat_id, rewind_message_id, deleted_messages, file_changes, restored_checkpoint_user_msg_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    uuid(), chatId, rewindMessageId,
+    JSON.stringify(deletedMessages),
+    JSON.stringify(fileChanges),
+    restoredCheckpointUserMsgId,
+    Date.now(),
+  )
+}
+
+export function getRewindHistory(chatId: string, rewindMessageId: string): RewindHistoryEntry | null {
+  const row = db.prepare(`
+    SELECT id, chat_id as chatId, rewind_message_id as rewindMessageId,
+           deleted_messages as deletedMessagesJson, file_changes as fileChangesJson,
+           restored_checkpoint_user_msg_id as restoredCheckpointUserMsgId,
+           created_at as createdAt
+    FROM rewind_history
+    WHERE chat_id = ? AND rewind_message_id = ?
+  `).get(chatId, rewindMessageId) as (Omit<RewindHistoryEntry, 'deletedMessages' | 'fileChanges'> & { deletedMessagesJson: string; fileChangesJson: string }) | undefined
+  if (!row) return null
+  return {
+    id: row.id,
+    chatId: row.chatId,
+    rewindMessageId: row.rewindMessageId,
+    deletedMessages: JSON.parse(row.deletedMessagesJson) as Message[],
+    fileChanges: JSON.parse(row.fileChangesJson) as Array<{ path: string; contentAfter: string | null }>,
+    restoredCheckpointUserMsgId: row.restoredCheckpointUserMsgId,
+    createdAt: row.createdAt,
+  }
+}
+
+export function deleteRewindHistory(chatId: string, rewindMessageId: string): void {
+  db.prepare(`DELETE FROM rewind_history WHERE chat_id = ? AND rewind_message_id = ?`).run(chatId, rewindMessageId)
+}
+
+/**
+ * Удаляет одно сообщение по id (используется при redo — убираем system-сообщение
+ * об откате, которое больше не актуально).
+ */
+export function deleteMessageById(messageId: string): void {
+  db.prepare(`DELETE FROM messages WHERE id = ?`).run(messageId)
 }

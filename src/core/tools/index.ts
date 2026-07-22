@@ -66,7 +66,7 @@ export interface ToolResult {
   error?: string
   diff?: string
   hidden?: boolean  // скрытые тулы (think, update_working_memory) — не показываются в UI
-  originalContent?: string  // §1.8 — для undo/rollback: содержимое до записи
+  originalContent?: string | null  // §1.8 — для undo/rollback: содержимое до записи; null = файл был создан
 }
 
 export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
@@ -348,13 +348,19 @@ export async function writeFile(path: string, content: string, opts?: { dryRun?:
   try {
     path = resolveToolPath(path, opts?.workdir)
     await ensureDirFor(path)
-    // Читаем оригинал для diff (если файл существует)
+    // Читаем оригинал для diff (если файл существует). originalContent = null
+    // сигнализирует снапшот-системе что файл был СОЗДАН (→ unlink при rewind),
+    // а не перезаписан пустым содержимым.
     let original = ''
-    try { original = existsSync(path) ? await fsReadFile(path, 'utf-8') : '' } catch { /* ok */ }
+    let originalContent: string | null = null
+    const fileExists = existsSync(path)
+    if (fileExists) {
+      try { original = await fsReadFile(path, 'utf-8'); originalContent = original } catch { /* ok */ }
+    }
     // dryRun — не записываем, только возвращаем diff-превью
     if (opts?.dryRun) {
       const diff = makeDiff(original, content, path)
-      const action = original ? 'ПЕРЕЗАПИСЬ существующего файла' : 'СОЗДАНИЕ нового файла'
+      const action = fileExists ? 'ПЕРЕЗАПИСЬ существующего файла' : 'СОЗДАНИЕ нового файла'
       return { success: true, output: `[DRY RUN] ${action}: ${path}\n${diff}`.slice(0, 4000), diff }
     }
     await fsWriteFile(path, content, 'utf-8')
@@ -362,7 +368,7 @@ export async function writeFile(path: string, content: string, opts?: { dryRun?:
     // Генерируем diff как у edit_file
     const diff = makeDiff(original, content, path)
     const changedLines = countChangedLines(diff)
-    return { success: true, output: `Файл записан: ${path} (${lines} строк, ${changedLines} строк изменено)`, diff, originalContent: original }
+    return { success: true, output: `Файл записан: ${path} (${lines} строк, ${changedLines} строк изменено)`, diff, originalContent }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
@@ -1664,3 +1670,29 @@ export function getToolSchemas(options: {
   if (planningMode) schemas.push(PLAN_TOOL_SCHEMA as any)
   return schemas
 }
+
+// ── Side-chat-only tool ────────────────────────────────────────────────
+// Этот тул доступен ТОЛЬКО в параллельном доп-чате (side chat). Он не
+// включён в TOOL_SCHEMAS и не выдаётся обычным чатам через getToolSchemas.
+// Позволяет side-агенту запросить сообщения основного чата по мере нужды
+// (вместо передачи всей истории в контекст — экономия токенов).
+export const GET_MAIN_CHAT_MESSAGES_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'get_main_chat_messages',
+    description: 'Получить сообщения из основного чата (параллельного этому доп-чату). Возвращает текст сообщений с указанием роли. Используй для поиска информации в истории основного чата.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Количество недавних сообщений (по умолчанию 15, максимум 50).',
+        },
+        search: {
+          type: 'string',
+          description: 'Подстрока для фильтрации сообщений (case-insensitive). Если задано, возвращаются только сообщения, содержащие эту подстроку.',
+        },
+      },
+    },
+  },
+} as const

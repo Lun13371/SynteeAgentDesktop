@@ -67,6 +67,7 @@ interface MessageBubbleProps {
   onCopy?: (content: string) => void
   onReadAloud?: (content: string) => void
   onReply?: (message: Message) => void
+  onRewind?: (userMessageId: string) => void
   toolOutputMode?: ToolOutputMode
   searchQuery?: string
   liveThinking?: { text: string; isLive: boolean; ms?: number }
@@ -262,7 +263,7 @@ function plural(n: number, one: string, few: string, many: string): string {
 // Мемоизированный тяжёлый контент сообщения
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
-  onPin, onCopy, onReadAloud, onReply, message, isPinned, createdAt,
+  onPin, onCopy, onReadAloud, onReply, onRewind, message, isPinned, createdAt,
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
   userMarkdown = true, timeEl, agentStatus,
 }: {
@@ -270,6 +271,7 @@ const MessageContent = memo(function MessageContent({
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
   onPin?: (id: string) => void; onCopy?: () => void
   onReadAloud?: () => void; onReply?: () => void
+  onRewind?: () => void
   message: Message; isPinned: number; createdAt: number
   liveThinking?: { text: string; isLive: boolean; ms?: number }
   isStreaming?: boolean
@@ -623,6 +625,7 @@ const MessageContent = memo(function MessageContent({
         <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={onCopy} />
         <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
         {onReply && <IconButton icon="reply" label="Ответить" className="msg-action-btn" onClick={onReply} />}
+        {isUser && onRewind && <IconButton icon="rewind" label="Откатить к этому сообщению" className="msg-action-btn" onClick={onRewind} />}
         {!isUser && <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={onReadAloud} />}
       </div>
     </div>
@@ -654,9 +657,80 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
   )
 }
 
+// System-разделитель — полоса поперёк чата для system-сообщений (откаты и т.д.)
+// Для rewind-сообщений с активной redo-точкой показывает кнопку "Отменить откат".
+function SystemDivider({ message, isRewind, timeEl }: {
+  message: Message
+  isRewind: boolean
+  timeEl: React.ReactNode
+}) {
+  const [canRedo, setCanRedo] = useState(false)
+  const [redoing, setRedoing] = useState(false)
+
+  // Проверяем — доступна ли отмена отката (есть redo-точка в БД).
+  useEffect(() => {
+    if (!isRewind || !message.chatId) { setCanRedo(false); return }
+    let cancelled = false
+    const check = async () => {
+      const result = await window.syntee.chat.canRedo(message.chatId, message.id) as boolean
+      if (!cancelled) setCanRedo(result)
+    }
+    check()
+    // Проверяем снова при получении события CHAT_REWOUND (redo мог быть отменён).
+    const off = window.syntee.on('chat:rewound', () => { if (!cancelled) check() })
+    return () => { cancelled = true; off() }
+  }, [isRewind, message.chatId, message.id])
+
+  const handleRedo = useCallback(async () => {
+    if (!message.chatId || redoing) return
+    const confirmed = window.confirm('Отменить откат? Сообщения и файлы будут возвращены.')
+    if (!confirmed) return
+    setRedoing(true)
+    try {
+      const result = await window.syntee.chat.redo(message.chatId, message.id) as { messages?: Message[]; error?: string }
+      if (result.error) {
+        window.alert(result.error)
+      }
+      // CHAT_REWOUND event обновит messages в store
+    } catch (e) {
+      window.alert(String((e as Error)?.message ?? e))
+    } finally {
+      setRedoing(false)
+    }
+  }, [message.chatId, message.id, redoing])
+
+  return (
+    <motion.div
+      className={`message-system-divider ${isRewind ? 'message-system-divider--rewind' : ''}`}
+      initial={{ opacity: 0, scaleY: 0 }}
+      animate={{ opacity: 1, scaleY: 1 }}
+      transition={{ duration: 0.25 }}
+    >
+      <div className="message-system-divider__line" />
+      <div className="message-system-divider__badge">
+        <AppIcon name={isRewind ? 'rewind' : 'info'} size="xs" tone={isRewind ? 'warning' : 'muted'} />
+        <span className="message-system-divider__text">{message.content}</span>
+        {timeEl}
+        {isRewind && canRedo && (
+          <button
+            className="message-system-divider__redo"
+            onClick={handleRedo}
+            disabled={redoing}
+            title="Отменить откат — вернуть сообщения и файлы"
+          >
+            <AppIcon name="refreshCw" size="xs" animation={redoing ? 'spin' : 'none'} />
+            <span>Отменить откат</span>
+          </button>
+        )}
+      </div>
+      <div className="message-system-divider__line" />
+    </motion.div>
+  )
+}
+
 
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec,
+  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -668,6 +742,10 @@ const MessageBubble = memo(function MessageBubble({
   const handleReply = useCallback(() => {
     onReply?.(message)
   }, [message, onReply])
+
+  const handleRewind = useCallback(() => {
+    onRewind?.(message.id)
+  }, [message.id, onRewind])
 
   const handleReadAloud = useCallback(() => {
     onReadAloud?.(message.content)
@@ -682,6 +760,13 @@ const MessageBubble = memo(function MessageBubble({
       {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
     </span>
   ) : null
+
+  // System-сообщения (откаты, системные уведомления) рендерим как
+  // стилизованную разделительную полосу поперёк чата — не как пузырь.
+  if (message.role === 'system') {
+    const isRewind = message.slashCommand?.name === 'rewind'
+    return <SystemDivider message={message} isRewind={isRewind} timeEl={timeEl} />
+  }
 
   return (
     <motion.div
@@ -705,6 +790,7 @@ const MessageBubble = memo(function MessageBubble({
               onCopy={handleCopy}
               onReadAloud={handleReadAloud}
               onReply={handleReply}
+              onRewind={handleRewind}
               message={message}
               isPinned={message.isPinned as number}
               createdAt={message.createdAt}
@@ -737,6 +823,7 @@ const MessageBubble = memo(function MessageBubble({
         onCopy={handleCopy}
         onReadAloud={handleReadAloud}
         onReply={handleReply}
+        onRewind={handleRewind}
         message={message}
         isPinned={message.isPinned as number}
         createdAt={message.createdAt}
