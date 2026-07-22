@@ -111,6 +111,22 @@ export function registerGitIPC(): void {
     }
   })
 
+  ipcMain.handle('git:show', async (_e, params: { workdir: string; hash: string; file?: string }) => {
+    if (!params.workdir) return { success: false, diff: '', error: 'workdir is required' }
+    if (!params.hash) return { success: false, diff: '', error: 'hash is required' }
+    try {
+      const args = ['show', '--no-color', params.hash]
+      if (params.file) {
+        args.push('--')
+        args.push(params.file)
+      }
+      const diff = await runGit(params.workdir, args)
+      return { success: true, diff }
+    } catch (e) {
+      return { success: false, diff: '', error: String((e as Error)?.message ?? e) }
+    }
+  })
+
   ipcMain.handle('git:log', async (_e, params: { workdir: string; limit?: number }) => {
     if (!params.workdir) return { success: false, entries: [], error: 'workdir is required' }
     try {

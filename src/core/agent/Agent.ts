@@ -63,6 +63,9 @@ export interface AgentCallbacks {
   onTodoUpdate?: (items: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>) => void
   onThinkingToken?: (token: string) => void
   onThinkingDone?: (ms: number) => void
+  // Side-chat-only: запросить сообщения основного чата из БД (в worker
+  // нет доступа к БД, поэтому идёт round-trip через main-процесс).
+  onGetMainChatMessages?: (params: { limit?: number; search?: string }) => Promise<string>
 }
 
 export interface AgentSummaryDetails {
@@ -70,6 +73,10 @@ export interface AgentSummaryDetails {
   diffs: Array<{ file: string; summary: string }>
   commandsRun: Array<{ command: string; exitCode?: string; success: boolean }>
   filesRead: string[]
+  // §1.8 — снимок undoStack на конец turn'а: {path, contentBefore} для каждого
+  // изменённого файла. contentBefore = null = файл был создан этим turn'ом.
+  // Перегоняется в file_snapshots (DB) на main-стороне для checkpoint/rewind.
+  fileSnapshots: Array<{ path: string; contentBefore: string | null }>
 }
 
 const FALLBACK_SYSTEM_PROMPT = 'You are a capable coding agent. Follow the provided system prompt and use tools when needed.'
@@ -1089,6 +1096,15 @@ export class Agent {
         }
         return { success: true, output: `Plan saved: ${args.title}` }
       }
+      case 'get_main_chat_messages': {
+        if (!callbacks?.onGetMainChatMessages) {
+          return { success: false, output: '', error: 'get_main_chat_messages: нет доступа к основному чату' }
+        }
+        const limit = Math.min(Math.max((args.limit as number) ?? 15, 1), 50)
+        const search = (args.search as string) || undefined
+        const result = await callbacks.onGetMainChatMessages({ limit, search })
+        return { success: true, output: result }
+      }
       default:
         return { success: false, output: '', error: `Unknown tool: ${name}` }
     }
@@ -1109,6 +1125,17 @@ export class Agent {
   }
 
   /**
+   * Возвращает копию undoStack — {path, contentBefore} для каждого файла,
+   * изменённого в текущем turn'е. Используется для:
+   *   - checkpoint/rewind (main-процесс сохраняет в file_snapshots)
+   *   - error recovery (worker включает в error-message при падении)
+   * contentBefore = null = файл был создан этим turn'ом.
+   */
+  getFileSnapshots(): Array<{ path: string; contentBefore: string | null }> {
+    return this.undoStack.map(e => ({ path: e.path, contentBefore: e.originalContent }))
+  }
+
+  /**
    * Структурированная выжимка действий агента — для передачи родительскому
    * агенту при spawn_agent, вместо обрезанного 500-символьного текста.
    */
@@ -1118,6 +1145,7 @@ export class Agent {
       diffs: [...this.pendingDiffEntries],
       commandsRun: [...this.commandsRun],
       filesRead: Array.from(this.fileMap.keys()),
+      fileSnapshots: this.undoStack.map(e => ({ path: e.path, contentBefore: e.originalContent })),
     }
   }
 }

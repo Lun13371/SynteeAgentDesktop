@@ -15,6 +15,12 @@
   min-height: 18px;
 }
 
+.diff-block-shared--wrap .diff-block-shared__line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
 .diff-block-shared__meta {
   color: var(--text-secondary, #888);
   font-weight: 600;
@@ -47,4 +53,8 @@
 
 .diff-block-shared--detailed .diff-block-shared__line {
   padding: 1px 12px;
+}
+
+.diff-block-shared--highlight {
+  padding: 12px;
 }

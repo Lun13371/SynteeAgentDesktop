@@ -11,6 +11,14 @@ export default function ResizeHandle({ onResize, onResizeEnd, side }: ResizeHand
   const draggingRef = useRef(false)
   const frameRef = useRef<number | null>(null)
 
+  // Callbacks в refs — useEffect не пересоздаётся при ре-рендере родителя.
+  const onResizeRef = useRef(onResize)
+  const onResizeEndRef = useRef(onResizeEnd)
+  useEffect(() => {
+    onResizeRef.current = onResize
+    onResizeEndRef.current = onResizeEnd
+  })
+
   useEffect(() => {
     const handleMove = (e: MouseEvent) => {
       if (!draggingRef.current) return
@@ -21,7 +29,7 @@ export default function ResizeHandle({ onResize, onResizeEnd, side }: ResizeHand
         frameRef.current = null
         if (side === 'right') {
           const newWidth = window.innerWidth - clientX
-          onResize(newWidth)
+          onResizeRef.current(newWidth)
         }
       })
     }
@@ -29,7 +37,7 @@ export default function ResizeHandle({ onResize, onResizeEnd, side }: ResizeHand
       if (draggingRef.current) {
         draggingRef.current = false
         document.body.classList.remove('resize-handle-active')
-        onResizeEnd?.()
+        onResizeEndRef.current?.()
       }
     }
     window.addEventListener('mousemove', handleMove)
@@ -39,7 +47,7 @@ export default function ResizeHandle({ onResize, onResizeEnd, side }: ResizeHand
       window.removeEventListener('mouseup', handleUp)
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
     }
-  }, [onResize, onResizeEnd, side])
+  }, [side])
 
   const handleDown = (e: React.MouseEvent) => {
     e.preventDefault()

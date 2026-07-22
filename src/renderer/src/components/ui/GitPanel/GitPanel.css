@@ -171,6 +171,37 @@
   padding: 4px 0;
 }
 
+.git-tree-dir {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background var(--transition, 0.1s ease);
+  font-family: var(--font-family);
+  font-size: 12px;
+}
+
+.git-tree-dir:hover {
+  background: var(--bg-tertiary);
+}
+
+.git-tree-dir__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.git-tree-children {
+  /* nested nodes */
+}
+
 .git-file-item {
   display: flex;
   align-items: center;
@@ -307,12 +338,26 @@
   gap: 6px;
   padding: 4px 10px;
   font-size: 11px;
+  border: none;
   border-bottom: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
   transition: background var(--transition, 0.1s ease);
+  font-family: var(--font-family);
 }
 
 .git-log-item:hover {
   background: var(--bg-tertiary);
+}
+
+.git-log-item--selected {
+  background: var(--accent-subtle, rgba(108, 138, 255, 0.1));
+}
+
+.git-log-item--selected:hover {
+  background: var(--accent-subtle, rgba(108, 138, 255, 0.15));
 }
 
 .git-log-item__hash {
@@ -360,6 +405,64 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
   flex-shrink: 0;
+}
+
+.git-panel__diff-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.git-panel__view-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+}
+
+.git-panel__view-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition, 0.1s ease), color var(--transition, 0.1s ease);
+}
+
+.git-panel__view-btn:hover {
+  color: var(--text-primary);
+}
+
+.git-panel__view-btn--active {
+  background: var(--bg-primary);
+  color: var(--accent);
+}
+
+.git-panel__action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition, 0.1s ease), color var(--transition, 0.1s ease);
+}
+
+.git-panel__action-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--accent);
 }
 
 .git-panel__diff-path {

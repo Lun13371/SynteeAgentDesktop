@@ -6,6 +6,8 @@
  * Work-режим удалён — остаётся только Code-режим с проектами (как в Codex CLI).
  */
 
+import type { ProjectInstructions } from './projectInstructions'
+
 export function buildSystemPrompt(params: {
   userName?: string
   memoryContext?: string
@@ -14,11 +16,12 @@ export function buildSystemPrompt(params: {
   customSystemPrompt?: string
   workdir?: string
   projectContext?: string
+  projectInstructions?: ProjectInstructions | null
 }): string {
-  const { userName, memoryContext, workingMemory, date, customSystemPrompt, workdir, projectContext } = params
+  const { userName, memoryContext, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
-  const modeBlock = buildCodeModeBlock(workdir, projectContext)
+  const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
 
   return `Ты Syntee — персональный AI-ассистент для Windows.
 ${userName ? `Пользователя зовут ${userName}. Обращайся к нему по имени.` : ''}
@@ -77,7 +80,7 @@ ${modeBlock}
 После выполнения инструментов пиши итог пользователю. Не вызывай tools снова, если задача уже решена.`
 }
 
-function buildCodeModeBlock(workdir?: string, projectContext?: string): string {
+function buildCodeModeBlock(workdir?: string, projectContext?: string, projectInstructions?: ProjectInstructions | null): string {
   // Реальная детекция ОС вместо хардкода "Windows 10".
   const platform = process.platform
   const osName = platform === 'win32' ? 'Windows'
@@ -89,7 +92,7 @@ function buildCodeModeBlock(workdir?: string, projectContext?: string): string {
   // Старые чаты без проекта — без блока, поведение остаётся прежним
   // (файловые тулы через process.cwd(), run_command через homedir()).
   const workdirBlock = workdir
-    ? `\n## Рабочая директория проекта\n\nАбсолютный путь: ${workdir}\nОтносительные пути в read_file/write_file/edit_file/multi_edit_file/list_directory/find_files/search_code и cwd для run_command резолвятся относительно этого пути. Не запрашивай у пользователя путь к файлам проекта — используй относительные пути или абсолютные от этой директории.\n${projectContext ? `\n## Скан проекта (зафиксирован при создании)\n\n${projectContext}\n` : ''}`
+    ? `\n## Рабочая директория проекта\n\nАбсолютный путь: ${workdir}\nОтносительные пути в read_file/write_file/edit_file/multi_edit_file/list_directory/find_files/search_code и cwd для run_command резолвятся относительно этого пути. Не запрашивай у пользователя путь к файлам проекта — используй относительные пути или абсолютные от этой директории.\n${projectInstructions ? `\n## Инструкции проекта (${projectInstructions.source})\n\n${projectInstructions.content}\n` : ''}${projectContext ? `\n## Скан проекта (зафиксирован при создании)\n\n${projectContext}\n` : ''}`
     : ''
 
   return `## Роль

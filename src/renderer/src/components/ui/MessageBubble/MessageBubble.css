@@ -531,3 +531,120 @@
   transition: opacity 0.15s;
 }
 .message-image:hover { opacity: 0.9; }
+
+/* ─── System-divider (откаты, системные уведомления) ─── */
+
+.message-system-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  margin: 4px 0;
+  width: 100%;
+  transform-origin: center;
+}
+
+.message-system-divider__line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--border, #333) 20%,
+    var(--border, #333) 80%,
+    transparent
+  );
+  min-width: 20px;
+}
+
+.message-system-divider__badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--bg-secondary, #1a1a1f);
+  border: 1px solid var(--border, #333);
+  border-radius: 20px;
+  font-size: 11px;
+  color: var(--text-secondary, #999);
+  white-space: nowrap;
+  max-width: 70%;
+  flex-shrink: 0;
+}
+
+.message-system-divider__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.message-system-divider--rewind .message-system-divider__badge {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: var(--warning, #f59e0b);
+}
+
+.message-system-divider--rewind {
+  position: relative;
+}
+
+.message-system-divider--rewind::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(245, 158, 11, 0.2) 0,
+    rgba(245, 158, 11, 0.2) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.message-system-divider--rewind .message-system-divider__badge {
+  position: relative;
+  z-index: 1;
+}
+
+.message-system-divider .message-time {
+  font-size: 10px;
+  color: var(--text-tertiary, #666);
+  flex-shrink: 0;
+}
+
+.message-system-divider__redo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  margin-left: 4px;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 10px;
+  color: var(--accent, #6366f1);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition, 0.12s ease);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.message-system-divider__redo:hover:not(:disabled) {
+  background: var(--accent, #6366f1);
+  color: white;
+  border-color: var(--accent, #6366f1);
+}
+
+.message-system-divider__redo:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
