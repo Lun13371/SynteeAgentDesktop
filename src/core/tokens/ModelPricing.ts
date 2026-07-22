@@ -4,6 +4,12 @@
 export interface ModelPrice {
   inputPerM: number   // центы за 1M input токенов
   outputPerM: number  // центы за 1M output токенов
+  // Цены для кэшированных токенов (Anthropic prompt caching).
+  // Заполняются из каталога models.dev (model.cost.cache_read / cache_write).
+  // cacheReadPerM  ~ 10% от inputPerM (чтение из кэша — большая скидка)
+  // cacheWritePerM ~ 125% от inputPerM (запись в кэш — премия за создание)
+  cacheReadPerM?: number
+  cacheWritePerM?: number
 }
 
 const PRICES: Record<string, ModelPrice> = {

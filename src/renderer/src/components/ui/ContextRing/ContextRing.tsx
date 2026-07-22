@@ -167,6 +167,24 @@ export default function ContextRing({ info }: ContextRingProps) {
                   <span className="ctx-row-label">Текущий ввод</span>
                   <span className="ctx-row-val">{formatNum(info.currentInput)} tok</span>
                 </div>
+                {info.breakdown?.cacheReadTokens != null && info.breakdown.cacheReadTokens > 0 && (
+                  <div className="ctx-row ctx-row-indent">
+                    <span className="ctx-row-label">↳ Кэш (чтение)</span>
+                    <span className="ctx-row-val">
+                      {formatNum(info.breakdown.cacheReadTokens)} tok
+                      <span className="ctx-row-sub"> -90%</span>
+                    </span>
+                  </div>
+                )}
+                {info.breakdown?.cacheWriteTokens != null && info.breakdown.cacheWriteTokens > 0 && (
+                  <div className="ctx-row ctx-row-indent">
+                    <span className="ctx-row-label">↳ Кэш (запись)</span>
+                    <span className="ctx-row-val">
+                      {formatNum(info.breakdown.cacheWriteTokens)} tok
+                      <span className="ctx-row-sub"> +25%</span>
+                    </span>
+                  </div>
+                )}
                 <div className="ctx-row ctx-row-reserved">
                   <span className="ctx-row-label">Резерв ответа</span>
                   <span className="ctx-row-val">{formatNum(info.reserved)} tok</span>
@@ -198,6 +216,11 @@ export default function ContextRing({ info }: ContextRingProps) {
                   </>
                 ) : (
                   <span className="ctx-pricing-nodata">Нет данных о ценах</span>
+                )}
+                {info.breakdown?.cacheReadTokens != null && info.breakdown.cacheReadTokens > 0 && (
+                  <div className="ctx-cache-badge">
+                    ⚡ Кэшировано {Math.round((info.breakdown.cacheReadTokens / Math.max(1, info.total)) * 100)}% контекста
+                  </div>
                 )}
               </div>
 

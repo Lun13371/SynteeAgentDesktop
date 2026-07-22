@@ -70,6 +70,8 @@ export function getHardLimitTargetTokens(contextWindow: number): number {
 export interface RealUsage {
   promptTokens: number
   completionTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
 }
 
 export interface UsageSnapshot {
@@ -85,6 +87,9 @@ export interface UsageSnapshot {
     current: number
     toolResults?: number
     completionTokens?: number
+    // Prompt caching: токены, прочитанные из кэша (со скидкой) и записанные в кэш
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
   }
   compressed?: boolean
   sessionCostCents?: number | null
@@ -117,6 +122,8 @@ export function buildSnapshotFromReal(
       current: prevBreakdown?.current ?? 0,
       toolResults: prevBreakdown?.toolResults,
       completionTokens: real.completionTokens,
+      cacheReadTokens: real.cacheReadTokens,
+      cacheWriteTokens: real.cacheWriteTokens,
     },
   }
 }
@@ -167,11 +174,33 @@ export function recordSessionCost(
   modelId: string,
   inputTokens: number,
   outputTokens: number,
+  cacheReadTokens?: number,
+  cacheWriteTokens?: number,
 ): { totalCents: number; requests: number } | null {
   const pricing = getModelPriceInfo(providerId, modelId)
   if (!pricing) return null
 
-  const cents = (inputTokens / 1_000_000) * pricing.inputPerM + (outputTokens / 1_000_000) * pricing.outputPerM
+  // Anthropic prompt caching тарификация:
+  //   - input_tokens (non-cached) — полная цена (inputPerM)
+  //   - cache_read_input_tokens   — цена со скидкой ~90% (cacheReadPerM)
+  //   - cache_creation_input_tokens — премия ~25% (cacheWritePerM)
+  //
+  // Семантика promptTokens в колбэке onUsage:
+  //   - OpenAI:   prompt_tokens = TOTAL (включая cached_tokens)
+  //   - Anthropic: promptTokens = total (input + cacheRead + cacheWrite), т.к.
+  //     AIClient нормализует: totalPrompt = input + cache_read + cache_creation
+  //
+  // Поэтому nonCachedInput = promptTokens - cacheRead - cacheWrite
+  const nonCachedInput = Math.max(0, inputTokens - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0))
+  let cents = (nonCachedInput / 1_000_000) * pricing.inputPerM
+  cents += (outputTokens / 1_000_000) * pricing.outputPerM
+  if (cacheReadTokens && pricing.cacheReadPerM) {
+    cents += (cacheReadTokens / 1_000_000) * pricing.cacheReadPerM
+  }
+  if (cacheWriteTokens && pricing.cacheWritePerM) {
+    cents += (cacheWriteTokens / 1_000_000) * pricing.cacheWritePerM
+  }
+
   const entry = sessionCosts.get(chatId) ?? { totalCents: 0, requests: 0 }
   entry.totalCents += cents
   entry.requests += 1
@@ -195,7 +224,12 @@ export function getModelPriceInfo(providerId: string, modelId: string): ModelPri
   // 1. Каталог models.dev
   const fromCatalog = getCatalogModel(providerId, modelId)
   if (fromCatalog && (fromCatalog.inputPricePerM > 0 || fromCatalog.outputPricePerM > 0)) {
-    return { inputPerM: fromCatalog.inputPricePerM, outputPerM: fromCatalog.outputPricePerM }
+    return {
+      inputPerM: fromCatalog.inputPricePerM,
+      outputPerM: fromCatalog.outputPricePerM,
+      cacheReadPerM: fromCatalog.cacheReadPerM,
+      cacheWritePerM: fromCatalog.cacheWritePerM,
+    }
   }
 
   // 2. Builtin модели (цены в $ за 1M → переводим в центы ×100)

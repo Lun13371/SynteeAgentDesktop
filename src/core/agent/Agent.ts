@@ -47,7 +47,7 @@ export interface AgentCallbacks {
   onRateLimit?: (waitSec: number) => void
   onRetry?: (attempt: number, reason: string, waitSec?: number) => void
   onContextUpdate?: (tokens: number) => void
-  onUsage?: (promptTokens: number, completionTokens: number) => void
+  onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full' }) => Promise<{ summary: string; error?: string }>
