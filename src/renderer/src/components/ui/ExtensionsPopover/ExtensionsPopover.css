@@ -1,0 +1,1428 @@
+/* ─────────────────────────────────────────────────────────────────────
+   ExtensionsPopover — большое центрированное модальное окно управления
+   MCP-серверами и Skills. Открывается из широкой кнопки «Расширения»
+   в шапке сайдбара. Glass-эстетика, портал, оверлей на весь экран.
+   ───────────────────────────────────────────────────────────────────── */
+
+.ext-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(var(--shadow-rgb, 0, 0, 0), 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+}
+
+.ext-modal {
+  width: 1100px;
+  max-width: calc(100vw - 48px);
+  height: 780px;
+  max-height: calc(100vh - 60px);
+  min-height: 600px;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg, 18px);
+  overflow: hidden;
+  background: var(--glass-bg, rgba(18, 18, 28, 0.97));
+  border: 1px solid var(--border);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  will-change: opacity, transform;
+}
+
+/* ── Header модалки ── */
+.ext-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.ext-modal-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ext-modal-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ext-modal-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+.ext-modal-close {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md, 10px);
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+  flex-shrink: 0;
+}
+.ext-modal-close:hover {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--text-secondary) 40%, transparent);
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+}
+
+/* ── Tabs: MCP | Skills ── */
+.ext-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 22px 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.ext-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 10px 14px 12px;
+  border-radius: var(--radius-sm, 8px) var(--radius-sm, 8px) 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  transition: color 0.12s, background 0.12s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  position: relative;
+}
+.ext-tab:hover { color: var(--text-primary); }
+.ext-tab--active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ext-tab--active::after {
+  content: '';
+  position: absolute;
+  left: 14px; right: 14px; bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.ext-tab-count {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-muted) 20%, transparent);
+  color: var(--text-secondary);
+  min-width: 17px;
+  text-align: center;
+}
+.ext-tab--active .ext-tab-count {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--accent);
+}
+
+/* ── Body (scroll) ── */
+.ext-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 22px;
+}
+
+.ext-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ext-empty-icon {
+  opacity: 0.5;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: center;
+}
+
+/* ── Карточка элемента (скилл / сервер) ── */
+.ext-card {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 12px);
+  background: color-mix(in srgb, var(--bg-primary) 60%, transparent);
+  border: 1px solid var(--border);
+  margin-bottom: 6px;
+  transition: border-color 0.12s, background 0.12s;
+}
+.ext-card:hover {
+  border-color: color-mix(in srgb, var(--text-secondary) 30%, transparent);
+}
+.ext-card--enabled {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-primary) 55%);
+}
+
+.ext-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+.ext-card-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--text-muted);
+}
+.ext-card--enabled .ext-card-icon { color: var(--accent); }
+
+.ext-card-main {
+  flex: 1;
+  min-width: 0;
+}
+.ext-card-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ext-card-source {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-muted);
+}
+.ext-card-source--builtin { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.ext-card-source--project { background: color-mix(in srgb, #4ade80 20%, transparent); color: #4ade80; }
+.ext-card-source--user    { background: color-mix(in srgb, #60a5fa 20%, transparent); color: #60a5fa; }
+.ext-card-source--global  { background: color-mix(in srgb, #60a5fa 20%, transparent); color: #60a5fa; }
+
+.ext-card-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Status dot для MCP-серверов */
+.ext-card-status {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.ext-card-status--connected { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+.ext-card-status--connecting { background: #fbbf24; animation: ext-pulse 1.2s infinite; }
+.ext-card-status--error { background: #f87171; }
+.ext-card-status--disconnected { background: var(--text-muted); opacity: 0.5; }
+
+/* Текстовая подпись статуса рядом с дотом — явный текст для всех состояний. */
+.ext-card-status-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ext-card-status-label--connected    { color: #4ade80; background: color-mix(in srgb, #4ade80 14%, transparent); }
+.ext-card-status-label--connecting   { color: #fbbf24; background: color-mix(in srgb, #fbbf24 14%, transparent); }
+.ext-card-status-label--error        { color: #f87171; background: color-mix(in srgb, #f87171 14%, transparent); }
+.ext-card-status-label--disconnected { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 14%, transparent); }
+
+@keyframes ext-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Toggle switch ── */
+.ext-toggle {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  padding: 0;
+}
+.ext-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transition: transform 0.15s, background 0.15s;
+}
+.ext-toggle--on {
+  background: var(--accent);
+}
+.ext-toggle--on::after {
+  transform: translateX(14px);
+  background: var(--on-accent, #fff);
+}
+
+/* ── Раскрывающаяся детальная часть карточки ── */
+.ext-card-details {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ext-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.ext-card-row-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.ext-card-row-val {
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Селектор scope */
+.ext-scope-select {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 3px 6px;
+  cursor: pointer;
+  outline: none;
+  max-width: 180px;
+}
+
+/* ── ScopeSelector: мульти-выбор проектов для расширений ── */
+.ext-scope-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ext-scope-radios {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ext-scope-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 4px 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.ext-scope-radio:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.ext-scope-radio--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ext-scope-radio--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ext-scope-radio--disabled:hover {
+  border-color: var(--border);
+}
+.ext-scope-radio input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+
+.ext-scope-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-tertiary, rgba(255,255,255,0.04));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  padding: 6px 4px;
+  max-height: 160px;
+  overflow: auto;
+}
+.ext-scope-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+.ext-scope-project:hover {
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+}
+.ext-scope-project--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ext-scope-project--disabled:hover {
+  background: transparent;
+}
+.ext-scope-project input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+.ext-scope-project-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ext-scope-project-current {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.ext-scope-projects-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 10px 8px;
+}
+.ext-scope-projects-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+  padding: 2px 8px 0;
+}
+
+/* ── Список тулов MCP-сервера ── */
+.ext-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.ext-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 8px);
+  background: color-mix(in srgb, var(--bg-secondary) 50%, transparent);
+  border: 1px solid var(--border);
+}
+.ext-tool-row--disabled {
+  opacity: 0.55;
+}
+.ext-tool-main {
+  flex: 1;
+  min-width: 0;
+}
+.ext-tool-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+}
+.ext-tool-desc {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ext-tool-mini-toggle {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  padding: 0;
+}
+.ext-tool-mini-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transition: transform 0.15s;
+}
+.ext-tool-mini-toggle--on { background: var(--accent); }
+.ext-tool-mini-toggle--on::after { transform: translateX(12px); background: var(--on-accent, #fff); }
+
+/* Чекбокс «спрашивать подтверждение» */
+.ext-tool-approval {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  margin-top: 3px;
+  padding-left: 2px;
+}
+.ext-tool-approval input { cursor: pointer; }
+
+/* ── Кнопки действий ── */
+.ext-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+.ext-action-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.ext-action-btn:hover {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--text-secondary) 35%, transparent);
+}
+.ext-action-btn--primary {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.ext-action-btn--primary:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.ext-action-btn--danger:hover {
+  color: #f87171;
+  border-color: color-mix(in srgb, #f87171 40%, transparent);
+}
+
+/* ── Footer ── */
+.ext-footer {
+  padding: 12px 22px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.ext-footer-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ── Форма добавления MCP-сервера ── */
+.ext-form {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ext-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ext-form-label {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.ext-form-input,
+.ext-form-textarea {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 8px;
+  outline: none;
+  font-family: inherit;
+  resize: vertical;
+}
+.ext-form-textarea {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  min-height: 48px;
+}
+.ext-form-input:focus,
+.ext-form-textarea:focus {
+  border-color: var(--accent);
+}
+.ext-form-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.ext-transport-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 2px;
+}
+.ext-transport-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: calc(var(--radius-sm, 6px) - 2px);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ext-transport-btn--active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* ── Кнопка "Добавить из каталога" над списком установленных ── */
+.ext-catalog-cta {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+/* ── Каталог (маркетплейс): поиск + сетка карточек ── */
+.ext-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 320px;
+}
+.ext-catalog-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ext-catalog-search {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 8px 12px;
+  outline: none;
+}
+.ext-catalog-search:focus {
+  border-color: var(--accent);
+}
+.ext-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.ext-catalog-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 12px);
+  background: color-mix(in srgb, var(--bg-primary) 60%, transparent);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, transform 0.12s;
+}
+.ext-catalog-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-primary) 55%);
+  transform: translateY(-1px);
+}
+.ext-catalog-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ext-catalog-card-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.6em;
+}
+.ext-catalog-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: auto;
+}
+.ext-catalog-card-transport {
+  font-family: var(--font-mono, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ext-catalog-card-version {
+  font-family: var(--font-mono, monospace);
+}
+.ext-catalog-card-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #fbbf24;
+}
+.ext-catalog-card-lang {
+  color: var(--text-muted);
+}
+
+/* ── Detail view (маркетплейс MCP/Skill) — переиспользует базовые классы
+   .ext-detail/.ext-detail-desc/.ext-detail-section из секции ExtensionsBadge
+   ниже (одинаковый визуальный язык для обоих popup/modal контекстов). ── */
+.ext-detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 10px;
+}
+.ext-detail-icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md, 12px);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ext-detail-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ext-detail-version {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  margin-left: 6px;
+}
+.ext-detail-links {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.ext-detail-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.ext-detail-link:hover {
+  color: var(--accent);
+}
+.ext-detail-topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.ext-detail-topic {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  color: var(--text-secondary);
+}
+.ext-detail-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.ext-detail-readme {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in srgb, var(--bg-primary) 50%, transparent);
+  border: 1px solid var(--border);
+}
+.ext-detail-readme :first-child { margin-top: 0; }
+.ext-detail-readme :last-child { margin-bottom: 0; }
+.ext-detail-readme pre {
+  background: var(--bg-primary);
+  border-radius: 8px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-size: 11px;
+}
+.ext-detail-readme code {
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+}
+.ext-detail-readme img { max-width: 100%; }
+
+/* ── Диалог выбора scope установки ── */
+.ext-scope-dialog {
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 100px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px;
+  border-radius: var(--radius-lg, 16px);
+  overflow-y: auto;
+  background: var(--glass-bg, rgba(18, 18, 28, 0.97));
+  border: 1px solid var(--border);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+}
+.ext-scope-dialog-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ext-scope-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.ext-scope-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.ext-scope-option:hover {
+  border-color: color-mix(in srgb, var(--text-secondary) 35%, transparent);
+}
+.ext-scope-option--active {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ext-scope-option input {
+  margin-top: 2px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+.ext-scope-option-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ext-scope-option-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  word-break: break-all;
+}
+.ext-scope-error {
+  font-size: 11.5px;
+  color: #f87171;
+  background: color-mix(in srgb, #f87171 10%, transparent);
+  border: 1px solid color-mix(in srgb, #f87171 30%, transparent);
+  border-radius: var(--radius-sm, 8px);
+  padding: 8px 10px;
+}
+
+/* ── Error box в карточке MCP-сервера ── */
+.ext-error-box {
+  margin: 6px 0 2px;
+  background: color-mix(in srgb, #f87171 8%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, #f87171 25%, transparent);
+  border-radius: var(--radius-sm, 8px);
+  overflow: hidden;
+}
+.ext-error-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: color-mix(in srgb, #f87171 6%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, #f87171 20%, transparent);
+}
+.ext-error-box-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #f87171;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ext-error-box-actions {
+  display: flex;
+  gap: 4px;
+}
+.ext-error-box-text {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono, 'Cascadia Code', monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+
+/* ── Logs box в карточке MCP-сервера (журнал подключения) ── */
+.ext-logs-box {
+  margin: 6px 0 2px;
+  background: var(--bg-tertiary, rgba(255,255,255,0.05));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  overflow: hidden;
+}
+.ext-logs-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--text-muted) 6%, transparent);
+  border-bottom: 1px solid var(--border);
+}
+.ext-logs-box-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.ext-logs-box-title-count {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  padding: 0 5px;
+  border-radius: 8px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ext-logs-box-actions {
+  display: flex;
+  gap: 4px;
+}
+.ext-logs-box-list {
+  margin: 0;
+  padding: 6px 4px;
+  font-family: var(--font-mono, 'Cascadia Code', monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 240px;
+  overflow: auto;
+}
+.ext-log-entry {
+  display: flex;
+  gap: 6px;
+  padding: 1px 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 3px;
+}
+.ext-log-entry:hover {
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+}
+.ext-log-entry-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.ext-log-entry-msg {
+  color: var(--text-secondary);
+}
+.ext-log-entry--error .ext-log-entry-msg { color: #f87171; }
+.ext-log-entry--warn  .ext-log-entry-msg { color: #fbbf24; }
+.ext-log-entry--info  .ext-log-entry-msg { color: var(--text-secondary); }
+.ext-logs-empty {
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.ext-action-btn--xs {
+  font-size: 10px;
+  padding: 2px 8px;
+  gap: 3px;
+}
+
+/* Чип переменной окружения MCP-сервера */
+.ext-env-chip {
+  font-size: 10px;
+  font-family: var(--font-mono, 'Cascadia Code', monospace);
+  background: var(--bg-tertiary, rgba(255,255,255,0.05));
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .ext-catalog-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   ExtensionsBadge — бейдж над инпутом, drill-down popup.
+   ───────────────────────────────────────────────────────────────────── */
+
+.ext-badge-wrap {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.ext-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  transition: background 0.15s, border-color 0.15s;
+}
+.ext-badge-pill:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.ext-badge-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.ext-badge-sep {
+  opacity: 0.5;
+  margin: 0 1px;
+}
+
+/* ── Drill-down popup (список → деталь → назад) ── */
+.ext-popup {
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg, 16px);
+  overflow: hidden;
+  background: var(--glass-bg, rgba(18, 18, 28, 0.97));
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  will-change: opacity, transform;
+  transform-origin: bottom left;
+}
+
+.ext-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.ext-popup-back {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 4px;
+}
+.ext-popup-back:hover { color: var(--text-primary); background: color-mix(in srgb, var(--text-secondary) 12%, transparent); }
+.ext-popup-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+.ext-popup-count {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.ext-popup-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.ext-popup-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 8px 8px 4px;
+}
+
+.ext-popup-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md, 10px);
+  cursor: pointer;
+  transition: background 0.12s;
+  border: 1px solid transparent;
+}
+.ext-popup-item:hover {
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+}
+.ext-popup-item-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.ext-popup-item-main {
+  flex: 1;
+  min-width: 0;
+}
+.ext-popup-item-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ext-popup-item-meta {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+.ext-popup-item-chev {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Детальный экран элемента */
+.ext-detail {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ext-detail-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ext-detail-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.ext-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+.ext-detail-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.ext-detail-tool {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 8px);
+  background: color-mix(in srgb, var(--bg-secondary) 50%, transparent);
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+.ext-detail-tool-name {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.ext-detail-tool-desc {
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.ext-detail-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* ── Кураторный список ── */
+.ext-curated-section {
+  margin-bottom: 16px;
+}
+.ext-curated-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.ext-curated-count {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.ext-curated-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+.ext-filter-chip {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+.ext-filter-chip:hover {
+  border-color: var(--accent, #60a5fa);
+  color: var(--text-primary);
+}
+.ext-filter-chip--active {
+  background: var(--accent, #60a5fa);
+  color: #fff;
+  border-color: var(--accent, #60a5fa);
+}
+.ext-catalog-card--featured {
+  border-color: color-mix(in srgb, var(--accent, #60a5fa) 40%, var(--border));
+}
+.ext-featured-badge {
+  color: var(--accent, #fbbf24);
+  margin-left: 4px;
+  font-size: 11px;
+}
+.ext-installed-badge {
+  font-size: 10px;
+  color: #34d399;
+  margin-left: 6px;
+  font-weight: 500;
+}
+
+/* ── Установка по URL ── */
+.ext-url-install {
+  padding: 12px;
+  border-radius: var(--radius-md, 12px);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  margin-top: 12px;
+}
+.ext-url-install .ext-form-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.ext-url-install .ext-form-input {
+  flex: 1;
+}
+
+/* ── Success message ── */
+.ext-scope-success {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm, 8px);
+  background: color-mix(in srgb, #34d399 15%, transparent);
+  border: 1px solid color-mix(in srgb, #34d399 30%, transparent);
+  color: #34d399;
+  font-size: 12px;
+}
+
+/* ── Поиск: прогресс + таймер + отмена ── */
+.ext-search-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.ext-search-progress-text {
+  flex: 1;
+}
+.ext-search-progress-cancel {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  padding: 4px 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+.ext-search-progress-cancel:hover {
+  border-color: var(--danger, #ef4444);
+  color: var(--danger, #ef4444);
+}
+.ext-search-cancel-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm, 8px);
+  transition: all 0.15s;
+}
+.ext-search-cancel-btn:hover {
+  color: var(--danger, #ef4444);
+  background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent);
+}
+
+/* ── MCP URL install (через AI) ── */
+.ext-url-install--mcp {
+  border-color: color-mix(in srgb, var(--accent, #6366f1) 25%, var(--border));
+}
+.ext-url-install--mcp .ext-detail-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ext-url-install-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 6px 0 8px;
+  line-height: 1.4;
+}
+
+/* Inline scope selector для MCP URL install */
+.ext-url-install-scope {
+  margin-bottom: 8px;
+}
+.ext-scope-options--inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ext-scope-options--inline .ext-scope-option {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  margin: 0;
+}
+.ext-scope-options--inline .ext-scope-option-sub {
+  display: none;
+}
+
+/* ── Remote search CTA (кнопка "Искать в реестре") ── */
+.ext-remote-search-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  text-align: center;
+}
+.ext-remote-search-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+}

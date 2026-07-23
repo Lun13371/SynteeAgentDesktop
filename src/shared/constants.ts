@@ -1,6 +1,9 @@
 export const APP_NAME = 'Syntee Helper'
 export const APP_VERSION = '0.1.0'
 
+/** Путь к файлу глобальных MCP-серверов (относительно home). */
+export const GLOBAL_MCP_FILE = '.syntee/mcp.json'
+
 export const DEFAULT_HOTKEYS = {
   mainWindow: 'CommandOrControl+Shift+Space',
   overlay: 'CommandOrControl+Shift+S',
@@ -59,6 +62,24 @@ export const DEFAULT_SETTINGS = {
     tavily: { key: '' },
     brave: { key: '' },
   },
+  // ─── MCP (Model Context Protocol) ──
+  // Глобальные серверы хранятся в файле ~/.syntee/mcp.json (редактируется
+  // агентом через edit_file). Здесь — только runtime-состояние:
+  // { [serverName]: { enabled, scope, toolStates } }
+  mcpGlobalState: {} as Record<string, {
+    enabled: boolean
+    scope: import('./types').ExtensionScope
+    toolStates: Record<string, import('./types').McpToolState>
+  }>,
+  // Per-tool/per-scope состояние проектных серверов: { [projectId]: { [serverName]: { toolStates, scope, enabled } } }
+  mcpProjectState: {} as Record<string, {
+    toolStates: Record<string, import('./types').McpToolState>
+    scope: import('./types').ExtensionScope
+    enabled: boolean
+  }>,
+  // ─── Skills ──
+  // Per-skill состояние по id скилла. Само тело скилла читается из .md-файла.
+  skillsState: {} as Record<string, import('./types').SkillState>,
 }
 
 export const WINDOW_SIZES = {
@@ -87,4 +108,9 @@ export const IPC_EVENTS = {
   WATCHER_NOTIFICATION: 'watcher:notification',
   SCHEDULER_TASK_DONE: 'scheduler:task_done',
   TRAY_ANIMATE: 'tray:animate',
+  // MCP push-events: статус подключения сервера, обновление списка тулов,
+  // и поток журнала подключения (для лог-вьюера в UI).
+  MCP_STATUS: 'mcp:status',
+  MCP_TOOLS_UPDATED: 'mcp:tools:updated',
+  MCP_LOGS: 'mcp:logs',
 }

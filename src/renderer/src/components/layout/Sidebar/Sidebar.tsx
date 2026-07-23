@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import type { Chat, Project } from '../../../../../shared/types'
+import type { Chat, Project, Message } from '../../../../../shared/types'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
+import ExtensionsPopover from '../../ui/ExtensionsPopover/ExtensionsPopover'
 import { useChatStore } from '../../../store/chat.store'
 import './Sidebar.css'
 
@@ -20,6 +21,8 @@ interface SidebarProps {
   onChatsUpdate?: (chats: Chat[]) => void
   onProjectsUpdate?: (projects: Project[]) => void
   onSelectProject?: (id: string | null) => void
+  /** Вызывается после установки MCP/Skill через маркетплейс — открывает новый чат установки. */
+  onExtensionInstalled?: (chatId: string, projectId: string | undefined, userMsg: Message) => void
 }
 
 type ChatFilter = 'all' | 'projects' | 'favorites' | 'archive'
@@ -71,6 +74,7 @@ export default function Sidebar({
   onChatsUpdate,
   onProjectsUpdate,
   onSelectProject,
+  onExtensionInstalled,
 }: SidebarProps) {
   const [search, setSearch] = useState('')
   const [chatFilter, setChatFilter] = useState<ChatFilter>('all')
@@ -89,6 +93,7 @@ export default function Sidebar({
   const renameRef = useRef<HTMLInputElement>(null)
   const renameProjectRef = useRef<HTMLInputElement>(null)
   const verifyCmdRef = useRef<HTMLInputElement>(null)
+  const [extPopoverOpen, setExtPopoverOpen] = useState(false)
 
   // Статусы запусков чатов для индикаторов (spinner/✓/✗). Подписываемся на
   // весь объект — Sidebar не большой, ре-рендер недорогой. Альтернатива
@@ -457,6 +462,21 @@ export default function Sidebar({
         </div>
       </div>
 
+      {/* Расширения (MCP и Skills) — отдельная широкая кнопка на всю ширину. */}
+      <button
+        type="button"
+        className="sidebar-extensions-btn"
+        data-extensions-btn
+        onClick={() => setExtPopoverOpen(true)}
+      >
+        <span className="sidebar-extensions-btn-icon">
+          <AppIcon name="puzzle" size="sm" />
+        </span>
+        <span className="sidebar-extensions-btn-label">Расширения</span>
+        <span className="sidebar-extensions-btn-sub">MCP и Skills</span>
+        <AppIcon name="chevronRight" size="xs" className="sidebar-extensions-btn-chevron" />
+      </button>
+
       {/* Поиск */}
       <div className="sidebar-search">
         <AppIcon name="search" size="xs" />
@@ -579,6 +599,14 @@ export default function Sidebar({
         onEmpty: () => { onNewProject?.('empty'); setNewProjectMenu(null) },
         onExisting: () => { onNewProject?.('existing'); setNewProjectMenu(null) },
       })}
+
+      {/* Модальное окно управления расширениями (MCP и Skills). */}
+      <ExtensionsPopover
+        open={extPopoverOpen}
+        projectId={activeProjectId ?? undefined}
+        onClose={() => setExtPopoverOpen(false)}
+        onInstalled={onExtensionInstalled}
+      />
     </aside>
   )
 }

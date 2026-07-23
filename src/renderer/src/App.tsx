@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useUIStore } from './store/ui.store'
+import { initExtensionsPushEvents, useExtensionsStore } from './store/extensions.store'
 import { setUiSoundsFlag } from './utils/sounds'
 import { useChatRunSubscription } from './hooks/useChatRunSubscription'
 import ChatPage from './pages/Chat/ChatPage'
@@ -200,6 +201,21 @@ export default function App() {
       }
     }
     check()
+  }, [])
+
+  // Подписка на push-события MCP (статус подключения, обновление тулов).
+  // Один раз за сессию — обновляет extensions.store в реальном времени.
+  useEffect(() => {
+    const cleanup = initExtensionsPushEvents()
+    // Предзагрузка mcpServers при старте — иначе бейдж MCP не покажется,
+    // пока пользователь не откроет ExtensionsPopover хотя бы раз.
+    // warmupGlobalServers в main уже запустил подключение в фоне; здесь мы
+    // подтягиваем актуальный список серверов (с runtime-статусом) в стор.
+    useExtensionsStore.getState().loadMcpServers()
+    // Предзагрузка skills — аналогично MCP, чтобы бейдж и список были
+    // доступны сразу при старте, без необходимости открывать ExtensionsPopover.
+    useExtensionsStore.getState().loadSkills()
+    return cleanup
   }, [])
 
   // Оверлей, голос, spotlight — отдельные окна

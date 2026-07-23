@@ -238,6 +238,24 @@ function renderResult(toolName: string, content: string, args: Record<string, un
     return <KeyValueResult content={content} />
   }
 
+  // list_extensions → key-value (статичный отчёт)
+  if (toolName === 'list_extensions') {
+    return <KeyValueResult content={content} />
+  }
+
+  // MCP-тулы (mcp__server__tool) — пробуем JSON-парсинг, fallback → terminal-стиль
+  if (toolName.startsWith('mcp__')) {
+    // Пытаемся распарсить JSON-ответ (многие MCP-серверы возвращают JSON)
+    try {
+      const parsed = JSON.parse(content)
+      if (typeof parsed === 'object' && parsed !== null) {
+        const formatted = JSON.stringify(parsed, null, 2)
+        return <TerminalResult content={formatted} maxLines={maxLines} />
+      }
+    } catch { /* не JSON — рендерим как текст */ }
+    return <TerminalResult content={content} maxLines={maxLines} />
+  }
+
   // default → pre
   const { text, truncated } = truncateLines(content, maxLines)
   return (

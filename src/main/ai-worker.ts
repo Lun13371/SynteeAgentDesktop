@@ -478,13 +478,53 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'get_main_chat_messages', chatId, msgId, replyId, limit: params.limit, search: params.search })
             })
           },
+          onMcpCall: (fullToolName, args) => {
+            return new Promise((resolve) => {
+              const replyId = `mcp-call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve({
+                  success: (reply.success as boolean) ?? false,
+                  output: (reply.output as string) ?? '',
+                  error: reply.error as string | undefined,
+                })
+              })
+              send({ type: 'mcp_call', chatId, msgId, replyId, toolName: fullToolName, args })
+            })
+          },
+          onMcpRequiresApproval: (fullToolName) => {
+            // Синхронный ответ из кэша workerData.mcpApprovalMap (заполняется main
+            // при spawn-е: { [toolFullName]: boolean }). По умолчанию true (безопаснее).
+            const map = ((workerData as Record<string, unknown>).mcpApprovalMap as Record<string, boolean> | undefined) ?? {}
+            return map[fullToolName] ?? true
+          },
+          onListExtensions: () => {
+            return new Promise((resolve) => {
+              const replyId = `list-ext-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve((reply.report as string) ?? 'Расширения недоступны')
+              })
+              send({ type: 'list_extensions', chatId, msgId, replyId })
+            })
+          },
+          onGetSkill: (name) => {
+            return new Promise((resolve) => {
+              const replyId = `get-skill-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve((reply.instructions as string) ?? 'Скилл не найден')
+              })
+              send({ type: 'get_skill', chatId, msgId, replyId, skillName: name })
+            })
+          },
         },
         agentSettings.maxSteps,
         undefined,
         systemPrompt,
         planningMode ? [{ role: 'system', content: buildPlanningInjection() }, ...history] : history,
-        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({ planningMode, mode: workerMode }),
-        {
+        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
+          planningMode,
+          mode: workerMode,
+          mcpTools: ((workerData as Record<string, unknown>).mcpTools as Parameters<typeof getToolSchemas>[0]['mcpTools']) ?? [],
+        }),        {
           autoMemoryInterval: agentSettings.autoMemoryInterval ?? 5,
           readFileCache: agentSettings.readFileCache !== false,
           maxRepeatedToolCalls: agentSettings.maxRepeatedToolCalls ?? 3,

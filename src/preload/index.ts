@@ -191,6 +191,7 @@ const synteeAPI = {
   // Shell
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
+    getExtensionsPaths: () => ipcRenderer.invoke('extensions:getPaths'),
   },
 
   // Файловый просмотрщик (read-only) для правой панели
@@ -213,6 +214,75 @@ const synteeAPI = {
       ipcRenderer.invoke('git:log', params),
     branch: (workdir: string) => ipcRenderer.invoke('git:branch', workdir),
     isRepo: (workdir: string) => ipcRenderer.invoke('git:isRepo', workdir),
+  },
+
+  // Skills — markdown-инструкции в system prompt.
+  // getAll — все скиллы (с состоянием) для popover; projectId опционально.
+  // setState — обновить enabled/scope скилла.
+  // reload — сбросить кэш и перечитать .md с диска.
+  // getActive — активные скиллы для конкретного чата (для бейджа).
+  skills: {
+    getAll: (params?: { projectId?: string }) => ipcRenderer.invoke('skills:getAll', params),
+    setState: (params: { skillId: string; state: unknown; source: 'builtin' | 'user' | 'project' }) =>
+      ipcRenderer.invoke('skills:setState', params),
+    reload: () => ipcRenderer.invoke('skills:reload'),
+    getActive: (params: { chatId: string; isIncognito?: boolean }) =>
+      ipcRenderer.invoke('skills:getActive', params),
+    installFromUrl: (params: { url: string; scope: 'global' | { workdir: string } }) =>
+      ipcRenderer.invoke('skills:installFromUrl', params),
+  },
+
+  // MCP (Model Context Protocol) — внешние серверы с инструментами.
+  // getAll — все серверы с runtime-состоянием (для popover).
+  // save/delete — CRUD глобальных серверов.
+  // connect/disconnect/reconnect — управление подключением.
+  // setServerState — enabled/scope сервера.
+  // setToolState — per-tool enabled/requireApproval.
+  mcp: {
+    getAll: (params?: { projectId?: string }) => ipcRenderer.invoke('mcp:getAll', params),
+    getActiveForChat: (params: { chatId: string; isIncognito?: boolean }) =>
+      ipcRenderer.invoke('mcp:getActiveForChat', params),
+    save: (config: unknown) => ipcRenderer.invoke('mcp:save', config),
+    delete: (id: string) => ipcRenderer.invoke('mcp:delete', id),
+    connect: (serverId: string) => ipcRenderer.invoke('mcp:connect', serverId),
+    disconnect: (serverId: string) => ipcRenderer.invoke('mcp:disconnect', serverId),
+    reconnect: (serverId: string) => ipcRenderer.invoke('mcp:reconnect', serverId),
+    setServerState: (params: { serverId: string; enabled?: boolean; scope?: unknown }) =>
+      ipcRenderer.invoke('mcp:setServerState', params),
+    setToolState: (params: { serverId: string; toolFullName: string; state: unknown }) =>
+      ipcRenderer.invoke('mcp:setToolState', params),
+    installDirect: (params: {
+      name: string
+      transport: 'stdio' | 'sse' | 'streamable-http'
+      command?: string
+      args?: string[]
+      env?: Record<string, string>
+      url?: string
+      headers?: Record<string, string>
+      scope: 'global' | { workdir: string }
+    }) => ipcRenderer.invoke('mcp:installDirect', params),
+    updateServer: (params: {
+      serverId: string
+      env?: Record<string, string>
+      args?: string[]
+    }) => ipcRenderer.invoke('mcp:updateServer', params),
+  },
+
+  // Marketplace — каталог MCP-серверов (официальный registry) и Skills
+  // (GitHub Search API). Только поиск/детали — установка идёт через агента.
+  marketplace: {
+    searchMcp: (params: { query: string; limit?: number; cursor?: string }) =>
+      ipcRenderer.invoke('marketplace:searchMcp', params),
+    cancelMcpSearch: () => ipcRenderer.invoke('marketplace:cancelMcpSearch'),
+    searchSkills: (params: { query: string; page?: number; perPage?: number }) =>
+      ipcRenderer.invoke('marketplace:searchSkills', params),
+    cancelSkillsSearch: () => ipcRenderer.invoke('marketplace:cancelSkillsSearch'),
+    getSkillReadme: (params: { fullName: string }) =>
+      ipcRenderer.invoke('marketplace:getSkillReadme', params),
+    buildMcpInstruction: (params: unknown) => ipcRenderer.invoke('marketplace:buildMcpInstruction', params),
+    buildSkillInstruction: (params: unknown) => ipcRenderer.invoke('marketplace:buildSkillInstruction', params),
+    buildMcpUrlInstruction: (params: { url: string; scope: 'global' | { workdir: string } }) =>
+      ipcRenderer.invoke('marketplace:buildMcpUrlInstruction', params),
   },
 }
 

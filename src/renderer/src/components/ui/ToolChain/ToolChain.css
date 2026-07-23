@@ -216,6 +216,20 @@
   background: rgba(99,102,241,0.15); color: #818cf8;
   animation: tc2-pulse-opacity 1.2s infinite;
 }
+.tc2-badge--mcp {
+  background: rgba(167,139,250,0.15); color: #a78bfa;
+}
+
+/* Имя MCP-сервера в заголовке итерации */
+.tc2-iter-server {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary, rgba(255,255,255,0.05));
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
 
 /* ── Детали итерации ── */
 .tc2-iter-details {
