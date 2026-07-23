@@ -8,6 +8,7 @@ import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
 import ModelSelector from '../ModelSelector/ModelSelector'
 import SlashMenu from '../SlashMenu/SlashMenu'
 import QueuePanel from '../QueuePanel/QueuePanel'
+import ExtensionsBadge from '../ExtensionsBadge/ExtensionsBadge'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import type { ApprovalMode } from '../../../../../shared/types'
@@ -237,6 +238,10 @@ export default function ChatInput({
         {/* Бейдж очереди запросов — раскрывается в панель управления при
             hover/клике. Показывается только когда есть active/queued запросы. */}
         {chatId && <QueuePanel chatId={chatId} />}
+
+        {/* Бейдж активных расширений (MCP + Skills) — drill-down popup.
+            Скрыт когда ничего не включено или инкогнито. */}
+        {chatId && <ExtensionsBadge chatId={chatId} isIncognito={isIncognito} />}
 
         {/* Бейдж режима планирования — над инпут полем */}
         <AnimatePresence>

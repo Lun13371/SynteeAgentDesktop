@@ -17,6 +17,8 @@ export interface ToolStep {
   imageUrl?: string
   diff?: string  // unified diff для edit_file / multi_edit_file
   callId?: string  // id tool_call из API — для матчинга call↔result при параллельных тулах
+  /** Имя MCP-сервера для MCP-тулов (mcp__server__tool). */
+  serverName?: string
   // true — модель только начала вызывать этот тул, аргументы ещё не собраны
   // (см. tool_call_pending в Agent.ts). Карточка показывает "готовится" без
   // аргументов, заменяется на обычный tool_call in-place когда придёт полный.
@@ -38,10 +40,37 @@ const TOOL_META: Record<string, { label: string; icon: string; color: string }> 
   analyze_project: { label: 'Анализ',        icon: 'folder',    color: '#c084fc' },
   spawn_agent:     { label: 'Суб-агент',     icon: 'gitBranch', color: '#4ade80' },
   get_agent_status:{ label: 'Статус агента', icon: 'gitBranch', color: '#4ade80' },
+  get_diagnostics: { label: 'Диагностика',   icon: 'info',      color: '#38bdf8' },
+  list_extensions: { label: 'Расширения',    icon: 'puzzle',    color: '#a78bfa' },
+  get_skill:       { label: 'Скилл',         icon: 'puzzle',    color: '#a78bfa' },
+  think:           { label: 'Размышление',   icon: 'brain',     color: '#94a3b8' },
+  update_todo:     { label: 'План',          icon: 'listChecks', color: '#60a5fa' },
+  update_working_memory: { label: 'Память',  icon: 'database',  color: '#34d399' },
+  revert_last_change: { label: 'Откат',      icon: 'rewind',    color: '#f87171' },
 }
 
-function getToolMeta(name?: string) {
+/** Парсит mcp__server__tool → { server, tool }. Server может содержать подчёркивания. */
+function parseMcpToolName(toolName: string): { server: string; tool: string } | null {
+  if (!toolName.startsWith('mcp__')) return null
+  const rest = toolName.slice(5)
+  const lastSep = rest.lastIndexOf('__')
+  if (lastSep === -1) return null
+  return { server: rest.slice(0, lastSep), tool: rest.slice(lastSep + 2) }
+}
+
+function getToolMeta(name?: string, serverName?: string): { label: string; icon: string; color: string; isMcp?: boolean; server?: string } {
   if (!name) return { label: 'Инструмент', icon: 'zap', color: '#94a3b8' }
+  // MCP-тулы — отдельная ветка с иконкой server и фиолетовым цветом.
+  const mcpParsed = parseMcpToolName(name)
+  if (mcpParsed) {
+    return {
+      label: mcpParsed.tool,
+      icon: 'server',
+      color: '#a78bfa',
+      isMcp: true,
+      server: serverName ?? mcpParsed.server,
+    }
+  }
   return TOOL_META[name] || { label: name, icon: 'zap', color: '#94a3b8' }
 }
 
@@ -125,7 +154,7 @@ function IterationBlock({
   defaultOpen: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
-  const meta = getToolMeta(iter.call.toolName)
+  const meta = getToolMeta(iter.call.toolName, iter.call.serverName)
   const failed = iter.result?.success === false
   // pending — модель ещё генерирует аргументы этого вызова (см. Agent.ts
   // tool_call_pending). Отличаем от "running" (тул реально исполняется в
@@ -170,7 +199,10 @@ function IterationBlock({
             <AppIcon name={meta.icon as 'zap'} size="sm" />
           </span>
           <span className="tc2-iter-label">{meta.label}</span>
-          {iter.call.toolName && (
+          {meta.isMcp && meta.server && (
+            <span className="tc2-iter-server">{meta.server}</span>
+          )}
+          {iter.call.toolName && !meta.isMcp && (
             <code className="tc2-iter-name">{iter.call.toolName}</code>
           )}
 
@@ -182,6 +214,7 @@ function IterationBlock({
 
           <span className="tc2-iter-spacer" />
 
+          {meta.isMcp && <span className="tc2-badge tc2-badge--mcp">MCP</span>}
           {pending && <span className="tc2-badge tc2-badge--running">готовится</span>}
           {running && <span className="tc2-badge tc2-badge--running">выполняется</span>}
           {failed && <span className="tc2-badge tc2-badge--fail">ошибка</span>}
@@ -321,7 +354,7 @@ export default function ToolChain({ steps, mode, isRunning, label, elapsed, summ
         <div className="tc2-compact-row">
           {isRunning && <span className="tc2-spinner" />}
           {iters.map(({ id, call }, i) => {
-            const meta = getToolMeta(call.toolName)
+            const meta = getToolMeta(call.toolName, call.serverName)
             return (
               <span key={id} className="tc2-compact-chip" style={{ '--chip-color': meta.color } as React.CSSProperties}>
                 <AppIcon name={meta.icon as 'zap'} size="xs" />
@@ -359,13 +392,13 @@ export default function ToolChain({ steps, mode, isRunning, label, elapsed, summ
 
         <div className="tc2-header-chips">
           {iters.map(({ id, call }) => {
-            const meta = getToolMeta(call.toolName)
+            const meta = getToolMeta(call.toolName, call.serverName)
             return (
               <span
                 key={id}
                 className="tc2-mini-chip"
                 style={{ background: meta.color + '22', color: meta.color }}
-                title={call.toolName}
+                title={meta.isMcp && meta.server ? `${meta.server} · ${meta.label}` : call.toolName}
               >
                 <AppIcon name={meta.icon as 'zap'} size="xs" />
               </span>

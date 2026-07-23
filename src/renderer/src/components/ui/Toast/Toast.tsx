@@ -19,10 +19,13 @@ interface ToastStore {
 
 export const useToast = create<ToastStore>((set) => ({
   toasts: [],
-  add: (message, type = 'default', duration = 3000) => {
+  add: (message, type = 'default', duration) => {
     const id = Math.random().toString(36).slice(2)
-    set(s => ({ toasts: [...s.toasts, { id, message, type, duration }] }))
-    setTimeout(() => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })), duration)
+    // Error-тосты живут 8с (раньше 3с — пользователь не успевал прочитать),
+    // остальные — 3с. Можно передать duration явно для кастома.
+    const actualDuration = duration ?? (type === 'error' ? 8000 : 3000)
+    set(s => ({ toasts: [...s.toasts, { id, message, type, duration: actualDuration }] }))
+    setTimeout(() => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })), actualDuration)
     playToastSound(type)
   },
   remove: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),
@@ -42,7 +45,7 @@ function getToastIcon(type: ToastItem['type']) {
 }
 
 export default function ToastContainer() {
-  const { toasts } = useToast()
+  const { toasts, remove } = useToast()
 
   return (
     <div className="toast-container">
@@ -58,6 +61,7 @@ export default function ToastContainer() {
           >
             <span className="toast-icon">{getToastIcon(toast.type)}</span>
             <span className="toast-message">{toast.message}</span>
+            <button className="toast-close" onClick={() => remove(toast.id)} title="Закрыть">✕</button>
           </motion.div>
         ))}
       </AnimatePresence>

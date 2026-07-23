@@ -32,6 +32,8 @@ import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usa
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { shellSessionManager } from '../ShellSessionManager'
 import { log } from '../../core/logger'
+import { getSkillManager } from '../../core/skills/skillManager'
+import { getMcpManager } from '../../core/mcp/McpManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta } from '../../shared/types'
 
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
@@ -291,7 +293,7 @@ function formatTodoForContext(todo: Array<{ text: string; status: 'pending' | 'i
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
 
-  const getSystemPrompt = async (chatId?: string): Promise<string> => {
+  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean): Promise<string> => {
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
     let workingMemory = ''
@@ -314,6 +316,49 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let projectInstructions: Awaited<ReturnType<typeof readProjectInstructions>> = null
     try { projectInstructions = await readProjectInstructions(workdir) } catch { /* ok */ }
 
+    // Активные скиллы для чата. В инкогнито — пусто (приватность).
+    // projectId достаём через projects-таблицу по workdir.
+    let activeSkills: import('../../shared/types').Skill[] = []
+    if (!isIncognito) {
+      try {
+        let skillProjectId: string | undefined
+        if (workdir) {
+          const found = getAllProjects().find(p => p.workdir === workdir)
+          skillProjectId = found?.id
+        }
+        activeSkills = getSkillManager().getActiveSkillsForChat({
+          projectWorkdir: workdir,
+          projectId: skillProjectId,
+          isIncognito,
+        })
+      } catch { /* SkillManager недоступен — работаем без скиллов */ }
+    }
+
+    // Активные MCP-серверы для краткой заметки в system prompt.
+    // В инкогнито — пусто (приватность).
+    // Фильтруем по scope — сервер с scope "только проект A" не должен
+    // попадать в системный промпт чатов проекта B.
+    let activeMcpServers: import('../../core/prompts/buildSystemPrompt').McpPromptInfo[] = []
+    if (!isIncognito) {
+      try {
+        const mgr = getMcpManager()
+        // projectId нужен для scope-фильтрации (как у skills выше).
+        let mcpProjectId: string | undefined
+        if (workdir) {
+          const found = getAllProjects().find(p => p.workdir === workdir)
+          mcpProjectId = found?.id
+        }
+        const allServers = mgr.getAllServers({ projectWorkdir: workdir, projectId: mcpProjectId })
+        activeMcpServers = allServers
+          .filter(s => s.enabled && s.status === 'connected' && s.tools.length > 0
+            && mgr.isScopeApplicable(s.scope, mcpProjectId))
+          .map(s => ({
+            name: s.name,
+            tools: s.tools.map(t => ({ shortName: t.shortName, description: t.description })),
+          }))
+      } catch { /* MCP недоступен — работаем без него */ }
+    }
+
     const mergedWorkingMemory = summary
       ? `${workingMemory ? workingMemory + '\n\n' : ''}## Сжатое резюме предыдущего контекста\n${summary}`
       : workingMemory
@@ -321,7 +366,96 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Глобальный system prompt из Настройки → AI → Параметры (или /sys команды)
     const customSystemPrompt = (store.get('modelParams') as { systemPrompt?: string } | undefined)?.systemPrompt
 
-    return buildSystemPrompt({ userName, memoryContext, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions })
+    return buildSystemPrompt({ userName, memoryContext, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers })
+  }
+
+  /**
+   * Строит текстовый отчёт об установленных расширениях для агента
+   * (тул list_extensions). Включает MCP-серверы (статус, тулы) и skills.
+   */
+  async function buildExtensionsReport(chatId: string): Promise<string> {
+    const lines: string[] = []
+
+    // MCP-серверы
+    try {
+      const mgr = getMcpManager()
+      const wctx = (() => {
+        try { return getChatWorkdirContext(chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
+      })()
+      const mcpWorkdir = wctx.workdir
+      let mcpProjectId: string | undefined
+      if (mcpWorkdir) {
+        const found = getAllProjects().find(p => p.workdir === mcpWorkdir)
+        mcpProjectId = found?.id
+      }
+      const servers = mgr.getAllServers({ projectWorkdir: mcpWorkdir, projectId: mcpProjectId })
+        .filter(s => s.enabled && mgr.isScopeApplicable(s.scope, mcpProjectId))
+      lines.push('## MCP-серверы')
+      if (servers.length === 0) {
+        lines.push('MCP-серверы не установлены.')
+      } else {
+        for (const srv of servers) {
+          const statusIcon = srv.status === 'connected' ? '✓' : srv.status === 'connecting' ? '⏳' : srv.status === 'error' ? '✗' : '○'
+          lines.push(`- ${statusIcon} **${srv.name}** (${srv.status})${srv.enabled ? '' : ' [отключён]'}${srv.source === 'global' ? '' : ' [проект]'}`)
+          if (srv.error) lines.push(`  Ошибка: ${srv.error.slice(0, 200)}`)
+          if (srv.tools.length > 0) {
+            lines.push(`  Тулы: ${srv.tools.map(t => t.shortName).join(', ')}`)
+          } else if (srv.status === 'connected') {
+            lines.push('  Тулы: (нет)')
+          }
+        }
+      }
+    } catch (e) {
+      const msg = (e as Error).message
+      log('[list_extensions] MCP error:', msg)
+      lines.push('## MCP-серверы')
+      lines.push(`MCP недоступен: ${msg}`)
+    }
+
+    // Skills
+    lines.push('')
+    lines.push('## Skills')
+    lines.push('Skills — это инструкции в системном промпте, которым ты следуешь. Это не тулы: их не нужно вызывать, они влияют на твоё поведение автоматически. Используй get_skill(name) чтобы получить инструкции конкретного скилла.')
+    try {
+      const wctx = (() => {
+        try { return getChatWorkdirContext(chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
+      })()
+      const workdir = wctx.workdir
+      let skillProjectId: string | undefined
+      if (workdir) {
+        const found = getAllProjects().find(p => p.workdir === workdir)
+        skillProjectId = found?.id
+      }
+      // Показываем ВСЕ skills с состоянием — не только активные.
+      const allSkills = getSkillManager().getAllWithState({
+        projectWorkdir: workdir,
+        projectId: skillProjectId,
+      })
+      if (allSkills.length === 0) {
+        lines.push('Скиллы не установлены. Создайте .md-файл в .syntee/skills/ проекта или userData/skills/.')
+      } else {
+        const active = allSkills.filter(s => s.state.enabled)
+        const inactive = allSkills.filter(s => !s.state.enabled)
+        if (active.length > 0) {
+          lines.push(`Активные (${active.length}):`)
+          for (const s of active) {
+            lines.push(`- **${s.name}** [${s.source}]: ${s.description || '(без описания)'}`)
+          }
+        }
+        if (inactive.length > 0) {
+          lines.push(`Неактивные (${inactive.length}, можно включить в Настройки → Расширения):`)
+          for (const s of inactive) {
+            lines.push(`- ${s.name} [${s.source}]: ${s.description || '(без описания)'}`)
+          }
+        }
+      }
+    } catch (e) {
+      const msg = (e as Error).message
+      log('[list_extensions] Skills error:', msg)
+      lines.push(`Ошибка загрузки скиллов: ${msg}`)
+    }
+
+    return lines.join('\n')
   }
 
   /**
@@ -419,7 +553,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     if (ctxSettings.tokenCounterEnabled) {
       const contextWindow = getModelContextWindow(storeData)
-      const sysPrompt = await getSystemPrompt(dbChatId)
+      const sysPrompt = await getSystemPrompt(dbChatId, params.incognito)
       const currentMsgTokens = estimateTokens(params.content)
       const snapshot = buildSnapshotFromEstimate(processedHistory, contextWindow, {
         systemPrompt: sysPrompt,
@@ -564,6 +698,42 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       try { return getChatWorkdirContext(dbChatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
     })()
 
+    // MCP: сбор УЖЕ подключённых тулов для агента. Полностью синхронно —
+    // НИКОГДА не ждём подключение сервера здесь. getActiveToolsForChat
+    // возвращает только тулы серверов, которые уже в статусе 'connected'
+    // (быстрая проверка Map.get), а для неподключённых просто триггерит
+    // фоновое подключение (fire-and-forget) и едет дальше без задержки.
+    // Раньше здесь был `await` на подключение (с таймаутами 15-35с) —
+    // это блокировало резолв IPC-хендлера chat:send, а значит и появление
+    // user-сообщения в UI, и возможность отменить/отправить новое — весь
+    // чат выглядел зависшим на десятки секунд при каждом сообщении.
+    let mcpTools: Array<{ name: string; shortName: string; description: string; inputSchema: Record<string, unknown>; serverId: string; serverName: string }> = []
+    const mcpApprovalMap: Record<string, boolean> = {}
+    const isIncognitoRun = !!params.incognito
+    try {
+      const mgr = getMcpManager()
+      // projectId для scope-фильтрации MCP-серверов
+      let mcpProjectId: string | undefined
+      if (chatWorkdir) {
+        const found = getAllProjects().find(p => p.workdir === chatWorkdir)
+        mcpProjectId = found?.id
+      }
+      mcpTools = mgr.getActiveToolsForChat({
+        projectWorkdir: chatWorkdir,
+        projectId: mcpProjectId,
+        isIncognito: isIncognitoRun,
+      })
+      // Approval map: для каждого активного тула — требует ли подтверждение.
+      const configs = mgr.getAllServers({ projectWorkdir: chatWorkdir, projectId: mcpProjectId })
+      for (const tool of mcpTools) {
+        const config = configs.find(c => c.id === tool.serverId)
+        mcpApprovalMap[tool.name] = config ? mgr.requiresApproval(config, tool.name) : true
+      }
+    } catch (e) {
+      // MCP недоступен — работаем без него, чат не должен падать из-за этого.
+      console.error('[chat:send] MCP load failed:', (e as Error).message)
+    }
+
     const worker = new Worker(workerPath, {
       workerData: {
         storeData,
@@ -576,6 +746,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         fileCacheSnapshot: getFileCacheSnapshot(params.chatId),
         workdir: chatWorkdir,
         verificationCommand,
+        mcpTools,
+        mcpApprovalMap,
       },
       env: process.env,
     })
@@ -768,6 +940,107 @@ ${subModeOutro}`,
           break
         }
 
+        case 'mcp_call': {
+          ;(async () => {
+            try {
+              const mgr = getMcpManager()
+              const wctx = (() => {
+                try { return getChatWorkdirContext(params.chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
+              })()
+              const mcpWorkdir = wctx.workdir
+              // projectId из БД (getChatWorkdirContext не возвращает id).
+              let mcpProjectId: string | undefined
+              if (mcpWorkdir) {
+                const found = getAllProjects().find(p => p.workdir === mcpWorkdir)
+                mcpProjectId = found?.id
+              }
+              const result = await mgr.callToolByName(
+                msg.toolName as string,
+                (msg.args as Record<string, unknown>) ?? {},
+                { projectWorkdir: mcpWorkdir, projectId: mcpProjectId },
+              )
+              worker.postMessage({
+                type: 'mcp_call_reply',
+                replyId: msg.replyId,
+                success: result.success,
+                output: result.output,
+                error: result.error,
+              })
+            } catch (e) {
+              worker.postMessage({
+                type: 'mcp_call_reply',
+                replyId: msg.replyId,
+                success: false,
+                output: '',
+                error: (e as Error).message,
+              })
+            }
+          })()
+          break
+        }
+
+        case 'list_extensions': {
+          ;(async () => {
+            try {
+              const report = await buildExtensionsReport(params.chatId)
+              worker.postMessage({
+                type: 'list_extensions_reply',
+                replyId: msg.replyId,
+                report,
+              })
+            } catch (e) {
+              worker.postMessage({
+                type: 'list_extensions_reply',
+                replyId: msg.replyId,
+                report: `Ошибка получения расширений: ${(e as Error).message}`,
+              })
+            }
+          })()
+          break
+        }
+
+        case 'get_skill': {
+          ;(async () => {
+            try {
+              const skillName = msg.skillName as string
+              const wctx = (() => {
+                try { return getChatWorkdirContext(params.chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
+              })()
+              const workdir = wctx.workdir
+              let skillProjectId: string | undefined
+              if (workdir) {
+                const found = getAllProjects().find(p => p.workdir === workdir)
+                skillProjectId = found?.id
+              }
+              const allSkills = getSkillManager().getAllWithState({
+                projectWorkdir: workdir,
+                projectId: skillProjectId,
+              })
+              const skill = allSkills.find(s => s.name === skillName)
+              if (!skill) {
+                worker.postMessage({
+                  type: 'get_skill_reply',
+                  replyId: msg.replyId,
+                  instructions: `Скилл "${skillName}" не найден. Доступные: ${allSkills.map(s => s.name).join(', ') || 'нет'}`,
+                })
+              } else {
+                worker.postMessage({
+                  type: 'get_skill_reply',
+                  replyId: msg.replyId,
+                  instructions: `# ${skill.name}\n${skill.description ? `Описание: ${skill.description}\n\n` : ''}${skill.instructions}`,
+                })
+              }
+            } catch (e) {
+              worker.postMessage({
+                type: 'get_skill_reply',
+                replyId: msg.replyId,
+                instructions: `Ошибка: ${(e as Error).message}`,
+              })
+            }
+          })()
+          break
+        }
+
         case 'rate_limit':
           run.bufferedRateLimitSec = msg.waitSec as number
           win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec, chatId: params.chatId })
@@ -897,13 +1170,14 @@ ${subModeOutro}`,
 
 Ниже — системный промпт и контекст основного чата (проект, рабочая память, сводка):
 
-${await getSystemPrompt(dbChatId)}`
+${await getSystemPrompt(dbChatId, params.incognito)}`
       : undefined
 
     const sideToolSchemas = getToolSchemas({
       planningMode: !!params.planningMode,
       imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
       mode: chatMode,
+      mcpTools: params.incognito ? undefined : mcpTools,
     })
     if (params.sideChatParentId) {
       sideToolSchemas.push(GET_MAIN_CHAT_MESSAGES_SCHEMA as any)
@@ -914,7 +1188,7 @@ ${await getSystemPrompt(dbChatId)}`
       msgId: assistantMsgId,
       content: params.content,
       history: processedHistory,
-      systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId),
+      systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId, params.incognito),
       enableTools: true,
       incognito: !!params.incognito,
       agentSettings,

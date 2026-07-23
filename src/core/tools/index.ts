@@ -6,7 +6,7 @@ import { tmpdir, homedir } from 'os'
 import { join, dirname, resolve as pathResolve } from 'path'
 import OpenAI from 'openai'
 import type Store from 'electron-store'
-import type { Provider } from '../../shared/types'
+import type { Provider, McpToolRuntime } from '../../shared/types'
 import * as Diff from 'diff'
 
 const execAsync = promisify(exec)
@@ -1608,6 +1608,36 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  // ── list_extensions: показать установленные расширения (MCP + skills) ──
+  {
+    type: 'function',
+    function: {
+      name: 'list_extensions',
+      description: 'Показать установленные расширения: MCP-серверы (статус подключения, список тулов) и все скиллы (имя, описание, активность). Используй когда нужно узнать свои возможности.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  // ── get_skill: получить инструкции скила по имени ──
+  {
+    type: 'function',
+    function: {
+      name: 'get_skill',
+      description: 'Получить полные инструкции скила по его имени (из списка list_extensions). Возвращает текст инструкций, который нужно соблюдать в работе. Используй когда видишь нужный скилл в списке и хочешь применить его инструкции.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Имя скилла (точное совпадение с именем из list_extensions)',
+          },
+        },
+        required: ['name'],
+      },
+    },
+  },
 ]
 
 // Динамический набор тулов — добавляем по режиму
@@ -1627,12 +1657,15 @@ export function getToolSchemas(options: {
   imageMode?: boolean
   multiAgentMode?: boolean
   mode?: 'code' | 'work'  // deprecated — игнорируется; work-режим удалён
+  /** MCP-тулы — динамически добавляются в набор (только enabled). */
+  mcpTools?: McpToolRuntime[]
 } = {}) {
   const {
     planningMode = false,
     webMode = false,
     imageMode = false,
     multiAgentMode = false,
+    mcpTools,
   } = options
 
   // Work-режим удалён — всегда полный Code-набор инструментов.
@@ -1657,6 +1690,8 @@ export function getToolSchemas(options: {
     'http_request',
     'spawn_agent',
     'get_agent_status',
+    'list_extensions',
+    'get_skill',
   ]
 
   if (!planningMode) names.push('analyze_project')
@@ -1668,6 +1703,24 @@ export function getToolSchemas(options: {
 
   const schemas = pickTools(names)
   if (planningMode) schemas.push(PLAN_TOOL_SCHEMA as any)
+
+  // MCP-тулы — конвертируем в OpenAI-function-схему и аппендим.
+  // Имя: mcp__{serverName}__{toolName}, описание из MCP-сервера.
+  if (mcpTools && mcpTools.length > 0) {
+    for (const tool of mcpTools) {
+      schemas.push({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description || `MCP-тул ${tool.shortName} с сервера ${tool.serverName}`,
+          parameters: tool.inputSchema && Object.keys(tool.inputSchema).length > 0
+            ? tool.inputSchema
+            : { type: 'object', properties: {} },
+        },
+      } as any)
+    }
+  }
+
   return schemas
 }
 

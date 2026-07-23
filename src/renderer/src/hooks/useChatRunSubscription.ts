@@ -254,7 +254,7 @@ export function useChatRunSubscription() {
       if (isSideChat(chatId)) {
         useChatStore.getState().setSideLiveState(sideParent(chatId), partial)
       } else {
-        liveSet(chatId, partial)
+        useChatStore.getState().setLiveState(chatId, partial)
       }
     }
     const liveClear = (chatId: string) => {
@@ -528,6 +528,7 @@ export function useChatRunSubscription() {
           content: step.content, success: undefined,
           timestamp: Date.now(), imageUrl: undefined,
           callId: step.callId,
+          serverName: step.serverName,
           pending: true,
         }
         const iters = buf.iters
@@ -573,6 +574,7 @@ export function useChatRunSubscription() {
           content: step.content, success: step.success,
           timestamp: Date.now(), imageUrl: step.imageUrl,
           callId: step.callId,
+          serverName: step.serverName,
         }
         buf.steps = [...buf.steps, newStep]
 

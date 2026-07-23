@@ -87,6 +87,8 @@ export interface ToolStep {
   imageUrl?: string  // путь к сгенерированному изображению
   diff?: string      // unified diff для edit_file / multi_edit_file
   callId?: string    // ID tool_call для связи call→result (реконструкция истории)
+  /** Имя MCP-сервера для MCP-тулов (mcp__server__tool). undefined для встроенных. */
+  serverName?: string
 }
 
 // ─── Checkpoint / Rewind ─────────────────────────────────────────────────────
@@ -237,4 +239,194 @@ export interface ProviderIPC {
   'models:setAssignment': (assignment: ModelAssignment) => void
   'models:getParams': () => ModelParams
   'models:setParams': (params: Partial<ModelParams>) => void
+}
+
+// ─── MCP (Model Context Protocol) ───────────────────────────────────────────
+
+/** Транспорт подключения к MCP-серверу. */
+export type McpTransport = 'stdio' | 'sse' | 'streamable-http'
+
+/**
+ * Область применения расширения (MCP-сервера или скилла).
+ * - global  → применяется ко всем чатам
+ * - projects → применяется только к чатам выбранных проектов (projectIds)
+ */
+export interface ExtensionScope {
+  type: 'global' | 'projects'
+  projectIds?: string[]
+}
+
+/** Конфигурация MCP-сервера (хранится в electron-store / .mcp.json). */
+export interface McpServerConfig {
+  /** Уникальный slug. Для проектных серверов — имя из .mcp.json. */
+  id: string
+  /** Отображаемое имя. */
+  name: string
+  transport: McpTransport
+  // stdio-only
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  // sse-only
+  url?: string
+  headers?: Record<string, string>
+  /** Включён ли сервер (глобальный тумблер). */
+  enabled: boolean
+  scope: ExtensionScope
+  /** 'global' (из electron-store) или 'project' (из .mcp.json). */
+  source: 'global' | 'project'
+  /** Для проектных серверов — id проекта, из workdir которого загружен. */
+  projectId?: string
+}
+
+/** Per-tool состояние (включён / подтверждение) — хранится отдельно от конфига. */
+export interface McpToolState {
+  enabled: boolean
+  /** Спрашивать подтверждение перед вызовом этого тула. */
+  requireApproval: boolean
+}
+
+/** Runtime-описание тулза MCP, агрегированное McpManager-ом для агента. */
+export interface McpToolRuntime {
+  serverId: string
+  serverName: string
+  /** Полное имя тула: mcp__{serverName}__{toolName}. */
+  name: string
+  /** Короткое имя тула (без префикса). */
+  shortName: string
+  description: string
+  inputSchema: Record<string, unknown>
+}
+
+/** Статус подключения MCP-сервера. */
+export type McpConnectionStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'error'
+
+/** Уровень записи в журнале подключения MCP-сервера. */
+export type McpLogLevel = 'info' | 'warn' | 'error'
+
+/** Одна запись журнала подключения MCP-сервера (для UI лог-вьюера). */
+export interface McpLogEntry {
+  /** Unix ms. */
+  ts: number
+  level: McpLogLevel
+  message: string
+}
+
+/** Полное состояние сервера для UI (конфиг + runtime). */
+export interface McpServerRuntime extends McpServerConfig {
+  status: McpConnectionStatus
+  error?: string
+  tools: McpToolRuntime[]
+  /** Per-tool состояние, сгруппированное по полному имени тула. */
+  toolStates: Record<string, McpToolState>
+  /** Timestamp начала последней попытки подключения (для UI-таймера). */
+  connectStartedAt?: number
+  /** Журнал подключения (хронологически; накопительно, cap на стороне main). */
+  logs?: McpLogEntry[]
+}
+
+// ─── Skills ─────────────────────────────────────────────────────────────────
+
+/** Источник скилла. */
+export type SkillSource = 'builtin' | 'user' | 'project'
+
+/**
+ * Скилл = markdown-инструкция, инжектищаяся в system prompt когда включён.
+ * Загружается из .md-файла с YAML frontmatter.
+ */
+export interface Skill {
+  /** Стабильный id: source + ':' + относительный путь/имя. */
+  id: string
+  name: string
+  description: string
+  /** Тело файла (инструкции) — попадает в system prompt. */
+  instructions: string
+  source: SkillSource
+  /** Абсолютный путь к файлу. */
+  filePath: string
+  /** Для проектных — id проекта. */
+  projectId?: string
+  /** mtime файла для инвалидации кэша. */
+  mtimeMs: number
+}
+
+/** Per-skill состояние (включён + область применения). */
+export interface SkillState {
+  enabled: boolean
+  scope: ExtensionScope
+}
+
+// ─── Marketplace (каталог MCP-серверов и Skills) ────────────────────────────
+
+/** Требование к переменной окружения MCP-сервера (из registry). */
+export interface McpEnvVarRequirement {
+  name: string
+  description: string
+  isRequired: boolean
+  isSecret: boolean
+}
+
+/** Требование к HTTP-заголовку удалённого MCP-сервера. */
+export interface McpHeaderRequirement {
+  name: string
+  description: string
+  isRequired: boolean
+  isSecret: boolean
+  value?: string
+}
+
+/** Вариант установки через удалённый транспорт (sse / streamable-http). */
+export interface McpRemoteOption {
+  type: 'sse' | 'streamable-http'
+  url: string
+  headers?: McpHeaderRequirement[]
+}
+
+/** Вариант установки через локальный пакет (stdio). */
+export interface McpPackageOption {
+  registryType: 'npm' | 'pypi' | 'oci'
+  identifier: string
+  version: string
+  /** Подсказка исполняемой среды: 'npx' | 'uvx' | 'docker'. */
+  runtimeHint?: string
+  packageArguments?: string[]
+  environmentVariables?: McpEnvVarRequirement[]
+  /** Позиционные параметры для GUI (пути, строки подключения и т.д.). */
+  positionalArgs?: Array<{
+    label: string
+    placeholder: string
+    defaultValue?: string
+    isRequired?: boolean
+  }>
+}
+
+/** Элемент каталога MCP Registry для маркетплейса. */
+export interface MarketplaceMcpServer {
+  id: string
+  title: string
+  description: string
+  version: string
+  repositoryUrl?: string
+  websiteUrl?: string
+  iconUrl?: string
+  remotes: McpRemoteOption[]
+  packages: McpPackageOption[]
+}
+
+/** Элемент каталога Skills (GitHub-репозиторий) для маркетплейса. */
+export interface MarketplaceSkill {
+  id: string
+  name: string
+  fullName: string
+  description: string
+  htmlUrl: string
+  stars: number
+  language: string | null
+  topics: string[]
+  license: string | null
+  updatedAt: string
 }

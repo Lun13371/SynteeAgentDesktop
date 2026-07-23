@@ -47,6 +47,18 @@ function registerSystemIPC(_ctx: IPCContext): void {
     console.error('[Renderer Error]', message, stack)
   })
   ipcMain.handle('shell:openPath', (_, path: string) => shell.openPath(path))
+
+  ipcMain.handle('extensions:getPaths', () => {
+    const { app } = require('electron')
+    const { join } = require('path')
+    const { homedir } = require('os')
+    return {
+      mcpConfig: join(homedir(), '.syntee', 'mcp.json'),
+      mcpConfigDir: join(homedir(), '.syntee'),
+      skillsUserDir: join(app.getPath('userData'), 'skills'),
+      skillsBuiltinDir: join(process.resourcesPath ?? app.getAppPath(), 'skills'),
+    }
+  })
 }
 
 function registerOverlayIPC({ overlayWindow }: IPCContext): void {

@@ -32,6 +32,8 @@ export interface AgentStep {
   diff?: string
   callId?: string
   hidden?: boolean
+  /** Имя MCP-сервера (для MCP-тулов mcp__server__tool). */
+  serverName?: string
   // Связывает финальный tool_call с более ранним tool_call_pending той же
   // генерации (см. onToolCallStarted) — фронтенд заменяет pending-карточку
   // на настоящую вместо создания второго блока.
@@ -66,6 +68,27 @@ export interface AgentCallbacks {
   // Side-chat-only: запросить сообщения основного чата из БД (в worker
   // нет доступа к БД, поэтому идёт round-trip через main-процесс).
   onGetMainChatMessages?: (params: { limit?: number; search?: string }) => Promise<string>
+  /**
+   * Вызов MCP-тула (round-trip в main-процесс, где живёт McpManager).
+   * fullToolName = mcp__serverName__toolName. Возвращает {success, output, error?}.
+   */
+  onMcpCall?: (fullToolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; output: string; error?: string }>
+  /**
+   * Проверка, нужно ли подтверждение для MCP-тула. Если вернёт true —
+   * агент запросит одобрение через onConfirm (как для опасных тулов).
+   */
+  onMcpRequiresApproval?: (fullToolName: string) => boolean
+  /**
+   * Запрос списка установленных расширений (MCP-серверы + skills).
+   * Round-trip в main-процесс, где есть доступ к McpManager и SkillManager.
+   * Возвращает текстовый отчёт для агента.
+   */
+  onListExtensions?: () => Promise<string>
+  /**
+   * Получить инструкции скила по имени. Round-trip в main-процесс.
+   * Возвращает текст инструкций.
+   */
+  onGetSkill?: (name: string) => Promise<string>
 }
 
 export interface AgentSummaryDetails {
@@ -643,7 +666,7 @@ export class Agent {
               })
             }
           }
-          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool, pendingCallId })
+          callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool, pendingCallId, serverName: extractMcpServerName(fn.name) })
 
           const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
           if (missingArgs.length > 0) {
@@ -667,6 +690,18 @@ export class Agent {
             forbiddenPaths: agentPerms.forbiddenPaths,
           })
           const effectiveApproval = isHiddenTool ? { confirm: false, block: false, reason: '' } : approval
+
+          // MCP-тулы: per-tool флаг requireApproval из McpManager.
+          // Если true — всегда спрашиваем (независимо от mode auto/ask,
+          // кроме full — там onMcpRequiresApproval не вызывается).
+          const isMcpTool = fn.name.startsWith('mcp__')
+          if (isMcpTool && !effectiveApproval.block && callbacks.onMcpRequiresApproval) {
+            const mcpNeedsConfirm = callbacks.onMcpRequiresApproval(fn.name)
+            if (mcpNeedsConfirm && mode !== 'full') {
+              effectiveApproval.confirm = true
+              if (!effectiveApproval.reason) effectiveApproval.reason = 'MCP-тул требует подтверждения (per-tool настройка)'
+            }
+          }
 
           if (effectiveApproval.block) {
             const blockMsg = `Действие заблокировано (режим ${mode}): ${effectiveApproval.reason}`
@@ -765,6 +800,7 @@ export class Agent {
             diff: (result as { diff?: string }).diff,
             callId,
             hidden: isHiddenTool || !!(result as { hidden?: boolean }).hidden,
+            serverName: extractMcpServerName(fn.name),
           })
 
           resultMap.set(callId, { contentForAI, callId, name: fn.name })
@@ -1105,7 +1141,28 @@ export class Agent {
         const result = await callbacks.onGetMainChatMessages({ limit, search })
         return { success: true, output: result }
       }
+      case 'list_extensions': {
+        if (!callbacks?.onListExtensions) {
+          return { success: false, output: '', error: 'list_extensions: нет доступа к расширениям' }
+        }
+        const report = await callbacks.onListExtensions()
+        return { success: true, output: report }
+      }
+      case 'get_skill': {
+        if (!callbacks?.onGetSkill) {
+          return { success: false, output: '', error: 'get_skill: нет доступа к скиллам' }
+        }
+        const skillName = args.name as string
+        if (!skillName) return { success: false, output: '', error: 'name обязательный параметр' }
+        const instructions = await callbacks.onGetSkill(skillName)
+        return { success: true, output: instructions }
+      }
       default:
+        // MCP-тулы: имя начинается с mcp__ — route через onMcpCall round-trip.
+        if (name.startsWith('mcp__') && callbacks?.onMcpCall) {
+          const result = await callbacks.onMcpCall(name, args)
+          return result
+        }
         return { success: false, output: '', error: `Unknown tool: ${name}` }
     }
   }
@@ -1148,4 +1205,24 @@ export class Agent {
       fileSnapshots: this.undoStack.map(e => ({ path: e.path, contentBefore: e.originalContent })),
     }
   }
+}
+
+/**
+ * Извлекает имя MCP-сервера из полного имени тула `mcp__server__tool`.
+ * Возвращает undefined для встроенных тулов. Sanitized-имя сервера может
+ * содержать подчёркивания, поэтому берём всё между первым и последним `__`.
+ */
+function extractMcpServerName(toolName: string): string | undefined {
+  if (!toolName.startsWith('mcp__')) return undefined
+  const rest = toolName.slice(5) // убираем 'mcp__'
+  const firstSep = rest.indexOf('__')
+  if (firstSep === -1) return undefined
+  const lastSep = rest.lastIndexOf('__')
+  if (lastSep === firstSep) {
+    // Только один `__` — сервер до него, тул после
+    return rest.slice(0, firstSep)
+  }
+  // Несколько `__` — сервер между первым и последним, но имя сервера
+  // это всё до последнего `__` (т.к. тул — последний сегмент)
+  return rest.slice(0, lastSep)
 }

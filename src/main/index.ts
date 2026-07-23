@@ -20,7 +20,13 @@ import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
 import { registerFsIPC } from './ipc/fs.ipc'
 import { registerGitIPC } from './ipc/git.ipc'
+import { registerSkillsIPC } from './ipc/skills.ipc'
+import { registerMcpIPC } from './ipc/mcp.ipc'
+import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
+import { initSkillManager } from '../core/skills/skillManager'
+import { initMcpManager } from '../core/mcp/McpManager'
+import { migrateGlobalMcpToFile } from '../core/mcp/mcpConfig'
 import { shellSessionManager } from './ShellSessionManager'
 import { ipcMain } from 'electron'
 
@@ -88,6 +94,23 @@ app.whenReady().then(async () => {
   refreshCatalog(catalogCachePath).catch(() => { /* ok — работаем на кэше/fallback */ })
   setInterval(() => { refreshCatalog(catalogCachePath).catch(() => {}) }, 86_400_000)
 
+  // Skills-менеджер (загрузка .md-скиллов, состояние вкл/выкл, scope).
+  // Инициализируем ДО IPC — handlers используют getSkillManager().
+  initSkillManager(store)
+
+  // Миграция: переносим старые глобальные MCP из electron-store в файл
+  // ~/.syntee/mcp.json (чтобы агент мог редактировать их через edit_file).
+  migrateGlobalMcpToFile(store)
+
+  // MCP-менеджер (подключение серверов, тулы, approval). Также до IPC.
+  const mcpManager = initMcpManager(store)
+  mcpManager.setWindow(mainWindow.getWindow())
+  // Прогреваем включённые глобальные серверы сразу при старте приложения,
+  // в фоне (не await — не блокирует запуск). Раньше подключение было чисто
+  // lazy (при первом chat:send) — это делало ПЕРВОЕ сообщение в любом чате
+  // синхронно зависающим на холодном старте stdio-процесса.
+  mcpManager.warmupGlobalServers()
+
   // IPC
   registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow })
   registerChatIPC(store, mainWindow)
@@ -100,6 +123,9 @@ app.whenReady().then(async () => {
   registerImageIPC(store, mainWindow)
   registerFsIPC()
   registerGitIPC()
+  registerSkillsIPC(store)
+  registerMcpIPC(store, () => mainWindow.getWindow())
+  registerMarketplaceIPC(store)
 
   // Лёгкий обработчик оценки токенов текущего ввода (для live-обновления кольца при печати)
   ipcMain.handle('context:estimateInput', (_e, params: { text: string }) => {

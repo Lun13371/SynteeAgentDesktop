@@ -41,6 +41,13 @@ const TOOL_ICONS: Record<string, IconName> = {
   get_system_info: 'monitor', generate_image: 'image',
   read_files: 'fileText', search_code: 'search', analyze_project: 'folder',
   spawn_agent: 'git-branch',
+  list_extensions: 'puzzle', get_skill: 'puzzle', think: 'brain', update_todo: 'listChecks',
+  update_working_memory: 'database', revert_last_change: 'rewind',
+}
+
+function getAgentToolIcon(toolName: string): IconName {
+  if (toolName.startsWith('mcp__')) return 'server'
+  return TOOL_ICONS[toolName] ?? 'zap'
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -280,7 +287,7 @@ function AgentListItem({ agent, selected, onSelect, onCancel }: {
         </div>
         {agent.status === 'running' && currentTool && (
           <div className="agent-list-item__tool">
-            <AppIcon name={TOOL_ICONS[currentTool] ?? 'zap'} size="xs" />
+            <AppIcon name={getAgentToolIcon(currentTool)} size="xs" />
             <span>{currentTool}</span>
           </div>
         )}

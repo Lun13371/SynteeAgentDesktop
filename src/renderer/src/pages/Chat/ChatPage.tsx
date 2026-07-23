@@ -410,6 +410,30 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     isInitialScrollRef.current = true
   }
 
+  /**
+   * Вызывается после установки MCP/Skill через маркетплейс расширений —
+   * чат уже создан и chat:send уже отправлен (агент начал работать).
+   * Переключаемся на чат и инициализируем live-стрим ТОЧНО как в handleSend:
+   * addMessage(userMsg) + initChatSend(chatId) — без этого live-буфер стрима
+   * не инициализируется (streamMsgId остаётся null) и прогресс агента/финальный
+   * ответ не отображаются, хотя агент реально работает в фоне.
+   */
+  const handleExtensionInstalled = async (chatId: string, projectId: string | undefined, userMsg: Message) => {
+    if (projectId) {
+      const allProjects: Project[] = await window.syntee.projects.getAll()
+      setProjects(allProjects)
+      setActiveProject(projectId)
+    }
+    const all: Chat[] = await window.syntee.chat.getAll()
+    setChats(all)
+    setCurrentChat(chatId)
+    setMessages([])
+    addMessage(userMsg)
+    initChatSend(chatId)
+    autoScrollRef.current = true
+    isInitialScrollRef.current = true
+  }
+
   const handleSend = async (text: string) => {
     const raw = text.trim()
     const slash = parseSlashCommand(raw)
@@ -639,6 +663,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
           onChatsUpdate={setChats}
           onProjectsUpdate={setProjects}
           onSelectProject={setActiveProject}
+          onExtensionInstalled={handleExtensionInstalled}
         />
         <main className="chat-main">
           <LiveTodoBar items={overlayTodo} active={overlayActive} />
