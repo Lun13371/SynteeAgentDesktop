@@ -194,6 +194,20 @@ const synteeAPI = {
     getExtensionsPaths: () => ipcRenderer.invoke('extensions:getPaths'),
   },
 
+  // PTY-терминал (xterm.js + node-pty). create/write/resize/kill — invoke;
+  // стриминг данных — через on('pty:data'/'pty:exit'). Сессии per-chat.
+  pty: {
+    detectShells: () => ipcRenderer.invoke('pty:detectShells'),
+    create: (params: { chatId: string; shell: string; cwd?: string; source?: 'user' | 'agent'; title?: string }) =>
+      ipcRenderer.invoke('pty:create', params),
+    list: (chatId: string) => ipcRenderer.invoke('pty:list', chatId),
+    write: (sessionId: string, data: string) => ipcRenderer.invoke('pty:write', sessionId, data),
+    resize: (sessionId: string, cols: number, rows: number) => ipcRenderer.invoke('pty:resize', sessionId, cols, rows),
+    kill: (sessionId: string) => ipcRenderer.invoke('pty:kill', sessionId),
+    consumePreMount: (sessionId: string) => ipcRenderer.invoke('pty:consumePreMount', sessionId),
+    getMeta: (sessionId: string) => ipcRenderer.invoke('pty:getMeta', sessionId),
+  },
+
   // Файловый просмотрщик (read-only) для правой панели
   fs: {
     getWorkdir: (chatId: string) => ipcRenderer.invoke('fs:getWorkdir', chatId),

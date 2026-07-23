@@ -22,6 +22,7 @@ import ToastContainer from './components/ui/Toast/Toast'
 import AnimatedBackground from './components/ui/AnimatedBackground/AnimatedBackground'
 import RightPanelHost from './components/ui/RightPanel/RightPanelHost'
 import AgentConfirmDialog from './components/ui/AgentConfirmDialog/AgentConfirmDialog'
+import BottomDock from './components/ui/BottomDock/BottomDock'
 import './components/ui/RightPanel/RightPanel.css'
 
 type Route = 'chat' | 'overlay' | 'voice' | 'spotlight'
@@ -251,6 +252,7 @@ export default function App() {
         </div>
         <RightPanelHost />
       </div>
+      <BottomDock />
       <ToastContainer />
       <AgentConfirmDialog />
     </div>

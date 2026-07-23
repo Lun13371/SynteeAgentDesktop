@@ -30,7 +30,7 @@ import {
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usageTracker'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
-import { shellSessionManager } from '../ShellSessionManager'
+import { ptyManager, type ShellType } from '../PtyManager'
 import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
 import { getMcpManager } from '../../core/mcp/McpManager'
@@ -861,15 +861,31 @@ ${subModeOutro}`,
 
         case 'shell_exec': {
           ;(async () => {
-            const result = await shellSessionManager.exec(
-              msg.chatId as string,
-              msg.command as string,
-              msg.cwd as string | undefined,
-              (msg.timeoutSec as number | undefined) ?? 60,
-            )
+            // AI run_command → PTY-сессия. Находим agent-сессию чата или
+            // создаём новую (видимую в UI). ИИ и юзер видят одну сессию.
+            const chatId = msg.chatId as string
+            const command = msg.command as string
+            const cwd = msg.cwd as string | undefined
+            const timeoutSec = (msg.timeoutSec as number | undefined) ?? 60
+            const sessions = ptyManager.listByChat(chatId)
+            let agentSession = sessions.find(s => s.source === 'agent' && !s.dead)
+            if (!agentSession) {
+              // Дефолтный shell: PowerShell на Windows, bash на Unix.
+              const defaultShell: ShellType = process.platform === 'win32' ? 'powershell' : 'bash'
+              const id = ptyManager.create(chatId, defaultShell, cwd, 'agent', 'AI')
+              agentSession = ptyManager.getMeta(id) ?? undefined
+            }
+            if (!agentSession) {
+              worker.postMessage({
+                type: 'shell_exec_reply', replyId: msg.replyId as string,
+                output: '[не удалось создать shell-сессию]', exitCode: 1, timedOut: false,
+              })
+              return
+            }
+            const result = await ptyManager.execInSession(agentSession.id, command, timeoutSec)
             worker.postMessage({
               type: 'shell_exec_reply',
-              replyId: msg.replyId,
+              replyId: msg.replyId as string,
               output: result.output,
               exitCode: result.exitCode,
               timedOut: result.timedOut,
@@ -1291,7 +1307,7 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     deleteChat(chatId)
     clearFileCache(chatId)
     agentManager.clearChat(chatId)
-    shellSessionManager.kill(chatId)
+    ptyManager.killByChat(chatId)
   })
   ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
   ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))

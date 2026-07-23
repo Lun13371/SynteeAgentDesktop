@@ -8,10 +8,11 @@ import FileExplorer from '../FileExplorer/FileExplorer'
 import GitPanel from '../GitPanel/GitPanel'
 import SessionChangesPanel from '../SessionChangesPanel/SessionChangesPanel'
 import SideChatPanel from '../SideChatPanel/SideChatPanel'
+import TerminalPanel from '../TerminalPanel/TerminalPanel'
 import { useUIStore } from '../../../store/ui.store'
 import './RightPanel.css'
 
-export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat'
+export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal'
 
 interface RightPanelProps {
   onClose: () => void
@@ -19,12 +20,13 @@ interface RightPanelProps {
   currentChatId?: string | null
 }
 
-const TABS: Array<{ id: RightPanelTab; label: string; icon: 'git-branch' | 'folder' | 'git' | 'history' | 'messageSquare' }> = [
+const TABS: Array<{ id: RightPanelTab; label: string; icon: 'git-branch' | 'folder' | 'git' | 'history' | 'messageSquare' | 'terminal' }> = [
   { id: 'sidechat', label: 'Чат', icon: 'messageSquare' },
   { id: 'agents', label: 'Агенты', icon: 'git-branch' },
   { id: 'files', label: 'Файлы', icon: 'folder' },
   { id: 'git', label: 'Git', icon: 'git' },
   { id: 'session', label: 'Сессия', icon: 'history' },
+  { id: 'terminal', label: 'Терминал', icon: 'terminal' },
 ]
 
 export default function RightPanel({ onClose, focusAgentId, currentChatId }: RightPanelProps) {
@@ -138,6 +140,9 @@ export default function RightPanel({ onClose, focusAgentId, currentChatId }: Rig
                 )}
                 {tab === 'session' && (
                   <SessionChangesPanel key={currentChatId ?? 'no-chat'} chatId={currentChatId} />
+                )}
+                {tab === 'terminal' && (
+                  <TerminalPanel currentChatId={currentChatId} />
                 )}
               </motion.div>
             )}
