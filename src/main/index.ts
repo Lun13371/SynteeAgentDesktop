@@ -23,11 +23,12 @@ import { registerGitIPC } from './ipc/git.ipc'
 import { registerSkillsIPC } from './ipc/skills.ipc'
 import { registerMcpIPC } from './ipc/mcp.ipc'
 import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
+import { registerPtyIPC } from './ipc/pty.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initMcpManager } from '../core/mcp/McpManager'
 import { migrateGlobalMcpToFile } from '../core/mcp/mcpConfig'
-import { shellSessionManager } from './ShellSessionManager'
+import { ptyManager } from './PtyManager'
 import { ipcMain } from 'electron'
 
 // Имя приложения — ДОЛЖНО быть ДО создания Store и app.whenReady
@@ -126,6 +127,10 @@ app.whenReady().then(async () => {
   registerSkillsIPC(store)
   registerMcpIPC(store, () => mainWindow.getWindow())
   registerMarketplaceIPC(store)
+  registerPtyIPC(mainWindow)
+
+  // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
+  ptyManager.setSender(mainWindow.getWindow())
 
   // Лёгкий обработчик оценки токенов текущего ввода (для live-обновления кольца при печати)
   ipcMain.handle('context:estimateInput', (_e, params: { text: string }) => {
@@ -184,7 +189,7 @@ app.on('window-all-closed', () => {})
 // 'close' на окне перехватывается для hide(), поэтому persistим здесь.
 app.on('before-quit', () => {
   mainWindow?.flushBounds()
-  shellSessionManager.killAll()
+  ptyManager.killAll()
 })
 
 app.on('will-quit', () => {

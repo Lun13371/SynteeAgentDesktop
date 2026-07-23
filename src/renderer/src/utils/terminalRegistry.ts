@@ -1,0 +1,150 @@
+/**
+ * Реестр xterm.js инстансов. Мутабельные объекты (Terminal, FitAddon) нельзя
+ * класть в zustand — поэтому живёт отдельно как синглтон. Один Terminal на
+ * sessionId, переживает unmount/mount (reparenting между right-tab и bottom-dock)
+ * без потери буфера и скроллбэка.
+ *
+ * Стриминг: глобальная подписка на 'pty:data'/'pty:exit' один раз при первом
+ * обращении к реестру; данные пишутся в соответствующий term по sessionId.
+ */
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { WebLinksAddon } from '@xterm/addon-web-links'
+
+interface Entry {
+  term: Terminal
+  fit: FitAddon
+  /** Контейнер, к которому сейчас приаттачен term.element. */
+  attachedTo: HTMLElement | null
+  unsub: (() => void) | null
+}
+
+const entries = new Map<string, Entry>()
+let globalSubscribed = false
+
+function ensureGlobalSubscription(): void {
+  if (globalSubscribed) return
+  globalSubscribed = true
+  window.syntee.on('pty:data', (sessionId: unknown, data: unknown) => {
+    const e = entries.get(sessionId as string)
+    if (e) e.term.write(data as string)
+  })
+  window.syntee.on('pty:exit', (sessionId: unknown, _exitCode: unknown) => {
+    // Ничего не делаем с term — юзер видит финальный вывод. Store обновится
+    // через poll/refresh. Можно добавить маркер смерти в самом term.
+    const e = entries.get(sessionId as string)
+    if (e) e.term.write('\r\n\x1b[2m[процесс завершён]\x1b[0m\r\n')
+  })
+}
+
+export interface GetOrCreateOpts {
+  sessionId: string
+  onData: (data: string) => void
+}
+
+/** Возвращает (или создаёт) xterm-инстанс для sessionId. */
+export function getOrCreateTerminal({ sessionId, onData }: GetOrCreateOpts): Entry {
+  ensureGlobalSubscription()
+  const existing = entries.get(sessionId)
+  if (existing) return existing
+
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, monospace',
+    theme: {
+      background: '#0c0c10',
+      foreground: '#d4d4d4',
+      cursor: '#d4d4d4',
+      selectionBackground: '#264f78',
+      black: '#000000',
+      red: '#e06c75',
+      green: '#98c379',
+      yellow: '#e5c07b',
+      blue: '#61afef',
+      magenta: '#c678dd',
+      cyan: '#56b6c2',
+      white: '#d4d4d4',
+      brightBlack: '#5c5c5c',
+      brightRed: '#e06c75',
+      brightGreen: '#98c379',
+      brightYellow: '#e5c07b',
+      brightBlue: '#61afef',
+      brightMagenta: '#c678dd',
+      brightCyan: '#56b6c2',
+      brightWhite: '#ffffff',
+    },
+    allowProposedApi: true,
+    scrollback: 5000,
+  })
+  const fit = new FitAddon()
+  term.loadAddon(fit)
+  term.loadAddon(new WebLinksAddon())
+
+  const disposeData = term.onData(d => onData(d))
+
+  const entry: Entry = { term, fit, attachedTo: null, unsub: () => disposeData.dispose() }
+  entries.set(sessionId, entry)
+  return entry
+}
+
+/** Аттачит term в контейнер. При re-attach (другой контейнер) — переносит
+ *  term.element. Повторный attach в тот же контейнер — no-op. */
+export function attachToContainer(sessionId: string, container: HTMLElement): void {
+  const e = entries.get(sessionId)
+  if (!e) return
+  if (e.attachedTo === container) return
+  // Если уже был открыт в другом контейнере — переносим DOM-узел.
+  // term.open(container) нельзя вызывать дважды, поэтому работаем через
+  // term.element (создаётся при первом open).
+  if (!e.term.element) {
+    e.term.open(container)
+  } else {
+    container.appendChild(e.term.element)
+  }
+  e.attachedTo = container
+  // fit после переноса/первого открытия — размеры могли измениться.
+  try { e.fit.fit() } catch { /* container ещё не имеет размеров */ }
+  // Отправляем актуальный размер в PTY
+  sendResize(e)
+}
+
+/** Достаёт pre-mount буфер (вывод до первого attach) и пишет в term. */
+export function flushPreMount(sessionId: string): void {
+  const e = entries.get(sessionId)
+  if (!e) return
+  window.syntee.pty.consumePreMount(sessionId).then((buf: string) => {
+    if (buf) e.term.write(buf)
+  })
+}
+
+function sendResize(e: Entry): void {
+  // cols/rows читаем из term после fit()
+  // Не делаем это здесь — resize шлётся из TerminalView через ResizeObserver,
+  // т.к. нужно привязать к конкретному sessionId.
+  void e
+}
+
+export function fitTerminal(sessionId: string): { cols: number; rows: number } | null {
+  const e = entries.get(sessionId)
+  if (!e) return null
+  try {
+    e.fit.fit()
+    return { cols: e.term.cols, rows: e.term.rows }
+  } catch {
+    return null
+  }
+}
+
+export function focusTerminal(sessionId: string): void {
+  const e = entries.get(sessionId)
+  if (e) e.term.focus()
+}
+
+export function disposeTerminal(sessionId: string): void {
+  const e = entries.get(sessionId)
+  if (!e) return
+  e.unsub?.()
+  e.term.dispose()
+  entries.delete(sessionId)
+}

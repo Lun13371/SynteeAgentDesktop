@@ -1,4 +1,5 @@
 import IconButton from '../../ui/IconButton/IconButton'
+import { useTerminalStore } from '../../../store/terminal.store'
 import './TitleBar.css'
 
 interface TitleBarProps {
@@ -11,6 +12,10 @@ interface TitleBarProps {
 export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick }: TitleBarProps) {
   const handleMinimize = () => window.syntee.window.minimize()
   const handleHide = () => window.syntee.window.hide()
+  const dockOpen = useTerminalStore(s => s.dockOpen)
+  const handleTerminalToggle = () => {
+    useTerminalStore.getState().toggleDock()
+  }
 
   return (
     <div className="titlebar drag-region">
@@ -31,6 +36,12 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick 
 
       <div className="titlebar-right no-drag">
         {onMemoryClick && <IconButton icon="brain" label="Память" onClick={onMemoryClick} />}
+        <IconButton
+          icon="terminal"
+          label="Терминал"
+          active={dockOpen}
+          onClick={handleTerminalToggle}
+        />
         {onAgentClick && <IconButton icon="panelRight" label="Панель" onClick={onAgentClick} />}
         {onSettingsClick && <IconButton icon="settings" label="Настройки" onClick={onSettingsClick} />}
         <IconButton icon="minus" label="Свернуть" onClick={handleMinimize} />

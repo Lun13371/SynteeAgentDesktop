@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './styles/fonts.css'
 import './styles/globals.css'
+import '@xterm/xterm/css/xterm.css'
 
 // Типизация window.syntee
 declare global {
