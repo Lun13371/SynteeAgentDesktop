@@ -131,6 +131,19 @@ function runMigrations(): void {
   if (!cols.find(c => c.name === 'todo')) {
     db.prepare(`ALTER TABLE messages ADD COLUMN todo TEXT`).run()
   }
+  // Миграция: compact_summary — снимок резюме на момент сжатия контекста.
+  // Заполняется только у system-сообщений-разделителей компакции
+  // (slashCommand.name === 'compact'). Позволяет разворачивать старые
+  // разделители даже после того, как chat_summaries перетёрся новым сжатием.
+  if (!cols.find(c => c.name === 'compact_summary')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN compact_summary TEXT`).run()
+  }
+  // Миграция: compact_stats — JSON {removedCount, tokensBefore, tokensAfter,
+  // tokensSaved} для compact-разделителей. Используется ContextRing для
+  // подсчёта общего кол-ва сжатий и сэкономленных токенов сессии.
+  if (!cols.find(c => c.name === 'compact_stats')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN compact_stats TEXT`).run()
+  }
 
   // Миграция: добавляем поля чатов
   const chatCols = db.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[]
@@ -457,8 +470,8 @@ export function touchProject(id: string): void {
 
 export function saveMessage(msg: Message): void {
   db.prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
     msg.toolSteps ? JSON.stringify(msg.toolSteps) : null,
@@ -467,6 +480,8 @@ export function saveMessage(msg: Message): void {
     (msg as Message & { iterations?: unknown }).iterations ? JSON.stringify((msg as Message & { iterations?: unknown }).iterations) : null,
     msg.planData ? JSON.stringify(msg.planData) : null,
     msg.todo ? JSON.stringify(msg.todo) : null,
+    msg.compactSummary ?? null,
+    msg.compactStats ? JSON.stringify(msg.compactStats) : null,
   )
   touchChat(msg.chatId)
 }
@@ -475,12 +490,13 @@ export function getMessages(chatId: string): Message[] {
   const rows = db.prepare(`
     SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model,
            tool_steps as toolStepsJson, thinking, thinking_ms as thinkingMs, slash_command as slashCommandJson,
-           iterations as iterationsJson, plan_data as planDataJson, todo as todoJson
+           iterations as iterationsJson, plan_data as planDataJson, todo as todoJson, compact_summary as compactSummary,
+           compact_stats as compactStatsJson
     FROM messages WHERE chat_id = ?
     ORDER BY created_at ASC
-  `).all(chatId) as (Message & { toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string; planDataJson?: string; todoJson?: string })[]
+  `).all(chatId) as (Message & { toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string; planDataJson?: string; todoJson?: string; compactStatsJson?: string })[]
   return rows.map(r => {
-    const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, ...rest } = r
+    const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, compactStatsJson, ...rest } = r
     return {
       ...rest,
       toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined,
@@ -488,6 +504,7 @@ export function getMessages(chatId: string): Message[] {
       iterations: iterationsJson ? JSON.parse(iterationsJson) : undefined,
       planData: planDataJson ? JSON.parse(planDataJson) : undefined,
       todo: todoJson ? JSON.parse(todoJson) : undefined,
+      compactStats: compactStatsJson ? JSON.parse(compactStatsJson) : undefined,
     }
   })
 }

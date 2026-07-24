@@ -52,6 +52,13 @@ function backoffDelay(attempt: number): number {
 // цикл прерывается с понятным сообщением вместо тихого ожидания 8-10 минут.
 const OVERALL_TIMEOUT_MS = 4 * 60 * 1000  // 4 минуты
 
+// Дефолтные параметры генерации. Ранее читались из store ('temperature' /
+// 'maxTokens'), но UI-контролы сохраняли в другой ключ (modelParams) —
+// настройки пользователя фактически ни на что не влияли. Поля убраны из UI;
+// используем фиксированные значения (Anthropic API требует max_tokens).
+const DEFAULT_TEMPERATURE = 0.7
+const DEFAULT_MAX_TOKENS = 16384
+
 export interface StreamCallbacks {
   onToken: (token: string) => void
   onDone: (fullText: string) => void
@@ -177,8 +184,8 @@ export class AIClient {
           messages: allMessages,
           stream: true,
           stream_options: { include_usage: true },
-          temperature: (this.store.get('temperature') as number) || 0.7,
-          max_tokens: (this.store.get('maxTokens') as number) || 4096,
+          temperature: DEFAULT_TEMPERATURE,
+          max_tokens: DEFAULT_MAX_TOKENS,
           ...reasoningExtra,
         }, { signal })
 
@@ -289,8 +296,8 @@ export class AIClient {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const res = await (client.chat.completions.create as any)({
             model, messages: allMessages, stream: false,
-            temperature: (this.store.get('temperature') as number) || 0.7,
-            max_tokens: (this.store.get('maxTokens') as number) || 4096,
+            temperature: DEFAULT_TEMPERATURE,
+            max_tokens: DEFAULT_MAX_TOKENS,
           })
           fullText = res.choices[0]?.message?.content || ''
           if (fullText) callbacks.onToken(fullText)
@@ -413,8 +420,8 @@ export class AIClient {
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
     const model = this.getModel(resolvedRole) || this.getModel('main')
     const providerInfo = this.getProviderInfoForRole(resolvedRole)
-    const temperature = (this.store.get('temperature') as number) || 0.7
-    const maxTokensRaw = (this.store.get('maxTokens') as number) || 4096
+    const temperature = DEFAULT_TEMPERATURE
+    const maxTokensRaw = DEFAULT_MAX_TOKENS
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
     const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue) : {}
 

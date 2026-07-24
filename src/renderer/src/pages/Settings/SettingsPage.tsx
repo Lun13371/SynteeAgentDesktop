@@ -4,7 +4,6 @@ import { useSettingsStore } from '../../store/settings.store'
 import { useUIStore } from '../../store/ui.store'
 import { useToast } from '../../components/ui/Toast/Toast'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
-import IconButton from '../../components/ui/IconButton/IconButton'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
@@ -35,8 +34,6 @@ export default function SettingsPage() {
   const { setTheme, setAccentColor, setBgStyle, setMsgAnim, setAnimatedBackground,
     setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect } = useUIStore()
   const { add: toast } = useToast()
-  const [apiKeyVisible, setApiKeyVisible] = useState(false)
-  const [testingApi, setTestingApi] = useState(false)
 
   useEffect(() => { load() }, [])
 
@@ -56,25 +53,6 @@ export default function SettingsPage() {
     if (key === 'fontFamily') applyFontToDOM(value as string)
     // Кастомный accent — применяется поверх темы.
     if (key === 'accentColor') applyAccentToDOM(value as string)
-  }
-
-  const testApiKey = async () => {
-    setTestingApi(true)
-    try {
-      const key = settings['apiKey'] as string
-      const endpoint = settings['apiEndpoint'] as string
-      const res = await fetch(`${endpoint}/models`, {
-        headers: { Authorization: `Bearer ${key}` }
-      })
-      if (res.ok) {
-        toast('API ключ работает', 'success')
-      } else {
-        toast('Ошибка: ' + res.status, 'error')
-      }
-    } catch (e) {
-      toast('Не удалось подключиться', 'error')
-    }
-    setTestingApi(false)
   }
 
   return (
@@ -202,86 +180,6 @@ function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>
       </Field>
       <Field label="Счётчик контекста" description="Кружок с заполнением контекста в поле ввода">
         <Toggle value={(settings['showContextRing'] as boolean) ?? true} onChange={v => onSet('showContextRing', v)} />
-      </Field>
-    </>
-  )
-}
-
-function AISection({ settings, onSet, apiKeyVisible, setApiKeyVisible, testingApi, onTestApi }: {
-  settings: Record<string, unknown>
-  onSet: (k: string, v: unknown) => void
-  apiKeyVisible: boolean
-  setApiKeyVisible: (v: boolean) => void
-  testingApi: boolean
-  onTestApi: () => void
-}) {
-  const MODELS = [
-    'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5',
-    'gpt-5', 'gpt-5.1', 'gpt-5.2', 'gpt-5-mini',
-    'deepseek-v3', 'deepseek-v4-flash',
-    'gemini-3.5-flash', 'gemini-3-flash',
-    'grok-4.20', 'grok-4-1-fast', 'grok-4.3',
-    'llama-3.3-70b', 'llama3.1-8b', 'mistral-small-3.1',
-  ]
-
-  return (
-    <>
-      <SectionTitle>ИИ и Модели</SectionTitle>
-      <Field label="API Endpoint">
-        <input
-          className="settings-input"
-          value={(settings['apiEndpoint'] as string) || ''}
-          onChange={e => onSet('apiEndpoint', e.target.value)}
-          placeholder="https://api.onlysq.ru/ai/openai"
-        />
-      </Field>
-      <Field label="API Ключ">
-        <div className="settings-api-key-wrap">
-          <input
-            className="settings-input"
-            type={apiKeyVisible ? 'text' : 'password'}
-            value={(settings['apiKey'] as string) || ''}
-            onChange={e => onSet('apiKey', e.target.value)}
-            placeholder="sk-..."
-          />
-          <IconButton
-            icon={apiKeyVisible ? 'eyeOff' : 'eye'}
-            label={apiKeyVisible ? 'Скрыть ключ' : 'Показать ключ'}
-            onClick={() => setApiKeyVisible(!apiKeyVisible)}
-            className="settings-icon-btn"
-          />
-          <motion.button
-            className="settings-btn"
-            onClick={onTestApi}
-            disabled={testingApi}
-            whileTap={{ scale: 0.95 }}
-          >
-            {testingApi ? '...' : 'Тест'}
-          </motion.button>
-        </div>
-      </Field>
-      <Field label="Основная модель (чат)">
-        <select className="settings-select" value={(settings['mainModel'] as string) || 'claude-sonnet-4-6'} onChange={e => onSet('mainModel', e.target.value)}>
-          {MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </Field>
-      <Field label="Быстрая модель (агент)">
-        <select className="settings-select" value={(settings['fastModel'] as string) || 'claude-haiku-4-5'} onChange={e => onSet('fastModel', e.target.value)}>
-          {MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </Field>
-      <Field label="Модель для зрения">
-        <select className="settings-select" value={(settings['visionModel'] as string) || 'gemini-3.5-flash'} onChange={e => onSet('visionModel', e.target.value)}>
-          {['gemini-3.5-flash', 'gemini-3-flash', 'gpt-5.4', 'gpt-5.2', 'claude-sonnet-4-6', 'zai-glm-4.6'].map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </Field>
-      <Field label="Температура" description="0 — точно, 1 — творчески">
-        <input
-          className="settings-input settings-input--sm"
-          type="number" min="0" max="1" step="0.1"
-          value={(settings['temperature'] as number) ?? 0.7}
-          onChange={e => onSet('temperature', parseFloat(e.target.value))}
-        />
       </Field>
     </>
   )

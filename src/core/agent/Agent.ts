@@ -923,7 +923,15 @@ export class Agent {
         if (callbacks?.onShellExec && this.role === 'main' && !args.shell) {
           const shellRes = await callbacks.onShellExec(cmd, effectiveCwd, timeoutSec)
           if (shellRes.timedOut) {
-            cmdResult = { success: false, output: `[timeout после ${timeoutSec}с — shell-сессия перезапущена]`, error: 'Команда превысила таймаут' }
+            // Сессия прервана Ctrl+C (см. PtyManager.execInSession) —
+            // env/cwd сохранены, следующий run_command продолжится в ней.
+            // shellRes.output содержит частичный вывод команды до прерывания.
+            const partial = smartTrimOutput(shellRes.output || '')
+            cmdResult = {
+              success: false,
+              output: `[timeout после ${timeoutSec}с — команда прервана Ctrl+C]\n${partial || '(нет вывода)'}`,
+              error: 'Команда превысила таймаут',
+            }
           } else {
             const out = smartTrimOutput(shellRes.output) || '(нет вывода)'
             cmdResult = shellRes.exitCode === 0

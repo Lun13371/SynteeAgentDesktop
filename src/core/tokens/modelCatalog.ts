@@ -59,6 +59,10 @@ const PROVIDER_REMAP: Record<string, string | null> = {
   deepseek: 'deepseek',
   xai: 'xai',
   xiaomi: 'xiaomi',
+  // OpenCode Zen — публичный шлюз opencode.ai/zen, есть в models.dev
+  opencode: 'opencode',
+  'opencode-free': 'opencode',  // тот же каталог; free-модели тоже там
+  'opencode-go': 'opencode-go',
   // проксирующие / не в models.dev — обрабатываются через vendor-sniff + global fallback
   onlysq: null,
   voidai: null,

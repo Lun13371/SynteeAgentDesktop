@@ -89,7 +89,7 @@ export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
   toolTruncEnabled: true,
   toolMaxChars: 6000,          // было 8000 — достаточно, outline компенсирует
   rollingEnabled: true,
-  rollingTriggerPct: 92,       // было 85 — компакция только близко к реальному пределу
+  rollingTriggerPct: 85,       // авто-компакция на 85% контекста
   rollingKeepFirst: 2,
   rollingKeepLast: 20,         // было 12 — больше свежей истории
   contextLimitTokens: 200_000,
@@ -134,6 +134,11 @@ export interface CompressResult {
   removedCount: number
   summaryAdded: boolean
   summaryContent?: string
+  /** Фактическое кол-во ChatMessage оставленных в head. Нужно вызывающему
+   *  коду для вычисления middle-индексов в исходном Message[] (удаление из БД). */
+  headCount?: number
+  /** Фактическое кол-во ChatMessage оставленных в tail. */
+  tailCount?: number
 }
 
 // Умный summarize tool result — информативная 1-строчная замена (как в Hermes)
@@ -270,15 +275,45 @@ export async function applyRollingWindowAsync(
   const limitTokens = settings.contextLimitTokens
   const triggerTokens = Math.floor(limitTokens * settings.rollingTriggerPct / 100)
 
-  // Сжимаем если превышен токенный порог ИЛИ форсированно по кол-ву сообщений
-  if (!forceCompress && (totalTokens < triggerTokens || messages.length <= settings.rollingKeepFirst + settings.rollingKeepLast)) {
+  // ── Пороги┐
+  // Авто-компакция (forceCompress=false): только если токенов >= trigger И
+  // сообщений достаточно чтобы middle был непустым (> keepFirst + keepLast).
+  // Ручная /compact (forceCompress=true): сразу идём к адаптации — не
+  // смотрим ни на порог токенов, ни на кол-во сообщений. Пользователь сам
+  // решил сжать — сжимаем.
+  if (!forceCompress) {
+    if (totalTokens < triggerTokens) {
+      return { messages, compressed: false, removedCount: 0, summaryAdded: false }
+    }
+    if (messages.length <= settings.rollingKeepFirst + settings.rollingKeepLast) {
+      return { messages, compressed: false, removedCount: 0, summaryAdded: false }
+    }
+  }
+
+  // Адаптация окна для коротких историй: keepFirst + keepLast не могут
+  // превышать длину. Оставляем минимум 1 middle сообщение для сжатия.
+  // Если total = 5, keepFirst=2, keepLast=20 → берём keepLast=2 (5-2-1),
+  // middle = messeges.slice(2, 3) = 1 сообщение. Если total = 2 (только
+  // 2 сообщении) — сжимать нечего, возвращаем compressed=false.
+  let keepFirst = settings.rollingKeepFirst
+  let keepLast = settings.rollingKeepLast
+  if (messages.length <= keepFirst + keepLast + 1) {
+    // Нужно освободить хотя бы 1 middle. Урезаем keepLast.
+    const newKeepLast = Math.max(0, messages.length - keepFirst - 1)
+    keepLast = Math.min(keepLast, newKeepLast)
+    if (keepFirst + keepLast + 1 > messages.length) {
+      // Всё равно не хватает — урезаем и keepFirst.
+      keepFirst = Math.max(0, messages.length - keepLast - 1)
+    }
+  }
+  if (keepFirst + keepLast >= messages.length) {
+    // Совсем короткая история (1-2 сообщения) — сжать невозможно.
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
   }
 
-  const keepFirst = settings.rollingKeepFirst
-  const keepLast = settings.rollingKeepLast
   let headMessages = messages.slice(0, keepFirst)
   let tailMessages = messages.slice(messages.length - keepLast)
+  // Если keepLast=0, slice(length-0) = slice(length) → []. Норм.
 
   // Не разрываем tool-раунды: если tail начинается с tool-сообщения без
   // парного assistant с tool_calls — отбрасываем непарные tool-сообщения.
@@ -325,6 +360,8 @@ export async function applyRollingWindowAsync(
     removedCount: middleMessages.length,
     summaryAdded: true,
     summaryContent: summaryMsg.content,
+    headCount: headMessages.length,
+    tailCount: tailMessages.length,
   }
 }
 

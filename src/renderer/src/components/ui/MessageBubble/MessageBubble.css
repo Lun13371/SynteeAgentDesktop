@@ -648,3 +648,143 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ─── Compact-разделитель (сжатие контекста) ─── */
+
+.message-system-divider--compact .message-system-divider__badge {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: var(--accent, #6366f1);
+}
+
+.message-system-divider--compact {
+  position: relative;
+  /* expand-блок должен перетекать под линии, нужна базовая
+     колоночная раскладка: line и badge в верхнем ряду, summary-блок
+     опционально под ними. */
+  flex-wrap: wrap;
+}
+
+.message-system-divider--compact::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(99, 102, 241, 0.18) 0,
+    rgba(99, 102, 241, 0.18) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.message-system-divider--compact .message-system-divider__badge {
+  position: relative;
+  z-index: 1;
+}
+
+.message-system-divider__expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  margin-left: 4px;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 10px;
+  color: var(--accent, #6366f1);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition, 0.12s ease);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.message-system-divider__expand:hover {
+  background: var(--accent, #6366f1);
+  color: white;
+  border-color: var(--accent, #6366f1);
+}
+
+.message-system-divider__summary {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 14px 12px;
+  background: var(--bg-secondary, #1a1a1f);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  border-radius: var(--radius-md, 10px);
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+
+.message-system-divider__summary-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent, #6366f1);
+  margin-bottom: 8px;
+  opacity: 0.85;
+}
+
+.message-system-divider__summary-content {
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary, #ccc);
+}
+
+.message-system-divider__summary-content p {
+  margin: 6px 0;
+}
+
+.message-system-divider__summary-content h1,
+.message-system-divider__summary-content h2,
+.message-system-divider__summary-content h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 10px 0 6px;
+  color: var(--text, #eee);
+}
+
+.message-system-divider__summary-content ul,
+.message-system-divider__summary-content ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.message-system-divider__summary-content li {
+  margin: 2px 0;
+}
+
+.message-system-divider__summary-content code {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* ─── Compacting-индикатор (идёт сжатие контекста) ─── */
+.message-system-divider--compacting .message-system-divider__text {
+  font-style: italic;
+  opacity: 0.85;
+  animation: ctx-compacting-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ctx-compacting-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}

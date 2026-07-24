@@ -77,6 +77,13 @@ const synteeAPI = {
     rewindTo: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:rewindTo', chatId, userMessageId),
     redo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:redo', chatId, rewindMessageId),
     canRedo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:canRedo', chatId, rewindMessageId),
+    // ── Сжатие контекста (/compact) ──
+    // Ручной запуск applyRollingWindowAsync с forceCompress=true. Возвращает
+    // обновлённую ленту сообщений (включая новый system-разделитель компакции)
+    // и stats { removedCount, tokensBefore, tokensAfter, tokensSaved,
+    // dividerMessageId } для toast'а. При активном чате / пустом чате —
+    // { error: string }.
+    compact: (chatId: string) => ipcRenderer.invoke('chat:compact', chatId),
     // ── Параллельный доп-чат (side chat) ──
     // Эфемерный чат-в-чате: incognito, не пишется в БД. ИИ получает сводку
     // родителя + тул get_main_chat_messages. chatId = 'sidechat:'+parentChatId.

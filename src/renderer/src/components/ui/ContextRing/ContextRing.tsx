@@ -2,10 +2,12 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
+import AppIcon from '../AppIcon/AppIcon'
 import './ContextRing.css'
 
 interface ContextRingProps {
   info: ContextInfo | null
+  compactSessionStats?: { count: number; totalTokensSaved: number }
 }
 
 function formatNum(n: number): string {
@@ -22,7 +24,7 @@ function formatCost(cents: number): string {
 
 const PANEL_WIDTH = 300
 
-export default function ContextRing({ info }: ContextRingProps) {
+export default function ContextRing({ info, compactSessionStats }: ContextRingProps) {
   const [panelOpen, setPanelOpen] = useState(false)
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null)
   const [panelPos, setPanelPos] = useState({ bottom: 0, left: 0 })
@@ -223,6 +225,15 @@ export default function ContextRing({ info }: ContextRingProps) {
                   </div>
                 )}
               </div>
+
+              {compactSessionStats && compactSessionStats.count > 0 && (
+                <div className="ctx-compact-stats">
+                  <AppIcon name="layers" size="xs" tone="accent" />
+                  <span>Сжатий: <strong>{compactSessionStats.count}</strong></span>
+                  <span className="ctx-compact-stats-sep">·</span>
+                  <span>сэкономлено <strong>{formatNum(compactSessionStats.totalTokensSaved)}</strong> tok</span>
+                </div>
+              )}
 
               {info.warning && (
                 <div className={`ctx-alert${info.critical ? ' ctx-alert-crit' : ''}`}>

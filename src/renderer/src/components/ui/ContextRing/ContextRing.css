@@ -167,3 +167,19 @@
   border-color: rgba(239, 68, 68, 0.3);
   color: #ef4444;
 }
+
+/* Статистика сжатий сессии */
+.ctx-compact-stats {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  color: var(--accent, #6366f1);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.ctx-compact-stats strong { font-weight: 600; }
+.ctx-compact-stats-sep { opacity: 0.5; }

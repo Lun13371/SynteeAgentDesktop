@@ -24,7 +24,7 @@ import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA } from '.
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
 import {
-  applyRollingWindowAsync, getContextSettings, estimateTokens,
+  applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokens,
   getModelContextWindow,
   type ChatMessage,
 } from '../../core/context/contextManager'
@@ -290,6 +290,91 @@ function formatTodoForContext(todo: Array<{ text: string; status: 'pending' | 'i
   return `[АКТУАЛЬНЫЙ ПЛАН ЗАДАЧИ — состояние на момент предыдущего сообщения]\n${lines.join('\n')}${suffix}`
 }
 
+// ─── Compact: helpers для разделителя сжатия контекста ──────────────────────
+// Применяется и при авто-компакции (внутри runChatSend), и при ручном /compact
+// (chat:compact IPC handler). Разделитель — это system-сообщение с
+// slashCommand.name === 'compact', сохраняется в БД через saveMessage.
+// compactSummary — снимок резюме на момент сжатия (не меняется при будущих
+// компакциях в отличие от chat_summaries, который перетирается).
+
+function fmtTokensK(n: number): string {
+  // Округляем до десятых k (1200 → "1.2k", 18500 → "18.5k", 600 → "0.6k")
+  return (Math.round(n / 100) / 10).toLocaleString('ru') + 'k'
+}
+
+function createCompactDivider(chatId: string, opts: {
+  removedCount: number
+  tokensBefore: number
+  tokensAfter: number
+  summaryContent: string
+  createdAt?: number
+}): Message {
+  const tokensSaved = Math.max(0, opts.tokensBefore - opts.tokensAfter)
+  const content = `Контекст сжат • удалено ${opts.removedCount} сообщ. • ${fmtTokensK(opts.tokensBefore)}→${fmtTokensK(opts.tokensAfter)} токенов • сэкономлено ~${fmtTokensK(tokensSaved)}`
+  return {
+    id: uuid(),
+    chatId,
+    role: 'system',
+    content,
+    createdAt: opts.createdAt ?? Date.now(),
+    isPinned: 0,
+    slashCommand: { name: 'compact', args: '' },
+    compactSummary: opts.summaryContent,
+    compactStats: {
+      removedCount: opts.removedCount,
+      tokensBefore: opts.tokensBefore,
+      tokensAfter: opts.tokensAfter,
+      tokensSaved,
+    },
+  }
+}
+
+function emitChatCompacted(win: BrowserWindow | null, payload: {
+  chatId: string
+  dividerMessageId: string
+  removedCount: number
+  tokensBefore: number
+  tokensAfter: number
+  trigger: 'auto' | 'manual'
+}): void {
+  win?.webContents.send(IPC_EVENTS.CHAT_COMPACTED, { ...payload, ts: Date.now() })
+}
+
+/**
+ * Вычисляет Message.id middle-диапазона (что надо удалить из БД) и удаляет их.
+ * Логика симметрична applyRollingWindowAsync: первые keepFirst и последние
+ * keepLast Message остаются, middle — удаляется физически (через
+ * deleteMessageById). При короткой истории адаптирует keepLast/keepFirst
+ * так, чтобы middle содержал хотя бы 1 сообщение.
+ *
+ * Возвращает реально удалённое кол-во (может отличаться от removedCount в
+ * CompressResult, т.к. тот считал ChatMessage, а тут — Message).
+ */
+function deleteMiddleMessagesFromDB(history: Message[], keepFirst: number, keepLast: number): number {
+  let kf = keepFirst
+  let kl = keepLast
+  if (history.length <= kf + kl + 1) {
+    const newKl = Math.max(0, history.length - kf - 1)
+    kl = Math.min(kl, newKl)
+    if (kf + kl + 1 > history.length) {
+      kf = Math.max(0, history.length - kl - 1)
+    }
+  }
+  if (kf + kl >= history.length || kf < 0 || kl < 0) return 0
+
+  const middle = history.slice(kf, history.length - kl)
+  let deleted = 0
+  for (const msg of middle) {
+    try {
+      deleteMessageById(msg.id)
+      deleted++
+    } catch {
+      // уже удалён / не существует — ok
+    }
+  }
+  return deleted
+}
+
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
 
@@ -547,6 +632,44 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         if (result.summaryContent && !params.incognito) {
           setChatSummary(params.chatId, result.summaryContent)
           storedSummary = result.summaryContent
+
+          // Видимый разделитель «Контекст сжат» — system-сообщение с
+          // slashCommand.name === 'compact'. createdAt чуть меньше userMsg,
+          // чтобы в БД-сортировке (ORDER BY created_at ASC) он шёл между
+          // предыдущим assistant и новым user-сообщением, инициировавшим
+          // сжатие. compactSummary — снимок резюме, не меняется при
+          // будущих компакциях (в отличие от chat_summaries).
+          const tokensBefore = estimateMessagesTokens(rawHistory)
+          const tokensAfter = estimateMessagesTokens(result.messages)
+          const divider = createCompactDivider(params.chatId, {
+            removedCount: result.removedCount,
+            tokensBefore,
+            tokensAfter,
+            summaryContent: result.summaryContent,
+            createdAt: userMsg.createdAt - 1,
+          })
+          saveMessage(divider)
+
+          // Физически удаляем middle-сообщения из БД — иначе контекст
+          // не уменьшится реально, а только увеличится за счёт divider +
+          // summary в system prompt. head/tail Message остаются, middle
+          // — удаляется по id. Число удалённых Message может отличаться
+          // от result.removedCount (ChatMessage), но для пользователя
+          // это разница не критична — stats в divider берутся из
+          // removedCount (ChatMessage), а реальная чистка БД идёт тут.
+          const dbDeleted = deleteMiddleMessagesFromDB(
+            history, ctxSettings.rollingKeepFirst, ctxSettings.rollingKeepLast,
+          )
+          log('[chat:send] compact: удалено из БД %d Message (chatId=%s)', dbDeleted, params.chatId)
+
+          emitChatCompacted(win, {
+            chatId: params.chatId,
+            dividerMessageId: divider.id,
+            removedCount: result.removedCount,
+            tokensBefore,
+            tokensAfter,
+            trigger: 'auto',
+          })
         }
       }
     }
@@ -1902,6 +2025,135 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     } catch (e) {
       log('[chat:redo] error chatId=%s: %s', chatId, (e as Error).message)
       return { error: `Ошибка отмены отката: ${(e as Error).message}` }
+    }
+  })
+
+  /**
+   * chat:compact — ручное сжатие контекста чата через slash-команду /compact.
+   *
+   * Делает то же, что и авто-компакция внутри chat:send, но с
+   * forceCompress=true (срабатывает даже когда порог токенов не достигнут),
+   * и сохраняет видимый system-разделитель «Контекст сжат» в ленте чата
+   * (аналогично rewind-сообщению). Возвращает обновлённый массив сообщений
+   * и краткую статистику для toast'а в renderer.
+   *
+   * Блокируется как rewind, если чат активен (воркер работает) —
+   * компакция гоняет LLM-запрос через summaryFn и не должна проходить
+   * параллельно с другим ходом.
+   */
+  ipcMain.handle('chat:compact', async (_, chatId: string) => {
+    // Sidechat-чаты (incognito, префикс 'sidechat:') — эфемерны:
+    // история не в БД, summary не сохраняется — компакция бессмысленна.
+    if (chatId.startsWith('sidechat:')) {
+      return { error: 'Компакция недоступна для параллельного side-чата.' }
+    }
+    if (activeRuns.has(chatId)) {
+      return { error: 'Чат активен — дождитесь завершения ответа перед сжатием.' }
+    }
+
+    try {
+      const storeData: Record<string, unknown> = {}
+      const storeKeys = [
+        'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'integrations',
+        'voiceId', 'embeddingModel',
+        'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
+        'contextSettings',
+      ]
+      for (const k of storeKeys) {
+        const v = store.get(k)
+        if (v !== undefined) storeData[k] = v
+      }
+      const ctxSettings = getContextSettings(storeData)
+
+      const history = getMessages(chatId)
+      const historyLimit = 40
+      const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
+      if (rawHistory.length === 0) {
+        return { error: 'Чат пуст — нечего сжимать.' }
+      }
+
+      let storedSummary = ''
+      try { storedSummary = getChatSummary(chatId) } catch { /* ok */ }
+
+      const realContextWindow = getModelContextWindow(storeData)
+      const rollingSettings = { ...ctxSettings, contextLimitTokens: realContextWindow }
+
+      const summaryFn = async (prompt: string): Promise<string> => {
+        const aiClient = new AIClient(store)
+        let result = ''
+        await aiClient.streamChat(
+          [{ role: 'user', content: prompt }],
+          { onToken: (t) => { result += t }, onDone: () => {}, onError: () => {} },
+          'fast',
+        )
+        return result
+      }
+
+      // forceCompress=true — форсируем сжатие даже если порог токенов
+      // не достигнут (пользователь явно попросил /compact). applyRollingWindowAsync
+      // адаптирует keepLast/keepFirst для коротких историй, чтобы middle
+      // был непустым. Если совсем нечего сжимать (1-2 сообщения) —
+      // вернёт compressed=false → сообщим пользователю.
+      const tokensBefore = estimateMessagesTokens(rawHistory)
+      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true)
+      if (!result.compressed) {
+        return { error: 'Недостаточно сообщений для сжатия (нужно больше 2).' }
+      }
+
+      const tokensAfter = estimateMessagesTokens(result.messages)
+
+      // Пишем summary в chat_summaries (перезаписывает старое, как при
+      // авто-компакции). Это нужно для будущего system prompt AI.
+      if (result.summaryContent) {
+        setChatSummary(chatId, result.summaryContent)
+      }
+
+      // Видимый разделитель. createdAt = Date.now() — простой append в
+      // конец чата: ручное сжатие, нет user-сообщения-триггера, divider
+      // просто фиксирует факт сжатия в текущей точке ленты. Разворачивается
+      // кнопкой «развернуть» в UI — текст берётся из compactSummary.
+      const divider = createCompactDivider(chatId, {
+        removedCount: result.removedCount,
+        tokensBefore,
+        tokensAfter,
+        summaryContent: result.summaryContent ?? '',
+        createdAt: Date.now(),
+      })
+      saveMessage(divider)
+
+      // Физически удаляем middle-сообщения из БД — иначе контекст не
+      // уменьшится, а только вырастет за счёт divider + summary в system
+      // prompt. head/tail Message остаются, middle — удаляется по id.
+      const dbDeleted = deleteMiddleMessagesFromDB(
+        history, ctxSettings.rollingKeepFirst, ctxSettings.rollingKeepLast,
+      )
+      log('[chat:compact] chatId=%s: removed=%d ChatMessage, удалено из БД %d Message, tokens %d→%d (saved %d)',
+        chatId, result.removedCount, dbDeleted, tokensBefore, tokensAfter, tokensBefore - tokensAfter)
+
+      const win = mainWindow.getWindow()
+      emitChatCompacted(win, {
+        chatId,
+        dividerMessageId: divider.id,
+        removedCount: result.removedCount,
+        tokensBefore,
+        tokensAfter,
+        trigger: 'manual',
+      })
+
+      return {
+        messages: getMessages(chatId),
+        stats: {
+          removedCount: dbDeleted,
+          tokensBefore,
+          tokensAfter,
+          tokensSaved: Math.max(0, tokensBefore - tokensAfter),
+          dividerMessageId: divider.id,
+        },
+      }
+    } catch (e) {
+      log('[chat:compact] error chatId=%s: %s', chatId, (e as Error).message)
+      return { error: `Ошибка сжатия контекста: ${(e as Error).message}` }
     }
   })
 }

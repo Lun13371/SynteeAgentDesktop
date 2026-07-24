@@ -113,6 +113,16 @@ export const BUILTIN_MODELS: ModelMeta[] = [
   m('black-forest-labs/FLUX.1-dev',      'together', 'FLUX.1 Dev',      0, 0.010, 0.00, 'medium', [I], 'Together — FLUX Dev'),
   m('black-forest-labs/FLUX.1.1-pro',    'together', 'FLUX 1.1 Pro',    0, 0.040, 0.00, 'medium', [I], 'Together — FLUX 1.1 Pro'),
   m('stabilityai/stable-diffusion-xl-base-1.0', 'together', 'SDXL 1.0', 0, 0.008, 0.00, 'fast',   [I], 'Together — Stable Diffusion XL'),
+
+  // ── OpenCode Zen Free (без ключа, только free-модели) ─────────────────────
+  // Pre-seed 6 free-моделей (видны в пикере сразу, до фетча). При «Модели»
+  // список обновляется фреш-фетчем с фильтром -free. Цены 0, статы из models.dev.
+  m('deepseek-v4-flash-free',  'opencode-free', 'DeepSeek V4 Flash (Free)',  200_000, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free — анонимный, без ключа'),
+  m('mimo-v2.5-free',           'opencode-free', 'MiMo V2.5 (Free)',          200_000, 0, 0, 'medium', [V,T,R,C], 'OpenCode Zen Free — мультимодальная, image/audio/video'),
+  m('nemotron-3-ultra-free',    'opencode-free', 'Nemotron 3 Ultra (Free)', 1_000_000, 0, 0, 'slow',   [T,R,C],   'OpenCode Zen Free — огромный контекст 1M'),
+  m('north-mini-code-free',     'opencode-free', 'North Mini Code (Free)',   256_000, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free — код-ориентированная'),
+  m('laguna-s-2.1-free',        'opencode-free', 'Laguna S 2.1 (Free)',       256_000, 0, 0, 'medium', [T,R,C],   'OpenCode Zen Free'),
+  m('ling-3.0-flash-free',      'opencode-free', 'Ling 3.0 Flash (Free)',    262_144, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free'),
 ]
 
 export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: string; docsUrl: string; color: string }> = {
@@ -130,4 +140,8 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   onlysq:    { name: 'OnlySQ',      baseUrl: 'https://api.onlysq.ru/ai/openai',            color: '#a855f7', docsUrl: 'https://api.onlysq.ru' },
   voidai:    { name: 'VoidAI',      baseUrl: 'https://api.voidai.app/v1',                  color: '#06b6d4', docsUrl: 'https://docs.voidai.app' },
   bfl:       { name: 'Black Forest Labs', baseUrl: 'https://api.bfl.ai',                   color: '#e11d48', docsUrl: 'https://docs.bfl.ml' },
+  // ── OpenCode Zen — публичный OpenAI-совместимый шлюз (https://opencode.ai/zen) ──
+  'opencode-free': { name: 'OpenCode Zen Free', baseUrl: 'https://opencode.ai/zen/v1',    color: '#10b981', docsUrl: 'https://opencode.ai' },
+  opencode:        { name: 'OpenCode Zen',      baseUrl: 'https://opencode.ai/zen/v1',    color: '#6366f1', docsUrl: 'https://opencode.ai' },
+  'opencode-go':   { name: 'OpenCode Go',       baseUrl: 'https://opencode.ai/zen/go/v1', color: '#f59e0b', docsUrl: 'https://opencode.ai' },
 }

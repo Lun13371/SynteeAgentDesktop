@@ -27,8 +27,6 @@ function getCatalogModelCached(providerId: string, modelId: string): CatalogMode
 }
 
 const DEFAULT_PARAMS: ModelParams = {
-  temperature: 0.7,
-  maxTokens: 4096,
   systemPrompt: '',
   streaming: true,
 }
@@ -65,6 +63,26 @@ const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
 
 export function registerProviderIPC(store: Store): void {
 
+  // ── Auto-seed OpenCode Zen Free ────────────────────────────────────────────
+  // Анонимный провайдер (без ключа) — готов «из коробки». Idempotent: если
+  // уже есть в store (вкл. если юзер выключил) — не трогаем.
+  {
+    const list = store.get('providers', []) as Provider[]
+    if (!list.find(p => p.id === 'opencode-free')) {
+      list.push({
+        id: 'opencode-free',
+        type: 'opencode-free',
+        name: 'OpenCode Zen Free',
+        baseUrl: 'https://opencode.ai/zen/v1',
+        apiKey: 'public',
+        enabled: true,
+        isCustom: false,
+        anonymous: true,
+      } as Provider)
+      store.set('providers', list)
+    }
+  }
+
   // ── Round-robin helper (экспортируем для AIClient) ─────────────────────────
   // Возвращает следующий ключ для провайдера и сохраняет индекс в store
   // Вызывается из AIClient перед каждым запросом
@@ -86,9 +104,13 @@ export function registerProviderIPC(store: Store): void {
   ipcMain.handle('providers:delete', (_e, id: string) => {
     const list = (store.get('providers', []) as Provider[]).filter(p => p.id !== id)
     store.set('providers', list)
-    // Удаляем кастомные модели этого провайдера
-    const models = (store.get('customModels', []) as ModelMeta[]).filter(m => m.providerId !== id)
-    store.set('customModels', models)
+    // Удаляем все модели этого провайдера: кастомные и закэшированные.
+    // Ранее cachedModels не фильтровались — модели удалённого провайдера
+    // оставались в models:getAll и показывались в UI как «висячие».
+    const custom = (store.get('customModels', []) as ModelMeta[]).filter(m => m.providerId !== id)
+    store.set('customModels', custom)
+    const cached = (store.get('cachedModels', []) as ModelMeta[]).filter(m => m.providerId !== id)
+    store.set('cachedModels', cached)
   })
 
   ipcMain.handle('providers:testKey', async (_e, providerId: string) => {
@@ -120,7 +142,9 @@ export function registerProviderIPC(store: Store): void {
       const url = provider.baseUrl.replace(/\/$/, '') + '/models'
       const res = await fetch(url, {
         headers: {
-          'Authorization': `Bearer ${provider.apiKey || ''}`,
+          // Анонимные провайдеры (opencode-free) шлют apiKey 'public' → Bearer public.
+          // Если apiKey пуст — fallback на 'public' (как делает opencode CLI).
+          'Authorization': `Bearer ${provider.apiKey || 'public'}`,
           'Content-Type': 'application/json',
         },
       })
@@ -130,7 +154,13 @@ export function registerProviderIPC(store: Store): void {
         const data = await res.json() as { data?: { id: string }[]; models?: { id: string }[] }
         // Поддерживаем оба формата: { data: [...] } и { models: [...] }
         const items = data.data || data.models || []
-        const ids: string[] = items.map((m: { id: string }) => m.id).filter(Boolean)
+        let ids: string[] = items.map((m: { id: string }) => m.id).filter(Boolean)
+
+        // OpenCode Zen Free — анонимный провайдер, оставляем только free-модели.
+        // Live-endpoint /zen/v1/models возвращает все id; дискриминатор free — суффикс -free.
+        if (provider.id === 'opencode-free') {
+          ids = ids.filter(id => id.endsWith('-free'))
+        }
 
         fetched = ids.map(id => {
           const known = BUILTIN_MODELS.find(b => b.id === id)

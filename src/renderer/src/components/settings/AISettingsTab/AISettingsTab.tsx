@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import type { Provider, ModelAssignment, ModelParams, ModelRole, ModelCapability } from '../../../../../shared/types'
+import type { Provider, ModelAssignment, ModelParams, ModelRole, ModelCapability, ModelMeta } from '../../../../../shared/types'
 import { BUILTIN_PROVIDERS_META } from '../../../../../shared/data/builtinModels'
 import ModelPicker from '../../ui/ModelPicker/ModelPicker'
 import AppIcon from '../../ui/AppIcon/AppIcon'
@@ -26,8 +26,9 @@ const BUILTIN_PROVIDER_IDS = Object.keys(BUILTIN_PROVIDERS_META)
 export default function AISettingsTab() {
   const [tab, setTab] = useState<'providers' | 'models' | 'params'>('providers')
   const [providers, setProviders] = useState<Provider[]>([])
+  const [allModels, setAllModels] = useState<ModelMeta[]>([])
   const [assignments, setAssignments] = useState<ModelAssignment[]>([])
-  const [params, setParams] = useState<ModelParams>({ temperature: 0.7, maxTokens: 4096, systemPrompt: '', streaming: true })
+  const [params, setParams] = useState<ModelParams>({ systemPrompt: '', streaming: true })
   const [configuring, setConfiguring] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<Partial<Provider>>({})
   const [editKeys, setEditKeys] = useState<string[]>([''])
@@ -42,13 +43,15 @@ export default function AISettingsTab() {
 
   const load = async () => {
     try {
-      const [p, a, pm, imgS] = await Promise.all([
+      const [p, a, pm, imgS, models] = await Promise.all([
         window.syntee.providers.getAll() as Promise<Provider[]>,
         window.syntee.models.getAssignments() as Promise<ModelAssignment[]>,
         window.syntee.models.getParams() as Promise<ModelParams>,
         window.syntee.image.getSettings(),
+        window.syntee.models.getAll() as Promise<ModelMeta[]>,
       ])
       setProviders(p)
+      setAllModels(models)
       setAssignments(a)
       setParams(pm)
       setImageModelId(imgS.modelId || '')
@@ -60,24 +63,36 @@ export default function AISettingsTab() {
 
   const getProviderMeta = (id: string) => BUILTIN_PROVIDERS_META[id]
 
-  const isConfigured = (id: string) => providers.find(p => p.id === id && p.enabled && p.apiKey)
+  // Анонимные провайдеры работают без API-ключа (шлют Bearer public).
+  // Для них скрываем поле ключа и считаем «настроенным» без ввода.
+  const isAnonymousProvider = (id: string) => id === 'opencode-free'
+
+  // Провайдеры, требующие обязательного ввода OPENCODE_API_KEY в UI.
+  const isKeyRequiredProvider = (id: string) => id === 'opencode' || id === 'opencode-go'
+
+  const isConfigured = (id: string) => providers.find(p => p.id === id && p.enabled && (p.apiKey || p.anonymous))
 
   const startConfigure = (id: string) => {
     const existing = providers.find(p => p.id === id)
     const meta = BUILTIN_PROVIDERS_META[id]
+    const anon = isAnonymousProvider(id)
     setEditForm({
       id,
       type: id as Provider['type'],
       name: meta?.name || id,
       baseUrl: existing?.baseUrl || meta?.baseUrl || '',
-      apiKey: existing?.apiKey || '',
+      apiKey: anon ? 'public' : (existing?.apiKey || ''),
       enabled: true,
       isCustom: false,
+      anonymous: anon || undefined,
     })
-    // Инициализируем список ключей: apiKeys если есть, иначе apiKey как первый
-    const keys = existing?.apiKeys?.length
-      ? existing.apiKeys
-      : existing?.apiKey ? [existing.apiKey] : ['']
+    // Инициализируем список ключей: apiKeys если есть, иначе apiKey как первый.
+    // Анонимные — один «public» (не редактируется, поле скрыто).
+    const keys = anon
+      ? ['public']
+      : (existing?.apiKeys?.length
+        ? existing.apiKeys
+        : existing?.apiKey ? [existing.apiKey] : [''])
     setEditKeys(keys)
     setConfiguring(id)
     setTestStatus(s => ({ ...s, [id]: 'idle' }))
@@ -86,10 +101,12 @@ export default function AISettingsTab() {
   const saveProvider = async () => {
     if (!editForm.id) return
     const validKeys = editKeys.filter(k => k.trim())
+    // OpenCode Zen / Go — ключ обязателен. Анонимные (opencode-free) проходят с 'public'.
+    if (isKeyRequiredProvider(editForm.id) && validKeys.length === 0) return
     await window.syntee.providers.save({
       ...editForm,
-      apiKey: validKeys[0] || '',   // первый ключ — обратная совместимость
-      apiKeys: validKeys,
+      apiKey: editForm.anonymous ? 'public' : (validKeys[0] || ''),   // первый ключ — обратная совместимость
+      apiKeys: editForm.anonymous ? ['public'] : validKeys,
       rrIndex: 0,                   // сбрасываем round-robin при сохранении
       enabled: true,
     } as Provider)
@@ -103,6 +120,7 @@ export default function AISettingsTab() {
   }
 
   const testKey = async (id: string) => {
+    if (isKeyRequiredProvider(id) && !editKeys.some(k => k.trim())) return
     setTestStatus(s => ({ ...s, [id]: 'loading' }))
     await window.syntee.providers.save({ ...editForm, id, enabled: true } as Provider)
     const res = await window.syntee.providers.testKey(id) as { ok: boolean }
@@ -196,7 +214,7 @@ export default function AISettingsTab() {
                     />
                     <span className="provider-name">{meta.name}</span>
                     <span className={`provider-status ${configured ? 'provider-status--ok' : ''}`}>
-                      {configured ? 'Настроен' : 'Не настроен'}
+                      {configured ? (isAnonymousProvider(id) ? 'Аноним' : 'Настроен') : 'Не настроен'}
                     </span>
                   </div>
 
@@ -209,38 +227,47 @@ export default function AISettingsTab() {
                         exit={{ height: 0, opacity: 0 }}
                         transition={{ duration: 0.2 }}
                       >
-                        <label className="provider-form-label">
-                          API Keys
-                          {editKeys.length > 1 && (
-                            <span className="provider-form-rr-badge">round-robin · {editKeys.filter(k=>k.trim()).length} ключей</span>
-                          )}
-                        </label>
-                        <div className="provider-keys-list">
-                          {editKeys.map((key, ki) => (
-                            <div key={ki} className="provider-key-row">
-                              <input
-                                className="provider-form-input provider-key-input"
-                                type="password"
-                                placeholder={ki === 0 ? 'sk-... (основной)' : `sk-... (ключ ${ki + 1})`}
-                                value={key}
-                                onChange={e => setEditKeys(ks => ks.map((k, i) => i === ki ? e.target.value : k))}
-                              />
+                        {editForm.anonymous ? (
+                          <div className="provider-anonymous-note">
+                            <AppIcon name="check" size="xs" tone="success" />
+                            <span>Анонимный доступ — без API-ключа. Доступны только free-модели (суффикс <code>-free</code>).</span>
+                          </div>
+                        ) : (
+                          <>
+                            <label className="provider-form-label">
+                              API Keys
                               {editKeys.length > 1 && (
-                                <button
-                                  className="provider-key-remove"
-                                  onClick={() => setEditKeys(ks => ks.filter((_, i) => i !== ki))}
-                                  title="Удалить ключ"
-                                >×</button>
+                                <span className="provider-form-rr-badge">round-robin · {editKeys.filter(k=>k.trim()).length} ключей</span>
                               )}
+                            </label>
+                            <div className="provider-keys-list">
+                              {editKeys.map((key, ki) => (
+                                <div key={ki} className="provider-key-row">
+                                  <input
+                                    className="provider-form-input provider-key-input"
+                                    type="password"
+                                    placeholder={ki === 0 ? 'sk-... (основной)' : `sk-... (ключ ${ki + 1})`}
+                                    value={key}
+                                    onChange={e => setEditKeys(ks => ks.map((k, i) => i === ki ? e.target.value : k))}
+                                  />
+                                  {editKeys.length > 1 && (
+                                    <button
+                                      className="provider-key-remove"
+                                      onClick={() => setEditKeys(ks => ks.filter((_, i) => i !== ki))}
+                                      title="Удалить ключ"
+                                    >×</button>
+                                  )}
+                                </div>
+                              ))}
+                              <button
+                                className="provider-key-add"
+                                onClick={() => setEditKeys(ks => [...ks, ''])}
+                              >
+                                + Добавить ключ
+                              </button>
                             </div>
-                          ))}
-                          <button
-                            className="provider-key-add"
-                            onClick={() => setEditKeys(ks => [...ks, ''])}
-                          >
-                            + Добавить ключ
-                          </button>
-                        </div>
+                          </>
+                        )}
                         {id === 'ollama' && (
                           <>
                             <label className="provider-form-label">Base URL</label>
@@ -255,7 +282,7 @@ export default function AISettingsTab() {
                           <button
                             className="provider-btn provider-btn--test"
                             onClick={() => testKey(id)}
-                            disabled={testStatus[id] === 'loading'}
+                            disabled={testStatus[id] === 'loading' || (isKeyRequiredProvider(id) && !editKeys.some(k => k.trim()))}
                           >
                             {testStatus[id] === 'loading' ? (
                               <AppIcon name="loader" size="xs" animation="spin" />
@@ -268,7 +295,12 @@ export default function AISettingsTab() {
                             )}
                             Проверить
                           </button>
-                          <button className="provider-btn provider-btn--save" onClick={saveProvider}>
+                          <button
+                            className="provider-btn provider-btn--save"
+                            onClick={saveProvider}
+                            disabled={isKeyRequiredProvider(id) && !editKeys.some(k => k.trim())}
+                            title={isKeyRequiredProvider(id) && !editKeys.some(k => k.trim()) ? 'Введите API-ключ' : undefined}
+                          >
                             Сохранить
                           </button>
                           <button className="provider-btn provider-btn--cancel" onClick={() => setConfiguring(null)}>
@@ -412,6 +444,8 @@ export default function AISettingsTab() {
                       onChange={(modelId, pid) => setAssignment(role, modelId, pid)}
                       filterCaps={meta.filterCaps}
                       placeholder="Не выбрано"
+                      sharedModels={allModels}
+                      sharedProviders={providers}
                     />
                   </div>
                 </motion.div>
@@ -446,6 +480,8 @@ export default function AISettingsTab() {
                 }}
                 filterCaps={['image_gen'] as ModelCapability[]}
                 placeholder="Не выбрано"
+                sharedModels={allModels}
+                sharedProviders={providers}
               />
             </div>
           </motion.div>
@@ -456,35 +492,6 @@ export default function AISettingsTab() {
       {/* ── ПАРАМЕТРЫ ── */}
       {tab === 'params' && (
         <div className="ai-params">
-          <div className="ai-param-row">
-            <label className="ai-param-label">
-              Temperature
-              <span className="ai-param-hint">Случайность ответов (0 = детерминировано, 2 = максимально творчески)</span>
-            </label>
-            <div className="ai-param-slider-wrap">
-              <input
-                type="range" min={0} max={2} step={0.05}
-                value={params.temperature}
-                onChange={e => updateParams({ temperature: parseFloat(e.target.value) })}
-                className="ai-param-slider"
-              />
-              <span className="ai-param-value">{params.temperature.toFixed(2)}</span>
-            </div>
-          </div>
-
-          <div className="ai-param-row">
-            <label className="ai-param-label">
-              Max Tokens
-              <span className="ai-param-hint">Максимальная длина ответа</span>
-            </label>
-            <input
-              type="number" min={256} max={32000} step={256}
-              value={params.maxTokens}
-              onChange={e => updateParams({ maxTokens: parseInt(e.target.value) })}
-              className="ai-param-input"
-            />
-          </div>
-
           <div className="ai-param-row ai-param-row--toggle">
             <label className="ai-param-label">
               Стриминг
@@ -500,13 +507,13 @@ export default function AISettingsTab() {
 
           <div className="ai-param-row ai-param-row--full">
             <label className="ai-param-label">
-              System Prompt
-              <span className="ai-param-hint">Глобальная инструкция для всех чатов</span>
+              Дополнительная инструкция
+              <span className="ai-param-hint">Дополнение к системному промпту для всех чатов. Не перезаписывает его, а добавляется отдельной секцией «Пользовательская инструкция».</span>
             </label>
             <textarea
               className="ai-param-textarea"
               rows={6}
-              placeholder="Ты — полезный AI-ассистент..."
+              placeholder="Например: отвечай коротко, используй примеры кода..."
               value={params.systemPrompt}
               onChange={e => updateParams({ systemPrompt: e.target.value })}
             />

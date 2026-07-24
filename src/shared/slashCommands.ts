@@ -34,6 +34,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     systemPrompt: () => '',
   },
   {
+    name: 'compact',
+    label: '/compact',
+    description: 'Сжать контекст чата',
+    icon: 'layers',
+    systemPrompt: () => '',
+  },
+  {
     name: 'recap',
     label: '/recap',
     description: 'Краткое резюме чата',

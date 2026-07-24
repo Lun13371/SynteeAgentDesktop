@@ -14,12 +14,19 @@ interface ModelPickerProps {
   onChange: (modelId: string, providerId: string) => void
   filterCaps?: ModelCapability[]   // начальный фильтр (можно снять)
   placeholder?: string
+  /** Готовый список моделей. Если передан — не делает IPC-запрос на маунт.
+   *  Родитель (напр. AISettingsTab) грузит модели один раз и раздаёт всем
+   *  пикерам, чтобы избежать N независимых IPC-вызовов и появления пунктов
+   *  по одному с задержкой. */
+  sharedModels?: ModelMeta[]
+  /** Готовый список провайдеров (та же оптимизация, что sharedModels). */
+  sharedProviders?: Provider[]
 }
 
 const DROP_H = 460
 const ALL_CAPS: ModelCapability[] = ['vision', 'tools', 'reasoning', 'code', 'image_gen', 'embedding', 'tts', 'stt']
 
-export default function ModelPicker({ value, providerId, onChange, filterCaps, placeholder }: ModelPickerProps) {
+export default function ModelPicker({ value, providerId, onChange, filterCaps, placeholder, sharedModels, sharedProviders }: ModelPickerProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [models, setModels] = useState<ModelMeta[]>([])
@@ -39,6 +46,9 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   // Не гоняем IPC round-trip на каждое открытие — список моделей/провайдеров
   // меняется редко. Перегружаем только один раз на маунт и если данные
   // старше 5с при повторном открытии (защита от staleness).
+  // Если родитель передал sharedModels/sharedProviders — используем их и
+  // вообще не делаем IPC-запрос (одна загрузка на весь AISettingsTab вместо
+  // N независимых запросов от каждого пикера).
   const lastLoadedAtRef = useRef(0)
   const loadData = () => {
     Promise.all([
@@ -53,11 +63,22 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
       .catch((e: unknown) => console.error('[ModelPicker] load error', e))
   }
 
-  useEffect(() => { loadData() }, [])
+  // Синхронизируем shared-данные, если родитель их предоставил.
+  useEffect(() => {
+    if (sharedModels) setModels(sharedModels)
+  }, [sharedModels])
+  useEffect(() => {
+    if (sharedProviders) setProviders(sharedProviders)
+  }, [sharedProviders])
+
+  // Самостоятельная загрузка только если shared-данных нет.
+  useEffect(() => {
+    if (!sharedModels && !sharedProviders) loadData()
+  }, [])
 
   useEffect(() => {
-    if (open && Date.now() - lastLoadedAtRef.current > 5000) loadData()
-  }, [open])
+    if (open && !sharedModels && Date.now() - lastLoadedAtRef.current > 5000) loadData()
+  }, [open, sharedModels])
 
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 50)
@@ -291,7 +312,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                               }}
                             >
                               <BrandAvatar logo={groupLogo} fallbackColor={getProviderColor(row.providerId)} size={16} className="model-picker-provider-logo" />
-                              {row.providerId}
+                              {prov?.name ?? row.providerId}
                             </div>
                           )
                         }
