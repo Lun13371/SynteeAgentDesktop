@@ -74,6 +74,12 @@ export interface Message {
   imageUrl?: string
   planData?: { title: string; content: string; summary: string; filePath: string }
   todo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
+  /** Снимок резюме на момент сжатия контекста (для разворачивания разделителя).
+   *  Заполняется только у system-сообщений с slashCommand.name === 'compact'. */
+  compactSummary?: string
+  /** Статистика сжатия (заполняется только у compact-разделителей).
+   *  Используется ContextRing для показа кол-ва сжатий и сэкономленных токенов. */
+  compactStats?: { removedCount: number; tokensBefore: number; tokensAfter: number; tokensSaved: number }
 }
 
 export interface ToolStep {
@@ -152,6 +158,7 @@ export type ProviderType =
   | 'openai' | 'anthropic' | 'google' | 'groq' | 'mistral'
   | 'ollama' | 'cohere' | 'together' | 'fireworks' | 'deepseek'
   | 'xai' | 'onlysq' | 'voidai' | 'custom'
+  | 'opencode' | 'opencode-free' | 'opencode-go'
 
 export interface Provider {
   id: string               // уникальный slug: 'openai', 'my-custom-1'
@@ -166,6 +173,8 @@ export interface Provider {
   iconUrl?: string         // для кастомных провайдеров
   lastModelsFetch?: number // timestamp последнего парсинга
   modelsOverride?: string[]// ручные модели добавленные пользователем
+  /** Провайдер работает без API-ключа (анонимный, шлёт Bearer public). */
+  anonymous?: boolean
 }
 
 export type ModelCapability = 'vision' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt' | 'image_gen'
@@ -203,9 +212,7 @@ export interface ModelAssignment {
 }
 
 export interface ModelParams {
-  temperature: number      // 0–2, default 0.7
-  maxTokens: number        // default 4096
-  systemPrompt: string     // глобальный system prompt
+  systemPrompt: string     // глобальная доп. инструкция (аппендится, не перезаписывает)
   streaming: boolean
 }
 

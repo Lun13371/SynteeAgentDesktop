@@ -216,9 +216,8 @@ class PtyManager {
     // Стираем маркер из PTY-экрана: очищаем текущую строку. AI-вывод уже
     // отрисован, маркер был на новой строке — затрём его.
     session.proc.write('\r\x1b[2K')
-    clearTimeout(p.timer)
-    session.pending = null
-    p.resolve({ output: output, exitCode, timedOut: false })
+    // Резолв через wrapper — он же чистит timer/pending (см. execInSession).
+    p.resolve({ output, exitCode, timedOut: false })
   }
 
   /** AI-exec: пишет команду в PTY, ждёт маркер с exit code. */
@@ -234,25 +233,63 @@ class PtyManager {
 
     const markerId = `__SYNTEE_DONE_${randomUUID().replace(/-/g, '')}__`
     const isWinShell = session.shell === 'powershell' || session.shell === 'cmd'
-    // Для cmd/powershell используем $?-аналог. cmd не имеет $? — используем
-    // %errorlevel%. PowerShell: $(if($?){0}else{1}).
+    // PowerShell: отдаём $LASTEXITCODE (нативные exe — npm/git/tsc/node и т.д.
+    // выставляют именно его), с fallback на $? для cmdlets, которые $LASTEXITCODE
+    // не трогают. Старый вариант `$(if($?){0}else{1})` всегда давал 0/1 — AI
+    // не видел реальный код и мог зациклиться на одной и той же "ошибке".
+    //   $ec = if ($LASTEXITCODE -ne $null) { [int]$LASTEXITCODE }
+    //         else { [int](-not $?) }
+    // Совместимо с PS 5.1 (без тернарника/null-coalescing).
     const suffix = isWinShell
       ? (session.shell === 'powershell'
-          ? `Write-Output "${markerId}:$(if ($?) { 0 } else { 1 })"`
+          ? `$ec = if ($LASTEXITCODE -ne $null) { [int]$LASTEXITCODE } else { [int](-not $?) }; Write-Output ("${markerId}:" + $ec)`
           : `echo ${markerId}:%errorlevel%`)
       : `echo "${markerId}:$?"`
 
     return new Promise(resolve => {
-      const timer = setTimeout(() => {
+      let settled = false
+      let killTimer: NodeJS.Timeout | undefined
+
+      // Единый выход — гарантирует что resolve позвется ровно один раз
+      // (dbl-resolve возможен: feedExec по маркеру + timeout-fallback),
+      // и чистит ВСЕ таймеры + session.pending.
+      const settle = (r: { output: string; exitCode: number; timedOut?: boolean }) => {
+        if (settled) return
+        settled = true
+        if (killTimer) { clearTimeout(killTimer); killTimer = undefined }
         if (session.pending) {
+          clearTimeout(session.pending.timer)
           session.pending = null
         }
-        // Не убиваем сессию (как делал старый менеджер) — юзер может хотеть
-        // продолжить. Просто резолвим таймаутом.
-        resolve({ output: '', exitCode: 1, timedOut: true })
+        resolve(r)
+      }
+
+      const timer = setTimeout(() => {
+        if (settled) return
+        // Ctrl+C в PTY — прерывает текущую команду (npm install / build /
+        // node / git и т.п.). Shell вернётся к промпту, env/cwd/история
+        // сессии сохранятся — следующий run_command продолжится в той же
+        // сессии, без "shell busy".
+        session.proc.write('\x03')
+        // Даём shell 2с на возврат промпта. Если за это время в поток успел
+        // вывалиться маркер (часто так — echo уже стояло в очереди PTY
+        // после C-c) — feedExec его сматчит и вызовет settle() с обычным
+        // exitCode; fallback не сработает. Если за 2с промпт не вернулся
+        // (висим в интерактивной проге типа vim/top, где Ctrl+C не помог) —
+        // kill PTY и помечаем dead; chat.ipc.ts:870-877 на следующем
+        // run_command увидит `!s.dead` и создаст новую сессию.
+        killTimer = setTimeout(() => {
+          if (settled) return
+          // Сохраняем partial output — то, что команда успела напечатать
+          // до таймаута (раньше это терялось — AI видел пустую строку).
+          const partial = session.pending?.buf ?? ''
+          try { session.proc.kill() } catch { /* already dead */ }
+          session.dead = true
+          settle({ output: partial, exitCode: 1, timedOut: true })
+        }, 2000)
       }, Math.max(1, timeoutSec) * 1000)
 
-      session.pending = { markerId, buf: '', resolve, timer }
+      session.pending = { markerId, buf: '', resolve: settle, timer }
       // PTY интерпретирует '\r' как Enter (submit строки), не '\n' — обычный
       // pipe-подход (\n) здесь не работает, команда просто вставляется в
       // буфер строки и никогда не выполняется, из-за чего маркер не приходит

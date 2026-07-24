@@ -71,6 +71,28 @@
 
 .provider-form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* ── Анонимный провайдер (без ключа) ─────────────────────────── */
+.provider-anonymous-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.provider-anonymous-note code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
 /* ── Множественные ключи ─────────────────────────────────────── */
 .provider-form-rr-badge {
   margin-left: 8px;

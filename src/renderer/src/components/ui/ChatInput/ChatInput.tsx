@@ -43,6 +43,8 @@ interface ChatInputProps {
   /** Рабочая директория текущего чата (режим "Код"). Показывается как
     *  бейдж над инпутом — как cwd-indicator в Codex CLI. */
   workdir?: string
+  /** Статистика сжатий сессии для ContextRing (кол-во + сэкономлено токенов). */
+  compactSessionStats?: { count: number; totalTokensSaved: number }
 }
 
 export default function ChatInput({
@@ -62,6 +64,7 @@ export default function ChatInput({
   onImageModeChange,
   rateLimitSec = 0,
   workdir,
+  compactSessionStats,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
@@ -426,7 +429,7 @@ export default function ChatInput({
         )}
 
         {showContextRing && !isIncognito && (
-          <ContextRing info={contextInfo ?? null} />
+          <ContextRing info={contextInfo ?? null} compactSessionStats={compactSessionStats} />
         )}
 
         <motion.button

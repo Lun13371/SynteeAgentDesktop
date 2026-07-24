@@ -60,6 +60,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
   const [reasoningValue, setReasoningValue] = useState('')
+  const [isCompacting, setIsCompacting] = useState(false)
 
   const handleReasoningChange = (value: string) => {
     setReasoningValue(value)
@@ -116,6 +117,25 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     prevIsTypingRef.current = isTyping
   }, [isTyping])
+
+  // CHAT_COMPACTED — реакция на сжатие контекста в main (как авто-компакция
+  // внутри chat:send когда токенов накопилось > rollingTriggerPct, так и
+  // ручной /compact из другого окна). Перечитываем ленту из БД, чтобы в
+  // renderer-store появился новый system-разделитель «Контекст сжат» —
+  // иначе при авто-компакции renderer не знает что divider был сохранён.
+  useEffect(() => {
+    const off = window.syntee.on('chat:compacted', (data: unknown) => {
+      const d = data as { chatId: string; trigger: 'auto' | 'manual' }
+      if (d.chatId !== currentChatId) return
+      window.syntee.chat.getMessages(d.chatId).then((msgs: Message[]) => {
+        setMessages(msgs)
+        if (d.trigger === 'auto') {
+          toast('Контекст автоматически сжат', 'info')
+        }
+      }).catch(() => {})
+    })
+    return () => { off() }
+  }, [currentChatId, setMessages, toast])
 
   // Счётчик контекста
   const contextInfo = useContextCounter({
@@ -333,7 +353,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     } else if (autoScrollRef.current) {
       smoothScrollToBottom()
     }
-  }, [messages.length, isTyping, isLoadingMessages, smoothScrollToBottom, scrollToBottomInstant])
+  }, [messages.length, isTyping, isLoadingMessages, isCompacting, smoothScrollToBottom, scrollToBottomInstant])
 
   // Автоскролл при стриминге — единый путь через smoothScrollToBottom.
   // (Раньше тут был прямой прыжок el.scrollTop = ... — конкурировал с
@@ -456,6 +476,43 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     if (slash?.command.name === 'image') {
       if (!slash.args) { toast('Укажи описание: /image красивый закат', 'info'); return }
+    }
+
+    // /compact — ручное сжатие контекста чата. Не создаёт user-сообщения
+    // (по поведению ближе к rewind): main гоняет applyRollingWindowAsync с
+    // forceCompress=true, вставляет в БД system-разделитель «Контекст сжат»
+    // и эмитит chat:compacted. Возвращённый messages — обновлённая лента
+    // с этим разделителем.
+    //
+    // Во время сжатия (AI-суммаризация занимает несколько секунд) показываем
+    // compacting-индикатор внизу чата — без него пользователь видит тишину
+    // и не понимает что команда вообще сработала. Инпут блокируется.
+    if (slash?.command.name === 'compact') {
+      if (!currentChatId) { toast('Создай чат перед /compact', 'info'); return }
+      setIsCompacting(true)
+      autoScrollRef.current = true
+      setShowScrollDownBtn(false)
+      try {
+        const result = await window.syntee.chat.compact(currentChatId) as {
+          messages?: Message[]
+          stats?: { removedCount: number; tokensBefore: number; tokensAfter: number; tokensSaved: number; dividerMessageId: string }
+          error?: string
+        }
+        if (result.error) {
+          toast(result.error, 'error')
+          return
+        }
+        if (result.messages) setMessages(result.messages)
+        if (result.stats) {
+          const tk = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n)
+          toast(`Контекст сжат: удалено ${result.stats.removedCount} сообщ. · ${tk(result.stats.tokensBefore)}→${tk(result.stats.tokensAfter)} tok · сэкономлено ~${tk(result.stats.tokensSaved)}`, 'success')
+        }
+      } catch (e) {
+        toast('Ошибка сжатия: ' + String((e as Error)?.message ?? e), 'error')
+      } finally {
+        setIsCompacting(false)
+      }
+      return
     }
 
     let chatId = currentChatId
@@ -611,8 +668,25 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   const overlayActive = isTyping || overlayTodo.length > 0
 
-  const displayMessages = useMemo(() => showLiveBubble
-    ? [...messages, {
+  // Статистика сжатий сессии — кол-во compact-разделителей и суммарно
+  // сэкономлено токенов. Берётся из messages (compactStats сохраняется в БД
+  // у каждого compact-разделителя). Показывается в ContextRing панели.
+  const compactSessionStats = useMemo(() => {
+    let count = 0
+    let totalTokensSaved = 0
+    for (const m of messages) {
+      if (m.slashCommand?.name === 'compact' && m.compactStats) {
+        count++
+        totalTokensSaved += m.compactStats.tokensSaved
+      }
+    }
+    return { count, totalTokensSaved }
+  }, [messages])
+
+  const displayMessages = useMemo(() => {
+    let result = messages
+    if (showLiveBubble) {
+      result = [...result, {
         // Фиксированный id/key для live-пузыря на весь период стриминга.
         // Раньше id = live.msgId, который менялся 'streaming-pending' →
         // реальному uuid при приходе первого токена/step — это вызывало
@@ -634,9 +708,25 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         agentStatus: live.agentStatus,
         rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
       } as Message & Record<string, unknown>]
-    : messages
+    }
+    if (isCompacting) {
+      // Compacting-индикатор — временный system-разделитель внизу чата со
+      // спиннером. Показывает что /compact работает (AI-суммаризация занимает
+      // несколько секунд). После завершения заменяется реальным compact-
+      // разделителем из обновлённой ленты messages.
+      result = [...result, {
+        id: 'compacting-indicator',
+        chatId: currentChatId || '',
+        role: 'system' as const,
+        content: 'Сжимаю контекст…',
+        createdAt: Date.now(),
+        isPinned: 0,
+        slashCommand: { name: 'compact', args: 'pending' },
+      } as Message]
+    }
+    return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  , [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, rateLimitSec])
+  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, rateLimitSec, isCompacting])
 
   const virtualizer = useVirtualizer({
     count: displayMessages.length,
@@ -805,11 +895,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
             <ChatInput
               chatId={currentChatId ?? undefined}
               onSend={handleSend}
-              disabled={isTyping}
+              disabled={isTyping || isCompacting}
               isIncognito={isIncognito}
               replyTo={replyTo}
               onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
-              isGenerating={isTyping || isAgentRunning}
+              isGenerating={isTyping || isAgentRunning || isCompacting}
               onStop={() => currentChatId && window.syntee.chat.stop(currentChatId)}
               contextInfo={contextInfo}
               showContextRing={showContextRing}
@@ -823,6 +913,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               imageMode={imageMode}
               onImageModeChange={setImageMode}
               workdir={currentWorkdir}
+              compactSessionStats={compactSessionStats}
             />
           </div>
 

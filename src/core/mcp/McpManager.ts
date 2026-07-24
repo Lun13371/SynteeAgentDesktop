@@ -381,13 +381,20 @@ export class McpManager {
     args: Record<string, unknown>,
     opts: { projectWorkdir?: string; projectId?: string },
   ): Promise<{ success: boolean; output: string; error?: string }> {
-    // Парсим mcp__serverName__toolName
-    const match = fullToolName.match(/^mcp__([^_]+)__(.+)$/)
-    if (!match) {
+    // Парсим mcp__serverName__toolName. ServerName после sanitize может
+    // содержать подчёркивания (напр. `dolphin-browser` → `dolphin_browser`),
+    // поэтому regex `[^_]+` обламывается — используем indexOf('__') как
+    // extractMcpServerName в Agent.ts. Сервер = до ПЕРВОГО `__`, тул = после.
+    if (!fullToolName.startsWith('mcp__')) {
       return { success: false, output: '', error: `Некорректное имя MCP-тула: ${fullToolName}` }
     }
-    const serverNameRaw = match[1]
-    const toolShortName = match[2]
+    const rest = fullToolName.slice(5) // убираем 'mcp__'
+    const firstSep = rest.indexOf('__')
+    if (firstSep === -1) {
+      return { success: false, output: '', error: `Некорректное имя MCP-тула: ${fullToolName}` }
+    }
+    const serverNameRaw = rest.slice(0, firstSep)
+    const toolShortName = rest.slice(firstSep + 2)
     const configs = this.loadConfigs(opts.projectWorkdir, opts.projectId)
     // Находим сервер по sanitized-имени (как формирует McpClient).
     const sanitize = (n: string) => n.replace(/[^A-Za-z0-9_]/g, '_')

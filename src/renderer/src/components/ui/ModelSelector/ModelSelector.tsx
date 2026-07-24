@@ -287,7 +287,7 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                               }}
                             >
                               <BrandAvatar logo={groupLogo} fallbackColor={getProviderColor(row.providerId)} size={16} className="model-selector-provider-logo" />
-                              {row.providerId}
+                              {prov?.name ?? row.providerId}
                             </div>
                           )
                         }

@@ -657,15 +657,20 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
   )
 }
 
-// System-разделитель — полоса поперёк чата для system-сообщений (откаты и т.д.)
-// Для rewind-сообщений с активной redo-точкой показывает кнопку "Отменить откат".
-function SystemDivider({ message, isRewind, timeEl }: {
+// System-разделитель — полоса поперёк чата для system-сообщений (откаты,
+// сжатие контекста и т.д.). Для rewind-сообщений с активной redo-точкой
+// показывает кнопку "Отменить откат". Для compact-сообщений — кнопку
+// "Развернуть"/"Свернуть" для раскрытия резюме (compactSummary).
+function SystemDivider({ message, isRewind, isCompact, isCompacting, timeEl }: {
   message: Message
   isRewind: boolean
+  isCompact: boolean
+  isCompacting: boolean
   timeEl: React.ReactNode
 }) {
   const [canRedo, setCanRedo] = useState(false)
   const [redoing, setRedoing] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
   // Проверяем — доступна ли отмена отката (есть redo-точка в БД).
   useEffect(() => {
@@ -699,18 +704,37 @@ function SystemDivider({ message, isRewind, timeEl }: {
     }
   }, [message.chatId, message.id, redoing])
 
+  const variantClass = isRewind ? 'message-system-divider--rewind'
+    : isCompact ? 'message-system-divider--compact'
+    : isCompacting ? 'message-system-divider--compact message-system-divider--compacting'
+    : ''
+  const iconName = isRewind ? 'rewind' : (isCompact || isCompacting) ? 'layers' : 'info'
+  const iconTone = isRewind ? 'warning' : (isCompact || isCompacting) ? 'accent' : 'muted'
+
   return (
     <motion.div
-      className={`message-system-divider ${isRewind ? 'message-system-divider--rewind' : ''}`}
+      className={`message-system-divider ${variantClass}`}
       initial={{ opacity: 0, scaleY: 0 }}
       animate={{ opacity: 1, scaleY: 1 }}
       transition={{ duration: 0.25 }}
     >
       <div className="message-system-divider__line" />
       <div className="message-system-divider__badge">
-        <AppIcon name={isRewind ? 'rewind' : 'info'} size="xs" tone={isRewind ? 'warning' : 'muted'} />
+        {isCompacting
+          ? <AppIcon name="refreshCw" size="xs" tone="accent" animation="spin" />
+          : <AppIcon name={iconName} size="xs" tone={iconTone} />}
         <span className="message-system-divider__text">{message.content}</span>
         {timeEl}
+        {isCompact && message.compactSummary && (
+          <button
+            className="message-system-divider__expand"
+            onClick={() => setExpanded(v => !v)}
+            title={expanded ? 'Свернуть резюме' : 'Развернуть резюме сжатия'}
+          >
+            <AppIcon name={expanded ? 'chevronUp' : 'chevronDown'} size="xs" />
+            <span>{expanded ? 'Свернуть' : 'Развернуть'}</span>
+          </button>
+        )}
         {isRewind && canRedo && (
           <button
             className="message-system-divider__redo"
@@ -724,6 +748,28 @@ function SystemDivider({ message, isRewind, timeEl }: {
         )}
       </div>
       <div className="message-system-divider__line" />
+
+      {isCompact && expanded && message.compactSummary && (
+        <motion.div
+          className="message-system-divider__summary"
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          transition={{ duration: 0.22, ease: 'easeOut' }}
+        >
+          <div className="message-system-divider__summary-head">
+            <AppIcon name="layers" size="xs" tone="accent" />
+            <span>Резюме сжатого контекста</span>
+          </div>
+          <div className="message-system-divider__summary-content selectable">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+            >
+              {message.compactSummary}
+            </ReactMarkdown>
+          </div>
+        </motion.div>
+      )}
     </motion.div>
   )
 }
@@ -761,11 +807,14 @@ const MessageBubble = memo(function MessageBubble({
     </span>
   ) : null
 
-  // System-сообщения (откаты, системные уведомления) рендерим как
-  // стилизованную разделительную полосу поперёк чата — не как пузырь.
+  // System-сообщения (откаты, сжатие контекста, системные уведомления)
+  // рендерим как стилизованную разделительную полосу поперёк чата — не
+  // как пузырь.
   if (message.role === 'system') {
     const isRewind = message.slashCommand?.name === 'rewind'
-    return <SystemDivider message={message} isRewind={isRewind} timeEl={timeEl} />
+    const isCompact = message.slashCommand?.name === 'compact' && message.slashCommand?.args !== 'pending'
+    const isCompacting = message.slashCommand?.name === 'compact' && message.slashCommand?.args === 'pending'
+    return <SystemDivider message={message} isRewind={isRewind} isCompact={isCompact} isCompacting={isCompacting} timeEl={timeEl} />
   }
 
   return (
