@@ -155,10 +155,11 @@ export interface AgentAction {
 // ─── AI Providers & Models ───────────────────────────────────────────────────
 
 export type ProviderType =
-  | 'openai' | 'anthropic' | 'google' | 'groq' | 'mistral'
+  | 'openai' | 'anthropic' | 'google' | 'groq' | 'cerebras' | 'mistral'
   | 'ollama' | 'cohere' | 'together' | 'fireworks' | 'deepseek'
   | 'xai' | 'onlysq' | 'voidai' | 'custom'
   | 'opencode' | 'opencode-free' | 'opencode-go'
+  | 'openrouter'
 
 export interface Provider {
   id: string               // уникальный slug: 'openai', 'my-custom-1'
@@ -197,6 +198,7 @@ export interface ModelMeta {
 export type ModelRole =
   | 'main'        // основной чат
   | 'fast'        // быстрые ответы, автотайтлы
+  | 'fastContext' // fast context retrieval (tree-sitter + fast LLM)
   | 'vision'      // анализ изображений
   | 'stt'         // speech-to-text
   | 'tts'         // text-to-speech

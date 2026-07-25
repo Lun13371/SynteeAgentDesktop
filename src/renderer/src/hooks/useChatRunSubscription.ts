@@ -26,6 +26,7 @@ interface ChatBuffers {
   thinkingBuf: string        // time-based throttle буфер для thinking-токенов
   flushTimer: ReturnType<typeof setTimeout> | null  // id setTimeout для батч-флеша
   streamMsgId: string | null // msgId текущего стрима (для матчинга step→итерация)
+  toolProgress: Record<string, { stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }
 
 const buffers = new Map<string, ChatBuffers>()
@@ -61,6 +62,7 @@ function getBuf(chatId: string): ChatBuffers {
       text: '', thinking: '', thinkingMs: undefined, isThinkingLive: false,
       iters: [], steps: [], todo: [], agentStatus: null, rateLimitSec: 0,
       tokenBuf: '', thinkingBuf: '', flushTimer: null, streamMsgId: null,
+      toolProgress: {},
     }
     buffers.set(chatId, buf)
   }
@@ -490,6 +492,30 @@ export function useChatRunSubscription() {
       liveSet(data.chatId, { agentStatus: data.text })
     })
 
+    // agent:tool_progress — live progress для долгих тулов (get_fast_context).
+    // Эфемерный — не персистится в БД, только отображается в live ToolChain.
+    const offToolProgress = window.syntee.on('agent:tool_progress', (data: {
+      msgId: string; chatId: string; toolName: string; stage: string
+      detail?: string; filesProcessed?: number; filesTotal?: number
+      filesFound?: Array<{ path: string; score: number; why: string }>
+    }) => {
+      if (!data.chatId) return
+      const buf = getBuf(data.chatId)
+      if (data.msgId && buf.streamMsgId && data.msgId !== buf.streamMsgId) return
+      buf.toolProgress = {
+        ...buf.toolProgress,
+        [data.toolName]: {
+          stage: data.stage,
+          detail: data.detail,
+          filesProcessed: data.filesProcessed,
+          filesTotal: data.filesTotal,
+          filesFound: data.filesFound,
+          ts: Date.now(),
+        },
+      }
+      liveSet(data.chatId, { toolProgress: { ...buf.toolProgress } })
+    })
+
     // agent:step — шаги тулов (tool_call_pending/tool_call/tool_result).
     // Самая нетривиальная часть: матчинг pending→call по pendingCallId,
     // группировка в итерации по textBefore/thinking.
@@ -670,7 +696,7 @@ export function useChatRunSubscription() {
     })
 
     return () => {
-      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offStep()
+      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offStep(); offToolProgress()
     }
   }, [])
 }

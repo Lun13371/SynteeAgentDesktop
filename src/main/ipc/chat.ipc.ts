@@ -30,6 +30,9 @@ import {
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usageTracker'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
+import { startWatching as startFastContextWatch, stopWatching as stopFastContextWatch } from '../../core/context/fastContextWatcher'
+import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
+import { existsSync } from 'fs'
 import { ptyManager, type ShellType } from '../PtyManager'
 import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
@@ -375,8 +378,57 @@ function deleteMiddleMessagesFromDB(history: Message[], keepFirst: number, keepL
   return deleted
 }
 
+/**
+ * Резолвит директорию с tree-sitter .wasm файлами.
+ * Порядок кандидатов:
+ *   1. <cwd>/resources/tree-sitter — dev режим (process.cwd() = project root)
+ *   2. <appPath>/resources/tree-sitter — packaged (если appPath НЕ out/main)
+ *      или <appPath>/../../resources/tree-sitter — если appPath = out/main (dev build)
+ *   3. process.resourcesPath/tree-sitter — packaged electron-builder extraResources
+ *   4. process.resourcesPath/resources/tree-sitter — альтернативный layout
+ */
+function resolveTreeSitterWasmDir(): string {
+  const candidates: string[] = [
+    path.join(process.cwd(), 'resources', 'tree-sitter'),
+  ]
+  try {
+    const appPath = app.getAppPath()
+    if (/[\\/]out[\\/]main$/.test(appPath)) {
+      candidates.push(path.join(appPath, '..', '..', 'resources', 'tree-sitter'))
+    } else {
+      candidates.push(path.join(appPath, 'resources', 'tree-sitter'))
+    }
+  } catch { /* app недоступен — ok */ }
+  candidates.push(path.join(process.resourcesPath ?? '', 'tree-sitter'))
+  candidates.push(path.join(process.resourcesPath ?? '', 'resources', 'tree-sitter'))
+  for (const c of candidates) {
+    try { if (existsSync(path.join(c, 'tree-sitter.wasm')) || existsSync(path.join(c, 'web-tree-sitter.wasm'))) return c } catch { /* ignore */ }
+  }
+  return candidates[0]
+}
+
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
+
+  // Fast Context: инициализируем main-процессное connection к БД для watcher'а.
+  // Worker открывает своё отдельное connection через initFastContextDb в ai-worker.ts.
+  // WAL mode → оба могут работать concurrently с одним файлом.
+  const fastContextDbPath = path.join(app.getPath('userData'), 'syntee.db')
+  const fastContextWasmDir = resolveTreeSitterWasmDir()
+  try {
+    initFastContextDb(fastContextDbPath)
+    initFastContextWasmDir(fastContextWasmDir)
+  } catch (e) {
+    log('[registerChatIPC] fast context init failed: %s', (e as Error).message)
+  }
+
+  // Стартуем fast context watchers для всех проектов, но pre-warm индексации
+  // происходит только если индекс пустой. Watcher ловит изменения файлов.
+  try {
+    for (const p of getAllProjects()) {
+      try { startFastContextWatch(p.id, p.workdir) } catch { /* отдельный watcher не критичен */ }
+    }
+  } catch { /* БД ещё пуста — ок */ }
 
   const getSystemPrompt = async (chatId?: string, isIncognito?: boolean): Promise<string> => {
     const userName = store.get('userName') as string || ''
@@ -857,6 +909,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       console.error('[chat:send] MCP load failed:', (e as Error).message)
     }
 
+    // projectId для fast context indexing (tree-sitter индекс привязан к проекту)
+    let fastContextProjectId: string | undefined
+    if (chatWorkdir) {
+      // Нормализуем через path.resolve — иначе trailing slash / регистр
+      // на Windows дают path-mismatch и projectId не резолвится.
+      const normWorkdir = path.resolve(chatWorkdir)
+      const found = getAllProjects().find(p => path.resolve(p.workdir) === normWorkdir)
+      fastContextProjectId = found?.id
+    }
+
+    // Пути для fast context (worker не имеет доступа к electron app):
+    //   dbPath   — абсолютный путь к syntee.db (worker открывает своё connection, WAL safe)
+    //   wasmDir  — директория с tree-sitter .wasm файлами
+    const fastContextDbPath = path.join(app.getPath('userData'), 'syntee.db')
+    // В dev: <project>/resources/tree-sitter, в prod: process.resourcesPath/resources/tree-sitter
+    const fastContextWasmDir = resolveTreeSitterWasmDir()
+
     const worker = new Worker(workerPath, {
       workerData: {
         storeData,
@@ -869,6 +938,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         fileCacheSnapshot: getFileCacheSnapshot(params.chatId),
         workdir: chatWorkdir,
         verificationCommand,
+        projectId: fastContextProjectId,
+        fastContextDbPath,
+        fastContextWasmDir,
         mcpTools,
         mcpApprovalMap,
       },
@@ -944,6 +1016,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           win?.webContents.send('agent:todo', { msgId: msg.msgId, chatId: msg.chatId, items: msg.items })
           break
 
+        case 'tool_progress':
+          // Progress для долгих тулов (get_fast_context) — live-индикация этапов.
+          // Не персистим в БД (ephemeral), только в live state renderer'а.
+          win?.webContents.send('agent:tool_progress', {
+            msgId: msg.msgId, chatId: msg.chatId,
+            toolName: msg.toolName, stage: msg.stage, detail: msg.detail,
+            filesProcessed: msg.filesProcessed, filesTotal: msg.filesTotal,
+            filesFound: msg.filesFound,
+          })
+          break
+
         case 'spawn_agent': {
           ;(async () => {
             const parentSummary = getChatSummary(msg.chatId as string)
@@ -970,6 +1053,10 @@ ${subModeOutro}`,
                 history: processedHistory.slice(-12),
                 workingMemory: parentWorkingMemory,
                 mode: chatMode,
+                workdir: chatWorkdir,
+                projectId: fastContextProjectId,
+                fastContextDbPath,
+                fastContextWasmDir,
               },
             })
             worker.postMessage({
@@ -1391,7 +1478,11 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     // Если проект с таким workdir уже существует — createProject вернёт его
     // (UNIQUE constraint). Скан запускаем только если project_context пуст.
     const existing = getAllProjects().find(p => p.workdir === workdir)
-    if (existing && existing.projectContext) return existing
+    if (existing && existing.projectContext) {
+      // Стартуем fast context watcher даже для существующего проекта
+      try { startFastContextWatch(existing.id, existing.workdir) } catch { /* watcher опционален */ }
+      return existing
+    }
     let projectContext: string | undefined
     try {
       const scan = await analyzeProject(workdir)
@@ -1400,12 +1491,19 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     } catch (e) {
       log('[projects:create] analyzeProject exception для workdir=%s: %s', workdir, (e as Error).message)
     }
-    return createProject(workdir, projectContext)
+    const project = createProject(workdir, projectContext)
+    // Стартуем fast context watcher для нового проекта
+    try { startFastContextWatch(project.id, project.workdir) } catch { /* watcher опционален */ }
+    return project
   })
 
   ipcMain.handle('projects:getAll', () => getAllProjects())
   ipcMain.handle('projects:rename', (_, id: string, name: string) => renameProject(id, name))
-  ipcMain.handle('projects:delete', (_, id: string) => deleteProject(id))
+  ipcMain.handle('projects:delete', async (_, id: string) => {
+    // Останавливаем fast context watcher перед удалением проекта
+    try { await stopFastContextWatch(id) } catch { /* watcher опционален */ }
+    deleteProject(id)
+  })
   ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))
   ipcMain.handle('projects:touch', (_, id: string) => touchProject(id))
   ipcMain.handle('projects:setVerificationCommand', (_, id: string, command: string | null) => setProjectVerificationCommand(id, command))

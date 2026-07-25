@@ -51,8 +51,9 @@ export function getNextApiKey(store: Store, providerId: string): string {
 }
 
 const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
-  { role: 'main',      modelId: 'claude-sonnet-4-6', providerId: 'anthropic' },
-  { role: 'fast',      modelId: 'claude-haiku-4-5',  providerId: 'anthropic' },
+  { role: 'main',      modelId: 'claude-sonnet-4-6',  providerId: 'anthropic' },
+  { role: 'fast',      modelId: 'north-mini-code-free', providerId: 'opencode-free' },
+  { role: 'fastContext', modelId: 'inclusionai/ling-3.0-flash:free', providerId: 'openrouter' },
   { role: 'vision',    modelId: 'gpt-4o',             providerId: 'openai' },
   { role: 'stt',       modelId: '',                   providerId: '' },
   { role: 'tts',       modelId: '',                   providerId: '' },
@@ -78,6 +79,25 @@ export function registerProviderIPC(store: Store): void {
         enabled: true,
         isCustom: false,
         anonymous: true,
+      } as Provider)
+      store.set('providers', list)
+    }
+  }
+
+  // ── Auto-seed OpenRouter (disabled — юзер включает и вводит ключ сам) ──────
+  // Появляется в списке провайдеров, но не активен пока юзер не добавит ключ.
+  // Idempotent: если уже есть — не трогаем.
+  {
+    const list = store.get('providers', []) as Provider[]
+    if (!list.find(p => p.id === 'openrouter')) {
+      list.push({
+        id: 'openrouter',
+        type: 'openrouter',
+        name: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: '',
+        enabled: false,
+        isCustom: false,
       } as Provider)
       store.set('providers', list)
     }

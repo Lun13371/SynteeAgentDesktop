@@ -6,6 +6,7 @@ import AppIcon from '../../ui/AppIcon/AppIcon'
 import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
 import ExtensionsPopover from '../../ui/ExtensionsPopover/ExtensionsPopover'
+import { ProjectIndexModal } from '../../ui/ProjectIndexModal/ProjectIndexModal'
 import { useChatStore } from '../../../store/chat.store'
 import './Sidebar.css'
 
@@ -94,6 +95,7 @@ export default function Sidebar({
   const renameProjectRef = useRef<HTMLInputElement>(null)
   const verifyCmdRef = useRef<HTMLInputElement>(null)
   const [extPopoverOpen, setExtPopoverOpen] = useState(false)
+  const [indexModalProject, setIndexModalProject] = useState<{ id: string; name: string } | null>(null)
 
   // Статусы запусков чатов для индикаторов (spinner/✓/✗). Подписываемся на
   // весь объект — Sidebar не большой, ре-рендер недорогой. Альтернатива
@@ -590,6 +592,7 @@ export default function Sidebar({
         onOpenFolder: handleProjectOpenFolder,
         onNewChat: (p) => { onNewChat?.(p.id); setProjectCtxMenu(null) },
         onEditVerifyCmd: handleEditVerifyCmd,
+        onIndexStatus: (p) => setIndexModalProject({ id: p.id, name: p.name }),
       })}
 
       {/* Меню «Новый проект»: создать пустой или выбрать существующую папку.
@@ -606,6 +609,13 @@ export default function Sidebar({
         projectId={activeProjectId ?? undefined}
         onClose={() => setExtPopoverOpen(false)}
         onInstalled={onExtensionInstalled}
+      />
+
+      <ProjectIndexModal
+        open={!!indexModalProject}
+        projectId={indexModalProject?.id ?? null}
+        projectName={indexModalProject?.name}
+        onClose={() => setIndexModalProject(null)}
       />
     </aside>
   )
@@ -624,6 +634,7 @@ function createProjectContextMenu(
     onOpenFolder: (p: Project) => void
     onNewChat: (p: Project) => void
     onEditVerifyCmd: (p: Project) => void
+    onIndexStatus: (p: Project) => void
   }
 ) {
   const project = state?.project
@@ -659,6 +670,10 @@ function createProjectContextMenu(
           <button className="ctx-item" onClick={() => { handlers.onEditVerifyCmd(project); handlers.onClose() }}>
             <AppIcon name="terminal" size="sm" />
             <span>Команда проверки</span>
+          </button>
+          <button className="ctx-item" onClick={() => { handlers.onIndexStatus(project); handlers.onClose() }}>
+            <AppIcon name="database" size="sm" />
+            <span>Статус индекса</span>
           </button>
           <div className="ctx-divider" />
           <button className="ctx-item ctx-item--danger" onClick={() => { handlers.onDelete(project); handlers.onClose() }}>

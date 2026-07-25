@@ -13,6 +13,7 @@ import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '..
 import { recordSessionCost, buildSnapshotFromReal } from '../core/tokens/usageTracker'
 import { initModelCatalog } from '../core/tokens/modelCatalog'
 import { getToolSchemas } from '../core/tools/index'
+import { initFastContextDb, initFastContextWasmDir } from '../core/context/fastContext'
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
@@ -216,7 +217,20 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // workdir чата (новые Code-чаты после фичи workdir; undefined для
       // Work-режима и старых чатов — поведение остаётся прежним).
       agent.workdir = (workerData as Record<string, unknown>).workdir as string | undefined
+      agent.projectId = (workerData as Record<string, unknown>).projectId as string | undefined
       agent.verificationCommand = (workerData as Record<string, unknown>).verificationCommand as string | undefined
+
+      // Fast Context: инициализация worker-local SQLite connection и пути к WASM.
+      // Worker не имеет доступа к electron app / main-процессной БД — открываем
+      // своё connection к тому же файлу (WAL mode → concurrent safe).
+      const fcDbPath = (workerData as Record<string, unknown>).fastContextDbPath as string | undefined
+      const fcWasmDir = (workerData as Record<string, unknown>).fastContextWasmDir as string | undefined
+      if (fcDbPath) {
+        try { initFastContextDb(fcDbPath) } catch (e) { console.warn('[ai-worker] initFastContextDb failed:', e) }
+      }
+      if (fcWasmDir) {
+        try { initFastContextWasmDir(fcWasmDir) } catch (e) { console.warn('[ai-worker] initFastContextWasmDir failed:', e) }
+      }
       agent.onUpdateWorkingMemory = (cid, content, mode) => {
         console.log('[ai-worker] update_working_memory:', cid, mode, content.length, 'chars')
         send({ type: 'update_working_memory', chatId: cid, content, mode })
@@ -513,6 +527,16 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 resolve((reply.instructions as string) ?? 'Скилл не найден')
               })
               send({ type: 'get_skill', chatId, msgId, replyId, skillName: name })
+            })
+          },
+          onToolProgress: (p) => {
+            // Progress для долгих тулов (get_fast_context) — транслируем в main
+            // для live-индикации этапов в UI ToolChain
+            send({
+              type: 'tool_progress', chatId, msgId,
+              toolName: p.toolName, stage: p.stage, detail: p.detail,
+              filesProcessed: p.filesProcessed, filesTotal: p.filesTotal,
+              filesFound: p.filesFound,
             })
           },
         },

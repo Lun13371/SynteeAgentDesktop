@@ -15,8 +15,11 @@ import {
   truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD, getModelContextWindow,
   getHardLimitTokens, getHardLimitTargetTokens,
 } from '../context/contextManager'
+import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { statSync } from 'fs'
+import { createHash } from 'crypto'
+import { resolve } from 'path'
 import { log } from '../logger'
 
 export interface AgentStep {
@@ -89,6 +92,13 @@ export interface AgentCallbacks {
    * Возвращает текст инструкций.
    */
   onGetSkill?: (name: string) => Promise<string>
+  /**
+   * Progress callback для долгих тулов (например get_fast_context):
+   * транслирует stage-прогресс в main для live-индикации этапов в UI.
+   */
+  onToolProgress?: (p: { toolName: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }> }) => void
+  /** AbortSignal для долгих тулов — позволяет отменить get_fast_context и т.п. */
+  signal?: AbortSignal
 }
 
 export interface AgentSummaryDetails {
@@ -330,6 +340,11 @@ export class Agent {
    * (созданных до фичи workdir) — в этом случае поведение прежнее.
    */
   workdir?: string
+  /**
+   * ID проекта (из таблицы projects) — используется fast context для
+   * привязки tree-sitter индекса к проекту. undefined для чатов без проекта.
+   */
+  projectId?: string
   /**
    * Команда авто-верификации проекта (напр. "npm test"), запускаемая
    * автоматически после VERIFICATION_INTERVAL успешных file-edit тулов —
@@ -980,6 +995,12 @@ export class Agent {
 
         const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined, this.workdir)
         if (result.success) {
+          // Relevance feedback: AI читает файл → boost для fast context ranking.
+          // UPDATE ... WHERE — no-op если файла нет в индексе, безопасно.
+          const rbProjectId = this.projectId
+            ?? `fc:${createHash('sha1').update(resolve(this.workdir)).digest('hex').slice(0, 16)}`
+          bumpRelevanceBoost(rbProjectId, filePath, 1)
+
           if (this.readFileCacheEnabled) this.readFileCache.set(cacheKey, result.output)
           // Обновляем персистентный кэш — ключ составной
           if (this.readFileCacheEnabled) {
@@ -1046,6 +1067,60 @@ export class Agent {
         )
       case 'analyze_project':
         return analyzeProject((args.path as string) ?? this.workdir ?? '.', this.workdir)
+      case 'get_fast_context': {
+        // Fast context retrieval: tree-sitter индекс + fast LLM synthesis.
+        // workdir обязательный — без него fallback на analyze_project.
+        // projectId опциональный — если не резолвится (path-mismatch на Windows),
+        // генерируем synthetic из sha1(resolve(workdir)) чтобы индекс работал.
+        const fcQuery = args.query as string
+        if (!fcQuery) return { success: false, output: '', error: 'query is required' }
+        if (!this.workdir) {
+          // Fallback: нет workdir — обычный analyze_project
+          const fallback = await analyzeProject(this.workdir ?? '.', this.workdir)
+          return {
+            success: true,
+            output: JSON.stringify({
+              files: [],
+              summary: 'Fast context недоступен (нет workdir). Использован analyze_project как fallback. ' + (fallback.output.slice(0, 200)),
+              ms: 0,
+              indexedFilesCount: 0,
+              fallback: true,
+            } as FastContextResult & { fallback: boolean }),
+          }
+        }
+        // Synthetic projectId если main-процесс не смог его резолвнуть (path-mismatch).
+        // tree-sitter indexing не требует реального projectId из БД — нужен только
+        // как namespace key в fast_context_index таблице.
+        const fcProjectId = this.projectId
+          ?? `fc:${createHash('sha1').update(resolve(this.workdir)).digest('hex').slice(0, 16)}`
+        const fcResult = await runFastContext(
+          fcProjectId,
+          this.workdir,
+          fcQuery,
+          this.store,
+          {
+            maxFiles: args.maxFiles as number | undefined,
+            maxTokens: args.maxTokens as number | undefined,
+            signal: callbacks?.signal,
+          },
+          (p) => {
+            // Progress callbacks транслируем в onToolProgress (если есть)
+            // для live-индикации этапов в UI
+            callbacks?.onToolProgress?.({
+              toolName: 'get_fast_context',
+              stage: p.stage,
+              detail: p.detail,
+              filesProcessed: p.filesProcessed,
+              filesTotal: p.filesTotal,
+              filesFound: p.filesFound,
+            })
+          },
+        )
+        return {
+          success: true,
+          output: JSON.stringify(fcResult),
+        }
+      }
       case 'spawn_agent': {
         if (!callbacks?.onSpawnAgent) {
           return { success: false, output: '', error: 'spawn_agent is not supported in this context' }

@@ -12,6 +12,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
 import TodoChecklist from '../TodoChecklist/TodoChecklist'
+import FastContextBlock, { type FastContextResultData } from '../FastContextBlock/FastContextBlock'
 import AgentCard from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
@@ -260,12 +261,25 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many
 }
 
+/** Извлекает результат get_fast_context из steps итерации. */
+function extractFastContextResult(steps: Array<{ type: string; toolName?: string; content?: string }>): FastContextResultData | null {
+  for (const s of steps) {
+    if (s.type === 'tool_result' && s.toolName === 'get_fast_context' && s.content) {
+      try {
+        const parsed = JSON.parse(s.content) as FastContextResultData
+        if (parsed && Array.isArray(parsed.files)) return parsed
+      } catch { /* skip */ }
+    }
+  }
+  return null
+}
+
 // Мемоизированный тяжёлый контент сообщения
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, onRewind, message, isPinned, createdAt,
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
-  userMarkdown = true, timeEl, agentStatus,
+  userMarkdown = true, timeEl, agentStatus, toolProgress,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -282,6 +296,7 @@ const MessageContent = memo(function MessageContent({
   userMarkdown?: boolean
   timeEl?: React.ReactNode
   agentStatus?: string | null
+  toolProgress?: Record<string, { stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
@@ -431,6 +446,11 @@ const MessageContent = memo(function MessageContent({
                   {iter.steps.length > 0 && (
                     <ToolChain steps={iter.steps} mode={toolOutputMode} isRunning={false} />
                   )}
+                  {iter.steps.some(s => s.toolName === 'get_fast_context') && (() => {
+                    const fcSaved = extractFastContextResult(iter.steps)
+                    if (fcSaved) return <FastContextBlock result={fcSaved} />
+                    return null
+                  })()}
                 </div>
               ))}
             </div>
@@ -548,6 +568,18 @@ const MessageContent = memo(function MessageContent({
                       isRunning={!!isStreaming && isLastIter && !lastStepIsResult}
                     />
                   )}
+                  {/* Fast Context блок — после toolchain, внутри итерации.
+                      Позиция стабильна: стримящийся текст идёт ниже. */}
+                  {iter.steps.some(s => s.toolName === 'get_fast_context') && (() => {
+                    const fcLive = isStreaming && isLastIter ? toolProgress?.['get_fast_context'] : undefined
+                    const isFcLive = fcLive && fcLive.stage !== 'done'
+                    if (isFcLive) {
+                      return <FastContextBlock result={{ files: [], summary: '', ms: 0, indexedFilesCount: 0 }} liveProgress={fcLive} />
+                    }
+                    const fcSaved = extractFastContextResult(iter.steps)
+                    if (fcSaved) return <FastContextBlock result={fcSaved} />
+                    return null
+                  })()}
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
                   {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && !liveThinking && (
                     <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
@@ -852,6 +884,7 @@ const MessageBubble = memo(function MessageBubble({
               userMarkdown={isUser ? userMarkdown : true}
               timeEl={timeEl}
               agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
+              toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
             />
           )}
           <PlanCard
@@ -885,6 +918,7 @@ const MessageBubble = memo(function MessageBubble({
         userMarkdown={isUser ? userMarkdown : true}
         timeEl={timeEl}
         agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
+        toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
       />
       )}
     </motion.div>

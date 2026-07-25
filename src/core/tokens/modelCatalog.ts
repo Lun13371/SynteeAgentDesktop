@@ -52,6 +52,7 @@ const PROVIDER_REMAP: Record<string, string | null> = {
   anthropic: 'anthropic',
   google: 'google',
   groq: 'groq',
+  cerebras: 'cerebras',
   mistral: 'mistral',
   cohere: 'cohere',
   together: 'togetherai',       // models.dev использует 'togetherai', не 'together'
@@ -68,12 +69,16 @@ const PROVIDER_REMAP: Record<string, string | null> = {
   voidai: null,
   bfl: null,
   ollama: null,
+  // OpenRouter — агрегатор; модели имеют вид 'vendor/model-name'. Каталог
+  // models.dev не имеет записи 'openrouter', но inferProviderFromModelId
+  // разрулит vendor по префиксу (например 'inclusionai/...' → null → global).
+  openrouter: null,
 }
 
 // Каноничные вендоры — приоритет при глобальном поиске (их цены/лимиты самые точные)
 const CANONICAL_VENDORS = [
   'openai', 'anthropic', 'google', 'xai', 'deepseek',
-  'mistral', 'cohere', 'groq', 'togetherai', 'fireworks-ai', 'xiaomi',
+  'mistral', 'cohere', 'groq', 'cerebras', 'togetherai', 'fireworks-ai', 'xiaomi',
   'zai', 'zhipuai',
 ]
 

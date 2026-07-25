@@ -6,3 +6,5 @@ out
 *.tsbuildinfo
 .mimocode/
 tmp_out.txt
+# tree-sitter WASM files копируются через scripts/copy-tree-sitter-wasms.js (postinstall)
+resources/tree-sitter/*.wasm

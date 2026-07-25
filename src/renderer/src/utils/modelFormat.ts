@@ -55,6 +55,7 @@ export function getProviderColor(pid: string): string {
     anthropic: '#d4763b',
     google: '#4285f4',
     groq: '#f55036',
+    cerebras: '#e0524d',
     mistral: '#ff7000',
     ollama: '#aaaaaa',
     cohere: '#39594d',
@@ -65,6 +66,7 @@ export function getProviderColor(pid: string): string {
     onlysq: '#a855f7',
     voidai: '#06b6d4',
     bfl: '#e11d48',
+    openrouter: '#8b5cf6',
   }
   return colors[pid] || '#888'
 }
@@ -141,6 +143,7 @@ export function getBrandLogo(
     case 'deepseek':  return pick('deepseek-color')
     case 'xai':       return pick('grok')
     case 'bfl':       return pick('flux')
+    case 'openrouter': return pick('openrouter')
   }
 
   // ── Тир 2: паттерны в model id/name (прокси-провайдеры) ──────────
