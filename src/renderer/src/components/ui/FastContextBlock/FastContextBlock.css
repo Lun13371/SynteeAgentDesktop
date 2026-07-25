@@ -1,365 +1,347 @@
-/* FastContextBlock — карточка результата get_fast_context
-   Стиль: glassmorphism с cyan-акцентом, как общий стиль приложения */
+/* FastContextBlock — в стиле ToolChain, консистентный с темой */
 
 .fcb-wrap {
-  border: 1px solid rgba(6, 182, 212, 0.15);
-  border-radius: 12px;
-  background: rgba(6, 182, 212, 0.03);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  margin: 8px 0;
-  overflow: hidden;
+  margin: 8px 0 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
   font-size: 12px;
-  transition: border-color 0.3s, box-shadow 0.3s;
+  overflow: hidden;
+  transition: border-color 0.3s;
 }
 
-/* Header */
+/* ── Header ── */
 .fcb-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 9px 14px;
+  gap: 8px;
+  padding: 8px 10px;
   cursor: pointer;
   user-select: none;
   transition: background 0.2s;
 }
 .fcb-header:hover {
-  background: rgba(6, 182, 212, 0.04);
+  background: var(--overlay-2);
 }
 .fcb-header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
 }
 .fcb-icon {
-  color: #06b6d4;
+  color: var(--text-muted);
   flex-shrink: 0;
-  transition: opacity 0.2s;
+  opacity: 0.8;
 }
 .fcb-title {
-  font-weight: 600;
-  color: var(--text-primary, #e5e7eb);
-  font-size: 12.5px;
-  letter-spacing: 0.2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 .fcb-fallback-badge {
   font-size: 9px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(250, 204, 21, 0.12);
-  color: #facc15;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--overlay-5);
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
 }
 .fcb-header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .fcb-meta {
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--text-muted, #94a3b8);
+  gap: 3px;
+  color: var(--text-muted);
   font-size: 10.5px;
   white-space: nowrap;
+  opacity: 0.7;
 }
 .fcb-compact-files {
-  color: var(--text-muted, #94a3b8);
+  color: var(--text-muted);
   font-size: 10px;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  max-width: 280px;
+  max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 .fcb-chevron {
-  background: transparent;
+  background: none;
   border: none;
-  color: var(--text-muted, #94a3b8);
   cursor: pointer;
+  color: var(--text-muted);
   padding: 2px;
   display: flex;
   align-items: center;
-  border-radius: 4px;
-  transition: background 0.15s, color 0.15s;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s, transform 0.2s;
 }
 .fcb-chevron:hover {
-  background: rgba(6, 182, 212, 0.1);
-  color: #22d3ee;
+  color: var(--text-primary);
+  background: var(--overlay-4);
 }
 
-/* Body */
+/* ── Body ── */
 .fcb-body {
-  padding: 12px 14px;
+  padding: 8px 10px 10px;
   overflow: hidden;
+  border-top: 1px solid var(--border);
 }
 
-/* Stages timeline */
+/* ── Roadmap ── */
 .fcb-stages {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 8px;
 }
 .fcb-stage {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  gap: 4px;
+  padding: 2px 6px;
   font-size: 10.5px;
-  color: var(--text-muted, #94a3b8);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  transition: color 0.25s, background 0.25s;
 }
 .fcb-stage.done {
-  color: #34d399;
-  background: rgba(52, 211, 153, 0.06);
+  color: var(--text-secondary);
 }
 .fcb-stage.active {
-  color: #22d3ee;
-  background: rgba(6, 182, 212, 0.1);
-  font-weight: 600;
-  box-shadow: 0 0 12px rgba(6, 182, 212, 0.15);
-}
-.fcb-stage.pending {
-  opacity: 0.35;
+  color: var(--accent);
+  background: var(--accent-subtle);
 }
 .fcb-stage-dot {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-4);
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
   flex-shrink: 0;
   transition: background 0.3s;
 }
 .fcb-stage.done .fcb-stage-dot {
-  background: rgba(52, 211, 153, 0.2);
+  background: var(--accent);
 }
 .fcb-stage.active .fcb-stage-dot {
-  background: rgba(6, 182, 212, 0.2);
+  background: var(--accent-subtle);
 }
 .fcb-stage-check {
-  color: #34d399;
-  stroke-width: 2.5;
-}
-.fcb-stage-pulse {
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(6, 182, 212, 0.5);
-  animation: fcb-pulse 1.8s ease-out infinite;
-}
-@keyframes fcb-pulse {
-  0% { transform: scale(0.8); opacity: 0.8; }
-  100% { transform: scale(1.8); opacity: 0; }
+  color: var(--bg-primary);
+  stroke-width: 3;
 }
 .fcb-stage-icon {
-  opacity: 0.7;
+  opacity: 0.5;
 }
 .fcb-stage-icon--spin {
-  animation: fcb-spin 1.2s linear infinite;
+  animation: fcb-spin 1.5s linear infinite;
   opacity: 1;
+  color: var(--accent);
 }
 @keyframes fcb-spin {
   to { transform: rotate(360deg); }
 }
+.fcb-stage-label {
+  white-space: nowrap;
+}
 .fcb-stage-detail {
-  font-size: 10px;
-  color: var(--text-muted, #94a3b8);
-  font-weight: 400;
-  margin-left: 2px;
-  max-width: 160px;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  margin-left: 1px;
+  max-width: 120px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  opacity: 0.8;
 }
 .fcb-stage-progress {
-  font-size: 9.5px;
-  background: rgba(6, 182, 212, 0.12);
-  padding: 1px 6px;
-  border-radius: 4px;
-  color: #22d3ee;
+  font-size: 9px;
+  background: var(--overlay-4);
+  padding: 0 5px;
+  border-radius: 3px;
+  color: var(--text-secondary);
   font-family: 'SF Mono', 'Cascadia Code', monospace;
 }
+.fcb-stage-arrow {
+  color: var(--text-muted);
+  opacity: 0.25;
+  font-size: 9px;
+  flex-shrink: 0;
+}
 
-/* Progress bar */
+/* ── Progress bar ── */
 .fcb-progress-bar {
   height: 2px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-3);
   border-radius: 1px;
   overflow: hidden;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 .fcb-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, rgba(6, 182, 212, 0.6), #22d3ee);
+  background: var(--accent);
   border-radius: 1px;
-  box-shadow: 0 0 6px rgba(6, 182, 212, 0.4);
-  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.5s ease;
 }
 
-/* Live file chips */
+/* ── Live chips ── */
 .fcb-live-chips {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
 }
 .fcb-live-chips-label {
-  font-size: 9.5px;
-  color: var(--text-muted, #94a3b8);
+  font-size: 9px;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  margin-bottom: 6px;
-  opacity: 0.7;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  opacity: 0.6;
 }
 .fcb-chips-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
 }
 .fcb-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
-  border-radius: 6px;
-  background: rgba(6, 182, 212, 0.08);
-  border: 1px solid rgba(6, 182, 212, 0.15);
-  color: #22d3ee;
-  font-size: 10.5px;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--overlay-3);
+  color: var(--text-secondary);
+  font-size: 10px;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 200px;
-  backdrop-filter: blur(4px);
+  max-width: 180px;
 }
 .fcb-chip svg {
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.6;
+  color: var(--accent);
 }
 .fcb-chip span {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Shimmer during LLM summarizing */
+/* ── Shimmer ── */
 .fcb-shimmer-wrap {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 6px 0;
+  gap: 5px;
+  padding: 4px 0;
 }
 .fcb-shimmer-line {
-  height: 10px;
-  border-radius: 5px;
-  background: linear-gradient(
-    90deg,
-    rgba(6, 182, 212, 0.04) 0%,
-    rgba(6, 182, 212, 0.12) 50%,
-    rgba(6, 182, 212, 0.04) 100%
-  );
-  background-size: 200% 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--overlay-3);
   animation: fcb-shimmer 1.8s ease-in-out infinite;
 }
 .fcb-shimmer-line--short {
   width: 55%;
 }
 @keyframes fcb-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
 }
 
-/* Summary */
+/* ── Summary ── */
 .fcb-summary-wrap {
-  margin: 10px 0;
+  margin: 6px 0;
 }
 .fcb-summary-toggle {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: transparent;
+  background: none;
   border: none;
-  color: var(--text-secondary, #cbd5e1);
   cursor: pointer;
-  font-size: 10.5px;
-  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
   padding: 2px 0;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
   transition: color 0.15s;
 }
 .fcb-summary-toggle:hover {
-  color: #22d3ee;
-}
-.fcb-summary-toggle .rotated {
-  transform: rotate(90deg);
-  transition: transform 0.2s;
+  color: var(--text-primary);
 }
 .fcb-summary {
-  margin: 6px 0 0;
-  padding: 10px 12px;
-  background: rgba(6, 182, 212, 0.04);
-  border-left: 2px solid rgba(6, 182, 212, 0.3);
-  border-radius: 0 6px 6px 0;
-  color: var(--text-primary, #e5e7eb);
-  font-size: 12px;
-  line-height: 1.6;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--overlay-2);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  color: var(--text-primary);
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow: hidden;
 }
 
-/* Files list */
+/* ── Files list ── */
 .fcb-files {
-  margin-top: 10px;
+  margin-top: 6px;
 }
 .fcb-files-header {
-  font-size: 10px;
-  color: var(--text-muted, #94a3b8);
-  margin-bottom: 8px;
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  opacity: 0.7;
+  letter-spacing: 0.5px;
+  opacity: 0.6;
 }
 .fcb-file-row {
-  border-radius: 8px;
-  margin-bottom: 2px;
+  border-radius: 4px;
   transition: background 0.15s;
 }
 .fcb-file-row:hover {
-  background: rgba(6, 182, 212, 0.04);
+  background: var(--overlay-2);
 }
 .fcb-file-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 5px;
+  padding: 4px 6px;
   cursor: pointer;
 }
 .fcb-file-chevron {
-  color: var(--text-muted, #94a3b8);
-  transition: transform 0.2s;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
   flex-shrink: 0;
+  opacity: 0.6;
 }
-.fcb-file-chevron.rotated {
-  transform: rotate(90deg);
+.fcb-file-chevron--closed {
+  transform: rotate(-90deg);
 }
 .fcb-file-icon {
-  color: #22d3ee;
+  color: var(--accent);
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.6;
 }
 .fcb-file-path {
-  background: transparent;
+  background: none;
   border: none;
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
   cursor: pointer;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 11.5px;
+  font-size: 11px;
   padding: 0;
   text-align: left;
   flex: 1;
@@ -370,62 +352,39 @@
   transition: color 0.15s;
 }
 .fcb-file-path:hover {
-  color: #22d3ee;
+  color: var(--accent);
 }
 .fcb-file-lines {
-  font-size: 10px;
-  color: #f59e0b;
-  background: rgba(245, 158, 11, 0.08);
-  padding: 1px 7px;
-  border-radius: 4px;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  background: var(--overlay-3);
+  padding: 0 5px;
+  border-radius: 3px;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
   flex-shrink: 0;
 }
 .fcb-file-why {
-  padding: 5px 10px 8px 32px;
-  font-size: 11px;
-  color: var(--text-secondary, #cbd5e1);
-  line-height: 1.55;
-  border-left: 2px solid rgba(6, 182, 212, 0.15);
-  margin-left: 10px;
-  margin-bottom: 4px;
+  padding: 4px 8px 6px 24px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  overflow: hidden;
 }
 
-/* Empty state */
+/* ── Empty ── */
 .fcb-empty {
-  padding: 14px;
+  padding: 10px;
   text-align: center;
-  color: var(--text-muted, #94a3b8);
-  font-size: 11.5px;
+  color: var(--text-muted);
+  font-size: 11px;
   font-style: italic;
-  opacity: 0.7;
+  opacity: 0.6;
 }
 
 /* ── Live state ── */
-
 .fcb-wrap--live {
-  border-color: rgba(6, 182, 212, 0.3);
-  background: rgba(6, 182, 212, 0.05);
-  box-shadow: 0 0 20px rgba(6, 182, 212, 0.08);
-  animation: fcb-glow 3s ease-in-out infinite;
-}
-@keyframes fcb-glow {
-  0%, 100% { box-shadow: 0 0 16px rgba(6, 182, 212, 0.05); }
-  50% { box-shadow: 0 0 28px rgba(6, 182, 212, 0.15); }
+  border-color: var(--border-strong);
 }
 .fcb-icon--spin {
-  animation: fcb-spin 2.5s linear infinite;
-}
-
-/* Light theme */
-:global(.theme-light) .fcb-wrap {
-  border-color: rgba(6, 182, 212, 0.2);
-  background: rgba(6, 182, 212, 0.03);
-}
-:global(.theme-light) .fcb-summary {
-  background: rgba(6, 182, 212, 0.05);
-  color: #1f2937;
-}
-:global(.theme-light) .fcb-file-path {
-  color: #1f2937;
+  animation: fcb-spin 3s linear infinite;
 }

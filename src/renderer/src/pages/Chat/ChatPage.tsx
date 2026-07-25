@@ -20,6 +20,69 @@ import { parseSlashCommand } from '../../../../shared/slashCommands'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta } from '../../../../shared/types'
 import './ChatPage.css'
 
+const itemStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  width: '100%',
+}
+
+const VirtualMessageItem = memo(function VirtualMessageItem({
+  msg, vItemStart, vItemIndex, measureRef,
+  toolOutputMode, onPin, onCopy, onReply, onRewind,
+  searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec,
+}: {
+  msg: Message
+  vItemStart: number
+  vItemIndex: number
+  measureRef: (el: Element | null) => void
+  toolOutputMode: ToolOutputMode
+  onPin?: (id: string) => void
+  onCopy?: () => void
+  onReply?: (message: Message) => void
+  onRewind?: (userMessageId: string) => void
+  searchQuery?: string
+  liveThinking?: { text: string; isLive: boolean; ms?: number }
+  isStreaming?: boolean
+  isWaiting?: boolean
+  rateLimitSec?: number
+}) {
+  return (
+    <div
+      data-index={vItemIndex}
+      ref={measureRef}
+      style={{ ...itemStyle, transform: `translateY(${vItemStart}px)` }}
+    >
+      <MessageBubble
+        message={msg}
+        toolOutputMode={toolOutputMode}
+        onPin={onPin}
+        onCopy={onCopy}
+        onReply={onReply}
+        onRewind={onRewind}
+        searchQuery={searchQuery}
+        liveThinking={liveThinking}
+        isStreaming={isStreaming}
+        isWaiting={isWaiting}
+        rateLimitSec={rateLimitSec}
+      />
+    </div>
+  )
+}, (prev, next) =>
+  prev.msg === next.msg &&
+  prev.vItemStart === next.vItemStart &&
+  prev.toolOutputMode === next.toolOutputMode &&
+  prev.onPin === next.onPin &&
+  prev.onCopy === next.onCopy &&
+  prev.onReply === next.onReply &&
+  prev.onRewind === next.onRewind &&
+  prev.searchQuery === next.searchQuery &&
+  prev.liveThinking === next.liveThinking &&
+  prev.isStreaming === next.isStreaming &&
+  prev.isWaiting === next.isWaiting &&
+  prev.rateLimitSec === next.rateLimitSec
+)
+
 function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const {
     chats, currentChatId, messages,
@@ -228,6 +291,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // onScroll используется исключительно для показа/скрытия кнопки "вниз".
   const autoScrollRef           = useRef(true)
   const scrollRafRef            = useRef<number | null>(null)
+  const scrollRafPendingRef     = useRef(false)
   const [showScrollDownBtn, setShowScrollDownBtn] = useState(false)
 
   const hasScroll = useCallback(() => {
@@ -286,25 +350,24 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [])
 
   const handleScroll = useCallback(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
-    // onScroll используется ТОЛЬКО для кнопки и закрепления у низа.
-    // НЕ отключаем autoScroll здесь — это вызывало ложные отключения из-за
-    // virtualizer reflow (scrollHeight меняется после перемера элементов).
-    // Отключение только через onWheel (100% пользовательский сигнал).
-    if (!hasScroll()) {
-      setShowScrollDownBtn(false)
-      return
-    }
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    // Закрепление: пользователь сам доехал до низа (drag scrollbar, тач).
-    if (distFromBottom < 24) {
-      autoScrollRef.current = true
-      setShowScrollDownBtn(false)
-      return
-    }
-    // Кнопку показываем если отошли от низа.
-    setShowScrollDownBtn(true)
+    if (scrollRafPendingRef.current) return
+    scrollRafPendingRef.current = true
+    requestAnimationFrame(() => {
+      scrollRafPendingRef.current = false
+      const el = scrollContainerRef.current
+      if (!el) return
+      if (!hasScroll()) {
+        setShowScrollDownBtn(false)
+        return
+      }
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      if (distFromBottom < 24) {
+        autoScrollRef.current = true
+        setShowScrollDownBtn(false)
+        return
+      }
+      setShowScrollDownBtn(true)
+    })
   }, [hasScroll])
 
   // Колесо вверх → мгновенно отключаем авто-скролл.
@@ -739,7 +802,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     count: displayMessages.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
-    overscan: 5,
+    overscan: 3,
     measureElement: (el) => el.getBoundingClientRect().height,
   })
 
@@ -845,32 +908,23 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                     ? { text: live.thinking, isLive: live.isThinkingLive, ms: live.thinkingMs }
                     : undefined
                   return (
-                    <div
+                    <VirtualMessageItem
                       key={msg.id}
-                      data-index={vItem.index}
-                      ref={virtualizer.measureElement}
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        transform: `translateY(${vItem.start}px)`,
-                      }}
-                    >
-                      <MessageBubble
-                        message={msg}
-                        toolOutputMode={toolOutputMode}
-                        onPin={handlePin}
-                        onCopy={handleCopy}
-                        onReply={handleReply}
-                        onRewind={handleRewind}
-                        searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
-                        liveThinking={liveThinking}
-                        isStreaming={isLive && isTyping}
-                        isWaiting={isLive && isTyping}
-                        rateLimitSec={isLive ? rateLimitSec : undefined}
-                      />
-                    </div>
+                      msg={msg}
+                      vItemStart={vItem.start}
+                      vItemIndex={vItem.index}
+                      measureRef={virtualizer.measureElement}
+                      toolOutputMode={toolOutputMode}
+                      onPin={handlePin}
+                      onCopy={handleCopy}
+                      onReply={handleReply}
+                      onRewind={handleRewind}
+                      searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
+                      liveThinking={liveThinking}
+                      isStreaming={isLive && isTyping}
+                      isWaiting={isLive && isTyping}
+                      rateLimitSec={isLive ? rateLimitSec : undefined}
+                    />
                   )
                 })}
               </div>

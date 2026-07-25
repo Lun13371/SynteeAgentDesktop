@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, memo, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import PlanCard from '../PlanCard/PlanCard'
@@ -144,7 +144,7 @@ function DiffBlock({ diff }: { diff: string }) {
 }
 
 // Один блок итерации
-function IterationBlock({
+const IterationBlock = memo(function IterationBlock({
   iter, index, isLast, isRunning, mode, defaultOpen,
 }: {
   iter: Iteration
@@ -317,9 +317,10 @@ function IterationBlock({
       </div>
     </motion.div>
   )
-}
+}, (prev, next) => prev.iter === next.iter && prev.isLast === next.isLast &&
+  prev.isRunning === next.isRunning && prev.mode === next.mode && prev.defaultOpen === next.defaultOpen)
 
-export default function ToolChain({ steps, mode, isRunning, label, elapsed, summary }: {
+const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elapsed, summary }: {
   steps: ToolStep[]
   mode: ToolOutputMode
   isRunning: boolean
@@ -327,7 +328,7 @@ export default function ToolChain({ steps, mode, isRunning, label, elapsed, summ
   elapsed?: number   // ms — время выполнения для финального блока
   summary?: boolean  // если true — компактный финальный блок
 }) {
-  const iters = buildIterations(steps)
+  const iters = useMemo(() => buildIterations(steps), [steps])
   const [collapsed, setCollapsed] = useState(true)  // свёрнут по дефолту
   const totalDone = iters.filter(i => i.result).length
   const hasFailed = iters.some(i => i.result?.success === false)
@@ -365,8 +366,8 @@ export default function ToolChain({ steps, mode, isRunning, label, elapsed, summ
           })}
           {isRunning && <span className="tc2-compact-dots">···</span>}
         </div>
-      </div>
-    )
+    </div>
+  )
   }
 
   return (
@@ -464,4 +465,8 @@ export default function ToolChain({ steps, mode, isRunning, label, elapsed, summ
       </AnimatePresence>
     </div>
   )
-}
+}, (prev, next) => prev.steps === next.steps && prev.mode === next.mode &&
+  prev.isRunning === next.isRunning && prev.label === next.label &&
+  prev.elapsed === next.elapsed && prev.summary === next.summary)
+
+export default ToolChain
