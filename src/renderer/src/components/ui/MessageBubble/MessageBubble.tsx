@@ -90,6 +90,21 @@ const codeStyle = {
   },
 }
 
+// Memoized code highlighter — не ре-хайлайтит блок при смене copiedBlock или стриминге
+const CodeHighlighter = memo(function CodeHighlighter({ raw, lang }: { raw: string; lang: string }) {
+  return (
+    <SyntaxHighlighter
+      style={codeStyle as Record<string, React.CSSProperties>}
+      language={lang} PreTag="div"
+      showLineNumbers={raw.split('\n').length > 4}
+      lineNumberStyle={{ color: '#4a4a5a', fontSize: '11px', minWidth: '2.5em' }}
+      wrapLongLines={false}
+    >
+      {raw}
+    </SyntaxHighlighter>
+  )
+}, (prev, next) => prev.raw === next.raw && prev.lang === next.lang)
+
 // Diff рендерер
 const DiffBlock = memo(function DiffBlock({ code }: { code: string }) {
   return (
@@ -351,15 +366,7 @@ const MessageContent = memo(function MessageContent({
                 {copiedBlock === idx ? '✓ Скопировано' : 'Копировать'}
               </button>
             </div>
-            <SyntaxHighlighter
-              style={codeStyle as Record<string, React.CSSProperties>}
-              language={lang} PreTag="div"
-              showLineNumbers={raw.split('\n').length > 4}
-              lineNumberStyle={{ color: '#4a4a5a', fontSize: '11px', minWidth: '2.5em' }}
-              wrapLongLines={false}
-            >
-              {raw}
-            </SyntaxHighlighter>
+            <CodeHighlighter raw={raw} lang={lang} />
           </div>
         )
       },

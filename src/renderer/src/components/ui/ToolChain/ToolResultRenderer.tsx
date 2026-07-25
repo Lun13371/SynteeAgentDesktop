@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { ToolStep } from './ToolChain'
@@ -34,7 +34,7 @@ function tryParseJSON(text: string): unknown | null {
 
 // ── Суб-рендеры ────────────────────────────────────────────────────────────
 
-function CodeResult({ content, lang, maxLines }: { content: string; lang: string; maxLines: number }) {
+const CodeResult = memo(function CodeResult({ content, lang, maxLines }: { content: string; lang: string; maxLines: number }) {
   const { text, truncated } = truncateLines(content, maxLines)
   return (
     <div className="trr-code-wrap">
@@ -49,9 +49,9 @@ function CodeResult({ content, lang, maxLines }: { content: string; lang: string
       {truncated && <div className="trr-truncated">... обрезано ({content.split('\n').length} строк всего)</div>}
     </div>
   )
-}
+}, (prev, next) => prev.content === next.content && prev.lang === next.lang && prev.maxLines === next.maxLines)
 
-function TerminalResult({ content, maxLines }: { content: string; maxLines: number }) {
+const TerminalResult = memo(function TerminalResult({ content, maxLines }: { content: string; maxLines: number }) {
   const { text, truncated } = truncateLines(content.trim(), maxLines)
   return (
     <div className="trr-terminal">
@@ -59,7 +59,7 @@ function TerminalResult({ content, maxLines }: { content: string; maxLines: numb
       {truncated && <div className="trr-truncated">... обрезано ({content.split('\n').length} строк)</div>}
     </div>
   )
-}
+}, (prev, next) => prev.content === next.content && prev.maxLines === next.maxLines)
 
 function FileListResult({ content }: { content: string }) {
   const lines = content.split('\n').filter(l => l.trim())
@@ -150,7 +150,7 @@ interface Props {
   mode: ToolOutputMode
 }
 
-export default function ToolResultRenderer({ call, result, mode }: Props) {
+const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode }: Props) {
   const [expanded, setExpanded] = useState(false)
   const toolName = call.toolName ?? ''
   const content = result.content ?? ''
@@ -193,7 +193,9 @@ export default function ToolResultRenderer({ call, result, mode }: Props) {
       </div>
     </div>
   )
-}
+}, (prev, next) => prev.call === next.call && prev.result === next.result && prev.mode === next.mode)
+
+export default ToolResultRenderer
 
 function renderResult(toolName: string, content: string, args: Record<string, unknown>, maxLines: number) {
   // read_file → code с подсветкой

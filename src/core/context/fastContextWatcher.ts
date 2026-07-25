@@ -26,6 +26,7 @@ interface WatcherEntry {
 }
 
 const _watchers = new Map<string, WatcherEntry>()
+const _projectWorkdirs = new Map<string, string>()
 let _activeProjectId: string | null = null
 let _onProgress: ((projectId: string, progress: IndexProgress) => void) | null = null
 let _onUpdated: ((projectId: string) => void) | null = null
@@ -76,6 +77,20 @@ export function setUpdatedCallback(cb: (projectId: string) => void): void {
 /** Установить активный проект (приоритетная индексация). */
 export function setActiveProject(projectId: string | null): void {
   _activeProjectId = projectId
+  // Только активный проект имеет persistent watcher — остальные останавливаем.
+  // Это радикально снижает CPU usage в простое (N watchers → 1 watcher).
+  for (const pid of Array.from(_watchers.keys())) {
+    if (pid !== projectId) {
+      void stopWatching(pid)
+    }
+  }
+  // Запускаем watcher для активного проекта, если он не запущен
+  if (projectId) {
+    const workdir = _projectWorkdirs.get(projectId)
+    if (workdir && !_watchers.has(projectId)) {
+      startWatching(projectId, workdir)
+    }
+  }
 }
 
 /** Идёт ли индексация для проекта прямо сейчас. */
@@ -131,6 +146,7 @@ function recordHistory(projectId: string, eventType: string, filesChanged: numbe
 
 /** Запускает watcher для проекта. Idempotent — повторный вызов для того же projectId не создаёт второй watcher. */
 export function startWatching(projectId: string, workdir: string): void {
+  _projectWorkdirs.set(projectId, workdir)
   if (_watchers.has(projectId)) return
 
   const ignored = buildIgnoredMatcher(workdir)
@@ -141,7 +157,7 @@ export function startWatching(projectId: string, workdir: string): void {
       ignored,
       persistent: true,
       ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 500 },
+      awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 1000 },
       depth: 8,
       usePolling: false,
       interval: 10000,

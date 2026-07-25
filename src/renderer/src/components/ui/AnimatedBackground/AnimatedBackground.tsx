@@ -12,37 +12,9 @@ function getAccentRgb(theme: string): string {
   return '255, 255, 255'
 }
 
-function drawParticles(
-  ctx: CanvasRenderingContext2D, w: number, h: number,
-  particles: Array<{ x: number; y: number; r: number; vx: number; vy: number; alpha: number }>,
-  color: string
-) {
-  ctx.clearRect(0, 0, w, h)
-  for (const p of particles) {
-    p.x += p.vx; p.y += p.vy
-    if (p.x < 0) p.x = w; if (p.x > w) p.x = 0
-    if (p.y < 0) p.y = h; if (p.y > h) p.y = 0
-    ctx.beginPath()
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(${color}, ${p.alpha})`
-    ctx.fill()
-  }
-  for (let i = 0; i < particles.length; i++) {
-    for (let j = i + 1; j < particles.length; j++) {
-      const dx = particles[i].x - particles[j].x
-      const dy = particles[i].y - particles[j].y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < 120) {
-        ctx.beginPath()
-        ctx.moveTo(particles[i].x, particles[i].y)
-        ctx.lineTo(particles[j].x, particles[j].y)
-        ctx.strokeStyle = `rgba(${color}, ${0.07 * (1 - dist / 120)})`
-        ctx.lineWidth = 0.5
-        ctx.stroke()
-      }
-    }
-  }
-}
+const CELL = 120
+const CONN_DIST_SQ = CELL * CELL
+const FRAME_MS = 1000 / 30
 
 export default function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -60,11 +32,13 @@ export default function AnimatedBackground() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    let animId: number
+    let animId: number | null = null
+    let running = false
     let w = canvas.width = canvas.offsetWidth
     let h = canvas.height = canvas.offsetHeight
     const color = getAccentRgb(theme)
     let t = 0
+    let lastTime = 0
 
     // --- PARTICLES ---
     const particles = Array.from({ length: 45 }, () => ({
@@ -79,9 +53,6 @@ export default function AnimatedBackground() {
     const cols = Math.floor(w / 16)
     const drops = Array.from({ length: cols }, () => Math.random() * -50)
     const matrixChars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノ01'
-
-    // --- WAVES ---
-    // nothing extra needed
 
     // --- AURORA ---
     const auroraLayers = [
@@ -100,15 +71,68 @@ export default function AnimatedBackground() {
       speed: Math.random() * 0.02 + 0.01,
     }))
 
-    const draw = () => {
-      t += 1
-      ctx.clearRect(0, 0, w, h)
+    const draw = (now: number) => {
+      if (!running) return
+      const dt = now - lastTime
+      if (dt < FRAME_MS) {
+        animId = requestAnimationFrame(draw)
+        return
+      }
+      const scale = Math.min(dt / 16.667, 3)
+      lastTime = now
+      t += scale
 
       if (style === 'particles') {
-        drawParticles(ctx, w, h, particles, color)
+        ctx.clearRect(0, 0, w, h)
+        for (const p of particles) {
+          p.x += p.vx * scale; p.y += p.vy * scale
+          if (p.x < 0) p.x = w; if (p.x > w) p.x = 0
+          if (p.y < 0) p.y = h; if (p.y > h) p.y = 0
+        }
+        for (const p of particles) {
+          ctx.beginPath()
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${color}, ${p.alpha})`
+          ctx.fill()
+        }
+        // Spatial grid for O(n) neighbor lookup instead of O(n²)
+        const grid = new Map<string, number[]>()
+        for (let i = 0; i < particles.length; i++) {
+          const cx = Math.floor(particles[i].x / CELL)
+          const cy = Math.floor(particles[i].y / CELL)
+          const key = cx + ',' + cy
+          let arr = grid.get(key)
+          if (!arr) { arr = []; grid.set(key, arr) }
+          arr.push(i)
+        }
+        ctx.lineWidth = 0.5
+        for (let i = 0; i < particles.length; i++) {
+          const cx = Math.floor(particles[i].x / CELL)
+          const cy = Math.floor(particles[i].y / CELL)
+          for (let dxc = -1; dxc <= 1; dxc++) {
+            for (let dyc = -1; dyc <= 1; dyc++) {
+              const neighbors = grid.get((cx + dxc) + ',' + (cy + dyc))
+              if (!neighbors) continue
+              for (const j of neighbors) {
+                if (j <= i) continue
+                const ddx = particles[i].x - particles[j].x
+                const ddy = particles[i].y - particles[j].y
+                const distSq = ddx * ddx + ddy * ddy
+                if (distSq < CONN_DIST_SQ) {
+                  const dist = Math.sqrt(distSq)
+                  ctx.beginPath()
+                  ctx.moveTo(particles[i].x, particles[i].y)
+                  ctx.lineTo(particles[j].x, particles[j].y)
+                  ctx.strokeStyle = `rgba(${color}, ${0.07 * (1 - dist / 120)})`
+                  ctx.stroke()
+                }
+              }
+            }
+          }
+        }
 
       } else if (style === 'matrix') {
-        ctx.fillStyle = 'rgba(0,0,0,0.04)'
+        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.04 * scale, 1)})`
         ctx.fillRect(0, 0, w, h)
         ctx.fillStyle = `rgba(${color}, 0.55)`
         ctx.font = '14px monospace'
@@ -116,10 +140,11 @@ export default function AnimatedBackground() {
           const ch = matrixChars[Math.floor(Math.random() * matrixChars.length)]
           ctx.fillText(ch, i * 16, drops[i] * 16)
           if (drops[i] * 16 > h && Math.random() > 0.975) drops[i] = 0
-          drops[i] += 0.35
+          drops[i] += 0.35 * scale
         }
 
       } else if (style === 'waves') {
+        ctx.clearRect(0, 0, w, h)
         for (let wave = 0; wave < 3; wave++) {
           const offset = wave * (Math.PI * 2 / 3)
           const amp = h * (0.04 + wave * 0.015)
@@ -138,8 +163,9 @@ export default function AnimatedBackground() {
         }
 
       } else if (style === 'aurora') {
+        ctx.clearRect(0, 0, w, h)
         for (const layer of auroraLayers) {
-          layer.phase += layer.speed
+          layer.phase += layer.speed * scale
           const yBase = h * layer.y
           const gradient = ctx.createLinearGradient(0, yBase - h * layer.amp * 2, 0, yBase + h * layer.amp * 2)
           gradient.addColorStop(0, 'transparent')
@@ -157,11 +183,12 @@ export default function AnimatedBackground() {
         }
 
       } else if (style === 'fireflies') {
+        ctx.clearRect(0, 0, w, h)
         for (const f of flies) {
-          f.x += f.vx; f.y += f.vy
+          f.x += f.vx * scale; f.y += f.vy * scale
           if (f.x < 0) f.x = w; if (f.x > w) f.x = 0
           if (f.y < 0) f.y = h; if (f.y > h) f.y = 0
-          f.phase += f.speed
+          f.phase += f.speed * scale
           const pulse = (Math.sin(f.phase) + 1) / 2
           const alpha = pulse * 0.5 + 0.05
           const radius = f.r * (0.7 + pulse * 0.6)
@@ -179,18 +206,41 @@ export default function AnimatedBackground() {
         }
       }
 
-      animId = requestAnimationFrame(draw)
+      if (running) animId = requestAnimationFrame(draw)
     }
 
-    draw()
+    const start = () => {
+      if (running) return
+      running = true
+      lastTime = 0
+      animId = requestAnimationFrame(draw)
+    }
+    const stop = () => {
+      running = false
+      if (animId !== null) { cancelAnimationFrame(animId); animId = null }
+    }
+
+    const onVisibility = () => { if (document.hidden) stop(); else start() }
+    const onBlur = () => stop()
+    const onFocus = () => start()
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('focus', onFocus)
+
+    start()
 
     const onResize = () => {
       w = canvas.width = canvas.offsetWidth
       h = canvas.height = canvas.offsetHeight
     }
     window.addEventListener('resize', onResize)
+
     return () => {
-      cancelAnimationFrame(animId)
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
       window.removeEventListener('resize', onResize)
     }
   }, [animatedBackground, bgStyle, theme, style])
