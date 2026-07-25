@@ -11,6 +11,7 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           'ai-worker': resolve('src/main/ai-worker.ts'),
         },
+        external: ['web-tree-sitter', 'better-sqlite3', '@huggingface/transformers', 'onnxruntime-node'],
       },
     },
     resolve: {

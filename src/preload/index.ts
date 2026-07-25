@@ -105,6 +105,24 @@ const synteeAPI = {
     setVerificationCommand: (id: string, command: string | null) => ipcRenderer.invoke('projects:setVerificationCommand', id, command),
   },
 
+  // Fast Context — статус индекса проекта, реиндекс, live progress
+  fastContext: {
+    getStatus: (projectId: string) => ipcRenderer.invoke('fastcontext:getStatus', projectId),
+    reindex: (projectId: string) => ipcRenderer.invoke('fastcontext:reindex', projectId),
+    clearIndex: (projectId: string) => ipcRenderer.invoke('fastcontext:clearIndex', projectId),
+    setActive: (projectId: string | null) => ipcRenderer.invoke('fastcontext:setActive', projectId),
+    onProgress: (cb: (data: { projectId: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number }) => void) => {
+      const handler = (_e: unknown, data: { projectId: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number }) => cb(data)
+      ipcRenderer.on('fastcontext:progress', handler)
+      return () => ipcRenderer.removeListener('fastcontext:progress', handler)
+    },
+    onUpdated: (cb: (projectId: string) => void) => {
+      const handler = (_e: unknown, projectId: string) => cb(projectId)
+      ipcRenderer.on('fastcontext:updated', handler)
+      return () => ipcRenderer.removeListener('fastcontext:updated', handler)
+    },
+  },
+
   // Память
   memory: {
     getAll: (category?: string) => ipcRenderer.invoke('memory:getAll', category),

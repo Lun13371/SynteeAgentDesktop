@@ -27,6 +27,8 @@ export interface ChatLiveState {
   rateLimitSec: number
   isTyping: boolean
   isAgentRunning: boolean
+  /** Live progress для долгих тулов (get_fast_context): {toolName → {stage, detail, files...}} */
+  toolProgress: Record<string, { stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }
 
 export type RunStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'
@@ -54,6 +56,7 @@ export const EMPTY_LIVE: ChatLiveState = {
   rateLimitSec: 0,
   isTyping: false,
   isAgentRunning: false,
+  toolProgress: {},
 }
 
 // ── Side chat (параллельный доп-чат в правой панели) ───────────────────

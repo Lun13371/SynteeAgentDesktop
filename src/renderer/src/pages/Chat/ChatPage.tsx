@@ -91,6 +91,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }).catch(() => {})
   }, [])
 
+  // Уведомляем fast context watcher о смене активного проекта —
+  // активный проект индексируется быстрее (priority, progress events).
+  useEffect(() => {
+    window.syntee.fastContext.setActive(activeProjectId).catch(() => {})
+  }, [activeProjectId])
+
   // Слежение за rateLimitSec из live-состояния (для WaitingIndicator)
   useEffect(() => {
     setRateLimitSec(live.rateLimitSec)
@@ -624,7 +630,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   // Собираем отображаемые сообщения (включая live-пузырь текущего чата)
   const hasLiveContent = !!streamingText || !!live.thinking || live.steps.length > 0 ||
-    live.iters.length > 0 || !!live.text
+    live.iters.length > 0 || !!live.text || Object.keys(live.toolProgress).length > 0
   const showLiveBubble = (hasLiveContent || isTyping) && !!live.msgId
 
   const currentWorkdir = useMemo(() => {
@@ -706,6 +712,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         liveTextAfter: live.text,
         liveTodo: live.todo,
         agentStatus: live.agentStatus,
+        toolProgress: live.toolProgress,
         rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
       } as Message & Record<string, unknown>]
     }
@@ -726,7 +733,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, rateLimitSec, isCompacting])
+  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, rateLimitSec, isCompacting])
 
   const virtualizer = useVirtualizer({
     count: displayMessages.length,

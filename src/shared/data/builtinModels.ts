@@ -38,6 +38,12 @@ export const BUILTIN_MODELS: ModelMeta[] = [
   m('llama-3.1-8b-instant',    'groq', 'Llama 3.1 8B Instant', 128_000,  0.05,   0.08, 'fast',   [T,C],     'Молниеносная маленькая модель'),
   m('mixtral-8x7b-32768',      'groq', 'Mixtral 8x7B',          32_768,  0.24,   0.24, 'fast',   [T,C],     'Mixture-of-Experts от Mistral'),
   m('gemma2-9b-it',            'groq', 'Gemma 2 9B',             8_192,  0.20,   0.20, 'fast',   [C],       'Google Gemma 2 на инфраструктуре Groq'),
+  m('openai/gpt-oss-120b',     'groq', 'GPT-OSS 120B',         131_072,  0.15,   0.60, 'fast',   [T,R,C],   'OpenAI GPT-OSS 120B на Groq LPU — ~500 t/s'),
+  m('openai/gpt-oss-20b',      'groq', 'GPT-OSS 20B',          131_072,  0.075,  0.30, 'fast',   [T,R,C],   'OpenAI GPT-OSS 20B на Groq LPU — ~1000 t/s'),
+
+  // Cerebras (Wafer-Scale Engine, ~3000 t/s на 120B)
+  m('gpt-oss-120b',            'cerebras', 'GPT-OSS 120B',     131_072,  0.35,   0.75, 'fast',   [T,R,C],   'Cerebras WSE — ~3000 t/s, самая быстрая 120B в мире'),
+  m('gpt-oss-20b',             'cerebras', 'GPT-OSS 20B',      131_072,  0.075,  0.30, 'fast',   [T,R,C],   'Cerebras WSE — быстрая 20B'),
 
   // Mistral
   m('mistral-large-latest',    'mistral', 'Mistral Large',      128_000,  2.00,   6.00, 'medium', [T,C],     'Флагман Mistral AI'),
@@ -120,9 +126,14 @@ export const BUILTIN_MODELS: ModelMeta[] = [
   m('deepseek-v4-flash-free',  'opencode-free', 'DeepSeek V4 Flash (Free)',  200_000, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free — анонимный, без ключа'),
   m('mimo-v2.5-free',           'opencode-free', 'MiMo V2.5 (Free)',          200_000, 0, 0, 'medium', [V,T,R,C], 'OpenCode Zen Free — мультимодальная, image/audio/video'),
   m('nemotron-3-ultra-free',    'opencode-free', 'Nemotron 3 Ultra (Free)', 1_000_000, 0, 0, 'slow',   [T,R,C],   'OpenCode Zen Free — огромный контекст 1M'),
-  m('north-mini-code-free',     'opencode-free', 'North Mini Code (Free)',   256_000, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free — код-ориентированная'),
+  m('north-mini-code-free',     'opencode-free', 'North Mini Code (Free)',   256_000, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free — код-ориентированная, дефолт для fast-context'),
   m('laguna-s-2.1-free',        'opencode-free', 'Laguna S 2.1 (Free)',       256_000, 0, 0, 'medium', [T,R,C],   'OpenCode Zen Free'),
   m('ling-3.0-flash-free',      'opencode-free', 'Ling 3.0 Flash (Free)',    262_144, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free'),
+  m('big-pickle',               'opencode-free', 'Big Pickle (Free)',        131_072, 0, 0, 'fast',   [T,R,C],   'OpenCode Zen Free — stealth free модель'),
+
+  // ── OpenRouter — агрегатор моделей, OpenAI-совместимый (https://openrouter.ai) ──
+  // Требует API-ключ пользователя. 200 t/s на free-моделях — идеально для fast-context.
+  m('inclusionai/ling-3.0-flash:free', 'openrouter', 'Ling 3.0 Flash (Free)', 262_144, 0, 0, 'fast', [T,R,C], 'OpenRouter — 200 t/s бесплатно, дефолт для fast-context'),
 ]
 
 export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: string; docsUrl: string; color: string }> = {
@@ -130,6 +141,7 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   anthropic: { name: 'Anthropic',   baseUrl: 'https://api.anthropic.com',                color: '#d4763b', docsUrl: 'https://console.anthropic.com' },
   google:    { name: 'Google',      baseUrl: 'https://generativelanguage.googleapis.com/v1beta', color: '#4285f4', docsUrl: 'https://aistudio.google.com' },
   groq:      { name: 'Groq',        baseUrl: 'https://api.groq.com/openai/v1',            color: '#f55036', docsUrl: 'https://console.groq.com' },
+  cerebras:  { name: 'Cerebras',    baseUrl: 'https://api.cerebras.ai/v1',                color: '#e0524d', docsUrl: 'https://inference.cerebras.ai' },
   mistral:   { name: 'Mistral AI',  baseUrl: 'https://api.mistral.ai/v1',                 color: '#ff7000', docsUrl: 'https://console.mistral.ai' },
   ollama:    { name: 'Ollama',      baseUrl: 'http://localhost:11434/v1',                  color: '#aaaaaa', docsUrl: 'https://ollama.ai' },
   cohere:    { name: 'Cohere',      baseUrl: 'https://api.cohere.ai/v1',                  color: '#39594d', docsUrl: 'https://dashboard.cohere.com' },
@@ -144,4 +156,6 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   'opencode-free': { name: 'OpenCode Zen Free', baseUrl: 'https://opencode.ai/zen/v1',    color: '#10b981', docsUrl: 'https://opencode.ai' },
   opencode:        { name: 'OpenCode Zen',      baseUrl: 'https://opencode.ai/zen/v1',    color: '#6366f1', docsUrl: 'https://opencode.ai' },
   'opencode-go':   { name: 'OpenCode Go',       baseUrl: 'https://opencode.ai/zen/go/v1', color: '#f59e0b', docsUrl: 'https://opencode.ai' },
+  // ── OpenRouter — OpenAI-совместимый агрегатор моделей ──
+  openrouter:  { name: 'OpenRouter',   baseUrl: 'https://openrouter.ai/api/v1',          color: '#8b5cf6', docsUrl: 'https://openrouter.ai/keys' },
 }

@@ -138,6 +138,7 @@ function buildCodeModeBlock(workdir?: string, projectContext?: string, projectIn
 - найти файл по имени/паттерну → find_files (быстрее, чем list_directory)
 - сориентироваться в большом файле → read_file с outline_only=true
 - поиск по содержимому файлов → search_code (ripgrep, быстрее чем читать всё)
+- понять какие файлы/функции относятся к задаче в проекте → get_fast_context (ПЕРВЫМ шагом для любой задачи по коду — мгновенно находит релевантные файлы и line ranges через tree-sitter индекс + fast LLM, экономит токены основной модели на поиск)
 - точечная правка существующего файла → edit_file (mode=replace) или multi_edit_file
 - создать новый файл или полностью перезаписать → write_file
 - несколько независимых файлов прочитать сразу → read_files

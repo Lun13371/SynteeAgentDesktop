@@ -1489,6 +1489,22 @@ export const TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
+      name: 'get_fast_context',
+      description: 'Быстрый контекст проекта: находит релевантные файлы и line ranges по запросу через tree-sitter индекс символов + fast LLM. Используй ПЕРВЫМ шагом для любой задачи чтобы мгновенно понять какие файлы/функции/классы относятся к запросу — экономит токены основной модели на поиск. Покрывает 80% случаев "где реализован X" за ~1-3с. Результат: список файлов с line ranges и краткое summary. Не заменяет read_file для деталей — используй его после чтобы прочитать найденные файлы.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Что найти: функционал, имя функции/класса, файл, концепция. Пример: "где реализован OAuth flow", "модель данных User", "обработка платежей"' },
+          maxFiles: { type: 'number', description: 'Макс. файлов вернуть (по умолч. 50)' },
+          maxTokens: { type: 'number', description: 'Бюджет repo-map slice в токенах (по умолч. 8000)' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'find_files',
       description: 'Найти файлы по имени или regex-паттерну. Используй когда нужно найти файл по имени: "где ChatPage.tsx?", "найди все *.config.ts". Игнорирует node_modules/dist/.git.',
       parameters: {
@@ -1694,7 +1710,10 @@ export function getToolSchemas(options: {
     'get_skill',
   ]
 
-  if (!planningMode) names.push('analyze_project')
+  if (!planningMode) {
+    names.push('analyze_project')
+    names.push('get_fast_context')
+  }
   if (imageMode) names.push('generate_image')
   // multiAgentMode/webMode больше не нужны для включения — оставлены как
   // параметры функции для совместимости с вызывающим кодом.

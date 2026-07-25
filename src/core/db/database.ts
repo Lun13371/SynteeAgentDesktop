@@ -226,7 +226,52 @@ function runMigrations(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_rh_chat ON rewind_history(chat_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_rh_rewind ON rewind_history(rewind_message_id);
+
+    -- Fast Context: tree-sitter индекс символов проекта для быстрого
+    -- retrieval релевантных файлов по запросу (тулза get_fast_context).
+    -- Один ряд = один файл проекта с его символами и метаданными для
+    -- инвалидации по mtime+size. ranked_score — PageRank-style важность.
+    CREATE TABLE IF NOT EXISTS fast_context_index (
+      project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      file_path       TEXT NOT NULL,
+      lang            TEXT,
+      symbols_json    TEXT,
+      mtime           INTEGER NOT NULL DEFAULT 0,
+      size            INTEGER NOT NULL DEFAULT 0,
+      ranked_score    REAL NOT NULL DEFAULT 0,
+      relevance_boost REAL NOT NULL DEFAULT 0,
+      embedding       BLOB,
+      updated_at      INTEGER NOT NULL,
+      PRIMARY KEY(project_id, file_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fci_project ON fast_context_index(project_id);
+    CREATE INDEX IF NOT EXISTS idx_fci_score ON fast_context_index(project_id, ranked_score DESC);
+
+    -- История обновлений индекса (для модалки статуса проекта).
+    -- Храним последние ~50 событий на проект, старые пруним автоматически.
+    CREATE TABLE IF NOT EXISTS fast_context_index_history (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      event_type    TEXT NOT NULL,        -- 'full' | 'incremental' | 'manual' | 'clear'
+      files_count   INTEGER NOT NULL,     -- файлов в индексе после события
+      files_changed INTEGER NOT NULL,     -- сколько файлов переиндексировано
+      duration_ms   INTEGER NOT NULL,     -- сколько заняло
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fcih_project ON fast_context_index_history(project_id, created_at DESC);
   `)
+
+  // Автомиграция: добавляем relevance_boost колонку для существующих БД.
+  // PRAGMA table_info возвращает колонки; если relevance_boost нет — ALTER TABLE ADD COLUMN.
+  {
+    const cols = db.prepare(`PRAGMA table_info(fast_context_index)`).all() as Array<{ name: string }>
+    if (!cols.find(c => c.name === 'relevance_boost')) {
+      db.exec(`ALTER TABLE fast_context_index ADD COLUMN relevance_boost REAL NOT NULL DEFAULT 0`)
+    }
+    if (!cols.find(c => c.name === 'embedding')) {
+      db.exec(`ALTER TABLE fast_context_index ADD COLUMN embedding BLOB`)
+    }
+  }
 
   // Автомиграция: для каждого уникального workdir из chats создаём проект
   // и привязываем чаты к нему. workdir на chats остаётся как денормализованный
@@ -887,4 +932,200 @@ export function deleteRewindHistory(chatId: string, rewindMessageId: string): vo
  */
 export function deleteMessageById(messageId: string): void {
   db.prepare(`DELETE FROM messages WHERE id = ?`).run(messageId)
+}
+
+// === FAST CONTEXT INDEX ===
+
+export interface FastContextEntry {
+  projectId: string
+  filePath: string
+  lang: string | null
+  symbolsJson: string | null
+  mtime: number
+  size: number
+  rankedScore: number
+  updatedAt: number
+}
+
+/** Получить все записи индекса fast context для проекта. */
+export function getFastContextEntries(projectId: string): FastContextEntry[] {
+  return db.prepare(`
+    SELECT project_id as projectId, file_path as filePath, lang, symbols_json as symbolsJson,
+           mtime, size, ranked_score as rankedScore, updated_at as updatedAt
+    FROM fast_context_index
+    WHERE project_id = ?
+    ORDER BY ranked_score DESC
+  `).all(projectId) as FastContextEntry[]
+}
+
+/** Получить одну запись (для проверки инвалидации по mtime+size). */
+export function getFastContextEntry(projectId: string, filePath: string): FastContextEntry | null {
+  return db.prepare(`
+    SELECT project_id as projectId, file_path as filePath, lang, symbols_json as symbolsJson,
+           mtime, size, ranked_score as rankedScore, updated_at as updatedAt
+    FROM fast_context_index
+    WHERE project_id = ? AND file_path = ?
+  `).get(projectId, filePath) as FastContextEntry | null
+}
+
+/** Upsert записи индекса. symbolsJson — JSON-строка с определениями/ссылками символов. */
+export function upsertFastContextEntry(
+  projectId: string,
+  filePath: string,
+  lang: string | null,
+  symbolsJson: string | null,
+  mtime: number,
+  size: number,
+  rankedScore = 0,
+): void {
+  db.prepare(`
+    INSERT INTO fast_context_index (project_id, file_path, lang, symbols_json, mtime, size, ranked_score, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(project_id, file_path) DO UPDATE SET
+      lang = excluded.lang,
+      symbols_json = excluded.symbols_json,
+      mtime = excluded.mtime,
+      size = excluded.size,
+      ranked_score = excluded.ranked_score,
+      updated_at = excluded.updated_at
+  `).run(projectId, filePath, lang, symbolsJson, mtime, size, rankedScore, Date.now())
+}
+
+/** Обновить только rankedScore (после graph ranking пересчёта). */
+export function updateFastContextScores(projectId: string, scores: Array<{ filePath: string; rankedScore: number }>): void {
+  const stmt = db.prepare(`UPDATE fast_context_index SET ranked_score = ? WHERE project_id = ? AND file_path = ?`)
+  const tx = db.transaction((rows: Array<{ filePath: string; rankedScore: number }>) => {
+    for (const r of rows) stmt.run(r.rankedScore, projectId, r.filePath)
+  })
+  tx(scores)
+}
+
+/** Удалить одну запись (файл удалён из проекта). */
+export function deleteFastContextEntry(projectId: string, filePath: string): void {
+  db.prepare(`DELETE FROM fast_context_index WHERE project_id = ? AND file_path = ?`).run(projectId, filePath)
+}
+
+/** Очистить весь индекс проекта (удаление проекта / reindex). */
+export function clearFastContextIndex(projectId: string): void {
+  db.prepare(`DELETE FROM fast_context_index WHERE project_id = ?`).run(projectId)
+}
+
+/** Количество файлов в индексе (для статистики в UI). */
+export function getFastContextIndexCount(projectId: string): number {
+  const r = db.prepare(`SELECT COUNT(*) as n FROM fast_context_index WHERE project_id = ?`).get(projectId) as { n: number }
+  return r.n
+}
+
+// === FAST CONTEXT INDEX HISTORY ===
+
+export interface FastContextIndexHistoryEntry {
+  id: number
+  projectId: string
+  eventType: string       // 'full' | 'incremental' | 'manual' | 'clear'
+  filesCount: number
+  filesChanged: number
+  durationMs: number
+  createdAt: number
+}
+
+/** Добавить событие в историю обновлений индекса. */
+export function addIndexHistoryEvent(
+  projectId: string,
+  eventType: string,
+  filesCount: number,
+  filesChanged: number,
+  durationMs: number,
+): void {
+  db.prepare(`
+    INSERT INTO fast_context_index_history (project_id, event_type, files_count, files_changed, duration_ms, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(projectId, eventType, filesCount, filesChanged, durationMs, Date.now())
+}
+
+/** Получить последние N событий истории для проекта (по умолчанию 50). */
+export function getIndexHistory(projectId: string, limit = 50): FastContextIndexHistoryEntry[] {
+  return db.prepare(`
+    SELECT id, project_id as projectId, event_type as eventType,
+           files_count as filesCount, files_changed as filesChanged,
+           duration_ms as durationMs, created_at as createdAt
+    FROM fast_context_index_history
+    WHERE project_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(projectId, limit) as FastContextIndexHistoryEntry[]
+}
+
+/** Удалить старые события истории, оставив только последние `keep`. */
+export function pruneIndexHistory(projectId: string, keep = 50): void {
+  db.prepare(`
+    DELETE FROM fast_context_index_history
+    WHERE project_id = ? AND id NOT IN (
+      SELECT id FROM fast_context_index_history
+      WHERE project_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    )
+  `).run(projectId, projectId, keep)
+}
+
+// === RELEVANCE BOOST (relevance feedback) ===
+// Когда AI читает файл (read_file) после get_fast_context — инкрементим boost.
+// В buildRepoMapSlice boost добавляется к combo score. Decay при каждом reindex.
+
+/** Инкремент relevance_boost для файла (вызывается когда AI читает файл). */
+export function bumpRelevanceBoost(projectId: string, filePath: string, amount = 1): void {
+  db.prepare(`
+    UPDATE fast_context_index
+    SET relevance_boost = relevance_boost + ?
+    WHERE project_id = ? AND file_path = ?
+  `).run(amount, projectId, filePath)
+}
+
+/** Применить decay (умножить на 0.9) ко всем relevance_boost проекта. */
+export function decayRelevanceBoost(projectId: string, factor = 0.9): void {
+  db.prepare(`
+    UPDATE fast_context_index
+    SET relevance_boost = relevance_boost * ?
+    WHERE project_id = ?
+  `).run(factor, projectId)
+}
+
+/** Получить последние N изменённых файлов (по updated_at). */
+export function getRecentFastContextFiles(projectId: string, limit = 10): Array<{
+  filePath: string
+  lang: string | null
+  rankedScore: number
+  updatedAt: number
+}> {
+  return db.prepare(`
+    SELECT file_path as filePath, lang, ranked_score as rankedScore, updated_at as updatedAt
+    FROM fast_context_index
+    WHERE project_id = ?
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).all(projectId, limit) as Array<{ filePath: string; lang: string | null; rankedScore: number; updatedAt: number }>
+}
+
+/** Получить топ-N файлов по rankedScore (самые важные по PageRank). */
+export function getTopFastContextFiles(projectId: string, limit = 10): Array<{
+  filePath: string
+  lang: string | null
+  rankedScore: number
+  relevanceBoost: number
+  updatedAt: number
+}> {
+  return db.prepare(`
+    SELECT file_path as filePath, lang, ranked_score as rankedScore,
+           relevance_boost as relevanceBoost, updated_at as updatedAt
+    FROM fast_context_index
+    WHERE project_id = ?
+    ORDER BY ranked_score DESC
+    LIMIT ?
+  `).all(projectId, limit) as Array<{ filePath: string; lang: string | null; rankedScore: number; relevanceBoost: number; updatedAt: number }>
+}
+
+/** Последний timestamp обновления индекса (MAX(updated_at)). */
+export function getFastContextLastUpdated(projectId: string): number | null {
+  const r = db.prepare(`SELECT MAX(updated_at) as m FROM fast_context_index WHERE project_id = ?`).get(projectId) as { m: number | null }
+  return r.m ?? null
 }

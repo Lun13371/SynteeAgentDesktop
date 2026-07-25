@@ -114,4 +114,7 @@ export const IPC_EVENTS = {
   MCP_STATUS: 'mcp:status',
   MCP_TOOLS_UPDATED: 'mcp:tools:updated',
   MCP_LOGS: 'mcp:logs',
+  // Fast Context: live progress при реиндексе + уведомление об обновлении индекса
+  FASTCONTEXT_PROGRESS: 'fastcontext:progress',
+  FASTCONTEXT_UPDATED: 'fastcontext:updated',
 }

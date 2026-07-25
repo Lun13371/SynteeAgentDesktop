@@ -41,6 +41,10 @@ export interface SubagentContext {
   history?: Array<{ role: string; content: string }>
   workingMemory?: string
   mode?: ChatMode
+  workdir?: string
+  projectId?: string
+  fastContextDbPath?: string
+  fastContextWasmDir?: string
 }
 
 class AgentManager {
@@ -144,7 +148,19 @@ class AgentManager {
 
       let worker: Worker
       try {
-        worker = new Worker(workerPath, { workerData: { storeData, isSubAgent: true, mode: record.mode, fileCacheSnapshot: getFileCacheSnapshot(record.chatId) }, env: process.env })
+        worker = new Worker(workerPath, {
+          workerData: {
+            storeData,
+            isSubAgent: true,
+            mode: record.mode,
+            fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
+            workdir: context?.workdir,
+            projectId: context?.projectId,
+            fastContextDbPath: context?.fastContextDbPath,
+            fastContextWasmDir: context?.fastContextWasmDir,
+          },
+          env: process.env,
+        })
       } catch (e: any) {
         record.status = 'error'
         record.error = e.message

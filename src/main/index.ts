@@ -18,12 +18,14 @@ import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
+import { stopAllWatchers as stopAllFastContextWatchers } from '../core/context/fastContextWatcher'
 import { registerFsIPC } from './ipc/fs.ipc'
 import { registerGitIPC } from './ipc/git.ipc'
 import { registerSkillsIPC } from './ipc/skills.ipc'
 import { registerMcpIPC } from './ipc/mcp.ipc'
 import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
 import { registerPtyIPC } from './ipc/pty.ipc'
+import { registerFastContextIPC } from './ipc/fastContext.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initMcpManager } from '../core/mcp/McpManager'
@@ -128,6 +130,7 @@ app.whenReady().then(async () => {
   registerMcpIPC(store, () => mainWindow.getWindow())
   registerMarketplaceIPC(store)
   registerPtyIPC(mainWindow)
+  registerFastContextIPC(store, () => mainWindow.getWindow())
 
   // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
   ptyManager.setSender(mainWindow.getWindow())
@@ -186,10 +189,12 @@ async function onFirstRun(): Promise<void> {
 app.on('window-all-closed', () => {})
 
 // Реальный выход (а не скрытие в трей) — сохраняем размер/позицию главного окна.
-// 'close' на окне перехватывается для hide(), поэтому persistим здесь.
+// 'close' на окне перехватывается для hide(), поэтому persistim здесь.
 app.on('before-quit', () => {
   mainWindow?.flushBounds()
   ptyManager.killAll()
+  // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.
+  stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
 })
 
 app.on('will-quit', () => {

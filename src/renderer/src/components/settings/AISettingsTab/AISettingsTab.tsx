@@ -9,15 +9,16 @@ import { getBrandLogo } from '../../../utils/modelFormat'
 import './AISettingsTab.css'
 
 const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; filterCaps?: ModelCapability[] }> = {
-  main:      { label: 'Основной чат',     desc: 'Для всех сообщений в чате',        icon: 'bot' },
-  fast:      { label: 'Быстрые ответы',   desc: 'Автоназвания, короткие задачи',    icon: 'zap' },
-  vision:    { label: 'Vision / Картинки',desc: 'Анализ изображений и скриншотов',  icon: 'eye', filterCaps: ['vision'] },
-  stt:       { label: 'Голос → Текст',    desc: 'Распознавание речи',               icon: 'mic',        filterCaps: ['stt'] },
-  subagent:  { label: 'Суб-агенты',       desc: 'Модель для дочерних агентов',      icon: 'git-branch' },
-  tts:       { label: 'Текст → Голос',    desc: 'Озвучивание ответов',              icon: 'volume',     filterCaps: ['tts'] },
-  embedding: { label: 'Embeddings',       desc: 'Векторный поиск и память',         icon: 'brain',      filterCaps: ['embedding'] },
-  memory:    { label: 'Память',           desc: 'Анализ и сохранение воспоминаний', icon: 'database' },
-  summary:   { label: 'Суммаризация',     desc: 'Авто-заголовки чатов',            icon: 'fileText' },
+  main:        { label: 'Основной чат',     desc: 'Для всех сообщений в чате',        icon: 'bot' },
+  fast:        { label: 'Быстрые ответы',   desc: 'Автоназвания, короткие задачи',    icon: 'zap' },
+  fastContext: { label: 'Быстрый контекст', desc: 'Tree-sitter retrieval + LLM сборка контекста по проекту', icon: 'compass', filterCaps: ['tools', 'code'] },
+  vision:      { label: 'Vision / Картинки',desc: 'Анализ изображений и скриншотов',  icon: 'eye', filterCaps: ['vision'] },
+  stt:         { label: 'Голос → Текст',    desc: 'Распознавание речи',               icon: 'mic',        filterCaps: ['stt'] },
+  subagent:    { label: 'Суб-агенты',       desc: 'Модель для дочерних агентов',      icon: 'git-branch' },
+  tts:         { label: 'Текст → Голос',    desc: 'Озвучивание ответов',              icon: 'volume',     filterCaps: ['tts'] },
+  embedding:   { label: 'Embeddings',       desc: 'Векторный поиск и память',         icon: 'brain',      filterCaps: ['embedding'] },
+  memory:      { label: 'Память',           desc: 'Анализ и сохранение воспоминаний', icon: 'database' },
+  summary:     { label: 'Суммаризация',     desc: 'Авто-заголовки чатов',            icon: 'fileText' },
 }
 
 const BUILTIN_PROVIDER_IDS = Object.keys(BUILTIN_PROVIDERS_META)

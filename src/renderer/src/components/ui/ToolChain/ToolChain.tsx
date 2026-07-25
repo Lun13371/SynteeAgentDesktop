@@ -38,6 +38,7 @@ const TOOL_META: Record<string, { label: string; icon: string; color: string }> 
   get_system_info: { label: 'Система',       icon: 'info',      color: '#38bdf8' },
   generate_image:  { label: 'Генерация',     icon: 'image',     color: '#fb923c' },
   analyze_project: { label: 'Анализ',        icon: 'folder',    color: '#c084fc' },
+  get_fast_context:{ label: 'Быстрый контекст', icon: 'compass', color: '#06b6d4' },
   spawn_agent:     { label: 'Суб-агент',     icon: 'gitBranch', color: '#4ade80' },
   get_agent_status:{ label: 'Статус агента', icon: 'gitBranch', color: '#4ade80' },
   get_diagnostics: { label: 'Диагностика',   icon: 'info',      color: '#38bdf8' },
