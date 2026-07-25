@@ -13,10 +13,32 @@
  */
 import chokidar, { type FSWatcher } from 'chokidar'
 import { basename, relative } from 'path'
-import { buildOrUpdateIndex, type IndexProgress } from './fastContext'
+import { buildOrUpdateIndex, getIndexSettingsFromRecord, DEFAULT_INDEXING_SETTINGS, type IndexProgress, type IndexingSettings } from './fastContext'
 import {
   addIndexHistoryEvent, pruneIndexHistory, getFastContextIndexCount,
 } from '../db/database'
+import type Store from 'electron-store'
+
+// Module-level store reference — устанавливается через setWatcherStore(store)
+// из fastContext.ipc.ts при регистрации IPC. Без store используются дефолты.
+let _store: Store | null = null
+
+/** Установить store для чтения настроек индексации (enabled/debounce/ignoreDirs). */
+export function setWatcherStore(store: Store): void {
+  _store = store
+}
+
+/** Читает текущие настройки индексации из store (с fallback на дефолты). */
+function getSettings(): IndexingSettings {
+  if (!_store) return DEFAULT_INDEXING_SETTINGS
+  try {
+    const all = (_store as unknown as { store: Record<string, unknown> }).store
+    return getIndexSettingsFromRecord(all)
+  } catch {
+    return DEFAULT_INDEXING_SETTINGS
+  }
+}
+
 interface WatcherEntry {
   projectId: string
   workdir: string
@@ -98,8 +120,8 @@ export function isIndexing(projectId: string): boolean {
   return _indexingProjects.has(projectId)
 }
 
-// Игнорируемые директории — синхронизированы с fastContext.ts DEFAULT_IGNORE_DIRS
-const IGNORED_DIRS = [
+// Игнорируемые директории по умолчанию — переопределяются настройками.
+const IGNORED_DIRS_DEFAULT = [
   'node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build',
   '.next', 'coverage', '.cache', '.turbo', '.parcel-cache', 'target',
   '.gradle', '.idea', '.vscode', '.hermes', '.mimocode', '.playwright-mcp',
@@ -118,10 +140,11 @@ const IGNORED_EXTS = [
   '.lock', '.log',
 ]
 
-function buildIgnoredMatcher(workdir: string): (path: string, stats?: { isFile?: () => boolean; isDirectory?: () => boolean }) => boolean {
+function buildIgnoredMatcher(workdir: string, ignoreDirs: string[] = IGNORED_DIRS_DEFAULT): (path: string, stats?: { isFile?: () => boolean; isDirectory?: () => boolean }) => boolean {
+  const ignoreSet = new Set(ignoreDirs)
   return (path: string, stats?: { isFile?: () => boolean; isDirectory?: () => boolean }) => {
     const rel = relative(workdir, path).split('\\').join('/')
-    for (const d of IGNORED_DIRS) {
+    for (const d of ignoreSet) {
       if (rel === d || rel.startsWith(d + '/')) return true
     }
     if (stats?.isFile?.()) {
@@ -144,12 +167,20 @@ function recordHistory(projectId: string, eventType: string, filesChanged: numbe
   } catch { /* history опциональна */ }
 }
 
-/** Запускает watcher для проекта. Idempotent — повторный вызов для того же projectId не создаёт второй watcher. */
+/** Запускает watcher для проекта. Idempotent — повторный вызов для того же projectId не создаёт второй watcher.
+ *  Если в настройках indexingSettings.enabled=false — watcher не запускается. */
 export function startWatching(projectId: string, workdir: string): void {
   _projectWorkdirs.set(projectId, workdir)
   if (_watchers.has(projectId)) return
 
-  const ignored = buildIgnoredMatcher(workdir)
+  const settings = getSettings()
+  // Мастер-переключатель: если индексация отключена в настройках — не стартуем watcher.
+  if (!settings.enabled) {
+    console.log(`[fastContextWatcher] indexing disabled in settings — skipping ${workdir}`)
+    return
+  }
+
+  const ignored = buildIgnoredMatcher(workdir, settings.ignoreDirs)
   let watcher: FSWatcher
 
   try {
@@ -177,12 +208,14 @@ export function startWatching(projectId: string, workdir: string): void {
   }
   _watchers.set(projectId, entry)
 
-  // Pre-warm: только если индекс пустой (первый запуск проекта).
+  // Pre-warm: только если индекс пустой (первый запуск проекта) И настройка включена.
   // Если индекс уже есть в БД — не делаем full scan, watcher ловит изменения.
   // Это убирает CPU spike при старте приложения с N проектов.
-  const existingCount = getFastContextIndexCount(projectId)
-  if (existingCount === 0) {
-    enqueueIndex(projectId, workdir, undefined, true)
+  if (settings.prewarmOnStart) {
+    const existingCount = getFastContextIndexCount(projectId)
+    if (existingCount === 0) {
+      enqueueIndex(projectId, workdir, undefined, true)
+    }
   }
 
   const scheduleUpdate = (filePath: string): void => {
@@ -194,7 +227,7 @@ export function startWatching(projectId: string, workdir: string): void {
       entry.debounceTimer = null
       if (paths.length === 0) return
       enqueueIndex(projectId, workdir, paths, false)
-    }, 1000)
+    }, settings.watcherDebounceMs)
   }
 
   watcher.on('add', (p) => scheduleUpdate(p))
@@ -231,9 +264,10 @@ async function runIndexDirect(
     // skipEmbeddings=true: pre-warm не грузит ONNX runtime (который жрёт CPU).
     // Embeddings генерируются только при первом get_fast_context вызове.
     const isPrewarm = isFull && !changedPaths
+    const settings = getSettings()
     const filesChanged = await buildOrUpdateIndex(
       projectId, workdir, changedPaths, onProgress,
-      { skipEmbeddings: isPrewarm && projectId !== _activeProjectId },
+      { skipEmbeddings: isPrewarm && projectId !== _activeProjectId, settings },
     )
     const durationMs = Date.now() - startedAt
     const eventType = isFull ? 'full' : 'incremental'

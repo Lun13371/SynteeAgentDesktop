@@ -18,7 +18,7 @@ import {
 } from '../../core/db/database'
 import {
   setProgressCallback, setUpdatedCallback, setActiveProject,
-  isWatching, isIndexing, forceReindex,
+  isWatching, isIndexing, forceReindex, setWatcherStore,
 } from '../../core/context/fastContextWatcher'
 
 let _initialized = false
@@ -27,6 +27,9 @@ export function registerFastContextIPC(store: Store, getWindow: () => BrowserWin
   // Idempotent — регистрируем только один раз
   if (_initialized) return
   _initialized = true
+
+  // Передаём store в watcher — он читает indexingSettings (enabled/debounce/ignoreDirs/prewarm).
+  setWatcherStore(store)
 
   // Push callbacks из watcher'а → renderer
   setProgressCallback((projectId, progress) => {

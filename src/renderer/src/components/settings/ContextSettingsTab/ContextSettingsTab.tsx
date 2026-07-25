@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { useSettingsStore } from '../../../store/settings.store'
 import { DEFAULT_CONTEXT_SETTINGS, type ContextSettings } from '../../../../../core/context/contextManager'
+import ResetButton from '../../ui/ResetButton/ResetButton'
 import './ContextSettingsTab.css'
 
 function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
@@ -69,7 +70,10 @@ export default function ContextSettingsTab() {
               Показывается начало и конец, середина сжимается.
             </p>
           </div>
-          <Toggle value={s.toolTruncEnabled} onChange={v => upd({ toolTruncEnabled: v })} />
+          <div className="ctx-section__head-actions">
+            <Toggle value={s.toolTruncEnabled} onChange={v => upd({ toolTruncEnabled: v })} />
+            <ResetButton current={s.toolTruncEnabled} defaultValue={DEFAULT_CONTEXT_SETTINGS.toolTruncEnabled} onReset={() => upd({ toolTruncEnabled: DEFAULT_CONTEXT_SETTINGS.toolTruncEnabled })} />
+          </div>
         </div>
         <div className={`ctx-field${!s.toolTruncEnabled ? ' ctx-field--disabled' : ''}`}>
           <label>Макс. символов на тул-результат</label>
@@ -80,8 +84,9 @@ export default function ContextSettingsTab() {
               onChange={e => upd({ toolMaxChars: +e.target.value })}
             />
             <span className="ctx-slider-val">{s.toolMaxChars.toLocaleString()}</span>
+            <ResetButton current={s.toolMaxChars} defaultValue={DEFAULT_CONTEXT_SETTINGS.toolMaxChars} onReset={() => upd({ toolMaxChars: DEFAULT_CONTEXT_SETTINGS.toolMaxChars })} />
           </div>
-          <span className="ctx-hint">Рекомендуется 3000–6000. По умолчанию: 4000</span>
+          <span className="ctx-hint">Рекомендуется 3000–6000. По умолчанию: 6000</span>
         </div>
       </section>
 
@@ -96,7 +101,10 @@ export default function ContextSettingsTab() {
               Лимит токенов берётся автоматически от активной модели провайдера.
             </p>
           </div>
-          <Toggle value={s.rollingEnabled} onChange={v => upd({ rollingEnabled: v })} />
+          <div className="ctx-section__head-actions">
+            <Toggle value={s.rollingEnabled} onChange={v => upd({ rollingEnabled: v })} />
+            <ResetButton current={s.rollingEnabled} defaultValue={DEFAULT_CONTEXT_SETTINGS.rollingEnabled} onReset={() => upd({ rollingEnabled: DEFAULT_CONTEXT_SETTINGS.rollingEnabled })} />
+          </div>
         </div>
         <div className={`ctx-fields${!s.rollingEnabled ? ' ctx-field--disabled' : ''}`}>
           <div className="ctx-field">
@@ -108,8 +116,9 @@ export default function ContextSettingsTab() {
                 onChange={e => upd({ rollingTriggerPct: +e.target.value })}
               />
               <span className="ctx-slider-val">{s.rollingTriggerPct}%</span>
+              <ResetButton current={s.rollingTriggerPct} defaultValue={DEFAULT_CONTEXT_SETTINGS.rollingTriggerPct} onReset={() => upd({ rollingTriggerPct: DEFAULT_CONTEXT_SETTINGS.rollingTriggerPct })} />
             </div>
-            <span className="ctx-hint">При заполнении на этот % — запустится сжатие. По умолчанию: 75%</span>
+            <span className="ctx-hint">При заполнении на этот % — запустится сжатие. По умолчанию: 85%</span>
           </div>
           <div className="ctx-row2">
             <div className="ctx-field">
@@ -121,7 +130,9 @@ export default function ContextSettingsTab() {
                   onChange={e => upd({ rollingKeepFirst: +e.target.value })}
                 />
                 <span className="ctx-slider-val">{s.rollingKeepFirst}</span>
+                <ResetButton current={s.rollingKeepFirst} defaultValue={DEFAULT_CONTEXT_SETTINGS.rollingKeepFirst} onReset={() => upd({ rollingKeepFirst: DEFAULT_CONTEXT_SETTINGS.rollingKeepFirst })} />
               </div>
+              <span className="ctx-hint">По умолчанию: 2</span>
             </div>
             <div className="ctx-field">
               <label>Сохранять последних сообщений</label>
@@ -132,7 +143,9 @@ export default function ContextSettingsTab() {
                   onChange={e => upd({ rollingKeepLast: +e.target.value })}
                 />
                 <span className="ctx-slider-val">{s.rollingKeepLast}</span>
+                <ResetButton current={s.rollingKeepLast} defaultValue={DEFAULT_CONTEXT_SETTINGS.rollingKeepLast} onReset={() => upd({ rollingKeepLast: DEFAULT_CONTEXT_SETTINGS.rollingKeepLast })} />
               </div>
+              <span className="ctx-hint">По умолчанию: 20</span>
             </div>
           </div>
         </div>
@@ -149,7 +162,10 @@ export default function ContextSettingsTab() {
               Приоритет — реальные данные от провайдера, fallback — оценка tiktoken.
             </p>
           </div>
-          <Toggle value={s.tokenCounterEnabled} onChange={v => upd({ tokenCounterEnabled: v })} />
+          <div className="ctx-section__head-actions">
+            <Toggle value={s.tokenCounterEnabled} onChange={v => upd({ tokenCounterEnabled: v })} />
+            <ResetButton current={s.tokenCounterEnabled} defaultValue={DEFAULT_CONTEXT_SETTINGS.tokenCounterEnabled} onReset={() => upd({ tokenCounterEnabled: DEFAULT_CONTEXT_SETTINGS.tokenCounterEnabled })} />
+          </div>
         </div>
       </section>
 
@@ -187,21 +203,30 @@ export default function ContextSettingsTab() {
               <label style={{ fontWeight: 600, fontSize: 13 }}>Diff журнал правок</label>
               <p className="ctx-section__desc">Сохранять изменённые строки при edit_file/write_file</p>
             </div>
-            <Toggle value={s.diffJournalEnabled} onChange={v => upd({ diffJournalEnabled: v })} />
+            <div className="ctx-section__head-actions">
+              <Toggle value={s.diffJournalEnabled} onChange={v => upd({ diffJournalEnabled: v })} />
+              <ResetButton current={s.diffJournalEnabled} defaultValue={DEFAULT_CONTEXT_SETTINGS.diffJournalEnabled} onReset={() => upd({ diffJournalEnabled: DEFAULT_CONTEXT_SETTINGS.diffJournalEnabled })} />
+            </div>
           </div>
           <div className="ctx-section__head" style={{ marginTop: 12 }}>
             <div>
               <label style={{ fontWeight: 600, fontSize: 13 }}>File Map</label>
               <p className="ctx-section__desc">Карта файлов с содержимым — AI знает что уже читал</p>
             </div>
-            <Toggle value={s.fileMapEnabled} onChange={v => upd({ fileMapEnabled: v })} />
+            <div className="ctx-section__head-actions">
+              <Toggle value={s.fileMapEnabled} onChange={v => upd({ fileMapEnabled: v })} />
+              <ResetButton current={s.fileMapEnabled} defaultValue={DEFAULT_CONTEXT_SETTINGS.fileMapEnabled} onReset={() => upd({ fileMapEnabled: DEFAULT_CONTEXT_SETTINGS.fileMapEnabled })} />
+            </div>
           </div>
           <div className="ctx-section__head" style={{ marginTop: 12 }}>
             <div>
               <label style={{ fontWeight: 600, fontSize: 13 }}>Кэш файлов внутри запроса</label>
               <p className="ctx-section__desc">Не читать один файл повторно в рамках одного запроса. Кэш переживает несколько сообщений чата и инвалидируется при изменении файла на диске.</p>
             </div>
-            <AgentToggle settingKey="readFileCache" defaultValue={true} />
+            <div className="ctx-section__head-actions">
+              <AgentToggle settingKey="readFileCache" defaultValue={true} />
+              <ResetButton current={agentS.readFileCache} defaultValue={true} onReset={() => setAgentSetting('readFileCache', true)} />
+            </div>
           </div>
         </div>
       </section>

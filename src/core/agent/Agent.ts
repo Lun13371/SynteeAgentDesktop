@@ -206,7 +206,7 @@ function getToolErrorHint(toolName: string, error: string): string {
     }
   }
   if (toolName === 'search_code' && (e.includes('rg') || e.includes('ripgrep') || e.includes('not found'))) {
-    return '\n\n[Hint: ripgrep may be missing — try run_command with grep/Select-String as alternative.]'
+    return '\n\n[Hint: ripgrep unavailable — автоматически задействован PowerShell-фолбэк. Если поиск пуст, проверь path и pattern, либо используй literal=true для дословного поиска.]'
   }
   if (toolName === 'http_request' && e.includes('timed out')) {
     return '\n\n[Hint: increase the timeout parameter or try a different endpoint.]'
@@ -1063,7 +1063,15 @@ export class Agent {
         return searchCode(
           args.pattern as string,
           args.path as string,
-          { fileGlob: args.file_glob as string | undefined, ignoreCase: args.ignore_case as boolean | undefined, maxResults: args.max_results as number | undefined, workdir: this.workdir }
+          {
+            fileGlob: args.file_glob as string | undefined,
+            ignoreCase: args.ignore_case as boolean | undefined,
+            literal: args.literal as boolean | undefined,
+            maxResults: args.max_results as number | undefined,
+            context: args.context as number | undefined,
+            maxChars: args.max_chars as number | undefined,
+            workdir: this.workdir,
+          }
         )
       case 'analyze_project':
         return analyzeProject((args.path as string) ?? this.workdir ?? '.', this.workdir)

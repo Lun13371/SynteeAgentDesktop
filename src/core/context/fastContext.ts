@@ -25,7 +25,16 @@ import Database from 'better-sqlite3'
 import type { Database as DBType } from 'better-sqlite3'
 import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
-import { getEmbedder, embeddingToBuffer, bufferToEmbedding, cosineSimilarity, fileToEmbeddingText, updateTfidfIdf, type Embedding } from './embeddings'
+import { getEmbedder, embeddingToBuffer, bufferToEmbedding, cosineSimilarity, fileToEmbeddingText, updateTfidfIdf, setActiveProjectId, setUseNeuralEmbeddings, type Embedding } from './embeddings'
+// IndexingSettings — чистые типы/константы без node-зависимостей (безопасны для renderer).
+// getIndexSettings(store) — main-only, использует Store для чтения electron-store.
+export {
+  type IndexingSettings,
+  DEFAULT_INDEXING_SETTINGS,
+  DEFAULT_IGNORE_DIRS_LIST,
+  getIndexSettingsFromRecord,
+} from './fastContextSettings'
+import { getIndexSettingsFromRecord, DEFAULT_INDEXING_SETTINGS, type IndexingSettings } from './fastContextSettings'
 
 // ─── Worker-local SQLite connection ──────────────────────────────────────────
 // Открывается lazy при первом обращении к индексу. WAL mode → безопасен
@@ -487,8 +496,13 @@ function walkAndExtract(root: TSNode): FileSymbols {
   return { definitions, imports, references: [] }
 }
 
-/** Парсит файл и извлекает символы. null = не удалось (нет грамматики / ошибка). */
-export async function extractSymbols(filePath: string): Promise<FileSymbols | null> {
+/** Парсит файл и извлекает символы. null = не удалось (нет грамматики / ошибка).
+ *  maxFileSizeBytes — лимит размера файла (default 1.5MB). */
+export async function extractSymbols(
+  filePath: string,
+  opts: { maxFileSizeBytes?: number } = {},
+): Promise<FileSymbols | null> {
+  const maxBytes = opts.maxFileSizeBytes ?? 1_500_000
   const langId = getLangForFile(filePath)
   if (!langId) return null
 
@@ -501,7 +515,7 @@ export async function extractSymbols(filePath: string): Promise<FileSymbols | nu
   } catch {
     return null
   }
-  if (!source || source.length > 1_500_000) return null
+  if (!source || source.length > maxBytes) return null
 
   try {
     const parser = await getParser()
@@ -543,6 +557,18 @@ const DEFAULT_IGNORE_DIRS = new Set([
   '.planning', 'logs', 'tmp', 'tmp_out', '.opencode',
 ])
 
+/** Читает IndexingSettings из electron-store с мерджем дефолтов. Main-only (Store). */
+export function getIndexSettings(store?: Store): IndexingSettings {
+  const defaults = DEFAULT_INDEXING_SETTINGS
+  if (!store) return defaults
+  try {
+    const all = (store as unknown as { store: Record<string, unknown> }).store
+    return getIndexSettingsFromRecord(all)
+  } catch {
+    return defaults
+  }
+}
+
 const MAX_FILES_PER_WALK = 5000  // safety limit
 const IGNORED_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', '.webp',
@@ -558,13 +584,19 @@ const IGNORED_EXTS = new Set([
 ])
 
 /** Walk проекта и возвращает список файлов с поддерживаемыми расширениями.
- *  Параллельный обход директорий для скорости. */
-export async function walkProjectFiles(workdir: string): Promise<Array<{ path: string; mtime: number; size: number; lang: string }>> {
+ *  Параллельный обход директорий для скорости.
+ *  ignoreDirs/maxFiles необязательные — по умолчанию глобальные константы. */
+export async function walkProjectFiles(
+  workdir: string,
+  opts: { ignoreDirs?: Set<string>; maxFiles?: number } = {},
+): Promise<Array<{ path: string; mtime: number; size: number; lang: string }>> {
+  const ignoreDirs = opts.ignoreDirs ?? DEFAULT_IGNORE_DIRS
+  const maxFiles = opts.maxFiles ?? MAX_FILES_PER_WALK
   const result: Array<{ path: string; mtime: number; size: number; lang: string }> = []
   const seen = new Set<string>()
 
   async function walk(dir: string, depth: number): Promise<void> {
-    if (result.length >= MAX_FILES_PER_WALK || depth > 8) return
+    if (result.length >= maxFiles || depth > 8) return
     let entries: string[]
     try {
       entries = await readdir(dir)
@@ -572,20 +604,20 @@ export async function walkProjectFiles(workdir: string): Promise<Array<{ path: s
       return
     }
     // Фильтруем игнорируемые — сразу
-    const filtered = entries.filter(name => !DEFAULT_IGNORE_DIRS.has(name) && !name.startsWith('.git'))
+    const filtered = entries.filter(name => !ignoreDirs.has(name) && !name.startsWith('.git'))
     // Параллельно stat для всех entries в директории
     const stats = await Promise.allSettled(
       filtered.map(name => {
         const full = join(dir, name)
         return stat(full).then(s => ({ name, full, s }))
-      })
+      }),
     )
     // Рекурсивно обходим поддиректории параллельно
     const subdirs: Promise<void>[] = []
     for (const r of stats) {
       if (r.status !== 'fulfilled') continue
       const { name, full, s } = r.value
-      if (result.length >= MAX_FILES_PER_WALK) break
+      if (result.length >= maxFiles) break
       if (seen.has(full)) continue
       seen.add(full)
       if (s.isDirectory()) {
@@ -627,29 +659,34 @@ export async function buildOrUpdateIndex(
   workdir: string,
   changedPaths?: string[],
   onProgress?: ProgressCallback,
-  opts: { skipEmbeddings?: boolean } = {},
+  opts: { skipEmbeddings?: boolean; settings?: IndexingSettings } = {},
 ): Promise<number> {
   if (!existsSync(workdir)) return 0
 
   let filesReIndexed = 0
   const skipEmb = opts.skipEmbeddings ?? false
+  // Настройки индексации (с fallback на дефолты). Передаются из runFastContext
+  // (через store) и из watcher (через IPC). Module-level константы — fallback.
+  const s = opts.settings ?? DEFAULT_INDEXING_SETTINGS
+  const maxBytes = s.maxFileSizeKb * 1024
+  const ignoreDirs = new Set(s.ignoreDirs)
 
   // Если передали конкретные изменившиеся файлы — обрабатываем только их
   // (вызывается из watcher). Иначе — full scan.
   if (changedPaths && changedPaths.length > 0) {
     for (const p of changedPaths) {
       try {
-        const s = await stat(p)
-        if (!s.isFile()) continue
+        const sFile = await stat(p)
+        if (!sFile.isFile()) continue
         const existing = localGetEntry(projectId, p)
-        if (existing && existing.mtime === s.mtimeMs && existing.size === s.size) continue
+        if (existing && existing.mtime === sFile.mtimeMs && existing.size === sFile.size) continue
         const lang = getLangForFile(p)
         if (!lang) {
           // файл больше не поддерживается — удаляем из индекса
           localDelete(projectId, p)
           continue
         }
-        const symbols = await extractSymbols(p)
+        const symbols = await extractSymbols(p, { maxFileSizeBytes: maxBytes })
         if (!symbols || symbols.definitions.length === 0) {
           // файл пропал или нет определений — удаляем
           localDelete(projectId, p)
@@ -658,7 +695,7 @@ export async function buildOrUpdateIndex(
         localUpsert(
           projectId, p, lang,
           JSON.stringify({ d: symbols.definitions.slice(0, 200), i: symbols.imports.slice(0, 50), r: symbols.references.slice(0, 200) }),
-          s.mtimeMs, s.size,
+          sFile.mtimeMs, sFile.size,
         )
         filesReIndexed++
       } catch {
@@ -668,7 +705,7 @@ export async function buildOrUpdateIndex(
     }
   } else {
     // Full scan
-    const files = await walkProjectFiles(workdir)
+    const files = await walkProjectFiles(workdir, { ignoreDirs, maxFiles: s.maxFilesPerProject })
     if (files.length === 0) {
       console.warn(`[fastContext] walkProjectFiles returned 0 files for workdir=${workdir}`)
     }
@@ -698,7 +735,7 @@ export async function buildOrUpdateIndex(
     for (let i = 0; i < toIndex.length; i += BATCH_SIZE) {
       const batch = toIndex.slice(i, i + BATCH_SIZE)
       const results = await Promise.allSettled(
-        batch.map(f => extractSymbols(f.path).then(symbols => ({ f, symbols })))
+        batch.map(f => extractSymbols(f.path, { maxFileSizeBytes: maxBytes }).then(symbols => ({ f, symbols }))),
       )
       for (let bi = 0; bi < results.length; bi++) {
         const r = results[bi]
@@ -744,15 +781,15 @@ export async function buildOrUpdateIndex(
       if (needEmbedding.length > 0) {
         const embedder = await getEmbedder()
 
-        // TF-IDF: обновляем IDF cache из всех файлов
+        // TF-IDF: обновляем IDF cache для этого проекта
         if (embedder.mode === 'tfidf') {
           const allTexts = allEntries.map(e => {
             try {
               const parsed = JSON.parse(e.symbolsJson || '{}') as { d?: SymbolDef[]; i?: string[] }
-              return fileToEmbeddingText(parsed.d ?? [], parsed.i ?? [])
+              return fileToEmbeddingText(parsed.d ?? [], parsed.i ?? [], e.filePath)
             } catch { return '' }
           })
-          updateTfidfIdf(allTexts)
+          updateTfidfIdf(projectId, allTexts)
         }
 
         // Генерируем embeddings батчами (не более 32 за раз)
@@ -762,7 +799,7 @@ export async function buildOrUpdateIndex(
           await Promise.allSettled(batch.map(async e => {
             try {
               const parsed = JSON.parse(e.symbolsJson || '{}') as { d?: SymbolDef[]; i?: string[] }
-              const text = fileToEmbeddingText(parsed.d ?? [], parsed.i ?? [])
+              const text = fileToEmbeddingText(parsed.d ?? [], parsed.i ?? [], e.filePath)
               const emb = await embedder.embed(text)
               const db = getDb()
               db.prepare(`UPDATE fast_context_index SET embedding = ? WHERE project_id = ? AND file_path = ?`)
@@ -878,28 +915,24 @@ function computeGraphRank(entries: FastContextEntry[]): Array<{ filePath: string
       const importPath = match[1]
 
       // Стратегия 1: path alias resolution (@/x → src/x, ~/x → x)
-      let resolved: number | null = null
+      // Берём ВСЕ candidates, не только [0] — иначе теряются edges при коллизии basename
       const aliasMatch = importPath.replace(/^[@~]/, '').replace(/^\//, '')
+      const resolvedAll = new Set<number>()
       if (aliasMatch && aliasMatch !== importPath) {
-        // Проверяем suffix match (2-3 компоненты)
         const candidates = pathSuffixToIdx.get(aliasMatch)
-        if (candidates && candidates.length > 0) {
-          resolved = candidates[0]
-        }
+        if (candidates) for (const c of candidates) resolvedAll.add(c)
       }
 
-      // Стратегия 2: basename match (fallback)
-      if (resolved === null) {
-        const base = importPath.split('/').pop()!.replace(/\.[^.]+$/, '')
-        if (base && base !== '.' && base !== '..') {
-          const candidates = basenameToIdx.get(base)
-          if (candidates && candidates.length > 0) {
-            resolved = candidates[0]
-          }
-        }
+      // Стратегия 2: basename match (fallback) — все candidates
+      const base = importPath.split('/').pop()!.replace(/\.[^.]+$/, '')
+      if (base && base !== '.' && base !== '..') {
+        const candidates = basenameToIdx.get(base)
+        if (candidates) for (const c of candidates) resolvedAll.add(c)
       }
 
-      if (resolved !== null) addEdge(i, resolved)
+      for (const resolved of resolvedAll) {
+        if (resolved !== i) addEdge(i, resolved)
+      }
     }
 
     // ── Reference edges (call-site → definition) ──
@@ -947,13 +980,35 @@ function computeGraphRank(entries: FastContextEntry[]): Array<{ filePath: string
  *  getUserById → ['get', 'user', 'by', 'id']
  *  parse_http_request → ['parse', 'http', 'request'] */
 function splitNameParts(name: string): string[] {
-  const lower = name.toLowerCase()
-  // camelCase: вставляем пробел перед заглавными, затем split
-  const parts = lower
+  // camelCase: вставляем пробел перед заглавными В ОРИГИНАЛЬНОЙ строке
+  // (не lowercased — иначе [A-Z] никогда не match!)
+  const parts = name
     .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase()
     .split(/[\s_-]+/)
     .filter(p => p.length >= 2)
   return parts
+}
+
+/** Lightweight stemmer: plural + common suffixes.
+ *  users → user, authentication → auth, configuration → config */
+const STEMMED_CACHE = new Map<string, string>()
+function stem(word: string): string {
+  const cached = STEMMED_CACHE.get(word)
+  if (cached !== undefined) return cached
+  let s = word
+  // Plurals
+  if (s.length > 4 && s.endsWith('ies')) s = s.slice(0, -3) + 'y'
+  else if (s.length > 3 && s.endsWith('es')) s = s.slice(0, -2)
+  else if (s.length > 3 && s.endsWith('s') && !s.endsWith('ss')) s = s.slice(0, -1)
+  // Common suffixes → abbreviation
+  if (s.length > 6 && s.endsWith('tion')) s = s.slice(0, -4)
+  else if (s.length > 5 && s.endsWith('ment')) s = s.slice(0, -4)
+  else if (s.length > 4 && s.endsWith('ing')) s = s.slice(0, -3)
+  else if (s.length > 4 && s.endsWith('er') && !s.endsWith('eer')) s = s.slice(0, -2)
+  else if (s.length > 4 && s.endsWith('ed') && !s.endsWith('eed')) s = s.slice(0, -2)
+  STEMMED_CACHE.set(word, s)
+  return s
 }
 
 /** Levenshtein distance (для fuzzy match). Оптимизирована для коротких строк. */
@@ -1004,11 +1059,13 @@ export function buildRepoMapSlice(
   const entries = localGetEntries(projectId)
   if (entries.length === 0) return { slice: '', topFiles: [] }
 
-  // Токены запроса (lowercase, без стоп-слов)
+  // Токены запроса (lowercase, без стоп-слов) + stemming
   const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'and', 'or', 'not', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'how', 'what', 'where', 'why', 'when', 'who', 'which', 'do', 'does', 'did', 'find', 'show', 'get', 'give', 'me', 'please', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those', 'my', 'your', 'его', 'её', 'их', 'где', 'что', 'как', 'какой', 'какая', 'найти', 'покажи', 'дай', 'сделай', 'сделать', 'для', 'из', 'на', 'в', 'не', 'и', 'или', 'но'])
   const queryTokens = query.toLowerCase()
     .split(/[^a-zа-я0-9_]+/i)
     .filter(t => t.length >= 2 && !stopWords.has(t))
+  // Stemmed tokens для matching (user/users, auth/authentication, config/configuration)
+  const queryStems = queryTokens.map(t => stem(t))
   const querySet = new Set(queryTokens)
 
   // Скоринг каждого файла (парсим symbolsJson ОДИН раз на файл)
@@ -1028,19 +1085,36 @@ export function buildRepoMapSlice(
 
     let lexical = 0
     // Match в имени файла (весомее)
-    for (const t of queryTokens) {
-      if (baseName.includes(t)) lexical += 3
-      else if (pathLower.includes(t)) lexical += 1
+    for (let ti = 0; ti < queryTokens.length; ti++) {
+      const t = queryTokens[ti]
+      const ts = queryStems[ti]
+      if (baseName.includes(t) || (ts !== t && baseName.includes(ts))) lexical += 3
+      else if (pathLower.includes(t) || (ts !== t && pathLower.includes(ts))) lexical += 1
     }
-    // Match в именах символов — умный: exact > camelCase component > substring > fuzzy
+    // Match в import строках (+2 за совпадение)
+    const importsLower = imports.map(imp => imp.toLowerCase())
+    for (let ti = 0; ti < queryTokens.length; ti++) {
+      const t = queryTokens[ti]
+      const ts = queryStems[ti]
+      for (const imp of importsLower) {
+        if (imp.includes(t) || (ts !== t && imp.includes(ts))) { lexical += 2; break }
+      }
+    }
+    // Match в именах символов — умный: exact > component > substring > stem > fuzzy
     for (const d of definitions) {
       const nameLower = d.name.toLowerCase()
       const parts = splitNameParts(d.name)
+      const nameStem = stem(nameLower)
+      const partStems = parts.map(p => stem(p))
       let matchedTokens = 0
-      for (const t of queryTokens) {
+      for (let ti = 0; ti < queryTokens.length; ti++) {
+        const t = queryTokens[ti]
+        const ts = queryStems[ti]
         if (nameLower === t) { lexical += 5; matchedTokens++; continue }
         if (parts.includes(t)) { lexical += 3; matchedTokens++; continue }
         if (nameLower.includes(t)) { lexical += 2; matchedTokens++; continue }
+        // Stem match: users → user, authentication → auth
+        if (ts !== t && (nameStem === ts || partStems.includes(ts))) { lexical += 3; matchedTokens++; continue }
         // camelCase component fuzzy (опечатки в компонентах имени)
         if (parts.some(p => p.length >= 4 && fuzzyMatch(t, p))) { lexical += 1; matchedTokens++; continue }
         // Full name fuzzy (опечатки в полном имени)
@@ -1059,7 +1133,9 @@ export function buildRepoMapSlice(
       lexical = softHits * 0.5
     }
 
-    // Combo: lexical + rankedScore boost + relevance feedback + semantic (embeddings)
+    // Combo: normalized lexical + rankedScore + relevance + semantic
+    // Lexical нормализуем через sigmoid: lexical / (lexical + 10) → [0, 1)
+    // Иначе файл с 30 символов набирает 60+ баллов и доминирует
     let semanticScore = 0
     if (queryEmbedding && e.embedding) {
       try {
@@ -1067,7 +1143,9 @@ export function buildRepoMapSlice(
         semanticScore = cosineSimilarity(queryEmbedding, fileEmb)
       } catch { /* skip */ }
     }
-    const combo = lexical + e.rankedScore * 1.5 + (e.relevanceBoost || 0) * 2.0 + semanticScore * 3.0
+    const lexicalNorm = lexical / (lexical + 10)
+    const relevanceCapped = Math.min(e.relevanceBoost || 0, 5)
+    const combo = lexicalNorm * 10 + e.rankedScore * 1.0 + relevanceCapped * 1.5 + semanticScore * 2.0
     if (combo <= 0) continue
     scored.push({ entry: e, definitions, imports, lexical, combo })
   }
@@ -1259,7 +1337,8 @@ Repo-map содержит:
 - path — ТОЧНО из repo-map, не выдумывай пути
 - lineRanges — диапазоны строк из L-номеров: "10-45" или "10-45, 100-130"
 - why — 1 строка: какие символы/зависимости делают файл релевантным
-- Приоритет: файлы которые [entry]/[hub], с большим imported by/called by
+- Выбирай файлы по РЕЛЕВАНТНОСТИ К ЗАПРОСУ, а не по структурной важности
+- [entry]/[hub] и imported by — справочная информация, НЕ приоритет
 - summary: архитектура решения, какие файлы за что отвечают`
 
 /**
@@ -1335,6 +1414,7 @@ async function summarizeWithLLM(
     'fastContext',
     SUMMARY_SYSTEM_PROMPT,
     signal,
+    0.1, // low temperature for deterministic file selection
   )
 
   const parsed = extractJsonFromLlmResponse(raw)
@@ -1363,17 +1443,20 @@ async function summarizeWithLLM(
 // ─── Content snippets (читаем куски кода top файлов для LLM) ─────────────────
 
 /**
- * Multi-symbol snippets: для top-N файлов берёт до 3 релевантных символов,
+ * Multi-symbol snippets: для top-N файлов берёт до 3 query-relevant символов,
  * 30 строк вокруг каждого. Даёт LLM реальный код для более точного выбора.
+ * Символы сортируются по query-relevance (lexical match), не по порядку в файле.
  */
 async function buildContentSnippets(
-  topFiles: Array<{ path: string; definitions: SymbolDef[] }>,
+  topFiles: Array<{ path: string; definitions: SymbolDef[]; score?: number }>,
   maxFiles = 5,
   maxSymbolsPerFile = 3,
   linesPerSnippet = 30,
+  queryTokens: string[] = [],
 ): Promise<string> {
   const snippets: string[] = []
   const filesToRead = topFiles.slice(0, maxFiles)
+  const queryStemsLocal = queryTokens.map(t => stem(t))
 
   const results = await Promise.allSettled(
     filesToRead.map(async f => {
@@ -1382,25 +1465,46 @@ async function buildContentSnippets(
       if (!source || source.length > 500_000) return null
 
       const lines = source.split('\n')
-      // Берём до maxSymbolsPerFile символов с валидными строками
-      const validDefs = f.definitions
+      // Sort definitions by query-relevance: exact > component > substring > stem
+      const scoredDefs = f.definitions
         .filter(d => d.lineStart > 0 && d.lineStart <= lines.length)
+        .map(d => {
+          const nameLower = d.name.toLowerCase()
+          const parts = splitNameParts(d.name)
+          const nameStem = stem(nameLower)
+          let ds = 0
+          for (let ti = 0; ti < queryTokens.length; ti++) {
+            const t = queryTokens[ti]
+            const ts = queryStemsLocal[ti]
+            if (nameLower === t) ds += 5
+            else if (parts.includes(t)) ds += 3
+            else if (nameLower.includes(t)) ds += 2
+            else if (ts !== t && (nameStem === ts || parts.some(p => stem(p) === ts))) ds += 3
+          }
+          return { def: d, ds }
+        })
+        .sort((a, b) => b.ds - a.ds)
         .slice(0, maxSymbolsPerFile)
-      if (validDefs.length === 0) return null
+
+      if (scoredDefs.length === 0) return null
 
       const parts: string[] = []
-      for (const def of validDefs) {
+      const usedRanges: Array<[number, number]> = []
+      for (const { def } of scoredDefs) {
         const center = def.lineStart - 1
         const half = Math.floor(linesPerSnippet / 2)
         const start = Math.max(0, center - half)
         const end = Math.min(lines.length, center + half)
+        // Dedup overlapping ranges
+        if (usedRanges.some(([s, e]) => start < e && end > s)) continue
+        usedRanges.push([start, end])
         const snippet = lines.slice(start, end)
           .map((line, i) => `${start + i + 1}: ${line}`)
           .join('\n')
         parts.push(`  L${def.lineStart} ${def.kind} ${def.name}:\n${snippet}`)
       }
 
-      return `--- ${f.path} ---\n${parts.join('\n\n')}`
+      return parts.length > 0 ? `--- ${f.path} ---\n${parts.join('\n\n')}` : null
     }),
   )
 
@@ -1429,9 +1533,17 @@ export async function runFastContext(
   const maxFiles = opts.maxFiles ?? 50
   const maxTokens = opts.maxTokens ?? 8000
 
+  // Читаем настройки индексации из store и применяем neural-режим.
+  // setUseNeuralEmbeddings переключает embedder: ONNX/MiniLM vs TF-IDF.
+  const idxSettings = getIndexSettings(store)
+  setUseNeuralEmbeddings(idxSettings.neuralEmbeddings)
+
+  // Устанавливаем active project для TF-IDF (per-project IDF cache)
+  setActiveProjectId(projectId)
+
   // Stage 1: indexing (incremental, обычно мгновенно если индекс уже тёплый)
   onProgress?.({ stage: 'indexing', detail: 'Сканирование файлов', filesProcessed: 0, filesTotal: 0 })
-  const indexedCount = await buildOrUpdateIndex(projectId, workdir, undefined, onProgress)
+  const indexedCount = await buildOrUpdateIndex(projectId, workdir, undefined, onProgress, { settings: idxSettings })
 
   // Stage 2: retrieving
   onProgress?.({ stage: 'retrieving', detail: `Поиск по ${indexedCount} файлам`, filesProcessed: 0, filesTotal: 0 })
@@ -1467,7 +1579,12 @@ export async function runFastContext(
   // Content snippets: читаем top-5 файлов (50 строк вокруг релевантного символа).
   // Даёт LLM реальный код для более точного выбора файлов и line ranges.
   onProgress?.({ stage: 'retrieving', detail: 'Чтение content snippets', filesProcessed: 0, filesTotal: 0 })
-  const snippets = await buildContentSnippets(topFiles, 5, 50)
+  // Токенизируем query для query-relevant snippets (внешний scope, т.к. buildRepoMapSlice — отдельная функция)
+  const stopWordsOuter = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'and', 'or', 'not', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'how', 'what', 'where', 'why', 'when', 'who', 'which', 'do', 'does', 'did', 'find', 'show', 'get', 'give', 'me', 'please', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those', 'my', 'your', 'его', 'её', 'их', 'где', 'что', 'как', 'какой', 'какая', 'найти', 'покажи', 'дай', 'сделай', 'сделать', 'для', 'из', 'на', 'в', 'не', 'и', 'или', 'но'])
+  const outerQueryTokens = query.toLowerCase()
+    .split(/[^a-zа-я0-9_]+/i)
+    .filter(t => t.length >= 2 && !stopWordsOuter.has(t))
+  const snippets = await buildContentSnippets(topFiles, 5, 3, 30, outerQueryTokens)
   const fullSlice = snippets ? slice + snippets : slice
 
   // Stage 3: summarizing (LLM вызов)

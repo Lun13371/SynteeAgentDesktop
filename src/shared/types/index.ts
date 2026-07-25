@@ -234,6 +234,21 @@ export interface AgentSettings {
   maxRepeatedErrors: number
 }
 
+// Дефолтные настройки агента. Вынесены в shared, чтобы renderer (SettingsPage)
+// мог использовать их для кнопок «восстановить по умолчанию» без IPC-запроса.
+// main/ipc/agent.ipc.ts и main/ipc/chat.ipc.ts импортируют отсюда же.
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  approvalMode: 'ask',
+  maxSteps: 32,
+  toolOutputMode: 'normal',
+  enableThinking: false,
+  maxParallelSubAgents: 3,
+  readFileCache: true,
+  autoMemoryInterval: 5,
+  maxRepeatedToolCalls: 3,
+  maxRepeatedErrors: 2,
+}
+
 // IPC channels для провайдеров/моделей
 export interface ProviderIPC {
   'providers:getAll': () => Provider[]
