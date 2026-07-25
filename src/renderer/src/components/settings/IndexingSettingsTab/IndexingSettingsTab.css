@@ -1,0 +1,120 @@
+.idx-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ctx-* классы наследуются из ContextSettingsTab.css (общие для вкладок настроек) */
+
+.idx-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  margin-top: 4px;
+}
+
+.idx-status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.idx-status-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.idx-status-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.idx-status-ok { color: #4ade80; }
+.idx-status-off { color: #f87171; }
+
+.idx-textarea {
+  width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, 'Cascadia Code', 'Fira Code', monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.idx-textarea:focus {
+  border-color: var(--accent, #7c6fff);
+}
+
+.idx-ignore-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.idx-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.idx-btn {
+  background: var(--overlay-2);
+  border: 1px solid var(--overlay-3);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.idx-btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--overlay-3);
+}
+
+.idx-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.idx-btn--primary {
+  background: var(--accent, #7c6fff);
+  border-color: var(--accent, #7c6fff);
+  color: #fff;
+}
+
+.idx-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  background: var(--accent, #7c6fff);
+}
+
+.idx-btn--danger {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #f87171;
+}
+
+.idx-btn--danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: #f87171;
+}
+
+.idx-btn--ghost {
+  background: transparent;
+  font-weight: 500;
+  font-size: 11px;
+  padding: 4px 10px;
+}

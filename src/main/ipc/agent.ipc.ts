@@ -1,19 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Store from 'electron-store'
 import { agentManager } from '../AgentManager'
-import type { AgentSettings } from '../../shared/types'
-
-const DEFAULT_AGENT_SETTINGS: AgentSettings = {
-  approvalMode: 'ask',
-  maxSteps: 32,
-  toolOutputMode: 'normal',
-  enableThinking: false,
-  maxParallelSubAgents: 3,
-  readFileCache: true,
-  autoMemoryInterval: 5,
-  maxRepeatedToolCalls: 3,
-  maxRepeatedErrors: 2,
-}
+import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 
 export function registerAgentIPC(store: Store, getWindow: () => BrowserWindow | null) {
   // Инициализируем AgentManager

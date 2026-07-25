@@ -6,20 +6,23 @@ import { useToast } from '../../components/ui/Toast/Toast'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
+import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
+import ResetButton from '../../components/ui/ResetButton/ResetButton'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
 import { applyFontToDOM, applyAccentToDOM } from '../../App'
-import type { AgentSettings as SharedAgentSettings } from '../../../../shared/types'
+import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings } from '../../../../shared/types'
 import './SettingsPage.css'
 
 type Section =
   | 'general' | 'ai' | 'voice' | 'hotkeys'
-  | 'agent' | 'data' | 'appearance' | 'integrations' | 'context'
+  | 'agent' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
 
 const SECTIONS: Array<{ id: Section; label: string; icon: IconName }> = [
   { id: 'general',      label: 'Общие',          icon: 'settings' },
   { id: 'ai',           label: 'ИИ и Модели',    icon: 'brain' },
   { id: 'context',      label: 'Контекст',       icon: 'layers' },
+  { id: 'indexing',     label: 'Индексация',     icon: 'cpu' },
   { id: 'appearance',   label: 'Внешний вид',    icon: 'palette' },
   { id: 'voice',        label: 'Голос',          icon: 'mic' },
   { id: 'hotkeys',      label: 'Горячие клавиши',icon: 'shield' },
@@ -90,6 +93,9 @@ export default function SettingsPage() {
             )}
             {section === 'context' && (
               <ContextSettingsTab />
+            )}
+            {section === 'indexing' && (
+              <IndexingSettingsTab />
             )}
             {section === 'appearance' && (
               <AppearanceSection settings={settings} onSet={handleSet} />
@@ -567,17 +573,7 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
 }
 
 function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  const [agentSettings, setAgentSettings] = useState<SharedAgentSettings>({
-    approvalMode: 'ask',
-    maxSteps: 32,
-    toolOutputMode: 'normal',
-    enableThinking: false,
-    maxParallelSubAgents: 3,
-    readFileCache: true,
-    autoMemoryInterval: 5,
-    maxRepeatedToolCalls: 3,
-    maxRepeatedErrors: 2,
-  })
+  const [agentSettings, setAgentSettings] = useState<SharedAgentSettings>(DEFAULT_AGENT_SETTINGS)
 
   useEffect(() => {
     window.syntee.agent.getSettings().then((s: SharedAgentSettings) => {
@@ -604,77 +600,98 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
       <SectionTitle>Агент и Безопасность</SectionTitle>
 
       <Field label="Режим подтверждения действий" description="Когда агент запрашивает подтверждение перед выполнением">
-        <ApprovalModeSelector
-          value={agentSettings.approvalMode as import('../../../../../shared/types').ApprovalMode}
-          onChange={mode => updateAgent({ approvalMode: mode })}
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <ApprovalModeSelector
+            value={agentSettings.approvalMode as import('../../../../../shared/types').ApprovalMode}
+            onChange={mode => updateAgent({ approvalMode: mode })}
+          />
+          <ResetButton current={agentSettings.approvalMode} defaultValue={DEFAULT_AGENT_SETTINGS.approvalMode} onReset={() => updateAgent({ approvalMode: DEFAULT_AGENT_SETTINGS.approvalMode })} />
+        </div>
       </Field>
 
       <Field label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">
-        <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />
+          <ResetButton current={agentSettings.enableThinking} defaultValue={DEFAULT_AGENT_SETTINGS.enableThinking} onReset={() => updateAgent({ enableThinking: DEFAULT_AGENT_SETTINGS.enableThinking })} />
+        </div>
       </Field>
 
       <Field label="Вывод инструментов" description="Как отображать цепочку действий агента в чате">
-        <div style={{ display: 'flex', gap: 8 }}>
-          {OUTPUT_MODES.map(m => (
-            <button
-              key={m.value}
-              className={`settings-chip ${agentSettings.toolOutputMode === m.value ? 'settings-chip--active' : ''}`}
-              onClick={() => updateAgent({ toolOutputMode: m.value })}
-              title={m.desc}
-            >
-              {m.label}
-            </button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {OUTPUT_MODES.map(m => (
+              <button
+                key={m.value}
+                className={`settings-chip ${agentSettings.toolOutputMode === m.value ? 'settings-chip--active' : ''}`}
+                onClick={() => updateAgent({ toolOutputMode: m.value })}
+                title={m.desc}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <ResetButton current={agentSettings.toolOutputMode} defaultValue={DEFAULT_AGENT_SETTINGS.toolOutputMode} onReset={() => updateAgent({ toolOutputMode: DEFAULT_AGENT_SETTINGS.toolOutputMode })} />
         </div>
       </Field>
 
       <Field label="Параллельных суб-агентов" description="Сколько дочерних агентов можно держать активными одновременно">
-        <select
-          className="settings-input"
-          value={agentSettings.maxParallelSubAgents}
-          onChange={e => updateAgent({ maxParallelSubAgents: Number(e.target.value) })}
-        >
-          {[1, 2, 3, 4, 6, 8].map(n => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-        </select>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <select
+            className="settings-input"
+            value={agentSettings.maxParallelSubAgents}
+            onChange={e => updateAgent({ maxParallelSubAgents: Number(e.target.value) })}
+          >
+            {[1, 2, 3, 4, 6, 8].map(n => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+          <ResetButton current={agentSettings.maxParallelSubAgents} defaultValue={DEFAULT_AGENT_SETTINGS.maxParallelSubAgents} onReset={() => updateAgent({ maxParallelSubAgents: DEFAULT_AGENT_SETTINGS.maxParallelSubAgents })} />
+        </div>
       </Field>
 
       <Field label="Автосохранение рабочей памяти" description="Через сколько шагов агент обновляет working memory во время длинной сессии">
-        <select
-          className="settings-input"
-          value={agentSettings.autoMemoryInterval}
-          onChange={e => updateAgent({ autoMemoryInterval: Number(e.target.value) })}
-        >
-          {[0, 3, 5, 8, 12].map(n => (
-            <option key={n} value={n}>{n === 0 ? 'выкл' : `каждые ${n} шагов`}</option>
-          ))}
-        </select>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <select
+            className="settings-input"
+            value={agentSettings.autoMemoryInterval}
+            onChange={e => updateAgent({ autoMemoryInterval: Number(e.target.value) })}
+          >
+            {[0, 3, 5, 8, 12].map(n => (
+              <option key={n} value={n}>{n === 0 ? 'выкл' : `каждые ${n} шагов`}</option>
+            ))}
+          </select>
+          <ResetButton current={agentSettings.autoMemoryInterval} defaultValue={DEFAULT_AGENT_SETTINGS.autoMemoryInterval} onReset={() => updateAgent({ autoMemoryInterval: DEFAULT_AGENT_SETTINGS.autoMemoryInterval })} />
+        </div>
       </Field>
 
       <Field label="Повтор одного и того же tool-call" description="После этого количества одинаковых вызовов агент получает защиту от зацикливания">
-        <select
-          className="settings-input"
-          value={agentSettings.maxRepeatedToolCalls}
-          onChange={e => updateAgent({ maxRepeatedToolCalls: Number(e.target.value) })}
-        >
-          {[2, 3, 4, 5].map(n => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-        </select>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <select
+            className="settings-input"
+            value={agentSettings.maxRepeatedToolCalls}
+            onChange={e => updateAgent({ maxRepeatedToolCalls: Number(e.target.value) })}
+          >
+            {[2, 3, 4, 5].map(n => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+          <ResetButton current={agentSettings.maxRepeatedToolCalls} defaultValue={DEFAULT_AGENT_SETTINGS.maxRepeatedToolCalls} onReset={() => updateAgent({ maxRepeatedToolCalls: DEFAULT_AGENT_SETTINGS.maxRepeatedToolCalls })} />
+        </div>
       </Field>
 
       <Field label="Повтор одной и той же ошибки" description="Если инструмент падает одинаково несколько раз подряд, агенту запрещается тупо повторять вызов">
-        <select
-          className="settings-input"
-          value={agentSettings.maxRepeatedErrors}
-          onChange={e => updateAgent({ maxRepeatedErrors: Number(e.target.value) })}
-        >
-          {[2, 3, 4].map(n => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-        </select>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <select
+            className="settings-input"
+            value={agentSettings.maxRepeatedErrors}
+            onChange={e => updateAgent({ maxRepeatedErrors: Number(e.target.value) })}
+          >
+            {[2, 3, 4].map(n => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+          <ResetButton current={agentSettings.maxRepeatedErrors} defaultValue={DEFAULT_AGENT_SETTINGS.maxRepeatedErrors} onReset={() => updateAgent({ maxRepeatedErrors: DEFAULT_AGENT_SETTINGS.maxRepeatedErrors })} />
+        </div>
       </Field>
 
       <Field label="Подтверждение опасных действий" description="Удаление файлов, системные команды">

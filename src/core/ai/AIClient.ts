@@ -145,7 +145,8 @@ export class AIClient {
     callbacks: StreamCallbacks,
     modelType: 'main' | 'fast' | 'fastContext' = 'main',
     systemPrompt?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    temperatureOverride?: number,
   ): Promise<void> {
     const model = this.getModel(modelType)
     const client = this.getClientForRole(modelType)
@@ -297,7 +298,7 @@ export class AIClient {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const res = await (client.chat.completions.create as any)({
             model, messages: allMessages, stream: false,
-            temperature: DEFAULT_TEMPERATURE,
+          temperature: temperatureOverride ?? DEFAULT_TEMPERATURE,
             max_tokens: DEFAULT_MAX_TOKENS,
           })
           fullText = res.choices[0]?.message?.content || ''

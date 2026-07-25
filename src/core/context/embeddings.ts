@@ -84,11 +84,19 @@ async function embedNeural(text: string): Promise<Embedding> {
 // Простой но эффективный: веса термам по IDF (редкие термины важнее).
 // Не знает синонимы, но лучше чистого lexical — учитывает важность слов.
 
-const IDF_CACHE = new Map<string, number>()
-const DOC_COUNT = { n: 0 }
+// Per-project IDF cache — avoids cross-project contamination
+interface ProjectIdf {
+  idf: Map<string, number>
+  docCount: number
+}
+const IDF_BY_PROJECT = new Map<string, ProjectIdf>()
+let _activeProjectId: string | null = null
 
-export function updateTfidfIdf(documents: string[]): void {
-  DOC_COUNT.n = documents.length
+export function setActiveProjectId(projectId: string): void {
+  _activeProjectId = projectId
+}
+
+export function updateTfidfIdf(projectId: string, documents: string[]): void {
   const df = new Map<string, number>() // document frequency
   for (const doc of documents) {
     const tokens = new Set(tokenize(doc))
@@ -97,9 +105,11 @@ export function updateTfidfIdf(documents: string[]): void {
     }
   }
   // IDF = ln(N / df)
+  const idf = new Map<string, number>()
   for (const [term, freq] of df) {
-    IDF_CACHE.set(term, Math.log(DOC_COUNT.n / freq))
+    idf.set(term, Math.log(documents.length / freq))
   }
+  IDF_BY_PROJECT.set(projectId, { idf, docCount: documents.length })
 }
 
 function tokenize(text: string): string[] {
@@ -109,6 +119,7 @@ function tokenize(text: string): string[] {
 }
 
 function embedTfidf(text: string): Embedding {
+  const project = _activeProjectId ? IDF_BY_PROJECT.get(_activeProjectId) : null
   const tokens = tokenize(text)
   const tf = new Map<string, number>()
   for (const t of tokens) {
@@ -117,7 +128,7 @@ function embedTfidf(text: string): Embedding {
   // Векторизуем: хэш в 384 измерений (тот же размер что neural для совместимости)
   const vec = new Float32Array(NEURAL_DIM)
   for (const [term, freq] of tf) {
-    const idf = IDF_CACHE.get(term) ?? Math.log(DOC_COUNT.n || 1)
+    const idf = project?.idf.get(term) ?? Math.log(project?.docCount || 1)
     const weight = freq * idf
     // Simple hashing trick: hash term → bucket
     let hash = 0
@@ -174,11 +185,27 @@ export function bufferToEmbedding(buf: Buffer): Embedding {
 }
 
 /**
- * Текст для embedding файла: имена символов + kinds + сигнатуры + imports.
+ * Текст для embedding файла: путь + имена символов + kinds + сигнатуры + imports.
  * Компактное представление содержимого файла для semantic поиска.
+ * ВАЖНО: путь файла включён — иначе auth.ts без символа "auth" не матчится.
  */
-export function fileToEmbeddingText(defs: Array<{ name: string; kind: string; signature: string; parentName?: string }>, imports: string[]): string {
+export function fileToEmbeddingText(
+  defs: Array<{ name: string; kind: string; signature: string; parentName?: string }>,
+  imports: string[],
+  filePath?: string,
+): string {
   const parts: string[] = []
+  // Путь файла — basename + директория (даёт сигнал для semantic match)
+  if (filePath) {
+    const normalized = filePath.replace(/\\/g, '/')
+    const segments = normalized.split('/')
+    const baseName = segments[segments.length - 1].replace(/\.[^.]+$/, '')
+    parts.push(baseName)
+    // Последние 2 директории — контекст (e.g. "auth/login" для src/auth/login.ts)
+    if (segments.length >= 3) {
+      parts.push(segments[segments.length - 2])
+    }
+  }
   for (const d of defs.slice(0, 50)) {
     if (d.parentName) parts.push(`${d.parentName}.${d.name} ${d.kind}`)
     else parts.push(`${d.name} ${d.kind}`)

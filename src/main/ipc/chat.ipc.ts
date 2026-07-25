@@ -38,18 +38,7 @@ import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta } from '../../shared/types'
-
-const DEFAULT_AGENT_SETTINGS: AgentSettings = {
-  approvalMode: 'ask',
-  maxSteps: 32,
-  toolOutputMode: 'normal',
-  enableThinking: false,
-  maxParallelSubAgents: 3,
-  readFileCache: true,
-  autoMemoryInterval: 5,
-  maxRepeatedToolCalls: 3,
-  maxRepeatedErrors: 2,
-}
+import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 
 /**
  * Состояние одного активного запуска chat:send.

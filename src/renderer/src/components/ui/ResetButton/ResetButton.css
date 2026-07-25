@@ -1,0 +1,53 @@
+.reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  opacity: 0.6;
+  flex-shrink: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+  vertical-align: middle;
+}
+
+.reset-btn:hover {
+  opacity: 1;
+  color: var(--accent);
+  background: var(--bg-tertiary);
+}
+
+.reset-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+/* В строке слайдера кнопка ставится после значения — небольшой отступ */
+.ctx-slider-row .reset-btn,
+.ctx-slider-val + .reset-btn {
+  margin-left: 6px;
+}
+
+/* Рядом с тогглом — отступ слева */
+.settings-toggle + .reset-btn,
+.ctx-section__head .reset-btn {
+  margin-left: 8px;
+}
+
+/* После select/input — отступ слева */
+.settings-input + .reset-btn,
+.settings-select + .reset-btn {
+  margin-left: 6px;
+}
+
+/* В группе chip-кнопок */
+.settings-chip--active ~ .reset-btn,
+.reset-btn--after-chips {
+  margin-left: 6px;
+}
