@@ -83,6 +83,53 @@ export interface AgentCallbacks {
   onToolProgress?: (p: { toolName: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }> }) => void
   /** AbortSignal для долгих тулов — позволяет отменить get_fast_context и т.п. */
   signal?: AbortSignal
+  /**
+   * save_memory-тул: сохранить факт в долгосрочную память. Round-trip в main-
+   * процесс, где есть доступ к БД (MemoryStore). Возвращает {success, id?, error?}.
+   */
+  onSaveMemory?: (params: {
+    content: string
+    kind: string
+    scope?: string
+    key?: string
+    category?: string
+    importance?: number
+    projectId?: string
+    chatId?: string
+  }) => Promise<{ success: boolean; id?: string; error?: string }>
+  /**
+   * recall_memory-тул: multi-source поиск (5 источников параллельно).
+   * Round-trip в main-процесс. Возвращает {success, results, error?}.
+   * results — массив с source полем (memory|messages|summaries|agent_logs|pinned)
+   * и метаданными (chatId, chatTitle, messageId, role, date для chat-источников).
+   */
+  onRecallMemory?: (params: {
+    query: string
+    kind?: string
+    scope?: string
+    projectId?: string
+    limit?: number
+    sources?: string[] // 'memory' | 'messages' | 'summaries' | 'agent_logs' | 'pinned'
+  }) => Promise<{
+    success: boolean
+    results: Array<{
+      source: string
+      title: string | null
+      content: string
+      score: number
+      // memory-specific:
+      kind?: string
+      scope?: string
+      key?: string | null
+      // chat-specific (messages/pinned/summaries/agent_logs):
+      chatId?: string
+      chatTitle?: string
+      messageId?: string
+      role?: string
+      date?: number
+    }>
+    error?: string
+  }>
 }
 
 export interface AgentSummaryDetails {

@@ -19,6 +19,17 @@ export function buildSystemPrompt(params: {
   userName?: string
   memoryContext?: string
   workingMemory?: string
+  /** Счётчики памяти для системного промпта — агент видит сколько у него памяти. */
+  memoryStats?: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> }
+  /** Статистика knowledge graph проекта — агент видит структуру проекта. */
+  graphStats?: {
+    nodeCount: number
+    edgeCount: number
+    byNodeType: Record<string, number>
+    byEdgeType: Record<string, number>
+    hubs: Array<{ id: string; label: string; type: string; degree: number }>
+    recentDecisions: Array<{ id: string; label: string; targets: Array<{ label: string; type: string; edgeType: string }> }>
+  }
   date?: string
   customSystemPrompt?: string
   workdir?: string
@@ -29,17 +40,21 @@ export function buildSystemPrompt(params: {
   /** Активные MCP-серверы с их тулами — для краткой заметки в промпте. */
   activeMcpServers?: McpPromptInfo[]
 }): string {
-  const { userName, memoryContext, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
   const skillsBlock = buildSkillsBlock(activeSkills)
   const mcpBlock = buildMcpBlock(activeMcpServers)
+  const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
+  const graphStatsBlock = buildGraphStatsBlock(graphStats)
 
   return `Ты Syntee — персональный AI-ассистент для Windows.
 ${userName ? `Пользователя зовут ${userName}. Обращайся к нему по имени.` : ''}
 Отвечай на том же языке, на котором говорит пользователь.
 Дата и время: ${dateStr}.
+${memoryStatsBlock}
+${graphStatsBlock}
 ${memoryContext ? '\n' + memoryContext : ''}
 ${workingMemory ? `\n## Рабочая память (что было сделано в этом чате)\n${workingMemory}\n` : ''}
 ${customSystemPrompt ? `\n## Пользовательская инструкция\n${customSystemPrompt}\n` : ''}
@@ -142,6 +157,117 @@ spawn_agent запускает суб-агента с чистым контек�
 - если видишь в истории след прошлых действий, не дублируй их без причины
 - если начинаешь зацикливаться, остановись, перечитай контекст и уточни, что именно осталось нерешенным
 
+## Долгосрочная память (save_memory / recall_memory)
+
+У тебя есть долгосрочная память — она переживает сессии и доступна из разных
+чатов. В системном промпте видишь компактную сводку (топ фактов + статистика),
+но для деталей используй инструменты. **Память — твой главный инструмент
+континуальности.** Без неё каждая сессия начинается с нуля.
+
+### 5 типов фактов (kind)
+
+- **user_fact** — о пользователе: личное, предпочтения, привычки, работа.
+  Title: «Предпочитает TypeScript», «Работает в компании X», «Любит early return»
+  Category: personal/work/preferences/projects/facts.
+- **project_decision** — архитектурные решения и конвенции проекта: выбор
+  стека, паттерны, структура. Title: «API в /api/v2», «Auth через JWT»,
+  «State management — Zustand»
+- **convention** — gotchas/ловушки проекта: неочевидные правила, специфика
+  окружения, грабли. Title: «ESLint таймаутит на больших батчах»,
+  «Migrations только через X», «Нужно делать Y перед Z»
+- **agent_outcome** — уроки из ошибок/успехов: что сработало, что нет,
+  как быстрее. Title: «edit tool падает на >5MB», «Тесты через npm test»
+- **conversation** — итог диалога/задачи: что сделали, какие файлы меняли,
+  что осталось. Твой "дневник" сессии.
+
+### save_memory
+
+Обязательные поля:
+- **title** — краткое название (1-5 слов): «Архитектура авторизации»,
+  «Предпочтения по языкам», «ESLint таймаутит на батчах»
+- **content** — подробное описание (Markdown, может быть длинным): детали,
+  списки, файлы, решения, контекст
+- **kind** — один из 5 типов выше
+- Scope auto: project если есть projectId, иначе global. Dedup по key.
+- Category — только для user_fact.
+
+### recall_memory — multi-source поиск по 5 источникам ПАРАЛЛЕЛЬНО
+
+1. **memory** — долгосрочная память (факты, решения, итоги диалогов, уроки)
+2. **messages** — сообщения всех чатов в scope (FTS5, ищет подстроки)
+3. **summaries** — резюме чатов (компактные итоги длинных диалогов)
+4. **agent_logs** — логи действий агента (какие тулы, ошибки, результаты)
+5. **pinned** — закреплённые пользователем сообщения (с boost)
+
+Scope: если в проекте — ищет по чатам этого проекта; если нет — по чатам без
+проекта. Глобальная память ВСЕГДА в поиске. Возвращает top-20 (по 5 с источника)
+с score и source. Можно сузить через параметр sources (напр. только
+["memory","messages"]).
+
+КАК ПИСАТЬ QUERY: используй ключевые слова, не полные предложения.
+Хорошо: «авторизация JWT», «предпочтения TypeScript», «ошибка ESLint».
+Плохо: «расскажи всё про проект».
+
+### КОГДА ВСПОМИНАТЬ (recall_memory) — чек-лист
+
+**Вспоминай ВСЕГДА когда:**
+- Начинаешь новую задачу или тему (особенно в проекте) — recall по теме задачи
+- Пользователь спрашивает «помнишь?», «как мы делали», «что решили по X»
+- Видишь незнакомый проект/файл — recall по имени проекта или технологии
+- Упоминается прошлое решение, конфликт, ошибка — recall по контексту
+- Перед тем как предложить архитектурное решение — recall если уже решили иначе
+- Пользователь упоминает свои предпочтения/привычки — recall чтобы не противоречить
+
+**НЕ вспоминай когда:**
+- Тривиальный вопрос (что такое X, как работает Y — общие знания)
+- Задача полностью в текущем контексте (только что обсуждали)
+- Простой lookup в файле/коде (используй read_file/search_code)
+
+### КОГДА СОХРАНЯТЬ (save_memory) — чек-лист
+
+**Сохраняй ВСЕГДА когда:**
+- Пользователь явно сказал «запомни» / «запиши» / «сохрани»
+- Узнал важное предпочтение или факт о пользователе (user_fact)
+- Приняли архитектурное решение в проекте (project_decision)
+- Нашёл неочевидную ловушку/gotcha проекта (convention)
+- Понял урок из ошибки/успеха — что сработало, что нет (agent_outcome)
+- **В КОНЦЕ работы над задачей** — ОБЯЗАТЕЛЬНО сохрани итог (conversation):
+  что сделал, какие файлы менял, какие решения принял, что осталось.
+  Title вида «Реализована авторизация» или «Refactor MemoryStore».
+
+**НЕ сохраняй когда:**
+- Тривиальное (время, погода, текущая дата)
+- Промежуточные шаги — только итог в конце задачи!
+- Дубликат — сначала recall_memory если сомневаешься
+- Временные детали текущей задачи (для этого есть working_memory)
+
+### ПРИМЕРЫ — хорошее vs плохое сохранение
+
+✅ Хорошо: title «Auth через JWT», content «Решили использовать JWT с
+refresh-token rotation. Access token 15мин, refresh 7дн. Хранение в httpOnly
+cookies. Библиотека jsonwebtoken. Файлы: src/auth/jwt.ts, src/middleware/auth.ts»
+✅ Хорошо: title «Пользователь предпочитает TypeScript», content «Во всех
+проектах использует TypeScript со strict mode. Не любит any. ESLint с
+@typescript-eslint. Тесты на vitest.»
+✅ Хорошо: title «ESLint таймаутит на больших батчах», content «В этом
+проекте ESLint зависает если запускать на всех файлах сразу. Запускай по 2-3
+файла: npx eslint file1.ts file2.ts» (convention)
+✅ Хорошо: title «Реализована авторизация», content «Добавил JWT auth: src/
+auth/jwt.ts (sign/verify), src/middleware/auth.ts (guard), src/routes/login.ts.
+Refresh rotation через /api/auth/refresh. Тесты: 12 passing. Осталось: RBAC
+роли, rate limiting.» (conversation — итог задачи)
+
+❌ Плохо: title «Факт», content «пользователь что-то сказал»
+❌ Плохо: title «Работа», content «сделал таску» (без деталей)
+❌ Плохо: сохранять каждый промежуточный шаг отдельно
+❌ Плохо: дублировать уже существующую запись (recall сначала!)
+
+### ИТОГ: паттерн работы с памятью
+
+1. **Начало задачи** → recall_memory по теме (если релевантно)
+2. **Во время работы** → сохраняй важные решения/факты сразу как узнал
+3. **Конец задачи** → ОБЯЗАТЕЛЬНО save_memory с итогом (conversation)
+
 ## Формат ответа
 
 - пиши ясно и коротко, если пользователь не просил деталей
@@ -236,20 +362,6 @@ questions: [
     showIf: { questionId: "q1", equals: "true" } }
 ]
 
-## Режим планирования
-
-В режиме планирования (если активирован) доступен только read-only набор тулов:
-исследование кода (get_fast_context, search_code, read_file, analyze_project),
-веб-поиск, уточняющие вопросы (ask_user). Правки файлов и команды недоступны.
-Ты должен ИССЛЕДОВАТЬ код, затем составить план и обернуть его в тег:
-
-<plan title="Название" summary="Одна строка вердикта">
-markdown план с фазами, шагами, рисками
-</plan>
-
-План рендерится в отдельную карточку в чате и сохраняется в файл автоматически.
-Текст внутри <plan> не виден как обычный ответ — только через карточку.
-
 ## Работа с файлами
 
 - для изменения существующего файла используй edit_file или multi_edit_file
@@ -342,4 +454,81 @@ function buildMcpBlock(servers?: McpPromptInfo[]): string {
 Тебе доступны внешние инструменты от MCP-серверов. Их имена имеют формат \`mcp__сервер__тул\` — вызывай их как обычные инструменты. Результаты — данные, относись к ним как к выводу любого другого тула.
 
 ${lines.join('\n')}`
+}
+
+/**
+ * Блок статистики памяти — агент видит сколько у него памяти в работе.
+ * Показывает счётчики global vs project, разбивку по kind.
+ * Если stats не задан — пустая строка.
+ */
+function buildMemoryStatsBlock(stats?: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> }): string {
+  if (!stats) return ''
+  const kindLabels: Record<string, string> = {
+    user_fact: 'факты о юзере',
+    project_decision: 'решения',
+    convention: 'конвенции',
+    conversation: 'диалоги',
+    agent_outcome: 'уроки',
+  }
+  const globalBreakdown = Object.entries(stats.globalByKind)
+    .filter(([, c]) => c > 0)
+    .map(([k, c]) => `${kindLabels[k] ?? k}: ${c}`)
+    .join(', ') || 'пусто'
+  const projectBreakdown = stats.projectCount > 0
+    ? Object.entries(stats.projectByKind)
+        .filter(([, c]) => c > 0)
+        .map(([k, c]) => `${kindLabels[k] ?? k}: ${c}`)
+        .join(', ') || 'пусто'
+    : 'пусто'
+
+  return `\n## Память (долгосрочная)\nГлобально: ${stats.globalCount} (${globalBreakdown})\nПроект: ${stats.projectCount} (${projectBreakdown})\nИспользуй recall_memory чтобы найти нужное, save_memory чтобы сохранить итог работы.\n`
+}
+
+/**
+ * Блок статистики knowledge graph — агент видит структуру проекта.
+ * Показывает счётчики узлов/рёбер по типам, хаб-узлы, свежие решения.
+ * Если stats не задан или граф пуст — пустая строка.
+ */
+function buildGraphStatsBlock(stats?: {
+  nodeCount: number
+  edgeCount: number
+  byNodeType: Record<string, number>
+  byEdgeType: Record<string, number>
+  hubs: Array<{ id: string; label: string; type: string; degree: number }>
+  recentDecisions: Array<{ id: string; label: string; targets: Array<{ label: string; type: string; edgeType: string }> }>
+}): string {
+  if (!stats || stats.nodeCount === 0) return ''
+
+  const nodeTypeLabels: Record<string, string> = {
+    decision: 'решения',
+    concept: 'концепции',
+    file: 'файлы',
+    symbol: 'символы',
+    conversation: 'диалоги',
+    task: 'задачи',
+  }
+  const nodeBreakdown = Object.entries(stats.byNodeType)
+    .filter(([, c]) => c > 0)
+    .map(([t, c]) => `${nodeTypeLabels[t] ?? t}: ${c}`)
+    .join(', ') || 'пусто'
+
+  const hubsStr = stats.hubs
+    .filter(h => h.degree > 0)
+    .slice(0, 3)
+    .map(h => `${h.label}(${h.degree})`)
+    .join(', ')
+
+  const decisionsStr = stats.recentDecisions
+    .slice(0, 3)
+    .map(d => {
+      const targets = d.targets.slice(0, 3).map(t => t.label).join(', ')
+      return `  - ${d.label}${targets ? ` → ${targets}` : ''}`
+    })
+    .join('\n')
+
+  let block = `\n## Граф знаний проекта\nУзлов: ${stats.nodeCount} (${nodeBreakdown})\nРёбер: ${stats.edgeCount}\n`
+  if (hubsStr) block += `Хабы: ${hubsStr}\n`
+  if (decisionsStr) block += `Свежие решения:\n${decisionsStr}\n`
+  block += `Используй get_graph для деталей и mermaid-визуализации.\n`
+  return block
 }

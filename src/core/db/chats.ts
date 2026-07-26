@@ -94,7 +94,57 @@ export function renameChat(id: string, title: string): void {
 }
 
 export function deleteChat(id: string): void {
-  getDB().prepare('DELETE FROM chats WHERE id = ?').run(id)
+  const db = getDB()
+  const now = Date.now()
+
+  db.transaction(() => {
+    // 1. Knowledge graph: удаляем orphan-узлы, ссылающиеся на сообщения этого чата.
+    //    Граф не имеет FK на messages (source_id — текстовое поле без constraint),
+    //    поэтому cascade не сработает — чистим вручную ДО удаления messages.
+    db.prepare(
+      `DELETE FROM memory_graph_nodes
+       WHERE source_kind = 'message'
+         AND source_id IN (SELECT id FROM messages WHERE chat_id = ?)`
+    ).run(id)
+
+    // 2. Knowledge graph: удаляем узлы, ссылающиеся на summary этого чата.
+    db.prepare(
+      `DELETE FROM memory_graph_nodes
+       WHERE source_kind = 'chat_summary' AND source_id = ?`
+    ).run(id)
+
+    // 3. Knowledge graph: удаляем узлы, ссылающиеся на эпизодическую память
+    //    этого чата (conversation items с key='chat_summary:<chatId>').
+    //    Граф-узлы с source_kind='memory_item' и source_id = ID эпизодической записи.
+    db.prepare(
+      `DELETE FROM memory_graph_nodes
+       WHERE source_kind = 'memory_item'
+         AND source_id IN (
+           SELECT id FROM memory_items
+           WHERE kind = 'conversation' AND key = 'chat_summary:' || ?
+         )`
+    ).run(id)
+
+    // 4. Удаляем эпизодическую память этого чата (итоги диалога).
+    //    Long-term факты (user_fact, project_decision, convention, agent_outcome)
+    //    СОХРАНЯЕМ — они переживают чат. Очищаем только chat_id (provenance-ссылку).
+    db.prepare(
+      `DELETE FROM memory_items
+       WHERE kind = 'conversation' AND key = 'chat_summary:' || ?`
+    ).run(id)
+
+    // 5. Сохраняем long-term память: очищаем chat_id (чтобы CASCADE не удалил их).
+    //    chat_id — это provenance (где факт был создан), не lifetime-ссылка.
+    db.prepare(
+      `UPDATE memory_items SET chat_id = NULL, updated_at = ?
+       WHERE chat_id = ?`
+    ).run(now, id)
+
+    // 6. Удаляем сам чат — ON DELETE CASCADE заботится об:
+    //    messages (→ messages_fts через триггер), pinned_messages, chat_summaries,
+    //    agent_logs, checkpoints, file_snapshots, context_snapshots, rewind_history.
+    db.prepare('DELETE FROM chats WHERE id = ?').run(id)
+  })()
 }
 
 export function archiveChat(id: string, archived: boolean): void {

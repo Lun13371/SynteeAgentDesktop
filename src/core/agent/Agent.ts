@@ -889,6 +889,89 @@ export class Agent {
         }
         return { success: false, output: '', error: 'chatId is not set - update_working_memory unavailable' }
       }
+      case 'save_memory': {
+        const content = args.content as string
+        if (!content) return { success: false, output: '', error: 'content is required' }
+        const kind = args.kind as string
+        if (!kind) return { success: false, output: '', error: 'kind is required' }
+        if (!callbacks?.onSaveMemory) {
+          return { success: false, output: '', error: 'save_memory unavailable (no memory backend)' }
+        }
+        try {
+          const result = await callbacks.onSaveMemory({
+            content,
+            kind,
+            scope: args.scope as string | undefined,
+            key: args.key as string | undefined,
+            category: args.category as string | undefined,
+            importance: args.importance as number | undefined,
+            projectId: this.projectId,
+            chatId: this.chatId,
+          })
+          if (!result.success) return { success: false, output: '', error: result.error ?? 'save failed' }
+          return { success: true, output: `Saved to memory (id: ${result.id ?? '?'}, kind: ${kind})` }
+        } catch (e) {
+          return { success: false, output: '', error: (e as Error).message }
+        }
+      }
+      case 'recall_memory': {
+        const query = args.query as string
+        if (!query) return { success: false, output: '', error: 'query is required' }
+        if (!callbacks?.onRecallMemory) {
+          return { success: false, output: '', error: 'recall_memory unavailable (no memory backend)' }
+        }
+        try {
+          const result = await callbacks.onRecallMemory({
+            query,
+            kind: args.kind as string | undefined,
+            scope: args.scope as string | undefined,
+            projectId: this.projectId,
+            limit: args.limit as number | undefined,
+            sources: args.sources as string[] | undefined,
+          })
+          if (!result.success) return { success: false, output: '', error: result.error ?? 'recall failed' }
+          if (result.results.length === 0) {
+            return { success: true, output: 'Ничего не найдено в памяти. Попробуй другой запрос или уточни ключевые слова.' }
+          }
+          // Форматируем результаты для агента — группируем по источнику
+          const sourceLabels: Record<string, string> = {
+            memory: 'Память',
+            messages: 'Сообщения',
+            summaries: 'Резюме чатов',
+            agent_logs: 'Логи агента',
+            pinned: 'Закреплённые',
+          }
+          const lines: string[] = []
+          let idx = 1
+          // Сортируем: memory сначала (самые важные), потом по score
+          const sorted = [...result.results].sort((a, b) => {
+            if (a.source === 'memory' && b.source !== 'memory') return -1
+            if (a.source !== 'memory' && b.source === 'memory') return 1
+            return b.score - a.score
+          })
+          for (const r of sorted) {
+            const scoreStr = r.score.toFixed(2)
+            const meta: string[] = []
+            if (r.chatTitle) meta.push(`чат: ${r.chatTitle}`)
+            if (r.role) meta.push(r.role)
+            if (r.date) {
+              const dateStr = new Date(r.date).toISOString().slice(0, 10)
+              meta.push(dateStr)
+            }
+            if (r.kind && r.source === 'memory') meta.push(`${r.kind}`)
+            if (r.scope && r.source === 'memory') meta.push(r.scope)
+            const metaStr = meta.length > 0 ? ` [${meta.join(', ')}]` : ''
+            const titleStr = r.title ? `${r.title}: ` : ''
+            const sourceLabel = sourceLabels[r.source] ?? r.source
+            lines.push(`${idx}. [${sourceLabel}] (релевантность: ${scoreStr})${metaStr}`)
+            lines.push(`   ${titleStr}${r.content}`)
+            idx++
+          }
+          return { success: true, output: `Найдено ${result.results.length} результатов:\n\n${lines.join('\n')}` }
+        } catch (e) {
+          return { success: false, output: '', error: (e as Error).message }
+        }
+      }
       case 'think': {
         const thought = args.thought as string
         if (!thought) return { success: false, output: '', error: 'thought is required' }

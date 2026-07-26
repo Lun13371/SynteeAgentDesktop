@@ -243,7 +243,7 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_fcih_project ON fast_context_index_history(project_id, created_at DESC);
 
     -- === Advanced memory: унифицированная таблица памяти ===
-    -- 4 типа памяти (kind): user_fact | project_decision | conversation | agent_outcome
+    -- 5 типов памяти (kind): user_fact | project_decision | convention | conversation | agent_outcome
     -- 3 scope: global (сквозная) | project (привязана к проекту) | chat (только чат)
     -- embedding: 384-dim Float32 BLOB (TF-IDF default, neural opt-in)
     -- importance + access_count + last_accessed_at: для recency-boost и forget-policy
@@ -253,7 +253,7 @@ export function runMigrations(db: Database.Database): void {
       scope            TEXT NOT NULL,        -- 'global' | 'project' | 'chat'
       project_id       TEXT REFERENCES projects(id) ON DELETE CASCADE,
       chat_id          TEXT REFERENCES chats(id) ON DELETE CASCADE,
-      kind             TEXT NOT NULL,        -- 'user_fact' | 'project_decision' | 'conversation' | 'agent_outcome'
+      kind             TEXT NOT NULL,        -- 'user_fact' | 'project_decision' | 'convention' | 'conversation' | 'agent_outcome'
       category         TEXT,                 -- 'personal'|'work'|'preferences'|'projects'|'facts' (для user_fact)
       key              TEXT,                 -- dedup-ключ ('name','preferred_stack')
       content          TEXT NOT NULL,
@@ -273,7 +273,123 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_mi_project ON memory_items(project_id);
     CREATE INDEX IF NOT EXISTS idx_mi_dedup ON memory_items(scope, key);
     CREATE INDEX IF NOT EXISTS idx_mi_access ON memory_items(last_accessed_at);
+
+    -- === Динамические категории памяти ===
+    -- Кастомные категории (global или project-scoped) для организации памяти
+    -- "по полочкам". Builtin категории (personal/work/preferences/projects/facts)
+    -- не хранятся тут — они дефолтные. Сюда попадают только пользовательские.
+    -- project_id NULL = глобальная категория (доступна везде).
+    CREATE TABLE IF NOT EXISTS memory_categories (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,             -- машинное имя (lowercase, для category field)
+      label       TEXT NOT NULL,             -- человекочитаемое
+      icon        TEXT,                      -- имя иконки из AppIcon (опционально)
+      color       TEXT,                      -- hex цвет (опционально)
+      scope       TEXT NOT NULL DEFAULT 'global',  -- 'global' | 'project'
+      project_id  TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      kind        TEXT,                      -- фильтр по kind (опционально, null = любой)
+      created_at  INTEGER NOT NULL,
+      UNIQUE(scope, project_id, name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mc_scope ON memory_categories(scope);
+    CREATE INDEX IF NOT EXISTS idx_mc_project ON memory_categories(project_id);
+
+    -- === Knowledge Graph: per-project граф сущностей и связей ===
+    -- 6 типов узлов: decision | concept | file | symbol | conversation | task
+    -- 9 типов рёбер: affects | mentions | implemented_in | depends_on | supersedes
+    --               | references | imports | calls | implements
+    -- weight: степень важности (boost от access_count, pinned, LLM confidence)
+    -- source_id: ID источника (memory_items.id, file_path, msg.id, etc.)
+    -- project-scoped: каждый узел/ребро привязан к project_id
+    CREATE TABLE IF NOT EXISTS memory_graph_nodes (
+      id               TEXT PRIMARY KEY,
+      project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      type             TEXT NOT NULL,  -- 'decision'|'concept'|'file'|'symbol'|'conversation'|'task'
+      label            TEXT NOT NULL,  -- display name (filepath, concept name, decision summary)
+      source_kind      TEXT,           -- 'memory_item'|'fast_context'|'message'|'chat_summary'|'llm_extract'|'manual'
+      source_id        TEXT,           -- ID источника (memory_items.id, file_path, msg.id)
+      metadata         TEXT,           -- JSON (path, line range, kind, evidence, ...)
+      weight           REAL NOT NULL DEFAULT 1.0,
+      access_count     INTEGER NOT NULL DEFAULT 0,
+      last_accessed_at INTEGER,
+      pinned           INTEGER NOT NULL DEFAULT 0,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      UNIQUE(project_id, type, label)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mgn_project ON memory_graph_nodes(project_id);
+    CREATE INDEX IF NOT EXISTS idx_mgn_type ON memory_graph_nodes(project_id, type);
+    CREATE INDEX IF NOT EXISTS idx_mgn_source ON memory_graph_nodes(source_kind, source_id);
+
+    CREATE TABLE IF NOT EXISTS memory_graph_edges (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      from_node   TEXT NOT NULL REFERENCES memory_graph_nodes(id) ON DELETE CASCADE,
+      to_node     TEXT NOT NULL REFERENCES memory_graph_nodes(id) ON DELETE CASCADE,
+      type        TEXT NOT NULL,  -- 'affects'|'mentions'|'implemented_in'|'depends_on'|'supersedes'|'references'|'imports'|'calls'|'implements'
+      weight      REAL NOT NULL DEFAULT 1.0,
+      metadata    TEXT,           -- JSON (context, evidence)
+      created_at  INTEGER NOT NULL,
+      UNIQUE(project_id, from_node, to_node, type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mge_project ON memory_graph_edges(project_id);
+    CREATE INDEX IF NOT EXISTS idx_mge_from ON memory_graph_edges(from_node);
+    CREATE INDEX IF NOT EXISTS idx_mge_to ON memory_graph_edges(to_node);
+    CREATE INDEX IF NOT EXISTS idx_mge_type ON memory_graph_edges(project_id, type);
+
+    -- === FTS5 полнотекстовый поиск по messages ===
+    -- Используется recall_memory для поиска по истории чатов проекта.
+    -- tokenize='trigram' — подстрочный поиск (находит 'авториз' в 'авторизация'),
+    -- работает для любых языков. message_id/chat_id/role/created_at — UNINDEXED
+    -- (хранятся для JOIN, но не участвуют в поиске).
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+      content,
+      message_id UNINDEXED,
+      chat_id UNINDEXED,
+      role UNINDEXED,
+      created_at UNINDEXED,
+      tokenize='trigram'
+    );
+
+    -- Триггеры: авто-синхронизация messages_fts при INSERT/UPDATE/DELETE messages.
+    -- Только user/assistant/system роли индексируются (на всякий случай).
+    CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages
+      WHEN new.role IN ('user','assistant','system')
+      BEGIN
+        INSERT INTO messages_fts(content, message_id, chat_id, role, created_at)
+        VALUES (new.content, new.id, new.chat_id, new.role, new.created_at);
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages
+      BEGIN
+        DELETE FROM messages_fts WHERE message_id = old.id;
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages
+      WHEN new.role IN ('user','assistant','system')
+      BEGIN
+        DELETE FROM messages_fts WHERE message_id = old.id;
+        INSERT INTO messages_fts(content, message_id, chat_id, role, created_at)
+        VALUES (new.content, new.id, new.chat_id, new.role, new.created_at);
+      END;
   `)
+
+  // Backfill messages_fts существующими сообщениями (одноразово при первом запуске).
+  // Проверяем по messages_fts — если пусто, а messages нет — заполняем.
+  {
+    const ftsCount = (db.prepare(`SELECT COUNT(*) as c FROM messages_fts`).get() as { c: number }).c
+    const msgCount = (db.prepare(`SELECT COUNT(*) as c FROM messages`).get() as { c: number }).c
+    if (ftsCount === 0 && msgCount > 0) {
+      const insertFts = db.prepare(
+        `INSERT INTO messages_fts(content, message_id, chat_id, role, created_at)
+         SELECT content, id, chat_id, role, created_at FROM messages
+         WHERE role IN ('user','assistant','system')`
+      )
+      const t0 = Date.now()
+      insertFts.run()
+      console.log(`[migrations] messages_fts: backfilled ${msgCount} messages in ${Date.now() - t0}ms`)
+    }
+  }
 
   // Автомиграция: добавляем relevance_boost колонку для существующих БД.
   // PRAGMA table_info возвращает колонки; если relevance_boost нет — ALTER TABLE ADD COLUMN.
@@ -296,6 +412,18 @@ export function runMigrations(db: Database.Database): void {
   // новую унифицированную memory_items. Идемпотентна — повторный запуск
   // не дублирует (проверка по metadata->legacy_id).
   migrateLegacyMemoryToMemoryItems(db)
+
+  // Автомиграция: добавляем title колонку к memory_items (если ещё нет).
+  // Для существующих записей без title — переносим content в title
+  // (как fallback, чтобы UI показывал что-то осмысленное).
+  {
+    const miCols = db.prepare(`PRAGMA table_info(memory_items)`).all() as { name: string }[]
+    if (!miCols.find(c => c.name === 'title')) {
+      db.prepare(`ALTER TABLE memory_items ADD COLUMN title TEXT`).run()
+      // Backfill: для существующих записей без title — переносим content (truncate 100)
+      db.prepare(`UPDATE memory_items SET title = SUBSTR(content, 1, 100) WHERE title IS NULL`).run()
+    }
+  }
 }
 
 /**
@@ -357,16 +485,18 @@ function migrateLegacyMemoryToMemoryItems(db: Database.Database): void {
   if (alreadyMigrated) return
 
   const insert = db.prepare(
-    `INSERT INTO memory_items (id, scope, project_id, chat_id, kind, category, key, content, source, confidence, importance, access_count, last_accessed_at, pinned, embedding, metadata, created_at, updated_at)
-     VALUES (?, ?, NULL, NULL, 'user_fact', ?, ?, ?, 'legacy_migration', 1.0, 0.6, 0, NULL, 1, NULL, ?, ?, ?)`
+    `INSERT INTO memory_items (id, title, scope, project_id, chat_id, kind, category, key, content, source, confidence, importance, access_count, last_accessed_at, pinned, embedding, metadata, created_at, updated_at)
+     VALUES (?, ?, ?, NULL, NULL, 'user_fact', ?, ?, ?, 'legacy_migration', 1.0, 0.6, 0, NULL, 1, NULL, ?, ?, ?)`
   )
 
   const migrateAll = db.transaction((rows: typeof legacyRows) => {
     for (const row of rows) {
       // legacy_id в metadata для идемпотентности
       const metadata = JSON.stringify({ legacy_id: row.id })
+      // title = row.value (truncate 100), content = row.value
+      const title = row.value.slice(0, 100)
       // Новый UUID, scope='global' (старая память не была привязана к проектам)
-      insert.run(uuid(), 'global', row.category || 'facts', row.key, row.value, metadata, row.created_at, row.updated_at)
+      insert.run(uuid(), title, 'global', row.category || 'facts', row.key, row.value, metadata, row.created_at, row.updated_at)
     }
   })
   migrateAll(legacyRows)

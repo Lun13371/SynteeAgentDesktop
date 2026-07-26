@@ -2,7 +2,7 @@ import { motion, type HTMLMotionProps } from 'framer-motion'
 import {
   Bot, Brain, Settings, User, Plus, Lock, Pin, Paperclip, Mic,
   SendHorizontal, Copy, Globe, FileText, FilePen, Search, Sparkles, Calculator,
-  Folder, Clipboard, Terminal, Monitor, Pencil, Check, X, AlertCircle,
+  Folder, Clipboard, Terminal, Monitor, Pencil, Check, X,   AlertCircle, AlertTriangle,
   Eye, EyeOff, Palette, Link2, Database, Volume2, LoaderCircle, Minus,
   Shield, Info, RefreshCw, ChevronUp, ChevronDown, Trash2, Zap,
   Archive, ChevronRight, Filter, Clock, CornerUpLeft, Image, GitBranch, GitGraph, Code, Layers, Cpu,
@@ -21,7 +21,7 @@ const ICONS = {
   copy: Copy, globe: Globe, fileText: FileText, filePen: FilePen, search: Search,
   sparkles: Sparkles, calculator: Calculator, folder: Folder,
   clipboard: Clipboard, terminal: Terminal, monitor: Monitor, edit: Pencil,
-  check: Check, x: X, alertCircle: AlertCircle, eye: Eye, eyeOff: EyeOff,
+  check: Check, x: X, alertCircle: AlertCircle, alertTriangle: AlertTriangle, eye: Eye, eyeOff: EyeOff,
   palette: Palette, link: Link2, database: Database, volume: Volume2,
   loader: LoaderCircle, minus: Minus, shield: Shield, info: Info,
   refreshCw: RefreshCw, chevronUp: ChevronUp, chevronDown: ChevronDown,

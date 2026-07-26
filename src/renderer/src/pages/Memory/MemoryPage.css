@@ -7,6 +7,51 @@
   gap: 12px;
 }
 
+.memory-page > .memory-graph-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.memory-graph-project-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: var(--bg-secondary, #1f2937);
+  border-radius: 8px;
+}
+
+.memory-graph-project-selector label {
+  font-size: 13px;
+  color: var(--text-secondary, #9ca3af);
+  font-weight: 500;
+}
+
+.memory-graph-project-selector select {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg-tertiary, #374151);
+  color: var(--text-primary, #e5e7eb);
+  border: 1px solid var(--border-color, #4b5563);
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.memory-graph-project-selector select:hover {
+  border-color: var(--accent, #3b82f6);
+}
+
+.memory-graph-project-selector select:focus {
+  border-color: var(--accent, #3b82f6);
+}
+
 .memory-header {
   display: flex;
   align-items: center;
@@ -194,13 +239,7 @@
   letter-spacing: 0.5px;
 }
 
-.memory-item-value {
-  font-size: 13px;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* .memory-item-value — см. ниже в секции Фазы 5 (multi-line variant) */
 
 .memory-item-meta {
   display: flex;
@@ -232,3 +271,279 @@
   transition: all var(--transition);
 }
 .memory-delete-btn:hover { background: rgba(255,80,80,0.12); color: #ff5555; }
+
+/* === Фаза 5: новые элементы === */
+
+.memory-header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.memory-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.memory-add-btn--primary {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.memory-add-btn--primary:hover { opacity: 0.85; }
+
+.memory-form-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.memory-textarea {
+  resize: vertical;
+  min-height: 40px;
+  font-family: var(--font-family);
+}
+
+.memory-importance-row {
+  align-items: center;
+}
+
+.memory-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.memory-range {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.memory-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.memory-scope-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.memory-mode-toggle {
+  display: flex;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.memory-mode-btn {
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.memory-mode-btn--active {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.memory-item--pinned {
+  border-color: var(--border-strong);
+  background: var(--accent-subtle);
+}
+
+.memory-item-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 3px;
+}
+
+.memory-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.memory-tag--kind {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.memory-tag--scope {
+  background: var(--bg-tertiary);
+}
+
+.memory-tag--category {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+.memory-tag--key {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+}
+
+.memory-item-value {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.4;
+  /* multi-line: показываем до 3 строк */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.memory-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  margin: 4px 0 2px 0;
+}
+
+.memory-item-content-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin-top: 4px;
+  /* collapsed: до 3 строк */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  transition: -webkit-line-clamp 0.2s;
+}
+
+.memory-item-content-body--expanded {
+  -webkit-line-clamp: unset;
+  display: block;
+  overflow: visible;
+}
+
+.memory-item-content-body p {
+  margin: 4px 0;
+}
+
+.memory-item-content-body ul,
+.memory-item-content-body ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.memory-item-content-body li {
+  margin: 2px 0;
+}
+
+.memory-item-content-body code {
+  font-family: var(--font-mono, 'Cascadia Code', monospace);
+  font-size: 12px;
+  background: var(--bg-tertiary, rgba(255,255,255,0.08));
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.memory-item-content-body pre {
+  background: var(--bg-tertiary, rgba(0,0,0,0.3));
+  padding: 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+.memory-item-content-body pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.memory-item-expand {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+  margin-top: 2px;
+  transition: color 0.15s;
+}
+
+.memory-item-expand:hover {
+  color: var(--text-secondary);
+}
+
+.memory-item-footer {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.memory-meta-text {
+  font-size: 10px;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.memory-importance-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.memory-pin-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.memory-pin-btn:hover { background: var(--bg-tertiary); }
+.memory-pin-btn--active { color: var(--warning, #f59e0b); }
+
+/* Кастомные категории — кнопка удаления и добавления */
+.memory-cat-delete {
+  margin-left: 4px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.5;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.memory-cat-delete:hover { opacity: 1; color: #ff5555; }
+
+.memory-cat-btn--add {
+  padding: 4px 8px;
+  border-style: dashed;
+}

@@ -47,6 +47,8 @@
     "remark-math": "^6.0.0",
     "tree-sitter-wasms": "^0.1.13",
     "uuid": "^10.0.0",
+    "vis-data": "^8.0.4",
+    "vis-network": "^10.1.0",
     "web-tree-sitter": "^0.24.0",
     "zustand": "^4.5.5"
   },
