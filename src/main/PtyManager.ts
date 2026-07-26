@@ -45,6 +45,8 @@ export interface SessionMeta {
 
 interface PendingExec {
   markerId: string
+  /** Скомпилированный регекс — создаётся один раз, не на каждый чанк. */
+  markerRe: RegExp
   buf: string
   resolve: (r: { output: string; exitCode: number; timedOut?: boolean }) => void
   timer: NodeJS.Timeout
@@ -66,6 +68,10 @@ interface PtySession {
 
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
+/** Кап pre-mount буфера — при превышении дропаем хвост с маркером обрезки.
+ *  Без этого команда с мегабайтами вывода + открытие панели = синхронный
+ *  term.write(весь_буфер) → фриз рендерера на секунды. */
+const PRE_MOUNT_BUF_CAP = 256 * 1024
 
 let cachedShells: ShellInfo[] | null = null
 
@@ -172,8 +178,20 @@ class PtyManager {
     }
 
     proc.onData(data => {
-      // 1. Копим pre-mount буфер (до первого xterm attach)
-      if (!session.dead) session.preMountBuf += data
+      // 1. Копим pre-mount буфер (до первого xterm attach) — с капом чтобы
+      //    избежать unbounded growth и фриза при flushPreMount. Полный
+      //    вывод уже стримится в renderer через pty:data — preMountBuf
+      //    нужен только для первого attach xterm.
+      if (!session.dead) {
+        if (session.preMountBuf.length < PRE_MOUNT_BUF_CAP) {
+          session.preMountBuf += data
+          if (session.preMountBuf.length > PRE_MOUNT_BUF_CAP) {
+            session.preMountBuf =
+              session.preMountBuf.slice(0, PRE_MOUNT_BUF_CAP) +
+              '\r\n\x1b[2m[…pre-mount buffer truncated]\x1b[0m'
+          }
+        }
+      }
       // 2. Стримим в renderer
       this.sender?.webContents.send('pty:data', id, data)
       // 3. Копим для pending exec (AI)
@@ -207,12 +225,18 @@ class PtyManager {
     const p = session.pending
     if (!p) return
     p.buf += data
-    const markerRe = new RegExp(`${p.markerId}:(\\d+)`)
-    const m = p.buf.match(markerRe)
+    // Ищем маркер только в хвосте буфера — новый data + backfill на случай
+    // если маркер разрезан между чанками. Маркер ~50 chars, backfill 128.
+    // Раньше было p.buf.match(new RegExp(...)) на КАЖДОМ чанке по ВЕСЬ буфер
+    // → O(n²) для команды с N чанков вывода → блокировка main process.
+    const backfill = Math.min(128, p.buf.length - data.length)
+    const searchStart = Math.max(0, p.buf.length - data.length - backfill)
+    const m = p.markerRe.exec(p.buf.slice(searchStart))
     if (!m || m.index === undefined) return
+    const actualIndex = searchStart + m.index
     const exitCode = Number(m[1])
     // Обрезаем вывод до маркера (маркер не должен попасть в результат AI)
-    const output = p.buf.slice(0, m.index)
+    const output = p.buf.slice(0, actualIndex)
     // Стираем маркер из PTY-экрана: очищаем текущую строку. AI-вывод уже
     // отрисован, маркер был на новой строке — затрём его.
     session.proc.write('\r\x1b[2K')
@@ -289,7 +313,7 @@ class PtyManager {
         }, 2000)
       }, Math.max(1, timeoutSec) * 1000)
 
-      session.pending = { markerId, buf: '', resolve: settle, timer }
+      session.pending = { markerId, markerRe: new RegExp(`${markerId}:(\\d+)`), buf: '', resolve: settle, timer }
       // PTY интерпретирует '\r' как Enter (submit строки), не '\n' — обычный
       // pipe-подход (\n) здесь не работает, команда просто вставляется в
       // буфер строки и никогда не выполняется, из-за чего маркер не приходит
@@ -301,7 +325,10 @@ class PtyManager {
 
   write(sessionId: string, data: string): void {
     const s = this.sessions.get(sessionId)
-    if (s && !s.dead) s.proc.write(data)
+    // Блокируем ввод пока AI-команда выполняется (session.pending !== null).
+    // Иначе юзер может напечатать в agent-сессию и испортить вывод/маркер →
+    // execInSession не сматчит маркер → timeout → пустой/битый output.
+    if (s && !s.dead && !s.pending) s.proc.write(data)
   }
 
   resize(sessionId: string, cols: number, rows: number): void {
@@ -314,7 +341,14 @@ class PtyManager {
   kill(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
-    if (s.pending) { clearTimeout(s.pending.timer); s.pending = null }
+    // Резолвим pending Promise ДО очистки — иначе worker виснет навсегда на
+    // await onShellExec (proc.onExit не сработает т.к. s.pending уже null).
+    if (s.pending) {
+      clearTimeout(s.pending.timer)
+      const p = s.pending
+      s.pending = null
+      p.resolve({ output: p.buf, exitCode: 1, timedOut: false })
+    }
     try { s.proc.kill() } catch { /* already dead */ }
     this.sessions.delete(sessionId)
     const set = this.byChat.get(s.chatId)
@@ -327,6 +361,30 @@ class PtyManager {
     const set = this.byChat.get(chatId)
     if (!set) return
     for (const id of Array.from(set)) this.kill(id)
+  }
+
+  /** Прерывает все pending exec для чата (используется при chat:stop).
+   *  Worker уже терминирован — Promise resolve бесполезен, но нужно:
+   *  1) Send Ctrl+C чтобы прервать текущую команду (shell вернётся к промпту).
+   *  2) Очистить session.pending — иначе следующий execInSession получит
+   *     '[shell busy]' и зависнет (chat.ipc.ts:870 не создаст новую сессию
+   *     т.к. !s.dead, но pending занят). */
+  interruptByChat(chatId: string): void {
+    const set = this.byChat.get(chatId)
+    if (!set) return
+    for (const id of set) {
+      const s = this.sessions.get(id)
+      if (!s || !s.pending) continue
+      try { s.proc.write('\x03') } catch { /* dead */ }
+      clearTimeout(s.pending.timer)
+      // Резолвим Promise иначе worker виснет на await onShellExec.
+      // Раньше relied solely on worker.terminate() — но если interrupt
+      // вызван без terminate (future-proof), Promise завис бы навсегда.
+      const partial = s.pending.buf ?? ''
+      const resolve = s.pending.resolve
+      s.pending = null
+      resolve({ output: partial, exitCode: 1, timedOut: true })
+    }
   }
 
   listByChat(chatId: string): SessionMeta[] {

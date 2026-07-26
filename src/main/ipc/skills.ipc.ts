@@ -15,7 +15,7 @@ import Store from 'electron-store'
 import { join } from 'path'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from 'fs'
 import { getSkillManager } from '../../core/skills/skillManager'
-import { getProjectById, getChatWorkdirContext } from '../../core/db/database'
+import { getProjectById, getChatWorkdirContext } from '../../core/db'
 import type { SkillState } from '../../shared/types'
 
 /**

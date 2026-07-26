@@ -54,13 +54,36 @@ export function resolveToolPath(p: string, workdir?: string): string {
   return pathResolve(workdir ?? process.cwd(), p)
 }
 
+// Удаление ANSI escape-последовательностей из вывода PTY. Path A (persistent
+// PTY) возвращает raw-байты с цветами/курсором/очисткой строк — без стрипинга
+// они попадают в <pre> (визуальный мусор) и в markdown textBefore (ломают
+// рендер). Path B (exec) ANSI не имеет, поэтому функция для него no-op.
+// Покрывает: SGR (цвета), CSI cursor/erase, OSC, простые escape (\r, \b).
+export function stripAnsi(text: string): string {
+  if (!text) return text
+  // eslint-disable-next-line no-control-regex
+  return text
+    // CSI sequences: ESC [ ... letter  (цвета, курсор, очистка строк/экрана)
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    // OSC sequences: ESC ] ... BEL/ST  (заголовок окна и т.п.)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // Прочие ESC-коды: ESC + один символ (например \x1b=, \x1b>)
+    // Исключаем [ и ] чтобы не матчить CSI/OSC (уже обработаны выше).
+    .replace(/\x1b[^[\]]/g, '')
+    // Backspace и вертикальный таб — артефакты PTY
+    .replace(/[\b]/g, '')
+}
+
 // Умная обрезка вывода команды — показываем начало (контекст) и конец (результат/ошибки)
 export function smartTrimOutput(text: string, maxChars = 4000): string {
-  if (!text || text.length <= maxChars) return text
+  // Сначала стрипаем ANSI — иначе обрезка по длине считается вместе с
+  // невидимыми кодами и реальный текст обрезается раньше времени.
+  const clean = stripAnsi(text)
+  if (!clean || clean.length <= maxChars) return clean
   const head = 800   // начало — контекст команды
   const tail = 2000  // конец — результат и ошибки (самое важное)
-  const removed = text.length - head - tail
-  return `${text.slice(0, head)}\n\n...[обрезано ${removed} символов, показано начало и конец]...\n\n${text.slice(-tail)}`
+  const removed = clean.length - head - tail
+  return `${clean.slice(0, head)}\n\n...[обрезано ${removed} символов, показано начало и конец]...\n\n${clean.slice(-tail)}`
 }
 
 export function formatSize(bytes: number): string {

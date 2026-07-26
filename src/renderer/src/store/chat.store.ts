@@ -27,8 +27,8 @@ export interface ChatLiveState {
   rateLimitSec: number
   isTyping: boolean
   isAgentRunning: boolean
-  /** Live progress для долгих тулов (get_fast_context): {toolName → {stage, detail, files...}} */
-  toolProgress: Record<string, { stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  /** Live progress для долгих тулов (get_fast_context / run_command): {toolName → {stage, detail, sessionId, files...}} */
+  toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }
 
 export type RunStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'

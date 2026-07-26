@@ -15,7 +15,7 @@ import {
   getFastContextIndexCount, getFastContextLastUpdated,
   getIndexHistory, getRecentFastContextFiles, getTopFastContextFiles,
   clearFastContextIndex, addIndexHistoryEvent, pruneIndexHistory,
-} from '../../core/db/database'
+} from '../../core/db'
 import {
   setProgressCallback, setUpdatedCallback, setActiveProject,
   isWatching, isIndexing, forceReindex, setWatcherStore,

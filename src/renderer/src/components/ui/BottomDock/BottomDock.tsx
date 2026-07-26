@@ -39,6 +39,7 @@ export default function BottomDock() {
   const dockHeight = useTerminalStore(s => s.dockHeight)
   const activeSessionId = useTerminalStore(s => s.activeSessionId)
   const sessionsByChat = useTerminalStore(s => s.sessionsByChat)
+  const aiBusySessionIds = useTerminalStore(s => s.aiBusySessionIds)
   const currentChatId = useChatStore(s => s.currentChatId)
   const { createSession, closeSession, switchSession, setDockOpen, setDockHeight, setActiveChat } = useTerminalStore.getState()
 
@@ -142,12 +143,13 @@ export default function BottomDock() {
                 {visibleSessions.map((s: TerminalSessionMeta) => (
                   <button
                     key={s.id}
-                    className={`bottom-dock__tab ${s.id === activeSessionId ? 'bottom-dock__tab--active' : ''}`}
+                    className={`bottom-dock__tab ${s.id === activeSessionId ? 'bottom-dock__tab--active' : ''} ${aiBusySessionIds.has(s.id) ? 'bottom-dock__tab--ai-busy' : ''}`}
                     onClick={() => switchSession(s.id)}
                   >
                     {s.source === 'agent' && <AppIcon name="bot" size="xs" tone="accent" />}
                     <span className="bottom-dock__tab-shell">{shellIconLabel(s.shell)}</span>
                     <span className="bottom-dock__tab-title">{s.title}</span>
+                    {aiBusySessionIds.has(s.id) && <span className="bottom-dock__tab-busy-dot" />}
                     <span className="bottom-dock__tab-close" onClick={(e) => handleClose(s.id, e)}>
                       <AppIcon name="x" size="xs" />
                     </span>

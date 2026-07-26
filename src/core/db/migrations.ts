@@ -1,0 +1,285 @@
+import type Database from 'better-sqlite3'
+import { basename } from 'path'
+import { v4 as uuid } from 'uuid'
+
+/**
+ * Идемпотентная схема-миграция: CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN
+ * с защитой через PRAGMA table_info. Порядок важен — см. комментарий у idx_chats_project_id.
+ */
+export function runMigrations(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chats (
+      id          TEXT PRIMARY KEY,
+      title       TEXT NOT NULL DEFAULT 'Новый чат',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      is_incognito INTEGER NOT NULL DEFAULT 0,
+      is_pinned   INTEGER NOT NULL DEFAULT 0,
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      color       TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id          TEXT PRIMARY KEY,
+      chat_id     TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      role        TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+      content     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      is_pinned   INTEGER NOT NULL DEFAULT 0,
+      model       TEXT,
+      tool_steps  TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS memory (
+      id          TEXT PRIMARY KEY,
+      category    TEXT NOT NULL DEFAULT 'general',
+      key         TEXT NOT NULL,
+      value       TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_logs (
+      id          TEXT PRIMARY KEY,
+      chat_id     TEXT,
+      type        TEXT NOT NULL,
+      tool        TEXT,
+      args        TEXT,
+      result      TEXT,
+      error       TEXT,
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS clipboard_history (
+      id          TEXT PRIMARY KEY,
+      content     TEXT NOT NULL,
+      content_type TEXT NOT NULL DEFAULT 'text',
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS pinned_messages (
+      message_id  TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      pinned_at   INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_working_memory (
+      chat_id     TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+      content     TEXT NOT NULL DEFAULT '',
+      updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_summaries (
+      chat_id     TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+      content     TEXT NOT NULL DEFAULT '',
+      updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS projects (
+      id              TEXT PRIMARY KEY,
+      name            TEXT NOT NULL,
+      workdir         TEXT NOT NULL UNIQUE,
+      project_context TEXT,
+      verification_command TEXT,
+      created_at      INTEGER NOT NULL,
+      last_used       INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+    CREATE INDEX IF NOT EXISTS idx_memory_category ON memory(category);
+    CREATE INDEX IF NOT EXISTS idx_clipboard_created ON clipboard_history(created_at);
+  `)
+
+  // Миграция: добавляем tool_steps если колонки нет
+  const cols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[]
+  if (!cols.find(c => c.name === 'tool_steps')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN tool_steps TEXT`).run()
+  }
+  if (!cols.find(c => c.name === 'thinking')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN thinking TEXT`).run()
+  }
+  if (!cols.find(c => c.name === 'thinking_ms')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN thinking_ms INTEGER`).run()
+  }
+  if (!cols.find(c => c.name === 'slash_command')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN slash_command TEXT`).run()
+  }
+  if (!cols.find(c => c.name === 'iterations')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN iterations TEXT`).run()
+  }
+  if (!cols.find(c => c.name === 'plan_data')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN plan_data TEXT`).run()
+  }
+  if (!cols.find(c => c.name === 'todo')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN todo TEXT`).run()
+  }
+  // Миграция: compact_summary — снимок резюме на момент сжатия контекста.
+  // Заполняется только у system-сообщений-разделителей компакции
+  // (slashCommand.name === 'compact'). Позволяет разворачивать старые
+  // разделители даже после того, как chat_summaries перетёрся новым сжатием.
+  if (!cols.find(c => c.name === 'compact_summary')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN compact_summary TEXT`).run()
+  }
+  // Миграция: compact_stats — JSON {removedCount, tokensBefore, tokensAfter,
+  // tokensSaved} для compact-разделителей. Используется ContextRing для
+  // подсчёта общего кол-ва сжатий и сэкономленных токенов сессии.
+  if (!cols.find(c => c.name === 'compact_stats')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN compact_stats TEXT`).run()
+  }
+
+  // Миграция: добавляем поля чатов
+  const chatCols = db.prepare(`PRAGMA table_info(chats)`).all() as { name: string }[]
+  if (!chatCols.find(c => c.name === 'is_pinned'))   db.prepare(`ALTER TABLE chats ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0`).run()
+  if (!chatCols.find(c => c.name === 'is_archived')) db.prepare(`ALTER TABLE chats ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0`).run()
+  if (!chatCols.find(c => c.name === 'color'))       db.prepare(`ALTER TABLE chats ADD COLUMN color TEXT`).run()
+  if (!chatCols.find(c => c.name === 'mode'))        db.prepare(`ALTER TABLE chats ADD COLUMN mode TEXT NOT NULL DEFAULT 'code'`).run()
+  // workdir — рабочая директория чата в режиме "Код" (NULL для Work-режима
+  // и чатов, созданных до этой фичи). project_context — результат
+  // analyzeProject(workdir) на момент создания чата; write-once, неизменяем.
+  if (!chatCols.find(c => c.name === 'workdir'))          db.prepare(`ALTER TABLE chats ADD COLUMN workdir TEXT`).run()
+  if (!chatCols.find(c => c.name === 'project_context'))  db.prepare(`ALTER TABLE chats ADD COLUMN project_context TEXT`).run()
+  // project_id — FK на projects. Чаты без проекта (старые, инкогнито,
+  // или созданные до этой фичи) имеют NULL → попадают в группу «Без проекта».
+  if (!chatCols.find(c => c.name === 'project_id'))       db.prepare(`ALTER TABLE chats ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`).run()
+
+  // Миграция: verification_command на projects — команда авто-проверки
+  // (напр. "npm test"), запускаемая после серии успешных правок файлов.
+  const projectCols = db.prepare(`PRAGMA table_info(projects)`).all() as { name: string }[]
+  if (!projectCols.find(c => c.name === 'verification_command')) {
+    db.prepare(`ALTER TABLE projects ADD COLUMN verification_command TEXT`).run()
+  }
+
+  // Индекс по project_id — создаём ПОСЛЕ миграции (колонка добавлена выше).
+  // В db.exec() этот индекс создавать нельзя: на момент выполнения первого
+  // блока колонки project_id ещё нет, и CREATE INDEX роняет всю миграцию.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_chats_project_id ON chats(project_id);`)
+
+  // === Checkpoint/rewind: file_snapshots + context_snapshots + chat_checkpoints ===
+  // Три таблицы для отката сессии к произвольному user-сообщению:
+  //  - file_snapshots: {path, content_before} для каждого файла, изменённого
+  //    в turn'е. content_before NULL = файл был создан этим turn'ом.
+  //  - context_snapshots: состояние chat_working_memory/chat_summaries НА
+  //    МОМЕНТ ДО turn'а — чтобы rewind восстановил контекст корректно.
+  //  - chat_checkpoints: плоский список точек отката для UI-таймлайна.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS file_snapshots (
+      id              TEXT PRIMARY KEY,
+      chat_id         TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      message_id      TEXT NOT NULL,
+      user_message_id TEXT NOT NULL,
+      path            TEXT NOT NULL,
+      content_before  TEXT,
+      created_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fs_chat ON file_snapshots(chat_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_fs_user ON file_snapshots(chat_id, user_message_id);
+
+    CREATE TABLE IF NOT EXISTS context_snapshots (
+      id              TEXT PRIMARY KEY,
+      chat_id         TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      user_message_id TEXT NOT NULL,
+      working_memory  TEXT,
+      chat_summary    TEXT,
+      message_count   INTEGER,
+      created_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cs_user ON context_snapshots(chat_id, user_message_id);
+
+    CREATE TABLE IF NOT EXISTS chat_checkpoints (
+      id                  TEXT PRIMARY KEY,
+      chat_id             TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      user_message_id     TEXT NOT NULL,
+      assistant_message_id TEXT,
+      user_prompt_preview TEXT,
+      files_changed       INTEGER NOT NULL DEFAULT 0,
+      file_paths          TEXT,
+      created_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cc_chat ON chat_checkpoints(chat_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS rewind_history (
+      id                  TEXT PRIMARY KEY,
+      chat_id             TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      rewind_message_id   TEXT NOT NULL,
+      deleted_messages    TEXT NOT NULL,
+      file_changes        TEXT NOT NULL,
+      restored_checkpoint_user_msg_id TEXT NOT NULL,
+      created_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_rh_chat ON rewind_history(chat_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_rh_rewind ON rewind_history(rewind_message_id);
+
+    -- Fast Context: tree-sitter индекс символов проекта для быстрого
+    -- retrieval релевантных файлов по запросу (тулза get_fast_context).
+    -- Один ряд = один файл проекта с его символами и метаданными для
+    -- инвалидации по mtime+size. ranked_score — PageRank-style важность.
+    CREATE TABLE IF NOT EXISTS fast_context_index (
+      project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      file_path       TEXT NOT NULL,
+      lang            TEXT,
+      symbols_json    TEXT,
+      mtime           INTEGER NOT NULL DEFAULT 0,
+      size            INTEGER NOT NULL DEFAULT 0,
+      ranked_score    REAL NOT NULL DEFAULT 0,
+      relevance_boost REAL NOT NULL DEFAULT 0,
+      embedding       BLOB,
+      updated_at      INTEGER NOT NULL,
+      PRIMARY KEY(project_id, file_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fci_project ON fast_context_index(project_id);
+    CREATE INDEX IF NOT EXISTS idx_fci_score ON fast_context_index(project_id, ranked_score DESC);
+
+    -- История обновлений индекса (для модалки статуса проекта).
+    -- Храним последние ~50 событий на проект, старые пруним автоматически.
+    CREATE TABLE IF NOT EXISTS fast_context_index_history (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      event_type    TEXT NOT NULL,        -- 'full' | 'incremental' | 'manual' | 'clear'
+      files_count   INTEGER NOT NULL,     -- файлов в индексе после события
+      files_changed INTEGER NOT NULL,     -- сколько файлов переиндексировано
+      duration_ms   INTEGER NOT NULL,     -- сколько заняло
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fcih_project ON fast_context_index_history(project_id, created_at DESC);
+  `)
+
+  // Автомиграция: добавляем relevance_boost колонку для существующих БД.
+  // PRAGMA table_info возвращает колонки; если relevance_boost нет — ALTER TABLE ADD COLUMN.
+  {
+    const cols = db.prepare(`PRAGMA table_info(fast_context_index)`).all() as Array<{ name: string }>
+    if (!cols.find(c => c.name === 'relevance_boost')) {
+      db.exec(`ALTER TABLE fast_context_index ADD COLUMN relevance_boost REAL NOT NULL DEFAULT 0`)
+    }
+    if (!cols.find(c => c.name === 'embedding')) {
+      db.exec(`ALTER TABLE fast_context_index ADD COLUMN embedding BLOB`)
+    }
+  }
+
+  // Автомиграция: для каждого уникального workdir из chats создаём проект
+  // и привязываем чаты к нему. workdir на chats остаётся как денормализованный
+  // кэш для обратной совместимости, но источник правды теперь — projects.
+  migrateChatsToProjects(db)
+}
+
+/**
+ * Переносит существующие chats.workdir в таблицу projects: для каждого
+ * уникального workdir создаёт проект (имя = basename папки), чатам
+ * проставляет project_id. Идемпотентна — повторный запуск не дублирует.
+ */
+function migrateChatsToProjects(db: Database.Database): void {
+  const rows = db.prepare(`SELECT DISTINCT workdir FROM chats WHERE workdir IS NOT NULL AND project_id IS NULL`).all() as { workdir: string }[]
+  if (rows.length === 0) return
+  const now = Date.now()
+  for (const { workdir } of rows) {
+    // Проверяем, есть ли уже проект с таким workdir (UNIQUE constraint)
+    const existing = db.prepare(`SELECT id FROM projects WHERE workdir = ?`).get(workdir) as { id: string } | undefined
+    const projectId = existing?.id ?? uuid()
+    if (!existing) {
+      const name = basename(workdir) || workdir
+      const projectContext = db.prepare(`SELECT project_context FROM chats WHERE workdir = ? AND project_context IS NOT NULL LIMIT 1`).get(workdir) as { project_context: string } | undefined
+      db.prepare(`INSERT INTO projects (id, name, workdir, project_context, created_at, last_used) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(projectId, name, workdir, projectContext?.project_context ?? null, now, now)
+    }
+    db.prepare(`UPDATE chats SET project_id = ? WHERE workdir = ? AND project_id IS NULL`).run(projectId, workdir)
+  }
+}

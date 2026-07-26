@@ -239,7 +239,7 @@ export interface AgentSettings {
 // main/ipc/agent.ipc.ts и main/ipc/chat.ipc.ts импортируют отсюда же.
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   approvalMode: 'ask',
-  maxSteps: 32,
+  maxSteps: 50,
   toolOutputMode: 'normal',
   enableThinking: false,
   maxParallelSubAgents: 3,

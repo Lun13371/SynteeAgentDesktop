@@ -1,5 +1,7 @@
+import { useMemo, useRef } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import './CodePreview.css'
 
 export function getLanguage(path: string): string {
@@ -28,7 +30,14 @@ interface CodePreviewProps {
   maxHeight?: number | string
   truncated?: boolean
   totalSize?: number
+  truncatedReason?: string
 }
+
+// Prism токенизирует ВЕСЬ контент синхронно. Для файлов >300 строк это
+// фризит UI. Порог: до 300 строк — Prism с подсветкой, выше — виртуализированный
+// plain text (рендерим только видимые строки, как VSCode).
+const PRISM_MAX_LINES = 300
+const LINE_HEIGHT = 18
 
 export default function CodePreview({
   content,
@@ -37,31 +46,82 @@ export default function CodePreview({
   showLineNumbers,
   maxHeight = '100%',
   truncated,
+  truncatedReason,
 }: CodePreviewProps) {
   const lang = language ?? (path ? getLanguage(path) : 'text')
-  const showLines = showLineNumbers ?? content.split('\n').length > 3
+  const lines = useMemo(() => content.split('\n'), [content])
+  const lineCount = lines.length
+  const showLines = showLineNumbers ?? lineCount > 3
+  const usePrism = lineCount <= PRISM_MAX_LINES
+
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const virtualizer = useVirtualizer({
+    count: lineCount,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => LINE_HEIGHT,
+    overscan: 12,
+  })
+
+  if (usePrism) {
+    return (
+      <div className="code-preview">
+        <SyntaxHighlighter
+          language={lang}
+          style={oneDark}
+          customStyle={{
+            margin: 0,
+            borderRadius: 8,
+            fontSize: 12,
+            maxHeight: maxHeight,
+            overflow: 'auto',
+            background: 'transparent',
+          }}
+          showLineNumbers={showLines}
+          wrapLongLines={false}
+        >
+          {content}
+        </SyntaxHighlighter>
+        {truncated && (
+          <div className="code-preview__truncated">
+            {truncatedReason ?? 'Файл обрезан — показана только часть содержимого'}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Виртуализированный plain text — рендерим только видимые строки.
+  const virtualItems = virtualizer.getVirtualItems()
 
   return (
     <div className="code-preview">
-      <SyntaxHighlighter
-        language={lang}
-        style={oneDark}
-        customStyle={{
-          margin: 0,
-          borderRadius: 8,
-          fontSize: 12,
-          maxHeight: maxHeight,
-          overflow: 'auto',
-          background: 'transparent',
-        }}
-        showLineNumbers={showLines}
-        wrapLongLines={false}
-      >
-        {content}
-      </SyntaxHighlighter>
+      <div ref={scrollRef} className="code-preview__scroll" style={{ maxHeight: maxHeight }}>
+        <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+          {virtualItems.map(vi => {
+            const line = lines[vi.index]
+            return (
+              <div
+                key={vi.index}
+                className="code-preview__vline"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  transform: `translateY(${vi.start}px)`,
+                  width: '100%',
+                  height: vi.size,
+                }}
+              >
+                {showLines && <span className="code-preview__vnum">{vi.index + 1}</span>}
+                <span className="code-preview__vtext">{line}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
       {truncated && (
         <div className="code-preview__truncated">
-          Файл обрезан — показана только часть содержимого
+          {truncatedReason ?? 'Файл обрезан — показана только часть содержимого'}
         </div>
       )}
     </div>

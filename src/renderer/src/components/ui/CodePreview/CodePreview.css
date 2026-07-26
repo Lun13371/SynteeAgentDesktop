@@ -1,8 +1,10 @@
 .code-preview {
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
   background: var(--bg-secondary, #1a1a1a);
   border-radius: var(--radius-md, 8px);
+  display: flex;
+  flex-direction: column;
 }
 
 .code-preview pre {
@@ -18,4 +20,38 @@
   border-top: 1px solid var(--border, #333);
   text-align: center;
   font-style: italic;
+  flex-shrink: 0;
+}
+
+/* ── Виртуализированный plain text ──────────────────────────────────── */
+
+.code-preview__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  color: #d4d4d4;
+}
+
+.code-preview__vline {
+  display: flex;
+  padding-right: 12px;
+  white-space: nowrap;
+}
+
+.code-preview__vnum {
+  flex-shrink: 0;
+  width: 48px;
+  text-align: right;
+  padding-right: 12px;
+  color: #5c5c5c;
+  user-select: none;
+}
+
+.code-preview__vtext {
+  white-space: pre;
+  flex: 1;
+  overflow: hidden;
 }

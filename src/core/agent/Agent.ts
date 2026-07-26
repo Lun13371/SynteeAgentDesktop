@@ -21,312 +21,15 @@ import { statSync } from 'fs'
 import { createHash } from 'crypto'
 import { resolve } from 'path'
 import { log } from '../logger'
-
-export interface AgentStep {
-  // tool_call_pending — модель только начала генерировать этот вызов (имя
-  // уже известно, аргументы ещё стримятся) — ранний сигнал для UI, чтобы
-  // блок тула появлялся сразу, а не после долгой генерации большого diff/content.
-  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'answer'
-  toolName?: string
-  toolArgs?: Record<string, unknown>
-  content: string
-  success?: boolean
-  imageUrl?: string
-  diff?: string
-  callId?: string
-  hidden?: boolean
-  /** Имя MCP-сервера (для MCP-тулов mcp__server__tool). */
-  serverName?: string
-  // Связывает финальный tool_call с более ранним tool_call_pending той же
-  // генерации (см. onToolCallStarted) — фронтенд заменяет pending-карточку
-  // на настоящую вместо создания второго блока.
-  pendingCallId?: string
-}
-
-export interface AgentCallbacks {
-  onStep: (step: AgentStep) => void
-  onDone: (answer: string, details?: AgentSummaryDetails) => void
-  onError: (error: Error) => void
-  onPlanSaved?: (plan: { title: string; content: string; summary: string; filePath: string }) => void
-  onStatus?: (text: string) => void
-  onRateLimit?: (waitSec: number) => void
-  onRetry?: (attempt: number, reason: string, waitSec?: number) => void
-  onContextUpdate?: (tokens: number) => void
-  onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
-  onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
-  approvalMode?: 'auto' | 'ask'
-  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full' }) => Promise<{ summary: string; error?: string }>
-  /**
-   * Персистентный shell (§1 GAP_ANALYSIS.md) — если задан, run_command
-   * выполняется через живую shell-сессию в main-процессе вместо
-   * одноразового exec(). cd/env переживают между вызовами. Не используется
-   * суб-агентами (короткоживущие — общий shell создал бы гонки).
-   */
-  onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean }>
-  onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
-  onContextCounted?: (promptTokens: number) => void
-  onTodoUpdate?: (items: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>) => void
-  onThinkingToken?: (token: string) => void
-  onThinkingDone?: (ms: number) => void
-  // Side-chat-only: запросить сообщения основного чата из БД (в worker
-  // нет доступа к БД, поэтому идёт round-trip через main-процесс).
-  onGetMainChatMessages?: (params: { limit?: number; search?: string }) => Promise<string>
-  /**
-   * Вызов MCP-тула (round-trip в main-процесс, где живёт McpManager).
-   * fullToolName = mcp__serverName__toolName. Возвращает {success, output, error?}.
-   */
-  onMcpCall?: (fullToolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; output: string; error?: string }>
-  /**
-   * Проверка, нужно ли подтверждение для MCP-тула. Если вернёт true —
-   * агент запросит одобрение через onConfirm (как для опасных тулов).
-   */
-  onMcpRequiresApproval?: (fullToolName: string) => boolean
-  /**
-   * Запрос списка установленных расширений (MCP-серверы + skills).
-   * Round-trip в main-процесс, где есть доступ к McpManager и SkillManager.
-   * Возвращает текстовый отчёт для агента.
-   */
-  onListExtensions?: () => Promise<string>
-  /**
-   * Получить инструкции скила по имени. Round-trip в main-процесс.
-   * Возвращает текст инструкций.
-   */
-  onGetSkill?: (name: string) => Promise<string>
-  /**
-   * Progress callback для долгих тулов (например get_fast_context):
-   * транслирует stage-прогресс в main для live-индикации этапов в UI.
-   */
-  onToolProgress?: (p: { toolName: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }> }) => void
-  /** AbortSignal для долгих тулов — позволяет отменить get_fast_context и т.п. */
-  signal?: AbortSignal
-}
-
-export interface AgentSummaryDetails {
-  modifiedFiles: string[]
-  diffs: Array<{ file: string; summary: string }>
-  commandsRun: Array<{ command: string; exitCode?: string; success: boolean }>
-  filesRead: string[]
-  // §1.8 — снимок undoStack на конец turn'а: {path, contentBefore} для каждого
-  // изменённого файла. contentBefore = null = файл был создан этим turn'ом.
-  // Перегоняется в file_snapshots (DB) на main-стороне для checkpoint/rewind.
-  fileSnapshots: Array<{ path: string; contentBefore: string | null }>
-}
-
-const FALLBACK_SYSTEM_PROMPT = 'You are a capable coding agent. Follow the provided system prompt and use tools when needed.'
-
-type AgentMessage = {
-  role: string
-  content: string
-  tool_calls?: unknown[]
-  tool_call_id?: string
-  name?: string
-}
-
-type NormalizedToolCall = {
-  call: unknown
-  callId: string
-  fn: { name: string; arguments: string }
-  args: Record<string, unknown>
-  isHiddenTool: boolean
-  pendingCallId: string
-}
-
-type AgentRuntimeOptions = {
-  autoMemoryInterval?: number
-  readFileCache?: boolean
-  maxRepeatedToolCalls?: number
-  maxRepeatedErrors?: number
-  fileCacheSnapshot?: Record<string, FileCacheEntry>
-}
-
-type AgentToolCallFingerprint = {
-  toolName: string
-  argsKey: string
-}
-
-type ToolRound = {
-  assistantIndex: number
-  toolIndices: number[]
-  toolNames: string[]
-}
-
-function normalizeToolName(name: string, schemas: Array<{ function: { name: string } }>): string {
-  const knownNames = schemas.map(s => s.function.name)
-  if (knownNames.includes(name)) return name
-
-  const parts = name.split('_')
-  for (let i = 1; i < parts.length; i++) {
-    const candidate = parts.slice(i).join('_')
-    if (knownNames.includes(candidate)) return candidate
-  }
-
-  for (let i = parts.length - 1; i > 0; i--) {
-    const candidate = parts.slice(0, i).join('_')
-    if (knownNames.includes(candidate)) return candidate
-  }
-
-  for (const known of knownNames) {
-    if (name.includes(known)) return known
-  }
-
-  return name
-}
-
-// Универсальная проверка обязательных аргументов по TOOL_SCHEMAS.required —
-// одна проверка для всех тулов сразу, вместо точечных if-ов в executeTool.
-// Ловит случаи когда модель не передала обязательное поле или JSON.parse
-// аргументов тихо упал (args = {}) — раньше это доходило до низкоуровневых
-// ошибок вида `The "paths[1]" argument must be of type string. Received
-// undefined` внутри path.resolve(), непонятных и для модели, и для пользователя.
-function findMissingRequiredArgs(
-  name: string,
-  args: Record<string, unknown>,
-  schemas: Array<{ function: { name: string; parameters?: { required?: string[] } } }>,
-): string[] {
-  const schema = schemas.find(s => s.function.name === name)
-  const required = schema?.function.parameters?.required
-  if (!required?.length) return []
-  return required.filter(key => args[key] === undefined || args[key] === null || args[key] === '')
-}
-
-function getToolErrorHint(toolName: string, error: string): string {
-  const e = error.toLowerCase()
-  if ((toolName === 'edit_file' || toolName === 'multi_edit_file') && (e.includes('not found') || e.includes('old_str'))) {
-    return '\n\n[Hint: refresh the file with read_file before retrying edit_file.]'
-  }
-  if ((toolName === 'read_file' || toolName === 'write_file') && (e.includes('no such file') || e.includes('enoent') || e.includes('not found'))) {
-    return '\n\n[Hint: locate the exact path with find_files first.]'
-  }
-  if (toolName === 'run_command') {
-    if (e.includes('not recognized') || e.includes('command not found')) {
-      return '\n\n[Hint: verify the command exists or use an installed alternative.]'
-    }
-    if (e.includes('permission') || e.includes('access denied')) {
-      return '\n\n[Hint: the command likely needs different permissions or a safer target path.]'
-    }
-  }
-  if (toolName === 'search_code' && (e.includes('rg') || e.includes('ripgrep') || e.includes('not found'))) {
-    return '\n\n[Hint: ripgrep unavailable — автоматически задействован PowerShell-фолбэк. Если поиск пуст, проверь path и pattern, либо используй literal=true для дословного поиска.]'
-  }
-  if (toolName === 'http_request' && e.includes('timed out')) {
-    return '\n\n[Hint: increase the timeout parameter or try a different endpoint.]'
-  }
-  if (toolName === 'find_files' && e.includes('not found') && e.includes('pattern')) {
-    return '\n\n[Hint: use a simpler glob pattern like *.ts or a partial filename.]'
-  }
-  return ''
-}
-
-// Число успешных file-edit тулов между авто-верификациями (упрощённый
-// аналог PostToolUse-хука Claude Code) — фиксированное значение для MVP,
-// можно вынести в AgentSettings позже если понадобится настройка в UI.
-const VERIFICATION_INTERVAL = 3
-
-function isSequentialTool(name: string): boolean {
-  return name === 'write_file' ||
-    name === 'edit_file' ||
-    name === 'multi_edit_file' ||
-    name === 'run_command'
-}
-
-function stableStringify(value: unknown): string {
-  if (value == null) return ''
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
-  if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => `${k}:${stableStringify(v)}`)
-    return `{${entries.join(',')}}`
-  }
-  return String(value)
-}
-
-function buildToolFingerprint(toolName: string, args: Record<string, unknown>): AgentToolCallFingerprint {
-  const normalizedArgs: Record<string, unknown> = { ...args }
-  for (const key of ['content', 'old_str', 'new_str']) {
-    if (typeof normalizedArgs[key] === 'string' && normalizedArgs[key].length > 160) {
-      normalizedArgs[key] = `${normalizedArgs[key].slice(0, 160)}...`
-    }
-  }
-  return {
-    toolName,
-    argsKey: stableStringify(normalizedArgs),
-  }
-}
-
-function getToolRounds(messages: AgentMessage[]): ToolRound[] {
-  const rounds: ToolRound[] = []
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i] as AgentMessage & { tool_calls?: Array<{ function?: { name?: string } }> }
-    if (msg.role !== 'assistant' || !msg.tool_calls?.length) continue
-    const toolIndices: number[] = []
-    let j = i + 1
-    while (j < messages.length && messages[j].role === 'tool') {
-      toolIndices.push(j)
-      j++
-    }
-    rounds.push({
-      assistantIndex: i,
-      toolIndices,
-      toolNames: msg.tool_calls.map((tc: { function?: { name?: string } }) => tc.function?.name || 'tool'),
-    })
-  }
-  return rounds
-}
-
-/**
- * Аварийный клапан: если токены сообщений реально подбираются к лимиту модели
- * (hardLimitTokens, см. getHardLimitTokens) — физически удаляем самые старые
- * целые tool-раунды (assistant+tool сообщения целиком), без замены на
- * текст-резюме. Это защита от hard-fail API, а не проактивное сжатие:
- * срабатывает исключительно на грани реального предела.
- *
- * Гистерезис: при срабатывании дропаем НЕ до hardLimitTokens, а до
- * targetTokens (значительно ниже) — иначе следующий же раунд тулов сразу
- * снова превышает hardLimitTokens и клапан триггерится повторно на каждом
- * шаге, давая пилообразный (то много, то мало) реальный prompt_tokens вместо
- * плавного роста. targetTokens задаёт запас, в который новые раунды могут
- * расти, прежде чем клапан сработает снова.
- */
-function dropOldestRoundsIfOverflow(
-  messages: AgentMessage[],
-  hardLimitTokens: number,
-  targetTokens: number,
-): AgentMessage[] {
-  const estimated = messages.reduce((sum, msg) => sum + estimateTokens(msg.content || '') + 4, TOOL_SCHEMAS_OVERHEAD)
-  if (estimated <= hardLimitTokens) return messages
-
-  const rounds = getToolRounds(messages)
-  if (rounds.length === 0) return messages
-
-  // Удаляем раунды с начала (самые старые), пока не уложимся в targetTokens
-  // (не hardLimitTokens — см. комментарий выше про гистерезис).
-  // Сохраняем system-сообщения и последнее user-сообщение.
-  const removeIndices = new Set<number>()
-  let currentEstimate = estimated
-  for (const round of rounds) {
-    if (currentEstimate <= targetTokens) break
-    removeIndices.add(round.assistantIndex)
-    for (const toolIndex of round.toolIndices) removeIndices.add(toolIndex)
-    for (const idx of [round.assistantIndex, ...round.toolIndices]) {
-      currentEstimate -= estimateTokens(messages[idx].content || '') + 4
-    }
-  }
-
-  if (removeIndices.size === 0) return messages
-
-  const result = messages.filter((_, index) => !removeIndices.has(index))
-  // Вставляем короткую метку чтобы модель знала что старые раунды были удалены
-  const firstNonSystem = result.findIndex(msg => msg.role !== 'system')
-  const insertAt = firstNonSystem === -1 ? result.length : firstNonSystem
-  result.splice(insertAt, 0, {
-    role: 'system',
-    content: `[Старые tool-раунды удалены для экономии контекста — ${removeIndices.size} сообщений]`,
-  })
-  log('[Agent] dropOldestRoundsIfOverflow сработал: estimated=%s hardLimitTokens=%s targetTokens=%s removedMessages=%s остаток~=%s',
-    estimated, hardLimitTokens, targetTokens, removeIndices.size, currentEstimate)
-  return result
-}
+import type {
+  AgentStep, AgentCallbacks, AgentSummaryDetails, AgentMessage,
+  NormalizedToolCall, AgentRuntimeOptions, AgentToolCallFingerprint, ToolRound,
+} from './types'
+import {
+  FALLBACK_SYSTEM_PROMPT, VERIFICATION_INTERVAL,
+  normalizeToolName, findMissingRequiredArgs, getToolErrorHint, isSequentialTool,
+  buildToolFingerprint, dropOldestRoundsIfOverflow, extractMcpServerName,
+} from './utils'
 
 export class Agent {
   private store: Store
@@ -464,11 +167,11 @@ export class Agent {
         callbacks.onStep({
           type: 'tool_result',
           toolName: '_limit',
-          content: `Достигнут лимит шагов агента (${maxSteps}). Работа остановлена, чтобы избежать бесконечного цикла — уточните задачу или продолжите в новом сообщении.`,
+          content: `Достигнут лимит шагов агента (${maxSteps}). Заверши текущую работу: кратко суммируй что уже сделано, что осталось, и предложи следующие шаги. Пользователь может сказать «продолжай» — история сохранится.`,
           success: false,
         })
         callbacks.onDone(
-          `Достигнут лимит в ${maxSteps} шагов агента — остановился, чтобы не зависнуть. Уточните задачу или попросите продолжить.`,
+          `Достигнут лимит в ${maxSteps} шагов агента.\n\n**Что сделано:** ${this._summarizeProgress(modifiedFiles)}\n\n**Что осталось:** смотри план выше (незавершённые пункты).\n\nСкажи «продолжай» — я подхвачу с того же места. Для больших задач эффективнее делегировать через spawn_agent, чтобы не упереться в лимит.`,
           this.buildSummaryDetails(modifiedFiles),
         )
         return
@@ -735,7 +438,17 @@ export class Agent {
           }
 
           callbacks.onStatus?.(`${fn.name}...`)
-          const result = await this.executeTool(fn.name, args, tavilyKey, callbacks, dryRunMode)
+          let result: ToolResult
+          try {
+            result = await this.executeTool(fn.name, args, tavilyKey, callbacks, dryRunMode)
+          } catch (toolErr) {
+            // Раньше throw из executeTool протекал в outer try/catch и
+            // интерпретировался как API/network error (emit '_error' +
+            // "Сеть недоступна"). Теперь — честный tool_result с реальным
+            // сообщением, агент может обработать и продолжить.
+            const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr)
+            result = { success: false, output: '', error: `Внутренняя ошибка тула ${fn.name}: ${errMsg}` }
+          }
 
           if (result.success && !dryRunMode && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
             const p = args.path as string | undefined
@@ -937,18 +650,25 @@ export class Agent {
         // соответствует тому, что запускает persistent сессия).
         if (callbacks?.onShellExec && this.role === 'main' && !args.shell) {
           const shellRes = await callbacks.onShellExec(cmd, effectiveCwd, timeoutSec)
+          // PTY-вывод содержит raw ANSI-коды и возможные остатки маркера
+          // завершения (__SYNTEE_DONE_...:N). feedExec срезает маркер, но при
+          // дроблении чанков могут остаться огрызки — вырезаем надёжно.
+          const cleanShellOutput = (raw: string) => {
+            const noMarker = raw.replace(/__SYNTEE_DONE_[a-f0-9]+:\d+\s*$/m, '')
+            return noMarker
+          }
           if (shellRes.timedOut) {
             // Сессия прервана Ctrl+C (см. PtyManager.execInSession) —
             // env/cwd сохранены, следующий run_command продолжится в ней.
             // shellRes.output содержит частичный вывод команды до прерывания.
-            const partial = smartTrimOutput(shellRes.output || '')
+            const partial = smartTrimOutput(cleanShellOutput(shellRes.output || ''))
             cmdResult = {
               success: false,
               output: `[timeout после ${timeoutSec}с — команда прервана Ctrl+C]\n${partial || '(нет вывода)'}`,
               error: 'Команда превысила таймаут',
             }
           } else {
-            const out = smartTrimOutput(shellRes.output) || '(нет вывода)'
+            const out = smartTrimOutput(cleanShellOutput(shellRes.output)) || '(нет вывода)'
             cmdResult = shellRes.exitCode === 0
               ? { success: true, output: `[exit: 0]\n${out}` }
               : { success: false, output: `[exit: ${shellRes.exitCode}]\n${out}`, error: out.slice(0, 500) || 'Команда завершилась с ошибкой' }
@@ -1139,6 +859,7 @@ export class Agent {
           task: args.task as string,
           model: args.model as string | undefined,
           approvalMode: args.approval_mode as 'auto' | 'ask' | 'full' | undefined,
+          isolation: args.isolation as 'auto' | 'worktree' | 'none' | undefined,
         })
         if (result.error) return { success: false, output: '', error: result.error }
         return {
@@ -1284,6 +1005,25 @@ export class Agent {
   }
 
   /**
+   * Краткая выжимка прогресса для сообщения о достижении maxSteps.
+   * Использует уже собранную статистику тулов, не парсит messages.
+   */
+  private _summarizeProgress(modifiedFiles: Set<string>): string {
+    const parts: string[] = []
+    if (modifiedFiles.size > 0) {
+      parts.push(`изменено файлов: ${modifiedFiles.size} (${Array.from(modifiedFiles).slice(0, 5).join(', ')}${modifiedFiles.size > 5 ? '...' : ''})`)
+    }
+    if (this.commandsRun.length > 0) {
+      parts.push(`выполнено команд: ${this.commandsRun.length}`)
+    }
+    const filesRead = this.fileMap.size
+    if (filesRead > 0) {
+      parts.push(`прочитано файлов: ${filesRead}`)
+    }
+    return parts.length > 0 ? parts.join('; ') : 'выполнена часть работы (см. лог тулов выше)'
+  }
+
+  /**
    * Структурированная выжимка действий агента — для передачи родительскому
    * агенту при spawn_agent, вместо обрезанного 500-символьного текста.
    */
@@ -1296,24 +1036,4 @@ export class Agent {
       fileSnapshots: this.undoStack.map(e => ({ path: e.path, contentBefore: e.originalContent })),
     }
   }
-}
-
-/**
- * Извлекает имя MCP-сервера из полного имени тула `mcp__server__tool`.
- * Возвращает undefined для встроенных тулов. Sanitized-имя сервера может
- * содержать подчёркивания, поэтому берём всё между первым и последним `__`.
- */
-function extractMcpServerName(toolName: string): string | undefined {
-  if (!toolName.startsWith('mcp__')) return undefined
-  const rest = toolName.slice(5) // убираем 'mcp__'
-  const firstSep = rest.indexOf('__')
-  if (firstSep === -1) return undefined
-  const lastSep = rest.lastIndexOf('__')
-  if (lastSep === firstSep) {
-    // Только один `__` — сервер до него, тул после
-    return rest.slice(0, firstSep)
-  }
-  // Несколько `__` — сервер между первым и последним, но имя сервера
-  // это всё до последнего `__` (т.к. тул — последний сегмент)
-  return rest.slice(0, lastSep)
-}
+}

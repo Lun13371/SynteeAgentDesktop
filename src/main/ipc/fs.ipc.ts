@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
-import { readFile as fsReadFile, readdir as fsReaddir, stat as fsStat } from 'fs/promises'
+import { readdir as fsReaddir, stat as fsStat, open as fsOpen } from 'fs/promises'
 import { join, resolve as pathResolve, relative, sep } from 'path'
-import { getChatWorkdirContext } from '../../core/db/database'
+import { getChatWorkdirContext } from '../../core/db'
 
 const DEFAULT_IGNORE_DIRS = new Set(['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage', '.cache'])
 
@@ -17,21 +17,6 @@ export interface FsEntry {
 
 export interface FsTreeEntry extends FsEntry {
   children?: FsEntry[]
-}
-
-async function isBinaryFile(filePath: string): Promise<boolean> {
-  let handle: { read: (buf: Buffer, offset: number, length: number, position: number) => Promise<{ bytesRead: number }>; close: () => Promise<void> } | undefined
-  try {
-    const { open } = await import('fs/promises')
-    handle = await open(filePath, 'r') as unknown as { read: (buf: Buffer, offset: number, length: number, position: number) => Promise<{ bytesRead: number }>; close: () => Promise<void> }
-    const buf = Buffer.alloc(8192)
-    const { bytesRead } = await handle.read(buf, 0, 8192, 0)
-    return buf.slice(0, bytesRead).includes(0)
-  } catch {
-    return false
-  } finally {
-    if (handle) await handle.close()
-  }
 }
 
 function safeJoin(root: string, relativePath: string): string | null {
@@ -61,28 +46,27 @@ export function registerFsIPC(): void {
     if (!dirPath) return { success: false, entries: [], error: 'Path outside root' }
 
     try {
-      const names = await fsReaddir(dirPath)
-      const entries: FsEntry[] = []
+      // withFileTypes: Dirent[] — isDirectory/isSymbolicLink уже доступны
+      // из данных readdir БЕЗ дополнительных stat вызовов. Раньше был stat
+      // на каждую запись (500 stat вызовов даже параллельно = тормоза на Windows).
+      // size/mtime не используются в дереве — size получаем при открытии файла.
+      const dirents = await fsReaddir(dirPath, { withFileTypes: true })
       const max = params.maxEntries ?? 500
-      for (const name of names) {
+      const entries: FsEntry[] = []
+      for (const d of dirents) {
         if (entries.length >= max) break
-        if (DEFAULT_IGNORE_DIRS.has(name)) continue
-        if (name.startsWith('.') && name !== '.env' && name !== '.gitignore') continue
-        const fullPath = join(dirPath, name)
-        try {
-          const st = await fsStat(fullPath)
-          entries.push({
-            name,
-            path: fullPath,
-            relPath: relative(root, fullPath).split(sep).join('/'),
-            isDir: st.isDirectory(),
-            isSymlink: st.isSymbolicLink(),
-            size: st.size,
-            mtime: st.mtimeMs,
-          })
-        } catch {
-          // пропускаем недоступные элементы
-        }
+        if (DEFAULT_IGNORE_DIRS.has(d.name)) continue
+        if (d.name.startsWith('.') && d.name !== '.env' && d.name !== '.gitignore') continue
+        const fullPath = join(dirPath, d.name)
+        entries.push({
+          name: d.name,
+          path: fullPath,
+          relPath: relative(root, fullPath).split(sep).join('/'),
+          isDir: d.isDirectory(),
+          isSymlink: d.isSymbolicLink(),
+          size: 0,
+          mtime: 0,
+        })
       }
       entries.sort((a, b) => {
         if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
@@ -105,12 +89,43 @@ export function registerFsIPC(): void {
       const st = await fsStat(filePath)
       if (st.isDirectory()) return { success: false, content: '', error: 'Is a directory' }
       if (st.size > maxBytes * 4) return { success: false, content: '', error: `File too large (${(st.size / 1024).toFixed(1)} KB). Max ${(maxBytes * 4 / 1024).toFixed(0)} KB.` }
-      const binary = await isBinaryFile(filePath)
-      if (binary) return { success: false, content: '', error: 'Binary file', isBinary: true, size: st.size }
-      const buf = await fsReadFile(filePath)
-      const truncated = buf.length > maxBytes
-      const content = truncated ? buf.slice(0, maxBytes).toString('utf8') : buf.toString('utf8')
-      return { success: true, content, truncated, size: st.size, mtime: st.mtimeMs }
+
+      // Частичное чтение через handle.read — раньше fsReadFile читал ВЕСЬ файл
+      // в память (до 2MB), потом slice. Бинарность проверяем прямо в прочитанном
+      // буфере (раньше отдельный 8KB read через isBinaryFile).
+      const readSize = Math.min(st.size, maxBytes)
+      const handle = await fsOpen(filePath, 'r')
+      try {
+        const buf = Buffer.alloc(readSize)
+        const { bytesRead } = await handle.read(buf, 0, readSize, 0)
+        const data = buf.slice(0, bytesRead)
+
+        if (data.includes(0)) {
+          return { success: false, content: '', error: 'Binary file', isBinary: true, size: st.size }
+        }
+
+        const truncated = st.size > maxBytes
+        let content = data.toString('utf8')
+
+        // Кап строк — чтобы CodePreview/Prism не токенизировал огромные файлы
+        const MAX_LINES = 2000
+        const lines = content.split('\n')
+        if (lines.length > MAX_LINES) {
+          content = lines.slice(0, MAX_LINES).join('\n')
+          return {
+            success: true,
+            content,
+            truncated: true,
+            size: st.size,
+            mtime: st.mtimeMs,
+            truncatedReason: `Показано ${MAX_LINES} из ${lines.length} строк`,
+          }
+        }
+
+        return { success: true, content, truncated, size: st.size, mtime: st.mtimeMs }
+      } finally {
+        await handle.close()
+      }
     } catch (e) {
       return { success: false, content: '', error: String((e as Error)?.message ?? e) }
     }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import DiffBlock from '../DiffBlock/DiffBlock'
@@ -98,6 +98,44 @@ function buildFileTree(files: GitFileStatus[]): FileTreeNode[] {
   return root.children
 }
 
+/** Собирает пути всех директорий в дереве — для auto-expand. */
+function collectDirPaths(nodes: FileTreeNode[]): string[] {
+  const paths: string[] = []
+  const walk = (nodes: FileTreeNode[]) => {
+    for (const node of nodes) {
+      if (node.isDir) {
+        paths.push(node.path)
+        walk(node.children)
+      }
+    }
+  }
+  walk(nodes)
+  return paths
+}
+
+interface StatusGroups {
+  staged: GitFileStatus[]
+  unstaged: GitFileStatus[]
+  untracked: GitFileStatus[]
+}
+
+/** Группирует файлы по git-статусу: Staged (index), Unstaged (worktree), Untracked.
+ *  Файл может быть одновременно в staged и unstaged (staged change + new modification). */
+function groupByStatus(files: GitFileStatus[]): StatusGroups {
+  const staged: GitFileStatus[] = []
+  const unstaged: GitFileStatus[] = []
+  const untracked: GitFileStatus[] = []
+  for (const file of files) {
+    if (file.indexStatus === '?' && file.worktreeStatus === '?') {
+      untracked.push(file)
+    } else {
+      if (file.indexStatus !== ' ' && file.indexStatus !== '?') staged.push(file)
+      if (file.worktreeStatus !== ' ' && file.worktreeStatus !== '?') unstaged.push(file)
+    }
+  }
+  return { staged, unstaged, untracked }
+}
+
 export default function GitPanel({ workdir }: GitPanelProps) {
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [log, setLog] = useState<GitLogEntry[]>([])
@@ -113,6 +151,7 @@ export default function GitPanel({ workdir }: GitPanelProps) {
   const [fileContent, setFileContent] = useState<{ path: string; content: string; isBinary: boolean } | null>(null)
   const [fileLoading, setFileLoading] = useState(false)
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
+  const [listMode, setListMode] = useState<'tree' | 'status'>('tree')
 
   const refresh = useCallback(async () => {
     if (!workdir) return
@@ -253,7 +292,19 @@ export default function GitPanel({ workdir }: GitPanelProps) {
     window.syntee.shell.openPath(fullpath)
   }
 
-  const fileTree = status?.files ? buildFileTree(status.files) : []
+  const fileTree = useMemo(() => status?.files ? buildFileTree(status.files) : [], [status])
+
+  // Auto-expand всех директорий по умолчанию при загрузке/обновлении статуса.
+  // Пользователь всё ещё может свернуть отдельные папки через toggleDir.
+  useEffect(() => {
+    if (fileTree.length > 0) {
+      const allDirs = collectDirPaths(fileTree)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setExpandedDirs(new Set(allDirs))
+    }
+  }, [fileTree])
+
+  const statusGroups = useMemo(() => status?.files ? groupByStatus(status.files) : null, [status])
 
   const renderTreeNodes = (nodes: FileTreeNode[], level: number): React.ReactNode => {
     return nodes.map(node => {
@@ -293,6 +344,38 @@ export default function GitPanel({ workdir }: GitPanelProps) {
         </button>
       )
     })
+  }
+
+  const renderStatusFile = (file: GitFileStatus) => {
+    const badge = getFileBadge(file)
+    return (
+      <button
+        key={file.path}
+        className={`git-file-item ${selectedFile === file.path ? 'git-file-item--selected' : ''}`}
+        style={{ paddingLeft: 26 }}
+        onClick={() => loadDiff(file)}
+        title={file.path}
+      >
+        {badge && <span className={`git-file-item__badge ${badge.cls}`}>{badge.label}</span>}
+        <span className="git-file-item__name">{file.path}</span>
+      </button>
+    )
+  }
+
+  const renderStatusGroup = (label: string, files: GitFileStatus[], groupCls: string) => {
+    if (files.length === 0) return null
+    return (
+      <div className="git-status-group" key={label}>
+        <div className="git-status-group__header">
+          <span className={`git-status-group__dot ${groupCls}`} />
+          <span className="git-status-group__label">{label}</span>
+          <span className="git-status-group__count">{files.length}</span>
+        </div>
+        <div className="git-status-group__files">
+          {files.map(renderStatusFile)}
+        </div>
+      </div>
+    )
   }
 
   if (!workdir) {
@@ -371,9 +454,38 @@ export default function GitPanel({ workdir }: GitPanelProps) {
               <span>Рабочая директория чиста</span>
             </div>
           ) : (
-            <div className="git-panel__file-list">
-              {renderTreeNodes(fileTree, 0)}
-            </div>
+            <>
+              <div className="git-panel__mode-switch">
+                <button
+                  className={`git-panel__mode-btn ${listMode === 'tree' ? 'git-panel__mode-btn--active' : ''}`}
+                  onClick={() => setListMode('tree')}
+                  title="Дерево файлов"
+                >
+                  <AppIcon name="folder" size="xs" />
+                  <span>Дерево</span>
+                </button>
+                <button
+                  className={`git-panel__mode-btn ${listMode === 'status' ? 'git-panel__mode-btn--active' : ''}`}
+                  onClick={() => setListMode('status')}
+                  title="По статусам (Staged / Unstaged / Untracked)"
+                >
+                  <AppIcon name="listChecks" size="xs" />
+                  <span>Статусы</span>
+                </button>
+              </div>
+              <div className="git-panel__file-list">
+                {listMode === 'tree'
+                  ? renderTreeNodes(fileTree, 0)
+                  : statusGroups && (
+                      <div className="git-panel__status-groups">
+                        {renderStatusGroup('Staged', statusGroups.staged, 'git-status-group__dot--staged')}
+                        {renderStatusGroup('Unstaged', statusGroups.unstaged, 'git-status-group__dot--unstaged')}
+                        {renderStatusGroup('Untracked', statusGroups.untracked, 'git-status-group__dot--untracked')}
+                      </div>
+                    )
+                }
+              </div>
+            </>
           )}
         </div>
 

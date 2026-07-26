@@ -208,7 +208,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   }
 
   try {
-    if (enableTools && !incognito) {
+    // incognito больше не гейтит тузы — только персистентность (память/история).
+    // Side-чат (incognito) получает read-only набор тулов из chat.ipc.ts
+    // (sideToolSchemas), а Agent выполняет только то, что есть в schemas.
+    // Память гейтится отдельно: onUpdateWorkingMemory не ставится для incognito.
+    if (enableTools) {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
 
@@ -231,16 +235,20 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       if (fcWasmDir) {
         try { initFastContextWasmDir(fcWasmDir) } catch (e) { console.warn('[ai-worker] initFastContextWasmDir failed:', e) }
       }
-      agent.onUpdateWorkingMemory = (cid, content, mode) => {
-        console.log('[ai-worker] update_working_memory:', cid, mode, content.length, 'chars')
-        send({ type: 'update_working_memory', chatId: cid, content, mode })
-      }
-      agent.onGetWorkingMemory = (cid) => {
-        // Синхронно читаем из БД — getWorkingMemory импортирован в main thread
-        // В воркере нет прямого доступа к БД — используем кэш из workerData
-        const wm = (workerData as Record<string, unknown>).workingMemory as string | undefined
-        console.log('[ai-worker] getWorkingMemory:', cid, '->', wm?.length ?? 0, 'chars')
-        return wm ?? ''
+      // Incognito-чаты (side chat) не пишут рабочую память — не ставим
+      // callback, Agent сам короткозит через проверку !this.onUpdateWorkingMemory.
+      if (!incognito) {
+        agent.onUpdateWorkingMemory = (cid, content, mode) => {
+          console.log('[ai-worker] update_working_memory:', cid, mode, content.length, 'chars')
+          send({ type: 'update_working_memory', chatId: cid, content, mode })
+        }
+        agent.onGetWorkingMemory = (cid) => {
+          // Синхронно читаем из БД — getWorkingMemory импортирован в main thread
+          // В воркере нет прямого доступа к БД — используем кэш из workerData
+          const wm = (workerData as Record<string, unknown>).workingMemory as string | undefined
+          console.log('[ai-worker] getWorkingMemory:', cid, '->', wm?.length ?? 0, 'chars')
+          return wm ?? ''
+        }
       }
 
       await agent.run(
@@ -549,7 +557,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           mode: workerMode,
           mcpTools: ((workerData as Record<string, unknown>).mcpTools as Parameters<typeof getToolSchemas>[0]['mcpTools']) ?? [],
         }),        {
-          autoMemoryInterval: agentSettings.autoMemoryInterval ?? 5,
+          autoMemoryInterval: incognito ? 0 : (agentSettings.autoMemoryInterval ?? 5),
           readFileCache: agentSettings.readFileCache !== false,
           maxRepeatedToolCalls: agentSettings.maxRepeatedToolCalls ?? 3,
           maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,

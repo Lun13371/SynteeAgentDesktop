@@ -22,12 +22,44 @@ interface Entry {
 const entries = new Map<string, Entry>()
 let globalSubscribed = false
 
+// ── Throttling pty:data → term.write через rAF ──────────────────────────
+// Без этого каждый чанк pty:data синхронно пишет в xterm → при большом
+// выводе (npm install, git clone) renderer фризит на каждом чанке. Батчим
+// чанки за один rAF-кадр — ~60fps, один term.write на кадр.
+const writeQueues = new Map<string, string[]>()
+let rafScheduled = false
+
+function flushWriteQueues(): void {
+  rafScheduled = false
+  for (const [sid, chunks] of writeQueues) {
+    const e = entries.get(sid)
+    if (e) {
+      e.term.write(chunks.join(''))
+    }
+    chunks.length = 0
+    writeQueues.delete(sid)
+  }
+}
+
+function scheduleWrite(sessionId: string, data: string): void {
+  let chunks = writeQueues.get(sessionId)
+  if (!chunks) {
+    chunks = []
+    writeQueues.set(sessionId, chunks)
+  }
+  chunks.push(data)
+  if (!rafScheduled) {
+    rafScheduled = true
+    requestAnimationFrame(flushWriteQueues)
+  }
+}
+
 function ensureGlobalSubscription(): void {
   if (globalSubscribed) return
   globalSubscribed = true
   window.syntee.on('pty:data', (sessionId: unknown, data: unknown) => {
     const e = entries.get(sessionId as string)
-    if (e) e.term.write(data as string)
+    if (e) scheduleWrite(sessionId as string, data as string)
   })
   window.syntee.on('pty:exit', (sessionId: unknown, _exitCode: unknown) => {
     // Ничего не делаем с term — юзер видит финальный вывод. Store обновится
@@ -109,13 +141,25 @@ export function attachToContainer(sessionId: string, container: HTMLElement): vo
   sendResize(e)
 }
 
-/** Достаёт pre-mount буфер (вывод до первого attach) и пишет в term. */
+/** Достаёт pre-mount буфер (вывод до первого attach) и пишет в term
+ *  чанками через rAF — чтобы не блокировать рендерер одним гигантским write. */
 export function flushPreMount(sessionId: string): void {
   const e = entries.get(sessionId)
   if (!e) return
   window.syntee.pty.consumePreMount(sessionId).then((buf: string) => {
-    if (buf) e.term.write(buf)
-  })
+    if (!buf) return
+    const CHUNK_SIZE = 16384 // 16 KB per frame — баланс между плавностью и overhead
+    let offset = 0
+    const writeChunk = () => {
+      if (offset >= buf.length || entries.get(sessionId) !== e) return
+      e.term.write(buf.slice(offset, offset + CHUNK_SIZE))
+      offset += CHUNK_SIZE
+      if (offset < buf.length) {
+        requestAnimationFrame(writeChunk)
+      }
+    }
+    requestAnimationFrame(writeChunk)
+  }).catch(() => { /* consumePreMount failed — ignore */ })
 }
 
 function sendResize(e: Entry): void {

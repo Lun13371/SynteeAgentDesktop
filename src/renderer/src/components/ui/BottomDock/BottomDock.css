@@ -117,6 +117,24 @@ body.dock-resize-active * {
   background: var(--overlay-6, rgba(255,255,255,0.15));
 }
 
+.bottom-dock__tab--ai-busy {
+  color: #f59e0b;
+}
+
+.bottom-dock__tab-busy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex-shrink: 0;
+  animation: bottom-dock-busy-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes bottom-dock-busy-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
 .bottom-dock__new-wrap {
   position: relative;
   flex-shrink: 0;
