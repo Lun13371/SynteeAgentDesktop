@@ -30,7 +30,15 @@ interface ChatInputProps {
   onStop?: () => void
   contextInfo?: ContextInfo | null
   showContextRing?: boolean
-  onInputChange?: (text: string) => void
+  /** Контролируемое значение поля ввода (черновик). Родитель хранит
+   *  draft-стейт и персистит его в БД. Раньше value был внутренним
+   *  useState и терялся при смене чата / перезапуске. */
+  value: string
+  onChangeValue: (text: string) => void
+  /** История предыдущих запросов чата (DESC — самый свежий первым),
+   *  уже дедуплицирована от подряд-дубликатов. Используется для навигации
+   *  по стрелкам вверх/вниз когда слеш-меню закрыто. */
+  inputHistory?: string[]
   mainModelId?: string
   onMainModelChange?: (modelId: string, providerId: string) => void
   reasoningValue?: string
@@ -40,8 +48,8 @@ interface ChatInputProps {
   imageMode?: boolean
   onImageModeChange?: (v: boolean) => void
   /** Read-only режим: агент отвечает без правок кода/запуска команд.
-   *  Комбинируется с imageMode (ask + image — read-only + генерация картинки).
-   *  planningMode имеет приоритет (он строже — требует <plan>). */
+    *  Комбинируется с imageMode (ask + image — read-only + генерация картинки).
+    *  planningMode имеет приоритет (он строже — требует <plan>). */
   askMode?: boolean
   onAskModeChange?: (v: boolean) => void
   rateLimitSec?: number
@@ -50,6 +58,9 @@ interface ChatInputProps {
   workdir?: string
   /** Статистика сжатий сессии для ContextRing (кол-во + сэкономлено токенов). */
   compactSessionStats?: { count: number; totalTokensSaved: number }
+  /** Кастомные slash-команды (из .md-файлов). Загружаются в ChatPage и
+    *  прокидываются сюда для автокомплита. */
+  customCommands?: SlashCommand[]
 }
 
 export default function ChatInput({
@@ -58,7 +69,8 @@ export default function ChatInput({
   replyTo, onCancelReply,
   isGenerating, onStop,
   contextInfo, showContextRing = true,
-  onInputChange,
+  value, onChangeValue,
+  inputHistory = [],
   mainModelId = '',
   onMainModelChange,
   reasoningValue = '',
@@ -72,8 +84,8 @@ export default function ChatInput({
   rateLimitSec = 0,
   workdir,
   compactSessionStats,
+  customCommands = [],
 }: ChatInputProps) {
-  const [value, setValue] = useState('')
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
   const [slashIdx, setSlashIdx] = useState(0)
@@ -84,6 +96,12 @@ export default function ChatInput({
   const { uiSounds, sendEffect } = useUIStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
+  // ── История навигации по стрелкам вверх/вниз ──
+  // historyIdx === null — пользователь не в режиме навигации (вводит текст
+  // вручную). При ArrowUp на пустом поле или в активной навигации idx
+  // указывает на текущую показанную запись из inputHistory (DESC — 0 самый
+  // свежий). При ручной правке сбрасывается в null.
+  const historyIdxRef = useRef<number | null>(null)
 
   // Закрытие + меню по клику снаружи
   const plusWrapRef = useRef<HTMLDivElement>(null)
@@ -118,14 +136,22 @@ export default function ChatInput({
     el.style.height = Math.min(el.scrollHeight, 160) + 'px'
   }, [value])
 
+  // Сброс навигации по истории при смене чата — индекс относится к
+  // inputHistory предыдущего чата и не валиден для нового.
+  useEffect(() => {
+    historyIdxRef.current = null
+  }, [chatId])
+
   // Обновляем слеш-меню при вводе
   const handleChange = (text: string) => {
-    setValue(text)
-    onInputChange?.(text)
+    // Любой ручной ввод сбрасывает режим навигации по истории — иначе
+    // следующий ArrowUp продолжил бы с устаревшего индекса.
+    historyIdxRef.current = null
+    onChangeValue(text)
     // Показываем меню только если строка начинается с / и нет пробелов после команды
     const firstWord = text.split(' ')[0]
     if (text.startsWith('/') && !text.includes(' ')) {
-      const cmds = filterCommands(firstWord)
+      const cmds = filterCommands(firstWord, customCommands)
       setSlashCmds(cmds)
       setSlashIdx(0)
     } else {
@@ -136,8 +162,8 @@ export default function ChatInput({
   const selectCommand = (cmd: SlashCommand) => {
     // Заменяем ввод на "/command " и фокусируем
     const next = `/${cmd.name} `
-    setValue(next)
-    onInputChange?.(next)
+    historyIdxRef.current = null
+    onChangeValue(next)
     setSlashCmds([])
     setTimeout(() => textareaRef.current?.focus(), 0)
   }
@@ -148,16 +174,28 @@ export default function ChatInput({
     // запрос уйдёт в очередь (main-процесс сериализует через chatQueues).
     if (!text || (disabled && !isGenerating)) return
     onSend(text)
-    setValue('')
-    onInputChange?.('')
+    historyIdxRef.current = null
+    onChangeValue('')
     setSlashCmds([])
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSendSound()
     if (sendEffect) { setSendBurst(true); setTimeout(() => setSendBurst(false), 400) }
   }
 
+  // Подставить запись из истории в поле и поставить каретку в конец.
+  const applyHistoryEntry = (entry: string) => {
+    onChangeValue(entry)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      const len = entry.length
+      el.setSelectionRange(len, len)
+    })
+  }
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Навигация по слеш-меню
+    // Навигация по слеш-меню — приоритет
     if (slashCmds.length > 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault()
@@ -176,6 +214,46 @@ export default function ChatInput({
       }
       if (e.key === 'Escape') {
         setSlashCmds([])
+        return
+      }
+    }
+    // ── История навигации по стрелкам вверх/вниз ──
+    // Активна только когда слеш-меню закрыто и в чате есть user-сообщения.
+    // Старт навигации — ArrowUp на пустом поле. Дальше Up/Down перемещаются
+    // по inputHistory (DESC — 0 самый свежий). Down ниже 0 → очищает поле
+    // и выходит из навигации. Многострочный ввод не ломается: пока поле не
+    // пусто, ArrowUp двигает каретку (навигация не стартует).
+    if (slashCmds.length === 0 && inputHistory.length > 0) {
+      const inNav = historyIdxRef.current !== null
+      if (e.key === 'ArrowUp') {
+        if (inNav) {
+          e.preventDefault()
+          const cur = historyIdxRef.current as number
+          const nextIdx = Math.min(cur + 1, inputHistory.length - 1)
+          historyIdxRef.current = nextIdx
+          applyHistoryEntry(inputHistory[nextIdx])
+          return
+        }
+        // Старт навигации только с пустого поля — иначе ArrowUp двигает
+        // каретку вверх в многострочном вводе.
+        if (value === '') {
+          e.preventDefault()
+          historyIdxRef.current = 0
+          applyHistoryEntry(inputHistory[0])
+          return
+        }
+      }
+      if (e.key === 'ArrowDown' && inNav) {
+        e.preventDefault()
+        const cur = historyIdxRef.current as number
+        const nextIdx = cur - 1
+        if (nextIdx < 0) {
+          historyIdxRef.current = null
+          onChangeValue('')
+        } else {
+          historyIdxRef.current = nextIdx
+          applyHistoryEntry(inputHistory[nextIdx])
+        }
         return
       }
     }

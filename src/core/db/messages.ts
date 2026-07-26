@@ -78,3 +78,16 @@ export function getMessageCount(chatId: string): number {
   const row = getDB().prepare(`SELECT COUNT(*) as cnt FROM messages WHERE chat_id = ?`).get(chatId) as { cnt: number }
   return row.cnt
 }
+
+/**
+ * Содержимое всех user-сообщений чата в хронологическом порядке (ASC).
+ * Используется для истории навигации по стрелкам вверх/вниз в инпут-баре.
+ * Возвращается как есть (с возможными подряд-дубликатами) — дедупликация
+ * consecutive-дубликатов выполняется в рендерере.
+ */
+export function getUserMessageContents(chatId: string): string[] {
+  const rows = getDB().prepare(
+    `SELECT content FROM messages WHERE chat_id = ? AND role = 'user' ORDER BY created_at ASC`
+  ).all(chatId) as { content: string }[]
+  return rows.map(r => r.content)
+}

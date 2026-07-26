@@ -142,6 +142,15 @@ export function runMigrations(db: Database.Database): void {
   // или созданные до этой фичи) имеют NULL → попадают в группу «Без проекта».
   if (!chatCols.find(c => c.name === 'project_id'))       db.prepare(`ALTER TABLE chats ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`).run()
 
+  // ── Per-chat UI state: режимы инпут-бара (планирование/изображение/ask),
+  // черновик (несохранённый текст в поле ввода) и история навигации по
+  // стрелкам. Хранится на чат, переживает перезапуск приложения. Для
+  // инкогнито-чатов эти колонки не пишутся (см. guard в ChatPage/IPC).
+  if (!chatCols.find(c => c.name === 'planning_mode')) db.prepare(`ALTER TABLE chats ADD COLUMN planning_mode INTEGER NOT NULL DEFAULT 0`).run()
+  if (!chatCols.find(c => c.name === 'image_mode'))    db.prepare(`ALTER TABLE chats ADD COLUMN image_mode INTEGER NOT NULL DEFAULT 0`).run()
+  if (!chatCols.find(c => c.name === 'ask_mode'))      db.prepare(`ALTER TABLE chats ADD COLUMN ask_mode INTEGER NOT NULL DEFAULT 0`).run()
+  if (!chatCols.find(c => c.name === 'draft'))         db.prepare(`ALTER TABLE chats ADD COLUMN draft TEXT`).run()
+
   // Миграция: verification_command на projects — команда авто-проверки
   // (напр. "npm test"), запускаемая после серии успешных правок файлов.
   const projectCols = db.prepare(`PRAGMA table_info(projects)`).all() as { name: string }[]
@@ -196,7 +205,6 @@ export function runMigrations(db: Database.Database): void {
       created_at          INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_cc_chat ON chat_checkpoints(chat_id, created_at);
-
     CREATE TABLE IF NOT EXISTS rewind_history (
       id                  TEXT PRIMARY KEY,
       chat_id             TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
@@ -422,6 +430,17 @@ export function runMigrations(db: Database.Database): void {
       db.prepare(`ALTER TABLE memory_items ADD COLUMN title TEXT`).run()
       // Backfill: для существующих записей без title — переносим content (truncate 100)
       db.prepare(`UPDATE memory_items SET title = SUBSTR(content, 1, 100) WHERE title IS NULL`).run()
+    }
+  }
+
+  // Автомиграция: name колонка в chat_checkpoints — для именованных снапшотов
+  // (/snapshot <name>). NULL у обычных чекпоинтов (auto-checkpoint на каждый turn).
+  // Именованные снапшоты — поименованные точки отката, которые пользователь
+  // явно создал и может восстановить через /restore <name>.
+  {
+    const ccCols = db.prepare(`PRAGMA table_info(chat_checkpoints)`).all() as { name: string }[]
+    if (!ccCols.find(c => c.name === 'name')) {
+      db.prepare(`ALTER TABLE chat_checkpoints ADD COLUMN name TEXT`).run()
     }
   }
 }

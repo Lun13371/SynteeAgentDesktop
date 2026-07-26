@@ -9,12 +9,14 @@ import {
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
+  getChatModes, setChatModes, getChatDraft, setChatDraft, getUserMessageContents,
   createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
   setProjectVerificationCommand,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
   getCheckpoints, getLastCheckpoint, getSnapshotsAfter, getContextSnapshot,
   deleteCheckpointsAfter, pruneOldCheckpoints, deleteMessagesAfter,
   saveRewindHistory, getRewindHistory, deleteRewindHistory, deleteMessageById,
+  saveNamedSnapshot, getNamedSnapshots,
   logAgentAction,
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
@@ -485,7 +487,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
   } catch { /* БД ещё пуста — ок */ }
 
-  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean): Promise<string> => {
+  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }): Promise<string> => {
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
     let workingMemory = ''
@@ -573,7 +575,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let graphStats: ReturnType<typeof getGraphStats> | undefined
     try { if (promptProjectId) graphStats = getGraphStats(promptProjectId) } catch { /* ok */ }
 
-    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers })
+    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill })
   }
 
   /**
@@ -686,6 +688,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       imageMode?: boolean
       mode?: ChatMode
       sideChatParentId?: string
+      /** One-shot скилл — инструкции временно инъектируются на этот прогон
+       *  (без записи в skillsState). Используется командами типа /review. */
+      oneShotSkill?: { name: string; instructions: string }
+      /** Ограничение тулов на этот прогон (для кастомных команд с allowed-tools).
+       *  Builtin-команды не используют — их режим задаётся planning/askMode. */
+      oneShotAllowedTools?: string[]
+      /** Режим для кастомной команды: 'ask' (read-only) | 'plan' | 'code'. */
+      oneShotMode?: 'ask' | 'plan' | 'code'
     },
     win: BrowserWindow | null,
     chatMode: ChatMode,
@@ -1097,11 +1107,21 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // В dev: <project>/resources/tree-sitter, в prod: process.resourcesPath/resources/tree-sitter
     const fastContextWasmDir = resolveTreeSitterWasmDir()
 
+    // ── Применение one-shot параметров кастомной команды ──
+    // oneShotMode активирует read-only (ask) или planning-режим на этот прогон,
+    // не меняя глобальные тогглы. oneShotSkill инъектирует инструкции скилла в
+    // system prompt. oneShotAllowedTools фильтрует schemas до указанного списка.
+    // Объявляем ДО создания Worker — workerData ниже использует эти значения.
+    const effectivePlanningMode = !!params.planningMode || params.oneShotMode === 'plan'
+    const effectiveAskMode = !!params.askMode
+      || params.slashCommand?.name === 'ask'
+      || params.oneShotMode === 'ask'
+
     const worker = new Worker(workerPath, {
       workerData: {
         storeData,
-        planningMode: params.planningMode ?? false,
-        askMode: params.askMode ?? false,
+        planningMode: effectivePlanningMode,
+        askMode: effectiveAskMode,
         workingMemory: currentWorkingMemory,
         mode: chatMode,
         catalogCachePath,
@@ -1778,6 +1798,12 @@ ${subModeOutro}`,
       })
     })
 
+    // ── Применение one-shot параметров кастомной команды ──
+    // (effectivePlanningMode/effectiveAskMode объявлены выше, до создания Worker,
+    //  т.к. workerData их использует. Здесь — только построение systemPrompt/schemas.)
+    // oneShotSkill инъектирует инструкции скилла в system prompt.
+    // oneShotAllowedTools фильтрует schemas до указанного списка.
+
     // Для side-чата строим кастомный промпт: базовый промпт родителя +
     // инструкция о доступе к основному чату через тул get_main_chat_messages.
     const sideSystemPrompt = params.sideChatParentId
@@ -1785,12 +1811,12 @@ ${subModeOutro}`,
 
 Ниже — системный промпт и контекст основного чата (проект, рабочая память, сводка):
 
-${await getSystemPrompt(dbChatId, params.incognito)}`
+${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       : undefined
 
     let sideToolSchemas = getToolSchemas({
-      planningMode: !!params.planningMode,
-      askMode: !!params.askMode || params.slashCommand?.name === 'ask',
+      planningMode: effectivePlanningMode,
+      askMode: effectiveAskMode,
       imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
       mode: chatMode,
       mcpTools: params.incognito ? undefined : mcpTools,
@@ -1814,6 +1840,19 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
         (s) => SIDE_CHAT_READONLY_TOOLS.has((s as { function: { name: string } }).function.name),
       )
       sideToolSchemas.push(GET_MAIN_CHAT_MESSAGES_SCHEMA as any)
+    } else if (params.oneShotAllowedTools && params.oneShotAllowedTools.length > 0) {
+      // Кастомная команда с allowed-tools — фильтруем schemas до разрешённого списка.
+      // think/update_todo/update_working_memory/save_memory/recall_memory/ask_user
+      // всегда доступны (управляющие тулы, не violating read-only).
+      const ALLOWED_ALWAYS = new Set([
+        'think', 'update_todo', 'update_working_memory',
+        'save_memory', 'recall_memory', 'ask_user',
+        'list_extensions', 'get_skill',
+      ])
+      const allowed = new Set([...params.oneShotAllowedTools, ...ALLOWED_ALWAYS])
+      sideToolSchemas = sideToolSchemas.filter(
+        (s) => allowed.has((s as { function: { name: string } }).function.name),
+      )
     }
 
     worker.postMessage({
@@ -1821,7 +1860,7 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
       msgId: assistantMsgId,
       content: params.content,
       history: processedHistory,
-      systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId, params.incognito),
+      systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill),
       enableTools: true,
       incognito: !!params.incognito,
       agentSettings,
@@ -1943,6 +1982,22 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
   ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
   ipcMain.handle('chat:unpinMsg', (_, messageId: string) => unpinMessage(messageId))
 
+  // ── Per-chat UI state: режимы инпут-бара, черновик, история ввода ──
+  // Хранятся в chats/messages, переживают перезапуск. Для инкогнито
+  // рендерер не вызывает эти методы (guard в ChatPage), но на уровне IPC
+  // тоже ничего не проверяем — БД-запросы идемпотентны и безопасны.
+  ipcMain.handle('chat:getModes', (_, chatId: string) => getChatModes(chatId))
+  ipcMain.handle('chat:setModes', (_, chatId: string, modes: { planningMode: boolean; imageMode: boolean; askMode: boolean }) => {
+    setChatModes(chatId, modes)
+    return true
+  })
+  ipcMain.handle('chat:getDraft', (_, chatId: string) => getChatDraft(chatId))
+  ipcMain.handle('chat:setDraft', (_, chatId: string, draft: string) => {
+    setChatDraft(chatId, draft)
+    return true
+  })
+  ipcMain.handle('chat:getInputHistory', (_, chatId: string) => getUserMessageContents(chatId))
+
   // ── context:calculate — пересчёт контекста чата без отправки сообщения.
   //    Вызывается renderer-хуком useContextCounter при смене activeChatId,
   //    чтобы показатель контекста не был пустым до первого сообщения.
@@ -2020,6 +2075,12 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     askMode?: boolean
     imageMode?: boolean
     mode?: ChatMode
+    /** One-shot скилл для кастомных команд (типа /review → skill:code-review). */
+    oneShotSkill?: { name: string; instructions: string }
+    /** Ограничение тулов на прогон (для кастомных команд с allowed-tools). */
+    oneShotAllowedTools?: string[]
+    /** Режим для кастомной команды: 'ask' (read-only) | 'plan' | 'code'. */
+    oneShotMode?: 'ask' | 'plan' | 'code'
   }) => {
     const win = mainWindow.getWindow()
 
@@ -2692,6 +2753,116 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     } catch (e) {
       log('[chat:compact] error chatId=%s: %s', chatId, (e as Error).message)
       return { error: `Ошибка сжатия контекста: ${(e as Error).message}` }
+    }
+  })
+
+  // === /fork — дублировать чат с этого места ==================================
+  //
+  // Создаёт новый чат, копируя ВСЁ содержимое текущего: сообщения, working
+  // memory, summary, project_id, workdir, mode. Пользователь получает точную
+  // копию чата на текущий момент и может идти в другом направлении ("what-if"
+  // эксперименты без потери оригинала).
+  //
+  // Возвращает { chatId, messages } нового чата (или { error }).
+  ipcMain.handle('chat:fork', async (_, sourceChatId: string, title?: string) => {
+    try {
+      const sourceMessages = getMessages(sourceChatId)
+      if (sourceMessages.length === 0) {
+        return { error: 'Исходный чат пуст — нечего форкать.' }
+      }
+
+      // Читаем метаданные исходного чата
+      const sourceChat = getAllChats().find(c => c.id === sourceChatId)
+      if (!sourceChat) {
+        return { error: 'Исходный чат не найден.' }
+      }
+
+      // Создаём новый чат с теми же параметрами (не инкогнито, тот же режим/проект)
+      const forkedChat = createChat(false, sourceChat.mode, sourceChat.projectId)
+      const forkedChatId = forkedChat.id
+      const forkTitle = (title && title.trim()) || `${sourceChat.title} (fork)`
+      renameChat(forkedChatId, forkTitle)
+
+      // Копируем сообщения. saveMessage проставит новый chatId — но чтобы
+      // сохранить порядок и структуру, копируем как есть с новыми id.
+      // createdAt сохраняем оригинальные — порядок в БД (ORDER BY created_at)
+      // остаётся тем же. toolSteps/iterations/thinking/todo/slashCommand тоже
+      // копируем (serialized через JSON в saveMessage).
+      for (const msg of sourceMessages) {
+        const newMsg: Message = {
+          ...msg,
+          id: uuid(), // новый id, чтобы не было PK-конфликта
+          chatId: forkedChatId,
+        }
+        saveMessage(newMsg)
+      }
+
+      // Копируем working memory и summary
+      try {
+        const wm = getWorkingMemory(sourceChatId)
+        if (wm) setWorkingMemory(forkedChatId, wm)
+      } catch { /* ok */ }
+      try {
+        const summary = getChatSummary(sourceChatId)
+        if (summary) setChatSummary(forkedChatId, summary)
+      } catch { /* ok */ }
+
+      log('[chat:fork] source=%s → forked=%s, messages=%d, title=%s',
+        sourceChatId, forkedChatId, sourceMessages.length, forkTitle)
+
+      return {
+        chatId: forkedChatId,
+        messages: getMessages(forkedChatId),
+        title: forkTitle,
+      }
+    } catch (e) {
+      log('[chat:fork] error source=%s: %s', sourceChatId, (e as Error).message)
+      return { error: `Ошибка форка: ${(e as Error).message}` }
+    }
+  })
+
+  // === /snapshot <name> — именованный снапшот =================================
+  //
+  // Создаёт именованную точку отката на основе последнего чекпоинта чата.
+  // Именованные снапшоты восстанавливаются через /restore <name> или /restore
+  // (с пикером). В отличие от обычных auto-checkpoint'ов на каждый turn,
+  // именованные явно создаются пользователем и имеют осмысленное имя.
+  //
+  // Возвращает { snapshot } (с id, name, createdAt) или { error }.
+  ipcMain.handle('chat:snapshot:create', (_, chatId: string, name: string) => {
+    try {
+      if (activeRuns.has(chatId)) {
+        return { error: 'Чат активен — дождитесь завершения ответа перед снапшотом.' }
+      }
+      const cleanName = (name || '').trim()
+      if (!cleanName) {
+        return { error: 'Укажите имя снапшота: /snapshot my-feature' }
+      }
+      if (cleanName.length > 80) {
+        return { error: 'Имя снапшота слишком длинное (макс. 80 символов).' }
+      }
+      const snap = saveNamedSnapshot(chatId, cleanName)
+      if (!snap) {
+        return { error: 'В чате ещё нет точек отката — отправьте хотя бы одно сообщение перед снапшотом.' }
+      }
+      log('[chat:snapshot:create] chatId=%s name=%s id=%s', chatId, cleanName, snap.id)
+      return { snapshot: snap }
+    } catch (e) {
+      log('[chat:snapshot:create] error chatId=%s: %s', chatId, (e as Error).message)
+      return { error: `Ошибка создания снапшота: ${(e as Error).message}` }
+    }
+  })
+
+  // === /restore — список именованных снапшотов для пикера ====================
+  //
+  // Возвращает массив именованных снапшотов чата (новые первыми) для UI-пикера.
+  // Само восстановление идёт через существующий chat:rewindTo (по userMessageId).
+  ipcMain.handle('chat:snapshot:list', (_, chatId: string) => {
+    try {
+      return getNamedSnapshots(chatId)
+    } catch (e) {
+      log('[chat:snapshot:list] error chatId=%s: %s', chatId, (e as Error).message)
+      return []
     }
   })
 }

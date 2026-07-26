@@ -26,8 +26,10 @@ import { registerMcpIPC } from './ipc/mcp.ipc'
 import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
 import { registerPtyIPC } from './ipc/pty.ipc'
 import { registerFastContextIPC } from './ipc/fastContext.ipc'
+import { registerCommandsIPC } from './ipc/commands.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
+import { initCommandManager } from '../core/commands/commandManager'
 import { initMcpManager } from '../core/mcp/McpManager'
 import { migrateGlobalMcpToFile } from '../core/mcp/mcpConfig'
 import { ptyManager } from './PtyManager'
@@ -101,6 +103,9 @@ app.whenReady().then(async () => {
   // Инициализируем ДО IPC — handlers используют getSkillManager().
   initSkillManager(store)
 
+  // Commands-менеджер (загрузка .md-кастомных slash-команд). Также до IPC.
+  initCommandManager()
+
   // Миграция: переносим старые глобальные MCP из electron-store в файл
   // ~/.syntee/mcp.json (чтобы агент мог редактировать их через edit_file).
   migrateGlobalMcpToFile(store)
@@ -131,6 +136,7 @@ app.whenReady().then(async () => {
   registerMarketplaceIPC(store)
   registerPtyIPC(mainWindow)
   registerFastContextIPC(store, () => mainWindow.getWindow())
+  registerCommandsIPC()
 
   // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
   ptyManager.setSender(mainWindow.getWindow())
