@@ -406,8 +406,25 @@
 
 .chat-input-planning-badge-close:hover { opacity: 1; }
 
+/* Ask-режим (read-only) — зелёный акцент, чтобы отличить от planning */
+.chat-input-planning-badge--ask {
+  background: color-mix(in srgb, #10b981 14%, transparent);
+  border-color: color-mix(in srgb, #10b981 38%, transparent);
+  color: #10b981;
+}
+.chat-input-planning-badge--ask:hover {
+  background: color-mix(in srgb, #10b981 24%, transparent);
+}
+.chat-input-planning-badge--ask .chat-input-planning-badge-close {
+  color: #10b981;
+}
+
 .chat-input-textarea--planning {
   caret-color: var(--accent);
+}
+
+.chat-input-textarea--ask {
+  caret-color: #10b981;
 }
 
 /* Эффект отправки — ripple вспышка */

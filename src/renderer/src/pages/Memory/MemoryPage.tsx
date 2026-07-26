@@ -244,20 +244,27 @@ export default function MemoryPage() {
         </div>
       </div>
 
-      {/* Табы: Записи | Граф */}
-      <div className="memory-tabs">
-        <button
-          className={`memory-tab ${activeTab === 'list' ? 'memory-tab--active' : ''}`}
-          onClick={() => setActiveTab('list')}
-        >
-          <AppIcon name="listChecks" size="sm" /> Записи
-        </button>
-        <button
-          className={`memory-tab ${activeTab === 'graph' ? 'memory-tab--active' : ''}`}
-          onClick={() => setActiveTab('graph')}
-        >
-          <AppIcon name="gitBranch" size="sm" /> Граф знаний
-        </button>
+      {/* Табы: Записи | Граф — segmented control со скользящим pill */}
+      <div className="memory-tabs" role="tablist" aria-label="Разделы памяти">
+        {(['list', 'graph'] as const).map(t => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={activeTab === t}
+            className={`memory-tab ${activeTab === t ? 'memory-tab--active' : ''}`}
+            onClick={() => setActiveTab(t)}
+          >
+            {activeTab === t && (
+              <motion.span
+                layoutId="memory-tab-active"
+                className="memory-tab-active-pill"
+                transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+              />
+            )}
+            <AppIcon name={t === 'list' ? 'listChecks' : 'gitBranch'} size="sm" />
+            <span className="memory-tab-label">{t === 'list' ? 'Записи' : 'Граф знаний'}</span>
+          </button>
+        ))}
       </div>
 
       {activeTab === 'graph' && (
@@ -285,6 +292,7 @@ export default function MemoryPage() {
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 30 }}
           >
             <div className="memory-form-row">
               <select className="memory-select" value={newKind} onChange={e => setNewKind(e.target.value)}>
@@ -377,19 +385,25 @@ export default function MemoryPage() {
             </button>
           ))}
         </div>
-        <div className="memory-mode-toggle">
-          <button
-            className={`memory-mode-btn ${searchMode === 'list' ? 'memory-mode-btn--active' : ''}`}
-            onClick={() => setSearchMode('list')}
-          >
-            Список
-          </button>
-          <button
-            className={`memory-mode-btn ${searchMode === 'semantic' ? 'memory-mode-btn--active' : ''}`}
-            onClick={() => setSearchMode('semantic')}
-          >
-            Семантика
-          </button>
+        <div className="memory-mode-toggle" role="tablist" aria-label="Режим поиска">
+          {(['list', 'semantic'] as const).map(m => (
+            <button
+              key={m}
+              role="tab"
+              aria-selected={searchMode === m}
+              className={`memory-mode-btn ${searchMode === m ? 'memory-mode-btn--active' : ''}`}
+              onClick={() => setSearchMode(m)}
+            >
+              {searchMode === m && (
+                <motion.span
+                  layoutId="memory-mode-active"
+                  className="memory-mode-active-pill"
+                  transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                />
+              )}
+              <span className="memory-mode-label">{m === 'list' ? 'Список' : 'Семантика'}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -436,6 +450,7 @@ export default function MemoryPage() {
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 30 }}
           >
             <div className="memory-form-row">
               <input
@@ -498,16 +513,17 @@ export default function MemoryPage() {
               </p>
             </div>
           ) : (
-            items.map(m => {
+            items.map((m, i) => {
               const kindMeta = KIND_META[m.kind] ?? { label: m.kind, icon: 'pin' as IconName }
               const scopeMeta = SCOPE_META[m.scope] ?? { label: m.scope, icon: 'database' as IconName }
               return (
                 <motion.div
                   key={m.id}
                   className={`memory-item ${m.pinned ? 'memory-item--pinned' : ''}`}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0, transition: { type: 'spring', stiffness: 320, damping: 26, delay: Math.min(i * 0.035, 0.4) } }}
                   exit={{ opacity: 0, x: -20 }}
+                  whileHover={{ y: -2, transition: { type: 'spring', stiffness: 400, damping: 25 } }}
                   layout
                 >
                   <div className="memory-item-cat">

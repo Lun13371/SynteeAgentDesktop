@@ -4,6 +4,7 @@ import { useSettingsStore } from '../../store/settings.store'
 import { useUIStore } from '../../store/ui.store'
 import { useToast } from '../../components/ui/Toast/Toast'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
+import Toggle from '../../components/ui/Toggle/Toggle'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
@@ -18,17 +19,42 @@ type Section =
   | 'general' | 'ai' | 'voice' | 'hotkeys'
   | 'agent' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
 
-const SECTIONS: Array<{ id: Section; label: string; icon: IconName }> = [
-  { id: 'general',      label: 'Общие',          icon: 'settings' },
-  { id: 'ai',           label: 'ИИ и Модели',    icon: 'brain' },
-  { id: 'context',      label: 'Контекст',       icon: 'layers' },
-  { id: 'indexing',     label: 'Индексация',     icon: 'cpu' },
-  { id: 'appearance',   label: 'Внешний вид',    icon: 'palette' },
-  { id: 'voice',        label: 'Голос',          icon: 'mic' },
-  { id: 'hotkeys',      label: 'Горячие клавиши',icon: 'shield' },
-  { id: 'agent',        label: 'Агент',          icon: 'bot' },
-  { id: 'integrations', label: 'Интеграции',     icon: 'link' },
-  { id: 'data',         label: 'Данные',         icon: 'database' },
+interface SectionDef { id: Section; label: string; icon: IconName }
+interface SectionGroup { title: string; items: SectionDef[] }
+
+// Сайдбар сгруппирован по категориям — как в VS Code / Notion.
+// Каждая группа получает uppercase-подзаголовок (см. .settings-nav-group-title).
+const SECTION_GROUPS: SectionGroup[] = [
+  {
+    title: 'Внешний вид',
+    items: [
+      { id: 'general',      label: 'Общие',       icon: 'settings' },
+      { id: 'appearance',   label: 'Внешний вид', icon: 'palette' },
+    ],
+  },
+  {
+    title: 'ИИ и контекст',
+    items: [
+      { id: 'ai',       label: 'ИИ и Модели', icon: 'brain' },
+      { id: 'context',  label: 'Контекст',    icon: 'layers' },
+      { id: 'indexing', label: 'Индексация',  icon: 'cpu' },
+      { id: 'agent',    label: 'Агент',       icon: 'bot' },
+    ],
+  },
+  {
+    title: 'Управление',
+    items: [
+      { id: 'voice',   label: 'Голос',           icon: 'mic' },
+      { id: 'hotkeys', label: 'Горячие клавиши', icon: 'shield' },
+    ],
+  },
+  {
+    title: 'Система',
+    items: [
+      { id: 'integrations', label: 'Интеграции', icon: 'link' },
+      { id: 'data',         label: 'Данные',     icon: 'database' },
+    ],
+  },
 ]
 
 export default function SettingsPage() {
@@ -60,19 +86,33 @@ export default function SettingsPage() {
 
   return (
     <div className="settings-root">
-      {/* Сайдбар разделов */}
+      {/* Сайдбар разделов (сгруппированный) */}
       <nav className="settings-nav glass">
         <div className="settings-nav-title">Настройки</div>
-        {SECTIONS.map(s => (
-          <motion.button
-            key={s.id}
-            className={`settings-nav-item no-drag ${section === s.id ? 'settings-nav-item--active' : ''}`}
-            onClick={() => setSection(s.id)}
-            whileTap={{ scale: 0.97 }}
-          >
-            <AppIcon name={s.icon} size="sm" tone={section === s.id ? 'accent' : 'muted'} />
-            {s.label}
-          </motion.button>
+        {SECTION_GROUPS.map(group => (
+          <div key={group.title} className="settings-nav-group">
+            <div className="settings-nav-group-title">{group.title}</div>
+            {group.items.map(s => (
+              <motion.button
+                key={s.id}
+                className={`settings-nav-item no-drag ${section === s.id ? 'settings-nav-item--active' : ''}`}
+                onClick={() => setSection(s.id)}
+                whileTap={{ scale: 0.97 }}
+              >
+                {/* Скользящий активный индикатор: один motion.div с layoutId,
+                    который "переезжает" между пунктами через shared layout-анимацию. */}
+                {section === s.id && (
+                  <motion.span
+                    layoutId="settings-nav-active"
+                    className="settings-nav-active-pill"
+                    transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                  />
+                )}
+                <AppIcon name={s.icon} size="sm" tone={section === s.id ? 'accent' : 'muted'} />
+                <span className="settings-nav-item-label">{s.label}</span>
+              </motion.button>
+            ))}
+          </div>
         ))}
       </nav>
 
@@ -80,10 +120,10 @@ export default function SettingsPage() {
       <div className="settings-content">
         <motion.div
           key={section}
-          className={`settings-section ${section === 'ai' ? 'settings-section--wide' : ''}`}
-          initial={{ opacity: 0, y: 6 }}
+          className="settings-section"
+          initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.15 }}
+          transition={{ type: 'spring', stiffness: 320, damping: 30 }}
         >
             {section === 'general' && (
               <GeneralSection settings={settings} onSet={handleSet} />
@@ -138,22 +178,6 @@ function Field({ label, description, children, block }: {
       </div>
       <div className="settings-field-control">{children}</div>
     </div>
-  )
-}
-
-function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <motion.button
-      className={`settings-toggle ${value ? 'settings-toggle--on' : ''}`}
-      onClick={() => onChange(!value)}
-      whileTap={{ scale: 0.93 }}
-    >
-      <motion.span
-        className="settings-toggle-thumb"
-        animate={{ x: value ? 20 : 2 }}
-        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-      />
-    </motion.button>
   )
 }
 

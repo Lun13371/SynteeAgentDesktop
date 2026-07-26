@@ -1,25 +1,9 @@
 import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
 import { useSettingsStore } from '../../../store/settings.store'
 import { DEFAULT_CONTEXT_SETTINGS, type ContextSettings } from '../../../../../core/context/contextManager'
+import Toggle from '../../ui/Toggle/Toggle'
 import ResetButton from '../../ui/ResetButton/ResetButton'
 import './ContextSettingsTab.css'
-
-function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <motion.button
-      className={`settings-toggle ${value ? 'settings-toggle--on' : ''}`}
-      onClick={() => onChange(!value)}
-      whileTap={{ scale: 0.93 }}
-    >
-      <motion.span
-        className="settings-toggle-thumb"
-        animate={{ x: value ? 20 : 2 }}
-        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-      />
-    </motion.button>
-  )
-}
 
 export default function ContextSettingsTab() {
   const { get, set } = useSettingsStore()
@@ -49,13 +33,6 @@ export default function ContextSettingsTab() {
     setAgentS(prev => ({ ...prev, [key]: value }))
     window.syntee.agent.setSettings({ [key]: value }).catch(() => {})
   }
-
-  const AgentToggle = ({ settingKey, defaultValue }: { settingKey: keyof typeof agentS; defaultValue: boolean }) => (
-    <Toggle
-      value={agentS[settingKey] as boolean ?? defaultValue}
-      onChange={v => setAgentSetting(settingKey, v)}
-    />
-  )
 
   return (
     <div className="ctx-tab">
@@ -224,7 +201,10 @@ export default function ContextSettingsTab() {
               <p className="ctx-section__desc">Не читать один файл повторно в рамках одного запроса. Кэш переживает несколько сообщений чата и инвалидируется при изменении файла на диске.</p>
             </div>
             <div className="ctx-section__head-actions">
-              <AgentToggle settingKey="readFileCache" defaultValue={true} />
+              <Toggle
+                value={agentS.readFileCache as boolean ?? true}
+                onChange={v => setAgentSetting('readFileCache', v)}
+              />
               <ResetButton current={agentS.readFileCache} defaultValue={true} onReset={() => setAgentSetting('readFileCache', true)} />
             </div>
           </div>
