@@ -42,7 +42,7 @@ Repo-map содержит:
  * затем ищет сбалансированный {...} блок (не жадный regex, который ломается
  * на prose с фигурными скобками).
  */
-function extractJsonFromLlmResponse(raw: string): { files?: unknown[]; summary?: string } | null {
+export function extractJsonFromLlmResponse(raw: string): { files?: unknown[]; summary?: string; facts?: unknown[] } | null {
   let text = raw.trim()
 
   // 1. Убираем markdown code fences (```json ... ``` или ``` ... ```)

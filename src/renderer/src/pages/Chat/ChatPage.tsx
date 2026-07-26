@@ -776,6 +776,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         liveTodo: live.todo,
         agentStatus: live.agentStatus,
         toolProgress: live.toolProgress,
+        livePlanningMode: planningMode,
         rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
       } as Message & Record<string, unknown>]
     }
@@ -796,7 +797,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, rateLimitSec, isCompacting])
+  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, rateLimitSec, isCompacting, planningMode])
 
   const virtualizer = useVirtualizer({
     count: displayMessages.length,

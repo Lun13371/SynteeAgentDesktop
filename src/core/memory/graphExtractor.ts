@@ -1,0 +1,503 @@
+/**
+ * graphExtractor — извлечение сущностей и связей для knowledge graph.
+ *
+ * Два подхода:
+ *
+ * 1. HEURISTIC (быстро, без LLM):
+ *    - extractFromDecisionHeuristic: regex для file paths, symbol refs из content
+ *    - syncFromFastContext: files/symbols/imports/calls из fast_context_index
+ *
+ * 2. LLM (умно, дорого):
+ *    - extractFromConversationLLM: концепции, отношения из chat_summary
+ *    - Вызывается после compaction (отдельный LLM-вызов, не в compaction prompt)
+ *
+ * Возвращает GraphExtraction — массив узлов и рёбер для graphBuilder.upsertMany.
+ */
+
+import type Store from 'electron-store'
+import { AIClient } from '../ai/AIClient'
+import { extractJsonFromLlmResponse } from '../context/fastContext/annotator'
+import { getFastContextEntries } from '../db/fastContextStore'
+import type { FileSymbols } from '../context/fastContext/symbols'
+import {
+  upsertNode,
+  upsertEdge,
+  type NodeType,
+  type EdgeType,
+  type NodeSourceKind,
+} from './graphStore'
+
+// ─── Типы ────────────────────────────────────────────────────────────────────
+
+export interface ExtractedNode {
+  type: NodeType
+  label: string
+  sourceKind?: NodeSourceKind
+  sourceId?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface ExtractedEdge {
+  fromType: NodeType
+  fromLabel: string
+  toType: NodeType
+  toLabel: string
+  type: EdgeType
+  metadata?: Record<string, unknown>
+}
+
+export interface GraphExtraction {
+  nodes: ExtractedNode[]
+  edges: ExtractedEdge[]
+}
+
+// ─── HEURISTIC: file path & symbol extraction ────────────────────────────────
+
+/**
+ * Regex для поиска путей к файлам в тексте.
+ * Ловит: src/foo.ts, ./bar.js, ../baz/index.tsx, MemoryStore.ts, schemas.ts
+ * Не ловит: обычные слова без расширения.
+ */
+const FILE_PATH_REGEX = /(?:\.\/|\.\.\/|\/)?(?:[\w-]+(?:\/[\w-]+)*\.[a-z]{1,5})\b/gi
+
+/**
+ * Regex для поиска упоминаний имён функций/классов (CamelCase или snake_case).
+ * Минимум 4 символа, чтобы не ловить предлоги/местоимения.
+ */
+const SYMBOL_REGEX = /\b(?:[A-Z][a-zA-Z]{3,}|[a-z][a-zA-Z_]{4,})\b/g
+
+/**
+ * Извлечь сущности из decision (memory_item kind=project_decision) heuristically.
+ * - Создаёт decision узел
+ * - Ищет file paths в content → file узлы + AFFECTS edges
+ * - Ищет symbol mentions → symbol узлы + MENTIONS edges (если symbol есть в fast_context)
+ *
+ * Синхронно: пишет в graphStore через upsertNode/upsertEdge.
+ */
+export function extractFromDecisionHeuristic(params: {
+  projectId: string
+  decisionLabel: string
+  content: string
+  memoryItemId: string
+}): { nodes: number; edges: number } {
+  const { projectId, decisionLabel, content, memoryItemId } = params
+  let nodes = 0
+  let edges = 0
+
+  // 1. Decision node
+  const decisionLabelShort = decisionLabel.length > 100 ? decisionLabel.slice(0, 97) + '…' : decisionLabel
+  upsertNode({
+    projectId,
+    type: 'decision',
+    label: decisionLabelShort,
+    sourceKind: 'memory_item',
+    sourceId: memoryItemId,
+    metadata: { content },
+  })
+  nodes++
+
+  // 2. File paths в content → file nodes + AFFECTS edges
+  const filePaths = new Set<string>()
+  const matches = content.match(FILE_PATH_REGEX) ?? []
+  for (const m of matches) {
+    // Normalize: убираем ведущие ./ и ../
+    const normalized = m.replace(/^(?:\.\/|\.\.\/|\/)+/, '')
+    if (normalized.length > 3 && normalized.length < 200) {
+      filePaths.add(normalized)
+    }
+  }
+
+  // Также проверяем что эти файлы реально есть в fast_context_index проекта
+  // (чтобы не создавать мусорные узлы для несуществующих файлов)
+  const existingFiles = new Set<string>()
+  try {
+    const fcEntries = getFastContextEntries(projectId)
+    for (const e of fcEntries) {
+      existingFiles.add(e.filePath)
+      // Также добавляем basename для matching
+      const basename = e.filePath.split(/[/\\]/).pop()
+      if (basename) existingFiles.add(basename)
+    }
+  } catch { /* skip if fast_context не доступен */ }
+
+  for (const filePath of filePaths) {
+    // Проверяем: либо полный путь есть в индексе, либо basename
+    const basename = filePath.split(/[/\\]/).pop() ?? filePath
+    const known = existingFiles.has(filePath) || existingFiles.has(basename)
+    if (!known) continue // пропускаем незнакомые файлы
+
+    upsertEdge({
+      projectId,
+      fromType: 'decision',
+      fromLabel: decisionLabelShort,
+      toType: 'file',
+      toLabel: basename, // используем basename как label для краткости
+      type: 'affects',
+      toSourceKind: 'fast_context',
+      toSourceId: basename,
+      metadata: { evidence: 'mentioned_in_decision' },
+    })
+    edges++
+  }
+
+  // 3. Symbol mentions → symbol nodes + MENTIONS edges
+  // Сначала собираем все symbol names из fast_context
+  const symbolNames = new Set<string>()
+  try {
+    const fcEntries = getFastContextEntries(projectId)
+    for (const e of fcEntries) {
+      if (!e.symbolsJson) continue
+      try {
+        const symbols = JSON.parse(e.symbolsJson) as FileSymbols
+        for (const def of symbols.definitions) {
+          if (def.name && def.name.length >= 4) {
+            symbolNames.add(def.name)
+          }
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+
+  if (symbolNames.size > 0) {
+    const symbolMatches = content.match(SYMBOL_REGEX) ?? []
+    const uniqueMatches = new Set(symbolMatches)
+    for (const sym of uniqueMatches) {
+      if (symbolNames.has(sym)) {
+        upsertEdge({
+          projectId,
+          fromType: 'decision',
+          fromLabel: decisionLabelShort,
+          toType: 'symbol',
+          toLabel: sym,
+          type: 'mentions',
+          toSourceKind: 'fast_context',
+          metadata: { evidence: 'mentioned_in_decision' },
+        })
+        edges++
+      }
+    }
+  }
+
+  return { nodes, edges }
+}
+
+// ─── HEURISTIC: sync fast_context → graph ────────────────────────────────────
+
+/**
+ * Синхронизировать узлы/рёбра из fast_context_index в graph.
+ * - files → file nodes
+ * - symbols → symbol nodes + DEFINED_IN edges (file → symbol)
+ * - imports → IMPORTS edges (file → file)
+ * - references → CALLS edges (symbol → symbol) — best-effort резолвинг по name
+ *
+ * Используется при full rebuild и при incremental reindex.
+ * Удаляет устаревшие file/symbol узлы (source_kind='fast_context'), которых
+ * больше нет в fast_context_index.
+ */
+export function syncFromFastContext(projectId: string): { nodes: number; edges: number } {
+  let nodes = 0
+  let edges = 0
+
+  const entries = getFastContextEntries(projectId)
+  const currentFilePaths = new Set<string>()
+
+  for (const entry of entries) {
+    currentFilePaths.add(entry.filePath)
+    const basename = entry.filePath.split(/[/\\]/).pop() ?? entry.filePath
+
+    // File node
+    upsertNode({
+      projectId,
+      type: 'file',
+      label: basename,
+      sourceKind: 'fast_context',
+      sourceId: entry.filePath,
+      metadata: {
+        path: entry.filePath,
+        lang: entry.lang,
+        rankedScore: entry.rankedScore,
+      },
+      weightBoost: Math.max(0.5, entry.rankedScore / 10),
+    })
+    nodes++
+
+    // Symbols
+    if (entry.symbolsJson) {
+      try {
+        const symbols = JSON.parse(entry.symbolsJson) as FileSymbols
+        for (const def of symbols.definitions) {
+          if (!def.name || def.name.length < 2) continue
+          upsertNode({
+            projectId,
+            type: 'symbol',
+            label: def.name,
+            sourceKind: 'fast_context',
+            sourceId: `${entry.filePath}:${def.lineStart}`,
+            metadata: {
+              file: entry.filePath,
+              kind: def.kind,
+              lineStart: def.lineStart,
+              lineEnd: def.lineEnd,
+              parentName: def.parentName,
+            },
+          })
+          nodes++
+
+          // Edge: file DEFINED_IN symbol (точнее: symbol DEFINED_IN file)
+          upsertEdge({
+            projectId,
+            fromType: 'symbol',
+            fromLabel: def.name,
+            toType: 'file',
+            toLabel: basename,
+            type: 'implemented_in',
+            fromSourceKind: 'fast_context',
+            toSourceKind: 'fast_context',
+            fromSourceId: `${entry.filePath}:${def.lineStart}`,
+            toSourceId: entry.filePath,
+          })
+          edges++
+        }
+
+        // Imports → IMPORTS edges (file → file, best-effort по basename)
+        for (const imp of symbols.imports ?? []) {
+          // imports[] содержат raw строки импортов — пытаемся извлечь basename
+          const importMatch = imp.match(/([\w-]+\.[a-z]{1,5})\b/i)
+          if (importMatch) {
+            const importedBasename = importMatch[1]
+            if (importedBasename !== basename) {
+              upsertEdge({
+                projectId,
+                fromType: 'file',
+                fromLabel: basename,
+                toType: 'file',
+                toLabel: importedBasename,
+                type: 'imports',
+                fromSourceKind: 'fast_context',
+                fromSourceId: entry.filePath,
+                metadata: { raw_import: imp },
+              })
+              edges++
+            }
+          }
+        }
+
+        // References → CALLS edges (file → symbol, best-effort по name)
+        for (const ref of symbols.references ?? []) {
+          if (ref.length < 4) continue
+          // Проверяем, есть ли такой symbol в индексе (best-effort)
+          // Не создаём узел — upsertEdge создаст если нужно
+          upsertEdge({
+            projectId,
+            fromType: 'file',
+            fromLabel: basename,
+            toType: 'symbol',
+            toLabel: ref,
+            type: 'calls',
+            fromSourceKind: 'fast_context',
+            fromSourceId: entry.filePath,
+            metadata: { reference: ref },
+          })
+          edges++
+        }
+      } catch { /* skip corrupted symbolsJson */ }
+    }
+  }
+
+  // Удаляем устаревшие file/symbol узлы (source_kind='fast_context'), которых
+  // больше нет в currentFilePaths. Рёбра удалятся каскадно.
+  // NOTE: это делает graphBuilder, не тут — чтобы избежать рекурсии.
+
+  return { nodes, edges }
+}
+
+// ─── LLM: extract concepts & relations from conversation ─────────────────────
+
+const GRAPH_EXTRACT_SYSTEM_PROMPT = `Ты — экстрактор сущностей и связей для knowledge graph проекта.
+
+Извлекай из резюме диалога:
+- concept: абстрактные сущности, технологии, подходы ("авторизация", "Postgres", "TF-IDF", "early return")
+- decision: архитектурные решения ("решили использовать X", "конвенция — Y")
+- task: конкретные задачи ("добавить миграцию", "исправить баг авторизации")
+- file: упомянутые файлы (если есть полные пути или basename с расширением)
+- symbol: упомянутые функции/классы (CamelCase, не тривиальные слова)
+
+И связи между ними:
+- affects: decision → file (решение затрагивает файл)
+- mentions: decision/concept → symbol (упоминает символ)
+- implemented_in: concept/symbol → file (где реализовано)
+- depends_on: decision → decision/concept (зависит от)
+- supersedes: decision → decision (новое заменяет старое)
+- references: conversation → decision/concept/file (диалог ссылается на)
+
+Ответ — только JSON без markdown:
+{"nodes":[{"type":"concept|decision|task|file|symbol","label":"короткое имя","evidence":"цитата из текста"}],"edges":[{"from":"label_from","fromType":"concept","to":"label_to","toType":"file","type":"affects"}]}
+
+Правила:
+- label — короткое имя (не более 80 символов), уникальное в рамках типа
+- Если сущностей нет — верни {"nodes":[],"edges":[]}
+- Не выдумывай связи — только если есть evidence в тексте
+- Максимум 15 узлов и 20 рёбер на диалог`
+
+/**
+ * LLM-извлечение концепций и связей из резюме диалога.
+ * Вызывается после compaction (отдельный LLM-вызов).
+ */
+export async function extractFromConversationLLM(
+  store: Store,
+  params: {
+    projectId: string
+    chatId: string
+    summary: string
+  },
+): Promise<{ extraction: GraphExtraction; error?: string }> {
+  if (params.summary.trim().length < 50) {
+    return { extraction: { nodes: [], edges: [] } }
+  }
+
+  const aiClient = new AIClient(store)
+  const prompt = `Извлеки сущности и связи для knowledge graph из резюме диалога:
+
+${params.summary.slice(0, 4000)}
+
+Верни JSON с nodes и edges.`
+
+  let raw = ''
+  try {
+    await aiClient.streamChat(
+      [{ role: 'user', content: prompt }],
+      {
+        onToken: (t) => { raw += t },
+        onDone: () => {},
+        onError: () => {},
+      },
+      'fastContext',
+      GRAPH_EXTRACT_SYSTEM_PROMPT,
+      undefined,
+      0.1,
+    )
+  } catch (e) {
+    return { extraction: { nodes: [], edges: [] }, error: (e as Error).message }
+  }
+
+  const parsed = extractJsonFromLlmResponse(raw) as { nodes?: unknown[]; edges?: unknown[]; files?: unknown[]; summary?: string; facts?: unknown[] } | null
+  if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+    return { extraction: { nodes: [], edges: [] }, error: 'invalid JSON response' }
+  }
+
+  const extraction: GraphExtraction = { nodes: [], edges: [] }
+  const validNodeTypes: NodeType[] = ['decision', 'concept', 'file', 'symbol', 'conversation', 'task']
+  const validEdgeTypes: EdgeType[] = [
+    'affects', 'mentions', 'implemented_in', 'depends_on', 'supersedes',
+    'references', 'imports', 'calls', 'implements',
+  ]
+
+  for (const n of parsed.nodes) {
+    if (typeof n !== 'object' || n === null) continue
+    const obj = n as Record<string, unknown>
+    const type = typeof obj.type === 'string' ? obj.type as NodeType : null
+    const label = typeof obj.label === 'string' ? obj.label.trim() : ''
+    if (!type || !label || !validNodeTypes.includes(type)) continue
+    const evidence = typeof obj.evidence === 'string' ? obj.evidence : undefined
+    extraction.nodes.push({
+      type,
+      label: label.slice(0, 80),
+      sourceKind: 'llm_extract',
+      sourceId: params.chatId,
+      metadata: evidence ? { evidence } : undefined,
+    })
+  }
+
+  for (const e of parsed.edges) {
+    if (typeof e !== 'object' || e === null) continue
+    const obj = e as Record<string, unknown>
+    const fromType = typeof obj.fromType === 'string' ? obj.fromType as NodeType : null
+    const fromLabel = typeof obj.from === 'string' ? obj.from.trim() : ''
+    const toType = typeof obj.toType === 'string' ? obj.toType as NodeType : null
+    const toLabel = typeof obj.to === 'string' ? obj.to.trim() : ''
+    const type = typeof obj.type === 'string' ? obj.type as EdgeType : null
+    if (!fromType || !fromLabel || !toType || !toLabel || !type) continue
+    if (!validNodeTypes.includes(fromType) || !validNodeTypes.includes(toType)) continue
+    if (!validEdgeTypes.includes(type)) continue
+    extraction.edges.push({
+      fromType,
+      fromLabel: fromLabel.slice(0, 80),
+      toType,
+      toLabel: toLabel.slice(0, 80),
+      type,
+    })
+  }
+
+  return { extraction }
+}
+
+// ─── Сохранение extraction в graphStore ──────────────────────────────────────
+
+/**
+ * Сохранить GraphExtraction в graphStore через upsertNode/upsertEdge.
+ * Создаёт conversation node (для отслеживания источника) и связывает с extraction nodes.
+ */
+export function saveExtractionToGraph(
+  projectId: string,
+  extraction: GraphExtraction,
+  options?: { conversationLabel?: string; chatId?: string },
+): { nodes: number; edges: number } {
+  let nodeCount = 0
+  let edgeCount = 0
+
+  // Conversation node (опционально) — связываем с извлечёнными сущностями через REFERENCES
+  let convLabel: string | null = null
+  if (options?.conversationLabel && options?.chatId) {
+    convLabel = options.conversationLabel.slice(0, 80)
+    upsertNode({
+      projectId,
+      type: 'conversation',
+      label: convLabel,
+      sourceKind: 'chat_summary',
+      sourceId: options.chatId,
+    })
+    nodeCount++
+  }
+
+  // Nodes
+  for (const n of extraction.nodes) {
+    upsertNode({
+      projectId,
+      type: n.type,
+      label: n.label,
+      sourceKind: n.sourceKind ?? 'llm_extract',
+      sourceId: n.sourceId,
+      metadata: n.metadata,
+    })
+    nodeCount++
+
+    // Link conversation → node
+    if (convLabel) {
+      upsertEdge({
+        projectId,
+        fromType: 'conversation',
+        fromLabel: convLabel,
+        toType: n.type,
+        toLabel: n.label,
+        type: 'references',
+      })
+      edgeCount++
+    }
+  }
+
+  // Edges
+  for (const e of extraction.edges) {
+    upsertEdge({
+      projectId,
+      fromType: e.fromType,
+      fromLabel: e.fromLabel,
+      toType: e.toType,
+      toLabel: e.toLabel,
+      type: e.type,
+      metadata: e.metadata,
+    })
+    edgeCount++
+  }
+
+  return { nodes: nodeCount, edges: edgeCount }
+}

@@ -8,7 +8,8 @@
 //   chats.ts           — CRUD чатов
 //   projects.ts        — CRUD проектов
 //   messages.ts        — сообщения (saveMessage/getMessages/...)
-//   memory.ts          — memory/clipboard/agent_logs/working_memory/summaries
+//   memory.ts          — clipboard/agent_logs/working_memory/summaries
+//                         (memory CRUD перенесён в memory/MemoryStore.ts)
 //   checkpoints.ts     — file_snapshots/context_snapshots/checkpoints/rewind_history
 //   fastContextStore.ts — fast_context_index + history + relevance_boost
 

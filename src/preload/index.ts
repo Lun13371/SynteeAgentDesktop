@@ -123,12 +123,32 @@ const synteeAPI = {
     },
   },
 
-  // Память
+  // Память (MemoryStore: гибридный TF-IDF + embeddings, 4 kind, 3 scope)
   memory: {
-    getAll: (category?: string) => ipcRenderer.invoke('memory:getAll', category),
+    getAll: (filter?: unknown) => ipcRenderer.invoke('memory:getAll', filter),
     save: (entry: unknown) => ipcRenderer.invoke('memory:save', entry),
     delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
-    search: (query: string) => ipcRenderer.invoke('memory:search', query),
+    search: (params: unknown) => ipcRenderer.invoke('memory:search', params),
+    pin: (id: string, pinned: boolean) => ipcRenderer.invoke('memory:pin', id, pinned),
+    setImportance: (id: string, importance: number) => ipcRenderer.invoke('memory:setImportance', id, importance),
+    stats: () => ipcRenderer.invoke('memory:stats'),
+    prune: (maxAgeDays?: number, minImportance?: number) => ipcRenderer.invoke('memory:prune', maxAgeDays, minImportance),
+    reindex: () => ipcRenderer.invoke('memory:reindex'),
+    extractOutcomes: (params?: { chatId?: string; projectId?: string }) => ipcRenderer.invoke('memory:extractOutcomes', params),
+    pruneAgentLogs: (maxAgeDays?: number) => ipcRenderer.invoke('memory:pruneAgentLogs', maxAgeDays),
+    getCategories: (projectId?: string) => ipcRenderer.invoke('memory:getCategories', projectId),
+    createCategory: (input: unknown) => ipcRenderer.invoke('memory:createCategory', input),
+    deleteCategory: (id: string) => ipcRenderer.invoke('memory:deleteCategory', id),
+  },
+
+  // Knowledge Graph (per-project: узлы + рёбра, force-directed визуализация)
+  graph: {
+    get: (projectId: string, opts?: unknown) => ipcRenderer.invoke('graph:get', projectId, opts),
+    stats: (projectId: string) => ipcRenderer.invoke('graph:stats', projectId),
+    rebuild: (projectId: string) => ipcRenderer.invoke('graph:rebuild', projectId),
+    deleteNode: (id: string) => ipcRenderer.invoke('graph:deleteNode', id),
+    pinNode: (id: string, pinned: boolean) => ipcRenderer.invoke('graph:pinNode', id, pinned),
+    pruneIsolated: (projectId?: string) => ipcRenderer.invoke('graph:pruneIsolated', projectId),
   },
 
   // Агент

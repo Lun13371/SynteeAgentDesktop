@@ -146,9 +146,45 @@ const AdmonitionBlock = memo(function AdmonitionBlock({ kind, title, children }:
 
 // Парсим admonitions + <plan>-блоки — вынесено и мемоизировано снаружи
 // Возвращает сегменты: md (обычный markdown), admonition (:::note…:::),
-// plan (<plan title="…" summary="…">…</plan> — рендерится в PlanCard).
-function parseContent(raw: string): Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> {
-  // 1. Сначала вытащим <plan>-блоки через shared-парсер.
+// plan (<plan title="…" summary="…" — рендерится в PlanCard).
+// allowPlanCard: если false — <plan>-теги НЕ парсятся, остаются как текст.
+// Это защищает от рендеринга <plan> вне режима планирования (модель может
+// ошибочно написать тег, но он не должен стать PlanCard).
+function parseContent(raw: string, allowPlanCard = false): Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> {
+  // 1. Если PlanCard не разрешён — пропускаем <plan>-парсинг, весь текст как md.
+  if (!allowPlanCard) {
+    // Просто разбиваем на md + admonition, без plan-сегментов.
+    const result: Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> = []
+    const lines = raw.split('\n')
+    let i = 0
+    let mdBuf: string[] = []
+    const ADM_RE = /^:::(note|tip|warning|danger|info)(?:\s+(.+))?$/i
+    const flushMd = () => {
+      if (mdBuf.length) {
+        result.push({ type: 'md', content: mdBuf.join('\n') })
+        mdBuf = []
+      }
+    }
+    while (i < lines.length) {
+      const m = ADM_RE.exec(lines[i].trim())
+      if (m) {
+        flushMd()
+        const kind = m[1].toLowerCase()
+        const title = m[2]
+        const body: string[] = []
+        i++
+        while (i < lines.length && lines[i].trim() !== ':::') { body.push(lines[i]); i++ }
+        result.push({ type: 'admonition', content: body.join('\n'), kind, title })
+      } else {
+        mdBuf.push(lines[i])
+      }
+      i++
+    }
+    flushMd()
+    return result
+  }
+
+  // 2. PlanCard разрешён — парсим <plan>-теги через shared-парсер.
   const { segments: planSegs } = extractPlanSegments(raw)
 
   // 2. Каждый text-сегмент дополнительно разбиваем на md + admonition.
@@ -388,13 +424,18 @@ const MessageContent = memo(function MessageContent({
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
 
+  // PlanCard разрешён только если: (1) план уже сохранён для этого сообщения
+  // (message.planData), ИЛИ (2) это live-bubble в режиме планирования.
+  // Вне режима планирования <plan>-теги рендерятся как обычный текст.
+  const allowPlanCard = !!message.planData || !!(message as Message & { livePlanningMode?: boolean }).livePlanningMode
+
   const segments = useMemo(() =>
     isUser && !userMarkdown
       ? [{ type: 'plain' as const, content }]
       : isUser
         ? [{ type: 'md' as const, content }]
-        : parseContent(content),
-    [content, isUser, userMarkdown]
+        : parseContent(content, allowPlanCard),
+    [content, isUser, userMarkdown, allowPlanCard]
   )
 
   // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
@@ -511,7 +552,7 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      {renderParsedSegments(parseContent(iter.textBefore), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
+                      {renderParsedSegments(parseContent(iter.textBefore, allowPlanCard), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
                     </div>
                   )}
                   {iter.steps.length > 0 && (
@@ -620,7 +661,7 @@ const MessageContent = memo(function MessageContent({
                   {/* Текст ДО тулчейна */}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      {renderParsedSegments(parseContent(iter.textBefore), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
+                      {renderParsedSegments(parseContent(iter.textBefore, allowPlanCard), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
                     </div>
                   )}
                   {/* Тулчейн итерации */}
@@ -663,7 +704,7 @@ const MessageContent = memo(function MessageContent({
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
             {liveTextAfter && (
               <div className="message-content selectable">
-                {renderParsedSegments(parseContent(liveTextAfter), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
+                {renderParsedSegments(parseContent(liveTextAfter, allowPlanCard), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
               </div>
             )}
           </div>

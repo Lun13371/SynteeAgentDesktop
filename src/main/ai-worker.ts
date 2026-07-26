@@ -544,6 +544,45 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'get_skill', chatId, msgId, replyId, skillName: name })
             })
           },
+          onSaveMemory: (params) => {
+            return new Promise((resolve) => {
+              const replyId = `save-mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve({
+                  success: (reply.success as boolean) ?? false,
+                  id: reply.id as string | undefined,
+                  error: reply.error as string | undefined,
+                })
+              })
+              send({ type: 'save_memory', chatId, msgId, replyId, ...params })
+            })
+          },
+          onRecallMemory: (params) => {
+            return new Promise((resolve) => {
+              const replyId = `recall-mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve({
+                  success: (reply.success as boolean) ?? false,
+                  results: (reply.results as Array<{
+                    source: string
+                    title: string | null
+                    content: string
+                    score: number
+                    kind?: string
+                    scope?: string
+                    key?: string | null
+                    chatId?: string
+                    chatTitle?: string
+                    messageId?: string
+                    role?: string
+                    date?: number
+                  }>) ?? [],
+                  error: reply.error as string | undefined,
+                })
+              })
+              send({ type: 'recall_memory', chatId, msgId, replyId, ...params })
+            })
+          },
           onToolProgress: (p) => {
             // Progress для долгих тулов (get_fast_context) — транслируем в main
             // для live-индикации этапов в UI ToolChain

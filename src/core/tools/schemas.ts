@@ -373,7 +373,96 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
-  // ── list_extensions: показать установленные расширения (MCP + skills) ──
+  // ── save_memory: сохранить факт в долгосрочную память ──
+  // Персистентная память через все сессии (в отличие от update_working_memory,
+  // которая живёт только в пределах одного чата). Scope auto: 'project' если
+  // есть project_id, иначе 'global'. Dedup по key → update; cosine>0.92 → merge.
+  {
+    type: 'function',
+    function: {
+      name: 'save_memory',
+      description: 'Сохранить факт в долгосрочную память (переживает сессию). Используй когда узнал важное: предпочтения пользователя, архитектурное решение проекта, выученный урок. В отличие от update_working_memory (только этот чат), save_memory доступен через сессии. Scope auto: проект если есть projectId, иначе глобально. Dedup по key или semantic similarity.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: 'Краткое название записи (1-5 слов, обязательно). Будет отображаться как заголовок. Напр. "Архитектура авторизации", "Предпочтения по языкам", "Итог: миграция на FTS5".',
+          },
+          content: {
+            type: 'string',
+            description: 'Подробное описание. Может быть длинным, с деталями, списками, файлами. Markdown поддерживается. Напр. "Решили использовать JWT + refresh tokens.\\n- Access token: 15мин\\n- Refresh token: 7дней\\n- Хранение в httpOnly cookies".',
+          },
+          kind: {
+            type: 'string',
+            enum: ['user_fact', 'project_decision', 'convention', 'conversation', 'agent_outcome'],
+            description: 'user_fact — о пользователе (личное, предпочтения); project_decision — архитектурное решение проекта; convention — gotchas/ловушки/некоординатные правила проекта; conversation — итог диалога; agent_outcome — урок из исхода действия.',
+          },
+          key: {
+            type: 'string',
+            description: 'Dedup-ключ (опционально). Если запись с тем же key существует — обновится. Напр. "name", "preferred_stack", "auth_approach".',
+          },
+          category: {
+            type: 'string',
+            description: '[user_fact] Подкатегория: personal/work/preferences/projects/facts.',
+          },
+          scope: {
+            type: 'string',
+            enum: ['global', 'project'],
+            description: 'global — сквозная память через все проекты; project — привязана к текущему проекту. Default: project если есть projectId, иначе global.',
+          },
+          importance: {
+            type: 'number',
+            description: 'Важность 0..1 (default 0.5). Выше = выше в ранжировании, дольше живёт. 1.0 для критичных фактов.',
+          },
+        },
+        required: ['title', 'content', 'kind'],
+      },
+    },
+  },
+  // ── recall_memory: найти релевантные воспоминания ──
+  // Multi-source поиск: 5 источников параллельно (memory + messages + summaries + agent_logs + pinned).
+  // FTS5 trigram для messages/pinned, TF-IDF для memory_items, LIKE для summaries/agent_logs.
+  // Возвращает top-15 (по 3 с каждого источника), отсортированных по normalized score.
+  {
+    type: 'function',
+    function: {
+      name: 'recall_memory',
+      description: 'Найти релевантные воспоминания и прошлый контекст. Ищет ПАРАЛЛЕЛЬНО по 5 источникам: (1) долгосрочная память — факты/решения/конвенции/итоги диалогов, (2) сообщения всех чатов в scope (FTS5 trigram), (3) резюме чатов (компактные итоги длинных диалогов), (4) логи действий агента — какие тулы вызывались, ошибки, (5) закреплённые сообщения. Scope: если в проекте — ищет по чатам этого проекта; если нет — по чатам без проекта. Глобальная память ВСЕГДА в поиске. Возвращает top-20 результатов с score и source, группированных по источнику.\n\nКОГДА ИСПОЛЬЗОВАТЬ: начало новой задачи (особенно в проекте), «помнишь?», «как мы делали», «что решили по X», незнакомый проект/файл, упоминание прошлого решения/ошибки, перед архитектурным решением.\n\nКАК ПИСАТЬ QUERY: используй ключевые слова, а не полные предложения. Хорошо: «авторизация JWT», «предпочтения TypeScript», «ошибка ESLint», «почему Postgres». Плохо: «расскажи мне всё что ты знаешь про проект».',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Поисковый запрос — ключевые слова или фраза. Напр. "авторизация JWT", "предпочтения по языкам", "почему выбрали Postgres", "ошибка ESLint таймаут". Для длинных запросов автоматически разбивается на ключевые слова.',
+          },
+          kind: {
+            type: 'string',
+            enum: ['user_fact', 'project_decision', 'convention', 'conversation', 'agent_outcome'],
+            description: 'Фильтр по типу памяти (опционально). Без фильтра — ищет по всем типам. Применяется только к источнику "memory".',
+          },
+          scope: {
+            type: 'string',
+            enum: ['global', 'project', 'all'],
+            description: 'Где искать в memory_items: global — только глобальная; project — только текущий проект; all — и то и то (default). На chat-источники не влияет.',
+          },
+          sources: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['memory', 'messages', 'summaries', 'agent_logs', 'pinned'],
+            },
+            description: 'Какие источники искать (default: все 5). Напр. ["memory","messages"] — только память и сообщения. Сузь если точно знаешь что нужно.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Сколько записей вернуть (default 20, max 30). По 5 на источник если все 5 включены.',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -519,6 +608,10 @@ export function getToolSchemas(options: {
     'update_working_memory',
     'update_todo',
     'ask_user',
+    // Долгосрочная память: save_memory (записать факт) + recall_memory (найти).
+    // Доступны всегда — модель сама решает когда сохранить/вспомнить.
+    'save_memory',
+    'recall_memory',
     // Веб-поиск, HTTP и суб-агенты — всегда доступны агенту, модель сама решает
     // когда их использовать.
     'search_web',

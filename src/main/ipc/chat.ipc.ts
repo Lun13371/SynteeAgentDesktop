@@ -5,7 +5,7 @@ import type Store from 'electron-store'
 import { agentManager } from '../AgentManager'
 import {
   createChat, getAllChats, getMessages, saveMessage,
-  deleteChat, renameChat, pinMessage, unpinMessage, initDB,
+  deleteChat, renameChat, pinMessage, unpinMessage, initDB, getDB,
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
@@ -15,8 +15,14 @@ import {
   getCheckpoints, getLastCheckpoint, getSnapshotsAfter, getContextSnapshot,
   deleteCheckpointsAfter, pruneOldCheckpoints, deleteMessagesAfter,
   saveRewindHistory, getRewindHistory, deleteRewindHistory, deleteMessageById,
+  logAgentAction,
 } from '../../core/db'
-import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
+import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
+import { saveMemoryItem, searchAllSources, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit } from '../../core/memory/MemoryStore'
+import { onCompactionTrigger, extractAndSaveFacts } from '../../core/memory/extractor'
+import { incrementalUpdateDecision, incrementalUpdateConversation } from '../../core/memory/graphBuilder'
+import { getGraphStats } from '../../core/memory/graphStore'
+import { extractAndSaveOutcomes } from '../../core/memory/outcomeExtractor'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
@@ -29,7 +35,7 @@ import {
   getModelContextWindow,
   type ChatMessage,
 } from '../../core/context/contextManager'
-import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usageTracker'
+import { buildSnapshotFromEstimate, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { startWatching as startFastContextWatch, stopWatching as stopFastContextWatch } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
@@ -85,6 +91,10 @@ interface ActiveRun {
   currentIterThinking: string
   currentIterThinkingMs?: number
   closedIters: unknown[]
+  // Фаза 4: кэш args tool_call'ов по callId — для логирования в agent_logs
+  // при получении tool_result. tool_result не содержит args (они в tool_call),
+  // но для outcome-extraction важен контекст "что пытались сделать".
+  toolCallArgsCache: Map<string, { toolName: string; args: Record<string, unknown> }>
 }
 
 const activeRuns = new Map<string, ActiveRun>()
@@ -102,6 +112,69 @@ interface QueuedSend {
   meta: QueueItemMeta
 }
 const chatQueues = new Map<string, Array<QueuedSend>>()
+
+// Фаза 3: Idle-timer для memory extraction. После каждого chat:send
+// ставим setTimeout на 10 минут — если за это время не было нового
+// сообщения в этом чате, запускаем LLM-extract фактов из последнего
+// turn'а. Сбрасывается при новом chat:send. Map<chatId, {timer, params}>.
+const IDLE_EXTRACT_DELAY_MS = 10 * 60 * 1000 // 10 минут
+interface IdleExtractPending {
+  timer: NodeJS.Timeout
+  chatId: string
+  userMessage: string
+  assistantMessage: string
+  projectId?: string
+}
+const idleExtractTimers = new Map<string, IdleExtractPending>()
+
+function scheduleIdleExtraction(
+  store: Store,
+  chatId: string,
+  userMessage: string,
+  assistantMessage: string,
+  projectId?: string,
+): void {
+  // Сбрасываем предыдущий таймер если был
+  const existing = idleExtractTimers.get(chatId)
+  if (existing) {
+    clearTimeout(existing.timer)
+  }
+
+  // Skip-условия (дублирование extractor.ts, но без LLM-вызова — дешевле)
+  if (userMessage.trim().length < 20 || userMessage.startsWith('/')) return
+
+  const timer = setTimeout(async () => {
+    idleExtractTimers.delete(chatId)
+    try {
+      const result = await extractAndSaveFacts(store, {
+        chatId,
+        userMessage,
+        assistantMessage,
+        projectId,
+      })
+      log('[chat] idle memory extraction: chatId=%s extracted=%d', chatId, result.extracted)
+      // Фаза 4: outcome-extraction из agent_logs (параллельно, не блокирует)
+      extractAndSaveOutcomes(store, { chatId, projectId })
+        .then(r => log('[chat] idle outcome extraction: chatId=%s extracted=%d', chatId, r.extracted))
+        .catch(e => log('[chat] idle outcome extraction failed: %s', (e as Error).message))
+    } catch (e) {
+      log('[chat] idle memory extraction failed: %s', (e as Error).message)
+    }
+  }, IDLE_EXTRACT_DELAY_MS)
+
+  // unref — таймер не держит процесс alive при выходе
+  if (typeof timer.unref === 'function') timer.unref()
+
+  idleExtractTimers.set(chatId, { timer, chatId, userMessage, assistantMessage, projectId })
+}
+
+function cancelIdleExtraction(chatId: string): void {
+  const existing = idleExtractTimers.get(chatId)
+  if (existing) {
+    clearTimeout(existing.timer)
+    idleExtractTimers.delete(chatId)
+  }
+}
 
 function emitRunStatus(
   win: BrowserWindow | null,
@@ -419,16 +492,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let summary = ''
     let workdir: string | undefined
     let projectContext: string | undefined
-    try { memoryContext = getAllMemoriesForContext() } catch { /* ok */ }
-    try { if (chatId) workingMemory = getWorkingMemory(chatId) } catch { /* ok */ }
-    try { if (chatId) summary = getChatSummary(chatId) } catch { /* ok */ }
+    let promptProjectId: string | undefined
     try {
       if (chatId) {
         const wctx = getChatWorkdirContext(chatId)
         workdir = wctx.workdir
         projectContext = wctx.projectContext
+        if (workdir) {
+          const found = getAllProjects().find(p => p.workdir === workdir)
+          promptProjectId = found?.id
+        }
       }
     } catch { /* ok */ }
+    // Curated memory summary: top global user_facts + top project_decisions.
+    // Заменяет полный дамп getAllMemoriesForContext — бюджет ~400 токенов.
+    try { memoryContext = buildCuratedSummary(promptProjectId) } catch { /* ok */ }
+    try { if (chatId) workingMemory = getWorkingMemory(chatId) } catch { /* ok */ }
+    try { if (chatId) summary = getChatSummary(chatId) } catch { /* ok */ }
 
     // Live-read AGENTS.md/CLAUDE.md/.syntee/instructions.md из workdir.
     // mtime-кэш внутри readProjectInstructions — повторные вызовы дёшевы.
@@ -485,7 +565,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Глобальный system prompt из Настройки → AI → Параметры (или /sys команды)
     const customSystemPrompt = (store.get('modelParams') as { systemPrompt?: string } | undefined)?.systemPrompt
 
-    return buildSystemPrompt({ userName, memoryContext, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers })
+    // Счётчики памяти для системного промпта — агент видит сколько у него памяти.
+    let memoryStats: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> } | undefined
+    try { memoryStats = getMemoryStatsForProject(promptProjectId) } catch { /* ok */ }
+
+    // Статистика knowledge graph — агент видит структуру проекта.
+    let graphStats: ReturnType<typeof getGraphStats> | undefined
+    try { if (promptProjectId) graphStats = getGraphStats(promptProjectId) } catch { /* ok */ }
+
+    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers })
   }
 
   /**
@@ -667,6 +755,51 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           setChatSummary(params.chatId, result.summaryContent)
           storedSummary = result.summaryContent
 
+          // Фаза 3: compaction-триггер памяти — sync summary → memory_items
+          // (episodic) + LLM-extract фактов из последнего turn'а.
+          // Fire-and-forget — не блокируем основной поток чата.
+          ;(async () => {
+            try {
+              let compactionProjectId: string | undefined
+              const wctx = (() => { try { return getChatWorkdirContext(params.chatId) } catch { return null } })()
+              if (wctx?.workdir) {
+                const found = getAllProjects().find(p => p.workdir === wctx.workdir)
+                compactionProjectId = found?.id
+              }
+              await onCompactionTrigger(store, {
+                chatId: params.chatId,
+                summary: result.summaryContent,
+                projectId: compactionProjectId,
+                lastUserMessage: params.content,
+                lastAssistantMessage: undefined, // assistant ещё не готов на этом этапе
+              })
+              // Фаза 4: outcome-extraction из agent_logs (параллельно с fact-extraction)
+              extractAndSaveOutcomes(store, { chatId: params.chatId, projectId: compactionProjectId })
+                .then(r => log('[chat:send] outcome extraction on compaction: chatId=%s extracted=%d', params.chatId, r.extracted))
+                .catch(e => log('[chat:send] outcome extraction failed: %s', (e as Error).message))
+
+              // Knowledge graph: LLM-extract концепций/связей из нового summary
+              if (compactionProjectId && result.summaryContent) {
+                let chatTitle: string | undefined
+                try {
+                  const chatRow = getDB().prepare(`SELECT title FROM chats WHERE id = ?`).get(params.chatId) as { title: string } | undefined
+                  chatTitle = chatRow?.title
+                } catch { /* ok */ }
+                incrementalUpdateConversation(store, {
+                  projectId: compactionProjectId,
+                  chatId: params.chatId,
+                  summary: result.summaryContent,
+                  chatTitle,
+                })
+                  .then(r => log('[chat:send] graph extraction on compaction: chatId=%s nodes=%d edges=%d', params.chatId, r.nodes, r.edges))
+                  .catch(e => log('[chat:send] graph extraction failed: %s', (e as Error).message))
+              }
+              log('[chat:send] memory extraction on compaction: chatId=%s', params.chatId)
+            } catch (e) {
+              log('[chat:send] memory extraction failed: %s', (e as Error).message)
+            }
+          })()
+
           // Видимый разделитель «Контекст сжат» — system-сообщение с
           // slashCommand.name === 'compact'. createdAt чуть меньше userMsg,
           // чтобы в БД-сортировке (ORDER BY created_at ASC) он шёл между
@@ -760,6 +893,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       currentIterThinking: '',
       currentIterThinkingMs: undefined,
       closedIters: [],
+      toolCallArgsCache: new Map(),
     }
 
     const sendDone = (
@@ -818,8 +952,40 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       if (!params.incognito) saveMessage(assistantMsg)
       if (!params.incognito) {
+        // Fast-path: regex-извлечение для явного «запомни X» / «меня зовут X»
+        // (мгновенно, без LLM). Фаза 3 добавляет LLM-extract на idle/compaction.
         const facts = extractMemoriesFromConversation(params.content, fullText)
         facts.forEach(f => saveMemory(f))
+
+        // Фаза 3: планируем idle-extraction через 10 минут. Сбрасывается
+        // при новом chat:send. Extract делает LLM-вызов на fast-модели.
+        try {
+          let idleProjectId: string | undefined
+          const wctx = (() => { try { return getChatWorkdirContext(params.chatId) } catch { return null } })()
+          if (wctx?.workdir) {
+            const found = getAllProjects().find(p => p.workdir === wctx.workdir)
+            idleProjectId = found?.id
+          }
+          scheduleIdleExtraction(store, params.chatId, params.content, fullText, idleProjectId)
+
+          // End-of-task триггер: если в этом turn'е НЕ было tool_calls —
+          // задача завершена. Запускаем extract немедленно (без 10мин idle),
+          // чтобы итоги задачи попали в память сразу. Параллельно с idle-extract
+          // (который добавит факты если за 10мин будет ещё turn).
+          const hadToolCalls = Array.isArray(steps) && steps.some(
+            (s: unknown) => typeof s === 'object' && s !== null && (s as { type: string }).type === 'tool_call'
+          )
+          if (!hadToolCalls && params.content.trim().length >= 20 && !params.content.startsWith('/')) {
+            extractAndSaveFacts(store, {
+              chatId: params.chatId,
+              userMessage: params.content,
+              assistantMessage: fullText,
+              projectId: idleProjectId,
+            })
+              .then(r => log('[chat] end-of-task extraction: chatId=%s extracted=%d', params.chatId, r.extracted))
+              .catch(e => log('[chat] end-of-task extraction failed: %s', (e as Error).message))
+          }
+        } catch { /* ok — extract опционален */ }
       }
       if (history.length === 0 && !params.incognito) {
         autoNameChat(params.chatId, params.content, store, win)
@@ -1030,6 +1196,39 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               run.currentIterSteps.push(ts)
             } else if (rawStep.type === 'tool_result') {
               run.currentIterSteps.push(ts)
+            }
+          }
+          // Фаза 4: логирование tool-вызовов в agent_logs для outcome-extraction.
+          // tool_call — кэшируем args по callId; tool_result — пишем запись в БД
+          // с args (из кэша) + result/error. Скрытые тулы (think/update_working_memory/
+          // update_todo) не логируем — они не tool actions в смысле agent_outcome.
+          if (!params.incognito) {
+            const stepType = rawStep.type as string
+            const stepToolName = rawStep.toolName as string | undefined
+            const stepCallId = rawStep.callId as string | undefined
+            const HIDDEN_TOOLS = new Set(['think', 'update_working_memory', 'update_todo'])
+            if (stepToolName && !HIDDEN_TOOLS.has(stepToolName)) {
+              if (stepType === 'tool_call' && stepCallId) {
+                run.toolCallArgsCache.set(stepCallId, {
+                  toolName: stepToolName,
+                  args: (rawStep.toolArgs as Record<string, unknown>) ?? {},
+                })
+              } else if (stepType === 'tool_result' && stepCallId) {
+                const cached = run.toolCallArgsCache.get(stepCallId)
+                run.toolCallArgsCache.delete(stepCallId)
+                try {
+                  logAgentAction({
+                    chatId: params.chatId,
+                    type: 'tool_call',
+                    tool: stepToolName,
+                    args: cached?.args ?? {},
+                    result: rawStep.success ? (rawStep.content as string)?.slice(0, 2000) : undefined,
+                    error: !rawStep.success ? (rawStep.content as string)?.slice(0, 2000) : undefined,
+                  })
+                } catch (e) {
+                  log('[chat:send] logAgentAction failed: %s', (e as Error).message)
+                }
+              }
             }
           }
           // chatId добавлен чтобы глобальный хук useChatRunSubscription мог
@@ -1376,6 +1575,107 @@ ${subModeOutro}`,
           break
         }
 
+        case 'save_memory': {
+          ;(async () => {
+            try {
+              const item = await saveMemoryItem({
+                title: msg.title as string,
+                content: msg.content as string,
+                kind: msg.kind as 'user_fact' | 'project_decision' | 'convention' | 'conversation' | 'agent_outcome',
+                scope: msg.scope as 'global' | 'project' | undefined,
+                key: msg.key as string | undefined,
+                category: msg.category as string | undefined,
+                importance: msg.importance as number | undefined,
+                source: 'agent_tool',
+                projectId: msg.projectId as string | undefined,
+                chatId: msg.chatId as string | undefined,
+              })
+              // Knowledge graph: heuristic extract из project_decision
+              if (item.kind === 'project_decision' && item.projectId) {
+                try {
+                  const r = incrementalUpdateDecision(item)
+                  log('[chat:send] graph decision update: nodes=%d edges=%d', r.nodes, r.edges)
+                } catch (e) {
+                  log('[chat:send] graph decision update failed: %s', (e as Error).message)
+                }
+              }
+              worker.postMessage({
+                type: 'save_memory_reply',
+                replyId: msg.replyId,
+                success: true,
+                id: item.id,
+              })
+            } catch (e) {
+              worker.postMessage({
+                type: 'save_memory_reply',
+                replyId: msg.replyId,
+                success: false,
+                error: (e as Error).message,
+              })
+            }
+          })()
+          break
+        }
+
+        case 'recall_memory': {
+          ;(async () => {
+            try {
+              const results = await searchAllSources({
+                query: msg.query as string,
+                kind: msg.kind as 'user_fact' | 'project_decision' | 'convention' | 'conversation' | 'agent_outcome' | undefined,
+                scope: msg.scope as 'global' | 'project' | 'all' | undefined,
+                projectId: msg.projectId as string | undefined,
+                limit: msg.limit as number | undefined,
+                sources: msg.sources as 'all' | ('memory' | 'messages' | 'summaries' | 'agent_logs' | 'pinned')[] | undefined,
+              })
+              // Feedback loop: bump access_count + importance для memory_items,
+              // которые попали в результаты. Часто вспоминаемые факты получают
+              // boost и защищены от decayPrune (access_count > 0).
+              try {
+                const hitIds = results
+                  .filter(r => r.source === 'memory' && r.item?.id)
+                  .map(r => r.item!.id)
+                if (hitIds.length > 0) {
+                  const bumped = bumpMemoryHit(hitIds)
+                  if (bumped > 0) log('[chat] memory feedback: bumped %d items (recall query="%s")', bumped, (msg.query as string).slice(0, 50))
+                }
+              } catch (e) {
+                log('[chat] memory feedback bump failed: %s', (e as Error).message)
+              }
+              worker.postMessage({
+                type: 'recall_memory_reply',
+                replyId: msg.replyId,
+                success: true,
+                results: results.map(r => ({
+                  source: r.source,
+                  title: r.item?.title ?? null,
+                  content: r.content,
+                  score: r.score,
+                  // memory-specific:
+                  kind: r.item?.kind,
+                  scope: r.item?.scope,
+                  key: r.item?.key ?? null,
+                  // chat-specific:
+                  chatId: r.chatId,
+                  chatTitle: r.chatTitle,
+                  messageId: r.messageId,
+                  role: r.role,
+                  date: r.date,
+                })),
+              })
+            } catch (e) {
+              worker.postMessage({
+                type: 'recall_memory_reply',
+                replyId: msg.replyId,
+                success: false,
+                results: [],
+                error: (e as Error).message,
+              })
+            }
+          })()
+          break
+        }
+
         case 'context_usage':
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
             chatId: params.chatId,
@@ -1629,10 +1929,12 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     }
     activeRunMeta.delete(chatId)
     chatQueues.delete(chatId)
+    cancelIdleExtraction(chatId)
     deleteChat(chatId)
     clearFileCache(chatId)
     agentManager.clearChat(chatId)
     ptyManager.killByChat(chatId)
+    resetSessionCost(chatId)
   })
   ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
   ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
@@ -1716,6 +2018,9 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     mode?: ChatMode
   }) => {
     const win = mainWindow.getWindow()
+
+    // Фаза 3: сбрасываем idle-extraction timer — пользователь снова активен.
+    if (!params.incognito) cancelIdleExtraction(params.chatId)
 
     // Читаем режим из БД — надёжнее чем доверять клиенту (защита от рассинхрона)
     const chatMode: ChatMode = params.mode ?? (() => { try { return getChatMode(params.chatId) } catch { return 'code' } })()
@@ -2316,6 +2621,26 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
       // авто-компакции). Это нужно для будущего system prompt AI.
       if (result.summaryContent) {
         setChatSummary(chatId, result.summaryContent)
+
+        // Фаза 3: compaction-триггер памяти — sync summary → memory_items
+        // (episodic). Fire-and-forget — не блокируем /compact.
+        ;(async () => {
+          try {
+            let compactionProjectId: string | undefined
+            const wctx = (() => { try { return getChatWorkdirContext(chatId) } catch { return null } })()
+            if (wctx?.workdir) {
+              const found = getAllProjects().find(p => p.workdir === wctx.workdir)
+              compactionProjectId = found?.id
+            }
+            await onCompactionTrigger(store, {
+              chatId,
+              summary: result.summaryContent,
+              projectId: compactionProjectId,
+            })
+          } catch (e) {
+            log('[chat:compact] memory extraction failed: %s', (e as Error).message)
+          }
+        })()
       }
 
       // Видимый разделитель. createdAt = Date.now() — простой append в

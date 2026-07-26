@@ -2,23 +2,10 @@ import { v4 as uuid } from 'uuid'
 import { getDB } from './handle'
 
 // === MEMORY ===
-
-export function saveMemory(category: string, key: string, value: string): void {
-  const db = getDB()
-  const now = Date.now()
-  const existing = db.prepare('SELECT id FROM memory WHERE category = ? AND key = ?').get(category, key)
-  if (existing) {
-    db.prepare('UPDATE memory SET value = ?, updated_at = ? WHERE category = ? AND key = ?')
-      .run(value, now, category, key)
-  } else {
-    db.prepare('INSERT INTO memory (id, category, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(uuid(), category, key, value, now, now)
-  }
-}
-
-export function getAllMemory(): Array<{ category: string; key: string; value: string }> {
-  return getDB().prepare('SELECT category, key, value FROM memory ORDER BY category, updated_at DESC').all() as Array<{ category: string; key: string; value: string }>
-}
+// ВНИМАНИЕ: saveMemory/getAllMemory удалены — были мёртвым кодом (0 callers).
+// Унифицированная память теперь живёт в memory_items (см. MemoryStore.ts).
+// Старая `memory` table оставлена в схеме до Фазы 2 (откат), данные
+// мигрированы в memory_items функцией migrateLegacyMemoryToMemoryItems.
 
 // === CLIPBOARD HISTORY ===
 
@@ -60,6 +47,55 @@ export function logAgentAction(action: {
     action.error ?? null,
     Date.now()
   )
+}
+
+export interface AgentLogEntry {
+  id: string
+  chatId: string | null
+  type: string
+  tool: string | null
+  args: unknown
+  result: string | null
+  error: string | null
+  createdAt: number
+}
+
+/**
+ * Недавние agent_logs — сырьё для outcome-extraction (Фаза 4).
+ * Возвращает записи по chatId (или все если chatId не задан), отсортированные
+ * от новыхых к старым, с лимитом. args парсится из JSON.
+ */
+export function getRecentAgentLogs(chatId?: string, limit = 50): AgentLogEntry[] {
+  const db = getDB()
+  const rows = chatId
+    ? db.prepare('SELECT * FROM agent_logs WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?').all(chatId, limit) as Array<Record<string, unknown>>
+    : db.prepare('SELECT * FROM agent_logs ORDER BY created_at DESC LIMIT ?').all(limit) as Array<Record<string, unknown>>
+  return rows.map(r => {
+    let args: unknown = null
+    if (r.args && typeof r.args === 'string') {
+      try { args = JSON.parse(r.args as string) } catch { /* skip */ }
+    }
+    return {
+      id: r.id as string,
+      chatId: (r.chat_id as string | null) ?? null,
+      type: r.type as string,
+      tool: (r.tool as string | null) ?? null,
+      args,
+      result: (r.result as string | null) ?? null,
+      error: (r.error as string | null) ?? null,
+      createdAt: r.created_at as number,
+    }
+  })
+}
+
+/**
+ * Удаляет agent_logs старше maxAgeDays. Вызывать периодически чтобы
+ * таблица не росла бесконечно. Возвращает кол-во удалённых записей.
+ */
+export function pruneOldAgentLogs(maxAgeDays = 14): number {
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000
+  const result = getDB().prepare('DELETE FROM agent_logs WHERE created_at < ?').run(cutoff)
+  return result.changes
 }
 
 // === WORKING MEMORY ===
