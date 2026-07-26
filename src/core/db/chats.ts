@@ -1,6 +1,7 @@
 import type { Chat, Message, ChatMode } from '../../shared/types'
 import { v4 as uuid } from 'uuid'
 import { getDB } from './handle'
+import { stripPlanTags } from '../../shared/planParser'
 
 // === CHATS ===
 
@@ -132,17 +133,20 @@ export function exportChat(id: string, format: 'txt' | 'md'): string {
   const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(id) as { title: string } | undefined
   if (!chat) return ''
   const msgs = db.prepare('SELECT role, content, created_at FROM messages WHERE chat_id = ? ORDER BY created_at ASC').all(id) as { role: string; content: string; created_at: number }[]
+  // Стрипаем <plan>-теги при экспорте — план сохраняется в отдельный .md-файл
+  // (через savePlanToFile), а в экспорте чата должен быть чистый markdown.
+  const cleanContent = (c: string) => (format === 'md' ? stripPlanTags(c) : stripPlanTags(c))
   if (format === 'md') {
     return `# ${chat.title}\n\n` + msgs.map(m => {
       const time = new Date(m.created_at).toLocaleString('ru')
       const role = m.role === 'user' ? '**Вы**' : '**Ассистент**'
-      return `${role} _(${time})_\n\n${m.content}`
+      return `${role} _(${time})_\n\n${cleanContent(m.content)}`
     }).join('\n\n---\n\n')
   }
   return msgs.map(m => {
     const time = new Date(m.created_at).toLocaleString('ru')
     const role = m.role === 'user' ? 'Вы' : 'Ассистент'
-    return `[${time}] ${role}:\n${m.content}`
+    return `[${time}] ${role}:\n${cleanContent(m.content)}`
   }).join('\n\n')
 }
 

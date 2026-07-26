@@ -390,8 +390,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               sessionRequests: sess?.requests ?? 0,
             })
           },
-          onPlanSaved: (plan) => {
-            send({ type: 'plan_saved', chatId, msgId, plan })
+          onQuestion: (questions) => {
+            return new Promise((resolve) => {
+              const reqId = `question-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(`question-reply-${reqId}`, (reply) => {
+                const answers = (reply.answers as import('../shared/types').QuestionAnswer[]) ?? []
+                resolve(answers)
+              })
+              send({ type: 'question', chatId, msgId, reqId, questions })
+            })
           },
           onStatus: (text) => {
             send({ type: 'agent_status', chatId, msgId, text })

@@ -1,5 +1,4 @@
 import type { McpToolRuntime } from '../../shared/types'
-import { PLAN_TOOL_SCHEMA } from './plan'
 
 export const TOOL_SCHEMAS = [
   {
@@ -404,6 +403,76 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  // ── ask_user: задать уточняющие вопросы пользователю ──
+  // Доступен ВСЕГДА (не только в planning-режиме). AI вызывает когда вводных
+  // мало для качественного ответа — scope задачи, ограничения, приоритеты,
+  // выбор из альтернатив. Round-trip через UI-панель над инпутом.
+  {
+    type: 'function' as const,
+    function: {
+      name: 'ask_user',
+      description: 'Задать уточняющие вопросы пользователю и получить ответы. Используй когда вводных недостаточно для качественного ответа: неясен scope задачи, нужны ограничения/приоритеты, выбор из альтернатив. Поддерживает разные типы вопросов (text/choice/yesno), условную логику (showIf), предзаполнение. Можно задать до 5 вопросов — пользователь отвечает по одному (wizard). НЕ злоупотребляй: если можешь предположить — делай, не спрашивай. После ответов продолжай работу с учётом полученной информации.',
+      parameters: {
+        type: 'object',
+        properties: {
+          questions: {
+            type: 'array',
+            description: 'Список вопросов (1-5 штук). Пользователь отвечает по одному (wizard).',
+            minItems: 1,
+            maxItems: 5,
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'ID вопроса. Используется для маппинга ответа и для showIf (условий других вопросов).' },
+                question: { type: 'string', description: 'Текст вопроса пользователю.' },
+                header: { type: 'string', description: 'Короткий заголовок (необязательно).' },
+                type: {
+                  type: 'string',
+                  enum: ['text', 'choice', 'yesno'],
+                  description: 'Тип вопроса. text (default) — свободный ответ. choice — выбор из options (radio/checkbox). yesno — Да/Нет кнопки. Если не указан, авто-detect: есть options → choice, иначе text.',
+                },
+                options: {
+                  type: 'array',
+                  description: 'Готовые варианты ответа (для type=choice).',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      value: { type: 'string', description: 'Значение опции (для маппинга).' },
+                      label: { type: 'string', description: 'Отображаемый текст опции.' },
+                      description: { type: 'string', description: 'Пояснение опции (необязательно).' },
+                    },
+                    required: ['value', 'label'],
+                  },
+                },
+                multiple: { type: 'boolean', description: 'Разрешить множественный выбор (только для type=choice).' },
+                allowCustom: { type: 'boolean', description: 'Разрешить свой ответ (default true). Для yesno — игнорируется.' },
+                required: { type: 'boolean', description: 'Вопрос обязательный (нельзя пропустить).' },
+                defaultValue: { type: 'string', description: 'Предзаполненный ответ — модель предлагает предположение, юзер правит. Ускоряет ответ.' },
+                placeholder: { type: 'string', description: 'Кастомный placeholder для текстового поля (напр. "порт 3000").' },
+                helpText: { type: 'string', description: 'Пояснение под вопросом (раскрывающийся блок). Для доп. контекста.' },
+                multiline: { type: 'boolean', description: 'Многострочное поле 5+ строк (для описательных ответов).' },
+                skipLabel: { type: 'string', description: 'Кастомный текст кнопки пропуска (default "Пропустить"). Напр. "Не знаю", "Решай сам".' },
+                showIf: {
+                  type: 'object',
+                  description: 'Условие показа — вопрос скрыт пока ответ на questionId не равен equals. Для ветвления: не спрашивать про CI если ответ на "нужны тесты" = "no".',
+                  properties: {
+                    questionId: { type: 'string', description: 'ID вопроса, ответ которого проверяется.' },
+                    equals: {
+                      type: 'string',
+                      description: 'Значение, при котором этот вопрос показывается. Для yesno — "true"/"false".',
+                    },
+                  },
+                  required: ['questionId', 'equals'],
+                },
+              },
+              required: ['question'],
+            },
+          },
+        },
+        required: ['questions'],
+      },
+    },
+  },
 ]
 
 // Динамический набор тулов — добавляем по режиму
@@ -435,21 +504,21 @@ export function getToolSchemas(options: {
   } = options
 
   // Work-режим удалён — всегда полный Code-набор инструментов.
+  // В planning-режиме — read-only + research: доступны все тулы исследования
+  // (get_fast_context, analyze_project, search_code, read_file, …), тул
+  // уточняющих вопросов ask_user, но ЗАПРЕЩЕНЫ правки (edit/write/run_command/
+  // revert). Планировщик исследует код → уточняет у пользователя → пишет план
+  // прямо в ответе, обёрнутый в <plan title="..." summary="...">…</plan>.
   const names: string[] = [
     'read_file',
     'read_files',
     'find_files',
     'search_code',
     'list_directory',
-    'edit_file',
-    'multi_edit_file',
-    'write_file',
-    'run_command',
-    'get_diagnostics',
     'think',
     'update_working_memory',
-    'revert_last_change',
     'update_todo',
+    'ask_user',
     // Веб-поиск, HTTP и суб-агенты — всегда доступны агенту, модель сама решает
     // когда их использовать.
     'search_web',
@@ -460,10 +529,23 @@ export function getToolSchemas(options: {
     'get_skill',
   ]
 
-  if (!planningMode) {
+  if (planningMode) {
+    // Planning: исследовательские тулы, read-only проверки, без правок.
+    names.push('get_diagnostics')
+    names.push('analyze_project')
+    names.push('get_fast_context')
+  } else {
+    // Обычный режим: правки файлов + команды + верификация.
+    names.push('edit_file')
+    names.push('multi_edit_file')
+    names.push('write_file')
+    names.push('run_command')
+    names.push('get_diagnostics')
+    names.push('revert_last_change')
     names.push('analyze_project')
     names.push('get_fast_context')
   }
+
   if (imageMode) names.push('generate_image')
   // multiAgentMode/webMode больше не нужны для включения — оставлены как
   // параметры функции для совместимости с вызывающим кодом.
@@ -471,7 +553,6 @@ export function getToolSchemas(options: {
   void multiAgentMode
 
   const schemas = pickTools(names)
-  if (planningMode) schemas.push(PLAN_TOOL_SCHEMA as any)
 
   // MCP-тулы — конвертируем в OpenAI-function-схему и аппендим.
   // Имя: mcp__{serverName}__{toolName}, описание из MCP-сервера.

@@ -146,3 +146,37 @@
   border-color: var(--accent);
   font-size: 11px;
 }
+
+/* ── Streaming state — план ещё пишется моделью ── */
+.plan-card--streaming {
+  border-style: dashed;
+  border-color: var(--accent);
+  position: relative;
+}
+
+.plan-card--streaming::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  pointer-events: none;
+  box-shadow: 0 0 0 0 var(--accent);
+  animation: plan-card-pulse 1.8s ease-out infinite;
+  opacity: 0.35;
+}
+
+@keyframes plan-card-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent); opacity: 0.35; }
+  70%  { box-shadow: 0 0 0 6px transparent; opacity: 0; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 0; }
+}
+
+.plan-card-streaming-indicator {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--accent);
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}

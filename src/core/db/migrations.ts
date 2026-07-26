@@ -241,6 +241,38 @@ export function runMigrations(db: Database.Database): void {
       created_at    INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_fcih_project ON fast_context_index_history(project_id, created_at DESC);
+
+    -- === Advanced memory: унифицированная таблица памяти ===
+    -- 4 типа памяти (kind): user_fact | project_decision | conversation | agent_outcome
+    -- 3 scope: global (сквозная) | project (привязана к проекту) | chat (только чат)
+    -- embedding: 384-dim Float32 BLOB (TF-IDF default, neural opt-in)
+    -- importance + access_count + last_accessed_at: для recency-boost и forget-policy
+    -- pinned: 1 = защищено от decay-prune (user_explicit source auto-pinned)
+    CREATE TABLE IF NOT EXISTS memory_items (
+      id               TEXT PRIMARY KEY,
+      scope            TEXT NOT NULL,        -- 'global' | 'project' | 'chat'
+      project_id       TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      chat_id          TEXT REFERENCES chats(id) ON DELETE CASCADE,
+      kind             TEXT NOT NULL,        -- 'user_fact' | 'project_decision' | 'conversation' | 'agent_outcome'
+      category         TEXT,                 -- 'personal'|'work'|'preferences'|'projects'|'facts' (для user_fact)
+      key              TEXT,                 -- dedup-ключ ('name','preferred_stack')
+      content          TEXT NOT NULL,
+      source           TEXT NOT NULL,        -- 'user_explicit'|'agent_tool'|'auto_extract'|'compaction'|'agent_log'
+      confidence       REAL NOT NULL DEFAULT 1.0,
+      importance       REAL NOT NULL DEFAULT 0.5,
+      access_count     INTEGER NOT NULL DEFAULT 0,
+      last_accessed_at INTEGER,
+      pinned           INTEGER NOT NULL DEFAULT 0,
+      embedding        BLOB,
+      metadata         TEXT,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mi_scope ON memory_items(scope);
+    CREATE INDEX IF NOT EXISTS idx_mi_kind ON memory_items(kind);
+    CREATE INDEX IF NOT EXISTS idx_mi_project ON memory_items(project_id);
+    CREATE INDEX IF NOT EXISTS idx_mi_dedup ON memory_items(scope, key);
+    CREATE INDEX IF NOT EXISTS idx_mi_access ON memory_items(last_accessed_at);
   `)
 
   // Автомиграция: добавляем relevance_boost колонку для существующих БД.
@@ -259,6 +291,11 @@ export function runMigrations(db: Database.Database): void {
   // и привязываем чаты к нему. workdir на chats остаётся как денормализованный
   // кэш для обратной совместимости, но источник правды теперь — projects.
   migrateChatsToProjects(db)
+
+  // Миграция памяти: переносим старую memory table (key-value факты) в
+  // новую унифицированную memory_items. Идемпотентна — повторный запуск
+  // не дублирует (проверка по metadata->legacy_id).
+  migrateLegacyMemoryToMemoryItems(db)
 }
 
 /**
@@ -282,4 +319,57 @@ function migrateChatsToProjects(db: Database.Database): void {
     }
     db.prepare(`UPDATE chats SET project_id = ? WHERE workdir = ? AND project_id IS NULL`).run(projectId, workdir)
   }
+}
+
+/**
+ * Переносит старую memory table (key-value: category/key/value) в новую
+ * унифицированную memory_items. Идемпотентна — повторный запуск не дублирует
+ * (проверяем по metadata->legacy_id, чтобы не мигрировать дважды).
+ *
+ * Старая memory table оставлена в схеме до Фазы 2 (не дропаем сразу, чтобы
+ * можно было откатиться). В Фазе 2, когда MemoryEngine.ts будет удалён и
+ * все потребители перейдут на MemoryStore, можно будет DROP TABLE memory.
+ *
+ * Embedding НЕ считается при миграции (TF-IDF требует IDF-кэш, который ещё
+ * не построен). MemoryStore.save() пересчитает embedding при первом update,
+ * либо отдельная команда реиндекса в UI. Поиск работает и без embeddings
+ * (fallback на LIKE по content), просто менее точно.
+ */
+function migrateLegacyMemoryToMemoryItems(db: Database.Database): void {
+  // Проверяем, есть ли что мигрировать
+  const legacyExists = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='memory'`
+  ).get() as { name: string } | undefined
+  if (!legacyExists) return
+
+  const legacyRows = db.prepare(
+    `SELECT id, category, key, value, created_at, updated_at FROM memory`
+  ).all() as Array<{ id: string; category: string; key: string; value: string; created_at: number; updated_at: number }>
+
+  if (legacyRows.length === 0) return
+
+  // Проверяем, не мигрировали ли уже (по metadata->legacy_id)
+  // Простой подход: если в memory_items есть хоть одна запись с source='legacy_migration',
+  // считаем что миграция уже была.
+  const alreadyMigrated = db.prepare(
+    `SELECT 1 FROM memory_items WHERE source = 'legacy_migration' LIMIT 1`
+  ).get() as { 1: number } | undefined
+  if (alreadyMigrated) return
+
+  const insert = db.prepare(
+    `INSERT INTO memory_items (id, scope, project_id, chat_id, kind, category, key, content, source, confidence, importance, access_count, last_accessed_at, pinned, embedding, metadata, created_at, updated_at)
+     VALUES (?, ?, NULL, NULL, 'user_fact', ?, ?, ?, 'legacy_migration', 1.0, 0.6, 0, NULL, 1, NULL, ?, ?, ?)`
+  )
+
+  const migrateAll = db.transaction((rows: typeof legacyRows) => {
+    for (const row of rows) {
+      // legacy_id в metadata для идемпотентности
+      const metadata = JSON.stringify({ legacy_id: row.id })
+      // Новый UUID, scope='global' (старая память не была привязана к проектам)
+      insert.run(uuid(), 'global', row.category || 'facts', row.key, row.value, metadata, row.created_at, row.updated_at)
+    }
+  })
+  migrateAll(legacyRows)
+
+  console.log(`[migrations] memory_items: migrated ${legacyRows.length} rows from legacy memory table`)
 }

@@ -1,0 +1,598 @@
+/* ── QuestionPanel — stepper уточняющих вопросов над инпутом ────────────────
+   Появляется когда AI вызывает ask_user. Один вопрос за раз (wizard),
+   прогресс-бар сверху, навигация Назад/Далее/Отправить. Консистентно с
+   дизайн-системой проекта: CSS-переменные, --radius-*, --overlay-*,
+   glass-эффект, --shadow-lg. */
+
+.qp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 16px 120px;
+  /* Лёгкое затемнение как в AgentConfirmDialog — фокус на панели */
+  background: radial-gradient(
+    ellipse at bottom,
+    rgba(var(--shadow-rgb, 0, 0, 0), 0.35) 0%,
+    rgba(var(--shadow-rgb, 0, 0, 0), 0.15) 40%,
+    transparent 70%
+  );
+}
+
+.qp-panel {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100vh - 180px);
+  display: flex;
+  flex-direction: column;
+  /* Liquid glass — steel/blur эффект как в ExtensionsPopover/ChatInput */
+  background: var(--glass-bg, rgba(18, 18, 28, 0.82));
+  backdrop-filter: blur(32px) saturate(180%);
+  -webkit-backdrop-filter: blur(32px) saturate(180%);
+  border: 1px solid var(--glass-border, var(--border-strong, var(--border)));
+  border-radius: var(--radius-lg, 18px);
+  box-shadow:
+    0 32px 80px -16px rgba(var(--shadow-rgb, 0, 0, 0), 0.6),
+    0 8px 24px -8px rgba(var(--shadow-rgb, 0, 0, 0), 0.4),
+    0 0 0 1px var(--overlay-1, rgba(255, 255, 255, 0.02)) inset,
+    0 1px 0 var(--glass-highlight-1, rgba(255, 255, 255, 0.08)) inset;
+  overflow: hidden;
+  position: relative;
+  will-change: transform, opacity;
+}
+
+/* Диагональный highlight-градиент поверх стекла (как .liquid-glass::before) */
+.qp-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    var(--glass-highlight-1, rgba(255, 255, 255, 0.08)) 0%,
+    transparent 45%,
+    transparent 55%,
+    var(--glass-highlight-2, rgba(255, 255, 255, 0.03)) 100%
+  );
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Дети поверх highlight-слоя */
+.qp-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Progress bar (тонкая полоска сверху) ── */
+.qp-progress-track {
+  height: 3px;
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.qp-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--accent, #e8e8ec) 70%, transparent),
+    var(--accent, #e8e8ec));
+  border-radius: 0 2px 2px 0;
+  box-shadow:
+    0 0 8px color-mix(in srgb, var(--accent, #e8e8ec) 60%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent, #e8e8ec) 30%, transparent);
+}
+
+/* ── Header ── */
+.qp-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: linear-gradient(180deg,
+    var(--glass-highlight-1, rgba(255, 255, 255, 0.04)),
+    transparent 100%);
+}
+
+.qp-header-icon {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm, 8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent, #e8e8ec) 14%, transparent);
+  color: var(--accent, #e8e8ec);
+  border: 1px solid color-mix(in srgb, var(--accent, #e8e8ec) 24%, transparent);
+  box-shadow:
+    0 0 12px color-mix(in srgb, var(--accent, #e8e8ec) 20%, transparent),
+    0 1px 0 var(--glass-highlight-1, rgba(255, 255, 255, 0.06)) inset;
+}
+
+.qp-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.qp-header-title {
+  font-size: var(--font-size-md, 14px);
+  font-weight: 600;
+  color: var(--text-primary, #e8e8ec);
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.qp-header-sub {
+  font-size: var(--font-size-xs, 11px);
+  color: var(--text-muted, #5c5c68);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.qp-close {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm, 8px);
+  color: var(--text-muted, #5c5c68);
+  cursor: pointer;
+  transition: background var(--transition, 200ms), color var(--transition, 200ms);
+}
+
+.qp-close:hover {
+  background: var(--overlay-5, rgba(255, 255, 255, 0.12));
+  color: var(--text-primary, #e8e8ec);
+}
+
+/* ── Body (контейнер одного вопроса) ── */
+.qp-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 18px 8px;
+  min-height: 120px;
+  position: relative;
+}
+
+.qp-body::-webkit-scrollbar {
+  width: 8px;
+}
+.qp-body::-webkit-scrollbar-thumb {
+  background: var(--overlay-4, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-pill, 999px);
+}
+.qp-body::-webkit-scrollbar-thumb:hover {
+  background: var(--overlay-5, rgba(255, 255, 255, 0.12));
+}
+
+.qp-question {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.qp-q-header {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.qp-q-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent, #e8e8ec);
+  opacity: 0.7;
+}
+
+.qp-q-text {
+  font-size: var(--font-size-md, 14px);
+  line-height: 1.5;
+  color: var(--text-primary, #e8e8ec);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+
+.qp-required {
+  color: #f87171;
+  margin-left: 4px;
+  font-weight: 700;
+}
+
+/* ── Options (chips) ── */
+.qp-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qp-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  padding: 11px 13px;
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-md, 12px);
+  color: var(--text-primary, #e8e8ec);
+  cursor: pointer;
+  transition: all var(--transition, 200ms);
+  font-family: inherit;
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.qp-option:hover {
+  background: color-mix(in srgb, var(--accent, #e8e8ec) 7%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #e8e8ec) 28%, var(--border, transparent));
+  transform: translateY(-1px);
+}
+
+.qp-option--selected {
+  background: color-mix(in srgb, var(--accent, #e8e8ec) 13%, transparent);
+  border-color: var(--accent, #e8e8ec);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent, #e8e8ec) 30%, transparent) inset,
+    0 4px 12px -4px color-mix(in srgb, var(--accent, #e8e8ec) 40%, transparent);
+}
+
+.qp-option--selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent, #e8e8ec);
+}
+
+.qp-option--selected .qp-option-mark {
+  color: var(--accent, #e8e8ec);
+}
+
+.qp-option-mark {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #5c5c68);
+  transition: color var(--transition, 200ms);
+}
+
+.qp-option-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.qp-option-label {
+  font-size: var(--font-size-sm, 12px);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-primary, #e8e8ec);
+}
+
+.qp-option-desc {
+  font-size: var(--font-size-xs, 11px);
+  color: var(--text-secondary, #9a9aa5);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+/* ── Custom answer textarea ── */
+.qp-input {
+  width: 100%;
+  min-height: 44px;
+  max-height: 140px;
+  resize: none;
+  padding: 11px 13px;
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-md, 12px);
+  color: var(--text-primary, #e8e8ec);
+  font-family: inherit;
+  font-size: var(--font-size-sm, 12px);
+  line-height: 1.5;
+  transition: border-color var(--transition, 200ms), background var(--transition, 200ms), box-shadow var(--transition, 200ms);
+  outline: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.qp-input--multiline {
+  min-height: 110px;
+  max-height: 240px;
+  resize: vertical;
+  font-size: var(--font-size-md, 14px);
+  line-height: 1.6;
+}
+
+.qp-input::placeholder {
+  color: var(--text-muted, #5c5c68);
+}
+
+.qp-input:focus {
+  border-color: var(--accent, #e8e8ec);
+  background: color-mix(in srgb, var(--accent, #e8e8ec) 4%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #e8e8ec) 12%, transparent);
+}
+
+/* ── Help text (раскрывающийся блок) ── */
+.qp-help-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #5c5c68);
+  font-family: inherit;
+  font-size: var(--font-size-xs, 11px);
+  cursor: pointer;
+  padding: 2px 0;
+  transition: color var(--transition, 200ms);
+  align-self: flex-start;
+}
+
+.qp-help-toggle:hover {
+  color: var(--text-secondary, #9a9aa5);
+}
+
+.qp-help-text {
+  overflow: hidden;
+  padding: 10px 13px;
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 8px);
+  font-size: var(--font-size-xs, 11px);
+  line-height: 1.5;
+  color: var(--text-secondary, #9a9aa5);
+  border-left: 2px solid var(--accent, #e8e8ec);
+}
+
+/* ── Yes/No buttons ── */
+.qp-yesno {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.qp-yesno-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 22px 16px;
+  border-radius: var(--radius-md, 14px);
+  font-family: inherit;
+  font-size: var(--font-size-md, 14px);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition, 200ms);
+  border: 1.5px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  color: var(--text-secondary, #9a9aa5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  position: relative;
+  overflow: hidden;
+}
+
+.qp-yesno-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, var(--glass-highlight-1, rgba(255,255,255,0.04)), transparent 60%);
+  pointer-events: none;
+}
+
+.qp-yesno-btn--yes.qp-yesno-btn--active {
+  background: color-mix(in srgb, #4ade80 18%, transparent);
+  border-color: #4ade80;
+  color: #4ade80;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, #4ade80 30%, transparent) inset,
+    0 8px 24px -8px color-mix(in srgb, #4ade80 50%, transparent);
+}
+
+.qp-yesno-btn--no.qp-yesno-btn--active {
+  background: color-mix(in srgb, #f87171 18%, transparent);
+  border-color: #f87171;
+  color: #f87171;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, #f87171 30%, transparent) inset,
+    0 8px 24px -8px color-mix(in srgb, #f87171 50%, transparent);
+}
+
+.qp-yesno-btn:hover {
+  background: var(--overlay-4, rgba(255, 255, 255, 0.08));
+  transform: translateY(-1px);
+}
+
+.qp-yesno-btn--yes:hover:not(.qp-yesno-btn--active) {
+  border-color: color-mix(in srgb, #4ade80 40%, transparent);
+  color: color-mix(in srgb, #4ade80 60%, var(--text-secondary, #9a9aa5));
+  box-shadow: 0 4px 12px -4px color-mix(in srgb, #4ade80 30%, transparent);
+}
+
+.qp-yesno-btn--no:hover:not(.qp-yesno-btn--active) {
+  border-color: color-mix(in srgb, #f87171 40%, transparent);
+  color: color-mix(in srgb, #f87171 60%, var(--text-secondary, #9a9aa5));
+  box-shadow: 0 4px 12px -4px color-mix(in srgb, #f87171 30%, transparent);
+}
+
+/* ── Footer (навигация stepper) ── */
+.qp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: linear-gradient(0deg,
+    var(--glass-highlight-2, rgba(255, 255, 255, 0.02)),
+    transparent 100%);
+  flex-shrink: 0;
+}
+
+.qp-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.qp-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.qp-hint {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-muted, #5c5c68);
+}
+
+.qp-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-family: inherit;
+  background: var(--overlay-3, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 5px;
+  color: var(--text-secondary, #9a9aa5);
+  line-height: 1;
+  font-weight: 500;
+}
+
+/* ── Buttons ── */
+.qp-btn {
+  font-family: inherit;
+  font-size: var(--font-size-sm, 12px);
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  transition: all var(--transition, 200ms);
+  border: 1px solid transparent;
+  letter-spacing: -0.005em;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.qp-btn--ghost {
+  background: transparent;
+  border-color: var(--border, rgba(255, 255, 255, 0.1));
+  color: var(--text-secondary, #9a9aa5);
+}
+
+.qp-btn--ghost:hover {
+  background: var(--overlay-5, rgba(255, 255, 255, 0.12));
+  color: var(--text-primary, #e8e8ec);
+  border-color: var(--border-strong, var(--border));
+}
+
+.qp-btn--link {
+  border-color: transparent;
+  color: var(--text-muted, #5c5c68);
+  padding: 8px 10px;
+}
+
+.qp-btn--link:hover {
+  color: var(--text-secondary, #9a9aa5);
+  background: transparent;
+  border-color: transparent;
+}
+
+.qp-btn--primary {
+  background: var(--accent, #e8e8ec);
+  color: var(--on-accent-strong, #1a1a20);
+  border-color: var(--accent, #e8e8ec);
+  font-weight: 600;
+  box-shadow:
+    0 4px 12px -4px color-mix(in srgb, var(--accent, #e8e8ec) 50%, transparent),
+    0 1px 0 color-mix(in srgb, #ffffff 30%, transparent) inset;
+}
+
+.qp-btn--primary:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 16px -4px color-mix(in srgb, var(--accent, #e8e8ec) 60%, transparent),
+    0 1px 0 color-mix(in srgb, #ffffff 30%, transparent) inset;
+}
+
+.qp-btn--submit {
+  background: color-mix(in srgb, #4ade80 85%, var(--accent, #e8e8ec));
+  border-color: #4ade80;
+  color: #0a1f10;
+  box-shadow:
+    0 4px 12px -4px color-mix(in srgb, #4ade80 50%, transparent),
+    0 1px 0 color-mix(in srgb, #ffffff 30%, transparent) inset;
+}
+
+.qp-btn--submit:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 16px -4px color-mix(in srgb, #4ade80 60%, transparent),
+    0 1px 0 color-mix(in srgb, #ffffff 30%, transparent) inset;
+}
+
+.qp-btn--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Mobile / narrow ── */
+@media (max-width: 600px) {
+  .qp-overlay {
+    padding: 0 8px 100px;
+  }
+  .qp-panel {
+    max-width: 100%;
+    border-radius: var(--radius-md, 12px);
+  }
+  .qp-body {
+    padding: 14px 14px 6px;
+  }
+  .qp-footer {
+    padding: 10px 12px;
+  }
+  .qp-hint {
+    display: none;
+  }
+  .qp-btn {
+    padding: 9px 12px;
+  }
+}

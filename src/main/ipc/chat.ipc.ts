@@ -20,7 +20,8 @@ import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory }
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
-import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA } from '../../core/tools'
+import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
+import { extractFinalPlan } from '../../shared/planParser'
 import { IPC_EVENTS } from '../../shared/constants'
 import { v4 as uuid } from 'uuid'
 import {
@@ -736,8 +737,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       })
     }
 
-    let pendingPlan: { title: string; content: string; summary: string; filePath: string } | undefined
-
     // Request-scoped состояние этого запуска. Каждый chat:send имеет свой
     // собственный экземпляр — буферы не пересекаются между запусками.
     const run: ActiveRun = {
@@ -782,6 +781,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Сбрасываем meta активного запуска — UI очереди уберёт Running-карточку.
       activeRunMeta.delete(params.chatId)
 
+      // Planning-режим: извлекаем <plan>-блок из ответа и сохраняем в файл.
+      // Тул save_plan удалён — модель пишет план прямо в ответе, обёрнутый в
+      // <plan title="..." summary="...">…</plan>. Здесь парсим и пишем .md.
+      let computedPlan: { title: string; content: string; summary: string; filePath: string } | undefined
+      if (params.planningMode && fullText) {
+        const extracted = extractFinalPlan(fullText)
+        if (extracted) {
+          try {
+            const filePath = savePlanToFileSync(extracted)
+            computedPlan = { ...extracted, filePath }
+          } catch (e) {
+            log('[chat.ipc] savePlanToFile упал: %s', (e as Error).message)
+            computedPlan = { ...extracted, filePath: '' }
+          }
+        }
+      }
+
       const todoArr = (todo as Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> | undefined)
       const assistantMsg: Message & { iterations?: unknown } = {
         id: assistantMsgId,
@@ -796,7 +812,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         iterations: iters && iters.length > 0 ? iters as never : undefined,
         thinking: thinkingText || undefined,
         thinkingMs,
-        planData: pendingPlan,
+        planData: computedPlan,
         todo: todoArr && todoArr.length > 0 ? todoArr : undefined,
       }
 
@@ -1033,6 +1049,21 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             dangerLevel: msg.dangerLevel,
             dangerReason: msg.dangerReason,
             previewDiff: msg.previewDiff,
+          })
+          break
+        }
+
+        case 'question': {
+          // ask_user-тул: AI задаёт уточняющие вопросы пользователю.
+          // Round-trip: worker → main (здесь) → renderer (QuestionPanel) →
+          // main (ipcMain.once) → worker (question_reply).
+          const reqId = msg.reqId as string
+          const questions = msg.questions as import('../../shared/types').QuestionSpec[]
+          ipcMain.once(`agent:question:response:${reqId}`, (_e, answers: import('../../shared/types').QuestionAnswer[]) => {
+            worker.postMessage({ type: 'question_reply', replyId: `question-reply-${reqId}`, answers })
+          })
+          win?.webContents.send('agent:question', {
+            reqId, questions, chatId: msg.chatId, msgId: msg.msgId,
           })
           break
         }
@@ -1381,10 +1412,6 @@ ${subModeOutro}`,
             run.bufferedTodo,
             (msg.agentSummary as { fileSnapshots?: Array<{ path: string; contentBefore: string | null }> } | undefined)?.fileSnapshots,
           )
-          break
-
-        case 'plan_saved':
-          pendingPlan = msg.plan as { title: string; content: string; summary: string; filePath: string }
           break
 
         case 'error': {

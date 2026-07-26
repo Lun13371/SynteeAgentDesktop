@@ -8,7 +8,9 @@ interface PlanCardProps {
   title: string
   summary: string
   content: string
-  filePath: string
+  filePath?: string
+  /** true — план ещё стримится (нет </plan>). Скрывает кнопки действий, показывает shimmer. */
+  partial?: boolean
 }
 
 const IconPlan = () => (
@@ -46,12 +48,15 @@ const IconChevronUp = () => (
   </svg>
 )
 
-export default function PlanCard({ title, summary, content, filePath }: PlanCardProps) {
-  const [expanded, setExpanded] = useState(false)
+export default function PlanCard({ title, summary, content, filePath, partial }: PlanCardProps) {
+  // Во время стрима план развёрнут (видно как пишется). После — тоже развёрнут.
+  // Сворачивает только пользователь. partial не в зависимостях — начальное
+  // состояние берётся из пропса при первом монтировании.
+  const [expanded, setExpanded] = useState(true)
   const [copied, setCopied] = useState(false)
 
   const handleOpen = () => {
-    window.syntee.shell?.openPath(filePath)
+    if (filePath) window.syntee.shell?.openPath(filePath)
   }
 
   const handleCopy = () => {
@@ -62,7 +67,7 @@ export default function PlanCard({ title, summary, content, filePath }: PlanCard
 
   return (
     <motion.div
-      className="plan-card"
+      className={`plan-card${partial ? ' plan-card--streaming' : ''}`}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
@@ -72,8 +77,8 @@ export default function PlanCard({ title, summary, content, filePath }: PlanCard
           <IconPlan />
         </div>
         <div className="plan-card-meta">
-          <div className="plan-card-title">{title}</div>
-          <div className="plan-card-summary">{summary}</div>
+          <div className="plan-card-title">{title || 'План'}</div>
+          <div className="plan-card-summary">{summary || (partial ? 'Составляю план…' : '')}</div>
         </div>
       </div>
 
@@ -88,6 +93,16 @@ export default function PlanCard({ title, summary, content, filePath }: PlanCard
           >
             <div className="plan-card-markdown">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              {partial && (
+                <div className="plan-card-streaming-indicator">
+                  <motion.span
+                    animate={{ opacity: [0.3, 1, 0.3] }}
+                    transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+                  >
+                    пишу план…
+                  </motion.span>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -98,16 +113,20 @@ export default function PlanCard({ title, summary, content, filePath }: PlanCard
           {expanded ? <IconChevronUp /> : <IconChevronDown />}
           {expanded ? 'Свернуть' : 'Показать план'}
         </button>
-        <div className="plan-card-actions">
-          <button className="plan-card-btn" onClick={handleCopy}>
-            <IconCopy />
-            {copied ? 'Скопировано' : 'Копировать'}
-          </button>
-          <button className="plan-card-btn plan-card-btn--primary" onClick={handleOpen}>
-            <IconFolder />
-            Открыть файл
-          </button>
-        </div>
+        {!partial && (
+          <div className="plan-card-actions">
+            <button className="plan-card-btn" onClick={handleCopy}>
+              <IconCopy />
+              {copied ? 'Скопировано' : 'Копировать'}
+            </button>
+            {filePath && (
+              <button className="plan-card-btn plan-card-btn--primary" onClick={handleOpen}>
+                <IconFolder />
+                Открыть файл
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </motion.div>
   )

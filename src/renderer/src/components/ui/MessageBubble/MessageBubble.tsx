@@ -8,6 +8,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import PlanCard from '../PlanCard/PlanCard'
 import type { Message, ToolOutputMode } from '../../../../../shared/types'
+import { extractPlanSegments } from '../../../../../shared/planParser'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
@@ -143,30 +144,100 @@ const AdmonitionBlock = memo(function AdmonitionBlock({ kind, title, children }:
   )
 })
 
-// Парсим admonitions — вынесено и мемоизировано снаружи
-function parseContent(raw: string): Array<{ type: 'md' | 'admonition'; content: string; kind?: string; title?: string }> {
-  const result: Array<{ type: 'md' | 'admonition'; content: string; kind?: string; title?: string }> = []
-  const lines = raw.split('\n')
-  let i = 0
-  let mdBuf: string[] = []
-  const ADM_RE = /^:::(note|tip|warning|danger|info)(?:\s+(.+))?$/i
-  while (i < lines.length) {
-    const m = ADM_RE.exec(lines[i].trim())
-    if (m) {
-      if (mdBuf.length) { result.push({ type: 'md', content: mdBuf.join('\n') }); mdBuf = [] }
-      const kind = m[1].toLowerCase()
-      const title = m[2]
-      const body: string[] = []
-      i++
-      while (i < lines.length && lines[i].trim() !== ':::') { body.push(lines[i]); i++ }
-      result.push({ type: 'admonition', content: body.join('\n'), kind, title })
-    } else {
-      mdBuf.push(lines[i])
+// Парсим admonitions + <plan>-блоки — вынесено и мемоизировано снаружи
+// Возвращает сегменты: md (обычный markdown), admonition (:::note…:::),
+// plan (<plan title="…" summary="…">…</plan> — рендерится в PlanCard).
+function parseContent(raw: string): Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> {
+  // 1. Сначала вытащим <plan>-блоки через shared-парсер.
+  const { segments: planSegs } = extractPlanSegments(raw)
+
+  // 2. Каждый text-сегмент дополнительно разбиваем на md + admonition.
+  const result: Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> = []
+  for (const seg of planSegs) {
+    if (seg.type === 'plan') {
+      result.push({
+        type: 'plan',
+        content: seg.content,
+        title: seg.title,
+        summary: seg.summary,
+        partial: seg.partial,
+      })
+      continue
     }
-    i++
+    // text → разбиваем на admonitions
+    const lines = seg.content.split('\n')
+    let i = 0
+    let mdBuf: string[] = []
+    const ADM_RE = /^:::(note|tip|warning|danger|info)(?:\s+(.+))?$/i
+    const flushMd = () => {
+      if (mdBuf.length) {
+        result.push({ type: 'md', content: mdBuf.join('\n') })
+        mdBuf = []
+      }
+    }
+    while (i < lines.length) {
+      const m = ADM_RE.exec(lines[i].trim())
+      if (m) {
+        flushMd()
+        const kind = m[1].toLowerCase()
+        const title = m[2]
+        const body: string[] = []
+        i++
+        while (i < lines.length && lines[i].trim() !== ':::') { body.push(lines[i]); i++ }
+        result.push({ type: 'admonition', content: body.join('\n'), kind, title })
+      } else {
+        mdBuf.push(lines[i])
+      }
+      i++
+    }
+    flushMd()
   }
-  if (mdBuf.length) result.push({ type: 'md', content: mdBuf.join('\n') })
   return result
+}
+
+// ── renderParsedSegments: рендер массива сегментов из parseContent ─────────
+// Переиспользуется в 4 местах (основной рендер, iterations, liveTextAfter).
+// Принимает memoизированные remarkPlugins/rehypePlugins/mdComponents чтобы
+// не создавать новые экземпляры. plan-сегменты рендерятся в PlanCard (live
+// во время стрима — partial=true, после — с filePath из message.planData).
+function renderParsedSegments(
+  segs: ReturnType<typeof parseContent>,
+  remarkPlugins: readonly unknown[],
+  rehypePlugins: readonly unknown[],
+  mdComponents: Record<string, unknown>,
+  planFilePath?: string,
+): React.ReactNode {
+  return segs.map((s, i) => {
+    if (s.type === 'plan') {
+      return (
+        <PlanCard
+          key={`plan-${i}`}
+          title={s.title || 'План'}
+          summary={s.summary || ''}
+          content={s.content}
+          filePath={s.partial ? undefined : planFilePath}
+          partial={s.partial}
+        />
+      )
+    }
+    if (s.type === 'admonition') {
+      return (
+        <AdmonitionBlock key={`adm-${i}`} kind={s.kind!} title={s.title}>
+          <ReactMarkdown remarkPlugins={remarkPlugins as never} rehypePlugins={rehypePlugins as never}>{s.content}</ReactMarkdown>
+        </AdmonitionBlock>
+      )
+    }
+    return (
+      <ReactMarkdown
+        key={`md-${i}`}
+        remarkPlugins={remarkPlugins as never}
+        rehypePlugins={rehypePlugins as never}
+        components={mdComponents as never}
+      >
+        {s.content}
+      </ReactMarkdown>
+    )
+  })
 }
 
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
@@ -440,15 +511,7 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      {parseContent(iter.textBefore).map((s, si) =>
-                        s.type === 'admonition' ? (
-                          <AdmonitionBlock key={si} kind={s.kind!} title={s.title}>
-                            <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{s.content}</ReactMarkdown>
-                          </AdmonitionBlock>
-                        ) : (
-                          <ReactMarkdown key={si} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={mdComponents}>{s.content}</ReactMarkdown>
-                        )
-                      )}
+                      {renderParsedSegments(parseContent(iter.textBefore), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
                     </div>
                   )}
                   {iter.steps.length > 0 && (
@@ -557,15 +620,7 @@ const MessageContent = memo(function MessageContent({
                   {/* Текст ДО тулчейна */}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      {parseContent(iter.textBefore).map((s, i) =>
-                        s.type === 'admonition' ? (
-                          <AdmonitionBlock key={i} kind={s.kind!} title={s.title}>
-                            <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{s.content}</ReactMarkdown>
-                          </AdmonitionBlock>
-                        ) : (
-                          <ReactMarkdown key={i} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={mdComponents}>{s.content}</ReactMarkdown>
-                        )
-                      )}
+                      {renderParsedSegments(parseContent(iter.textBefore), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
                     </div>
                   )}
                   {/* Тулчейн итерации */}
@@ -608,15 +663,7 @@ const MessageContent = memo(function MessageContent({
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
             {liveTextAfter && (
               <div className="message-content selectable">
-                {parseContent(liveTextAfter).map((s, i) =>
-                  s.type === 'admonition' ? (
-                    <AdmonitionBlock key={i} kind={s.kind!} title={s.title}>
-                      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{s.content}</ReactMarkdown>
-                    </AdmonitionBlock>
-                  ) : (
-                    <ReactMarkdown key={i} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={mdComponents}>{s.content}</ReactMarkdown>
-                  )
-                )}
+                {renderParsedSegments(parseContent(liveTextAfter), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
               </div>
             )}
           </div>
@@ -632,24 +679,7 @@ const MessageContent = memo(function MessageContent({
                 {isUser && !userMarkdown ? (
                   <p>{content}</p>
                 ) : (
-                  segments.map((seg, si) =>
-                    seg.type === 'admonition' ? (
-                      <AdmonitionBlock key={si} kind={seg.kind!} title={seg.title}>
-                        <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
-                          {seg.content}
-                        </ReactMarkdown>
-                      </AdmonitionBlock>
-                    ) : (
-                      <ReactMarkdown
-                        key={si}
-                        remarkPlugins={remarkPlugins}
-                        rehypePlugins={rehypePlugins}
-                        components={mdComponents}
-                      >
-                        {seg.content}
-                      </ReactMarkdown>
-                    )
-                  )
+                  renderParsedSegments(segments as ReturnType<typeof parseContent>, remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)
                 )}
               </div>
             )
@@ -752,38 +782,30 @@ const MessageBubble = memo(function MessageBubble({
 
       {message.planData ? (
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
-          {message.content && message.content.trim() && (
-            <MessageContent
-              content={message.content}
-              isUser={isUser}
-              searchQuery={searchQuery}
-              toolOutputMode={toolOutputMode}
-              toolSteps={message.toolSteps}
-              onPin={onPin}
-              onCopy={handleCopy}
-              onReadAloud={handleReadAloud}
-              onReply={handleReply}
-              onRewind={handleRewind}
-              message={message}
-              isPinned={message.isPinned as number}
-              createdAt={message.createdAt}
-              liveThinking={liveThinking}
-              isStreaming={isStreaming}
-              isWaiting={isWaiting}
-              liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
-              liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
-              rateLimitSec={rateLimitSec}
-              userMarkdown={isUser ? userMarkdown : true}
-              timeEl={timeEl}
-              agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
-              toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
-            />
-          )}
-          <PlanCard
-            title={message.planData.title}
-            content={message.planData.content}
-            summary={message.planData.summary}
-            filePath={message.planData.filePath}
+          <MessageContent
+            content={message.content}
+            isUser={isUser}
+            searchQuery={searchQuery}
+            toolOutputMode={toolOutputMode}
+            toolSteps={message.toolSteps}
+            onPin={onPin}
+            onCopy={handleCopy}
+            onReadAloud={handleReadAloud}
+            onReply={handleReply}
+            onRewind={handleRewind}
+            message={message}
+            isPinned={message.isPinned as number}
+            createdAt={message.createdAt}
+            liveThinking={liveThinking}
+            isStreaming={isStreaming}
+            isWaiting={isWaiting}
+            liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
+            liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
+            rateLimitSec={rateLimitSec}
+            userMarkdown={isUser ? userMarkdown : true}
+            timeEl={timeEl}
+            agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
+            toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
           />
         </div>
       ) : (

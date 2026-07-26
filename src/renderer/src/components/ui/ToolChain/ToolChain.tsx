@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, memo, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
-import PlanCard from '../PlanCard/PlanCard'
 import ToolResultRenderer from './ToolResultRenderer'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import './ToolChain.css'
@@ -48,6 +47,7 @@ const TOOL_META: Record<string, { label: string; icon: string; color: string }> 
   update_todo:     { label: 'План',          icon: 'listChecks', color: '#60a5fa' },
   update_working_memory: { label: 'Память',  icon: 'database',  color: '#34d399' },
   revert_last_change: { label: 'Откат',      icon: 'rewind',    color: '#f87171' },
+  ask_user:        { label: 'Вопрос',        icon: 'helpCircle', color: '#c084fc' },
 }
 
 /** Парсит mcp__server__tool → { server, tool }. Server может содержать подчёркивания. */
@@ -315,17 +315,83 @@ const IterationBlock = memo(function IterationBlock({
               )}
 
               {iter.result && mode !== 'compact' && (() => {
-                // save_plan — специальная плашка
-                if (iter.call.toolName === 'save_plan' && iter.result.success) {
+                // ask_user — рендер вопросов и ответов пользователя
+                if (iter.call.toolName === 'ask_user' && iter.call.toolArgs?.questions) {
+                  const questions = iter.call.toolArgs.questions as Array<{
+                    id?: string
+                    question: string
+                    header?: string
+                    type?: string
+                    options?: Array<{ label: string; value: string }>
+                  }>
+                  // Парсим ответы из результата (JSON в конце content)
+                  let answers: Array<{
+                    id: string
+                    values?: string[]
+                    text?: string
+                    value?: boolean
+                  }> = []
+                  if (iter.result.success && iter.result.content) {
+                    const jsonMatch = iter.result.content.match(/JSON:\s*(\[[\s\S]*\])/)
+                    if (jsonMatch) {
+                      try { answers = JSON.parse(jsonMatch[1]) } catch { /* skip */ }
+                    }
+                  }
+                  const total = questions.length
+                  const resolveType = (q: { type?: string; options?: unknown[] }) =>
+                    q.type || (q.options && q.options.length > 0 ? 'choice' : 'text')
                   return (
                     <div className="tc2-section">
-                      <div className="tc2-section-title" style={{ color: '#4ade80' }}>Результат</div>
-                      <div className="tc2-plan-saved">
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                          <polyline points="14 2 14 8 20 8"/>
-                        </svg>
-                        {iter.result.content}
+                      <div className="tc2-section-title" style={{ color: 'var(--accent, #e8e8ec)' }}>
+                        {total > 1 ? `${total} вопроса пользователю` : 'Вопрос пользователю'}
+                      </div>
+                      <div className="tc2-ask-user">
+                        {questions.map((q, qi) => {
+                          const ans = answers.find(a => a.id === q.id) || answers[qi]
+                          const qType = resolveType(q)
+                          return (
+                            <div key={qi} className="tc2-ask-q">
+                              <div className="tc2-ask-q-num">
+                                <AppIcon
+                                  name={qType === 'yesno' ? 'check' : 'helpCircle'}
+                                  size="xs"
+                                />
+                              </div>
+                              <div className="tc2-ask-q-content">
+                                {q.header && <div className="tc2-ask-q-label">{q.header}</div>}
+                                <div className="tc2-ask-q-text">{q.question}</div>
+                                {q.options && q.options.length > 0 && (
+                                  <div className="tc2-ask-q-opts">
+                                    {q.options.map(o => {
+                                      const isSel = ans?.values?.includes(o.value)
+                                      return (
+                                        <span
+                                          key={o.value}
+                                          className={`tc2-ask-q-opt${isSel ? ' tc2-ask-q-opt--selected' : ''}`}
+                                        >
+                                          {isSel && <span className="tc2-ask-q-opt-check">✓</span>}
+                                          {o.label}
+                                        </span>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                                {/* Ответ пользователя — цветовое выделение, collapse если длинный */}
+                                {qType === 'yesno' && ans?.value !== undefined && (
+                                  <div className={`tc2-ask-q-answer tc2-ask-q-answer--${ans.value ? 'yes' : 'no'}`}>
+                                    <AppIcon name={ans.value ? 'check' : 'x'} size="xs" />
+                                    {ans.value ? 'Да' : 'Нет'}
+                                  </div>
+                                )}
+                                {ans?.text && (
+                                  <div className={`tc2-ask-q-custom${ans.text.length > 200 ? ' tc2-ask-q-custom--collapsible' : ''}`}>
+                                    {ans.text}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   )

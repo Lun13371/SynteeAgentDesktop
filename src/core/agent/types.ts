@@ -1,4 +1,5 @@
 import type { FileCacheEntry } from '../context/fileCacheTypes'
+import type { QuestionSpec, QuestionAnswer } from '../../shared/types'
 
 export interface AgentStep {
   // tool_call_pending — модель только начала генерировать этот вызов (имя
@@ -25,7 +26,6 @@ export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
   onDone: (answer: string, details?: AgentSummaryDetails) => void
   onError: (error: Error) => void
-  onPlanSaved?: (plan: { title: string; content: string; summary: string; filePath: string }) => void
   onStatus?: (text: string) => void
   onRateLimit?: (waitSec: number) => void
   onRetry?: (attempt: number, reason: string, waitSec?: number) => void
@@ -70,6 +70,12 @@ export interface AgentCallbacks {
    * Возвращает текст инструкций.
    */
   onGetSkill?: (name: string) => Promise<string>
+  /**
+   * ask_user-тул: задать уточняющие вопросы пользователю через UI-панель.
+   * Round-trip через main-процесс → renderer (QuestionPanel). Блокирует
+   * агент до ответа пользователя. Возвращает ответы по каждому вопросу.
+   */
+  onQuestion?: (questions: QuestionSpec[]) => Promise<QuestionAnswer[]>
   /**
    * Progress callback для долгих тулов (например get_fast_context):
    * транслирует stage-прогресс в main для live-индикации этапов в UI.

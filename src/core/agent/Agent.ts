@@ -932,17 +932,48 @@ export class Agent {
         return { success: true, output: `Todo updated: ${done}/${total} done`, hidden: true }
       }
       case 'save_plan': {
-        const { savePlan } = await import('../tools/index')
-        const result = await savePlan(args as { title: string; content: string; summary: string })
-        if (result.success && callbacks?.onPlanSaved) {
-          callbacks.onPlanSaved({
-            title: args.title as string,
-            content: args.content as string,
-            summary: args.summary as string,
-            filePath: result.output,
-          })
+        // Тул save_plan удалён — модель пишет план прямо в ответе, обёрнутый
+        // в <plan title="..." summary="...">…</plan>. Сохранение в файл
+        // происходит в main/ipc/chat.ipc.ts (sendDone) после извлечения
+        // <plan>-блока из ответа. Если модель всё же вызвала тул — вернём
+        // подсказку, чтобы она перестала его вызывать.
+        return { success: false, output: '', error: 'save_plan удалён. Пиши план прямо в ответе, обёрнутый в <plan title="..." summary="...">markdown плана</plan>. Не вызывай этот тул.' }
+      }
+      case 'ask_user': {
+        const questions = (args.questions as import('../../shared/types').QuestionSpec[]) ?? []
+        if (questions.length === 0) {
+          return { success: false, output: '', error: 'ask_user: questions array is empty' }
         }
-        return { success: true, output: `Plan saved: ${args.title}` }
+        if (!callbacks?.onQuestion) {
+          return { success: false, output: '', error: 'ask_user: нет UI-обработчика (onQuestion). Действуй по разумным предположениям.' }
+        }
+        // Генерируем ID для вопросов без него — для маппинга ответов и showIf.
+        const withIds = questions.map((q, i) => ({
+          ...q,
+          id: q.id || `q_${Date.now()}_${i}`,
+        }))
+        // Авто-detect типа: если type не указан, выводим из options.
+        const typed = withIds.map(q => ({
+          ...q,
+          type: q.type || (q.options && q.options.length > 0 ? 'choice' : 'text'),
+        }))
+        try {
+          const answers = await callbacks.onQuestion(typed)
+          // Форматируем ответы как читаемый текст для модели + JSON для парсинга.
+          const lines = answers.map(a => {
+            const parts: string[] = []
+            if (a.value !== undefined) parts.push(`ответ: ${a.value ? 'Да' : 'Нет'}`)
+            if (a.values && a.values.length > 0) parts.push(`выбрано: ${a.values.join(', ')}`)
+            if (a.text) parts.push(`текст: ${a.text}`)
+            return `- [${a.id}] ${parts.join(' | ') || '(пропущено)'}`
+          })
+          return {
+            success: true,
+            output: `Пользователь ответил:\n${lines.join('\n')}\n\nJSON: ${JSON.stringify(answers)}`,
+          }
+        } catch (e: unknown) {
+          return { success: false, output: '', error: `ask_user: ${String(e)}` }
+        }
       }
       case 'get_main_chat_messages': {
         if (!callbacks?.onGetMainChatMessages) {

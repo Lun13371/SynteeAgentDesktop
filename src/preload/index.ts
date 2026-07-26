@@ -152,6 +152,20 @@ const synteeAPI = {
     confirmResponse: (reqId: string, approved: boolean) => {
       ipcRenderer.send(`agent:confirm:response:${reqId}`, approved)
     },
+    // ── ask_user: тул уточняющих вопросов ──
+    // onQuestion — подписка на входящие вопросы от AI (renderer показывает
+    // QuestionPanel над инпутом). questionResponse — ответ пользователя.
+    onQuestion: (cb: (data: { reqId: string; questions: unknown[]; chatId: string; msgId: string }) => void) => {
+      const wrapper = (_: unknown, data: unknown) => cb(data as { reqId: string; questions: unknown[]; chatId: string; msgId: string })
+      ipcRenderer.on('agent:question', wrapper)
+      return wrapper
+    },
+    offQuestion: (wrapper: (...args: unknown[]) => void) => {
+      ipcRenderer.removeListener('agent:question', wrapper)
+    },
+    questionResponse: (reqId: string, answers: unknown[]) => {
+      ipcRenderer.send(`agent:question:response:${reqId}`, answers)
+    },
   },
 
   // Провайдеры и модели
