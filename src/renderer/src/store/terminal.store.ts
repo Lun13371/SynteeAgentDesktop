@@ -33,6 +33,8 @@ interface TerminalStore {
   dockOpen: boolean
   /** Высота нижнего dock (persist в settings). */
   dockHeight: number
+  /** SessionId где AI сейчас выполняет run_command (ввод заблокирован). */
+  aiBusySessionIds: Set<string>
 
   // Actions
   setActiveChat: (chatId: string | null) => void
@@ -44,6 +46,7 @@ interface TerminalStore {
   toggleDock: () => void
   setDockHeight: (h: number) => void
   removeSessionLocally: (sessionId: string) => void
+  markAiBusy: (sessionId: string, busy: boolean) => void
 }
 
 export const DOCK_HEIGHT_MIN = 120
@@ -55,6 +58,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   activeChatId: null,
   dockOpen: false,
   dockHeight: DOCK_HEIGHT_DEFAULT,
+  aiBusySessionIds: new Set<string>(),
 
   setActiveChat: (chatId) => {
     set({ activeChatId: chatId })
@@ -65,11 +69,14 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     try {
       const sessions = (await window.syntee.pty.list(chatId)) as TerminalSessionMeta[]
       set((st) => ({ sessionsByChat: { ...st.sessionsByChat, [chatId]: sessions } }))
-      // Если активная сессия умерла или не из этого чата — выбираем первую живую
+      // Если активная сессия умерла или не из этого чата — выбираем замену.
+      // Предпочитаем user-сессию: agent-сессия управляется AI, пользователь
+      // не должен случайно оказаться в ней и печатать в чужой ввод.
       const active = get().activeSessionId
       const alive = sessions.filter(s => !s.dead)
       if (!active || !alive.find(s => s.id === active)) {
-        set({ activeSessionId: alive[alive.length - 1]?.id ?? null })
+        const userSession = alive.find(s => s.source === 'user')
+        set({ activeSessionId: userSession?.id ?? alive[alive.length - 1]?.id ?? null })
       }
     } catch { /* ignore */ }
   },
@@ -105,7 +112,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       let newActive = st.activeSessionId
       if (st.activeSessionId === sessionId) {
         const alive = next.filter(s => !s.dead)
-        newActive = alive[alive.length - 1]?.id ?? null
+        const userSession = alive.find(s => s.source === 'user')
+        newActive = userSession?.id ?? alive[alive.length - 1]?.id ?? null
       }
       return {
         sessionsByChat: { ...st.sessionsByChat, [chatId]: next },
@@ -119,6 +127,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   setDockOpen: (open) => set({ dockOpen: open }),
   toggleDock: () => set((st) => ({ dockOpen: !st.dockOpen })),
   setDockHeight: (h) => set({ dockHeight: Math.max(DOCK_HEIGHT_MIN, Math.round(h)) }),
+  markAiBusy: (sessionId, busy) => set((st) => {
+    const next = new Set(st.aiBusySessionIds)
+    if (busy) next.add(sessionId); else next.delete(sessionId)
+    return { aiBusySessionIds: next }
+  }),
 }))
 
 // Живая синхронизация: main-процесс шлёт 'pty:session-list-changed' при
@@ -127,8 +140,31 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 // только когда какой-то компонент явно вызывал loadSessions() при mount
 // (переключение чата/таба) — сессия, созданная агентом посреди диалога,
 // не появлялась в открытом доке/панели без "лишнего" перехода.
+//
+// agent:tool_progress — AI начал/закончил run_command. На 'start' помечаем
+// сессию занятой (ввод заблокирован в PtyManager.write), на 'done'/'error'
+// снимаем отметку. pty:exit — процесс умер, тоже снимаем отметку.
+// done/error не несут sessionId, поэтому держим chatId→sessionId map.
+const aiBusyByChat: Record<string, string> = {}
 if (typeof window !== 'undefined' && window.syntee) {
   window.syntee.on('pty:session-list-changed', (chatId: unknown) => {
     if (typeof chatId === 'string') useTerminalStore.getState().loadSessions(chatId)
+  })
+  window.syntee.on('agent:tool_progress', (data: unknown) => {
+    const d = data as { chatId?: string; toolName?: string; stage?: string; sessionId?: string }
+    if (d.toolName !== 'run_command' || !d.chatId) return
+    if (d.stage === 'start' && d.sessionId) {
+      aiBusyByChat[d.chatId] = d.sessionId
+      useTerminalStore.getState().markAiBusy(d.sessionId, true)
+    } else if (d.stage === 'done' || d.stage === 'error') {
+      const sid = aiBusyByChat[d.chatId]
+      if (sid) {
+        delete aiBusyByChat[d.chatId]
+        useTerminalStore.getState().markAiBusy(sid, false)
+      }
+    }
+  })
+  window.syntee.on('pty:exit', (sessionId: unknown) => {
+    if (typeof sessionId === 'string') useTerminalStore.getState().markAiBusy(sessionId, false)
   })
 }

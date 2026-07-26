@@ -15,7 +15,7 @@ import {
   getCheckpoints, getLastCheckpoint, getSnapshotsAfter, getContextSnapshot,
   deleteCheckpointsAfter, pruneOldCheckpoints, deleteMessagesAfter,
   saveRewindHistory, getRewindHistory, deleteRewindHistory, deleteMessageById,
-} from '../../core/db/database'
+} from '../../core/db'
 import { getAllMemoriesForContext, extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
@@ -39,6 +39,7 @@ import { getSkillManager } from '../../core/skills/skillManager'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta } from '../../shared/types'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
+import { messageToContextMessages, formatTodoForContext } from './chatContextHelpers'
 
 /**
  * Состояние одного активного запуска chat:send.
@@ -62,12 +63,27 @@ interface ActiveRun {
   bufferedThinking: string
   bufferedThinkingMs?: number
   bufferedSteps: unknown[]
-  bufferedIters: unknown[]
   bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
   bufferedAgentStatus: string | null
   bufferedRateLimitSec: number
   doneSent: boolean
   sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[], todo?: unknown[]) => void
+  // ── Реконструкция итераций (зеркало ai-worker.ts:113-125) ──
+  // Раньше bufferedIters был всегда [] — main не группировал шаги в итерации,
+  // полагаясь на worker.collectedIters в сообщении 'done'. Но при stop/exit/
+  // error воркер не успевает отправить collectedIters, и sendDone сохранял
+  // сообщение без iterations → все тулы сливались в одну кучу, а текст
+  // рендерился отдельным блоком. Также chat:getLiveState возвращал [] → при
+  // возврате в чат во время стриминга тулы теряли позиции. Теперь main сам
+  // реконструирует iters из потоковых событий (token/step/thinking).
+  pendingTextAfter: string
+  pendingThinking: string
+  pendingThinkingMs?: number
+  currentIterTextBefore: string
+  currentIterSteps: unknown[]
+  currentIterThinking: string
+  currentIterThinkingMs?: number
+  closedIters: unknown[]
 }
 
 const activeRuns = new Map<string, ActiveRun>()
@@ -106,6 +122,136 @@ function emitQueueUpdate(win: BrowserWindow | null, chatId: string) {
   win?.webContents.send(IPC_EVENTS.CHAT_QUEUE_UPDATED, { chatId, queue, ts: Date.now() })
 }
 
+// ── Хелперы реконструкции итераций для ActiveRun ──────────────────────
+// Зеркалят логику ai-worker.ts (flushIter + finalize) чтобы main мог строить
+// iterations из потоковых событий при stop/exit/error и для chat:getLiveState.
+// Без этого при ручной остановке или возврате в чат во время стриминга тулы
+// теряли позиции (все сливались в одну кучу, текст — отдельным блоком).
+
+/**
+ * Чинит незакрытые markdown code-fences в textBefore. Если агент стримил
+ * prose до зависшего тула и не дописал закрывающий ```` ``` ```` — ReactMarkdown
+ * проглотил бы весь последующий контент в code-block. Считаем fences (``` и ~~~)
+ * и если нечётное — дописываем закрывающий.
+ */
+function repairMarkdownFence(text: string): string {
+  if (!text) return text
+  const fenceMatches = text.match(/^[ \t]*(`{3,}|~{3,})/gm)
+  if (!fenceMatches) return text
+  // Группируем по типу ограды (``` или ~~~) — незакрытый считается только
+  // если нечётное число ОДНОТИПНЫХ оград.
+  const byChar: Record<string, number> = {}
+  for (const f of fenceMatches) {
+    const ch = f.trim()[0]
+    byChar[ch] = (byChar[ch] || 0) + 1
+  }
+  let result = text
+  for (const [ch, count] of Object.entries(byChar)) {
+    if (count % 2 !== 0) {
+      result += `\n${ch.repeat(3)} `
+    }
+  }
+  return result
+}
+
+/**
+ * Добавляет синтетические tool_result для tool_call без парного result.
+ * При ручной остановке/падении воркера агент мог эмитить tool_call, но
+ * executeTool не успел вернуть результат → в шагах висит orphan call.
+ * Без этого ToolChain рендерит карточку без бейджа (ни ✓ ни ✗) — "кривая".
+ * Синтетический result даёт ✗ бейдж + текст "[прервано пользователем]".
+ */
+function ensureToolResults(steps: unknown[]): unknown[] {
+  const result = [...steps]
+  const calls = result.filter((s: any) => s?.type === 'tool_call')
+  const results = result.filter((s: any) => s?.type === 'tool_result')
+  for (const call of calls) {
+    const c = call as { callId?: string; toolName?: string; id: string }
+    const hasResult = results.some((r: any) =>
+      (c.callId && r?.callId === c.callId) ||
+      (!c.callId && r?.toolName === c.toolName && !(r as any)._matched)
+    )
+    if (!hasResult) {
+      // Помечаем чтобы fallback-матчинг не цеплял один result на несколько call'ов
+      result.push({
+        id: uuid(),
+        type: 'tool_result',
+        toolName: c.toolName,
+        content: '[прервано пользователем]',
+        success: false,
+        timestamp: Date.now(),
+        callId: c.callId,
+      })
+    }
+  }
+  return result
+}
+
+function flushRunIter(run: ActiveRun): void {
+  if (run.currentIterSteps.length > 0) {
+    run.closedIters.push({
+      textBefore: repairMarkdownFence(run.currentIterTextBefore),
+      thinking: run.currentIterThinking || undefined,
+      thinkingMs: run.currentIterThinkingMs,
+      steps: run.currentIterSteps,
+    })
+    run.currentIterTextBefore = ''
+    run.currentIterSteps = []
+    run.currentIterThinking = ''
+    run.currentIterThinkingMs = undefined
+  }
+}
+
+/**
+ * Снапшот для chat:getLiveState: закрытые iters + открытая (текущая) итерация.
+ * Включает open-iter чтобы при возврате в чат показать частичный прогресс
+ * (тулы на своих местах, незавершённый тулчейн — с isRunning).
+ */
+function buildLiveIters(run: ActiveRun): unknown[] {
+  const iters = [...run.closedIters]
+  if (run.currentIterSteps.length > 0) {
+    iters.push({
+      textBefore: run.currentIterTextBefore,
+      thinking: run.currentIterThinking || undefined,
+      thinkingMs: run.currentIterThinkingMs,
+      steps: [...run.currentIterSteps],
+    })
+  }
+  return iters
+}
+
+/**
+ * Финальные iters для sendDone: закрытые + открытая + хвостовой text-only iter
+ * (зеркало ai-worker.ts finalize 176-187). Возвращает undefined если iters нет
+ * (чисто текстовый ответ без тулов — рендерится через message.content).
+ * Для каждого tool_call без парного tool_result добавляется синтетический
+ * result (success:false, '[прервано]') — иначе ToolChain показывает orphan-карточку.
+ */
+function buildFinalIters(run: ActiveRun): unknown[] | undefined {
+  const iters = [...run.closedIters]
+  if (run.currentIterSteps.length > 0) {
+    iters.push({
+      textBefore: repairMarkdownFence(run.currentIterTextBefore),
+      thinking: run.currentIterThinking || undefined,
+      thinkingMs: run.currentIterThinkingMs,
+      steps: [...run.currentIterSteps],
+    })
+  }
+  if (iters.length > 0 && (run.pendingThinking || run.pendingTextAfter.trim())) {
+    iters.push({
+      textBefore: repairMarkdownFence(run.pendingTextAfter),
+      thinking: run.pendingThinking || undefined,
+      thinkingMs: run.pendingThinkingMs,
+      steps: [],
+    })
+  }
+  // Чиним orphan tool_call'ы во ВСЕХ итерациях (синтетические tool_result).
+  for (const iter of iters as Array<{ steps: unknown[] }>) {
+    iter.steps = ensureToolResults(iter.steps)
+  }
+  return iters.length > 0 ? iters : undefined
+}
+
 /**
  * Запускает следующий chat:send из очереди chatId, если он есть.
  * Вызывается после терминального статуса предыдущего запуска (done/error/cancelled).
@@ -126,160 +272,6 @@ function drainQueue(win: BrowserWindow | null, chatId: string) {
   void next.run().catch((e) => {
     log('[chat:send] queued run failed chatId=%s: %s', chatId, (e as Error).message)
   })
-}
-
-/**
- * Разворачивает Message с toolSteps в массив полноценных OpenAI-совместимых
- * сообщений: assistant (с tool_calls) + tool (с результатами).
- *
- * Раньше toolSteps сжимались в компактный текстовый trace (400 симв. на шаг),
- * из-за чего агент терял результаты предыдущих tool-вызовов (содержимое
- * файлов, результаты команд) и был вынужден перечитывать всё заново.
- * Теперь полная история tool-вызовов передаётся в нативном формате API.
- */
-function messageToContextMessages(message: Message): ChatMessage[] {
-  // План — как раньше, просто текст
-  if (message.planData) {
-    return [{
-      role: message.role as ChatMessage['role'],
-      content: `[ПЛАН: "${message.planData.title}"]\n${message.planData.content}\n[Файл: ${message.planData.filePath}]`,
-    }]
-  }
-
-  const steps = message.toolSteps ?? []
-
-  // Нет toolSteps — обычное текстовое сообщение
-  if (message.role !== 'assistant' || steps.length === 0) {
-    // Даже для текстового сообщения без toolSteps — если есть todo,
-    // инжектим его (user-роль, после assistant) чтобы AI видел свой
-    // незавершённый план из прошлой итерации. Без этого AI не знает
-    // что todo сохраняется между сообщениями и не может продолжить.
-    if (message.role === 'assistant' && message.todo?.length) {
-      return [
-        { role: 'assistant' as const, content: message.content },
-        { role: 'user' as const, content: formatTodoForContext(message.todo) },
-      ]
-    }
-    return [{ role: message.role as ChatMessage['role'], content: message.content }]
-  }
-
-  // Группируем steps по итерациям: каждая итерация = assistant с tool_calls
-  // + последующие tool results. Сохраняем текст между итерациями.
-  type Iteration = {
-    textBefore?: string
-    calls: Array<{ callId: string; toolName: string; toolArgs: Record<string, unknown> }>
-    results: Map<string, { content: string; success?: boolean; toolName?: string }>
-  }
-
-  const iterations: Iteration[] = []
-  let currentIter: Iteration | null = null
-  let pendingCall: { callId: string; toolName: string; toolArgs: Record<string, unknown> } | null = null
-
-  for (const step of steps) {
-    if (step.type === 'tool_call') {
-      if (!currentIter || currentIter.calls.length > 0 || currentIter.results.size > 0) {
-        // Новая итерация
-        currentIter = { calls: [], results: new Map() }
-        iterations.push(currentIter)
-      }
-      const callId = step.callId || `call_${iterations.length}_${currentIter.calls.length}`
-      currentIter.calls.push({
-        callId,
-        toolName: step.toolName || 'tool',
-        toolArgs: step.toolArgs || {},
-      })
-      pendingCall = { callId, toolName: step.toolName || 'tool', toolArgs: step.toolArgs || {} }
-    } else if (step.type === 'tool_result') {
-      if (!currentIter) {
-        currentIter = { calls: [], results: new Map() }
-        iterations.push(currentIter)
-      }
-      const callId = step.callId || pendingCall?.callId || `call_${iterations.length}_${currentIter.results.size}`
-      currentIter.results.set(callId, {
-        content: step.content || '',
-        success: step.success,
-        toolName: step.toolName || pendingCall?.toolName,
-      })
-      pendingCall = null
-    }
-  }
-
-  // Если итераций нет — просто текст (но мог быть todo)
-  if (iterations.length === 0) {
-    if (message.todo?.length) {
-      return [
-        { role: 'assistant' as const, content: message.content },
-        { role: 'user' as const, content: formatTodoForContext(message.todo) },
-      ]
-    }
-    return [{ role: 'assistant', content: message.content }]
-  }
-
-  // Если есть content до первой итерации и он непустой — добавляем как отдельное сообщение
-  const result: ChatMessage[] = []
-  const contentBefore = message.content || ''
-  const hasContentBefore = contentBefore.trim().length > 0
-
-  for (let i = 0; i < iterations.length; i++) {
-    const iter = iterations[i]
-
-    // Assistant сообщение с tool_calls (включает текст ответа перед тулаами)
-    const assistantContent = (i === 0 && hasContentBefore) ? contentBefore : ''
-    const toolCalls = iter.calls.map(c => ({
-      id: c.callId,
-      type: 'function' as const,
-      function: {
-        name: c.toolName,
-        arguments: JSON.stringify(c.toolArgs),
-      },
-    }))
-
-    result.push({
-      role: 'assistant',
-      content: assistantContent,
-      tool_calls: toolCalls,
-    })
-
-    // Tool результаты для каждого call
-    for (const call of iter.calls) {
-      const toolResult = iter.results.get(call.callId)
-      result.push({
-        role: 'tool',
-        content: toolResult?.content ?? '',
-        tool_call_id: call.callId,
-        name: call.toolName,
-      })
-    }
-  }
-
-  // Если у assistant-сообщения есть todo — добавляем user-напоминание
-  // ПОСЛЕ всей цепочки assistant(tool_calls)→tool results. User-роль
-  // работает со всеми провайдерами (system в середине некоторые
-  // прокси отбрасывают). AI видит свой незавершённый план и может
-  // продолжить работу по нему в следующем ответе.
-  if (message.role === 'assistant' && message.todo?.length) {
-    result.push({ role: 'user' as const, content: formatTodoForContext(message.todo) })
-  }
-
-  return result
-}
-
-// Форматирует todo-список для инжекции в контекст истории.
-// Используется в messageToContextMessages — AI видит это как user-сообщение
-// после своего прошлого ответа, чтобы понимать что осталось сделать.
-function formatTodoForContext(todo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>): string {
-  const lines = todo.map(t => {
-    const mark = t.status === 'done' ? '[x]'
-      : t.status === 'in_progress' ? '[~]'
-      : t.status === 'skipped' ? '[-]'
-      : '[ ]'
-    return `${mark} ${t.text}`
-  })
-  const unfinished = todo.filter(t => t.status === 'pending' || t.status === 'in_progress').length
-  const suffix = unfinished > 0
-    ? `\n\nЭто твой незавершённый план из предыдущего ответа (${unfinished} пункт(ов) осталось). Продолжи работу по нему — не создавай новый план, если этот ещё актуален.`
-    : '\n\nЭто твой завершённый план из предыдущего ответа (все пункты выполнены).'
-  return `[АКТУАЛЬНЫЙ ПЛАН ЗАДАЧИ — состояние на момент предыдущего сообщения]\n${lines.join('\n')}${suffix}`
 }
 
 // ─── Compact: helpers для разделителя сжатия контекста ──────────────────────
@@ -756,12 +748,19 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       bufferedThinking: '',
       bufferedThinkingMs: undefined,
       bufferedSteps: [],
-      bufferedIters: [],
       bufferedTodo: [],
       bufferedAgentStatus: null,
       bufferedRateLimitSec: 0,
       doneSent: false,
       sendDone: () => { /* присваивается ниже после определения sendDone */ },
+      pendingTextAfter: '',
+      pendingThinking: '',
+      pendingThinkingMs: undefined,
+      currentIterTextBefore: '',
+      currentIterSteps: [],
+      currentIterThinking: '',
+      currentIterThinkingMs: undefined,
+      closedIters: [],
     }
 
     const sendDone = (
@@ -945,6 +944,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       switch (msg.type) {
         case 'token':
           run.bufferedText += (msg.token as string) || ''
+          run.pendingTextAfter += (msg.token as string) || ''
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
             chatId: msg.chatId, msgId: msg.msgId, token: msg.token,
           })
@@ -953,6 +953,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         case 'thinking_token': {
           const tok = typeof msg.token === 'string' ? msg.token : ''
           run.bufferedThinking += tok
+          run.pendingThinking += tok
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
             chatId: msg.chatId, msgId: msg.msgId, thinkingToken: tok,
           })
@@ -961,25 +962,66 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
         case 'thinking_done':
           run.bufferedThinkingMs = msg.thinkingMs as number
+          run.pendingThinkingMs = msg.thinkingMs as number
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
             chatId: msg.chatId, msgId: msg.msgId,
             thinkingDone: true, thinkingMs: msg.thinkingMs,
           })
           break
 
-        case 'step':
+        case 'step': {
+          const rawStep = msg.step as Record<string, unknown>
           // tool_call_pending — временный ранний сигнал для UI (см. Agent.ts
           // onToolCallStarted), заменяется настоящим tool_call через
-          // pendingCallId матчинг на фронтенде. Не персистим его в
-          // bufferedSteps — иначе он попал бы в БД как "фантомный" шаг.
-          if ((msg.step as { type?: string }).type !== 'tool_call_pending') {
-            run.bufferedSteps.push(msg.step)
+          // pendingCallId матчинг на фронтенде. Не персистим в bufferedSteps —
+          // иначе попал бы в БД как "фантомный" шаг (зеркало ai-worker.ts:273-280).
+          if (rawStep.type !== 'tool_call_pending') {
+            // Полноценный ToolStep (с id/timestamp) — раньше в bufferedSteps
+            // попадал сырой step без id/timestamp, что ломало React-ключи в
+            // ToolChain и было неконсистентно с ts-объектами воркера.
+            const ts = {
+              id: `${Date.now()}-${Math.random()}`,
+              type: rawStep.type,
+              toolName: rawStep.toolName,
+              toolArgs: rawStep.toolArgs,
+              content: rawStep.content,
+              success: rawStep.success,
+              timestamp: Date.now(),
+              imageUrl: rawStep.imageUrl,
+              diff: rawStep.diff,
+              callId: rawStep.callId,
+              pendingCallId: rawStep.pendingCallId,
+              serverName: rawStep.serverName,
+            }
+            run.bufferedSteps.push(ts)
+            // Реконструкция итераций (зеркало ai-worker.ts:282-330):
+            // tool_call начинает новую итерацию (захватывая pendingTextAfter/
+            // pendingThinking как textBefore/thinking), tool_result дописывается
+            // в текущую. tool_call_pending игнорируется (как и в воркере).
+            if (rawStep.type === 'tool_call') {
+              if (run.pendingTextAfter.trim() || run.pendingThinking) {
+                flushRunIter(run)
+                run.currentIterTextBefore = run.pendingTextAfter
+                run.currentIterThinking = run.pendingThinking
+                run.currentIterThinkingMs = run.pendingThinkingMs
+                run.pendingTextAfter = ''
+                run.pendingThinking = ''
+                run.pendingThinkingMs = undefined
+              } else if (run.currentIterSteps.length === 0) {
+                run.currentIterTextBefore = run.pendingTextAfter
+                run.pendingTextAfter = ''
+              }
+              run.currentIterSteps.push(ts)
+            } else if (rawStep.type === 'tool_result') {
+              run.currentIterSteps.push(ts)
+            }
           }
           // chatId добавлен чтобы глобальный хук useChatRunSubscription мог
           // маршрутизировать шаг в нужный чат (раньше фильтрация шла по msgId
           // в локальном стейте ChatPage — не работало для параллельных чатов).
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId, chatId: msg.chatId })
           break
+        }
 
         case 'confirm': {
           const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
@@ -1029,6 +1071,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               task: msg.task as string,
               model: msg.model as string | undefined,
               approvalMode: msg.approval_mode as 'auto' | 'ask' | 'full' | undefined,
+              isolation: msg.isolation as 'auto' | 'worktree' | 'none' | undefined,
               mode: chatMode,
               storeData,
               context: {
@@ -1066,29 +1109,57 @@ ${subModeOutro}`,
             const command = msg.command as string
             const cwd = msg.cwd as string | undefined
             const timeoutSec = (msg.timeoutSec as number | undefined) ?? 60
-            const sessions = ptyManager.listByChat(chatId)
-            let agentSession = sessions.find(s => s.source === 'agent' && !s.dead)
-            if (!agentSession) {
-              // Дефолтный shell: PowerShell на Windows, bash на Unix.
-              const defaultShell: ShellType = process.platform === 'win32' ? 'powershell' : 'bash'
-              const id = ptyManager.create(chatId, defaultShell, cwd, 'agent', 'AI')
-              agentSession = ptyManager.getMeta(id) ?? undefined
-            }
-            if (!agentSession) {
-              worker.postMessage({
-                type: 'shell_exec_reply', replyId: msg.replyId as string,
-                output: '[не удалось создать shell-сессию]', exitCode: 1, timedOut: false,
+            const replyId = msg.replyId as string
+            const shellMsgId = msg.msgId as string
+            try {
+              const sessions = ptyManager.listByChat(chatId)
+              let agentSession = sessions.find(s => s.source === 'agent' && !s.dead)
+              if (!agentSession) {
+                // Дефолтный shell: PowerShell на Windows, bash на Unix.
+                const defaultShell: ShellType = process.platform === 'win32' ? 'powershell' : 'bash'
+                const id = ptyManager.create(chatId, defaultShell, cwd, 'agent', 'AI')
+                agentSession = ptyManager.getMeta(id) ?? undefined
+              }
+              if (!agentSession) {
+                worker.postMessage({
+                  type: 'shell_exec_reply', replyId,
+                  output: '[не удалось создать shell-сессию]', exitCode: 1, timedOut: false,
+                })
+                return
+              }
+              // Live-прогресс: сообщаем renderer sessionId запущенной команды,
+              // чтобы ToolChain-карточка стримила pty:data внутрь себя.
+              win?.webContents.send('agent:tool_progress', {
+                msgId: shellMsgId, chatId,
+                toolName: 'run_command', stage: 'start',
+                detail: command, sessionId: agentSession.id, ts: Date.now(),
               })
-              return
+              const result = await ptyManager.execInSession(agentSession.id, command, timeoutSec)
+              win?.webContents.send('agent:tool_progress', {
+                msgId: shellMsgId, chatId,
+                toolName: 'run_command', stage: 'done', ts: Date.now(),
+              })
+              worker.postMessage({
+                type: 'shell_exec_reply',
+                replyId,
+                output: result.output,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut,
+              })
+            } catch (err) {
+              // spawn-failure / unexpected error — раньше IIFE reject'ился
+              // молча, shell_exec_reply не отправлялся, worker Promise
+              // висел вечно → агент зависал на await onShellExec.
+              const errMsg = err instanceof Error ? err.message : String(err)
+              win?.webContents.send('agent:tool_progress', {
+                msgId: shellMsgId, chatId,
+                toolName: 'run_command', stage: 'error', ts: Date.now(),
+              })
+              worker.postMessage({
+                type: 'shell_exec_reply', replyId,
+                output: `[spawn failed: ${errMsg}]`, exitCode: 1, timedOut: false,
+              })
             }
-            const result = await ptyManager.execInSession(agentSession.id, command, timeoutSec)
-            worker.postMessage({
-              type: 'shell_exec_reply',
-              replyId: msg.replyId as string,
-              output: result.output,
-              exitCode: result.exitCode,
-              timedOut: result.timedOut,
-            })
           })()
           break
         }
@@ -1357,7 +1428,7 @@ ${subModeOutro}`,
     worker.on('error', (err) => {
       log('[Worker] error chatId=%s: %s', params.chatId, err.message)
       console.error('[Worker] error:', err)
-      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters, run.bufferedTodo)
+      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
       emitRunStatus(win, params.chatId, 'error', assistantMsgId, err.message)
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
         chatId: params.chatId, error: err.message,
@@ -1373,7 +1444,7 @@ ${subModeOutro}`,
         if (!run.doneSent) {
           log('[Worker] exit без done — флешим накопленный прогресс chatId=%s (text=%d chars, steps=%d)',
             params.chatId, run.bufferedText.length, run.bufferedSteps.length)
-          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters, run.bufferedTodo)
+          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
         }
       })
     })
@@ -1381,20 +1452,37 @@ ${subModeOutro}`,
     // Для side-чата строим кастомный промпт: базовый промпт родителя +
     // инструкция о доступе к основному чату через тул get_main_chat_messages.
     const sideSystemPrompt = params.sideChatParentId
-      ? `Ты параллельный доп-агент в правой панели. У тебя есть доступ к основному чату через тул get_main_chat_messages — используй его чтобы запросить конкретные сообщения из истории основного чата, если нужен контекст или детали диалога.
+      ? `Ты параллельный доп-агент в правой панели. У тебя есть read-only доступ к файловой системе (read_file, read_files, list_directory, find_files, search_code, get_fast_context) и к основному чату через тул get_main_chat_messages — используй его чтобы запросить конкретные сообщения из истории основного чата, если нужен контекст или детали диалога. Ты НЕ можешь изменять файлы или выполнять команды — только читать и искать.
 
 Ниже — системный промпт и контекст основного чата (проект, рабочая память, сводка):
 
 ${await getSystemPrompt(dbChatId, params.incognito)}`
       : undefined
 
-    const sideToolSchemas = getToolSchemas({
+    let sideToolSchemas = getToolSchemas({
       planningMode: !!params.planningMode,
       imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
       mode: chatMode,
       mcpTools: params.incognito ? undefined : mcpTools,
     })
     if (params.sideChatParentId) {
+      // Side-чат (доп-чат) — read-only набор: только чтение файлов/поиск +
+      // get_main_chat_messages. Никаких run_command/edit_file/write_file и т.д.
+      // Defense-in-depth: даже если модель попытается вызвать запрещённый тул,
+      // его не будет в schemas → function-calling его не пропустит.
+      const SIDE_CHAT_READONLY_TOOLS = new Set([
+        'read_file',
+        'read_files',
+        'list_directory',
+        'find_files',
+        'search_code',
+        'get_fast_context',
+        'think',
+        'update_todo',
+      ])
+      sideToolSchemas = sideToolSchemas.filter(
+        (s) => SIDE_CHAT_READONLY_TOOLS.has((s as { function: { name: string } }).function.name),
+      )
       sideToolSchemas.push(GET_MAIN_CHAT_MESSAGES_SCHEMA as any)
     }
 
@@ -1744,11 +1832,15 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
       chatId,
       msgId: run.msgId,
       isRunning: !run.doneSent,
-      bufferedText: run.bufferedText,
-      bufferedThinking: run.bufferedThinking,
-      bufferedThinkingMs: run.bufferedThinkingMs,
+      // bufferedText/bufferedThinking — текст/thinking ПОСЛЕ последнего тула
+      // (не полный накопленный). Renderer гидрирует их как buf.text/buf.thinking
+      // = "текст после последнего тула". Раньше возвращался полный bufferedText
+      // → при первом tool_call весь текст захватывался как textBefore → дубли.
+      bufferedText: run.pendingTextAfter,
+      bufferedThinking: run.pendingThinking,
+      bufferedThinkingMs: run.pendingThinkingMs,
       bufferedSteps: run.bufferedSteps,
-      bufferedIters: run.bufferedIters,
+      bufferedIters: buildLiveIters(run),
       bufferedTodo: run.bufferedTodo,
       bufferedAgentStatus: run.bufferedAgentStatus,
       bufferedRateLimitSec: run.bufferedRateLimitSec,
@@ -1764,10 +1856,13 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     const stopRun = (run: ActiveRun) => {
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
       run.worker.terminate()
+      // Прерываем agent PTY: Ctrl+C + очистка pending. Без этого сессия
+      // остаётся в '[shell busy]' и следующий run_command зависает.
+      ptyManager.interruptByChat(run.chatId)
       // Флешим накопленный прогресс — пользователь увидит частичный ответ,
       // сохранённый в историю. sendDone также сбрасывает activeRunMeta и
       // дрейнит очередь этого чата.
-      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, run.bufferedIters, run.bufferedTodo)
+      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
       emitRunStatus(win, run.chatId, 'cancelled', run.msgId)
     }
     if (chatId) {

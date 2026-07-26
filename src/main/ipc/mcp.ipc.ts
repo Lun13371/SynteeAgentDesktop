@@ -21,7 +21,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import Store from 'electron-store'
 import { getMcpManager } from '../../core/mcp/McpManager'
-import { getProjectById, getChatWorkdirContext, getAllProjects } from '../../core/db/database'
+import { getProjectById, getChatWorkdirContext, getAllProjects } from '../../core/db'
 import type { McpServerConfig, McpToolState, ExtensionScope } from '../../shared/types'
 
 export function registerMcpIPC(store: Store, getWindow: () => BrowserWindow | null): void {

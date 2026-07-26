@@ -43,6 +43,7 @@ export default function TerminalPanel({ currentChatId }: TerminalPanelProps) {
   const dockOpen = useTerminalStore(s => s.dockOpen)
   const activeSessionId = useTerminalStore(s => s.activeSessionId)
   const sessionsByChat = useTerminalStore(s => s.sessionsByChat)
+  const aiBusySessionIds = useTerminalStore(s => s.aiBusySessionIds)
   const { createSession, closeSession, switchSession, setDockOpen, setActiveChat } = useTerminalStore.getState()
 
   const [shells, setShells] = useState<ShellInfo[]>([])
@@ -96,12 +97,13 @@ export default function TerminalPanel({ currentChatId }: TerminalPanelProps) {
           {visibleSessions.map((s: TerminalSessionMeta) => (
             <button
               key={s.id}
-              className={`terminal-panel__tab ${s.id === activeSessionId ? 'terminal-panel__tab--active' : ''}`}
+              className={`terminal-panel__tab ${s.id === activeSessionId ? 'terminal-panel__tab--active' : ''} ${aiBusySessionIds.has(s.id) ? 'terminal-panel__tab--ai-busy' : ''}`}
               onClick={() => switchSession(s.id)}
             >
               {s.source === 'agent' && <AppIcon name="bot" size="xs" tone="accent" />}
               <span className="terminal-panel__tab-shell">{shellIconLabel(s.shell)}</span>
               <span className="terminal-panel__tab-title">{s.title}</span>
+              {aiBusySessionIds.has(s.id) && <span className="terminal-panel__tab-busy-dot" />}
               <span className="terminal-panel__tab-close" onClick={(e) => handleClose(s.id, e)}>
                 <AppIcon name="x" size="xs" />
               </span>

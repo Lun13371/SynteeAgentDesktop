@@ -5,8 +5,26 @@ import type Store from 'electron-store'
 import type { ChatMode } from '../shared/types'
 import { getToolSchemas } from '../core/tools'
 import { getFileCacheSnapshot, mergeFileCache } from '../core/context/fileReadCache'
+import {
+  createSubagentWorktree,
+  mergeWorktreeBack,
+  discardWorktree,
+  cleanupWorktree,
+  type WorktreeInfo,
+} from './WorktreeIsolation'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
+
+/**
+ * Режим изоляции файлов суб-агента.
+ * - 'none'     — писать в workdir родителя (shared). Sequential суб-агент видит
+ *                WIP родителя; безопасно только при отсутствии параллелизма.
+ * - 'worktree' — отдельный git worktree от HEAD родителя; дельта сливается
+ *                обратно через `git apply --3way` после завершения.
+ * - 'auto'     — 'worktree' если уже есть pending/running суб-агент на этом
+ *                workdir (реальный параллелизм), иначе 'none'.
+ */
+export type IsolationMode = 'auto' | 'worktree' | 'none'
 
 export interface AgentStep {
   id: string
@@ -34,6 +52,12 @@ export interface AgentRecord {
   createdAt: number
   finishedAt?: number
   error?: string
+  /** workdir родительского чата — для merge-back/cleanup worktree. */
+  workdir?: string
+  /** Резолвнутый режим изоляции ('auto' свернут в 'worktree'|'none' до старта). */
+  isolationMode: 'worktree' | 'none'
+  /** Созданный worktree, если isolationMode === 'worktree' и creation удалось. */
+  worktreeInfo?: WorktreeInfo
 }
 
 export interface SubagentContext {
@@ -45,6 +69,8 @@ export interface SubagentContext {
   projectId?: string
   fastContextDbPath?: string
   fastContextWasmDir?: string
+  /** Запрошенный режим изоляции (default 'auto'). */
+  isolation?: IsolationMode
 }
 
 class AgentManager {
@@ -53,6 +79,12 @@ class AgentManager {
   private windows = new Set<BrowserWindow>()
   private store: Store | null = null
   private resolvers = new Map<string, (result: { summary: string; error?: string }) => void>()
+  /**
+   * Chain-mutex merge-back per workdir: одновременно завершающиеся суб-агенты
+   * одного проекта сериализуют `git apply` в общее рабочее дерево родителя,
+   * чтобы не соревноваться за index/objects.
+   */
+  private mergeChain = new Map<string, Promise<unknown>>()
 
   init(store: Store) {
     this.store = store
@@ -92,6 +124,32 @@ class AgentManager {
     ).length
   }
 
+  /**
+   * Число pending+running суб-агентов на данном workdir. Считаем и 'pending'
+   * (между agents.set и переходом в 'running' есть окно) — это закрывает TOCTOU:
+   * второй spawn, проверяя count в той же синхронной секции, где делает set,
+   * видит первого ещё до старта его worker'а.
+   */
+  getRunningCountByWorkdir(workdir: string): number {
+    return this.getAll().filter(a =>
+      (a.status === 'pending' || a.status === 'running') &&
+      a.workdir === workdir
+    ).length
+  }
+
+  /**
+   * Сериализует merge-back per workdir (chain-mutex). Параллельные завершения
+   * суб-агентов одного проекта выстраиваются в цепочку, чтобы `git apply`
+   * не соревновался за index родителя.
+   */
+  private serializedMerge(workdir: string, info: WorktreeInfo): Promise<{ ok: boolean; conflict: boolean; worktreeKept: boolean; error?: string }> {
+    const prev = this.mergeChain.get(workdir) ?? Promise.resolve()
+    const result = prev.then(() => mergeWorktreeBack(workdir, info))
+    // В цепочку кладём promise без rejection — чтобы один упавший merge не валил всех.
+    this.mergeChain.set(workdir, result.then(() => undefined, () => undefined))
+    return result
+  }
+
   async spawn(opts: {
     id: string
     parentId: string
@@ -102,6 +160,7 @@ class AgentManager {
     storeData: Record<string, unknown>
     context?: SubagentContext
     approvalMode?: 'auto' | 'ask' | 'full'  // §1.10 — override глобального режима
+    isolation?: IsolationMode  // §изоляция — override режима worktree
   }): Promise<{ summary: string; error?: string }> {
     const maxParallel = this.getMaxParallel()
     const running = this.getRunningCount()
@@ -116,6 +175,19 @@ class AgentManager {
         ?.find(a => a.role === 'main')?.modelId ||
       'claude-sonnet-4-6'
 
+    // Резолвим режим изоляции синхронно — в той же секции, что и agents.set,
+    // чтобы getRunningCountByWorkdir был атомарным с регистрацией записи.
+    // isGitRepo проверяется позже в _runWorker (асинхронно); если не-git —
+    // fallback на 'none' там.
+    const workdir = opts.context?.workdir
+    const isolationRequest: IsolationMode = opts.isolation ?? opts.context?.isolation ?? 'auto'
+    let isolationMode: 'worktree' | 'none' = 'none'
+    if (isolationRequest === 'worktree') {
+      isolationMode = 'worktree'
+    } else if (isolationRequest === 'auto' && workdir) {
+      isolationMode = this.getRunningCountByWorkdir(workdir) > 0 ? 'worktree' : 'none'
+    }
+
     const record: AgentRecord = {
       id: opts.id,
       parentId: opts.parentId,
@@ -128,6 +200,8 @@ class AgentManager {
       result: '',
       summary: '',
       createdAt: Date.now(),
+      workdir,
+      isolationMode,
     }
 
     this.agents.set(opts.id, record)
@@ -142,6 +216,36 @@ class AgentManager {
     context?: SubagentContext,
     approvalModeOverride?: 'auto' | 'ask' | 'full',
   ): Promise<{ summary: string; error?: string }> {
+    // §изоляция — если режим 'worktree', создаём отдельный git worktree ДО старта
+    // worker'а и подменяем workdir. Не-git workdir → fallback на 'none' (shared).
+    // Cancel во время создания: cancel() ставит status='cancelled' синхронно,
+    // здесь мы это видим и делаем discard + return.
+    if (record.isolationMode === 'worktree' && record.workdir) {
+      try {
+        const info = await createSubagentWorktree(record.workdir, record.id)
+        if (info) {
+          record.worktreeInfo = info
+          this.broadcast('agent:update', record)
+        } else {
+          // не-git → shared, как и без изоляции
+          record.isolationMode = 'none'
+        }
+      } catch (e: any) {
+        // Не удалось создать worktree (git error, нет прав и т.п.) — fallback на
+        // shared, чтобы суб-агент хотя бы запустился. Логируем для диагностики.
+        record.isolationMode = 'none'
+        console.warn(`[AgentManager] worktree creation failed for ${record.id} (fallback to shared): ${e.message}`)
+      }
+      // Cancel мог прийти во время await — не стартуем worker, чистим worktree.
+      if (record.status === 'cancelled') {
+        if (record.worktreeInfo) {
+          try { await discardWorktree(record.workdir, record.worktreeInfo) } catch { /* noop */ }
+        }
+        return { summary: '', error: 'Суб-агент отменен пользователем' }
+      }
+    }
+    const effectiveWorkdir = record.worktreeInfo?.worktreePath ?? context?.workdir
+
     return new Promise((resolve) => {
       const workerPath = join(__dirname, 'ai-worker.js')
       this.resolvers.set(record.id, resolve)
@@ -154,7 +258,7 @@ class AgentManager {
             isSubAgent: true,
             mode: record.mode,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
-            workdir: context?.workdir,
+            workdir: effectiveWorkdir,
             projectId: context?.projectId,
             fastContextDbPath: context?.fastContextDbPath,
             fastContextWasmDir: context?.fastContextWasmDir,
@@ -175,7 +279,7 @@ class AgentManager {
       this.broadcast('agent:update', record)
 
       const agentSettings = (storeData.agentSettings as Record<string, unknown> | undefined) ?? {
-        maxSteps: 8,
+        maxSteps: 20,
         approvalMode: 'auto',
         toolOutputMode: 'normal',
         enableThinking: false,
@@ -239,13 +343,38 @@ ${subModeOutro}`,
             if (msg.fileCacheUpdates) {
               mergeFileCache(record.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
             }
+            // §изоляция — фиксируем факт cancel до перезаписи status. Если cancel
+            // уже discard'нул worktree, merge не запускаем (race: terminate → 'done').
+            const wasCancelled = record.status === 'cancelled'
             record.status = 'done'
             record.finishedAt = Date.now()
             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
             this.workers.delete(record.id)
             this.resolvers.delete(record.id)
-            this.broadcast('agent:update', record)
-            resolve({ summary: record.summary })
+            // §изоляция — merge-back worktree в родительский workdir (сериализованно
+            // per workdir). Отменённый суб-агент уже discard'нут cancel() — не трогаем.
+            if (record.worktreeInfo && record.workdir && !wasCancelled) {
+              ;(async () => {
+                try {
+                  const mergeResult = await this.serializedMerge(record.workdir!, record.worktreeInfo!)
+                  if (mergeResult.conflict) {
+                    record.summary += `\n\n[Внимание: конфликт слияния worktree с WIP родителя. Изменения суб-агента сохранены в: ${record.worktreeInfo!.worktreePath}]`
+                  } else if (!mergeResult.ok) {
+                    record.summary += `\n\n[Ошибка слияния worktree: ${mergeResult.error}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
+                  }
+                  if (!mergeResult.worktreeKept) {
+                    try { await cleanupWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+                  }
+                } catch (e: any) {
+                  record.summary += `\n\n[Необработанная ошибка merge worktree: ${e.message}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
+                }
+                this.broadcast('agent:update', record)
+                resolve({ summary: record.summary })
+              })()
+            } else {
+              this.broadcast('agent:update', record)
+              resolve({ summary: record.summary })
+            }
             break
           }
           case 'error': {
@@ -265,8 +394,17 @@ ${subModeOutro}`,
             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
             this.workers.delete(record.id)
             this.resolvers.delete(record.id)
-            this.broadcast('agent:update', record)
-            resolve({ summary: record.summary, error: record.error })
+            // §изоляция — при ошибке discard worktree (правки суб-агента не нужны).
+            if (record.worktreeInfo && record.workdir) {
+              ;(async () => {
+                try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+                this.broadcast('agent:update', record)
+                resolve({ summary: record.summary, error: record.error })
+              })()
+            } else {
+              this.broadcast('agent:update', record)
+              resolve({ summary: record.summary, error: record.error })
+            }
             break
           }
         }
@@ -277,8 +415,17 @@ ${subModeOutro}`,
         record.error = e.message
         record.finishedAt = Date.now()
         this.workers.delete(record.id)
-        this.broadcast('agent:update', record)
-        resolve({ summary: '', error: e.message })
+        // §изоляция — discard worktree при crash worker'а.
+        if (record.worktreeInfo && record.workdir) {
+          ;(async () => {
+            try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+            this.broadcast('agent:update', record)
+            resolve({ summary: '', error: e.message })
+          })()
+        } else {
+          this.broadcast('agent:update', record)
+          resolve({ summary: '', error: e.message })
+        }
       })
 
       worker.on('exit', (code) => {
@@ -287,8 +434,17 @@ ${subModeOutro}`,
           record.error = code !== 0 ? `Worker завершился с кодом ${code}` : undefined
           record.finishedAt = Date.now()
           this.workers.delete(record.id)
-          this.broadcast('agent:update', record)
-          resolve({ summary: record.summary || '', error: record.error })
+          // §изоляция — discard worktree при неожиданном exit (если ещё не очищен).
+          if (record.worktreeInfo && record.workdir) {
+            ;(async () => {
+              try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+              this.broadcast('agent:update', record)
+              resolve({ summary: record.summary || '', error: record.error })
+            })()
+          } else {
+            this.broadcast('agent:update', record)
+            resolve({ summary: record.summary || '', error: record.error })
+          }
         }
       })
     })
@@ -305,6 +461,14 @@ ${subModeOutro}`,
       record.status = 'cancelled'
       record.finishedAt = Date.now()
       this.broadcast('agent:update', record)
+      // §изоляция — discard worktree при cancel. Если worktree ещё создаётся
+      // (record.worktreeInfo не установлен), discard сделает _runWorker по
+      // проверке status === 'cancelled'. Идемпотентен — двойной discard безопасен.
+      if (record.worktreeInfo && record.workdir) {
+        ;(async () => {
+          try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+        })()
+      }
     }
     const resolver = this.resolvers.get(id)
     if (resolver) {

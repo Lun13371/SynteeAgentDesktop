@@ -16,7 +16,7 @@ import { basename, relative } from 'path'
 import { buildOrUpdateIndex, getIndexSettingsFromRecord, DEFAULT_INDEXING_SETTINGS, type IndexProgress, type IndexingSettings } from './fastContext'
 import {
   addIndexHistoryEvent, pruneIndexHistory, getFastContextIndexCount,
-} from '../db/database'
+} from '../db'
 import type Store from 'electron-store'
 
 // Module-level store reference — устанавливается через setWatcherStore(store)

@@ -12,6 +12,8 @@
  */
 import { useEffect, useRef } from 'react'
 import { attachToContainer, flushPreMount, fitTerminal, focusTerminal, getOrCreateTerminal } from '../../../utils/terminalRegistry'
+import { useTerminalStore } from '../../../store/terminal.store'
+import AppIcon from '../AppIcon/AppIcon'
 import './TerminalView.css'
 
 interface TerminalViewProps {
@@ -23,6 +25,7 @@ interface TerminalViewProps {
 
 export default function TerminalView({ sessionId, autoFocus, className }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const aiBusy = useTerminalStore(s => s.aiBusySessionIds.has(sessionId))
 
   useEffect(() => {
     const container = containerRef.current
@@ -36,26 +39,43 @@ export default function TerminalView({ sessionId, autoFocus, className }: Termin
     attachToContainer(sessionId, container)
     flushPreMount(sessionId)
 
-    // ResizeObserver: при изменении размеров контейнера — fit + сообщаем PTY
-    const ro = new ResizeObserver(() => {
+    // ResizeObserver: при изменении размеров контейнера — fit + сообщаем PTY.
+    // Debounce 100мс — во время анимации панели (framer-motion, ~60fps) RO
+    // стреляет каждый кадр, вызывая синхронный fit() + IPC на каждый кадр.
+    // При 5+ сессиях в BottomDock это создавало флуд IPC + блокировку main.
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    const doFit = () => {
       const dims = fitTerminal(sessionId)
       if (dims) window.syntee.pty.resize(sessionId, dims.cols, dims.rows)
+    }
+    const ro = new ResizeObserver(() => {
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(doFit, 100)
     })
     ro.observe(container)
 
     // Начальный fit после того как контейнер получил размеры
     requestAnimationFrame(() => {
-      const dims = fitTerminal(sessionId)
-      if (dims) window.syntee.pty.resize(sessionId, dims.cols, dims.rows)
+      doFit()
       if (autoFocus) focusTerminal(sessionId)
     })
 
     return () => {
       ro.disconnect()
+      if (resizeTimer) clearTimeout(resizeTimer)
       // НЕ диспозим Terminal — он переживает unmount (reparenting).
       // Dispose только при закрытии сессии (через store.closeSession → disposeTerminal).
     }
   }, [sessionId, autoFocus])
 
-  return <div ref={containerRef} className={`terminal-view ${className ?? ''}`} />
+  return (
+    <div ref={containerRef} className={`terminal-view ${aiBusy ? 'terminal-view--ai-busy' : ''} ${className ?? ''}`}>
+      {aiBusy && (
+        <div className="terminal-view__ai-badge">
+          <AppIcon name="bot" size="xs" tone="accent" />
+          <span>AI выполняет команду…</span>
+        </div>
+      )}
+    </div>
+  )
 }

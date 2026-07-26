@@ -122,6 +122,72 @@ function formatArg(v: unknown): string {
   return JSON.stringify(v, null, 2)
 }
 
+// ANSI-стрипинг для renderer (нельзя импортировать из _shared.ts — там Node-зависимости).
+// Та же логика что stripAnsi в core/tools/_shared.ts.
+function stripAnsiRenderer(text: string): string {
+  if (!text) return text
+  return text
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b[^[\]]/g, '')
+    .replace(/[\b]/g, '')
+}
+
+// ── Live-вывод команды пока она выполняется ──────────────────────────
+// Подписывается на pty:data для sessionId, стримит plain-text (ANSI стрипнут,
+// маркер __SYNTEE_DONE вырезан) в <pre> с авто-скроллом. rAF-throttle чтобы
+// не ре-рендерить на каждый чанк. Buffer capped 50KB (хвост) — иначе длинный
+// вывод (npm install) раздул бы DOM.
+const LiveCommandOutput = memo(function LiveCommandOutput({ sessionId }: { sessionId: string }) {
+  const [output, setOutput] = useState('')
+  const bufRef = useRef('')
+  const rafRef = useRef<number | null>(null)
+  const pendingRef = useRef(false)
+  const preRef = useRef<HTMLPreElement>(null)
+
+  useEffect(() => {
+    bufRef.current = ''
+    setOutput('')
+    const off = window.syntee.on('pty:data', (sid: unknown, data: unknown) => {
+      if (sid !== sessionId) return
+      const chunk = typeof data === 'string' ? data : ''
+      if (!chunk) return
+      // ANSI + маркер-огрызки
+      const clean = stripAnsiRenderer(chunk)
+        .replace(/__SYNTEE_DONE_[a-f0-9]+:\d+\s*$/m, '')
+      bufRef.current += clean
+      // Cap 50KB — оставляем хвост (самое свежее)
+      if (bufRef.current.length > 50000) {
+        bufRef.current = bufRef.current.slice(-50000)
+      }
+      if (!pendingRef.current) {
+        pendingRef.current = true
+        rafRef.current = requestAnimationFrame(() => {
+          pendingRef.current = false
+          setOutput(bufRef.current)
+        })
+      }
+    })
+    return () => {
+      off()
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+    }
+  }, [sessionId])
+
+  // Авто-скролл вниз при обновлении
+  useEffect(() => {
+    if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
+  }, [output])
+
+  if (!output) return null
+  return (
+    <div className="tc2-section tc2-live-terminal">
+      <div className="tc2-section-title">Вывод</div>
+      <pre ref={preRef} className="tc2-live-terminal-pre">{output}</pre>
+    </div>
+  )
+}, (prev, next) => prev.sessionId === next.sessionId)
+
 // Цветной diff блок
 function DiffBlock({ diff }: { diff: string }) {
   const lines = diff.split('\n').filter((_, i, arr) => {
@@ -145,7 +211,7 @@ function DiffBlock({ diff }: { diff: string }) {
 
 // Один блок итерации
 const IterationBlock = memo(function IterationBlock({
-  iter, index, isLast, isRunning, mode, defaultOpen,
+  iter, index, isLast, isRunning, mode, defaultOpen, liveSessionId,
 }: {
   iter: Iteration
   index: number
@@ -153,6 +219,7 @@ const IterationBlock = memo(function IterationBlock({
   isRunning: boolean
   mode: ToolOutputMode
   defaultOpen: boolean
+  liveSessionId?: string
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const meta = getToolMeta(iter.call.toolName, iter.call.serverName)
@@ -306,10 +373,17 @@ const IterationBlock = memo(function IterationBlock({
               )}
 
               {running && (
-                <div className="tc2-section tc2-section--running">
-                  <span className="tc2-spinner" />
-                  <span className="tc2-running-text">Выполняется…</span>
-                </div>
+                <>
+                  {/* Live-вывод для run_command пока команда выполняется.
+                      Подписывается на pty:data по sessionId из toolProgress. */}
+                  {iter.call.toolName === 'run_command' && liveSessionId && (
+                    <LiveCommandOutput sessionId={liveSessionId} />
+                  )}
+                  <div className="tc2-section tc2-section--running">
+                    <span className="tc2-spinner" />
+                    <span className="tc2-running-text">Выполняется…</span>
+                  </div>
+                </>
               )}
             </motion.div>
           )}
@@ -318,17 +392,23 @@ const IterationBlock = memo(function IterationBlock({
     </motion.div>
   )
 }, (prev, next) => prev.iter === next.iter && prev.isLast === next.isLast &&
-  prev.isRunning === next.isRunning && prev.mode === next.mode && prev.defaultOpen === next.defaultOpen)
+  prev.isRunning === next.isRunning && prev.mode === next.mode && prev.defaultOpen === next.defaultOpen &&
+  prev.liveSessionId === next.liveSessionId)
 
-const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elapsed, summary }: {
+const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elapsed, summary, toolProgress }: {
   steps: ToolStep[]
   mode: ToolOutputMode
   isRunning: boolean
   label?: string
   elapsed?: number   // ms — время выполнения для финального блока
   summary?: boolean  // если true — компактный финальный блок
+  toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }) {
   const iters = useMemo(() => buildIterations(steps), [steps])
+  // sessionId для live-вывода run_command (из tool_progress). Передаётся ТОЛЬКО
+  // в IterationBlock — не в store, чтобы pty:data-стрим не триггерил ре-рендер.
+  const runCmdSessionId = toolProgress?.['run_command']?.sessionId
+  const runCmdActive = toolProgress?.['run_command']?.stage === 'start'
   const [collapsed, setCollapsed] = useState(true)  // свёрнут по дефолту
   const totalDone = iters.filter(i => i.result).length
   const hasFailed = iters.some(i => i.result?.success === false)
@@ -428,6 +508,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
                 isRunning={!!isRunning}
                 mode={mode}
                 defaultOpen={!!isRunning && idx === iters.length - 1}
+                liveSessionId={runCmdActive && iter.call.toolName === 'run_command' && !iter.result ? runCmdSessionId : undefined}
               />
             ))}
 
@@ -467,6 +548,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   )
 }, (prev, next) => prev.steps === next.steps && prev.mode === next.mode &&
   prev.isRunning === next.isRunning && prev.label === next.label &&
-  prev.elapsed === next.elapsed && prev.summary === next.summary)
+  prev.elapsed === next.elapsed && prev.summary === next.summary &&
+  prev.toolProgress === next.toolProgress)
 
 export default ToolChain

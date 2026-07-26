@@ -213,6 +213,11 @@
   display: flex;
   flex-direction: column;
 }
+/* CodePreview сам управляет скроллом через .code-preview__scroll */
+.file-explorer__preview-body > * {
+  flex: 1;
+  min-height: 0;
+}
 
 .file-explorer__preview-loading {
   display: flex;

@@ -1,16 +1,5 @@
 import { ipcMain } from 'electron'
-import { exec } from 'child_process'
-import { promisify } from 'util'
-
-const execAsync = promisify(exec)
-
-const GIT_TIMEOUT_MS = 8000
-
-async function runGit(workdir: string, args: string[]): Promise<string> {
-  const cmd = `git -C "${workdir}" ${args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ')}`
-  const { stdout } = await execAsync(cmd, { timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 })
-  return stdout
-}
+import { runGit } from '../git/runGit'
 
 export interface GitFileStatus {
   path: string

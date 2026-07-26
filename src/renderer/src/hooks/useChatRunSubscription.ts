@@ -26,7 +26,7 @@ interface ChatBuffers {
   thinkingBuf: string        // time-based throttle буфер для thinking-токенов
   flushTimer: ReturnType<typeof setTimeout> | null  // id setTimeout для батч-флеша
   streamMsgId: string | null // msgId текущего стрима (для матчинга step→итерация)
-  toolProgress: Record<string, { stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }
 
 const buffers = new Map<string, ChatBuffers>()
@@ -492,11 +492,11 @@ export function useChatRunSubscription() {
       liveSet(data.chatId, { agentStatus: data.text })
     })
 
-    // agent:tool_progress — live progress для долгих тулов (get_fast_context).
-    // Эфемерный — не персистится в БД, только отображается в live ToolChain.
+    // agent:tool_progress — live progress для долгих тулов (get_fast_context,
+    // run_command). Эфемерный — не персистится в БД, только отображается в live ToolChain.
     const offToolProgress = window.syntee.on('agent:tool_progress', (data: {
       msgId: string; chatId: string; toolName: string; stage: string
-      detail?: string; filesProcessed?: number; filesTotal?: number
+      detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number
       filesFound?: Array<{ path: string; score: number; why: string }>
     }) => {
       if (!data.chatId) return
@@ -507,6 +507,7 @@ export function useChatRunSubscription() {
         [data.toolName]: {
           stage: data.stage,
           detail: data.detail,
+          sessionId: data.sessionId,
           filesProcessed: data.filesProcessed,
           filesTotal: data.filesTotal,
           filesFound: data.filesFound,
