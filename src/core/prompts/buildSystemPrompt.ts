@@ -39,12 +39,20 @@ export function buildSystemPrompt(params: {
   activeSkills?: Skill[]
   /** Активные MCP-серверы с их тулами — для краткой заметки в промпте. */
   activeMcpServers?: McpPromptInfo[]
+  /**
+   * One-shot скилл — инструкции временно инъектируются на этот прогон
+   * (без записи в skillsState). Используется командами типа /review →
+   * skill:code-review. В отличие от activeSkills, инструкции попадают
+   * в промпт напрямую (а не через get_skill).
+   */
+  oneShotSkill?: { name: string; instructions: string }
 }): string {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
   const skillsBlock = buildSkillsBlock(activeSkills)
+  const oneShotSkillBlock = buildOneShotSkillBlock(oneShotSkill)
   const mcpBlock = buildMcpBlock(activeMcpServers)
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)
@@ -60,6 +68,7 @@ ${workingMemory ? `\n## Рабочая память (что было сдела�
 ${customSystemPrompt ? `\n## Пользовательская инструкция\n${customSystemPrompt}\n` : ''}
 ${mcpBlock}
 ${skillsBlock}
+${oneShotSkillBlock}
 
 ## Безопасность и prompt-injection
 
@@ -432,6 +441,21 @@ export function buildAskInjection(): string {
 - Не задавай больше 5 вопросов за раз. Если можешь сделать разумное предположение — делай, не спрашивай.
 - Длинные ответы структурируй: заголовки, списки, блоки кода. Не лей воду.
 - Это не режим планирования — не оборачивай ответ в <plan>. Просто отвечай.`
+}
+
+/**
+ * Блок one-shot скилла — инструкции временно инъектируются на этот прогон
+ * (без записи в skillsState). Используется командами типа /review.
+ * В отличие от активных скиллов, инструкции попадают в промпт напрямую,
+ * а не через get_skill. Если скилл не задан — пустая строка.
+ */
+function buildOneShotSkillBlock(skill?: { name: string; instructions: string }): string {
+  if (!skill?.instructions) return ''
+  return `## Активный режим: ${skill.name}
+
+Следуй этим инструкциям в текущей задаче:
+
+${skill.instructions}`
 }
 
 /**

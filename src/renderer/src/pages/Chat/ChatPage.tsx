@@ -15,9 +15,11 @@ import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedB
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
+import HelpModal from '../../components/ui/HelpModal/HelpModal'
 import { useChatStore, EMPTY_LIVE } from '../../store/chat.store'
-import { parseSlashCommand } from '../../../../shared/slashCommands'
-import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta } from '../../../../shared/types'
+import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
+import type { SlashCommand } from '../../../../shared/slashCommands'
+import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta } from '../../../../shared/types'
 import './ChatPage.css'
 
 const itemStyle: React.CSSProperties = {
@@ -116,15 +118,50 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [searchMatchIds, setSearchMatchIds] = useState<string[]>([])
   const [replyTo, setReplyTo] = useState<Message[]>([])
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null)
-  const [inputText, setInputText] = useState('')
+  // ── Per-chat UI state (переживает перезапуск приложения) ──
+  // draft — текст в поле ввода (черновик). inputHistory — предыдущие
+  // user-запросы чата (DESC, самый свежий первым), для навигации стрелками.
+  // planning/image/askMode — тумблеры плюсик-меню инпут-бара.
+  // Все четыре сохраняются в chats/messages через IPC. Для инкогнито —
+  // только in-memory на сессию (после рестарта чисто).
+  const [draft, setDraft] = useState('')
+  const [inputHistory, setInputHistory] = useState<string[]>([])
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
   const [askMode, setAskMode] = useState(false)
+
+  // Refs для актуальных значений в эффекте сохранения при смене чата —
+  // замыкание в useEffect видит значения на момент создания, а нам нужны
+  // свежие draft/modes при переключении chatId.
+  const draftRef = useRef('')
+  const planningModeRef = useRef(false)
+  const imageModeRef = useRef(false)
+  const askModeRef = useRef(false)
+  const prevChatIdRef = useRef<string | null>(null)
+  const prevIsIncognitoRef = useRef(false)
+  // In-memory история для инкогнито-чатов (chatId → DESC массив), чтобы
+  // стрелки работали в инкогнито в рамках сессии, но не писались в БД.
+  const incognitoHistoryRef = useRef<Map<string, string[]>>(new Map())
+  // Debounce-таймер для черновика — чтобы не писать в БД на каждый символ.
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => { draftRef.current = draft }, [draft])
+  useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
+  useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
+  useEffect(() => { askModeRef.current = askMode }, [askMode])
 
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
   const [reasoningValue, setReasoningValue] = useState('')
   const [isCompacting, setIsCompacting] = useState(false)
+
+  // ── Кастомные slash-команды (из .md-файлов через CommandManager) ──
+  // Загружаются при mount и при смене workdir (проектные команды).
+  const [customCommands, setCustomCommands] = useState<SlashCommand[]>([])
+  // ── /help модалка ──
+  const [showHelp, setShowHelp] = useState(false)
+  // ── /restore пикер именованных снапшотов ──
+  const [snapshotPicker, setSnapshotPicker] = useState<CheckpointMeta[] | null>(null)
 
   const handleReasoningChange = (value: string) => {
     setReasoningValue(value)
@@ -210,12 +247,143 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Счётчик контекста
   const contextInfo = useContextCounter({
     chatId: currentChatId || '',
-    currentInput: inputText,
+    currentInput: draft,
     modelId: mainModelId,
     incognito: isIncognito,
     enabled: showContextRing && !isIncognito,
     messageCount: messages.length,
   })
+
+  // ── Wrapper'ы режимов инпут-бара ──
+  // Каждый тумблер сохраняет своё состояние в БД (chats.planning_mode /
+  // image_mode / ask_mode) для переживания перезапуска. Инкогнито не
+  // пишется — только in-memory state. Пишем все 3 режима разом: один
+  // UPDATE в SQLite дешевле, чем три IPC-вызова.
+  const persistModes = (chatId: string, p: boolean, i: boolean, a: boolean) => {
+    if (!chatId || isIncognito) return
+    window.syntee.chat.setModes(chatId, { planningMode: p, imageMode: i, askMode: a }).catch(() => {})
+  }
+  const handlePlanningModeChange = (v: boolean) => {
+    setPlanningMode(v)
+    persistModes(currentChatId ?? '', v, imageModeRef.current, askModeRef.current)
+  }
+  const handleImageModeChange = (v: boolean) => {
+    setImageMode(v)
+    persistModes(currentChatId ?? '', planningModeRef.current, v, askModeRef.current)
+  }
+  const handleAskModeChange = (v: boolean) => {
+    setAskMode(v)
+    persistModes(currentChatId ?? '', planningModeRef.current, imageModeRef.current, v)
+  }
+
+  // ── Черновик: debounced-сохранение в БД ──
+  // 300мс задержка — чтобы не дёргать IPC на каждое нажатие. При смене
+  // чата / размонтировании pending-таймер отменяется и сохранение идёт
+  // синхронно в эффекте ниже.
+  const handleDraftChange = (text: string) => {
+    setDraft(text)
+    draftRef.current = text
+    if (currentChatId && !isIncognito) {
+      if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current)
+      draftSaveTimerRef.current = setTimeout(() => {
+        window.syntee.chat.setDraft(currentChatId, text).catch(() => {})
+        draftSaveTimerRef.current = null
+      }, 300)
+    }
+  }
+
+  // ── Загрузка/сохранение per-chat UI state при смене чата ──
+  // При переключении chatId: сначала сохраняем draft/modes предыдущего
+  // чата (если не инкогнито), затем загружаем draft/modes/history нового.
+  // Инкогнито-чаты: сбрасываем режимы/черновик в дефолт, историю берём
+  // из in-memory Map (если уже обращались к этому инкогнито-чату).
+  useEffect(() => {
+    const prevId = prevChatIdRef.current
+    const prevIncog = prevIsIncognitoRef.current
+    // Сохраняем старый чат (если был и не инкогнито)
+    if (prevId && prevId !== currentChatId && !prevIncog) {
+      if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null }
+      window.syntee.chat.setDraft(prevId, draftRef.current).catch(() => {})
+      window.syntee.chat.setModes(prevId, {
+        planningMode: planningModeRef.current,
+        imageMode: imageModeRef.current,
+        askMode: askModeRef.current,
+      }).catch(() => {})
+    }
+    prevChatIdRef.current = currentChatId
+    prevIsIncognitoRef.current = isIncognito
+
+    if (!currentChatId) {
+      setDraft('')
+      setInputHistory([])
+      setPlanningMode(false); setImageMode(false); setAskMode(false)
+      draftRef.current = ''
+      return
+    }
+    // Отменяем pending-debounce от прежнего чата
+    if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null }
+
+    if (isIncognito) {
+      // Инкогнито: дефолт-значения, история из in-memory Map
+      setDraft('')
+      setPlanningMode(false); setImageMode(false); setAskMode(false)
+      draftRef.current = ''
+      setInputHistory(incognitoHistoryRef.current.get(currentChatId) ?? [])
+      return
+    }
+    // Обычный чат: грузим modes/draft/history из БД параллельно
+    let cancelled = false
+    Promise.all([
+      window.syntee.chat.getModes(currentChatId),
+      window.syntee.chat.getDraft(currentChatId),
+      window.syntee.chat.getInputHistory(currentChatId),
+    ]).then(([modes, draftText, history]) => {
+      if (cancelled || currentChatId !== prevChatIdRef.current) return
+      setPlanningMode(!!modes.planningMode)
+      setImageMode(!!modes.imageMode)
+      setAskMode(!!modes.askMode)
+      planningModeRef.current = !!modes.planningMode
+      imageModeRef.current = !!modes.imageMode
+      askModeRef.current = !!modes.askMode
+      const d = typeof draftText === 'string' ? draftText : ''
+      setDraft(d)
+      draftRef.current = d
+      // Дедупликация подряд идущих дубликатов + reverse → DESC (свежий первым)
+      const raw = Array.isArray(history) ? history : []
+      const dedup: string[] = []
+      for (const s of raw) {
+        if (dedup.length === 0 || dedup[dedup.length - 1] !== s) dedup.push(s)
+      }
+      dedup.reverse()
+      setInputHistory(dedup)
+    }).catch(() => {
+      if (cancelled) return
+      setDraft(''); setPlanningMode(false); setImageMode(false); setAskMode(false); setInputHistory([])
+    })
+    return () => { cancelled = true }
+  }, [currentChatId, isIncognito])
+
+  // ── beforeunload: сохраняем черновик текущего чата при закрытии окна ──
+  // Debounce 300мс может не успеть сработать перед закрытием. Fire-and-forget
+  // через ipcRenderer.send — без ожидания ответа. Не гарантируется доставка,
+  // но покрывает большинство случаев.
+  useEffect(() => {
+    const handler = () => {
+      const id = prevChatIdRef.current
+      if (id && !prevIsIncognitoRef.current) {
+        try {
+          window.syntee.chat.setDraft(id, draftRef.current).catch(() => {})
+          window.syntee.chat.setModes(id, {
+            planningMode: planningModeRef.current,
+            imageMode: imageModeRef.current,
+            askMode: askModeRef.current,
+          }).catch(() => {})
+        } catch { /* окно уже закрывается — ок */ }
+      }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
 
   // Selection reply — выделил текст в чате → popup с кнопкой Reply
   useEffect(() => {
@@ -526,7 +694,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   const handleSend = async (text: string) => {
     const raw = text.trim()
-    const slash = parseSlashCommand(raw)
+    const slash = parseSlashCommandWithCustom(raw, customCommands)
 
     // При отправке сообщения — принудительно закрепляем авто-скролл.
     // Пользователь ожидает увидеть своё сообщение и ответ, даже если до этого
@@ -552,6 +720,92 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // + ask-инъекцию только для этого запроса, не меняя глобальный тоггл askMode.
     if (slash?.command.name === 'ask') {
       if (!slash.args) { toast('Укажи вопрос: /ask как работает этот модуль?', 'info'); return }
+    }
+
+    // ── /help — открыть модалку (без аргументов) ──
+    if (slash?.command.name === 'help') {
+      setShowHelp(true)
+      return
+    }
+
+    // ── /fork — дублировать чат с этого места ──
+    // Копирует сообщения + working memory + summary + project в новый чат.
+    // Без currentChatId — нет смысла (нечего форкать).
+    if (slash?.command.name === 'fork') {
+      if (!currentChatId) { toast('Создай чат перед /fork', 'info'); return }
+      try {
+        const result = await window.syntee.chat.fork(currentChatId, slash.args || undefined) as {
+          chatId?: string; messages?: Message[]; title?: string; error?: string
+        }
+        if (result.error) { toast(result.error, 'error'); return }
+        if (result.chatId) {
+          const all: Chat[] = await window.syntee.chat.getAll()
+          setChats(all)
+          setCurrentChat(result.chatId)
+          if (result.messages) setMessages(result.messages)
+          toast(`Чат форкнут: ${result.title ?? 'новый чат'}`, 'success')
+        }
+      } catch (e) {
+        toast('Ошибка форка: ' + String((e as Error)?.message ?? e), 'error')
+      }
+      return
+    }
+
+    // ── /snapshot <name> — именованный снапшот ──
+    if (slash?.command.name === 'snapshot') {
+      if (!currentChatId) { toast('Создай чат перед /snapshot', 'info'); return }
+      if (!slash.args) { toast('Укажи имя: /snapshot my-feature', 'info'); return }
+      try {
+        const result = await window.syntee.chat.snapshotCreate(currentChatId, slash.args) as {
+          snapshot?: CheckpointMeta; error?: string
+        }
+        if (result.error) { toast(result.error, 'error'); return }
+        if (result.snapshot) {
+          toast(`Снапшот сохранён: ${result.snapshot.name}`, 'success')
+        }
+      } catch (e) {
+        toast('Ошибка снапшота: ' + String((e as Error)?.message ?? e), 'error')
+      }
+      return
+    }
+
+    // ── /restore [id|name] — восстановить снапшот ──
+    // Без аргумента — открываем пикер именованных снапшотов.
+    // С аргументом — пытаемся найти по name и восстановить.
+    if (slash?.command.name === 'restore') {
+      if (!currentChatId) { toast('Создай чат перед /restore', 'info'); return }
+      // Если аргумент указан — ищем по имени и восстанавливаем сразу.
+      if (slash.args) {
+        try {
+          const snapshots = await window.syntee.chat.snapshotList(currentChatId) as CheckpointMeta[]
+          const found = snapshots.find(s => s.name === slash.args)
+          if (!found) {
+            toast(`Снапшот "${slash.args}" не найден. Доступные: ${snapshots.map(s => s.name).join(', ') || 'нет'}`, 'error')
+            return
+          }
+          const result = await window.syntee.chat.rewindTo(currentChatId, found.userMessageId) as { messages?: Message[]; error?: string }
+          if (result.error) { toast(result.error, 'error'); return }
+          if (result.messages) {
+            setMessages(result.messages)
+            toast(`Восстановлен снапшот: ${found.name}`, 'success')
+          }
+        } catch (e) {
+          toast('Ошибка восстановления: ' + String((e as Error)?.message ?? e), 'error')
+        }
+        return
+      }
+      // Без аргумента — открываем пикер.
+      try {
+        const snapshots = await window.syntee.chat.snapshotList(currentChatId) as CheckpointMeta[]
+        if (snapshots.length === 0) {
+          toast('Нет именованных снапшотов. Создайте через /snapshot <имя>', 'info')
+          return
+        }
+        setSnapshotPicker(snapshots)
+      } catch (e) {
+        toast('Ошибка загрузки снапшотов: ' + String((e as Error)?.message ?? e), 'error')
+      }
+      return
     }
 
     // /compact — ручное сжатие контекста чата. Не создаёт user-сообщения
@@ -614,9 +868,43 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const displayContent = raw
     let aiContent: string = raw
 
+    // ── One-shot параметры для кастомных команд ──
+    // Если команда custom (из .md) и имеет skill/mode/allowedTools —
+    // прокидываем их в chat:send как oneShot*. Это активирует скилл на этот
+    // прогон без записи в skillsState, фильтрует тулы и/или включает read-only.
+    let oneShotSkill: { name: string; instructions: string } | undefined
+    let oneShotAllowedTools: string[] | undefined
+    let oneShotMode: 'ask' | 'plan' | 'code' | undefined
+
     if (slash) {
       const sysPrompt = slash.command.systemPrompt(slash.args)
       if (sysPrompt) aiContent = sysPrompt
+
+      // Кастомная команда с one-shot параметрами
+      if (slash.command.custom) {
+        if (slash.command.mode) oneShotMode = slash.command.mode
+        if (slash.command.allowedTools && slash.command.allowedTools.length > 0) {
+          oneShotAllowedTools = slash.command.allowedTools
+        }
+        // Если указан skill — резолвим его инструкции через skills:getAll.
+        // Скилл может быть builtin (в resources/skills) или user/project.
+        if (slash.command.skill) {
+          try {
+            const skills = await window.syntee.skills.getAll({
+              projectId: activeProjectId || undefined,
+            }) as Array<{ name: string; instructions: string; source: string; state?: { enabled: boolean } }>
+            // Ищем по имени — preferring builtin (они в дистрибутиве).
+            const found = skills.find(s => s.name === slash.command.skill)
+            if (found) {
+              oneShotSkill = { name: found.name, instructions: found.instructions }
+            } else {
+              toast(`Скилл "${slash.command.skill}" не найден. Команда выполнится без скилла.`, 'info')
+            }
+          } catch (e) {
+            console.error('[ChatPage] skills.getAll failed for oneShotSkill', e)
+          }
+        }
+      }
     }
 
     if (replyTo.length > 0) {
@@ -656,6 +944,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       askMode: askMode || slash?.command.name === 'ask',
       imageMode,
       mode: activeMode,
+      // One-shot параметры кастомной команды (skill/mode/allowedTools).
+      oneShotSkill,
+      oneShotAllowedTools,
+      oneShotMode,
     }) as { queued?: boolean; assistantMsgId?: string }
 
     if (result.queued && result.assistantMsgId) {
@@ -673,6 +965,30 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         setShowScrollDownBtn(false)
         scrollToBottomInstant()
       })
+    }
+
+    // ── Обновляем историю навигации по стрелкам ──
+    // displayContent — то, что ввёл пользователь (без quotes/sysPrompt).
+    // Для обычных чатов — ре-фетч из БД (там уже сохранено). Для инкогнито —
+    // поддерживаем in-memory Map на сессию. Дедупликация подряд-дубликатов.
+    if (isIncognito && chatId) {
+      const prev = incognitoHistoryRef.current.get(chatId) ?? []
+      if (prev.length === 0 || prev[0] !== displayContent) {
+        const next = [displayContent, ...prev]
+        incognitoHistoryRef.current.set(chatId, next)
+        if (chatId === currentChatId) setInputHistory(next)
+      }
+    } else if (chatId) {
+      window.syntee.chat.getInputHistory(chatId).then((history: string[]) => {
+        if (chatId !== currentChatId) return
+        const raw = Array.isArray(history) ? history : []
+        const dedup: string[] = []
+        for (const s of raw) {
+          if (dedup.length === 0 || dedup[dedup.length - 1] !== s) dedup.push(s)
+        }
+        dedup.reverse()
+        setInputHistory(dedup)
+      }).catch(() => {})
     }
   }
 
@@ -710,6 +1026,23 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (!currentChatId || isIncognito) return undefined
     return chats.find(c => c.id === currentChatId)?.workdir
   }, [chats, currentChatId, isIncognito])
+
+  // ── Загрузка кастомных slash-команд (из .md-файлов) ──
+  // Грузим при mount и при смене workdir (проектные команды из .syntee/commands/).
+  // builtin из SLASH_COMMANDS не входят в этот список — они в filterCommands.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const cmds = await window.syntee.commands.list({ projectWorkdir: currentWorkdir }) as SlashCommand[]
+        if (!cancelled) setCustomCommands(cmds)
+      } catch (e) {
+        console.error('[ChatPage] commands.list failed', e)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [currentWorkdir])
 
   const activeProject = useMemo(() => {
     if (!currentChatId) return undefined
@@ -975,19 +1308,22 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onStop={() => currentChatId && window.syntee.chat.stop(currentChatId)}
               contextInfo={contextInfo}
               showContextRing={showContextRing}
-              onInputChange={setInputText}
+              value={draft}
+              onChangeValue={handleDraftChange}
+              inputHistory={inputHistory}
               mainModelId={mainModelId}
               onMainModelChange={handleMainModelChange}
               reasoningValue={reasoningValue}
               onReasoningChange={handleReasoningChange}
               planningMode={planningMode}
-              onPlanningModeChange={setPlanningMode}
+              onPlanningModeChange={handlePlanningModeChange}
               imageMode={imageMode}
-              onImageModeChange={setImageMode}
+              onImageModeChange={handleImageModeChange}
               askMode={askMode}
-              onAskModeChange={setAskMode}
+              onAskModeChange={handleAskModeChange}
               workdir={currentWorkdir}
               compactSessionStats={compactSessionStats}
+              customCommands={customCommands}
             />
           </div>
 
@@ -1019,6 +1355,73 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               </button>
             </div>,
             document.body
+          )}
+
+          {/* /help модалка — список команд + горячих клавиш */}
+          <HelpModal open={showHelp} onClose={() => setShowHelp(false)} customCommands={customCommands} />
+
+          {/* /restore пикер именованных снапшотов */}
+          {snapshotPicker && createPortal(
+            <div
+              className="snapshot-picker-overlay"
+              onClick={() => setSnapshotPicker(null)}
+            >
+              <div
+                className="snapshot-picker"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="snapshot-picker-header">
+                  <h3>Восстановить снапшот</h3>
+                  <button
+                    className="snapshot-picker-close"
+                    onClick={() => setSnapshotPicker(null)}
+                    title="Закрыть"
+                  >
+                    <AppIcon name="x" size="sm" />
+                  </button>
+                </div>
+                <div className="snapshot-picker-list">
+                  {snapshotPicker.map(snap => (
+                    <button
+                      key={snap.id}
+                      className="snapshot-picker-item"
+                      onClick={async () => {
+                        if (!currentChatId) return
+                        try {
+                          const result = await window.syntee.chat.rewindTo(currentChatId, snap.userMessageId) as { messages?: Message[]; error?: string }
+                          if (result.error) {
+                            toast(result.error, 'error')
+                            return
+                          }
+                          if (result.messages) {
+                            setMessages(result.messages)
+                            toast(`Восстановлен снапшот: ${snap.name}`, 'success')
+                          }
+                        } catch (e) {
+                          toast('Ошибка восстановления: ' + String((e as Error)?.message ?? e), 'error')
+                        } finally {
+                          setSnapshotPicker(null)
+                        }
+                      }}
+                    >
+                      <span className="snapshot-picker-icon">
+                        <AppIcon name="camera" size="sm" />
+                      </span>
+                      <span className="snapshot-picker-name">{snap.name}</span>
+                      <span className="snapshot-picker-date">
+                        {new Date(snap.createdAt).toLocaleString('ru')}
+                      </span>
+                      {snap.filesChanged > 0 && (
+                        <span className="snapshot-picker-files" title="Файлов изменено в этом turn'е">
+                          {snap.filesChanged} ф.
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>,
+            document.body,
           )}
         </main>
       </div>

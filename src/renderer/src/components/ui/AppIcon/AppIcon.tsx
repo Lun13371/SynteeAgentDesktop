@@ -8,7 +8,7 @@ import {
   Archive, ChevronRight, Filter, Clock, CornerUpLeft, Image, GitBranch, GitGraph, Code, Layers, Cpu,
   ListChecks, Briefcase, MessageSquare, GripVertical, PanelRight,
   History, Undo2, Puzzle, Power, ChevronLeft, Server, Wrench, Star, Download,
-  Compass, HelpCircle,
+  Compass, HelpCircle, GitFork, Camera, Command, FlaskConical, Bug, Shuffle,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -36,6 +36,13 @@ const ICONS = {
   star: Star, download: Download,
   compass: Compass,
   helpCircle: HelpCircle,
+  gitFork: GitFork,
+  camera: Camera,
+  command: Command,
+  undo: Undo2,
+  flaskConical: FlaskConical,
+  bug: Bug,
+  shuffle: Shuffle,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS

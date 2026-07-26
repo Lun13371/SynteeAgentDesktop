@@ -47,8 +47,21 @@ const synteeAPI = {
     create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string) => ipcRenderer.invoke('chat:create', incognito, mode, projectId),
     getAll: () => ipcRenderer.invoke('chat:getAll'),
     getMessages: (chatId: string) => ipcRenderer.invoke('chat:getMessages', chatId),
-    send: (params: { chatId: string; content: string; incognito?: boolean; mode?: 'code' | 'work' }) =>
-      ipcRenderer.invoke('chat:send', params),
+    send: (params: {
+      chatId: string
+      content: string
+      displayContent?: string
+      slashCommand?: { name: string; args: string }
+      incognito?: boolean
+      userMsgId?: string
+      planningMode?: boolean
+      askMode?: boolean
+      imageMode?: boolean
+      mode?: 'code' | 'work'
+      oneShotSkill?: { name: string; instructions: string }
+      oneShotAllowedTools?: string[]
+      oneShotMode?: 'ask' | 'plan' | 'code'
+    }) => ipcRenderer.invoke('chat:send', params),
     delete: (chatId: string) => ipcRenderer.invoke('chat:delete', chatId),
     rename: (chatId: string, title: string) => ipcRenderer.invoke('chat:rename', chatId, title),
     pin: (messageId: string) => ipcRenderer.invoke('chat:pinMsg', messageId),
@@ -84,11 +97,32 @@ const synteeAPI = {
     // dividerMessageId } для toast'а. При активном чате / пустом чате —
     // { error: string }.
     compact: (chatId: string) => ipcRenderer.invoke('chat:compact', chatId),
+    // ── /fork — дублировать чат с этого места ──
+    // Создаёт новый чат, копируя сообщения+working memory+summary+project.
+    // Возвращает { chatId, messages, title } нового чата или { error }.
+    fork: (chatId: string, title?: string) => ipcRenderer.invoke('chat:fork', chatId, title),
+    // ── /snapshot <name> — именованный снапшот ──
+    // Создаёт именованную точку отката на основе последнего чекпоинта.
+    // Восстанавливается через /restore (list + rewindTo).
+    snapshotCreate: (chatId: string, name: string) => ipcRenderer.invoke('chat:snapshot:create', chatId, name),
+    // ── /restore — список именованных снапшотов для пикера ──
+    // Возвращает массив снапшотов (новые первыми). Восстановление — через
+    // rewindTo с userMessageId выбранного снапшота.
+    snapshotList: (chatId: string) => ipcRenderer.invoke('chat:snapshot:list', chatId),
     // ── Параллельный доп-чат (side chat) ──
     // Эфемерный чат-в-чате: incognito, не пишется в БД. ИИ получает сводку
     // родителя + тул get_main_chat_messages. chatId = 'sidechat:'+parentChatId.
     sideSend: (params: { parentChatId: string; content: string; sideMessages: unknown[] }) =>
       ipcRenderer.invoke('chat:sideSend', params),
+
+    // ── Per-chat UI state: режимы инпут-бара + черновик + история ввода ──
+    // Сохраняются в chats/messages, переживают перезапуск. Рендерер не
+    // вызывает их для инкогнито-чатов (guard в ChatPage).
+    getModes: (chatId: string) => ipcRenderer.invoke('chat:getModes', chatId) as Promise<{ planningMode: boolean; imageMode: boolean; askMode: boolean }>,
+    setModes: (chatId: string, modes: { planningMode: boolean; imageMode: boolean; askMode: boolean }) => ipcRenderer.invoke('chat:setModes', chatId, modes),
+    getDraft: (chatId: string) => ipcRenderer.invoke('chat:getDraft', chatId) as Promise<string>,
+    setDraft: (chatId: string, draft: string) => ipcRenderer.invoke('chat:setDraft', chatId, draft),
+    getInputHistory: (chatId: string) => ipcRenderer.invoke('chat:getInputHistory', chatId) as Promise<string[]>,
   },
 
   // Проекты (рабочие директории) — сущность верхнего уровня над чатами.
@@ -303,6 +337,15 @@ const synteeAPI = {
       ipcRenderer.invoke('skills:getActive', params),
     installFromUrl: (params: { url: string; scope: 'global' | { workdir: string } }) =>
       ipcRenderer.invoke('skills:installFromUrl', params),
+  },
+
+  // Кастомные slash-команды — .md-файлы с расширенным frontmatter.
+  // list — все custom-команды (без builtin из SLASH_COMMANDS — renderer
+  // добавляет их сам через filterCommands). projectWorkdir — для проектных.
+  // reload — сбросить кэш и перечитать .md с диска (после правки файлов).
+  commands: {
+    list: (params?: { projectWorkdir?: string }) => ipcRenderer.invoke('commands:list', params),
+    reload: () => ipcRenderer.invoke('commands:reload'),
   },
 
   // MCP (Model Context Protocol) — внешние серверы с инструментами.

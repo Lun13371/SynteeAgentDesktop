@@ -34,6 +34,10 @@ export interface CheckpointMeta {
   filesChanged: number
   filePaths: string[]
   createdAt: number
+  /** Имя снапшота для /snapshot <name> + /restore <name>. NULL у обычных
+   *  auto-checkpoint'ов на каждый turn. Именованные снапшоты — поименованные
+   *  точки отката, которые пользователь явно создал. */
+  name?: string | null
 }
 
 export function saveFileSnapshots(
@@ -91,21 +95,86 @@ export function saveCheckpointMeta(
   )
 }
 
+/**
+ * Создаёт именованный снапшот текущего состояния чата — без привязки к
+ * конкретному user_message_id (используется последний checkpoint).
+ *
+ * Именованный снапшот — это "сохранённая точка" с именем, которую пользователь
+ * может восстановить через /restore <name>. В отличие от обычных auto-
+ * checkpoint'ов на каждый turn, именованные явно создаются пользователем.
+ *
+ * Реализация: находим последний существующий checkpoint чата, копируем его
+ * метаданные в новую запись с указанным name. file_snapshots и context_snapshots
+ * уже привязаны к user_message_id — дублировать их не нужно, при restore
+ * через chat:rewindTo они подтянутся автоматически.
+ *
+ * Возвращает созданную CheckpointMeta или null если чекпоинтов в чате нет.
+ */
+export function saveNamedSnapshot(chatId: string, name: string): CheckpointMeta | null {
+  const last = getLastCheckpoint(chatId)
+  if (!last) return null
+  const id = uuid()
+  const now = Date.now()
+  getDB().prepare(`
+    INSERT INTO chat_checkpoints (id, chat_id, user_message_id, assistant_message_id, user_prompt_preview, files_changed, file_paths, created_at, name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, chatId, last.userMessageId, last.assistantMessageId,
+    last.userPromptPreview, last.filesChanged, JSON.stringify(last.filePaths),
+    now, name,
+  )
+  return {
+    id, chatId,
+    userMessageId: last.userMessageId,
+    assistantMessageId: last.assistantMessageId,
+    userPromptPreview: last.userPromptPreview,
+    filesChanged: last.filesChanged,
+    filePaths: last.filePaths,
+    createdAt: now,
+    name,
+  }
+}
+
 export function getCheckpoints(chatId: string): CheckpointMeta[] {
   const rows = getDB().prepare(`
     SELECT id, chat_id as chatId, user_message_id as userMessageId,
            assistant_message_id as assistantMessageId,
            user_prompt_preview as userPromptPreview,
            files_changed as filesChanged, file_paths as filePathsJson,
-           created_at as createdAt
+           created_at as createdAt, name
     FROM chat_checkpoints WHERE chat_id = ?
     ORDER BY created_at ASC
-  `).all(chatId) as (Omit<CheckpointMeta, 'filePaths'> & { filePathsJson: string })[]
+  `).all(chatId) as (Omit<CheckpointMeta, 'filePaths'> & { filePathsJson: string; name?: string | null })[]
   return rows.map(r => ({
     id: r.id, chatId: r.chatId, userMessageId: r.userMessageId,
     assistantMessageId: r.assistantMessageId, userPromptPreview: r.userPromptPreview,
     filesChanged: r.filesChanged, filePaths: JSON.parse(r.filePathsJson) as string[],
     createdAt: r.createdAt,
+    name: r.name ?? null,
+  }))
+}
+
+/**
+ * Возвращает только именованные снапшоты чата (для пикера /restore).
+ * Сортировка: новые первыми (UI покажет свежие сверху).
+ */
+export function getNamedSnapshots(chatId: string): CheckpointMeta[] {
+  const rows = getDB().prepare(`
+    SELECT id, chat_id as chatId, user_message_id as userMessageId,
+           assistant_message_id as assistantMessageId,
+           user_prompt_preview as userPromptPreview,
+           files_changed as filesChanged, file_paths as filePathsJson,
+           created_at as createdAt, name
+    FROM chat_checkpoints
+    WHERE chat_id = ? AND name IS NOT NULL
+    ORDER BY created_at DESC
+  `).all(chatId) as (Omit<CheckpointMeta, 'filePaths'> & { filePathsJson: string; name?: string | null })[]
+  return rows.map(r => ({
+    id: r.id, chatId: r.chatId, userMessageId: r.userMessageId,
+    assistantMessageId: r.assistantMessageId, userPromptPreview: r.userPromptPreview,
+    filesChanged: r.filesChanged, filePaths: JSON.parse(r.filePathsJson) as string[],
+    createdAt: r.createdAt,
+    name: r.name ?? null,
   }))
 }
 

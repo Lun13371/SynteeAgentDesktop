@@ -203,3 +203,40 @@ export function exportChat(id: string, format: 'txt' | 'md'): string {
 export function touchChat(id: string): void {
   getDB().prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), id)
 }
+
+// === Per-chat UI state: режимы инпут-бара + черновик ===
+// Хранятся в chats (см. миграции), переживают перезапуск. Для инкогнито
+// эти функции не вызываются — guard на уровне рендерера (ChatPage).
+
+export interface ChatModes {
+  planningMode: boolean
+  imageMode: boolean
+  askMode: boolean
+}
+
+export function getChatModes(chatId: string): ChatModes {
+  const row = getDB().prepare(
+    'SELECT planning_mode as p, image_mode as i, ask_mode as a FROM chats WHERE id = ?'
+  ).get(chatId) as { p: number; i: number; a: number } | undefined
+  if (!row) return { planningMode: false, imageMode: false, askMode: false }
+  return {
+    planningMode: !!row.p,
+    imageMode: !!row.i,
+    askMode: !!row.a,
+  }
+}
+
+export function setChatModes(chatId: string, modes: ChatModes): void {
+  getDB().prepare(
+    'UPDATE chats SET planning_mode = ?, image_mode = ?, ask_mode = ? WHERE id = ?'
+  ).run(modes.planningMode ? 1 : 0, modes.imageMode ? 1 : 0, modes.askMode ? 1 : 0, chatId)
+}
+
+export function getChatDraft(chatId: string): string {
+  const row = getDB().prepare('SELECT draft FROM chats WHERE id = ?').get(chatId) as { draft: string | null } | undefined
+  return row?.draft ?? ''
+}
+
+export function setChatDraft(chatId: string, draft: string): void {
+  getDB().prepare('UPDATE chats SET draft = ? WHERE id = ?').run(draft, chatId)
+}

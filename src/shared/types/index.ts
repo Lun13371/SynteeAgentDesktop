@@ -9,7 +9,21 @@ export interface IPCChannels {
   'settings:set': (key: string, value: unknown) => void
   'settings:getAll': () => Record<string, unknown>
   // Chat
-  'chat:send': (params: { chatId: string; content: string; incognito?: boolean; mode?: ChatMode }) => void
+  'chat:send': (params: {
+    chatId: string
+    content: string
+    displayContent?: string
+    slashCommand?: { name: string; args: string }
+    incognito?: boolean
+    userMsgId?: string
+    planningMode?: boolean
+    askMode?: boolean
+    imageMode?: boolean
+    mode?: ChatMode
+    oneShotSkill?: { name: string; instructions: string }
+    oneShotAllowedTools?: string[]
+    oneShotMode?: 'ask' | 'plan' | 'code'
+  }) => void
   'chat:create': (incognito?: boolean, mode?: ChatMode) => string
   'chat:getAll': () => Chat[]
   'chat:getMessages': (chatId: string) => Message[]
@@ -183,6 +197,9 @@ export interface CheckpointMeta {
   filesChanged: number       // кол-во файлов, изменённых в этом turn'е
   filePaths: string[]        // список путей изменённых файлов
   createdAt: number
+  /** Имя снапшота для /snapshot <name> + /restore <name>. NULL у обычных
+   *  auto-checkpoint'ов на каждый turn. Именованные — явно созданы пользователем. */
+  name?: string | null
 }
 
 // Результат chat:rewindTo — либо обновлённый массив сообщений, либо ошибка.

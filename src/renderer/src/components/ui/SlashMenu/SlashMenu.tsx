@@ -57,8 +57,16 @@ export default function SlashMenu({ commands, selectedIndex, anchorRef, onSelect
           </span>
           <span className="slash-menu-label">{cmd.label}</span>
           <span className="slash-menu-desc">{cmd.description}</span>
-          {cmd.placeholder && (
+          {cmd.argumentHint && (
+            <span className="slash-menu-hint">{cmd.argumentHint}</span>
+          )}
+          {!cmd.argumentHint && cmd.placeholder && (
             <span className="slash-menu-hint">{cmd.placeholder}</span>
+          )}
+          {cmd.custom && cmd.source && cmd.source !== 'builtin' && (
+            <span className={`slash-menu-source slash-menu-source--${cmd.source}`} title={`Источник: ${cmd.source}`}>
+              {cmd.source === 'user' ? 'U' : cmd.source === 'project' ? 'P' : ''}
+            </span>
           )}
         </button>
       ))}
