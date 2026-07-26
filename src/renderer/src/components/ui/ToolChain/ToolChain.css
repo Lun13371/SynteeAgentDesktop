@@ -355,6 +355,160 @@
   padding: 4px 0;
 }
 
+/* ── ask_user: рендер вопросов и ответов ── */
+.tc2-ask-user {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.tc2-ask-q {
+  display: flex;
+  gap: 10px;
+  padding: 9px 11px;
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 8px);
+}
+
+.tc2-ask-q-num {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-pill, 999px);
+  background: color-mix(in srgb, var(--accent, #e8e8ec) 14%, transparent);
+  color: var(--accent, #e8e8ec);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tc2-ask-q-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tc2-ask-q-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent, #e8e8ec);
+  opacity: 0.7;
+}
+
+.tc2-ask-q-text {
+  font-size: 12px;
+  color: var(--text-primary, #e8e8ec);
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.tc2-ask-q-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.tc2-ask-q-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--overlay-3, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  color: var(--text-secondary, #9a9aa5);
+  transition: all var(--transition, 200ms);
+}
+
+.tc2-ask-q-opt--selected {
+  background: color-mix(in srgb, var(--accent, #e8e8ec) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #e8e8ec) 40%, transparent);
+  color: var(--text-primary, #e8e8ec);
+}
+
+.tc2-ask-q-opt-check {
+  color: var(--accent, #e8e8ec);
+  font-weight: 700;
+  font-size: 10px;
+}
+
+.tc2-ask-q-custom {
+  font-size: 11.5px;
+  color: var(--text-secondary, #9a9aa5);
+  font-style: italic;
+  padding: 5px 9px;
+  background: var(--overlay-1, rgba(255, 255, 255, 0.02));
+  border-left: 2px solid var(--accent, #e8e8ec);
+  border-radius: 0 4px 4px 0;
+  margin-top: 2px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* Collapse длинных ответов (>200 символов) — показываем только первые 3 строки */
+.tc2-ask-q-custom--collapsible {
+  max-height: 3.6em;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+}
+
+.tc2-ask-q-custom--collapsible::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1.2em;
+  background: linear-gradient(transparent, var(--overlay-2, rgba(255, 255, 255, 0.04)));
+  pointer-events: none;
+}
+
+.tc2-ask-q-custom--collapsible:hover {
+  max-height: none;
+}
+
+.tc2-ask-q-custom--collapsible:hover::after {
+  display: none;
+}
+
+/* ── Цветовое выделение ответов (yesno/file/code) ── */
+.tc2-ask-q-answer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill, 999px);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+}
+
+.tc2-ask-q-answer--yes {
+  background: color-mix(in srgb, #4ade80 16%, transparent);
+  color: #4ade80;
+  border: 1px solid color-mix(in srgb, #4ade80 35%, transparent);
+}
+
+.tc2-ask-q-answer--no {
+  background: color-mix(in srgb, #f87171 16%, transparent);
+  color: #f87171;
+  border: 1px solid color-mix(in srgb, #f87171 35%, transparent);
+}
+
 /* Streaming tool call карточка */
 .tc-streaming-card {
   background: var(--bg-secondary);

@@ -8,7 +8,7 @@ import {
   Archive, ChevronRight, Filter, Clock, CornerUpLeft, Image, GitBranch, GitGraph, Code, Layers, Cpu,
   ListChecks, Briefcase, MessageSquare, GripVertical, PanelRight,
   History, Undo2, Puzzle, Power, ChevronLeft, Server, Wrench, Star, Download,
-  Compass,
+  Compass, HelpCircle,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -27,7 +27,7 @@ const ICONS = {
   refreshCw: RefreshCw, chevronUp: ChevronUp, chevronDown: ChevronDown,
   trash: Trash2, zap: Zap, archive: Archive, chevronRight: ChevronRight,
   filter: Filter, clock: Clock, reply: CornerUpLeft, image: Image,
-  'git-branch': GitBranch, gitBranch: GitBranch, git: GitGraph, code: Code, layers: Layers, cpu: Cpu,
+  'git-branch': GitBranch, gitBranch: GitGraph, git: GitGraph, code: Code, layers: Layers, cpu: Cpu,
   panelRight: PanelRight,
   listChecks: ListChecks, briefcase: Briefcase, messageSquare: MessageSquare,
   gripVertical: GripVertical,
@@ -35,6 +35,7 @@ const ICONS = {
   puzzle: Puzzle, power: Power, chevronLeft: ChevronLeft, server: Server, wrench: Wrench,
   star: Star, download: Download,
   compass: Compass,
+  helpCircle: HelpCircle,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS
