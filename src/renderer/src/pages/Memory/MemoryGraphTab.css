@@ -16,7 +16,7 @@
   flex: 1;
   min-height: 300px;
   gap: 12px;
-  color: var(--text-muted, #6b7280);
+  color: var(--text-muted);
 }
 
 .memory-graph-empty p {
@@ -31,7 +31,7 @@
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
-  background: var(--bg-secondary, #1f2937);
+  background: var(--bg-secondary);
   border-radius: 8px;
   flex-wrap: wrap;
   flex-shrink: 0;
@@ -42,11 +42,11 @@
   gap: 16px;
   flex-wrap: wrap;
   font-size: 13px;
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
 }
 
 .graph-stat strong {
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
 }
 
 .memory-graph-actions {
@@ -59,9 +59,9 @@
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  background: var(--bg-tertiary, #374151);
-  color: var(--text-primary, #e5e7eb);
-  border: 1px solid var(--border-color, #4b5563);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
@@ -69,7 +69,7 @@
 }
 
 .graph-action-btn:hover:not(:disabled) {
-  background: var(--bg-hover, #4b5563);
+  background: var(--overlay-5);
 }
 
 .graph-action-btn:disabled {
@@ -78,13 +78,13 @@
 }
 
 .graph-action-btn--primary {
-  background: var(--accent, #3b82f6);
-  border-color: var(--accent, #3b82f6);
+  background: var(--accent);
+  border-color: var(--accent);
   color: white;
 }
 
 .graph-action-btn--primary:hover:not(:disabled) {
-  background: var(--accent-hover, #2563eb);
+  background: var(--accent-hover);
 }
 
 /* Filters */
@@ -99,7 +99,7 @@
 
 .filter-label {
   font-size: 13px;
-  color: var(--text-muted, #6b7280);
+  color: var(--text-muted);
 }
 
 .graph-filter-chip {
@@ -107,9 +107,9 @@
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  background: var(--bg-secondary, #1f2937);
-  color: var(--text-secondary, #9ca3af);
-  border: 1px solid var(--border-color, #4b5563);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
   font-size: 12px;
   cursor: pointer;
@@ -117,11 +117,11 @@
 }
 
 .graph-filter-chip:hover {
-  background: var(--bg-hover, #374151);
+  background: var(--overlay-5);
 }
 
 .graph-filter-chip--active {
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
 }
 
 .filter-dot {
@@ -134,7 +134,7 @@
 .graph-filter-clear {
   padding: 4px 10px;
   background: transparent;
-  color: var(--text-muted, #6b7280);
+  color: var(--text-muted);
   border: none;
   font-size: 12px;
   cursor: pointer;
@@ -142,7 +142,7 @@
 }
 
 .graph-filter-clear:hover {
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
 }
 
 /* Error */
@@ -166,8 +166,8 @@
 
 .memory-graph-canvas {
   flex: 1;
-  background: var(--bg-primary, #111827);
-  border: 1px solid var(--border-color, #374151);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   min-height: 0;
   overflow: hidden;
@@ -176,8 +176,8 @@
 /* Side panel */
 .memory-graph-sidepanel {
   width: 280px;
-  background: var(--bg-secondary, #1f2937);
-  border: 1px solid var(--border-color, #4b5563);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -189,7 +189,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border-color, #4b5563);
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .sidepanel-type-badge {
@@ -205,7 +205,7 @@
 .sidepanel-close {
   background: transparent;
   border: none;
-  color: var(--text-muted, #6b7280);
+  color: var(--text-muted);
   font-size: 20px;
   cursor: pointer;
   padding: 0 4px;
@@ -213,7 +213,7 @@
 }
 
 .sidepanel-close:hover {
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
 }
 
 .sidepanel-body {
@@ -227,7 +227,7 @@
 .sidepanel-label {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
   word-break: break-word;
   line-height: 1.4;
 }
@@ -237,17 +237,17 @@
   flex-direction: column;
   gap: 6px;
   font-size: 12px;
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
 }
 
 .sidepanel-meta strong {
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
 }
 
 .sidepanel-source-id code {
   font-family: 'Cascadia Code', 'Consolas', monospace;
   font-size: 11px;
-  background: var(--bg-tertiary, #374151);
+  background: var(--bg-tertiary);
   padding: 2px 4px;
   border-radius: 3px;
   word-break: break-all;
@@ -264,9 +264,9 @@
   align-items: center;
   gap: 4px;
   padding: 6px 10px;
-  background: var(--bg-tertiary, #374151);
-  color: var(--text-primary, #e5e7eb);
-  border: 1px solid var(--border-color, #4b5563);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
@@ -274,7 +274,7 @@
 }
 
 .sidepanel-btn:hover {
-  background: var(--bg-hover, #4b5563);
+  background: var(--overlay-5);
 }
 
 .sidepanel-btn--danger {
@@ -286,38 +286,7 @@
   background: rgba(239, 68, 68, 0.15);
 }
 
-/* Tabs в MemoryPage */
-.memory-tabs {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border-color, #374151);
-  flex-shrink: 0;
-}
-
-.memory-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  background: transparent;
-  color: var(--text-muted, #6b7280);
-  border: none;
-  border-bottom: 2px solid transparent;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s;
-  margin-bottom: -1px;
-}
-
-.memory-tab:hover {
-  color: var(--text-secondary, #9ca3af);
-}
-
-.memory-tab--active {
-  color: var(--text-primary, #e5e7eb);
-  border-bottom-color: var(--accent, #3b82f6);
-}
+/* Tabs в MemoryPage — стили перенесены в MemoryPage.css (segmented control) */
 
 /* Responsive: на узких экранах sidepanel уходит вниз */
 @media (max-width: 768px) {

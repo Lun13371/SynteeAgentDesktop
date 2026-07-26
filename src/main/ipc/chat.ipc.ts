@@ -682,6 +682,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       incognito?: boolean
       userMsgId?: string
       planningMode?: boolean
+      askMode?: boolean
       imageMode?: boolean
       mode?: ChatMode
       sideChatParentId?: string
@@ -1100,6 +1101,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       workerData: {
         storeData,
         planningMode: params.planningMode ?? false,
+        askMode: params.askMode ?? false,
         workingMemory: currentWorkingMemory,
         mode: chatMode,
         catalogCachePath,
@@ -1788,6 +1790,7 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
 
     let sideToolSchemas = getToolSchemas({
       planningMode: !!params.planningMode,
+      askMode: !!params.askMode || params.slashCommand?.name === 'ask',
       imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
       mode: chatMode,
       mcpTools: params.incognito ? undefined : mcpTools,
@@ -2014,6 +2017,7 @@ ${await getSystemPrompt(dbChatId, params.incognito)}`
     incognito?: boolean
     userMsgId?: string
     planningMode?: boolean
+    askMode?: boolean
     imageMode?: boolean
     mode?: ChatMode
   }) => {

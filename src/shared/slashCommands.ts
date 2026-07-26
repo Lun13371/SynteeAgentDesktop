@@ -82,6 +82,17 @@ export const SLASH_COMMANDS: SlashCommand[] = [
 
 Не запускай суб-агентов без необходимости и не дублируй работу между ними.`,
   },
+  {
+    name: 'ask',
+    label: '/ask',
+    description: 'Спросить без правок (read-only)',
+    icon: 'messageSquare',
+    placeholder: 'вопрос...',
+    // systemPrompt здесь pass-through — фрейминг задаётся buildAskInjection
+    // в ai-worker.ts (как и в planning-режиме). Команда лишь сигнализирует
+    // chat.ipc.ts, что это сообщение нужно выполнить в read-only режиме.
+    systemPrompt: (args) => args,
+  },
 ]
 
 export function parseSlashCommand(text: string): { command: SlashCommand; args: string } | null {

@@ -21,35 +21,33 @@
   gap: 8px;
   flex-shrink: 0;
   padding: 8px 12px;
-  background: var(--bg-secondary, #1f2937);
-  border-radius: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 
 .memory-graph-project-selector label {
   font-size: 13px;
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
 .memory-graph-project-selector select {
   flex: 1;
   padding: 6px 10px;
-  background: var(--bg-tertiary, #374151);
-  color: var(--text-primary, #e5e7eb);
-  border: 1px solid var(--border-color, #4b5563);
-  border-radius: 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   font-size: 13px;
   cursor: pointer;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--transition);
 }
 
-.memory-graph-project-selector select:hover {
-  border-color: var(--accent, #3b82f6);
-}
-
+.memory-graph-project-selector select:hover,
 .memory-graph-project-selector select:focus {
-  border-color: var(--accent, #3b82f6);
+  border-color: var(--accent);
 }
 
 .memory-header {
@@ -95,14 +93,15 @@
 
 .memory-add-form {
   background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  padding: 12px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   overflow: hidden;
   flex-shrink: 0;
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.12);
 }
 
 .memory-select, .memory-input {
@@ -155,24 +154,6 @@
   flex-shrink: 0;
 }
 
-.memory-cat-btn {
-  padding: 4px 10px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.memory-cat-btn:hover { border-color: var(--border-strong); color: var(--text-primary); }
-.memory-cat-btn--active {
-  background: var(--accent-subtle);
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
 .memory-search-wrap { flex-shrink: 0; }
 
 .memory-search {
@@ -209,18 +190,6 @@
   text-align: center;
 }
 .memory-empty span { font-size: 32px; }
-
-.memory-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  transition: border-color var(--transition);
-}
-.memory-item:hover { border-color: var(--border-strong); }
 
 .memory-item-cat { font-size: 16px; flex-shrink: 0; }
 
@@ -333,34 +302,6 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-}
-
-.memory-mode-toggle {
-  display: flex;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.memory-mode-btn {
-  padding: 4px 12px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.memory-mode-btn--active {
-  background: var(--accent-subtle);
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.memory-item--pinned {
-  border-color: var(--border-strong);
-  background: var(--accent-subtle);
 }
 
 .memory-item-tags {
@@ -530,7 +471,7 @@
   transition: all var(--transition);
 }
 .memory-pin-btn:hover { background: var(--bg-tertiary); }
-.memory-pin-btn--active { color: var(--warning, #f59e0b); }
+.memory-pin-btn--active { color: #fbbf24; }
 
 /* Кастомные категории — кнопка удаления и добавления */
 .memory-cat-delete {
@@ -546,4 +487,163 @@
 .memory-cat-btn--add {
   padding: 4px 8px;
   border-style: dashed;
+}
+
+/* ========== SEGMENTED CONTROL: главные табы (Записи | Граф) ==========
+   Pill-переключатель со скользящим motion.span (layoutId).
+   Раньше были underline-табы — как в AI-настройках до правки. */
+.memory-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  flex-shrink: 0;
+}
+
+.memory-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--transition);
+  white-space: nowrap;
+}
+
+.memory-tab:hover { color: var(--text-secondary); }
+.memory-tab--active { color: var(--text-primary); }
+
+.memory-tab-active-pill {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  z-index: 0;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(var(--shadow-rgb), 0.18);
+}
+
+.memory-tab > *:not(.memory-tab-active-pill) {
+  position: relative;
+  z-index: 1;
+}
+
+.memory-tab-label {
+  white-space: nowrap;
+}
+
+/* ========== SEGMENTED CONTROL: режим поиска (Список | Семантика) ========== */
+.memory-mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.memory-mode-btn {
+  position: relative;
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--transition);
+  white-space: nowrap;
+}
+
+.memory-mode-btn:hover { color: var(--text-secondary); }
+.memory-mode-btn--active { color: var(--text-primary); }
+
+.memory-mode-active-pill {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  z-index: 0;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(var(--shadow-rgb), 0.18);
+}
+
+.memory-mode-btn > *:not(.memory-mode-active-pill) {
+  position: relative;
+  z-index: 1;
+}
+
+.memory-mode-label {
+  position: relative;
+  z-index: 1;
+}
+
+/* ========== ПОЛИРОВКА: фильтры, карточки ========== */
+
+/* Чип-фильтры (kind/scope/category) — лёгкий hover-lift.
+   Активное состояние подсвечено accent-цветом (раньше был просто
+   border-strong, без цветового акцента). */
+.memory-cat-btn {
+  position: relative;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition), transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.memory-cat-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+.memory-cat-btn--active {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Карточка записи — мягкая тень + hover lift (дополнение к whileHover
+   в motion.div). transition на border-color для случая когда layout
+   анимация отключена (reduced-motion). */
+.memory-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition), box-shadow 0.18s ease;
+  will-change: transform;
+}
+.memory-item:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 4px 12px rgba(var(--shadow-rgb), 0.1);
+}
+
+/* Pinned-карточка — тёплый акцент вместо простого bg-tint */
+.memory-item--pinned {
+  border-color: var(--border-strong);
+  background: var(--accent-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-cat-btn:hover { transform: none; }
 }

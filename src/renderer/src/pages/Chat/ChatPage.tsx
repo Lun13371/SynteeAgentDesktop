@@ -119,6 +119,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [inputText, setInputText] = useState('')
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
+  const [askMode, setAskMode] = useState(false)
 
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
@@ -546,6 +547,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (slash?.command.name === 'image') {
       if (!slash.args) { toast('Укажи описание: /image красивый закат', 'info'); return }
     }
+    // /ask — одноразовый read-only режим для текущего сообщения. Без args
+    // не имеет смысла (нечего спросить). С args — включаем read-only тулы
+    // + ask-инъекцию только для этого запроса, не меняя глобальный тоггл askMode.
+    if (slash?.command.name === 'ask') {
+      if (!slash.args) { toast('Укажи вопрос: /ask как работает этот модуль?', 'info'); return }
+    }
 
     // /compact — ручное сжатие контекста чата. Не создаёт user-сообщения
     // (по поведению ближе к rewind): main гоняет applyRollingWindowAsync с
@@ -644,6 +651,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
       userMsgId: userMsg.id,
       planningMode,
+      // askMode активируется тогглом ИЛИ одноразовой /ask <текст>. Для
+      // /ask без тоггла — askMode true только для этого сообщения.
+      askMode: askMode || slash?.command.name === 'ask',
       imageMode,
       mode: activeMode,
     }) as { queued?: boolean; assistantMsgId?: string }
@@ -974,6 +984,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onPlanningModeChange={setPlanningMode}
               imageMode={imageMode}
               onImageModeChange={setImageMode}
+              askMode={askMode}
+              onAskModeChange={setAskMode}
               workdir={currentWorkdir}
               compactSessionStats={compactSessionStats}
             />

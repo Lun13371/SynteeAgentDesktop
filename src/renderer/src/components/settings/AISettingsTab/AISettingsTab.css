@@ -1,29 +1,70 @@
-﻿.ai-settings { display: flex; flex-direction: column; gap: 16px; height: 100%; }
-
-.ai-settings-tabs {
+﻿/* Раньше: .ai-settings { height: 100% } — но родитель .settings-section
+   не имел фиксированной высоты, поэтому внутренние overflow-y:auto
+   регионы не могли сформировать скролл-контейнер. Теперь: flex-колонка
+   с min-height:0 — корректный flex-scroll паттерн. */
+.ai-settings {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  flex: 1;
+}
+
+.ai-settings > .settings-section-title {
+  position: static;
+  margin-bottom: 4px;
+}
+.ai-settings > .settings-section-title::before { display: none; }
+
+/* ── Segmented control (вместо underline-табов) ──────────────────
+   Pill-переключатель: контейнер с padding 3px, активный сегмент
+   подсвечен скользящим motion.div (layoutId="ai-seg-active"). */
+.ai-seg {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
   flex-shrink: 0;
 }
-.ai-settings-tab {
-  padding: 8px 16px;
-  font-size: 13px;
+
+.ai-seg-item {
+  position: relative;
+  padding: 6px 16px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-muted);
-  background: none;
+  background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-pill);
   cursor: pointer;
-  transition: color var(--transition), border-color var(--transition);
-  margin-bottom: -1px;
+  transition: color var(--transition);
+  white-space: nowrap;
 }
-.ai-settings-tab:hover { color: var(--text-secondary); }
-.ai-settings-tab--active { color: var(--text-primary); border-bottom-color: var(--accent); }
+
+.ai-seg-item:hover { color: var(--text-secondary); }
+.ai-seg-item--active { color: var(--text-primary); }
+
+.ai-seg-active-pill {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  z-index: 0;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(var(--shadow-rgb), 0.18);
+}
+
+.ai-seg-item-label {
+  position: relative;
+  z-index: 1;
+}
 
 /* ── Провайдеры ── */
-.ai-providers { overflow-y: auto; flex: 1; padding: 2px 4px; }
+.ai-providers { overflow-y: auto; flex: 1; min-height: 0; padding: 2px 4px; }
 .ai-providers-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -188,7 +229,7 @@
 .provider-add-btn:hover { color: var(--text-primary); background: var(--accent-subtle); }
 
 /* ── Назначения ── */
-.ai-assignments { overflow-y: auto; flex: 1; padding: 2px 4px; }
+.ai-assignments { overflow-y: auto; flex: 1; min-height: 0; padding: 2px 4px; }
 .ai-assignments-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
 .ai-assignments-grid { display: flex; flex-direction: column; gap: 8px; overflow: visible; }
 
@@ -205,7 +246,7 @@
 .assignment-picker { flex: 1; min-width: 0; position: relative; }
 
 /* ── Параметры ── */
-.ai-params { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; padding-right: 4px; }
+.ai-params { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; min-height: 0; padding-right: 4px; }
 .ai-param-row { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; }
 .ai-param-row--toggle { align-items: center; }
 .ai-param-row--full { flex-direction: column; gap: 8px; }

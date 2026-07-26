@@ -577,6 +577,7 @@ function pickTools(names: string[]) {
 
 export function getToolSchemas(options: {
   planningMode?: boolean
+  askMode?: boolean
   webMode?: boolean
   imageMode?: boolean
   multiAgentMode?: boolean
@@ -586,6 +587,7 @@ export function getToolSchemas(options: {
 } = {}) {
   const {
     planningMode = false,
+    askMode = false,
     webMode = false,
     imageMode = false,
     multiAgentMode = false,
@@ -598,6 +600,12 @@ export function getToolSchemas(options: {
   // уточняющих вопросов ask_user, но ЗАПРЕЩЕНЫ правки (edit/write/run_command/
   // revert). Планировщик исследует код → уточняет у пользователя → пишет план
   // прямо в ответе, обёрнутый в <plan title="..." summary="...">…</plan>.
+  //
+  // askMode (read-only) — тот же набор read-only тулов что и planning, но без
+  // требования оформлять <plan>. Используется для вопросов «не трогая код»
+  // (включается тогглом в плюс-меню или одноразово через /ask <текст>).
+  // planning имеет приоритет (он строже), но набор тулов идентичен — различие
+  // только в system-injection.
   const names: string[] = [
     'read_file',
     'read_files',
@@ -622,8 +630,8 @@ export function getToolSchemas(options: {
     'get_skill',
   ]
 
-  if (planningMode) {
-    // Planning: исследовательские тулы, read-only проверки, без правок.
+  if (planningMode || askMode) {
+    // Planning / Ask: исследовательские тулы, read-only проверки, без правок.
     names.push('get_diagnostics')
     names.push('analyze_project')
     names.push('get_fast_context')

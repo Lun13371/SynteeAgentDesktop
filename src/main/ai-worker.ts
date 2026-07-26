@@ -8,7 +8,7 @@ import { AIClient } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
 import { classifyTool } from '../core/agent/commandSafety'
 import { writeFile, editFile, multiEditFile } from '../core/tools/index'
-import { buildPlanningInjection } from '../core/prompts/buildSystemPrompt'
+import { buildPlanningInjection, buildAskInjection } from '../core/prompts/buildSystemPrompt'
 import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '../core/context/contextManager'
 import { recordSessionCost, buildSnapshotFromReal } from '../core/tokens/usageTracker'
 import { initModelCatalog } from '../core/tokens/modelCatalog'
@@ -17,6 +17,7 @@ import { initFastContextDb, initFastContextWasmDir } from '../core/context/fastC
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
+const askMode: boolean = !!(workerData as Record<string, unknown>).askMode
 const workerMode: 'code' | 'work' = ((workerData as Record<string, unknown>).mode as 'code' | 'work') ?? 'code'
 
 // Инициализируем каталог моделей из кэш-файла (записанного main-процессом)
@@ -597,9 +598,17 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         agentSettings.maxSteps,
         undefined,
         systemPrompt,
-        planningMode ? [{ role: 'system', content: buildPlanningInjection() }, ...history] : history,
+        // Инъекция режимного промпта: planning имеет приоритет над ask
+        // (planning строже — требует <plan>). ask только ограничивает read-only.
+        // Если активны оба — работает planning-инъекция, тулы read-only в любом случае.
+        (planningMode
+          ? [{ role: 'system', content: buildPlanningInjection() }, ...history]
+          : askMode
+            ? [{ role: 'system', content: buildAskInjection() }, ...history]
+            : history),
         (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
           planningMode,
+          askMode,
           mode: workerMode,
           mcpTools: ((workerData as Record<string, unknown>).mcpTools as Parameters<typeof getToolSchemas>[0]['mcpTools']) ?? [],
         }),        {

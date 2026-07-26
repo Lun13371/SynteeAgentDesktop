@@ -39,6 +39,11 @@ interface ChatInputProps {
   onPlanningModeChange?: (v: boolean) => void
   imageMode?: boolean
   onImageModeChange?: (v: boolean) => void
+  /** Read-only режим: агент отвечает без правок кода/запуска команд.
+   *  Комбинируется с imageMode (ask + image — read-only + генерация картинки).
+   *  planningMode имеет приоритет (он строже — требует <plan>). */
+  askMode?: boolean
+  onAskModeChange?: (v: boolean) => void
   rateLimitSec?: number
   /** Рабочая директория текущего чата (режим "Код"). Показывается как
     *  бейдж над инпутом — как cwd-indicator в Codex CLI. */
@@ -62,6 +67,8 @@ export default function ChatInput({
   onPlanningModeChange,
   imageMode = false,
   onImageModeChange,
+  askMode = false,
+  onAskModeChange,
   rateLimitSec = 0,
   workdir,
   compactSessionStats,
@@ -287,6 +294,23 @@ export default function ChatInput({
               <span className="chat-input-planning-badge-close">✕</span>
             </motion.div>
           )}
+          {askMode && !planningMode && (
+            <motion.div
+              className="chat-input-planning-badge chat-input-planning-badge--ask"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+              onClick={() => onAskModeChange?.(false)}
+              title="Выключить ask-режим (только чтение)"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span>Ask — только чтение</span>
+              <span className="chat-input-planning-badge-close">✕</span>
+            </motion.div>
+          )}
         </AnimatePresence>
 
         {/* Селектор модели — справа в status-row. Минималистичный бейдж
@@ -328,7 +352,7 @@ export default function ChatInput({
             onClick={() => {
               if (!plusBtnRef.current) return
               const r = plusBtnRef.current.getBoundingClientRect()
-              const menuH = 90 // примерная высота меню
+              const menuH = 130 // примерная высота меню (attach + divider + 3 toggle)
               setMenuPos({
                 top: r.top - menuH - 8,
                 left: r.left,
@@ -402,6 +426,23 @@ export default function ChatInput({
                       />
                     </motion.button>
                   </div>
+                  <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onAskModeChange?.(!askMode) }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    Ask — только чтение
+                    <motion.button
+                      className={`plus-menu-toggle${askMode ? ' plus-menu-toggle--on' : ''}`}
+                      onClick={e => { e.stopPropagation(); onAskModeChange?.(!askMode) }}
+                      whileTap={{ scale: 0.93 }}
+                    >
+                      <motion.span
+                        className="plus-menu-toggle-thumb"
+                        animate={{ x: askMode ? 16 : 2 }}
+                        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                      />
+                    </motion.button>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>,
@@ -411,11 +452,17 @@ export default function ChatInput({
 
         <textarea
           ref={textareaRef}
-          className={`chat-input-textarea selectable${planningMode ? ' chat-input-textarea--planning' : ''}`}
+          className={`chat-input-textarea selectable${planningMode ? ' chat-input-textarea--planning' : ''}${askMode && !planningMode ? ' chat-input-textarea--ask' : ''}`}
           value={value}
           onChange={e => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={planningMode ? 'Режим планирования — опишите задачу...' : imageMode ? 'Режим генерации изображений — опишите картинку...' : isIncognito ? 'Режим инкогнито — чат не сохраняется...' : 'Сообщение Syntee... (/ для команд)'}
+          placeholder={
+            planningMode ? 'Режим планирования — опишите задачу...'
+            : askMode ? 'Ask-режим — только чтение, задайте вопрос...'
+            : imageMode ? 'Режим генерации изображений — опишите картинку...'
+            : isIncognito ? 'Режим инкогнито — чат не сохраняется...'
+            : 'Сообщение Syntee... (/ для команд)'
+          }
           rows={1}
           disabled={disabled && !isGenerating}
         />

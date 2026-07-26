@@ -175,15 +175,30 @@ export default function AISettingsTab() {
 
   return (
     <div className="ai-settings">
-      {/* Таб-переключатель */}
-      <div className="ai-settings-tabs">
+      {/* Заголовок раздела — раньше его не было, таб-бар «висел» в воздухе. */}
+      <h2 className="settings-section-title">ИИ и Модели</h2>
+
+      {/* Segmented control: pill-переключатель со скользящим индикатором
+          вместо underline-табов. layoutId animates между сегментами. */}
+      <div className="ai-seg" role="tablist" aria-label="Настройки ИИ">
         {(['providers', 'models', 'params'] as const).map(t => (
           <button
             key={t}
-            className={`ai-settings-tab ${tab === t ? 'ai-settings-tab--active' : ''}`}
+            role="tab"
+            aria-selected={tab === t}
+            className={`ai-seg-item ${tab === t ? 'ai-seg-item--active' : ''}`}
             onClick={() => setTab(t)}
           >
-            {t === 'providers' ? 'Провайдеры' : t === 'models' ? 'Назначения' : 'Параметры'}
+            {tab === t && (
+              <motion.span
+                layoutId="ai-seg-active"
+                className="ai-seg-active-pill"
+                transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+              />
+            )}
+            <span className="ai-seg-item-label">
+              {t === 'providers' ? 'Провайдеры' : t === 'models' ? 'Назначения' : 'Параметры'}
+            </span>
           </button>
         ))}
       </div>

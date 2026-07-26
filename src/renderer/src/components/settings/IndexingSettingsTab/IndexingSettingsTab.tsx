@@ -1,26 +1,10 @@
 import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
 import { useSettingsStore } from '../../../store/settings.store'
 import { useChatStore } from '../../../store/chat.store'
 import { DEFAULT_INDEXING_SETTINGS, DEFAULT_IGNORE_DIRS_LIST, type IndexingSettings } from '../../../../../core/context/fastContextSettings'
+import Toggle from '../../ui/Toggle/Toggle'
 import ResetButton from '../../ui/ResetButton/ResetButton'
 import './IndexingSettingsTab.css'
-
-function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <motion.button
-      className={`settings-toggle ${value ? 'settings-toggle--on' : ''}`}
-      onClick={() => onChange(!value)}
-      whileTap={{ scale: 0.93 }}
-    >
-      <motion.span
-        className="settings-toggle-thumb"
-        animate={{ x: value ? 20 : 2 }}
-        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-      />
-    </motion.button>
-  )
-}
 
 interface IndexStatus {
   fileCount: number
