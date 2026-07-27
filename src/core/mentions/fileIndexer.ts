@@ -1,0 +1,315 @@
+/**
+ * FileIndexer — индексатор файлов проекта для @mention-пикера.
+ *
+ * Один chokidar-watcher на активный workdir (как fastContextWatcher, но проще).
+ * Держит in-memory кэш FileEntry[] и обновляет его при изменениях.
+ *
+ * Уважает .gitignore (простой парсинг — без glob-expand, только точные
+ * паттерны вида node_modules/, *.log, /build). Полный gitignore-мэтчер
+ * тяжёлый; для типичных проектов достаточно базового набора + IGNORED_DIRS.
+ *
+ * API:
+ *  - startIndexing(workdir) — запускает watcher + первичный scan
+ *  - stopIndexing(workdir) — останавливает
+ *  - searchFiles(workdir, query) — возвращает FileEntry[] отсортированный
+ *    через filterMentions (fuzzy)
+ *  - getRecentFiles(workdir, limit) — последние изменённые файлы (для @ без query)
+ *
+ * Лимиты: maxFiles=20000 на проект (защита от гигантских mono-repo),
+ * maxDepth=10 (как fastContextWatcher, но 10 вместо 8 — глубже для полноты).
+ */
+import chokidar, { type FSWatcher } from 'chokidar'
+import { basename, relative, sep } from 'path'
+import { readdir, stat } from 'fs/promises'
+import { existsSync, readFileSync } from 'fs'
+import type { MentionItem } from '../../shared/types'
+import { filterMentions, mimeFromExt, mentionTypeFromFilename } from '../../shared/mentions'
+
+export interface FileEntry {
+  path: string
+  relPath: string
+  name: string
+  mime: string
+  size: number
+  mtime: number
+  type: 'file' | 'image'
+}
+
+interface IndexEntry {
+  workdir: string
+  watcher: FSWatcher
+  files: FileEntry[]
+  ready: boolean
+}
+
+const _indexes = new Map<string, IndexEntry>()
+
+// Игнорируемые директории (union из fastContextWatcher.IGNORED_DIRS_DEFAULT
+// и fs.ipc.DEFAULT_IGNORE_DIRS). Дополнительно — типичные мусорные папки.
+const IGNORED_DIRS = new Set([
+  'node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build',
+  '.next', 'coverage', '.cache', '.turbo', '.parcel-cache', 'target',
+  '.gradle', '.idea', '.vscode', '.hermes', '.mimocode', '.playwright-mcp',
+  '.planning', 'logs', 'tmp', 'tmp_out', '.opencode', '.syntee',
+  '.angular', '.svelte-kit', '.nuxt', '.expo', 'Pods', 'vendor',
+])
+
+const IGNORED_EXTS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', // картинки — НЕТ, они нужны! убираем ниже
+])
+
+// Картинки НЕ игнорируем — они нужны для @прикрепления. Убираем из IGNORED_EXTS.
+IGNORED_EXTS.clear()
+
+const BINARY_EXTS = new Set([
+  '.exe', '.dll', '.so', '.dylib', '.wasm', '.lib', '.obj', '.bin', '.dat',
+  '.db', '.sqlite', '.db-shm', '.db-wal', '.o', '.a', '.class', '.jar', '.war',
+  '.ttf', '.otf', '.woff', '.woff2', '.eot', '.lock', '.log', '.zip', '.gz',
+  '.tar', '.rar', '.7z', '.bz2', '.mp3', '.mp4', '.wav', '.avi', '.mov', '.webm',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+])
+
+const MAX_FILES = 20000
+const MAX_DEPTH = 10
+const SCAN_DEBOUNCE_MS = 200
+
+// ── .gitignore парсинг (упрощённый) ──────────────────────────────────────────
+
+interface GitignorePatterns {
+  dirs: Set<string>
+  files: Set<string>
+  exts: Set<string>
+}
+
+function parseGitignore(workdir: string): GitignorePatterns {
+  const result: GitignorePatterns = { dirs: new Set(), files: new Set(), exts: new Set() }
+  const giPath = workdir + sep + '.gitignore'
+  if (!existsSync(giPath)) return result
+  try {
+    const content = readFileSync(giPath, 'utf-8')
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith('#')) continue
+      // Убираем ведущий / (anchor to root) для упрощения
+      const pat = line.replace(/^\//, '')
+      // Директория (заканчивается на /)
+      if (pat.endsWith('/')) {
+        result.dirs.add(pat.slice(0, -1))
+        continue
+      }
+      // Глоб расширения (*.log, *.tmp)
+      if (pat.startsWith('*.')) {
+        result.exts.add(pat.slice(1)) // '.log'
+        continue
+      }
+      // Точный файл/паттерн без слеша — добавляем как файл
+      if (!pat.includes('/')) {
+        result.files.add(pat)
+      }
+    }
+  } catch { /* ok */ }
+  return result
+}
+
+function isIgnored(relPath: string, name: string, gitignore: GitignorePatterns): boolean {
+  const segments = relPath.split('/')
+  for (const seg of segments) {
+    if (IGNORED_DIRS.has(seg)) return true
+    if (gitignore.dirs.has(seg)) return true
+  }
+  if (gitignore.files.has(name)) return true
+  const lower = name.toLowerCase()
+  const dot = lower.lastIndexOf('.')
+  if (dot >= 0) {
+    const ext = lower.slice(dot)
+    if (gitignore.exts.has(ext)) return true
+    if (BINARY_EXTS.has(ext)) return true
+  }
+  // Скрытые файлы (.env, .gitignore — оставляем; остальные .dotfiles — скрываем)
+  if (name.startsWith('.') && name !== '.env' && name !== '.gitignore' && name !== '.editorconfig') {
+    return true
+  }
+  return false
+}
+
+// ── Первичный scan ───────────────────────────────────────────────────────────
+
+async function scanDir(
+  workdir: string,
+  gitignore: GitignorePatterns,
+  onFile: (entry: FileEntry) => void,
+  count: { n: number },
+): Promise<void> {
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: workdir, depth: 0 }]
+  while (stack.length > 0 && count.n < MAX_FILES) {
+    const { dir, depth } = stack.pop()!
+    if (depth > MAX_DEPTH) continue
+    let dirents
+    try {
+      dirents = await readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const d of dirents) {
+      if (count.n >= MAX_FILES) break
+      const fullPath = dir + sep + d.name
+      const relPath = relative(workdir, fullPath).split(sep).join('/')
+      if (d.isDirectory()) {
+        if (IGNORED_DIRS.has(d.name) || gitignore.dirs.has(d.name)) continue
+        if (d.name.startsWith('.') && d.name !== '.env') continue
+        stack.push({ dir: fullPath, depth: depth + 1 })
+        continue
+      }
+      if (d.isFile()) {
+        if (isIgnored(relPath, d.name, gitignore)) continue
+        let st
+        try {
+          st = await stat(fullPath)
+        } catch {
+          continue
+        }
+        const mime = mimeFromExt(d.name)
+        onFile({
+          path: fullPath,
+          relPath,
+          name: d.name,
+          mime,
+          size: st.size,
+          mtime: st.mtimeMs,
+          type: mentionTypeFromFilename(d.name),
+        })
+        count.n++
+      }
+    }
+  }
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/** Запускает индексацию workdir. Idempotent — повторный вызов для того же
+ *  workdir не создаёт второй watcher. Возвращает Promise<void> который
+ *  резолвится когда первичный scan завершён. */
+export async function startIndexing(workdir: string): Promise<void> {
+  if (_indexes.has(workdir)) return
+  const gitignore = parseGitignore(workdir)
+  const entry: IndexEntry = {
+    workdir,
+    watcher: undefined as unknown as FSWatcher,
+    files: [],
+    ready: false,
+  }
+  _indexes.set(workdir, entry)
+
+  // Первичный scan (быстрее chokidar для нашего кэша)
+  const count = { n: 0 }
+  await scanDir(workdir, gitignore, (fe) => entry.files.push(fe), count)
+  entry.files.sort((a, b) => b.mtime - a.mtime)
+  entry.ready = true
+
+  // Запускаем watcher для incremental-обновлений
+  try {
+    const watcher = chokidar.watch(workdir, {
+      ignored: (path: string, stats?: { isFile?: () => boolean; isDirectory?: () => boolean }) => {
+        const rel = relative(workdir, path).split(sep).join('/')
+        if (!rel) return false
+        const segs = rel.split('/')
+        for (const s of segs) {
+          if (IGNORED_DIRS.has(s) || gitignore.dirs.has(s)) return true
+        }
+        if (stats?.isFile?.()) {
+          const name = basename(path)
+          if (isIgnored(rel, name, gitignore)) return true
+        }
+        return false
+      },
+      persistent: true,
+      ignoreInitial: true,
+      awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 500 },
+      depth: MAX_DEPTH,
+      usePolling: false,
+    })
+    entry.watcher = watcher
+
+    let debounceTimer: NodeJS.Timeout | null = null
+    const scheduleRescan = (): void => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(async () => {
+        debounceTimer = null
+        // Простейший подход: при изменениях — полный rescan (быстро для типичных проектов)
+        const files: FileEntry[] = []
+        const c = { n: 0 }
+        await scanDir(workdir, gitignore, (fe) => files.push(fe), c)
+        files.sort((a, b) => b.mtime - a.mtime)
+        entry.files = files
+      }, SCAN_DEBOUNCE_MS)
+    }
+    watcher.on('add', scheduleRescan)
+    watcher.on('change', scheduleRescan)
+    watcher.on('unlink', scheduleRescan)
+    watcher.on('error', (e) => console.warn(`[fileIndexer] error for ${workdir}:`, e))
+  } catch (e) {
+    console.warn(`[fileIndexer] watcher failed for ${workdir}:`, e)
+  }
+}
+
+/** Останавливает индексацию workdir. */
+export async function stopIndexing(workdir: string): Promise<void> {
+  const entry = _indexes.get(workdir)
+  if (!entry) return
+  try {
+    await entry.watcher?.close()
+  } catch { /* ignore */ }
+  _indexes.delete(workdir)
+}
+
+/** Останавливает все индексации (при выходе из приложения). */
+export async function stopAllIndexing(): Promise<void> {
+  const dirs = Array.from(_indexes.keys())
+  await Promise.all(dirs.map(stopIndexing))
+}
+
+/** Готов ли индекс для workdir (первичный scan завершён). */
+export function isIndexReady(workdir: string): boolean {
+  return _indexes.get(workdir)?.ready ?? false
+}
+
+/** Возвращает все файлы индекса (без фильтрации). Для отладки/экспорта. */
+export function getAllFiles(workdir: string): FileEntry[] {
+  return _indexes.get(workdir)?.files ?? []
+}
+
+/** Поиск файлов по query. Возвращает отсортированный через filterMentions
+ *  список MentionItem[]. limit — макс. кол-во результатов. */
+export function searchFiles(workdir: string, query: string, limit = 30): MentionItem[] {
+  const entry = _indexes.get(workdir)
+  if (!entry || !entry.ready) return []
+  const items: MentionItem[] = entry.files.map(f => ({
+    id: `file:${f.path}`,
+    type: f.type,
+    label: f.name,
+    description: f.relPath,
+    path: f.path,
+    relPath: f.relPath,
+    mime: f.mime,
+    size: f.size,
+    mtime: f.mtime,
+  }))
+  return filterMentions(query, items, limit)
+}
+
+/** Последние изменённые файлы (для @ без query). */
+export function getRecentFiles(workdir: string, limit = 20): MentionItem[] {
+  const entry = _indexes.get(workdir)
+  if (!entry || !entry.ready) return []
+  return entry.files.slice(0, limit).map(f => ({
+    id: `file:${f.path}`,
+    type: f.type,
+    label: f.name,
+    description: f.relPath,
+    path: f.path,
+    relPath: f.relPath,
+    mime: f.mime,
+    size: f.size,
+    mtime: f.mtime,
+  }))
+}

@@ -267,14 +267,6 @@
   outline: none;
 }
 
-.cte-picker-popover {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 100;
-  margin-top: 4px;
-}
-
 .cte-glass {
   display: grid;
   grid-template-columns: 1fr;

@@ -87,6 +87,18 @@ interface GatewayModelsStore {
 const POLL_INTERVAL_MS = 60_000
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+// Таймер фонового self-retry после провала load(). Сбрасывается при следующем
+// успешном load() или logout, чтобы не плодить параллельные запросы.
+let selfRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Строит Record<modelId, status> из списка GatewayModel. */
+function buildStatusByModel(models: GatewayModel[]): Record<string, GatewayModelStatus> {
+  const m: Record<string, GatewayModelStatus> = {}
+  for (const g of models) {
+    if (g.id && g.status) m[g.id] = g.status as GatewayModelStatus
+  }
+  return m
+}
 
 export const useGatewayModelsStore = create<GatewayModelsStore>((set) => ({
   models: [],
@@ -100,36 +112,99 @@ export const useGatewayModelsStore = create<GatewayModelsStore>((set) => ({
   load: async (silent = false) => {
     const user = useAuthStore.getState().user
     if (!user) {
-      set({ models: [], statusByModel: {}, modelStatusBuckets: [], providerStatus: [] })
+      // Гостевой режим — очищаем всё, включая loading (защита от залипания,
+      // если logout случился во время фетча).
+      set({ models: [], statusByModel: {}, modelStatusBuckets: [], providerStatus: [], loading: false, error: null })
       return
     }
     if (!silent) set({ loading: true, error: null })
     try {
-      const [gatewayModels, buckets, providers] = await Promise.all([
-        window.syntee.gateway.fetchModels() as Promise<GatewayModel[]>,
-        window.syntee.gateway.fetchModelStatus() as Promise<ModelStatusBuckets[]>,
-        window.syntee.gateway.fetchProviderStatus() as Promise<ProviderStatusRow[]>,
-      ])
+      // Обновляем стор инкрементально — каждый срез (модели/статусы/провайдеры)
+      // записывается сразу, как только соответствующий запрос завершается.
+      // Раньше allSettled ждал всех трёх, из-за чего uptime-бары задерживались
+      // до 10с (timeout fetchModels), хотя статусы уже пришли.
+      //
+      // Контракт gateway:fetchModels: { models, error }. При транзиентном
+      // сбое main отдаёт stale-кэш (возможно пустой, если кэша ещё нет) +
+      // error. Мы НЕ затираем свой непустой список при ошибке — показываем
+      // старые модели + бейдж ошибки. lastFetchAt обновляем только при
+      // успешном (непустом) фетче, чтобы авто-retry в пикере мог сработать
+      // раньше 5-минутного порога.
+      let fetchError: string | null = null
+      let modelsSucceeded = false
 
-      const statusByModel: Record<string, GatewayModelStatus> = {}
-      for (const m of gatewayModels) {
-        if (m.id && m.status) {
-          statusByModel[m.id] = m.status as GatewayModelStatus
-        }
-      }
+      const modelsP = (window.syntee.gateway.fetchModels() as Promise<{ models: GatewayModel[]; error: string | null }>)
+        .then(({ models, error }) => {
+          if (error) {
+            fetchError = error
+            // Stale-кэш от main. Если у нас уже есть непустой список —
+            // оставляем его (main мог отдать пустой кэш при первом старте).
+            // Если и у нас, и от main пусто — показываем состояние ошибки.
+            set(s => ({
+              error,
+              ...(s.models.length === 0 && models.length === 0
+                ? { models: [], statusByModel: {} }
+                : models.length > 0
+                  ? { models, statusByModel: buildStatusByModel(models) }
+                  : {}),
+            }))
+            return
+          }
+          // Успех. Если gateway реально вернул пустой список — затираем свой.
+          const statusByModel = buildStatusByModel(models)
+          set({ models, statusByModel, error: null })
+          modelsSucceeded = true
+        })
+        .catch(err => {
+          // GatewayAuthError пробрасывается main'ом — это сценарий логаута,
+          // auth-флоу обработает отдельно. Прочее (включая IPC-сбой) — тихо.
+          fetchError = err instanceof Error ? err.message : 'Ошибка загрузки моделей gateway'
+          set(s => (s.models.length === 0 ? { models: [], statusByModel: {}, error: fetchError } : { error: fetchError }))
+        })
+
+      const bucketsP = (window.syntee.gateway.fetchModelStatus() as Promise<ModelStatusBuckets[]>)
+        .then(buckets => {
+          set({ modelStatusBuckets: buckets })
+          // Если статусы пустые (endpoint временно недоступен) — перезапрашиваем
+          // через 3с, чтобы не ждать 60с до следующего polling-тика.
+          if (buckets.length === 0) {
+            setTimeout(() => { useGatewayModelsStore.getState().loadStatus() }, 3000)
+          }
+        })
+        .catch(() => {})
+
+      const providersP = (window.syntee.gateway.fetchProviderStatus() as Promise<ProviderStatusRow[]>)
+        .then(providers => { set({ providerStatus: providers }) })
+        .catch(() => {})
+
+      await Promise.allSettled([modelsP, bucketsP, providersP])
 
       set({
-        models: gatewayModels,
-        statusByModel,
-        modelStatusBuckets: buckets,
-        providerStatus: providers,
         loading: false,
-        error: null,
-        lastFetchAt: Date.now(),
+        // lastFetchAt обновляем только при успехе моделей — иначе авто-retry
+        // в пикере будет считать, что данные свежие, и не перезапросит.
+        ...(modelsSucceeded ? { lastFetchAt: Date.now() } : {}),
+        error: fetchError,
       })
+
+      // Self-retry: если модели не приехали — повторяем через 25с без спиннера.
+      // Гасим таймер при следующем load()/logout, чтобы не плодить запросы.
+      if (!modelsSucceeded) {
+        if (selfRetryTimer) clearTimeout(selfRetryTimer)
+        selfRetryTimer = setTimeout(() => {
+          selfRetryTimer = null
+          // Повторяем только если юзер всё ещё залогинен (мог сделать logout).
+          if (useAuthStore.getState().user) {
+            useGatewayModelsStore.getState().load(true)
+          }
+        }, 25_000)
+      } else {
+        if (selfRetryTimer) { clearTimeout(selfRetryTimer); selfRetryTimer = null }
+      }
     } catch (err) {
       set({
         loading: false,
+        lastFetchAt: Date.now(),
         error: err instanceof Error ? err.message : 'Ошибка загрузки моделей gateway',
       })
     }

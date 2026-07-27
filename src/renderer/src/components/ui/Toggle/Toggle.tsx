@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import { playClickSound } from '../../../utils/sounds'
 
 export interface ToggleProps {
   value: boolean
@@ -19,7 +20,7 @@ export default function Toggle({ value, onChange, disabled, ...rest }: TogglePro
     <motion.button
       type="button"
       className={`settings-toggle ${value ? 'settings-toggle--on' : ''}${disabled ? ' settings-toggle--disabled' : ''}`}
-      onClick={() => !disabled && onChange(!value)}
+      onClick={() => { if (!disabled) { playClickSound(); onChange(!value) } }}
       whileTap={disabled ? undefined : { scale: 0.93 }}
       disabled={disabled}
       aria-pressed={value}

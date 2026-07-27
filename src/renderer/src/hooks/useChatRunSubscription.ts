@@ -493,7 +493,7 @@ export function useChatRunSubscription() {
     })
 
     // agent:tool_progress — live progress для долгих тулов (get_fast_context,
-    // run_command). Эфемерный — не персистится в БД, только отображается в live ToolChain.
+    // run_command, process_attachments). Эфемерный — не персистится в БД.
     const offToolProgress = window.syntee.on('agent:tool_progress', (data: {
       msgId: string; chatId: string; toolName: string; stage: string
       detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number
@@ -501,6 +501,18 @@ export function useChatRunSubscription() {
     }) => {
       if (!data.chatId) return
       const buf = getBuf(data.chatId)
+      // Усваиваем реальный msgId из первого события (как в offToken/offStep).
+      // process_attachments стримит ДО первого токена, поэтому именно тут
+      // промоутим 'streaming-pending' → реальный msgId + включаем isTyping,
+      // чтобы showLiveBubble стал true и блок отрисовался немедленно.
+      // ВАЖНО: buf.streamMsgId может быть null (не только 'streaming-pending'),
+      // если chat:send ещё не вернулся из main (runChatSend await-ит
+      // processAttachmentsAndStream, и initChatSend не успел вызваться в
+      // renderer). Трактуем null так же как 'streaming-pending'.
+      if ((!buf.streamMsgId || buf.streamMsgId === 'streaming-pending') && data.msgId) {
+        buf.streamMsgId = data.msgId
+        liveSet(data.chatId, { msgId: data.msgId, isTyping: true })
+      }
       if (data.msgId && buf.streamMsgId && data.msgId !== buf.streamMsgId) return
       buf.toolProgress = {
         ...buf.toolProgress,

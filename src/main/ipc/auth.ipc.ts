@@ -48,13 +48,25 @@ function parseCallbackUrl(url: string): string | null {
 
 /** Handle a deep-link callback URL: exchange code → store tokens → notify renderer. */
 async function handleCallback(url: string, mainWindow?: BrowserWindow | null): Promise<void> {
+  console.log('[auth] handleCallback:', url)
   const code = parseCallbackUrl(url)
-  if (!code) return
+  if (!code) {
+    // Раньше тут был молчаливый return → вечный вис в UI.
+    // Теперь сообщаем об ошибке, чтобы пользователь не ждал вечно.
+    console.error('[auth] handleCallback: no code in URL', url)
+    mainWindow?.webContents.send('auth:login-error', {
+      message: 'Некорректный ответ от браузера (нет кода авторизации). Попробуйте снова.',
+    })
+    return
+  }
   try {
+    console.log('[auth] exchanging desktop code...')
     const tokens = await exchangeDesktopCode(code)
     setTokens(tokens.access_token, tokens.refresh_token)
+    console.log('[auth] tokens stored, notifying renderer')
     mainWindow?.webContents.send('auth:logged-in')
   } catch (err) {
+    console.error('[auth] exchange failed:', err)
     mainWindow?.webContents.send('auth:login-error', {
       message: err instanceof Error ? err.message : 'Exchange failed',
     })
@@ -83,6 +95,7 @@ export function registerDeepLinks(getMainWindow: () => BrowserWindow | null): vo
   app.on('second-instance', (_event, argv) => {
     const url = argv.find((a) => a.startsWith(`${PROTOCOL}://`))
     if (url) {
+      console.log('[auth] second-instance deep-link received')
       handleCallback(url, getMainWindow())
     } else {
       // Regular second launch — focus the main window.

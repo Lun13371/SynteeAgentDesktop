@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, KeyboardEvent } from 'react'
+import { useState, useRef, useEffect, KeyboardEvent, DragEvent, ClipboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
@@ -7,11 +7,14 @@ import ContextRing from '../ContextRing/ContextRing'
 import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
 import ModelSelector from '../ModelSelector/ModelSelector'
 import SlashMenu from '../SlashMenu/SlashMenu'
+import MentionMenu from '../MentionMenu/MentionMenu'
+import AttachmentChips from '../AttachmentChips/AttachmentChips'
 import QueuePanel from '../QueuePanel/QueuePanel'
 import ExtensionsBadge from '../ExtensionsBadge/ExtensionsBadge'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
-import type { ApprovalMode } from '../../../../../shared/types'
+import { findMentionTokenAtCaret, mentionToAttachment, mimeFromExt, isImageMime } from '../../../../../shared/mentions'
+import type { Attachment, MentionItem, ApprovalMode } from '../../../../../shared/types'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import { useUIStore } from '../../../store/ui.store'
 import { playSendSound } from '../../../utils/sounds'
@@ -21,7 +24,6 @@ interface ChatInputProps {
   /** ID текущего чата — для панели очереди запросов. */
   chatId?: string
   onSend: (text: string) => void
-  onAttach?: () => void
   disabled?: boolean
   isIncognito?: boolean
   replyTo?: { id: string; role: string; content: string }[]
@@ -59,13 +61,75 @@ interface ChatInputProps {
   /** Статистика сжатий сессии для ContextRing (кол-во + сэкономлено токенов). */
   compactSessionStats?: { count: number; totalTokensSaved: number }
   /** Кастомные slash-команды (из .md-файлов). Загружаются в ChatPage и
-    *  прокидываются сюда для автокомплита. */
+   *  прокидываются сюда для автокомплита. */
   customCommands?: SlashCommand[]
+  /** Прикреплённые вложения черновика (персистятся в БД через ChatPage).
+   *  ChatInput — controlled: только отображает и сообщает об изменениях. */
+  attachments?: Attachment[]
+  /** Колбэк изменения набора вложений (добавление/удаление чипа). ChatPage
+   *  персистит в БД (debounce) и очищает после отправки. */
+  onAttachmentsChange?: (attachments: Attachment[]) => void
+  /** Лимит вложений (default 10). При достижении показываем warning-чип. */
+  maxAttachments?: number
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Читает File как base64 data URL (для paste/drag&drop картинок). */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
+ * Рендерит содержимое mirror-слоя для подсветки @упоминаний.
+ *
+ * Ищет в тексте токены вида @имяФайла (соответствующие прикреплённым
+ * Attachment) и обрамляет их в <span class="mention-highlight">. Остальной
+ * текст рендерится как есть (color: transparent — виден только фон подсветки).
+ *
+ * Используем extractMentions из shared/mentions для парсинга.
+ */
+function renderMirrorContent(text: string): JSX.Element {
+  // Делим текст по @упоминаниям. Простой split без полноценного markdown-парсера —
+  // mirror только для подсветки, не для форматирования.
+  const parts: Array<{ text: string; isMention: boolean }> = []
+  const re = /(?:^|\s)@[^\s@]+/g
+  let lastIdx = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const matchStart = m.index + (m[0].startsWith('@') ? 0 : 1)
+    if (matchStart > lastIdx) {
+      parts.push({ text: text.slice(lastIdx, matchStart), isMention: false })
+    }
+    parts.push({ text: text.slice(matchStart, matchStart + m[0].length - (m[0].startsWith('@') ? 0 : 1)), isMention: true })
+    lastIdx = matchStart + m[0].length - (m[0].startsWith('@') ? 0 : 1)
+  }
+  if (lastIdx < text.length) {
+    parts.push({ text: text.slice(lastIdx), isMention: false })
+  }
+  // Если нет упоминаний — рендерим весь текст одним куском (быстрее)
+  if (parts.length === 0) return <>{text}</>
+  return (
+    <>
+      {parts.map((p, i) => (
+        p.isMention
+          ? <span key={i} className="mention-highlight">{p.text}</span>
+          : <span key={i}>{p.text}</span>
+      ))}
+      {/* Трейлинг-пробел чтобы mirror не схлопывался */}
+      {' '}
+    </>
+  )
 }
 
 export default function ChatInput({
   chatId,
-  onSend, onAttach, disabled, isIncognito,
+  onSend, disabled, isIncognito,
   replyTo, onCancelReply,
   isGenerating, onStop,
   contextInfo, showContextRing = true,
@@ -85,10 +149,24 @@ export default function ChatInput({
   workdir,
   compactSessionStats,
   customCommands = [],
+  attachments = [],
+  onAttachmentsChange,
+  maxAttachments = 10,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
   const [slashIdx, setSlashIdx] = useState(0)
+  // ── @mention-меню ──
+  // mentionItems — текущий список для дропдауна (fuzzy-отфильтрованный).
+  // mentionIdx — выбранный индекс (как slashIdx).
+  // mentionToken — {start,end,query} текущего @токена у каретки. null = меню скрыто.
+  const [mentionItems, setMentionItems] = useState<MentionItem[]>([])
+  const [mentionIdx, setMentionIdx] = useState(0)
+  const mentionTokenRef = useRef<{ start: number; end: number; query: string } | null>(null)
+  const mentionFetchIdRef = useRef(0) // race-condition guard для асинхронных fetchей
+  // ── Drag&Drop overlay ──
+  const [isDragOver, setIsDragOver] = useState(false)
+  const dragCounterRef = useRef(0)
   const [sendBurst, setSendBurst] = useState(false)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const plusBtnRef = useRef<HTMLButtonElement>(null)
@@ -143,7 +221,7 @@ export default function ChatInput({
     historyIdxRef.current = null
   }, [chatId])
 
-  // Обновляем слеш-меню при вводе
+  // Обновляем слеш-меню и @mention-меню при вводе
   const handleChange = (text: string) => {
     // Любой ручной ввод сбрасывает режим навигации по истории — иначе
     // следующий ArrowUp продолжил бы с устаревшего индекса.
@@ -157,6 +235,27 @@ export default function ChatInput({
       setSlashIdx(0)
     } else {
       setSlashCmds([])
+    }
+
+    // ── @mention-детект: парсим токен у каретки ──
+    const caretPos = textareaRef.current?.selectionStart ?? text.length
+    const token = findMentionTokenAtCaret(text, caretPos)
+    mentionTokenRef.current = token
+    if (token) {
+      // Асинхронный fetch с race-guard — если юзер быстро печатает, оставляем только последний
+      const fetchId = ++mentionFetchIdRef.current
+      window.syntee.mentions.search({ workdir, query: token.query, limit: 30 })
+        .then((items: MentionItem[]) => {
+          if (fetchId !== mentionFetchIdRef.current) return // устарел
+          setMentionItems(items)
+          setMentionIdx(0)
+        })
+        .catch(() => {
+          if (fetchId !== mentionFetchIdRef.current) return
+          setMentionItems([])
+        })
+    } else {
+      setMentionItems([])
     }
   }
 
@@ -173,14 +272,196 @@ export default function ChatInput({
     const text = value.trim()
     // Разрешаем отправку даже при disabled=true если идёт генерация —
     // запрос уйдёт в очередь (main-процесс сериализует через chatQueues).
-    if (!text || (disabled && !isGenerating)) return
+    if (!text && attachments.length === 0) return
+    if (disabled && !isGenerating) return
     onSend(text)
     historyIdxRef.current = null
     onChangeValue('')
     setSlashCmds([])
+    setMentionItems([])
+    mentionTokenRef.current = null
+    // Вложения очищаются в ChatPage после отправки (после chat:send)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSendSound()
     if (sendEffect) { setSendBurst(true); setTimeout(() => setSendBurst(false), 400) }
+  }
+
+  // ── @mention: выбор элемента из дропдауна ──
+  // Заменяем @токен в тексте на @label (без пробела — юзер может продолжить
+  // печатать). Добавляем Attachment в чипы. Каретку ставим после вставки.
+  const selectMention = (item: MentionItem) => {
+    const token = mentionTokenRef.current
+    if (!token) return
+    const label = item.label
+    const before = value.slice(0, token.start)
+    const after = value.slice(token.end)
+    const newText = before + '@' + label + ' ' + after
+    mentionTokenRef.current = null
+    setMentionItems([])
+    onChangeValue(newText)
+    // Добавляем Attachment (если не превышен лимит и ещё нет дубликата)
+    const newAtt = mentionToAttachment(item)
+    if (attachments.length < maxAttachments && !attachments.some(a => a.path === newAtt.path && a.kind === newAtt.kind)) {
+      onAttachmentsChange?.([...attachments, newAtt])
+    }
+    // Фокус + каретка после вставки
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      const pos = before.length + label.length + 2 // +@ +пробел
+      el.setSelectionRange(pos, pos)
+    })
+  }
+
+  // ── Удаление вложения ──
+  // Если это картинка из paste/dragdrop (source !== 'mention') — удаляем файл из userData.
+  const handleRemoveAttachment = (id: string) => {
+    const removed = attachments.find(a => a.id === id)
+    if (removed && removed.path && removed.source !== 'mention' && removed.kind === 'image') {
+      window.syntee.attachments.deleteFile({ path: removed.path }).catch(() => {})
+    }
+    onAttachmentsChange?.(attachments.filter(a => a.id !== id))
+  }
+
+  // ── Drag&Drop файлов ──
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!e.dataTransfer.types.includes('Files')) return
+    dragCounterRef.current++
+    setIsDragOver(true)
+  }
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current--
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0
+      setIsDragOver(false)
+    }
+  }
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  const handleDrop = async (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current = 0
+    setIsDragOver(false)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length === 0) return
+    await addFilesAsAttachments(files)
+  }
+
+  // ── Универсальный обработчик добавления File[] → Attachment[] ──
+  // Используется в drag&drop и в paste. Картинки сохраняем в userData
+  // (saveImageFromBase64), остальные файлы — копируем (saveFileFromPath).
+  // Файлы из workdir НЕ копируем — храним только path (но drag&drop не даёт
+  // надёжного способа узнать, из workdir файл или нет, поэтому всегда копируем
+  // через saveFileFromPath для надёжности).
+  const addFilesAsAttachments = async (files: File[]) => {
+    if (!chatId) return
+    const remaining = maxAttachments - attachments.length
+    if (remaining <= 0) return
+    const toAdd: Attachment[] = []
+    for (const file of files.slice(0, remaining)) {
+      try {
+        if (file.type.startsWith('image/')) {
+          // Картинка — читаем как base64, сохраняем в userData
+          const base64 = await fileToBase64(file)
+          const res = await window.syntee.attachments.saveImageFromBase64({
+            chatId,
+            base64,
+            mime: file.type,
+            suggestedName: file.name.replace(/\.[^.]+$/, '') || `image-${Date.now()}`,
+          })
+          if (res.success) {
+            toAdd.push({
+              id: crypto.randomUUID(),
+              kind: 'image',
+              name: res.name,
+              path: res.path,
+              mime: res.mime,
+              size: res.size,
+              source: 'dragdrop',
+              dataUrl: base64,
+              attachedAt: Date.now(),
+            })
+          }
+        } else {
+          // Не-картинка — нужен путь. File.path удалён в Electron 32+
+          // (contextIsolation), используем webUtils.getPathForFile через preload.
+          const filePath = window.syntee.attachments.getPathForFile(file)
+          if (!filePath) continue
+          const res = await window.syntee.attachments.saveFileFromPath({ chatId, sourcePath: filePath })
+          if (res.success) {
+            toAdd.push({
+              id: crypto.randomUUID(),
+              kind: 'file',
+              name: res.name,
+              path: res.path,
+              mime: res.mime,
+              size: res.size,
+              source: 'dragdrop',
+              attachedAt: Date.now(),
+            })
+          }
+        }
+      } catch { /* skip individual file errors */ }
+    }
+    if (toAdd.length > 0) {
+      onAttachmentsChange?.([...attachments, ...toAdd])
+    }
+  }
+
+  // ── Paste изображения из буфера обмена (Ctrl+V) ──
+  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const imageItems: DataTransferItem[] = []
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) imageItems.push(items[i])
+    }
+    if (imageItems.length === 0) return // обычный текст — пусть textarea обрабатывает
+    e.preventDefault()
+    const files: File[] = []
+    for (const item of imageItems) {
+      const f = item.getAsFile()
+      if (f) files.push(f)
+    }
+    if (files.length > 0) void addFilesAsAttachments(files)
+  }
+
+  // ── Кнопка «Прикрепить файл» (native dialog) ──
+  const handleAttachClick = async () => {
+    const filePaths = await window.syntee.attachments.pickFile()
+    if (!filePaths || filePaths.length === 0) return
+    const remaining = maxAttachments - attachments.length
+    if (remaining <= 0) return
+    const toAdd: Attachment[] = []
+    for (const fp of filePaths.slice(0, remaining)) {
+      const name = fp.split(/[\\/]/).pop() || fp
+      const mime = mimeFromExt(name)
+      const isImg = isImageMime(mime)
+      // Для диалога — копируем файл в userData (как в drag&drop), чтобы
+      // пережил рестарт даже если исходный файл удалят.
+      const res = await window.syntee.attachments.saveFileFromPath({ chatId: chatId!, sourcePath: fp })
+      if (res.success) {
+        toAdd.push({
+          id: crypto.randomUUID(),
+          kind: isImg ? 'image' : 'file',
+          name: res.name,
+          path: res.path,
+          mime: res.mime,
+          size: res.size,
+          source: 'dialog',
+          attachedAt: Date.now(),
+        })
+      }
+    }
+    if (toAdd.length > 0) onAttachmentsChange?.([...attachments, ...toAdd])
   }
 
   // Подставить запись из истории в поле и поставить каретку в конец.
@@ -196,6 +477,29 @@ export default function ChatInput({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Навигация по @mention-меню — высший приоритет (как slash)
+    if (mentionItems.length > 0) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionIdx(i => (i - 1 + mentionItems.length) % mentionItems.length)
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionIdx(i => (i + 1) % mentionItems.length)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault()
+        selectMention(mentionItems[mentionIdx])
+        return
+      }
+      if (e.key === 'Escape') {
+        setMentionItems([])
+        mentionTokenRef.current = null
+        return
+      }
+    }
     // Навигация по слеш-меню — приоритет
     if (slashCmds.length > 0) {
       if (e.key === 'ArrowUp') {
@@ -300,6 +604,15 @@ export default function ChatInput({
           anchorRef={boxRef as React.RefObject<HTMLElement>}
           onSelect={selectCommand}
           onClose={() => setSlashCmds([])}
+        />
+
+        {/* @mention-меню */}
+        <MentionMenu
+          items={mentionItems}
+          selectedIndex={mentionIdx}
+          anchorRef={boxRef as React.RefObject<HTMLElement>}
+          onSelect={selectMention}
+          onClose={() => { setMentionItems([]); mentionTokenRef.current = null }}
         />
 
       {/* Строка статуса над инпутом: workdir-бейдж + planning/image-бейджи.
@@ -422,7 +735,44 @@ export default function ChatInput({
         </div>
       )}
 
-      <div className="chat-input-box" ref={boxRef}>
+      {/* Чипы прикреплённых вложений — над инпут-боксом. Показываем только
+          когда есть вложения, иначе место не занимаем. */}
+      {attachments.length > 0 && (
+        <AttachmentChips
+          attachments={attachments}
+          onRemove={handleRemoveAttachment}
+          max={maxAttachments}
+          maxReached={attachments.length >= maxAttachments}
+        />
+      )}
+
+      <div
+        className="chat-input-box"
+        ref={boxRef}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
+        {/* Drag&Drop overlay — подсветка всего инпута + текст «Отпустите для прикрепления» */}
+        <AnimatePresence>
+          {isDragOver && (
+            <motion.div
+              className="chat-input-drop-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+            >
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span>Отпустите для прикрепления</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
         {/* + кнопка с меню */}
         <div className="chat-input-plus-wrap" ref={plusWrapRef}>
           <button
@@ -459,7 +809,7 @@ export default function ChatInput({
                   transition={{ type: 'spring', stiffness: 480, damping: 28 }}
                   onMouseDown={e => e.stopPropagation()}
                 >
-                  <button className="chat-input-plus-item" onClick={() => { onAttach?.(); setPlusMenuOpen(false) }}>
+                  <button className="chat-input-plus-item" onClick={() => { handleAttachClick(); setPlusMenuOpen(false) }}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
                     </svg>
@@ -529,22 +879,36 @@ export default function ChatInput({
           )}
         </div>
 
-        <textarea
-          ref={textareaRef}
-          className={`chat-input-textarea selectable${planningMode ? ' chat-input-textarea--planning' : ''}${askMode && !planningMode ? ' chat-input-textarea--ask' : ''}`}
-          value={value}
-          onChange={e => handleChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={
-            planningMode ? 'Режим планирования — опишите задачу...'
-            : askMode ? 'Ask-режим — только чтение, задайте вопрос...'
-            : imageMode ? 'Режим генерации изображений — опишите картинку...'
-            : isIncognito ? 'Режим инкогнито — чат не сохраняется...'
-            : 'Сообщение Syntee... (/ для команд)'
-          }
-          rows={1}
-          disabled={disabled && !isGenerating}
-        />
+        <div className="chat-input-textarea-wrap">
+          {/* Mirror-слой для подсветки @упоминаний. Точно совпадает по
+              шрифту/отступам с textarea, рендерит value с подсветкой @токенов.
+              pointer-events:none — клики идут в textarea. */}
+          <div className="chat-input-mirror" aria-hidden="true">
+            {renderMirrorContent(value)}
+          </div>
+          <textarea
+            ref={textareaRef}
+            className={`chat-input-textarea selectable${planningMode ? ' chat-input-textarea--planning' : ''}${askMode && !planningMode ? ' chat-input-textarea--ask' : ''}`}
+            value={value}
+            onChange={e => handleChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onScroll={(e) => {
+              const wrap = e.currentTarget.parentElement
+              const mirror = wrap?.querySelector('.chat-input-mirror') as HTMLDivElement
+              if (mirror) mirror.scrollTop = e.currentTarget.scrollTop
+            }}
+            placeholder={
+              planningMode ? 'Режим планирования — опишите задачу...'
+              : askMode ? 'Ask-режим — только чтение, задайте вопрос...'
+              : imageMode ? 'Режим генерации изображений — опишите картинку...'
+              : isIncognito ? 'Режим инкогнито — чат не сохраняется...'
+              : 'Сообщение Syntee... (/ для команд, @ для файлов)'
+            }
+            rows={1}
+            disabled={disabled && !isGenerating}
+          />
+        </div>
 
         {!isIncognito && (
           <ApprovalModeSelector value={approvalMode} onChange={handleApprovalChange} compact />
@@ -582,7 +946,7 @@ export default function ChatInput({
         </motion.button>
       </div>
 
-      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды</p>
+      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · @ — файлы и сущности</p>
       </div>
     </div>
   )

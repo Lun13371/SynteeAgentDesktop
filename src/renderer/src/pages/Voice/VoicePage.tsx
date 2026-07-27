@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import Logo from '../../components/ui/Logo/Logo'
 import './VoicePage.css'
 
 type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking' | 'error'
@@ -179,12 +180,7 @@ export default function VoicePage() {
       >
         {/* Логотип */}
         <div className="voice-logo">
-          <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-            <polygon points="16,2 30,9 30,23 16,30 2,23 2,9"
-              fill="none" stroke="var(--accent)" strokeWidth="1.5" opacity="0.9"/>
-            <polygon points="16,6 26,11 26,21 16,26 6,21 6,11"
-              fill="var(--accent)" opacity="0.1"/>
-          </svg>
+          <Logo size={32} />
           <span>Syntee</span>
         </div>
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
+import Logo from '../../components/ui/Logo/Logo'
 import { useAuthStore } from '../../store/auth.store'
 import './LoginScreen.css'
 
@@ -58,6 +59,20 @@ export default function LoginScreen({ onContinueAsGuest }: LoginScreenProps) {
     return () => { off() }
   }, [])
 
+  // Таймаут ожидания: если deep-link callback не вернулся за 120с
+  // (gateway не запущен, протокол сломан, second-instance не сработал) —
+  // сбрасываем waiting и показываем понятную ошибку вместо вечного виса.
+  useEffect(() => {
+    if (!waiting) return
+    const timer = setTimeout(() => {
+      setWaiting(false)
+      useAuthStore.setState({
+        error: 'Не дождались ответа от браузера за 2 минуты. Проверьте, что Syntee-Gateway запущен (localhost:3000) и протокол synteehelper:// зарегистрирован.',
+      })
+    }, 120_000)
+    return () => clearTimeout(timer)
+  }, [waiting])
+
   const handleLogin = async () => {
     clearError()
     setWaiting(true)
@@ -69,20 +84,17 @@ export default function LoginScreen({ onContinueAsGuest }: LoginScreenProps) {
     }
   }
 
+  const handleCancel = () => {
+    setWaiting(false)
+    clearError()
+  }
+
   return (
     <div className="login-screen">
       <div className="login-screen__bg" />
       <div className="login-screen__content">
         <div className="login-screen__logo">
-          <svg width="56" height="56" viewBox="0 0 22 22" fill="none">
-            <polygon points="11,1 21,7 21,15 11,21 1,15 1,7"
-              fill="none" stroke="var(--accent)" strokeWidth="1.2" opacity="0.9"/>
-            <polygon points="11,4 18,8 18,14 11,18 4,14 4,8"
-              fill="var(--accent)" opacity="0.18"/>
-            <line x1="11" y1="1" x2="11" y2="21" stroke="var(--accent)" strokeWidth="0.6" opacity="0.4"/>
-            <line x1="1" y1="7" x2="21" y2="15" stroke="var(--accent)" strokeWidth="0.6" opacity="0.4"/>
-            <line x1="21" y1="7" x2="1" y2="15" stroke="var(--accent)" strokeWidth="0.6" opacity="0.4"/>
-          </svg>
+          <Logo size={56} />
         </div>
 
         <h1 className="login-screen__title">Syntee Helper</h1>
@@ -100,13 +112,13 @@ export default function LoginScreen({ onContinueAsGuest }: LoginScreenProps) {
         <button
           type="button"
           className="login-screen__btn login-screen__btn--primary"
-          onClick={handleLogin}
-          disabled={waiting}
+          onClick={waiting ? handleCancel : handleLogin}
+          disabled={false}
         >
           {waiting ? (
             <>
               <AppIcon name="loader" size="sm" animation="spin" />
-              <span>Ожидание авторизации в браузере…</span>
+              <span>Отмена ожидания…</span>
             </>
           ) : (
             <>
@@ -120,7 +132,7 @@ export default function LoginScreen({ onContinueAsGuest }: LoginScreenProps) {
           type="button"
           className="login-screen__btn login-screen__btn--ghost"
           onClick={onContinueAsGuest}
-          disabled={waiting}
+          disabled={false}
         >
           <AppIcon name="user" size="sm" />
           <span>Продолжить как гость</span>

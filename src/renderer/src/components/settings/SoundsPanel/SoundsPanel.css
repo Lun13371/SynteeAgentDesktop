@@ -1,0 +1,162 @@
+.sounds-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sounds-section {
+  margin-top: 12px;
+  padding: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.sounds-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.sounds-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sounds-upload-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.sounds-upload-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.sounds-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 8px 4px;
+}
+
+.sounds-custom-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sounds-custom-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.sounds-custom-name {
+  font-size: 11px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.sounds-custom-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sounds-preview-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s, color 0.15s;
+}
+
+.sounds-preview-btn:hover:not(:disabled) {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.sounds-preview-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.sounds-delete-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s, color 0.15s;
+}
+
+.sounds-delete-btn:hover {
+  background: rgba(255, 90, 77, 0.15);
+  color: #ff5a4d;
+}
+
+.sounds-actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sounds-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.sounds-action-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.sounds-action-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.sounds-action-select {
+  font-size: 11px;
+  padding: 4px 6px;
+  min-width: 160px;
+  max-width: 220px;
+}

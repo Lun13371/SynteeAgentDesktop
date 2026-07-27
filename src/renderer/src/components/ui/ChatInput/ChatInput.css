@@ -464,3 +464,67 @@
   margin-top: 6px;
   opacity: 0.6;
 }
+
+/* ── Drag&Drop overlay ───────────────────────────────────────────────────── */
+.chat-input-box {
+  position: relative;
+}
+
+.chat-input-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 18%, var(--glass-bg, rgba(18, 18, 28, 0.97)));
+  border: 2px dashed var(--accent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* ── @mention-подсветка в тексте (mirror layer) ──────────────────────────── */
+/* Mirror-слой позади textarea — точно совпадает по шрифту/отступам, но
+   рендерит @упоминания цветным фоном. Сам textarea прозрачный поверх.
+   Реализация: .chat-input-textarea-wrap — position relative, mirror абсолютно. */
+.chat-input-textarea-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+.chat-input-textarea-wrap .chat-input-textarea {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  background: transparent;
+}
+.chat-input-mirror {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: transparent;
+  font-family: var(--font-family);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 0;
+  overflow: hidden;
+  z-index: 0;
+}
+.chat-input-mirror .mention-highlight {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 1px;
+  margin: 0 -1px;
+}
+

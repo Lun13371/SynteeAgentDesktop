@@ -66,6 +66,52 @@ export default function ProfileSection() {
 }
 
 function GuestProfile() {
+  const [waiting, setWaiting] = useState(false)
+  const load = useAuthStore(s => s.load)
+  const { add: toast } = useToast()
+
+  // Подписка на успешный вход (deep-link callback отработал в main).
+  useEffect(() => {
+    const off = window.syntee.auth.onLoggedIn(() => {
+      setWaiting(false)
+      load()
+    })
+    return () => { off() }
+  }, [load])
+
+  // Подписка на ошибку обмена кода.
+  useEffect(() => {
+    const off = window.syntee.auth.onLoginError((err) => {
+      setWaiting(false)
+      toast(err.message || 'Ошибка авторизации', 'error')
+    })
+    return () => { off() }
+  }, [toast])
+
+  // Таймаут: если deep-link не вернулся за 120с — сбрасываем.
+  useEffect(() => {
+    if (!waiting) return
+    const timer = setTimeout(() => {
+      setWaiting(false)
+      toast('Не дождались ответа от браузера за 2 минуты. Проверьте, что Syntee-Gateway запущен.', 'error')
+    }, 120_000)
+    return () => clearTimeout(timer)
+  }, [waiting, toast])
+
+  const handleLogin = async () => {
+    setWaiting(true)
+    try {
+      await window.syntee.auth.login()
+    } catch (err) {
+      setWaiting(false)
+      toast(err instanceof Error ? err.message : 'Не удалось открыть браузер', 'error')
+    }
+  }
+
+  const handleCancel = () => {
+    setWaiting(false)
+  }
+
   return (
     <div className="profile-section">
       <SectionTitle>Профиль</SectionTitle>
@@ -81,10 +127,19 @@ function GuestProfile() {
         <button
           type="button"
           className="profile-btn profile-btn--primary"
-          onClick={() => window.syntee.auth.login()}
+          onClick={waiting ? handleCancel : handleLogin}
         >
-          <AppIcon name="globe" size="sm" />
-          Войти через Syntee
+          {waiting ? (
+            <>
+              <AppIcon name="loader" size="sm" animation="spin" />
+              Отмена ожидания…
+            </>
+          ) : (
+            <>
+              <AppIcon name="globe" size="sm" />
+              Войти через Syntee
+            </>
+          )}
         </button>
       </div>
     </div>

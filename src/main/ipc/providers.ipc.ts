@@ -17,9 +17,11 @@ export function setGatewayModelsCache(models: ModelMeta[]): void {
 }
 
 export function getGatewayModelsCache(): ModelMeta[] {
-  // Считаем кэш валидным 5 минут. После — модели станут «старыми» и
-  // renderer перезагрузит их, но старый список остаётся чтобы UI не дёргался.
-  if (Date.now() - gatewayModelsCacheAt > 300_000) return gatewayModelsCache
+  // Считаем кэш валидным 5 минут. После — возвращаем пустой список, чтобы
+  // models:getAll не подмешивал протухшие модели, пока renderer не обновит
+  // их свежим gateway:fetchModels. Раньше обе ветки возвращали одно и то же,
+  // из-за чего пикер показывал stale-модели при текущем неуспешном фетче.
+  if (gatewayModelsCacheAt === 0 || Date.now() - gatewayModelsCacheAt > 300_000) return []
   return gatewayModelsCache
 }
 

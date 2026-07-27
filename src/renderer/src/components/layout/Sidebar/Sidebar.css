@@ -200,8 +200,15 @@
 .sidebar-chat-item:active { transform: scale(0.99); }
 .sidebar-chat-item--active {
   background: var(--accent-subtle);
-  box-shadow: inset 2px 0 0 var(--accent);
   padding-left: 6px;
+}
+.sidebar-chat-item--active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--accent-bg);
+  border-radius: 2px;
 }
 
 /* Color strip */

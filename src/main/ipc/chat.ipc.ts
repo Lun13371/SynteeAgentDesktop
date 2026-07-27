@@ -47,7 +47,7 @@ import { ptyManager, type ShellType } from '../PtyManager'
 import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
 import { getMcpManager } from '../../core/mcp/McpManager'
-import type { Message, AgentSettings, ChatMode, QueueItemMeta } from '../../shared/types'
+import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult } from '../../shared/types'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { messageToContextMessages, formatTodoForContext } from './chatContextHelpers'
 
@@ -98,6 +98,9 @@ interface ActiveRun {
   // при получении tool_result. tool_result не содержит args (они в tool_call),
   // но для outcome-extraction важен контекст "что пытались сделать".
   toolCallArgsCache: Map<string, { toolName: string; args: Record<string, unknown> }>
+  // Результат обработки вложений (processAttachmentsAndStream) — сохраняется
+  // в assistantMsg через sendDone для отображения AttachmentProcessingBlock.
+  attachmentResult: AttachmentProcessingResult | null
 }
 
 const activeRuns = new Map<string, ActiveRun>()
@@ -676,6 +679,192 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
    *  Все ссылки на глобальные синглтоны (activeRuns, chatQueues) — module-level.
    *  store / mainWindow / getSystemPrompt — из замыкания registerChatIPC.
    */
+
+  /**
+   * Обработка вложений перед запуском агента:
+   *  - Текстовые файлы инлайним в content (с лимитом 5МБ).
+   *  - Картинки отправляем в vision-модель (через AIClient.analyzeImage),
+   *    получаем текстовое описание, инлайним его в content.
+   *  - Бинарные — только путь+имя+размер.
+   *
+   * Процесс стримится в UI как отдельный блок (AttachmentProcessingBlock,
+   * аналогичный FastContextBlock) — НЕ ToolStep. Эмитим только
+   * agent:tool_progress events (без agent:step tool_call/tool_result),
+   * которые попадают в toolProgress['process_attachments'] в ChatLiveState.
+   *
+   * Возвращает { content, result } — augmented content с инлайн-блоками
+   * и структурированный результат для сохранения в message (чтобы блок
+   * отображался после рестарта, как FastContextBlock).
+   */
+  async function processAttachmentsAndStream(
+    win: BrowserWindow | null,
+    chatId: string,
+    msgId: string,
+    content: string,
+    attachments: Attachment[],
+  ): Promise<{ content: string; result: AttachmentProcessingResult | null }> {
+    if (attachments.length === 0) return { content, result: null }
+
+    const { readFile: fsReadFile, stat: fsStat } = await import('fs/promises')
+    const { readFileSync } = await import('fs')
+    const { isTextMime, isImageMime } = await import('../../shared/mentions')
+    const { AIClient } = await import('../../core/ai/AIClient')
+
+    const startedAt = Date.now()
+    // Подсчитываем кол-во файлов для прогресса (скиллы/команды пропускаем)
+    const fileAttachments = attachments.filter(a => a.kind !== 'skill' && a.kind !== 'command' && a.path)
+    const total = fileAttachments.length
+    let processed = 0
+
+    // Эмитим старт прогресса
+    win?.webContents.send('agent:tool_progress', {
+      msgId, chatId,
+      toolName: 'process_attachments',
+      stage: 'start',
+      detail: 'Подготовка файлов',
+      filesProcessed: 0,
+      filesTotal: total,
+      ts: Date.now(),
+    })
+
+    const textBlocks: string[] = []
+    const processedFiles: Array<{
+      name: string
+      kind: string
+      status: 'text_inlined' | 'image_described' | 'binary_path' | 'error' | 'skipped'
+      size?: number
+      detail?: string
+      description?: string
+    }> = []
+    let hasErrors = false
+
+    for (const att of attachments) {
+      if (att.kind === 'skill' || att.kind === 'command' || !att.path) {
+        processedFiles.push({
+          name: att.name,
+          kind: att.kind,
+          status: 'skipped',
+          detail: att.kind === 'skill' ? 'Скилл (обрабатывается отдельно)' : 'Команда (обрабатывается отдельно)',
+        })
+        continue
+      }
+
+      win?.webContents.send('agent:tool_progress', {
+        msgId, chatId,
+        toolName: 'process_attachments',
+        stage: 'processing',
+        detail: att.name,
+        filesProcessed: processed,
+        filesTotal: total,
+        ts: Date.now(),
+      })
+
+      try {
+        const st = await fsStat(att.path)
+        if (st.isDirectory()) {
+          textBlocks.push(`[Директория: ${att.name}]`)
+          processedFiles.push({ name: att.name, kind: att.kind, status: 'binary_path', size: 0, detail: 'Директория' })
+        } else if (att.kind === 'image' || isImageMime(att.mime)) {
+          // Картинка → vision-модель
+          win?.webContents.send('agent:tool_progress', {
+            msgId, chatId,
+            toolName: 'process_attachments',
+            stage: 'analyzing_image',
+            detail: att.name,
+            filesProcessed: processed,
+            filesTotal: total,
+            ts: Date.now(),
+          })
+
+          const base64 = readFileSync(att.path).toString('base64')
+          const aiClient = new AIClient(store)
+          const description = await new Promise<string>((resolve) => {
+            let full = ''
+            aiClient.analyzeImage(
+              base64,
+              `Опиши содержимое этого изображения подробно. Это вложение пользователя к вопросу. Отвечай на русском. Опиши: что изображено, любой текст на картинке, контекст, который может быть полезен для ответа на вопрос пользователя.`,
+              {
+                onToken: (token) => {
+                  full += token
+                },
+                onDone: (text) => resolve(text || full),
+                onError: (err) => {
+                  resolve(`[Ошибка анализа изображения: ${err.message}]`)
+                },
+              },
+            ).catch(() => resolve('[Ошибка анализа изображения]'))
+          })
+
+          textBlocks.push(`─── Изображение: ${att.name} ───\n${description}\n─── Конец описания: ${att.name} ───`)
+          processedFiles.push({
+            name: att.name,
+            kind: att.kind,
+            status: 'image_described',
+            size: st.size,
+            description: description.slice(0, 200) + (description.length > 200 ? '…' : ''),
+          })
+        } else {
+          // Текстовый или бинарный файл
+          const mime = att.mime || ''
+          if (isTextMime(mime) && st.size <= 5 * 1024 * 1024) {
+            const fileContent = await fsReadFile(att.path, 'utf-8')
+            textBlocks.push(`─── Файл: ${att.relPath || att.name} ───\n${fileContent}\n─── Конец файла: ${att.relPath || att.name} ───`)
+            processedFiles.push({
+              name: att.name,
+              kind: att.kind,
+              status: 'text_inlined',
+              size: st.size,
+              detail: `${(st.size / 1024).toFixed(1)} KB — содержимое инлайнено`,
+            })
+          } else {
+            textBlocks.push(`[Прикреплён файл: ${att.name}] (${(st.size / 1024).toFixed(1)} KB, путь: ${att.path})`)
+            processedFiles.push({
+              name: att.name,
+              kind: att.kind,
+              status: 'binary_path',
+              size: st.size,
+              detail: `${(st.size / 1024).toFixed(1)} KB — только путь`,
+            })
+          }
+        }
+      } catch (e) {
+        hasErrors = true
+        const errMsg = (e as Error).message
+        textBlocks.push(`[Файл недоступен: ${att.name} — ${errMsg}]`)
+        processedFiles.push({ name: att.name, kind: att.kind, status: 'error', detail: errMsg })
+      }
+      processed++
+    }
+
+    // Эмитим финальный прогресс — блок в UI покажет финальный результат
+    win?.webContents.send('agent:tool_progress', {
+      msgId, chatId,
+      toolName: 'process_attachments',
+      stage: 'done',
+      detail: hasErrors ? 'Завершено с ошибками' : 'Готово',
+      filesProcessed: total,
+      filesTotal: total,
+      ts: Date.now(),
+    })
+
+    // Собираем augmented content
+    const augmentedContent = textBlocks.length > 0
+      ? `${content}\n\n${textBlocks.join('\n\n')}`
+      : content
+
+    // Структурированный результат для сохранения в message
+    const result: AttachmentProcessingResult = {
+      files: processedFiles,
+      totalProcessed: processedFiles.filter(f => f.status !== 'skipped' && f.status !== 'error').length,
+      totalErrors: processedFiles.filter(f => f.status === 'error').length,
+      totalImages: processedFiles.filter(f => f.status === 'image_described').length,
+      ms: Date.now() - startedAt,
+      hasErrors,
+    }
+
+    return { content: augmentedContent, result }
+  }
+
   async function runChatSend(
     params: {
       chatId: string
@@ -906,6 +1095,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       currentIterThinkingMs: undefined,
       closedIters: [],
       toolCallArgsCache: new Map(),
+      // Результат обработки вложений (processAttachmentsAndStream) —
+      // сохраняется в assistantMsg через sendDone для отображения
+      // AttachmentProcessingBlock после рестарта.
+      attachmentResult: null as AttachmentProcessingResult | null,
     }
 
     const sendDone = (
@@ -960,6 +1153,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         thinkingMs,
         planData: computedPlan,
         todo: todoArr && todoArr.length > 0 ? todoArr : undefined,
+        // Результат обработки вложений — для AttachmentProcessingBlock.
+        // null если вложений не было или обработка не запускалась.
+        attachmentResult: run.attachmentResult ?? undefined,
       }
 
       if (!params.incognito) saveMessage(assistantMsg)
@@ -1145,6 +1341,28 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     // Эмитим стартовый статус для сайдбара (spinner).
     emitRunStatus(win, params.chatId, 'running', assistantMsgId)
+
+    // ── Обработка вложений (до старта воркера) ──────────────────────────────
+    // Если есть attachments — обрабатываем их с прогресс-стримингом в UI:
+    //  - текстовые файлы инлайним в content
+    //  - картинки отправляем в vision-модель, описание инлайним в content
+    // В UI это отрисовывается как AttachmentProcessingBlock (аналог FastContextBlock).
+    // Заменяем params.content на augmented-версию для передачи в worker.
+    // Результат сохраняем в run.attachmentResult — sendDone добавит его в
+    // assistantMsg для отображения после рестарта.
+    let effectiveContent = params.content
+    if (params.attachments && params.attachments.length > 0) {
+      try {
+        const processed = await processAttachmentsAndStream(
+          win, params.chatId, assistantMsgId, params.content, params.attachments,
+        )
+        effectiveContent = processed.content
+        run.attachmentResult = processed.result
+      } catch (e) {
+        log('[runChatSend] processAttachments failed: %s', (e as Error).message)
+        // Продолжаем с исходным content — лучше чем уронить весь запрос
+      }
+    }
 
     worker.on('message', (msg: Record<string, unknown>) => {
       switch (msg.type) {
@@ -1860,7 +2078,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
     worker.postMessage({
       chatId: params.chatId,
       msgId: assistantMsgId,
-      content: params.content,
+      // effectiveContent — с инлайн-блоками из processAttachmentsAndStream
+      // (текстовые файлы + описания картинок от vision-модели).
+      content: effectiveContent,
       history: processedHistory,
       systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill),
       enableTools: true,
@@ -2083,6 +2303,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
     oneShotAllowedTools?: string[]
     /** Режим для кастомной команды: 'ask' (read-only) | 'plan' | 'code'. */
     oneShotMode?: 'ask' | 'plan' | 'code'
+    /** Прикреплённые файлы/изображения из @mention/drag&drop/paste/dialog.
+     *  Текстовые файлы инлайним в content, картинки — путь (vision Phase 2). */
+    attachments?: Attachment[]
   }) => {
     const win = mainWindow.getWindow()
 
@@ -2094,14 +2317,20 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
 
     const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
 
+    const attachments = params.attachments ?? []
+
     const userMsg: Message = {
       id: params.userMsgId ?? uuid(),
       chatId: params.chatId,
       role: 'user',
+      // displayContent — то что ввёл юзер (без инлайн-блоков), сохраняется в БД.
+      // effectiveContent (с инлайн-блоками) формируется в runChatSend после
+      // processAttachmentsAndStream и отправляется в AI.
       content: params.displayContent ?? params.content,
       createdAt: Date.now(),
       isPinned: 0,
       slashCommand: params.slashCommand,
+      attachments: attachments.length > 0 ? attachments : undefined,
     }
     const history = params.incognito ? [] : getMessages(params.chatId)
     const assistantMsgId = uuid()
@@ -2118,9 +2347,15 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       enqueuedAt: Date.now(),
     }
 
-    // Если в этом чате уже работает воркер — ставим запрос в очередь и
+    // Если в этом чате уже работает воркер — ставим в очередь и
     // возвращаемся. Реальный запуск произойдёт после drainQueue(win, chatId).
-    if (activeRuns.has(params.chatId)) {
+    // Обработка вложений (processAttachmentsAndStream) тоже откладывается —
+    // выполнится внутри runChatSend когда слот освободится.
+    // Проверяем activeRunMeta В ДОПОЛНЕНИЕ к activeRuns: при fire-and-forget
+    // запуске (ниже) activeRuns.set может задержаться (runChatSend выполняется
+    // синхронно только до первого await), а activeRunMeta устанавливается
+    // синхронно тут — надёжный индикатор занятости слота.
+    if (activeRuns.has(params.chatId) || activeRunMeta.has(params.chatId)) {
       log('[chat:send] chatId=%s уже работает — ставим в очередь', params.chatId)
       emitRunStatus(win, params.chatId, 'queued', assistantMsgId)
       const queued: QueuedSend = {
@@ -2137,7 +2372,14 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
 
     // Слот свободен — стартуем сразу. Запоминаем meta как активный запуск.
     activeRunMeta.set(params.chatId, { ...meta, startedAt: Date.now() })
-    return runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+    // Fire-and-forget: runChatSend await-ит processAttachmentsAndStream
+    // (vision-модель, чтение файлов — секунды), но chat:send должен вернуть
+    // результат немедленно, чтобы renderer вызвал addMessage(userMsg) +
+    // initChatSend(chatId) и показал live-пузырь с прогрессом обработки
+    // вложений. Без этого пользователь видит пустой чат всё время обработки.
+    void runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+      .catch((e) => log('[chat:send] runChatSend failed chatId=%s: %s', params.chatId, (e as Error).message))
+    return { userMsg, assistantMsgId }
   })
 
   // ── chat:sideSend — отправка сообщения в параллельный доп-чат (side chat).
@@ -2202,7 +2444,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       sideChatParentId: params.parentChatId,
     }
 
-    if (activeRuns.has(sideChatId)) {
+    if (activeRuns.has(sideChatId) || activeRunMeta.has(sideChatId)) {
       emitRunStatus(win, sideChatId, 'queued', assistantMsgId)
       const queued: QueuedSend = {
         run: async () => { await runChatSend(sideParams, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow) },
@@ -2216,7 +2458,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
     }
 
     activeRunMeta.set(sideChatId, { ...meta, startedAt: Date.now() })
-    return runChatSend(sideParams, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+    // Fire-and-forget (см. комментарий в chat:send выше).
+    void runChatSend(sideParams, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+      .catch((e) => log('[chat:sideSend] runChatSend failed chatId=%s: %s', sideChatId, (e as Error).message))
+    return { userMsg, assistantMsgId }
   })
 
   // ── chat:getLiveState — снапшот накопленного прогресса активного запуска.

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
+import Logo from '../../components/ui/Logo/Logo'
 import './SpotlightPage.css'
 
 interface SuggestionItem {
@@ -61,10 +62,7 @@ export default function SpotlightPage() {
       >
         {/* Поле ввода */}
         <div className="spotlight-input-row">
-          <svg className="spotlight-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <polygon points="8,1 15,4.5 15,11.5 8,15 1,11.5 1,4.5"
-              fill="none" stroke="var(--accent)" strokeWidth="1.3"/>
-          </svg>
+          <Logo size={16} className="spotlight-icon" />
           <input
             ref={inputRef}
             className="spotlight-input"

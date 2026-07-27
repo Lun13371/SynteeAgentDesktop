@@ -69,6 +69,13 @@ if (!window.syntee) {
   } as unknown as typeof window.syntee
 }
 
+// Предотвращаем навигацию окна при drag&drop файлов из ОС.
+// Без этого Electron открывает file:// URL вместо drop-события.
+// Chat-input-box имеет собственные handlers (с stopPropagation), поэтому
+// эти document-level listeners срабатывают только для drop вне инпута.
+document.addEventListener('dragover', (e) => e.preventDefault())
+document.addEventListener('drop', (e) => e.preventDefault())
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />

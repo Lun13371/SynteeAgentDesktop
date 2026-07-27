@@ -120,3 +120,16 @@
   line-height: 1.5;
   max-width: 300px;
 }
+
+/* Обёртка для boot-переходов (LoginScreen / main UI) при AnimatePresence.
+   Заполняет экран, чтобы framer-motion crossfade работал поверх BootScreen. */
+.app-boot-layer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app-boot-layer > .app-root {
+  flex: 1;
+  min-height: 0;
+}
