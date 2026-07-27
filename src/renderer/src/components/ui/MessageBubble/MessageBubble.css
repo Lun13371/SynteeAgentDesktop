@@ -4,6 +4,7 @@
   padding: 4px 16px;
   position: relative;
   align-items: flex-start;
+  contain: layout style paint;
 }
 
 .message-wrap--user {
@@ -21,7 +22,7 @@
   justify-content: center;
   flex-shrink: 0;
   margin-top: 0;
-  filter: drop-shadow(0 0 6px var(--overlay-4));
+  box-shadow: 0 0 6px var(--overlay-4);
 }
 
 .message-avatar--user {

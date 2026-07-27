@@ -276,6 +276,32 @@ function renderParsedSegments(
   })
 }
 
+// ── ParsedContent: мемоизированный рендер parseContent ──────────────────
+// Раньше parseContent(...) звался инлайн при каждом флеше стрима (20×/сек),
+// ре-парся markdown AST + KaTeX каждый раз. Теперь каждый экземпляр
+// мемоизирует парс на [text, allowPlanCard] — ре-парс только если текст
+// реально изменился. Невидимо: вывод идентичный.
+const ParsedContent = memo(function ParsedContent({
+  text, allowPlanCard, remarkPlugins, rehypePlugins, mdComponents, planFilePath,
+}: {
+  text: string
+  allowPlanCard: boolean
+  remarkPlugins: readonly unknown[]
+  rehypePlugins: readonly unknown[]
+  mdComponents: Record<string, unknown>
+  planFilePath?: string
+}) {
+  const segs = useMemo(() => parseContent(text, allowPlanCard), [text, allowPlanCard])
+  return <>{renderParsedSegments(segs, remarkPlugins, rehypePlugins, mdComponents, planFilePath)}</>
+}, (prev, next) =>
+  prev.text === next.text &&
+  prev.allowPlanCard === next.allowPlanCard &&
+  prev.remarkPlugins === next.remarkPlugins &&
+  prev.rehypePlugins === next.rehypePlugins &&
+  prev.mdComponents === next.mdComponents &&
+  prev.planFilePath === next.planFilePath
+)
+
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
 function AgentCardLive({ agentId, task }: {
   agentId: string
@@ -552,7 +578,7 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      {renderParsedSegments(parseContent(iter.textBefore, allowPlanCard), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
+                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} planFilePath={message.planData?.filePath} />
                     </div>
                   )}
                   {iter.steps.length > 0 && (
@@ -661,7 +687,7 @@ const MessageContent = memo(function MessageContent({
                   {/* Текст ДО тулчейна */}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      {renderParsedSegments(parseContent(iter.textBefore, allowPlanCard), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
+                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} planFilePath={message.planData?.filePath} />
                     </div>
                   )}
                   {/* Тулчейн итерации */}
@@ -704,7 +730,7 @@ const MessageContent = memo(function MessageContent({
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
             {liveTextAfter && (
               <div className="message-content selectable">
-                {renderParsedSegments(parseContent(liveTextAfter, allowPlanCard), remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)}
+                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} planFilePath={message.planData?.filePath} />
               </div>
             )}
           </div>
@@ -792,7 +818,12 @@ const MessageBubble = memo(function MessageBubble({
     onReadAloud?.(message.content)
   }, [message.content, onReadAloud])
 
-  const { msgAnim, avatarStyle, showTime, userMarkdown } = useUIStore()
+  // Узкие селекторы вместо useUIStore() — иначе каждый пузырь ре-рендерится
+  // при любом UI-изменении (agentPanelWidth, glassBlur, accentColor и т.д.).
+  const msgAnim = useUIStore(s => s.msgAnim)
+  const avatarStyle = useUIStore(s => s.avatarStyle)
+  const showTime = useUIStore(s => s.showTime)
+  const userMarkdown = useUIStore(s => s.userMarkdown)
   const anim = MSG_ANIM_VARIANTS[msgAnim] ?? MSG_ANIM_VARIANTS.slide
 
   // Время — always / hover / never

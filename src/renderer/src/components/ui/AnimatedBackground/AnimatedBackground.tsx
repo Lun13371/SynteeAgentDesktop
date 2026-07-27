@@ -23,7 +23,15 @@ function getAccentRgb(): string {
 
 const CELL = 120
 const CONN_DIST_SQ = CELL * CELL
-const FRAME_MS = 1000 / 30
+
+// Мягкие стили (медленное движение, soft glow) — рендерим на 20fps вместо
+// 30. Для пульсирующих glow/aurora/waves/topographic разница 20 vs 30 fps
+// визуально неразличима (движение ~0.003 рад/кадр), но CPU/GPU работа
+// меньше на 33%. Резкие стили (particles/matrix/starfield/geometric)
+// оставляем на 30fps — там движение заметнее.
+const SOFT_STYLES = new Set(['aurora', 'fireflies', 'nebula', 'waves', 'topographic'])
+const SOFT_FRAME_MS = 1000 / 20
+const SHARP_FRAME_MS = 1000 / 30
 
 export default function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -49,6 +57,7 @@ export default function AnimatedBackground() {
     const color = getAccentRgb()
     let t = 0
     let lastTime = 0
+    const FRAME_MS = SOFT_STYLES.has(style) ? SOFT_FRAME_MS : SHARP_FRAME_MS
 
     // --- PARTICLES ---
     const particles = Array.from({ length: 45 }, () => ({
@@ -70,6 +79,17 @@ export default function AnimatedBackground() {
       { amp: 0.05, freq: 1.1, phase: 1.5, speed: 0.004, y: 0.45, col: `rgba(${color}, 0.05)` },
       { amp: 0.07, freq: 0.6, phase: 3.0, speed: 0.002, y: 0.55, col: `rgba(${color}, 0.06)` },
     ]
+    // Кэшируем градиенты — их координаты и color stops не меняются между
+    // кадрами (yBase = h * layer.y — константа). Раньше createLinearGradient
+    // звался 3× на кадр → GC-давление. Теперь один раз.
+    const auroraGradients = auroraLayers.map(layer => {
+      const yBase = h * layer.y
+      const g = ctx.createLinearGradient(0, yBase - h * layer.amp * 2, 0, yBase + h * layer.amp * 2)
+      g.addColorStop(0, 'transparent')
+      g.addColorStop(0.5, layer.col)
+      g.addColorStop(1, 'transparent')
+      return g
+    })
 
     // --- FIREFLIES ---
     const flies = Array.from({ length: 30 }, () => ({
@@ -114,6 +134,44 @@ export default function AnimatedBackground() {
       vy: (Math.random() - 0.5) * 0.25,
     }))
 
+    // ── Sprite caching для fireflies/nebula ──────────────────────────────
+    // Раньше каждый кадр звал createRadialGradient (30×/5× за кадр) →
+    // GC-давление + растеризация. Теперь pre-renderим спрайт один раз и
+    // рисуем через drawImage (GPU, без аллокаций). Визуально идентично:
+    // тот же radial gradient, та же alpha-композиция.
+    const SPRITE_SIZE = 128
+    function makeRadialSprite(stops: Array<[number, string]>): HTMLCanvasElement {
+      const c = document.createElement('canvas')
+      c.width = c.height = SPRITE_SIZE
+      const cx = c.getContext('2d')!
+      const half = SPRITE_SIZE / 2
+      const g = cx.createRadialGradient(half, half, 0, half, half, half)
+      for (const [off, col] of stops) g.addColorStop(off, col)
+      cx.fillStyle = g
+      cx.fillRect(0, 0, SPRITE_SIZE, SPRITE_SIZE)
+      return c
+    }
+    const fireflyGlow = style === 'fireflies'
+      ? makeRadialSprite([[0, `rgba(${color}, 1)`], [1, 'transparent']])
+      : null
+    const nebulaSprites: HTMLCanvasElement[] | null = style === 'nebula'
+      ? nebulaBlobs.map(b => {
+          const hslHue = (parseInt(color.split(',')[0]) + b.hueShift) % 360
+          return makeRadialSprite([
+            [0, `hsla(${hslHue}, 70%, 60%, 0.10)`],
+            [0.5, `rgba(${color}, 0.04)`],
+            [1, 'transparent'],
+          ])
+        })
+      : null
+
+    // Переиспользуем Map для spatial grid particles вместо new Map() каждый
+    // кадр — снижает GC-давление (45 элементов × ~10 ячеек × 30fps = много
+    // аллокаций). Clear+reuse массивов из пула.
+    const gridCache = new Map<string, number[]>()
+    const gridArrPool: number[][] = []
+    let gridArrIdx = 0
+
     const draw = (now: number) => {
       if (!running) return
       const dt = now - lastTime
@@ -139,13 +197,19 @@ export default function AnimatedBackground() {
           ctx.fill()
         }
         // Spatial grid for O(n) neighbor lookup instead of O(n²)
-        const grid = new Map<string, number[]>()
+        // Reuse Map + arrays from pool to avoid per-frame allocations.
+        gridCache.clear()
+        gridArrIdx = 0
         for (let i = 0; i < particles.length; i++) {
           const cx = Math.floor(particles[i].x / CELL)
           const cy = Math.floor(particles[i].y / CELL)
           const key = cx + ',' + cy
-          let arr = grid.get(key)
-          if (!arr) { arr = []; grid.set(key, arr) }
+          let arr = gridCache.get(key)
+          if (!arr) {
+            arr = gridArrPool[gridArrIdx++] ?? (gridArrPool[gridArrIdx - 1] = [])
+            arr.length = 0
+            gridCache.set(key, arr)
+          }
           arr.push(i)
         }
         ctx.lineWidth = 0.5
@@ -154,7 +218,7 @@ export default function AnimatedBackground() {
           const cy = Math.floor(particles[i].y / CELL)
           for (let dxc = -1; dxc <= 1; dxc++) {
             for (let dyc = -1; dyc <= 1; dyc++) {
-              const neighbors = grid.get((cx + dxc) + ',' + (cy + dyc))
+              const neighbors = gridCache.get((cx + dxc) + ',' + (cy + dyc))
               if (!neighbors) continue
               for (const j of neighbors) {
                 if (j <= i) continue
@@ -207,13 +271,10 @@ export default function AnimatedBackground() {
 
       } else if (style === 'aurora') {
         ctx.clearRect(0, 0, w, h)
-        for (const layer of auroraLayers) {
+        for (let li = 0; li < auroraLayers.length; li++) {
+          const layer = auroraLayers[li]
           layer.phase += layer.speed * scale
           const yBase = h * layer.y
-          const gradient = ctx.createLinearGradient(0, yBase - h * layer.amp * 2, 0, yBase + h * layer.amp * 2)
-          gradient.addColorStop(0, 'transparent')
-          gradient.addColorStop(0.5, layer.col)
-          gradient.addColorStop(1, 'transparent')
           ctx.beginPath()
           ctx.moveTo(0, yBase)
           for (let x = 0; x <= w; x += 6) {
@@ -221,12 +282,13 @@ export default function AnimatedBackground() {
             ctx.lineTo(x, y)
           }
           ctx.lineTo(w, h * 1.5); ctx.lineTo(0, h * 1.5); ctx.closePath()
-          ctx.fillStyle = gradient
+          ctx.fillStyle = auroraGradients[li]
           ctx.fill()
         }
 
       } else if (style === 'fireflies') {
         ctx.clearRect(0, 0, w, h)
+        const glow = fireflyGlow!
         for (const f of flies) {
           f.x += f.vx * scale; f.y += f.vy * scale
           if (f.x < 0) f.x = w; if (f.x > w) f.x = 0
@@ -235,13 +297,12 @@ export default function AnimatedBackground() {
           const pulse = (Math.sin(f.phase) + 1) / 2
           const alpha = pulse * 0.5 + 0.05
           const radius = f.r * (0.7 + pulse * 0.6)
-          const grad = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, radius * 4)
-          grad.addColorStop(0, `rgba(${color}, ${alpha})`)
-          grad.addColorStop(1, 'transparent')
-          ctx.beginPath()
-          ctx.arc(f.x, f.y, radius * 4, 0, Math.PI * 2)
-          ctx.fillStyle = grad
-          ctx.fill()
+          // Glow через спрайт (вместо createRadialGradient каждый кадр).
+          const glowD = radius * 8
+          ctx.globalAlpha = alpha
+          ctx.drawImage(glow, f.x - glowD / 2, f.y - glowD / 2, glowD, glowD)
+          ctx.globalAlpha = 1
+          // Ядро — дешёвый solid fill.
           ctx.beginPath()
           ctx.arc(f.x, f.y, radius, 0, Math.PI * 2)
           ctx.fillStyle = `rgba(${color}, ${alpha * 1.5})`
@@ -277,22 +338,18 @@ export default function AnimatedBackground() {
         ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.12 * scale, 1)})`
         ctx.fillRect(0, 0, w, h)
         ctx.globalCompositeOperation = 'lighter'
-        for (const b of nebulaBlobs) {
+        const sprites = nebulaSprites!
+        for (let bi = 0; bi < nebulaBlobs.length; bi++) {
+          const b = nebulaBlobs[bi]
           b.x += b.vx * scale; b.y += b.vy * scale
           b.phase += 0.005 * scale
           if (b.x < -b.r) b.x = w + b.r; if (b.x > w + b.r) b.x = -b.r
           if (b.y < -b.r) b.y = h + b.r; if (b.y > h + b.r) b.y = -b.r
           const pulse = (Math.sin(b.phase) + 1) / 2
           const r = Math.max(20, b.r * (0.85 + pulse * 0.25))
-          const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r)
-          const hslHue = (parseInt(color.split(',')[0]) + b.hueShift) % 360
-          grad.addColorStop(0, `hsla(${hslHue}, 70%, 60%, 0.10)`)
-          grad.addColorStop(0.5, `rgba(${color}, 0.04)`)
-          grad.addColorStop(1, 'transparent')
-          ctx.beginPath()
-          ctx.arc(b.x, b.y, r, 0, Math.PI * 2)
-          ctx.fillStyle = grad
-          ctx.fill()
+          // Спрайт вместо createRadialGradient (3-stop gradient baked).
+          const d = r * 2
+          ctx.drawImage(sprites[bi], b.x - r, b.y - r, d, d)
         }
         ctx.globalCompositeOperation = 'source-over'
 

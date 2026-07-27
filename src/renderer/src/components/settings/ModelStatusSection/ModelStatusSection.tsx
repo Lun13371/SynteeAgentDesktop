@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, memo } from 'react'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import { useAuthStore } from '../../../store/auth.store'
 import {
@@ -127,22 +127,7 @@ export default function ModelStatusSection() {
               const status = normalizeStatus(statusByModel[m.id])
               const buckets = bucketsByModel[m.id] ?? []
               return (
-                <div key={m.id} className="model-status-model">
-                  <div className="model-status-model__head">
-                    <span
-                      className={`model-status-dot model-status-dot--${status}`}
-                      title={status}
-                    />
-                    <span className="model-status-model__name">
-                      {m.display_name || m.id}
-                    </span>
-                    {m.type === 'group' && (
-                      <span className="model-status-model__badge">group</span>
-                    )}
-                    <span className="model-status-model__id">{m.id}</span>
-                  </div>
-                  <UptimeBar buckets={buckets} />
-                </div>
+                <ModelRow key={m.id} model={m} status={status} buckets={buckets} />
               )
             })}
           </div>
@@ -152,8 +137,43 @@ export default function ModelStatusSection() {
   )
 }
 
-/** Горизонтальный бар uptime по часам. */
-function UptimeBar({ buckets }: { buckets: UptimeBucket[] }) {
+/** Строка модели — memoized чтобы при 60s polling ре-рендерились только
+ *  изменившиеся строки, а не все 50-100+. */
+const ModelRow = memo(function ModelRow({
+  model, status, buckets,
+}: {
+  model: { id: string; display_name?: string; type?: string }
+  status: string
+  buckets: UptimeBucket[]
+}) {
+  return (
+    <div className="model-status-model">
+      <div className="model-status-model__head">
+        <span
+          className={`model-status-dot model-status-dot--${status}`}
+          title={status}
+        />
+        <span className="model-status-model__name">
+          {model.display_name || model.id}
+        </span>
+        {model.type === 'group' && (
+          <span className="model-status-model__badge">group</span>
+        )}
+        <span className="model-status-model__id">{model.id}</span>
+      </div>
+      <UptimeBar buckets={buckets} />
+    </div>
+  )
+}, (prev, next) =>
+  prev.model === next.model &&
+  prev.status === next.status &&
+  prev.buckets === next.buckets
+)
+
+/** Горизонтальный бар uptime по часам. Memoized с content-comparison:
+ *  buckets — массив до 12 ячеек, сравниваем по полям (дёшево), чтобы
+ *  пропускать ре-рендер когда ref меняется но контент тот же (polling). */
+const UptimeBar = memo(function UptimeBar({ buckets }: { buckets: UptimeBucket[] }) {
   if (buckets.length === 0) {
     return <div className="uptime-bar uptime-bar--empty">нет данных</div>
   }
@@ -181,4 +201,11 @@ function UptimeBar({ buckets }: { buckets: UptimeBucket[] }) {
       })}
     </div>
   )
-}
+}, (prev, next) => {
+  if (prev.buckets.length !== next.buckets.length) return false
+  for (let i = 0; i < prev.buckets.length; i++) {
+    const a = prev.buckets[i], b = next.buckets[i]
+    if (a.requests !== b.requests || a.errors !== b.errors || a.success !== b.success) return false
+  }
+  return true
+})

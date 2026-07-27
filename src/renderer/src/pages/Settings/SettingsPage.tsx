@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useShallow } from 'zustand/react/shallow'
 import { useSettingsStore } from '../../store/settings.store'
 import { useUIStore, DEFAULT_THEME_SCHEDULE } from '../../store/ui.store'
 import { useNavStore } from '../../store/nav.store'
@@ -77,12 +78,26 @@ export default function SettingsPage() {
   const [section, setSection] = useState<Section>(
     (navSection as Section) || 'general'
   )
-  const { settings, load, set } = useSettingsStore()
-  const uiStore = useUIStore()
+  // Узкие селекторы: раньше useSettingsStore() и useUIStore() без селекторов
+  // → ре-рендер SettingsPage на любое изменение любого поля. Теперь:
+  // - settings — выбираем объект (нужен для передачи в секции)
+  // - load/set — стабильные actions
+  // - UI setters — стабильные actions через useShallow
+  const settings = useSettingsStore(s => s.settings)
+  const load = useSettingsStore(s => s.load)
+  const set = useSettingsStore(s => s.set)
   const { setTheme, setAccentColor, setBgStyle, setMsgAnim,
     setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect,
     setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
-    setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents } = uiStore
+    setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents } = useUIStore(useShallow(s => ({
+    setTheme: s.setTheme, setAccentColor: s.setAccentColor, setBgStyle: s.setBgStyle,
+    setMsgAnim: s.setMsgAnim, setAvatarStyle: s.setAvatarStyle, setShowTime: s.setShowTime,
+    setUserMarkdown: s.setUserMarkdown, setUiSounds: s.setUiSounds, setSendEffect: s.setSendEffect,
+    setGlassBlur: s.setGlassBlur, setDensity: s.setDensity, setAccentGradient: s.setAccentGradient,
+    setRainbowAccent: s.setRainbowAccent, setBgImage: s.setBgImage,
+    setCustomThemes: s.setCustomThemes, setActiveCustomThemeId: s.setActiveCustomThemeId,
+    setThemeSchedule: s.setThemeSchedule, setRecentAccents: s.setRecentAccents,
+  })))
   const { add: toast } = useToast()
 
   // Синхронизация: при изменении settingsSection извне (openSettings) — переключаемся.
@@ -101,7 +116,7 @@ export default function SettingsPage() {
 
   useEffect(() => { load() }, [])
 
-  const handleSet = async (key: string, value: unknown) => {
+  const handleSet = useCallback(async (key: string, value: unknown) => {
     await set(key, value)
     if (key === 'theme') {
       setTheme(value as any)
@@ -158,7 +173,9 @@ export default function SettingsPage() {
     if (key === 'themeSchedule') setThemeSchedule(value as any)
     if (key === 'recentAccents') setRecentAccents(value as string[])
     if (key === 'fontFamily') applyFontToDOM(value as string)
-  }
+  }, [set, setTheme, setAccentColor, setBgStyle, setMsgAnim, setAvatarStyle, setShowTime,
+    setUserMarkdown, setUiSounds, setSendEffect, setGlassBlur, setDensity, setAccentGradient,
+    setRainbowAccent, setBgImage, setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents])
 
   return (
     <div className="settings-root">
@@ -272,7 +289,7 @@ function Field({ label, description, children, block }: {
   )
 }
 
-function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+const GeneralSection = memo(function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   return (
     <>
       <SectionTitle>Общие</SectionTitle>
@@ -304,7 +321,7 @@ function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>
       </Field>
     </>
   )
-}
+})
 
 // Превью анимации — мини-демо при наведении
 function AnimPreview({ animId, active, onClick }: { animId: string; active: boolean; onClick: () => void }) {
@@ -391,7 +408,7 @@ const ACCENT_PRESETS = [
 // CDN (без интернета fallback), Geist ещё и без кириллицы.
 const FONTS = ['Inter', 'system']
 
-function AppearanceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const [accentPickerOpen, setAccentPickerOpen] = useState(false)
   const [accentPickerPos, setAccentPickerPos] = useState<{ top: number; left: number } | null>(null)
   const accentBtnRef = useRef<HTMLButtonElement>(null)
@@ -405,13 +422,13 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
   const themeSchedule = (settings['themeSchedule'] as any) || DEFAULT_THEME_SCHEDULE
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const commitAccent = (c: string) => {
+  const commitAccent = useCallback((c: string) => {
     onSet('accentColor', c)
     const next = [c, ...recentAccents.filter(x => x !== c)].slice(0, 8)
     onSet('recentAccents', next)
-  }
+  }, [onSet, recentAccents])
 
-  const allThemes = [
+  const allThemes = useMemo(() => [
     ...THEMES,
     ...customThemes.map(t => ({
       id: t.id,
@@ -425,7 +442,7 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
       },
       isCustom: true,
     })),
-  ]
+  ], [customThemes])
 
   const onPickBgImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -841,9 +858,9 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
       </AnimatePresence>
     </>
   )
-}
+})
 
-function VoiceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   return (
     <>
       <SectionTitle>Голос</SectionTitle>
@@ -860,10 +877,14 @@ function VoiceSection({ settings, onSet }: { settings: Record<string, unknown>; 
       </div>
     </>
   )
-}
+})
 
-function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const hotkeys = (settings['hotkeys'] as Record<string, string>) || {}
+  // Ref чтобы effect keydown/keyup не ре-подписывался при каждом изменении
+  // settings (hotkeys меняется → новый ref → effect teardown+resubscribe).
+  const hotkeysRef = useRef(hotkeys)
+  hotkeysRef.current = hotkeys
   const [recording, setRecording] = useState<string | null>(null)
   const [pressed, setPressed] = useState<string>('')
 
@@ -896,19 +917,19 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
     const onKeyUp = (e: KeyboardEvent) => {
       e.preventDefault()
       const combo = formatKey(e)
-      if (combo && !['Ctrl','Alt','Shift','Meta'].every(m => combo === m)) {
-        onSet('hotkeys', { ...hotkeys, [recording]: combo })
-        setRecording(null)
-        setPressed('')
+        if (combo && !['Ctrl','Alt','Shift','Meta'].every(m => combo === m)) {
+          onSet('hotkeys', { ...hotkeysRef.current, [recording]: combo })
+          setRecording(null)
+          setPressed('')
+        }
       }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('keyup', onKeyUp)
-    }
-  }, [recording, hotkeys, onSet])
+      window.addEventListener('keydown', onKeyDown)
+      window.addEventListener('keyup', onKeyUp)
+      return () => {
+        window.removeEventListener('keydown', onKeyDown)
+        window.removeEventListener('keyup', onKeyUp)
+      }
+    }, [recording, onSet])
 
   const renderBind = (bind: string) => {
     if (!bind) return <span className="hk-empty">Не задано</span>
@@ -953,9 +974,9 @@ function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>
       )}
     </>
   )
-}
+})
 
-function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+const AgentSection = memo(function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const [agentSettings, setAgentSettings] = useState<SharedAgentSettings>(DEFAULT_AGENT_SETTINGS)
 
   useEffect(() => {
@@ -1091,9 +1112,9 @@ function AgentSection({ settings, onSet }: { settings: Record<string, unknown>; 
       </Field>
     </>
   )
-}
+})
 
-function IntegrationsSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+const IntegrationsSection = memo(function IntegrationsSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const integrations = (settings['integrations'] as Record<string, Record<string, string>>) || {}
   return (
     <>
@@ -1127,9 +1148,9 @@ function IntegrationsSection({ settings, onSet }: { settings: Record<string, unk
       </Field>
     </>
   )
-}
+})
 
-function DataSection({ settings, onSet, toast }: {
+const DataSection = memo(function DataSection({ settings, onSet, toast }: {
   settings: Record<string, unknown>
   onSet: (k: string, v: unknown) => void
   toast: (msg: string, type?: string) => void
@@ -1164,4 +1185,4 @@ function DataSection({ settings, onSet, toast }: {
       </Field>
     </>
   )
-}
+})
