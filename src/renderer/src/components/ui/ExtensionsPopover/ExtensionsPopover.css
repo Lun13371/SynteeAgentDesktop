@@ -113,7 +113,7 @@
   position: absolute;
   left: 14px; right: 14px; bottom: -1px;
   height: 2px;
-  background: var(--accent);
+  background: var(--accent-bg);
   border-radius: 2px;
 }
 .ext-tab-count {
@@ -277,7 +277,7 @@
   transition: transform 0.15s, background 0.15s;
 }
 .ext-toggle--on {
-  background: var(--accent);
+  background: var(--accent-bg);
 }
 .ext-toggle--on::after {
   transform: translateX(14px);
@@ -501,7 +501,7 @@
   background: var(--text-primary);
   transition: transform 0.15s;
 }
-.ext-tool-mini-toggle--on { background: var(--accent); }
+.ext-tool-mini-toggle--on { background: var(--accent-bg); }
 .ext-tool-mini-toggle--on::after { transform: translateX(12px); background: var(--on-accent, #fff); }
 
 /* Чекбокс «спрашивать подтверждение» */
@@ -1289,7 +1289,7 @@
   color: var(--text-primary);
 }
 .ext-filter-chip--active {
-  background: var(--accent, #60a5fa);
+  background: var(--accent-bg, #60a5fa);
   color: #fff;
   border-color: var(--accent, #60a5fa);
 }

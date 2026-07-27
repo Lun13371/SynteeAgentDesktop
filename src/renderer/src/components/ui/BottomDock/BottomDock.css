@@ -33,7 +33,7 @@
 
 .bottom-dock__resize-bar:hover::before,
 .bottom-dock__resize-bar:active::before {
-  background: var(--accent);
+  background: var(--accent-bg);
 }
 
 body.dock-resize-active {

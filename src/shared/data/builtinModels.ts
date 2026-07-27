@@ -75,37 +75,10 @@ export const BUILTIN_MODELS: ModelMeta[] = [
   m('accounts/fireworks/models/qwen3-32b',               'fireworks', 'Qwen3 32B',      32_768, 0.30, 0.30, 'fast', [T,C,R], 'Qwen3 32B с reasoning'),
   m('accounts/fireworks/models/deepseek-v3',             'fireworks', 'DeepSeek V3',    64_000, 0.90, 0.90, 'medium', [T,C], 'DeepSeek V3 на Fireworks'),
 
-  // OnlySQ
-  m('claude-opus-4-7',        'onlysq', 'Claude Opus 4.7',     200_000, 15.00,  75.00, 'slow',   [V,T,R,C], 'Claude Opus 4.7 через OnlySQ'),
-  m('claude-opus-4-8',        'onlysq', 'Claude Opus 4.8',     200_000, 15.00,  75.00, 'slow',   [V,T,R,C], 'Claude Opus 4.8 через OnlySQ'),
-  m('claude-sonnet-4-5',      'onlysq', 'Claude Sonnet 4.5',   200_000,  3.00,  15.00, 'medium', [V,T,C],   'Claude Sonnet 4.5 через OnlySQ'),
-  m('claude-sonnet-4-6',      'onlysq', 'Claude Sonnet 4.6',   200_000,  3.00,  15.00, 'medium', [V,T,C],   'Claude Sonnet 4.6 через OnlySQ'),
-  m('claude-haiku-4-5',       'onlysq', 'Claude Haiku 4.5',    200_000,  0.80,   4.00, 'fast',   [V,T,C],   'Claude Haiku 4.5 через OnlySQ'),
-  m('gpt-4o',                 'onlysq', 'GPT-4o',              128_000,  2.50,  10.00, 'fast',   [V,T,C],   'GPT-4o через OnlySQ'),
-  m('gpt-4.1',                'onlysq', 'GPT-4.1',           1_000_000,  2.00,   8.00, 'medium', [V,T,C],   'GPT-4.1 через OnlySQ'),
-  m('gpt-5',                  'onlysq', 'GPT-5',               128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5 через OnlySQ'),
-  m('gpt-5.1',                'onlysq', 'GPT-5.1',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.1 через OnlySQ'),
-  m('gpt-5.2',                'onlysq', 'GPT-5.2',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.2 через OnlySQ'),
-  m('gpt-5.4',                'onlysq', 'GPT-5.4',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.4 через OnlySQ'),
-  m('gpt-5.5',                'onlysq', 'GPT-5.5',             128_000, 10.00,  40.00, 'medium', [V,T,R,C], 'GPT-5.5 через OnlySQ'),
-  m('gemini-3.1-pro',         'onlysq', 'Gemini 3.1 Pro',    1_000_000,  1.25,  10.00, 'medium', [V,T,C],   'Gemini 3.1 Pro через OnlySQ'),
-  m('gemini-3-flash',         'onlysq', 'Gemini 3 Flash',    1_000_000,  0.15,   0.60, 'fast',   [V,T,C],   'Gemini 3 Flash через OnlySQ'),
-  m('deepseek-r1',            'onlysq', 'DeepSeek R1',          64_000,  0.55,   2.19, 'slow',   [R,C],     'DeepSeek R1 через OnlySQ'),
-  m('deepseek-v3',            'onlysq', 'DeepSeek V3',          64_000,  0.27,   1.10, 'medium', [T,C],     'DeepSeek V3 через OnlySQ'),
-  m('deepseek-v4-pro',        'onlysq', 'DeepSeek V4 Pro',     128_000,  0.50,   2.00, 'medium', [T,C,R],   'DeepSeek V4 Pro через OnlySQ'),
-  m('grok-4.20',              'onlysq', 'Grok 4.20',           131_072,  3.00,  15.00, 'medium', [V,T,C],   'Grok 4.20 через OnlySQ'),
-  m('o3',                     'onlysq', 'o3',                  200_000, 10.00,  40.00, 'slow',   [T,R,C],   'o3 через OnlySQ'),
-  m('o4-mini',                'onlysq', 'o4-mini',             200_000,  1.10,   4.40, 'medium', [T,R,C],   'o4-mini через OnlySQ'),
-  m('qwen-3-32b',             'onlysq', 'Qwen 3 32B',           32_768,  0.30,   0.30, 'fast',   [T,C,R],   'Qwen 3 32B через OnlySQ'),
-
   // ── Генерация изображений (OpenAI) ──────────────────────────────────────
   m('dall-e-3',               'openai', 'DALL-E 3',                  0,  0.04,   0.00, 'medium', [I],       'OpenAI — качественная генерация, style/quality параметры'),
   m('dall-e-2',               'openai', 'DALL-E 2',                  0,  0.02,   0.00, 'fast',   [I],       'OpenAI — быстрая базовая генерация'),
   m('gpt-image-1',            'openai', 'GPT Image 1',               0,  0.04,   0.00, 'medium', [I],       'OpenAI — новейшая модель генерации изображений'),
-
-  // ── Генерация изображений (OnlySQ — если проксирует OpenAI Images) ───────
-  m('dall-e-3',               'onlysq', 'DALL-E 3',                  0,  0.04,   0.00, 'medium', [I],       'DALL-E 3 через OnlySQ'),
-  m('gpt-image-1',            'onlysq', 'GPT Image 1',               0,  0.04,   0.00, 'medium', [I],       'GPT Image 1 через OnlySQ'),
 
   // ── Генерация изображений (Black Forest Labs — FLUX) ─────────────────────
   m('flux-pro-1.1-ultra',     'bfl',    'FLUX 1.1 Pro Ultra',        0,  0.06,   0.00, 'medium', [I],       'BFL — наивысшее качество, до 4MP'),
@@ -149,7 +122,6 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   fireworks: { name: 'Fireworks',   baseUrl: 'https://api.fireworks.ai/inference/v1',     color: '#ef4444', docsUrl: 'https://fireworks.ai' },
   deepseek:  { name: 'DeepSeek',    baseUrl: 'https://api.deepseek.com/v1',               color: '#2563eb', docsUrl: 'https://platform.deepseek.com' },
   xai:       { name: 'xAI Grok',    baseUrl: 'https://api.x.ai/v1',                       color: '#ffffff', docsUrl: 'https://console.x.ai' },
-  onlysq:    { name: 'OnlySQ',      baseUrl: 'https://api.onlysq.ru/ai/openai',            color: '#a855f7', docsUrl: 'https://api.onlysq.ru' },
   voidai:    { name: 'VoidAI',      baseUrl: 'https://api.voidai.app/v1',                  color: '#06b6d4', docsUrl: 'https://docs.voidai.app' },
   bfl:       { name: 'Black Forest Labs', baseUrl: 'https://api.bfl.ai',                   color: '#e11d48', docsUrl: 'https://docs.bfl.ml' },
   // ── OpenCode Zen — публичный OpenAI-совместимый шлюз (https://opencode.ai/zen) ──
@@ -158,4 +130,6 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   'opencode-go':   { name: 'OpenCode Go',       baseUrl: 'https://opencode.ai/zen/go/v1', color: '#f59e0b', docsUrl: 'https://opencode.ai' },
   // ── OpenRouter — OpenAI-совместимый агрегатор моделей ──
   openrouter:  { name: 'OpenRouter',   baseUrl: 'https://openrouter.ai/api/v1',          color: '#8b5cf6', docsUrl: 'https://openrouter.ai/keys' },
+  // ── Syntee-Gateway — собственный шлюз с JWT-авторизацией (модели тянем из /v1/models) ──
+  'syntee-gateway': { name: 'Syntee Gateway', baseUrl: '', color: '#10b981', docsUrl: '' },
 }

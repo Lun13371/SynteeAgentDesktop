@@ -19,12 +19,6 @@ export interface ImageGenResult {
   error?: string
 }
 
-// OnlySQ использует отдельный endpoint для генерации изображений
-function getImageBaseUrl(provider: Provider): string {
-  if (provider.id === 'onlysq') return 'https://api.onlysq.ru/ai/imagen'
-  return provider.baseUrl
-}
-
 export function registerImageIPC(store: Store, _mainWindow: { getWindow: () => BrowserWindow | null }): void {
 
   ipcMain.handle('image:generate', async (_, params: ImageGenParams): Promise<ImageGenResult> => {
@@ -45,7 +39,7 @@ export function registerImageIPC(store: Store, _mainWindow: { getWindow: () => B
     const apiKey = provider.apiKeys?.find(k => k.trim()) || provider.apiKey || ''
     if (!apiKey) return { error: 'API ключ провайдера не задан' }
 
-    const baseURL = getImageBaseUrl(provider)
+    const baseURL = provider.baseUrl
 
     try {
       const client = new OpenAI({ apiKey, baseURL })

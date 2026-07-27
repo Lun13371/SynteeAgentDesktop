@@ -1,17 +1,26 @@
 import { create } from 'zustand'
+import type { CustomTheme } from '../../../shared/types'
 
-type Theme = 'dark' | 'light' | 'midnight' | 'forest' | 'amber' | 'rose' | 'paper' | 'slate' | 'crimson'
+type Theme = 'dark' | 'light' | 'midnight' | 'forest' | 'amber' | 'rose' | 'paper' | 'slate' | 'crimson' | 'custom'
 type Page = 'chat' | 'settings' | 'tasks' | 'notes' | 'stats'
+type Density = 'compact' | 'comfortable' | 'spacious'
 
 export type AvatarStyle = 'hex' | 'circle' | 'letter' | 'emoji' | 'none'
 export type ShowTime = 'always' | 'hover' | 'never'
 
+export interface AccentGradient { enabled: boolean; color2: string; angle: number }
+export interface BgImage { src: string; blur: number; opacity: number; tint: string; tintStrength: number }
+export interface ThemeSchedule {
+  enabled: boolean
+  dayTheme: string
+  nightTheme: string
+  dayTime: string
+  nightTime: string
+}
+
 export const AGENT_PANEL_WIDTH_MIN = 280
 export const AGENT_PANEL_WIDTH_DEFAULT = 420
 
-// Максимальная ширина панели — динамическая, зависит от ширины окна:
-// 70% от окна, но не больше 1600px. На большом мониторе панель может
-// быть шире, на маленьком — уже, при этом область чата остаётся читаемой.
 export function getAgentPanelWidthMax(): number {
   if (typeof window === 'undefined') return 720
   return Math.min(Math.floor(window.innerWidth * 0.7), 1600)
@@ -32,7 +41,15 @@ interface UIStore {
   sendEffect: boolean
   currentPage: Page
   isLoading: boolean
-  // Actions
+  glassBlur: number
+  density: Density
+  accentGradient: AccentGradient
+  rainbowAccent: boolean
+  bgImage: BgImage | null
+  customThemes: CustomTheme[]
+  activeCustomThemeId: string | null
+  themeSchedule: ThemeSchedule
+  recentAccents: string[]
   setTheme: (theme: Theme) => void
   setAccentColor: (color: string) => void
   setAgentPanelWidth: (width: number) => void
@@ -47,11 +64,28 @@ interface UIStore {
   setUserMarkdown: (v: boolean) => void
   setUiSounds: (v: boolean) => void
   setSendEffect: (v: boolean) => void
+  setGlassBlur: (v: number) => void
+  setDensity: (v: Density) => void
+  setAccentGradient: (v: AccentGradient) => void
+  setRainbowAccent: (v: boolean) => void
+  setBgImage: (v: BgImage | null) => void
+  setCustomThemes: (v: CustomTheme[]) => void
+  setActiveCustomThemeId: (v: string | null) => void
+  setThemeSchedule: (v: ThemeSchedule) => void
+  setRecentAccents: (v: string[]) => void
 }
 
 function clampAgentPanelWidth(w: number): number {
   if (!Number.isFinite(w)) return AGENT_PANEL_WIDTH_DEFAULT
   return Math.min(getAgentPanelWidthMax(), Math.max(AGENT_PANEL_WIDTH_MIN, Math.round(w)))
+}
+
+export const DEFAULT_THEME_SCHEDULE: ThemeSchedule = {
+  enabled: false,
+  dayTheme: 'light',
+  nightTheme: 'dark',
+  dayTime: '08:00',
+  nightTime: '20:00',
 }
 
 export const useUIStore = create<UIStore>((set) => ({
@@ -69,6 +103,15 @@ export const useUIStore = create<UIStore>((set) => ({
   sendEffect: true,
   currentPage: 'chat',
   isLoading: false,
+  glassBlur: 20,
+  density: 'comfortable',
+  accentGradient: { enabled: false, color2: '#a78bfa', angle: 135 },
+  rainbowAccent: false,
+  bgImage: null,
+  customThemes: [],
+  activeCustomThemeId: null,
+  themeSchedule: DEFAULT_THEME_SCHEDULE,
+  recentAccents: [],
 
   setTheme: (theme) => set({ theme }),
   setAccentColor: (accentColor) => set({ accentColor }),
@@ -84,4 +127,13 @@ export const useUIStore = create<UIStore>((set) => ({
   setUserMarkdown: (userMarkdown) => set({ userMarkdown }),
   setUiSounds: (uiSounds) => set({ uiSounds }),
   setSendEffect: (sendEffect) => set({ sendEffect }),
+  setGlassBlur: (glassBlur) => set({ glassBlur }),
+  setDensity: (density) => set({ density }),
+  setAccentGradient: (accentGradient) => set({ accentGradient }),
+  setRainbowAccent: (rainbowAccent) => set({ rainbowAccent }),
+  setBgImage: (bgImage) => set({ bgImage }),
+  setCustomThemes: (customThemes) => set({ customThemes }),
+  setActiveCustomThemeId: (activeCustomThemeId) => set({ activeCustomThemeId }),
+  setThemeSchedule: (themeSchedule) => set({ themeSchedule }),
+  setRecentAccents: (recentAccents) => set({ recentAccents }),
 }))

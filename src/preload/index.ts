@@ -16,6 +16,80 @@ const synteeAPI = {
     getAll: () => ipcRenderer.invoke('settings:getAll'),
   },
 
+  // Background image — сохранение/загрузка файлов в userData/bg-images/
+  bgImage: {
+    save: (data: Uint8Array, ext: string) => ipcRenderer.invoke('bgImage:save', data, ext) as Promise<string | null>,
+    load: (src: string) => ipcRenderer.invoke('bgImage:load', src) as Promise<string | null>,
+    clear: () => ipcRenderer.invoke('bgImage:clear') as Promise<boolean>,
+  },
+
+  // Syntee-Gateway авторизация и профиль
+  auth: {
+    // Открыть браузер на consent-странице gateway (deep-link вернёт код обратно).
+    login: () => ipcRenderer.invoke('auth:login'),
+    // Проверить, есть ли сохранённые токены.
+    isLoggedIn: () => ipcRenderer.invoke('auth:isLoggedIn') as Promise<boolean>,
+    // Получить текущего пользователя (или null если не залогинен).
+    me: () => ipcRenderer.invoke('auth:me'),
+    // Выйти — стирает токены.
+    logout: () => ipcRenderer.invoke('auth:logout'),
+    // Подписка на события входа/выхода (deep-link callback).
+    onLoggedIn: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('auth:logged-in', handler)
+      return () => ipcRenderer.removeListener('auth:logged-in', handler)
+    },
+    onLoggedOut: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('auth:logged-out', handler)
+      return () => ipcRenderer.removeListener('auth:logged-out', handler)
+    },
+    onLoginError: (cb: (err: { message: string }) => void) => {
+      const handler = (_e: unknown, err: { message: string }) => cb(err)
+      ipcRenderer.on('auth:login-error', handler)
+      return () => ipcRenderer.removeListener('auth:login-error', handler)
+    },
+  },
+
+  // Профиль пользователя gateway (имя, аватар, пароль, API-ключи)
+  profile: {
+    update: (payload: { display_name?: string | null; avatar_url?: string | null }) =>
+      ipcRenderer.invoke('profile:update', payload),
+    changePassword: (currentPassword: string, newPassword: string) =>
+      ipcRenderer.invoke('profile:changePassword', currentPassword, newPassword),
+    listApiKeys: () => ipcRenderer.invoke('profile:listApiKeys'),
+    createApiKey: (name: string) => ipcRenderer.invoke('profile:createApiKey', name),
+    deleteApiKey: (keyId: string) => ipcRenderer.invoke('profile:deleteApiKey', keyId),
+  },
+
+  // Syntee-Gateway модели и статусы (фаза 2)
+  gateway: {
+    // Список моделей gateway (/v1/models). Пустой массив если не залогинен.
+    fetchModels: () => ipcRenderer.invoke('gateway:fetchModels'),
+    // Per-model uptime buckets за 12 часов — для панели статуса.
+    fetchModelStatus: () => ipcRenderer.invoke('gateway:fetchModelStatus'),
+    // Per-provider request counts + uptime за 1 час.
+    fetchProviderStatus: () => ipcRenderer.invoke('gateway:fetchProviderStatus'),
+    // Доступен ли gateway (залогинен ли юзер).
+    isAvailable: () => ipcRenderer.invoke('gateway:isAvailable') as Promise<boolean>,
+  },
+
+  // Биллинг и лимиты (фаза 3)
+  billing: {
+    balance: () => ipcRenderer.invoke('billing:balance'),
+    transactions: (params?: { limit?: number; offset?: number }) =>
+      ipcRenderer.invoke('billing:transactions', params ?? {}),
+    summary: (params?: { hours?: number }) =>
+      ipcRenderer.invoke('billing:summary', params ?? {}),
+    timeseries: (params?: { hours?: number }) =>
+      ipcRenderer.invoke('billing:timeseries', params ?? {}),
+    breakdown: (params?: { hours?: number; by?: 'model' | 'provider' | 'status' | 'format' }) =>
+      ipcRenderer.invoke('billing:breakdown', params ?? {}),
+    plan: () => ipcRenderer.invoke('billing:plan'),
+    // Открыть страницу пополнения в браузере.
+    openTopup: () => ipcRenderer.invoke('billing:openTopup'),
+  },
+
   // Система
   system: {
     info: () => ipcRenderer.invoke('system:info'),
@@ -247,6 +321,10 @@ const synteeAPI = {
     setAssignment: (assignment: unknown) => ipcRenderer.invoke('models:setAssignment', assignment),
     getParams: () => ipcRenderer.invoke('models:getParams'),
     setParams: (params: unknown) => ipcRenderer.invoke('models:setParams', params),
+    getRecent: () => ipcRenderer.invoke('models:getRecent'),
+    addRecent: (modelId: string, providerId: string) => ipcRenderer.invoke('models:addRecent', modelId, providerId),
+    getPinned: () => ipcRenderer.invoke('models:getPinned'),
+    togglePin: (modelId: string, providerId: string) => ipcRenderer.invoke('models:togglePin', modelId, providerId),
   },
 
   // События (подписка)

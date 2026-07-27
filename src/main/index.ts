@@ -1,5 +1,15 @@
 import { app } from 'electron'
 import { join } from 'path'
+
+// ── ВАЖНО: setPath ДО любых импортов которые создают electron-store ──
+// electron-store при создании читает app.getPath('userData'). Если запустить
+// electron.exe напрямую (не packaged), userData = AppData\Roaming\Electron\
+// вместо AppData\Roaming\SynteeHelper\. setPath фиксит это, но должен
+// выполниться ДО импорта tokenStore/gatewayClient (они создают Store при
+// импорте). Поэтому setPath — первое что выполняется в модуле.
+app.setName('SynteeHelper')
+app.setPath('userData', join(app.getPath('appData'), 'SynteeHelper'))
+
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { DEFAULT_SETTINGS } from '../shared/constants'
@@ -27,6 +37,9 @@ import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
 import { registerPtyIPC } from './ipc/pty.ipc'
 import { registerFastContextIPC } from './ipc/fastContext.ipc'
 import { registerCommandsIPC } from './ipc/commands.ipc'
+import { registerAuthIPC, registerDeepLinks } from './ipc/auth.ipc'
+import { registerGatewayIPC } from './ipc/gateway.ipc'
+import { registerBillingIPC } from './ipc/billing.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initCommandManager } from '../core/commands/commandManager'
@@ -35,8 +48,12 @@ import { migrateGlobalMcpToFile } from '../core/mcp/mcpConfig'
 import { ptyManager } from './PtyManager'
 import { ipcMain } from 'electron'
 
-// Имя приложения — ДОЛЖНО быть ДО создания Store и app.whenReady
-app.setName('SynteeHelper')
+// Single-instance lock — обязателен для deep-link flow (synteehelper://).
+// Второй запуск с deep-link URL приходит в событие second-instance.
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+}
 
 // Инициализируем store с дефолтными настройками.
 // Явно указываем generic <Record<string, unknown>> — без него TS выводит тип
@@ -137,6 +154,14 @@ app.whenReady().then(async () => {
   registerPtyIPC(mainWindow)
   registerFastContextIPC(store, () => mainWindow.getWindow())
   registerCommandsIPC()
+
+  // Syntee-Gateway auth + profile + deep-link (synteehelper://)
+  registerDeepLinks(() => mainWindow.getWindow())
+  registerAuthIPC(() => mainWindow.getWindow())
+  // Syntee-Gateway models & status (фаза 2)
+  registerGatewayIPC()
+  // Syntee-Gateway биллинг (фаза 3)
+  registerBillingIPC()
 
   // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
   ptyManager.setSender(mainWindow.getWindow())

@@ -155,12 +155,12 @@
 }
 
 .side-chat__send {
-  background: var(--accent);
+  background: var(--accent-bg);
   color: white;
 }
 
 .side-chat__send:hover:not(:disabled) {
-  background: var(--accent-hover, var(--accent));
+  background: var(--accent-hover, var(--accent-bg));
 }
 
 .side-chat__send:disabled {

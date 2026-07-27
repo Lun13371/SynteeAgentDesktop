@@ -253,7 +253,7 @@
   transition: background 0.1s;
 }
 .selection-reply-btn {
-  background: var(--accent);
+  background: var(--accent-bg);
   color: var(--on-accent-strong);
 }
 .selection-reply-btn:hover { background: var(--accent-hover, #9333ea); }

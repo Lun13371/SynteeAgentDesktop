@@ -1,22 +1,28 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useSettingsStore } from '../../store/settings.store'
-import { useUIStore } from '../../store/ui.store'
+import { useUIStore, DEFAULT_THEME_SCHEDULE } from '../../store/ui.store'
+import { useNavStore } from '../../store/nav.store'
 import { useToast } from '../../components/ui/Toast/Toast'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import Toggle from '../../components/ui/Toggle/Toggle'
+import ColorPicker from '../../components/ui/ColorPicker/ColorPicker'
+import CustomThemeEditor from '../../components/settings/CustomThemeEditor/CustomThemeEditor'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
+import ProfileSection from '../../components/settings/ProfileSection/ProfileSection'
+import ModelStatusSection from '../../components/settings/ModelStatusSection/ModelStatusSection'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
 import ResetButton from '../../components/ui/ResetButton/ResetButton'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
-import { applyFontToDOM, applyAccentToDOM } from '../../App'
-import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings } from '../../../../shared/types'
+import { applyFontToDOM, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM } from '../../App'
+import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings, type CustomTheme } from '../../../../shared/types'
 import './SettingsPage.css'
 
 type Section =
-  | 'general' | 'ai' | 'voice' | 'hotkeys'
+  | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
   | 'agent' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
 
 interface SectionDef { id: Section; label: string; icon: IconName }
@@ -25,6 +31,12 @@ interface SectionGroup { title: string; items: SectionDef[] }
 // Сайдбар сгруппирован по категориям — как в VS Code / Notion.
 // Каждая группа получает uppercase-подзаголовок (см. .settings-nav-group-title).
 const SECTION_GROUPS: SectionGroup[] = [
+  {
+    title: 'Аккаунт',
+    items: [
+      { id: 'profile', label: 'Профиль', icon: 'user' },
+    ],
+  },
   {
     title: 'Внешний вид',
     items: [
@@ -35,10 +47,11 @@ const SECTION_GROUPS: SectionGroup[] = [
   {
     title: 'ИИ и контекст',
     items: [
-      { id: 'ai',       label: 'ИИ и Модели', icon: 'brain' },
-      { id: 'context',  label: 'Контекст',    icon: 'layers' },
-      { id: 'indexing', label: 'Индексация',  icon: 'cpu' },
-      { id: 'agent',    label: 'Агент',       icon: 'bot' },
+      { id: 'ai',         label: 'ИИ и Модели', icon: 'brain' },
+      { id: 'modelStatus', label: 'Статус моделей', icon: 'server' },
+      { id: 'context',    label: 'Контекст',    icon: 'layers' },
+      { id: 'indexing',   label: 'Индексация',  icon: 'cpu' },
+      { id: 'agent',      label: 'Агент',       icon: 'bot' },
     ],
   },
   {
@@ -58,18 +71,51 @@ const SECTION_GROUPS: SectionGroup[] = [
 ]
 
 export default function SettingsPage() {
-  const [section, setSection] = useState<Section>('general')
+  const navSection = useNavStore(s => s.settingsSection)
+  const setNavSection = useNavStore(s => s.setSettingsSection)
+  const setMainPage = useNavStore(s => s.setMainPage)
+  const [section, setSection] = useState<Section>(
+    (navSection as Section) || 'general'
+  )
   const { settings, load, set } = useSettingsStore()
-  const { setTheme, setAccentColor, setBgStyle, setMsgAnim, setAnimatedBackground,
-    setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect } = useUIStore()
+  const uiStore = useUIStore()
+  const { setTheme, setAccentColor, setBgStyle, setMsgAnim,
+    setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect,
+    setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
+    setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents } = uiStore
   const { add: toast } = useToast()
+
+  // Синхронизация: при изменении settingsSection извне (openSettings) — переключаемся.
+  useEffect(() => {
+    if (navSection && (navSection !== section)) {
+      setSection(navSection as Section)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navSection])
+
+  // Обратная синхронизация: локальный выбор юзера пишем в nav store.
+  const handleSectionChange = (s: Section) => {
+    setSection(s)
+    setNavSection(s)
+  }
 
   useEffect(() => { load() }, [])
 
   const handleSet = async (key: string, value: unknown) => {
     await set(key, value)
-    if (key === 'theme') setTheme(value as any)
-    if (key === 'accentColor') setAccentColor(value as string)
+    if (key === 'theme') {
+      setTheme(value as any)
+      if (value === 'custom') {
+        const ct = useUIStore.getState().customThemes.find(t => t.id === useUIStore.getState().activeCustomThemeId)
+        if (ct) applyCustomThemeToDOM(ct)
+      } else {
+        applyCustomThemeToDOM(null)
+      }
+    }
+    if (key === 'accentColor') {
+      setAccentColor(value as string)
+      if (!useUIStore.getState().rainbowAccent) applyAccentToDOM(value as string)
+    }
     if (key === 'bgStyle') setBgStyle(value as string)
     if (key === 'msgAnim') setMsgAnim(value as string)
     if (key === 'avatarStyle') setAvatarStyle(value as any)
@@ -77,17 +123,56 @@ export default function SettingsPage() {
     if (key === 'userMarkdown') setUserMarkdown(value as boolean)
     if (key === 'uiSounds') setUiSounds(value as boolean)
     if (key === 'sendEffect') setSendEffect(value as boolean)
-    // Применяем шрифт мгновенно к CSS-переменной — раньше select
-    // сохранял значение, но UI не менялся до перезапуска.
+    if (key === 'glassBlur') { setGlassBlur(value as number); applyGlassToDOM(value as number) }
+    if (key === 'density') { setDensity(value as any); applyDensityToDOM(value as any) }
+    if (key === 'accentGradient') {
+      setAccentGradient(value as any)
+      const ag = value as any
+      applyGradientAccentToDOM(ag.enabled, ag.color2, ag.angle, useUIStore.getState().accentColor)
+    }
+    if (key === 'rainbowAccent') {
+      setRainbowAccent(value as boolean)
+      if (value as boolean) {
+        applyRainbowAccentToDOM(true)
+      } else {
+        applyRainbowAccentToDOM(false)
+        applyAccentToDOM(useUIStore.getState().accentColor)
+      }
+    }
+    if (key === 'bgImage') { setBgImage(value as any); applyBgImageToDOM(value as any) }
+    if (key === 'customThemes') {
+      setCustomThemes(value as CustomTheme[])
+      const activeId = useUIStore.getState().activeCustomThemeId
+      if (useUIStore.getState().theme === 'custom' && activeId) {
+        const ct = (value as CustomTheme[]).find(t => t.id === activeId)
+        if (ct) applyCustomThemeToDOM(ct)
+      }
+    }
+    if (key === 'activeCustomThemeId') {
+      setActiveCustomThemeId(value as any)
+      if (useUIStore.getState().theme === 'custom' && value) {
+        const ct = useUIStore.getState().customThemes.find(t => t.id === value)
+        if (ct) applyCustomThemeToDOM(ct)
+      }
+    }
+    if (key === 'themeSchedule') setThemeSchedule(value as any)
+    if (key === 'recentAccents') setRecentAccents(value as string[])
     if (key === 'fontFamily') applyFontToDOM(value as string)
-    // Кастомный accent — применяется поверх темы.
-    if (key === 'accentColor') applyAccentToDOM(value as string)
   }
 
   return (
     <div className="settings-root">
       {/* Сайдбар разделов (сгруппированный) */}
       <nav className="settings-nav glass">
+        <button
+          type="button"
+          className="settings-back-btn"
+          onClick={() => setMainPage('chat')}
+          title="Назад к чату"
+        >
+          <AppIcon name="chevronLeft" size="sm" />
+          <span>Назад</span>
+        </button>
         <div className="settings-nav-title">Настройки</div>
         {SECTION_GROUPS.map(group => (
           <div key={group.title} className="settings-nav-group">
@@ -96,7 +181,7 @@ export default function SettingsPage() {
               <motion.button
                 key={s.id}
                 className={`settings-nav-item no-drag ${section === s.id ? 'settings-nav-item--active' : ''}`}
-                onClick={() => setSection(s.id)}
+                onClick={() => handleSectionChange(s.id)}
                 whileTap={{ scale: 0.97 }}
               >
                 {/* Скользящий активный индикатор: один motion.div с layoutId,
@@ -125,11 +210,17 @@ export default function SettingsPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
         >
+            {section === 'profile' && (
+              <ProfileSection />
+            )}
             {section === 'general' && (
               <GeneralSection settings={settings} onSet={handleSet} />
             )}
             {section === 'ai' && (
               <AISettingsTab />
+            )}
+            {section === 'modelStatus' && (
+              <ModelStatusSection />
             )}
             {section === 'context' && (
               <ContextSettingsTab />
@@ -259,12 +350,16 @@ function AnimPreview({ animId, active, onClick }: { animId: string; active: bool
 
 
 const BG_STYLES = [
-  { id: 'particles', label: 'Частицы',   icon: '✦', desc: 'Точки с линиями' },
-  { id: 'matrix',    label: 'Матрица',   icon: '⌨', desc: 'Дождь символов' },
-  { id: 'waves',     label: 'Волны',     icon: '〜', desc: 'Плавные волны' },
-  { id: 'aurora',    label: 'Аврора',    icon: '◈', desc: 'Северное сияние' },
-  { id: 'fireflies', label: 'Светлячки', icon: '✺', desc: 'Мерцающие огни' },
-  { id: 'none',      label: 'Выкл',      icon: '✕', desc: 'Без анимации' },
+  { id: 'particles',   label: 'Частицы',    icon: '✦', desc: 'Точки с линиями' },
+  { id: 'matrix',      label: 'Матрица',    icon: '⌨', desc: 'Дождь символов' },
+  { id: 'waves',       label: 'Волны',      icon: '〜', desc: 'Плавные волны' },
+  { id: 'aurora',      label: 'Аврора',     icon: '◈', desc: 'Северное сияние' },
+  { id: 'fireflies',   label: 'Светлячки',  icon: '✺', desc: 'Мерцающие огни' },
+  { id: 'starfield',   label: 'Звёзды',     icon: '✧', desc: 'Звёздное поле с параллаксом' },
+  { id: 'nebula',      label: 'Туманность', icon: '◉', desc: 'Облака космоса' },
+  { id: 'topographic', label: 'Топо',       icon: '⌒', desc: 'Контурные линии' },
+  { id: 'geometric',   label: 'Геометрия',  icon: '⬡', desc: 'Вращающиеся фигуры' },
+  { id: 'none',        label: 'Выкл',       icon: '✕', desc: 'Без анимации' },
 ]
 // 9 тем: 4 тёмных + 2 светлых + 3 цветных. Каждая — bg, surface, text,
 // accent цвета для мини-превью интерфейса в selector.
@@ -297,50 +392,85 @@ const ACCENT_PRESETS = [
 const FONTS = ['Inter', 'system']
 
 function AppearanceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+  const [accentPickerOpen, setAccentPickerOpen] = useState(false)
+  const [accentPickerPos, setAccentPickerPos] = useState<{ top: number; left: number } | null>(null)
+  const accentBtnRef = useRef<HTMLButtonElement>(null)
+  const [themeEditorOpen, setThemeEditorOpen] = useState(false)
+  const customThemes = (settings['customThemes'] as CustomTheme[]) || []
+  const activeCustomThemeId = settings['activeCustomThemeId'] as string | null
+  const recentAccents = (settings['recentAccents'] as string[]) || []
+  const rainbowAccent = settings['rainbowAccent'] as boolean
+  const accentGradient = (settings['accentGradient'] as { enabled: boolean; color2: string; angle: number }) || { enabled: false, color2: '#a78bfa', angle: 135 }
+  const bgImage = settings['bgImage'] as { src: string; blur: number; opacity: number; tint: string; tintStrength: number } | null
+  const themeSchedule = (settings['themeSchedule'] as any) || DEFAULT_THEME_SCHEDULE
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const commitAccent = (c: string) => {
+    onSet('accentColor', c)
+    const next = [c, ...recentAccents.filter(x => x !== c)].slice(0, 8)
+    onSet('recentAccents', next)
+  }
+
+  const allThemes = [
+    ...THEMES,
+    ...customThemes.map(t => ({
+      id: t.id,
+      label: t.name,
+      group: t.base,
+      colors: {
+        bg: t.colors.bodyBg,
+        surface: t.colors.bgSecondary,
+        text: t.colors.textPrimary,
+        accent: t.colors.accent,
+      },
+      isCustom: true,
+    })),
+  ]
+
+  const onPickBgImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    // Получаем расширение файла
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'png'
+    // Читаем как ArrayBuffer и отправляем в main для сохранения в userData
+    const buf = await file.arrayBuffer()
+    const savedPath = await window.syntee.bgImage.save(new Uint8Array(buf), ext)
+    if (!savedPath) {
+      toast('Не удалось сохранить картинку фона', 'error')
+      return
+    }
+    onSet('bgImage', { src: savedPath, blur: bgImage?.blur ?? 8, opacity: bgImage?.opacity ?? 40, tint: bgImage?.tint ?? '#000000', tintStrength: bgImage?.tintStrength ?? 30 })
+  }
+
   return (
     <>
       <SectionTitle>Внешний вид</SectionTitle>
       <Field label="Тема" description="Выберите цветовую палитру" block>
         <div className="settings-theme-cards">
-          {THEMES.map(t => {
-            const isActive = settings['theme'] === t.id
+          {allThemes.map(t => {
+            const isActive = settings['theme'] === t.id || (t.id === activeCustomThemeId && settings['theme'] === 'custom')
             return (
               <motion.button
                 key={t.id}
                 type="button"
                 className={`settings-theme-card${isActive ? ' settings-theme-card--active' : ''}`}
-                onClick={() => onSet('theme', t.id)}
+                onClick={() => onSet('theme', t.id === activeCustomThemeId ? 'custom' : t.id)}
                 whileTap={{ scale: 0.96 }}
                 whileHover={{ y: -2 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 25 }}
                 title={t.label}
               >
-                {/* Мини-превью интерфейса с реальными цветами темы */}
                 <div
                   className="settings-theme-card__preview"
                   style={{ background: t.colors.bg, borderColor: t.colors.accent + '22' }}
                 >
-                  {/* Имитация sidebar */}
-                  <div
-                    className="settings-theme-card__sidebar"
-                    style={{ background: t.colors.surface }}
-                  />
-                  {/* Имитация message bubbles */}
+                  <div className="settings-theme-card__sidebar" style={{ background: t.colors.surface }} />
                   <div className="settings-theme-card__content">
-                    <div
-                      className="settings-theme-card__bubble settings-theme-card__bubble--left"
-                      style={{ background: t.colors.surface, borderColor: t.colors.text + '18' }}
-                    />
-                    <div
-                      className="settings-theme-card__bubble settings-theme-card__bubble--right"
-                      style={{ background: t.colors.accent }}
-                    />
+                    <div className="settings-theme-card__bubble settings-theme-card__bubble--left" style={{ background: t.colors.surface, borderColor: t.colors.text + '18' }} />
+                    <div className="settings-theme-card__bubble settings-theme-card__bubble--right" style={{ background: t.colors.accent }} />
                   </div>
-                  {/* Accent dot */}
-                  <div
-                    className="settings-theme-card__dot"
-                    style={{ background: t.colors.accent, boxShadow: `0 0 8px ${t.colors.accent}66` }}
-                  />
+                  <div className="settings-theme-card__dot" style={{ background: t.colors.accent, boxShadow: `0 0 8px ${t.colors.accent}66` }} />
                 </div>
                 <div className="settings-theme-card__label">{t.label}</div>
                 {isActive && (
@@ -359,23 +489,63 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
               </motion.button>
             )
           })}
+          <motion.button
+            type="button"
+            className="settings-theme-card settings-theme-card--add"
+            onClick={() => setThemeEditorOpen(v => !v)}
+            whileTap={{ scale: 0.96 }}
+            whileHover={{ y: -2 }}
+            title="Создать кастомную тему"
+          >
+            <div className="settings-theme-card__preview settings-theme-card__preview--add">
+              <span>+</span>
+            </div>
+            <div className="settings-theme-card__label">Создать</div>
+          </motion.button>
         </div>
       </Field>
+
+      <AnimatePresence>
+        {themeEditorOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 32 }}
+            style={{ overflow: 'hidden' }}
+          >
+            <CustomThemeEditor
+              themes={customThemes}
+              activeId={activeCustomThemeId}
+              onChange={(themes, activeId) => {
+                onSet('customThemes', themes)
+                if (activeId !== undefined) onSet('activeCustomThemeId', activeId)
+              }}
+              onApply={(id) => {
+                onSet('activeCustomThemeId', id)
+                onSet('theme', 'custom')
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <Field label="Цвет акцента" description="Дополнительный акцент поверх темы">
         <div className="settings-accent-picker">
           {ACCENT_PRESETS.map(c => {
-            const isActive = (settings['accentColor'] as string) === c
+            const isActive = (settings['accentColor'] as string) === c && !rainbowAccent
             return (
               <motion.button
                 key={c}
                 type="button"
                 className={`settings-accent-swatch${isActive ? ' settings-accent-swatch--active' : ''}`}
                 style={{ background: c }}
-                onClick={() => onSet('accentColor', c)}
+                onClick={() => { commitAccent(c) }}
                 whileTap={{ scale: 0.85 }}
                 whileHover={{ scale: 1.15 }}
                 transition={{ type: 'spring', stiffness: 500, damping: 25 }}
                 title={c}
+                disabled={rainbowAccent}
               >
                 {isActive && (
                   <motion.svg
@@ -392,13 +562,131 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
               </motion.button>
             )
           })}
+          <motion.button
+            type="button"
+            className={`settings-accent-swatch settings-accent-swatch--custom${accentPickerOpen ? ' settings-accent-swatch--active' : ''}`}
+            ref={accentBtnRef}
+            onClick={() => {
+              if (!accentPickerOpen && accentBtnRef.current) {
+                const r = accentBtnRef.current.getBoundingClientRect()
+                setAccentPickerPos({ top: r.bottom + 8, left: r.left })
+              }
+              setAccentPickerOpen(v => !v)
+            }}
+            whileTap={{ scale: 0.85 }}
+            whileHover={{ scale: 1.15 }}
+            title="Свой цвет"
+            disabled={rainbowAccent}
+            style={{ background: rainbowAccent ? 'conic-gradient(red, orange, yellow, green, blue, purple, red)' : (settings['accentColor'] as string) || '#fff' }}
+          >
+            <span className="settings-accent-swatch-plus">＋</span>
+          </motion.button>
         </div>
       </Field>
+
+      {createPortal(
+        <AnimatePresence>
+          {accentPickerOpen && !rainbowAccent && accentPickerPos && (
+            <>
+              <div className="settings-accent-popover-overlay" onClick={() => setAccentPickerOpen(false)} />
+              <motion.div
+                className="settings-accent-popover"
+                style={{ top: accentPickerPos.top, left: accentPickerPos.left }}
+                initial={{ opacity: 0, scale: 0.9, y: -8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: -8 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+              >
+                <ColorPicker
+                  value={(settings['accentColor'] as string) || '#ffffff'}
+                  onChange={(c) => {
+                    useUIStore.getState().setAccentColor(c)
+                    if (!useUIStore.getState().rainbowAccent) applyAccentToDOM(c)
+                  }}
+                  onCommit={commitAccent}
+                  recent={recentAccents}
+                />
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
+
+      <Field label="Радужный акцент" description="Accent медленно циклит по всем цветам">
+        <Toggle value={!!rainbowAccent} onChange={v => onSet('rainbowAccent', v)} />
+      </Field>
+
+      <Field label="Градиентный акцент" description="Accent как градиент из двух цветов">
+        <Toggle value={!!accentGradient.enabled} onChange={v => onSet('accentGradient', { ...accentGradient, enabled: v })} disabled={rainbowAccent} />
+      </Field>
+      <AnimatePresence>
+        {accentGradient.enabled && !rainbowAccent && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 32 }}
+            style={{ overflow: 'hidden' }}
+          >
+            <Field label="Второй цвет градиента">
+              <div className="settings-accent-picker">
+                {ACCENT_PRESETS.map(c => (
+                  <motion.button
+                    key={c}
+                    type="button"
+                    className={`settings-accent-swatch${accentGradient.color2 === c ? ' settings-accent-swatch--active' : ''}`}
+                    style={{ background: c }}
+                    onClick={() => onSet('accentGradient', { ...accentGradient, color2: c })}
+                    whileTap={{ scale: 0.85 }}
+                    whileHover={{ scale: 1.15 }}
+                  />
+                ))}
+              </div>
+            </Field>
+            <Field label="Угол градиента" description={`${accentGradient.angle}°`}>
+              <input
+                type="range" min={0} max={360} value={accentGradient.angle}
+                onChange={e => onSet('accentGradient', { ...accentGradient, angle: Number(e.target.value) })}
+                className="settings-slider"
+              />
+            </Field>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <Field label="Шрифт">
         <select className="settings-select" value={(settings['fontFamily'] as string) || 'Inter'} onChange={e => onSet('fontFamily', e.target.value)}>
           {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
         </select>
       </Field>
+
+      <Field label="Плотность интерфейса" description="Компактный / Комфортный / Просторный">
+        <div className="settings-theme-grid">
+          {[
+            { id: 'compact', label: 'Компактно' },
+            { id: 'comfortable', label: 'Комфорт' },
+            { id: 'spacious', label: 'Просторно' },
+          ].map(d => (
+            <motion.button
+              key={d.id}
+              className={`settings-theme-btn ${(settings['density'] || 'comfortable') === d.id ? 'settings-theme-btn--active' : ''}`}
+              style={{ background: 'var(--bg-tertiary)', fontSize: 12 }}
+              onClick={() => onSet('density', d.id)}
+              whileTap={{ scale: 0.94 }}
+            >{d.label}</motion.button>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Стекло (Glass blur)" description={`${settings['glassBlur'] ?? 20}px — размытие Liquid Glass`}>
+        <input
+          type="range" min={0} max={40} value={(settings['glassBlur'] as number) ?? 20}
+          onChange={e => onSet('glassBlur', Number(e.target.value))}
+          className="settings-slider"
+        />
+      </Field>
+
       <Field label="Стиль фона" description="Анимация на заднем плане" block>
         <div className="settings-bg-grid">
           {BG_STYLES.map(s => (
@@ -415,6 +703,46 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
           ))}
         </div>
       </Field>
+
+      <Field label="Фоновое изображение" description="Картинка как фон (под анимацией)" block>
+        <div className="settings-bgimage-controls">
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={onPickBgImage} style={{ display: 'none' }} />
+          <motion.button
+            className="settings-btn"
+            whileTap={{ scale: 0.95 }}
+            onClick={() => fileInputRef.current?.click()}
+          >Загрузить</motion.button>
+          {bgImage && (
+            <>
+              <motion.button
+                className="settings-btn settings-btn--danger"
+                whileTap={{ scale: 0.95 }}
+                onClick={() => { window.syntee.bgImage.clear(); onSet('bgImage', null) }}
+              >Очистить</motion.button>
+            </>
+          )}
+        </div>
+        {bgImage && (
+          <div className="settings-bgimage-sliders">
+            <label>
+              <span>Размытие: {bgImage.blur}px</span>
+              <input type="range" min={0} max={40} value={bgImage.blur}
+                onChange={e => onSet('bgImage', { ...bgImage, blur: Number(e.target.value) })} className="settings-slider" />
+            </label>
+            <label>
+              <span>Непрозрачность: {bgImage.opacity}%</span>
+              <input type="range" min={0} max={100} value={bgImage.opacity}
+                onChange={e => onSet('bgImage', { ...bgImage, opacity: Number(e.target.value) })} className="settings-slider" />
+            </label>
+            <label>
+              <span>Затемнение: {bgImage.tintStrength}%</span>
+              <input type="range" min={0} max={100} value={bgImage.tintStrength}
+                onChange={e => onSet('bgImage', { ...bgImage, tint: '#000000', tintStrength: Number(e.target.value) })} className="settings-slider" />
+            </label>
+          </div>
+        )}
+      </Field>
+
       <Field label="Анимация сообщений" description="Наведи на карточку чтобы увидеть превью" block>
         <div className="anim-preview-grid">
           {Object.entries(MSG_ANIM_VARIANTS).map(([id]) => (
@@ -477,9 +805,40 @@ function AppearanceSection({ settings, onSet }: { settings: Record<string, unkno
       <Field label="Эффект отправки" description="Ripple-вспышка на кнопке при отправке">
         <Toggle value={settings['sendEffect'] !== false} onChange={v => onSet('sendEffect', v)} />
       </Field>
-      <Field label="Автосмена темы">
-        <Toggle value={!!(settings['themeSchedule'] as any)?.enabled} onChange={v => onSet('themeSchedule', { ...((settings['themeSchedule'] as any) || {}), enabled: v })} />
+
+      <Field label="Автосмена темы" description="День → светлая, ночь → тёмная">
+        <Toggle value={!!themeSchedule.enabled} onChange={v => onSet('themeSchedule', { ...themeSchedule, enabled: v })} />
       </Field>
+      <AnimatePresence>
+        {themeSchedule.enabled && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 32 }}
+            style={{ overflow: 'hidden' }}
+          >
+            <Field label="Дневная тема">
+              <select className="settings-select" value={themeSchedule.dayTheme} onChange={e => onSet('themeSchedule', { ...themeSchedule, dayTheme: e.target.value })}>
+                {THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                {customThemes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Ночная тема">
+              <select className="settings-select" value={themeSchedule.nightTheme} onChange={e => onSet('themeSchedule', { ...themeSchedule, nightTheme: e.target.value })}>
+                {THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                {customThemes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </Field>
+            <Field label="День начинается в">
+              <input type="time" className="settings-input" value={themeSchedule.dayTime} onChange={e => onSet('themeSchedule', { ...themeSchedule, dayTime: e.target.value })} />
+            </Field>
+            <Field label="Ночь начинается в">
+              <input type="time" className="settings-input" value={themeSchedule.nightTime} onChange={e => onSet('themeSchedule', { ...themeSchedule, nightTime: e.target.value })} />
+            </Field>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   )
 }

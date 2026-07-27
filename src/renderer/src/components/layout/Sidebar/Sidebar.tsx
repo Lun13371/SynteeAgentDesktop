@@ -7,6 +7,7 @@ import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
 import ExtensionsPopover from '../../ui/ExtensionsPopover/ExtensionsPopover'
 import { ProjectIndexModal } from '../../ui/ProjectIndexModal/ProjectIndexModal'
+import UserCard from './UserCard'
 import { useChatStore } from '../../../store/chat.store'
 import './Sidebar.css'
 
@@ -617,6 +618,8 @@ export default function Sidebar({
         projectName={indexModalProject?.name}
         onClose={() => setIndexModalProject(null)}
       />
+
+      <UserCard />
     </aside>
   )
 }

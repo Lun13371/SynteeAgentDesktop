@@ -18,13 +18,38 @@
   overflow-y: auto;
 }
 
+.settings-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 10px 10px 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+}
+.settings-back-btn:hover {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.settings-back-btn:active {
+  transform: scale(0.97);
+}
+
 .settings-nav-title {
   font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  padding: 4px 10px 14px;
+  padding: 10px 12px 10px;
 }
 
 /* Группа разделов в сайдбаре (VS Code / Notion style).
@@ -272,14 +297,14 @@
   flex-shrink: 0;
 }
 
-.settings-toggle--on { background: var(--accent); }
+.settings-toggle--on { background: var(--accent-bg); }
 
 .settings-toggle--disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .settings-toggle--disabled:hover { background: var(--bg-tertiary); }
-.settings-toggle--disabled.settings-toggle--on:hover { background: var(--accent); }
+.settings-toggle--disabled.settings-toggle--on:hover { background: var(--accent-bg); }
 
 .settings-toggle-thumb {
   position: absolute;
@@ -507,6 +532,122 @@
 
 .settings-accent-swatch--active {
   border-color: var(--text-primary);
+}
+
+.settings-accent-popover-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.settings-accent-popover-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: transparent;
+}
+
+.settings-accent-popover {
+  position: fixed;
+  z-index: 9999;
+}
+
+.settings-accent-swatch--custom {
+  position: relative;
+  background-image: linear-gradient(45deg, var(--overlay-4) 25%, transparent 25%, transparent 75%, var(--overlay-4) 75%),
+                    linear-gradient(45deg, var(--overlay-4) 25%, transparent 25%, transparent 75%, var(--overlay-4) 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+}
+
+.settings-accent-swatch-plus {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  pointer-events: none;
+  mix-blend-mode: difference;
+}
+
+.settings-accent-swatch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.settings-colorpicker-wrap {
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+.settings-slider {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--overlay-4);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  cursor: pointer;
+  border: 2px solid var(--bg-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.settings-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  cursor: pointer;
+  border: 2px solid var(--bg-primary);
+}
+
+.settings-bgimage-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.settings-bgimage-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-top: 8px;
+}
+
+.settings-bgimage-sliders label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.settings-theme-card--add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-theme-card__preview--add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary);
+  font-size: 22px;
+  color: var(--text-muted);
+  border-style: dashed;
 }
 
 .settings-bg-grid {

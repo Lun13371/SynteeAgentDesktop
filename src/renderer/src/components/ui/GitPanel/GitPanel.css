@@ -45,7 +45,7 @@
 }
 
 .git-panel__retry:hover {
-  background: var(--accent);
+  background: var(--accent-bg);
   color: white;
 }
 
@@ -309,11 +309,11 @@
 }
 
 .git-file-item--selected {
-  background: var(--accent);
+  background: var(--accent-bg);
 }
 
 .git-file-item--selected:hover {
-  background: var(--accent);
+  background: var(--accent-bg);
 }
 
 .git-file-item--selected .git-file-item__name,

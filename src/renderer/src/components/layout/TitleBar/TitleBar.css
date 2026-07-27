@@ -6,7 +6,9 @@
   padding: 0 16px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
+  position: relative;
+  z-index: 5;
 }
 
 .titlebar-left {
@@ -63,23 +65,48 @@
   display: inline-flex;
 }
 
-.titlebar-badge {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+.titlebar-avatar-btn {
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--accent, #6366f1);
-  color: white;
-  font-size: 10px;
-  font-weight: 700;
-  border-radius: 8px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 4px;
+  position: relative;
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+
+.titlebar-avatar-btn:hover {
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.titlebar-avatar-btn:active {
+  transform: scale(0.95);
+}
+
+/* Кольцо дневного лимита вокруг аватара */
+.titlebar-limit-ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
   pointer-events: none;
-  z-index: 1;
-  box-shadow: 0 0 0 1.5px var(--bg-primary);
-  font-variant-numeric: tabular-nums;
+  color: #4ade80;
+  -webkit-mask: radial-gradient(circle, transparent 60%, black 62%);
+          mask: radial-gradient(circle, transparent 60%, black 62%);
+}
+
+.titlebar-limit-ring--warning { color: #facc15; }
+.titlebar-limit-ring--critical { color: #f87171; }
+
+.titlebar-avatar-btn--warning {
+  box-shadow: 0 0 0 1px #facc15;
+}
+
+.titlebar-avatar-btn--critical {
+  box-shadow: 0 0 0 1px #f87171;
 }

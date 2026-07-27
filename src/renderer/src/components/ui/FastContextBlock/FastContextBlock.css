@@ -134,7 +134,7 @@
   transition: background 0.3s;
 }
 .fcb-stage.done .fcb-stage-dot {
-  background: var(--accent);
+  background: var(--accent-bg);
 }
 .fcb-stage.active .fcb-stage-dot {
   background: var(--accent-subtle);
@@ -192,7 +192,7 @@
 }
 .fcb-progress-fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--accent-bg);
   border-radius: 1px;
   transition: width 0.5s ease;
 }

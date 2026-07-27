@@ -260,7 +260,7 @@
   top: 0;
   bottom: 0;
   width: 3px;
-  background: var(--accent, #e8e8ec);
+  background: var(--accent-bg, #e8e8ec);
 }
 
 .qp-option--selected .qp-option-mark {
@@ -534,7 +534,7 @@
 }
 
 .qp-btn--primary {
-  background: var(--accent, #e8e8ec);
+  background: var(--accent-bg, #e8e8ec);
   color: var(--on-accent-strong, #1a1a20);
   border-color: var(--accent, #e8e8ec);
   font-weight: 600;

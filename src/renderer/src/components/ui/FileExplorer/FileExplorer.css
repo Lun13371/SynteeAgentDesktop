@@ -45,7 +45,7 @@
 }
 
 .file-explorer__retry:hover {
-  background: var(--accent);
+  background: var(--accent-bg);
   color: white;
 }
 
@@ -136,12 +136,12 @@
 }
 
 .file-tree-item--selected {
-  background: var(--accent);
+  background: var(--accent-bg);
   color: white;
 }
 
 .file-tree-item--selected:hover {
-  background: var(--accent);
+  background: var(--accent-bg);
 }
 
 .file-tree-item__spacer {

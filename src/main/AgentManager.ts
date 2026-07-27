@@ -5,6 +5,7 @@ import type Store from 'electron-store'
 import type { ChatMode } from '../shared/types'
 import { getToolSchemas } from '../core/tools'
 import { getFileCacheSnapshot, mergeFileCache } from '../core/context/fileReadCache'
+import { getAccessToken } from './services/tokenStore'
 import {
   createSubagentWorktree,
   mergeWorktreeBack,
@@ -257,6 +258,7 @@ class AgentManager {
             storeData,
             isSubAgent: true,
             mode: record.mode,
+            gatewayToken: getAccessToken(),
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
             workdir: effectiveWorkdir,
             projectId: context?.projectId,

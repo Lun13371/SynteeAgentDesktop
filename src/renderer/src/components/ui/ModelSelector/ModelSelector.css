@@ -94,6 +94,102 @@
 }
 .model-selector-search-clear:hover { color: var(--text-primary); }
 
+/* ── Закреплённые и Недавние модели (компактные chips) ── */
+.model-selector-pinned,
+.model-selector-recent {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.model-selector-pinned {
+  padding-bottom: 4px;
+}
+.model-selector-section-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+.model-selector-chips {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.model-selector-chips::-webkit-scrollbar { display: none; }
+.model-selector-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px 3px 5px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.model-selector-chip:hover {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.model-selector-chip--active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.model-selector-chip-logo {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+.model-selector-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+}
+
+/* ── Context menu (правый клик) ── */
+.model-selector-ctx-menu {
+  min-width: 140px;
+  padding: 4px;
+  background: rgba(14, 14, 18, 0.97);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.model-selector-ctx-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.1s;
+}
+.model-selector-ctx-item:hover {
+  background: var(--accent-subtle);
+}
+
 .model-selector-list {
   flex: 1;
   overflow-y: auto;
@@ -107,6 +203,62 @@
   text-align: center;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* ── Skeleton loading ── */
+.model-selector-skeleton {
+  padding: 6px 0;
+}
+.model-selector-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  animation: model-selector-skeleton-pulse 1.2s ease-in-out infinite;
+}
+.model-selector-skeleton-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+.model-selector-skeleton-text {
+  flex: 1;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--bg-tertiary);
+  max-width: 160px;
+}
+@keyframes model-selector-skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+/* ── Gateway loading (модели ещё грузятся) ── */
+.model-selector-gateway-loading {
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.model-selector-gateway-loading-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+.model-selector-gateway-loading-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  opacity: 0.5;
+  flex-shrink: 0;
 }
 
 .model-selector-group { margin-bottom: 2px; }
@@ -161,6 +313,37 @@
   color: var(--accent);
   background: var(--accent-subtle);
 }
+
+/* Gateway-модели: column layout с uptime-баром снизу */
+.model-selector-item--gateway {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  padding: 4px 12px;
+}
+.model-selector-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.model-selector-item-uptime {
+  padding-left: 22px;
+  padding-right: 4px;
+}
+
+/* Бейдж статуса gateway-модели */
+.model-status-badge {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: auto;
+  margin-right: 6px;
+}
+.model-status-badge--operational { background: #4ade80; box-shadow: 0 0 4px rgba(74, 222, 128, 0.6); }
+.model-status-badge--degraded    { background: #facc15; box-shadow: 0 0 4px rgba(250, 204, 21, 0.6); }
+.model-status-badge--down        { background: #f87171; box-shadow: 0 0 4px rgba(248, 113, 113, 0.6); }
+.model-status-badge--unknown     { background: var(--text-muted); }
 
 /* Цветная точка модели (fallback, если нет SVG-логотипа) */
 .model-selector-item-dot {

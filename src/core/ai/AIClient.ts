@@ -36,8 +36,11 @@ export class AIClient {
 
   private createClient(): OpenAI {
     const apiKey = (this.store.get('apiKey') as string) || '***'
-    const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
-    return new OpenAI({ apiKey, baseURL: endpoint })
+    // Только явный URL из настроек. OnlySQ-дефолт удалён — модели идут через
+    // мульти-провайдерную систему. Если endpoint пуст, клиент всё равно
+    // создаётся (для совместимости), но запросы без назначения упадут.
+    const endpoint = (this.store.get('apiEndpoint') as string) || ''
+    return new OpenAI({ apiKey, baseURL: endpoint || undefined })
   }
 
   reload(): void {
@@ -64,6 +67,9 @@ export class AIClient {
    * (chatWithToolsAnthropic) для единой логики выбора провайдера и ключа.
    * Возвращает null если назначение не задано — в этом случае используется
    * дефолтный клиент (this.client).
+   *
+   * Для syntee-gateway apiKey НЕ берётся из Provider.apiKey — вместо этого
+   * возвращается маркер '__JWT__', и getClientForRoleAsync подставит JWT.
    */
   private getProviderInfoForRole(type: string): { provider: Provider; apiKey: string } | null {
     const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
@@ -72,6 +78,12 @@ export class AIClient {
     const providers = this.store.get('providers') as Provider[] | undefined
     const provider = providers?.find(p => p.id === assignment.providerId && p.enabled)
     if (!provider?.baseUrl) return null
+
+    // Syntee-Gateway: авторизация через JWT, не через статический apiKey.
+    // Возвращаем маркер — реальный токен подставится в getClientForRoleAsync.
+    if (provider.id === 'syntee-gateway' || provider.type === 'syntee-gateway') {
+      return { provider, apiKey: '__JWT__' }
+    }
 
     // Round-robin: выбираем следующий ключ из списка
     const { key, updatedProviders } = getNextApiKey(providers || [], assignment.providerId)
@@ -83,9 +95,37 @@ export class AIClient {
     return { provider, apiKey: key }
   }
 
-  private getClientForRole(type: string): OpenAI {
+  /**
+   * Асинхронная версия getClientForRole — для syntee-gateway получает JWT
+   * через getGatewayAuthToken() (с авто-refresh). Для остальных провайдеров
+   * работает синхронно как getClientForRole.
+   */
+  private async getClientForRoleAsync(type: string): Promise<OpenAI> {
     const info = this.getProviderInfoForRole(type)
-    if (!info) return this.client
+    if (!info) {
+      console.log(`[AIClient] getClientForRoleAsync(${type}): no provider info, using default client`)
+      return this.client
+    }
+    console.log(`[AIClient] getClientForRoleAsync(${type}): provider=${info.provider.id} baseUrl=${info.provider.baseUrl}`)
+    if (info.apiKey === '__JWT__') {
+      // Worker thread не имеет доступа к electron-store/tokenStore.
+      // Токен передаётся из main через workerData.gatewayToken.
+      // В main-процессе workerData недоступен, используем lazy import.
+      let token: string | null = null
+      try {
+        const { workerData } = await import('worker_threads')
+        token = (workerData as Record<string, unknown> | undefined)?.gatewayToken as string | null
+      } catch { /* не в worker */ }
+      if (!token) {
+        const { getGatewayAuthToken } = await import('../../main/services/gatewayClient')
+        token = await getGatewayAuthToken()
+      }
+      console.log(`[AIClient] gateway token: ${token ? 'OK (' + token.slice(0, 20) + '...)' : 'NULL'}`)
+      if (!token) {
+        throw new Error('Не авторизован в Syntee-Gateway. Войдите через Профиль → Войти.')
+      }
+      return new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl })
+    }
     return new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl })
   }
 
@@ -98,7 +138,7 @@ export class AIClient {
     temperatureOverride?: number,
   ): Promise<void> {
     const model = this.getModel(modelType)
-    const client = this.getClientForRole(modelType)
+    const client = await this.getClientForRoleAsync(modelType)
 
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
@@ -306,7 +346,7 @@ export class AIClient {
     systemPrompt?: string
   ): Promise<string> {
     const model = this.getModel(modelType)
-    const client = this.getClientForRole(modelType)
+    const client = await this.getClientForRoleAsync(modelType)
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
@@ -336,7 +376,10 @@ export class AIClient {
 
   async textToSpeech(text: string): Promise<string> {
     const apiKey = this.store.get('apiKey') as string
-    const endpoint = (this.store.get('apiEndpoint') as string) || 'https://api.onlysq.ru/ai/openai'
+    const endpoint = (this.store.get('apiEndpoint') as string) || ''
+    if (!endpoint) {
+      throw new Error('TTS endpoint не настроен — укажите провайдера в Настройках → ИИ и Модели')
+    }
     const voice = (this.store.get('voiceId') as string) || 'alloy'
     const response = await fetch(`${endpoint}/audio/speech`, {
       method: 'POST',
@@ -371,6 +414,24 @@ export class AIClient {
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
     const model = this.getModel(resolvedRole) || this.getModel('main')
     const providerInfo = this.getProviderInfoForRole(resolvedRole)
+    // Для syntee-gateway apiKey === '__JWT__' — реальный JWT получаем ниже.
+    const isGateway = providerInfo?.apiKey === '__JWT__'
+    let gatewayToken: string | null = null
+    if (isGateway) {
+      // Worker thread не имеет доступа к electron-store/tokenStore.
+      // Токен передаётся из main через workerData.gatewayToken.
+      try {
+        const { workerData } = await import('worker_threads')
+        gatewayToken = (workerData as Record<string, unknown> | undefined)?.gatewayToken as string | null
+      } catch { /* не в worker */ }
+      if (!gatewayToken) {
+        const { getGatewayAuthToken } = await import('../../main/services/gatewayClient')
+        gatewayToken = await getGatewayAuthToken()
+      }
+      if (!gatewayToken) {
+        throw new Error('Не авторизован в Syntee-Gateway. Войдите через Профиль → Войти.')
+      }
+    }
     const temperature = DEFAULT_TEMPERATURE
     const maxTokensRaw = DEFAULT_MAX_TOKENS
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
@@ -404,10 +465,11 @@ export class AIClient {
 
     // Anthropic-нативный путь с prompt caching (cache_control на system + tools).
     // Срабатывает когда провайдер имеет type='anthropic' или baseUrl=api.anthropic.com.
-    // OnlySQ-прокси (type='onlysq') здесь НЕ матчится — остаётся на OpenAI-пути ниже.
+    // OnlySQ-прокси больше не используется; gateway-провайдер идёт через JWT.
     if (providerInfo && isAnthropicProvider(providerInfo.provider)) {
+      const anthropicApiKey = isGateway ? gatewayToken! : providerInfo.apiKey
       const anthropicClient = new Anthropic({
-        apiKey: providerInfo.apiKey,
+        apiKey: anthropicApiKey,
         baseURL: providerInfo.provider.baseUrl,
       })
       return chatWithToolsAnthropic(
@@ -416,9 +478,12 @@ export class AIClient {
       )
     }
 
-    // OpenAI-совместимый путь (включая OnlySQ-прокси)
+    // OpenAI-совместимый путь (включая syntee-gateway через JWT)
     const client = providerInfo
-      ? new OpenAI({ apiKey: providerInfo.apiKey, baseURL: providerInfo.provider.baseUrl })
+      ? new OpenAI({
+          apiKey: isGateway ? gatewayToken! : providerInfo.apiKey,
+          baseURL: providerInfo.provider.baseUrl,
+        })
       : this.client
 
     let attempt = 0
@@ -587,7 +652,7 @@ export class AIClient {
 
   async analyzeImage(imageBase64: string, prompt: string, callbacks: StreamCallbacks): Promise<void> {
     const model = this.getModel('vision')
-    const client = this.getClientForRole('vision')
+    const client = await this.getClientForRoleAsync('vision')
     let attempt = 0
     const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt <= this.maxRetries) {

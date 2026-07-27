@@ -6,6 +6,7 @@ import ModelPicker from '../../ui/ModelPicker/ModelPicker'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import BrandAvatar from '../../ui/BrandAvatar/BrandAvatar'
 import { getBrandLogo } from '../../../utils/modelFormat'
+import { useGatewayModelsStore } from '../../../store/gatewayModels.store'
 import './AISettingsTab.css'
 
 const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; filterCaps?: ModelCapability[] }> = {
@@ -41,6 +42,14 @@ export default function AISettingsTab() {
   const [imageProviderId, setImageProviderId] = useState('')
 
   useEffect(() => { load() }, [])
+
+  // Перегружаем список моделей когда gateway-модели обновляются (после входа
+  // или polling). Без этого ModelPicker не увидит новые модели.
+  const gatewayLastFetch = useGatewayModelsStore(s => s.lastFetchAt)
+  useEffect(() => {
+    if (gatewayLastFetch > 0) load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayLastFetch])
 
   const load = async () => {
     try {
