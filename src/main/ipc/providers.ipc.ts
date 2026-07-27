@@ -4,6 +4,25 @@ import type { Provider, ModelMeta, ModelAssignment, ModelParams } from '../../sh
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import { getCatalogModel, inferSpeed, getCatalogStatus, type CatalogModelInfo } from '../../core/tokens/modelCatalog'
 
+// ── Кэш моделей Syntee-Gateway ─────────────────────────────────────────────
+// Обновляется через gateway:fetchModels (renderer тянет после входа и при
+// polling). Здесь хранится последняя загруженная версия, чтобы models:getAll
+// мог вернуть модели gateway синхронно вместе с остальными.
+let gatewayModelsCache: ModelMeta[] = []
+let gatewayModelsCacheAt = 0
+
+export function setGatewayModelsCache(models: ModelMeta[]): void {
+  gatewayModelsCache = models
+  gatewayModelsCacheAt = Date.now()
+}
+
+export function getGatewayModelsCache(): ModelMeta[] {
+  // Считаем кэш валидным 5 минут. После — модели станут «старыми» и
+  // renderer перезагрузит их, но старый список остаётся чтобы UI не дёргался.
+  if (Date.now() - gatewayModelsCacheAt > 300_000) return gatewayModelsCache
+  return gatewayModelsCache
+}
+
 // ── Кэш enrichment для models:getAll ────────────────────────────────────────
 // getCatalogModel() в худшем случае (проксирующие провайдеры) сканирует весь
 // кэш models.dev (globalSearch), что дорого при большом списке custom/cached
@@ -103,6 +122,27 @@ export function registerProviderIPC(store: Store): void {
     }
   }
 
+  // ── Auto-seed Syntee-Gateway (disabled — активируется после входа) ────────
+  // baseUrl пустой на старте; при каждом getAll обновляем его из env-переменной
+  // SYNTEE_API_URL (см. providers:getAll ниже). JWT-авторизация обрабатывается
+  // в AIClient.getClientForRoleAsync — apiKey тут не используется.
+  {
+    const list = store.get('providers', []) as Provider[]
+    if (!list.find(p => p.id === 'syntee-gateway')) {
+      list.push({
+        id: 'syntee-gateway',
+        type: 'syntee-gateway',
+        name: 'Syntee Gateway',
+        baseUrl: '',
+        apiKey: '',
+        enabled: true,           // включён всегда — доступен когда юзер залогинен
+        isCustom: false,
+        anonymous: undefined,
+      } as Provider)
+      store.set('providers', list)
+    }
+  }
+
   // ── Round-robin helper (экспортируем для AIClient) ─────────────────────────
   // Возвращает следующий ключ для провайдера и сохраняет индекс в store
   // Вызывается из AIClient перед каждым запросом
@@ -110,7 +150,18 @@ export function registerProviderIPC(store: Store): void {
   // ── Providers ─────────────────────────────────────────────────────────────
 
   ipcMain.handle('providers:getAll', () => {
-    return store.get('providers', []) as Provider[]
+    const list = store.get('providers', []) as Provider[]
+    // Обновляем baseUrl gateway-провайдера из env (может поменяться при запуске
+    // через run-debug.bat или run-prod.bat).
+    const gwIdx = list.findIndex(p => p.id === 'syntee-gateway')
+    if (gwIdx >= 0) {
+      const envUrl = (process.env.SYNTEE_API_URL ?? '').replace(/\/$/, '')
+      if (envUrl && list[gwIdx].baseUrl !== `${envUrl}/v1`) {
+        list[gwIdx] = { ...list[gwIdx], baseUrl: `${envUrl}/v1` }
+        store.set('providers', list)
+      }
+    }
+    return list
   })
 
   ipcMain.handle('providers:save', (_e, provider: Provider) => {
@@ -293,6 +344,17 @@ export function registerProviderIPC(store: Store): void {
       }
     }
 
+    // ── Модели Syntee-Gateway (если юзер залогинен) ────────────────────────
+    // Берём из кэша, который обновляется отдельным IPC-вызовом из renderer
+    // (gateway:fetchModels → setGatewayModelsCache). Это позволяет держать
+    // models:getAll синхронным и не блокировать UI на сетевой запрос.
+    const gatewayModels = getGatewayModelsCache()
+    for (const m of gatewayModels) {
+      if (!all.find(x => x.id === m.id && x.providerId === m.providerId)) {
+        all.push(m)
+      }
+    }
+
     return all
   })
 
@@ -333,5 +395,39 @@ export function registerProviderIPC(store: Store): void {
   ipcMain.handle('models:setParams', (_e, params: Partial<ModelParams>) => {
     const current = store.get('modelParams', DEFAULT_PARAMS) as ModelParams
     store.set('modelParams', { ...current, ...params })
+  })
+
+  // ── Recent models (недавно использованные) ─────────────────────────────────
+
+  ipcMain.handle('models:getRecent', (): { modelId: string; providerId: string; usedAt: number }[] => {
+    return (store.get('recentModels', []) as { modelId: string; providerId: string; usedAt: number }[]).slice(0, 5)
+  })
+
+  ipcMain.handle('models:addRecent', (_e, modelId: string, providerId: string) => {
+    const list = store.get('recentModels', []) as { modelId: string; providerId: string; usedAt: number }[]
+    // Удаляем дубликаты
+    const filtered = list.filter(r => !(r.modelId === modelId && r.providerId === providerId))
+    // Добавляем в начало
+    filtered.unshift({ modelId, providerId, usedAt: Date.now() })
+    // Ограничиваем 5 элементами
+    store.set('recentModels', filtered.slice(0, 5))
+  })
+
+  // ── Pinned models (закреплённые пользователем) ─────────────────────────────
+
+  ipcMain.handle('models:getPinned', (): { modelId: string; providerId: string }[] => {
+    return (store.get('pinnedModels', []) as { modelId: string; providerId: string }[])
+  })
+
+  ipcMain.handle('models:togglePin', (_e, modelId: string, providerId: string) => {
+    const list = store.get('pinnedModels', []) as { modelId: string; providerId: string }[]
+    const idx = list.findIndex(p => p.modelId === modelId && p.providerId === providerId)
+    if (idx >= 0) {
+      list.splice(idx, 1)
+    } else {
+      list.push({ modelId, providerId })
+    }
+    store.set('pinnedModels', list)
+    return list
   })
 }

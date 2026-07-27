@@ -78,7 +78,7 @@
 }
 
 .graph-action-btn--primary {
-  background: var(--accent);
+  background: var(--accent-bg);
   border-color: var(--accent);
   color: white;
 }

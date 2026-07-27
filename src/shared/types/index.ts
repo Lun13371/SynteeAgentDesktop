@@ -247,9 +247,10 @@ export interface AgentAction {
 export type ProviderType =
   | 'openai' | 'anthropic' | 'google' | 'groq' | 'cerebras' | 'mistral'
   | 'ollama' | 'cohere' | 'together' | 'fireworks' | 'deepseek'
-  | 'xai' | 'onlysq' | 'voidai' | 'custom'
+  | 'xai' | 'voidai' | 'custom'
   | 'opencode' | 'opencode-free' | 'opencode-go'
   | 'openrouter'
+  | 'syntee-gateway'
 
 export interface Provider {
   id: string               // уникальный slug: 'openai', 'my-custom-1'
@@ -543,4 +544,27 @@ export interface MarketplaceSkill {
   topics: string[]
   license: string | null
   updatedAt: string
+}
+
+/** Пользовательская кастомная тема (полный редактор в настройках). */
+export interface CustomTheme {
+  id: string
+  name: string
+  base: 'light' | 'dark'
+  colors: {
+    bodyBg: string
+    bgPrimary: string
+    bgSecondary: string
+    bgTertiary: string
+    textPrimary: string
+    textSecondary: string
+    textMuted: string
+    accent: string
+    sidebarBg: string
+  }
+  glass: {
+    blur: number
+    saturate: number
+    opacity: number
+  }
 }

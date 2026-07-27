@@ -17,7 +17,7 @@ if (!window.syntee) {
   const noop = () => Promise.resolve()
   const mockStore: Record<string, unknown> = {
     theme: 'dark', accentColor: '#ffffff', userName: '',
-    apiKey: '', apiEndpoint: 'https://api.onlysq.ru/ai/openai',
+    apiKey: '', apiEndpoint: '',
     mainModel: 'claude-sonnet-4-6', sidebarOpen: true,
     firstRunComplete: true,
   }
@@ -27,6 +27,11 @@ if (!window.syntee) {
       get: (key: string) => Promise.resolve(mockStore[key]),
       set: (key: string, val: unknown) => { mockStore[key] = val; return Promise.resolve() },
       getAll: () => Promise.resolve(mockStore),
+    },
+    bgImage: {
+      save: () => Promise.resolve(null),
+      load: () => Promise.resolve(null),
+      clear: () => Promise.resolve(true),
     },
     system: {
       info: () => Promise.resolve({ platform: 'win32', version: '10', appVersion: '0.1.0' }),

@@ -54,7 +54,7 @@
 }
 
 .voice-wave--listening .voice-wave-bar {
-  background: var(--accent);
+  background: var(--accent-bg);
 }
 
 .voice-wave--speaking .voice-wave-bar {

@@ -27,8 +27,11 @@ export const DEFAULT_SETTINGS = {
   autostart: false,
   onboardingCompleted: false,
   userName: '',
+  // Глобальные apiKey/apiEndpoint больше не используются для OnlySQ —
+  // модели идут через мульти-провайдерную систему (providers + assignments).
+  // Поле оставлено для обратной совместимости со старым кодом AIClient.
   apiKey: '',
-  apiEndpoint: 'https://api.onlysq.ru/ai/openai',
+  apiEndpoint: '',
   mainModel: 'claude-sonnet-4-6',
   fastModel: 'claude-haiku-4-5',
   visionModel: 'gemini-3.5-flash',

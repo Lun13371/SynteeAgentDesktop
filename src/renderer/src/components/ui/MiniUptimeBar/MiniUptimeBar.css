@@ -1,0 +1,23 @@
+.mini-uptime-bar {
+  display: flex;
+  gap: 1px;
+  height: 8px;
+  width: 100%;
+}
+
+.mini-uptime-bar__cell {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 1px;
+  background: var(--bg-primary);
+  transition: transform 0.08s;
+}
+
+.mini-uptime-bar__cell:hover {
+  transform: scaleY(1.4);
+}
+
+.mini-uptime-bar__cell--ok      { background: #4ade80; }
+.mini-uptime-bar__cell--warn    { background: #facc15; }
+.mini-uptime-bar__cell--err     { background: #f87171; }
+.mini-uptime-bar__cell--neutral { background: var(--bg-tertiary); }

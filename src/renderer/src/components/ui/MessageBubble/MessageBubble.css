@@ -639,7 +639,7 @@
 }
 
 .message-system-divider__redo:hover:not(:disabled) {
-  background: var(--accent, #6366f1);
+  background: var(--accent-bg, #6366f1);
   color: white;
   border-color: var(--accent, #6366f1);
 }
@@ -708,7 +708,7 @@
 }
 
 .message-system-divider__expand:hover {
-  background: var(--accent, #6366f1);
+  background: var(--accent-bg, #6366f1);
   color: white;
   border-color: var(--accent, #6366f1);
 }

@@ -6,6 +6,9 @@ import type { ModelMeta, ModelCapability, Provider } from '../../../../../shared
 import AppIcon from '../AppIcon/AppIcon'
 import BrandAvatar from '../BrandAvatar/BrandAvatar'
 import { CAP_LABELS, SPEED_LABEL, SPEED_COLOR, formatCtx, formatPrice, getProviderColor, getBrandLogo } from '../../../utils/modelFormat'
+import { useGatewayModelsStore, normalizeStatus, GATEWAY_PROVIDER_ID } from '../../../store/gatewayModels.store'
+import { useAuthStore } from '../../../store/auth.store'
+import MiniUptimeBar from '../MiniUptimeBar/MiniUptimeBar'
 import './ModelPicker.css'
 
 interface ModelPickerProps {
@@ -35,9 +38,35 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number; openUp: boolean } | null>(null)
   const [hovered, setHovered] = useState<ModelMeta | null>(null)
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 })
+  const [loading, setLoading] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+
+  // Статусы моделей gateway — для бейджей operational/degraded/down.
+  const statusByModel = useGatewayModelsStore(s => s.statusByModel)
+  const modelStatusBuckets = useGatewayModelsStore(s => s.modelStatusBuckets)
+  const gatewayModelsRaw = useGatewayModelsStore(s => s.models)
+  const authUser = useAuthStore(s => s.user)
+
+  // Показываем skeleton для gateway, если юзер залогинен, но модели ещё не загружены.
+  const showGatewaySkeleton = !!authUser && gatewayModelsRaw.length === 0 && !loading
+
+  // Множество ID моделей-групп (type === 'group') — для сортировки выше обычных.
+  const groupModelIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const m of gatewayModelsRaw) {
+      if (m.type === 'group' && m.id) s.add(m.id)
+    }
+    return s
+  }, [gatewayModelsRaw])
+
+  // Map по model id для мини uptime-баров.
+  const bucketsByModel = useMemo(() => {
+    const m: Record<string, import('../../../store/gatewayModels.store').UptimeBucket[]> = {}
+    for (const b of modelStatusBuckets) m[b.model] = b.buckets
+    return m
+  }, [modelStatusBuckets])
 
   // Map по providerId для быстрого доступа к provider.type при рендере пунктов.
   const providerMap = useRef<Map<string, Provider>>(new Map())
@@ -51,6 +80,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   // N независимых запросов от каждого пикера).
   const lastLoadedAtRef = useRef(0)
   const loadData = () => {
+    setLoading(true)
     Promise.all([
       window.syntee.models.getAll() as Promise<ModelMeta[]>,
       window.syntee.providers.getAll() as Promise<Provider[]>,
@@ -61,6 +91,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
         lastLoadedAtRef.current = Date.now()
       })
       .catch((e: unknown) => console.error('[ModelPicker] load error', e))
+      .finally(() => setLoading(false))
   }
 
   // Синхронизируем shared-данные, если родитель их предоставил.
@@ -140,12 +171,33 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
         m.providerId.toLowerCase().includes(q)
       )
     }
-    return filtered.reduce<Record<string, ModelMeta[]>>((acc, m) => {
+    const raw = filtered.reduce<Record<string, ModelMeta[]>>((acc, m) => {
       if (!acc[m.providerId]) acc[m.providerId] = []
       acc[m.providerId].push(m)
       return acc
     }, {})
-  }, [models, activeCaps, query])
+    // Сортировка моделей gateway: groups выше, затем по статусу
+    if (raw[GATEWAY_PROVIDER_ID]) {
+      const statusOrder: Record<string, number> = { operational: 0, degraded: 1, down: 2, unknown: 3 }
+      raw[GATEWAY_PROVIDER_ID] = [...raw[GATEWAY_PROVIDER_ID]].sort((a, b) => {
+        const aIsGroup = groupModelIds.has(a.id) ? 0 : 1
+        const bIsGroup = groupModelIds.has(b.id) ? 0 : 1
+        if (aIsGroup !== bIsGroup) return aIsGroup - bIsGroup
+        const sa = statusOrder[normalizeStatus(statusByModel[a.id])] ?? 3
+        const sb = statusOrder[normalizeStatus(statusByModel[b.id])] ?? 3
+        return sa - sb
+      })
+    }
+    // Reorder: syntee-gateway группа первой
+    const ordered: Record<string, ModelMeta[]> = {}
+    if (raw[GATEWAY_PROVIDER_ID]) {
+      ordered[GATEWAY_PROVIDER_ID] = raw[GATEWAY_PROVIDER_ID]
+    }
+    for (const [k, v] of Object.entries(raw)) {
+      if (k !== GATEWAY_PROVIDER_ID) ordered[k] = v
+    }
+    return ordered
+  }, [models, activeCaps, query, statusByModel, groupModelIds])
 
   // Fix 7: виртуализация списка. Плоский массив рядов (header | item),
   // один useVirtualizer на весь список. Раньше рендерились ВСЕ модели с
@@ -168,7 +220,12 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => listRef.current,
-    estimateSize: (i) => rows[i].type === 'header' ? 26 : 34,
+    estimateSize: (i) => {
+      const row = rows[i]
+      if (row.type === 'header') return 26
+      if (row.model.providerId === GATEWAY_PROVIDER_ID) return 48
+      return 34
+    },
     overscan: 8,
   })
 
@@ -279,9 +336,35 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                   ref={listRef}
                   onScroll={() => setHovered(null)}
                 >
-                  {rows.length === 0 && (
+                  {loading && rows.length === 0 && (
+                    <div className="model-picker-skeleton">
+                      {[0, 1, 2, 3, 4, 5].map(i => (
+                        <div key={i} className="model-picker-skeleton-row" style={{ animationDelay: `${i * 0.06}s` }}>
+                          <div className="model-picker-skeleton-icon" />
+                          <div className="model-picker-skeleton-text" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!loading && rows.length === 0 && (
                     <div className="model-picker-empty">
                       {activeCaps.length ? 'Нет моделей с такими фильтрами' : 'Модели не найдены'}
+                    </div>
+                  )}
+                  {/* Skeleton для gateway-моделей, которые ещё грузятся */}
+                  {showGatewaySkeleton && !query.trim() && (
+                    <div className="model-picker-gateway-loading">
+                      <div className="model-picker-gateway-loading-header">
+                        <div className="model-picker-gateway-loading-dot" />
+                        <span>Syntee-Gateway</span>
+                        <AppIcon name="loader" size="xs" animation="spin" tone="muted" />
+                      </div>
+                      {[0, 1, 2].map(i => (
+                        <div key={i} className="model-picker-skeleton-row" style={{ animationDelay: `${i * 0.08}s` }}>
+                          <div className="model-picker-skeleton-icon" />
+                          <div className="model-picker-skeleton-text" />
+                        </div>
+                      ))}
                     </div>
                   )}
                   {rows.length > 0 && (
@@ -298,6 +381,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                         if (row.type === 'header') {
                           const prov = providerMap.current.get(row.providerId)
                           const groupLogo = prov ? getBrandLogo(prov.type, '', '', prov.iconUrl) : null
+                          const isGatewayGroup = row.providerId === GATEWAY_PROVIDER_ID
                           return (
                             <div
                               key={row.key}
@@ -313,6 +397,9 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                             >
                               <BrandAvatar logo={groupLogo} fallbackColor={getProviderColor(row.providerId)} size={16} className="model-picker-provider-logo" />
                               {prov?.name ?? row.providerId}
+                              {isGatewayGroup && (
+                                <AppIcon name="pin" size="xs" tone="accent" />
+                              )}
                             </div>
                           )
                         }
@@ -320,32 +407,49 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                         const isActive = m.id === value && m.providerId === providerId
                         const mProv = providerMap.current.get(m.providerId)
                         const mLogo = mProv ? getBrandLogo(mProv.type, m.id, m.name, mProv.iconUrl) : null
+                        // Бейдж статуса только для моделей gateway.
+                        const isGatewayModel = m.providerId === GATEWAY_PROVIDER_ID
+                        const status = isGatewayModel ? normalizeStatus(statusByModel[m.id]) : 'unknown'
+                        const uptimeBuckets = isGatewayModel ? bucketsByModel[m.id] : undefined
                         return (
                           <div
                             key={row.key}
-                            className={`model-picker-item ${isActive ? 'model-picker-item--active' : ''}`}
+                            className={`model-picker-item ${isActive ? 'model-picker-item--active' : ''} ${isGatewayModel ? 'model-picker-item--gateway' : ''}`}
                             style={{
                               position: 'absolute',
                               top: 0,
                               left: 0,
                               width: '100%',
-                              height: '34px',
+                              height: isGatewayModel ? '48px' : '34px',
                               transform: `translateY(${startY}px)`,
                             }}
                             onClick={() => { onChange(m.id, m.providerId); setOpen(false); setQuery('') }}
                             onMouseEnter={e => handleItemHover(e, m)}
                             onMouseLeave={() => setHovered(null)}
                           >
-                            <BrandAvatar logo={mLogo} fallbackColor={getProviderColor(m.providerId)} size={16} className="model-picker-item-logo" />
-                            <span className="model-picker-item-name">{m.name}</span>
-                            <div className="model-picker-item-caps">
-                              {m.capabilities.slice(0, 3).map(c => (
-                                <span key={c} className={`model-cap-badge ${activeCaps.includes(c) ? 'model-cap-badge--active' : ''}`}>
-                                  {CAP_LABELS[c]}
-                                </span>
-                              ))}
+                            <div className="model-picker-item-row">
+                              <BrandAvatar logo={mLogo} fallbackColor={getProviderColor(m.providerId)} size={16} className="model-picker-item-logo" />
+                              <span className="model-picker-item-name">{m.name}</span>
+                              <div className="model-picker-item-caps">
+                                {m.capabilities.slice(0, 3).map(c => (
+                                  <span key={c} className={`model-cap-badge ${activeCaps.includes(c) ? 'model-cap-badge--active' : ''}`}>
+                                    {CAP_LABELS[c]}
+                                  </span>
+                                ))}
+                              </div>
+                              {isGatewayModel && status !== 'unknown' && (
+                                <span
+                                  className={`model-status-badge model-status-badge--${status}`}
+                                  title={`Статус: ${status}`}
+                                />
+                              )}
+                              {isActive && <AppIcon name="check" size="xs" tone="accent" />}
                             </div>
-                            {isActive && <AppIcon name="check" size="xs" tone="accent" />}
+                            {isGatewayModel && uptimeBuckets && uptimeBuckets.length > 0 && (
+                              <div className="model-picker-item-uptime">
+                                <MiniUptimeBar buckets={uptimeBuckets} />
+                              </div>
+                            )}
                           </div>
                         )
                       })}

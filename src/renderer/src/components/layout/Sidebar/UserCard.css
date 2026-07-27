@@ -1,0 +1,236 @@
+.usercard {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 8px;
+  background: var(--bg-secondary);
+  position: relative;
+}
+
+.usercard-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-primary);
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.usercard-btn:hover {
+  background: var(--accent-subtle);
+}
+
+.usercard-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.usercard-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usercard-email {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Гостевая карточка */
+.usercard-signin {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-primary);
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.usercard-signin:hover {
+  background: var(--accent-subtle);
+}
+
+.usercard-avatar-placeholder {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Всплывающая панель (portal в document.body, позиция через inline style) ── */
+.usercard-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 8px;
+  background: var(--bg-secondary);
+  backdrop-filter: blur(24px) saturate(var(--glass-saturate, 1.4));
+  -webkit-backdrop-filter: blur(24px) saturate(var(--glass-saturate, 1.4));
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 20px 60px rgba(0, 0, 0, 0.6));
+  transform-origin: bottom left;
+  overflow-y: auto;
+}
+
+/* Header панели — аватар + имя + план */
+.usercard-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usercard-panel-user {
+  flex: 1;
+  min-width: 0;
+}
+
+.usercard-panel-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usercard-panel-email {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+.usercard-panel-plan {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 7px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-radius: 5px;
+}
+
+/* ── Limit ring (дневной лимит) ── */
+.usercard-panel-limit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usercard-panel-limit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.usercard-panel-limit-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.usercard-panel-limit-pct {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.usercard-panel-limit-pct--warning { color: #facc15; }
+.usercard-panel-limit-pct--critical { color: #f87171; }
+
+.usercard-panel-limit-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+
+.usercard-panel-limit-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-bg);
+  transition: width 0.3s ease;
+}
+.usercard-panel-limit-fill--warning { background: #facc15; }
+.usercard-panel-limit-fill--critical { background: #f87171; }
+
+.usercard-panel-limit-tokens {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+/* ── Кнопки действий ── */
+.usercard-panel-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.usercard-panel-action {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.usercard-panel-action:hover {
+  background: var(--accent-subtle);
+}
+
+.usercard-panel-action--danger {
+  color: #ff7070;
+}
+
+.usercard-panel-action--danger:hover {
+  background: rgba(255, 80, 80, 0.1);
+}
+
+.usercard-panel-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 3px 0;
+}

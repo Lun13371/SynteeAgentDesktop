@@ -23,7 +23,7 @@
 
 .resize-handle:hover::before,
 .resize-handle:active::before {
-  background: var(--accent);
+  background: var(--accent-bg);
   width: 3px;
 }
 

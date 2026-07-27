@@ -21,7 +21,7 @@
   flex-shrink: 0;
 }
 .agent-card__stripe--pending   { background: var(--text-muted); }
-.agent-card__stripe--running   { background: var(--accent); }
+.agent-card__stripe--running   { background: var(--accent-bg); }
 .agent-card__stripe--done      { background: #4ade80; }
 .agent-card__stripe--error     { background: #f87171; }
 .agent-card__stripe--cancelled { background: var(--text-muted); }
@@ -100,7 +100,7 @@
 .agent-card__step-dot {
   width: 5px; height: 5px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-bg);
   flex-shrink: 0;
   animation: pulse 1.4s ease-in-out infinite;
 }

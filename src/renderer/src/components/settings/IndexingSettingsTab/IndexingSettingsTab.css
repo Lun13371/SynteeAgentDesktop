@@ -92,14 +92,14 @@
 }
 
 .idx-btn--primary {
-  background: var(--accent, #7c6fff);
+  background: var(--accent-bg, #7c6fff);
   border-color: var(--accent, #7c6fff);
   color: #fff;
 }
 
 .idx-btn--primary:hover:not(:disabled) {
   filter: brightness(1.1);
-  background: var(--accent, #7c6fff);
+  background: var(--accent-bg, #7c6fff);
 }
 
 .idx-btn--danger {

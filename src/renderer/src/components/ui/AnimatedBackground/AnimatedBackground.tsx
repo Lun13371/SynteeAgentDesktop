@@ -3,13 +3,22 @@ import { useShallow } from 'zustand/react/shallow'
 import { useUIStore } from '../../../store/ui.store'
 import './AnimatedBackground.css'
 
-export type BgStyle = 'particles' | 'matrix' | 'waves' | 'aurora' | 'fireflies' | 'none'
+export type BgStyle = 'particles' | 'matrix' | 'waves' | 'aurora' | 'fireflies' | 'starfield' | 'nebula' | 'topographic' | 'geometric' | 'none'
 
-function getAccentRgb(theme: string): string {
-  if (theme === 'midnight') return '77, 159, 255'
-  if (theme === 'forest') return '76, 175, 96'
-  if (theme === 'light') return '0, 0, 0'
-  return '255, 255, 255'
+const FALLBACK_RGB = '255, 255, 255'
+
+function getAccentRgb(): string {
+  if (typeof window === 'undefined') return FALLBACK_RGB
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim()
+  if (raw) return raw
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
+  if (accent && accent.startsWith('#') && accent.length >= 7) {
+    const r = parseInt(accent.slice(1, 3), 16)
+    const g = parseInt(accent.slice(3, 5), 16)
+    const b = parseInt(accent.slice(5, 7), 16)
+    if (!isNaN(r) && !isNaN(g) && !isNaN(b)) return `${r}, ${g}, ${b}`
+  }
+  return FALLBACK_RGB
 }
 
 const CELL = 120
@@ -18,10 +27,11 @@ const FRAME_MS = 1000 / 30
 
 export default function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { animatedBackground, bgStyle, theme } = useUIStore(useShallow(s => ({
+  const { animatedBackground, bgStyle, theme, accentColor } = useUIStore(useShallow(s => ({
     animatedBackground: s.animatedBackground,
     bgStyle: s.bgStyle,
     theme: s.theme,
+    accentColor: s.accentColor,
   })))
   const style: BgStyle = (bgStyle as BgStyle) || 'particles'
 
@@ -36,7 +46,7 @@ export default function AnimatedBackground() {
     let running = false
     let w = canvas.width = canvas.offsetWidth
     let h = canvas.height = canvas.offsetHeight
-    const color = getAccentRgb(theme)
+    const color = getAccentRgb()
     let t = 0
     let lastTime = 0
 
@@ -69,6 +79,39 @@ export default function AnimatedBackground() {
       r: Math.random() * 2.5 + 1,
       phase: Math.random() * Math.PI * 2,
       speed: Math.random() * 0.02 + 0.01,
+    }))
+
+    // --- STARFIELD ---
+    const stars = Array.from({ length: 140 }, () => ({
+      x: Math.random() * w, y: Math.random() * h,
+      r: Math.random() * 1.2 + 0.3,
+      twinkle: Math.random() * Math.PI * 2,
+      speed: Math.random() * 0.04 + 0.01,
+      depth: Math.random() * 0.6 + 0.2,
+    }))
+
+    // --- NEBULA ---
+    const nebulaBlobs = Array.from({ length: 5 }, (_, i) => ({
+      x: Math.random() * w, y: Math.random() * h,
+      r: Math.max(120, Math.min(w, h) * (0.25 + i * 0.05)),
+      vx: (Math.random() - 0.5) * 0.15,
+      vy: (Math.random() - 0.5) * 0.15,
+      phase: Math.random() * Math.PI * 2,
+      hueShift: (i / 5) * 60 - 30,
+    }))
+
+    // --- TOPOGRAPHIC ---
+    let topoSeed = Math.random() * 1000
+
+    // --- GEOMETRIC ---
+    const geoShapes = Array.from({ length: 8 }, () => ({
+      x: Math.random() * w, y: Math.random() * h,
+      r: Math.random() * 40 + 20,
+      sides: 3 + Math.floor(Math.random() * 4),
+      rot: Math.random() * Math.PI * 2,
+      vRot: (Math.random() - 0.5) * 0.008,
+      vx: (Math.random() - 0.5) * 0.25,
+      vy: (Math.random() - 0.5) * 0.25,
     }))
 
     const draw = (now: number) => {
@@ -204,6 +247,97 @@ export default function AnimatedBackground() {
           ctx.fillStyle = `rgba(${color}, ${alpha * 1.5})`
           ctx.fill()
         }
+
+      } else if (style === 'starfield') {
+        ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.18 * scale, 1)})`
+        ctx.fillRect(0, 0, w, h)
+        const mx = (Math.sin(t * 0.002) * 0.5) * 30
+        const my = (Math.cos(t * 0.0015) * 0.5) * 20
+        for (const s of stars) {
+          s.twinkle += s.speed * scale
+          const tw = (Math.sin(s.twinkle) + 1) / 2
+          const alpha = tw * 0.7 + 0.15
+          const px = s.x + mx * s.depth
+          const py = s.y + my * s.depth
+          ctx.beginPath()
+          ctx.arc(px, py, s.r * (0.8 + tw * 0.5), 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${color}, ${alpha})`
+          ctx.fill()
+          if (tw > 0.85 && s.r > 0.9) {
+            ctx.strokeStyle = `rgba(${color}, ${alpha * 0.4})`
+            ctx.lineWidth = 0.5
+            ctx.beginPath()
+            ctx.moveTo(px - s.r * 3, py); ctx.lineTo(px + s.r * 3, py)
+            ctx.moveTo(px, py - s.r * 3); ctx.lineTo(px, py + s.r * 3)
+            ctx.stroke()
+          }
+        }
+
+      } else if (style === 'nebula') {
+        ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.12 * scale, 1)})`
+        ctx.fillRect(0, 0, w, h)
+        ctx.globalCompositeOperation = 'lighter'
+        for (const b of nebulaBlobs) {
+          b.x += b.vx * scale; b.y += b.vy * scale
+          b.phase += 0.005 * scale
+          if (b.x < -b.r) b.x = w + b.r; if (b.x > w + b.r) b.x = -b.r
+          if (b.y < -b.r) b.y = h + b.r; if (b.y > h + b.r) b.y = -b.r
+          const pulse = (Math.sin(b.phase) + 1) / 2
+          const r = Math.max(20, b.r * (0.85 + pulse * 0.25))
+          const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r)
+          const hslHue = (parseInt(color.split(',')[0]) + b.hueShift) % 360
+          grad.addColorStop(0, `hsla(${hslHue}, 70%, 60%, 0.10)`)
+          grad.addColorStop(0.5, `rgba(${color}, 0.04)`)
+          grad.addColorStop(1, 'transparent')
+          ctx.beginPath()
+          ctx.arc(b.x, b.y, r, 0, Math.PI * 2)
+          ctx.fillStyle = grad
+          ctx.fill()
+        }
+        ctx.globalCompositeOperation = 'source-over'
+
+      } else if (style === 'topographic') {
+        ctx.clearRect(0, 0, w, h)
+        topoSeed += 0.003 * scale
+        ctx.lineWidth = 0.7
+        const step = 28
+        for (let level = 0; level < 16; level++) {
+          const levelOffset = level * step
+          ctx.beginPath()
+          let first = true
+          for (let x = 0; x <= w; x += 8) {
+            const n = Math.sin(x * 0.008 + topoSeed + level * 0.5) *
+                      Math.cos(x * 0.013 + topoSeed * 1.3 + level * 0.3) *
+                      (40 + level * 3)
+            const y = h * 0.5 + n + levelOffset - 16 * step / 2
+            if (first) { ctx.moveTo(x, y); first = false }
+            else ctx.lineTo(x, y)
+          }
+          const alpha = 0.05 + (level / 16) * 0.06
+          ctx.strokeStyle = `rgba(${color}, ${alpha})`
+          ctx.stroke()
+        }
+
+      } else if (style === 'geometric') {
+        ctx.clearRect(0, 0, w, h)
+        for (const g of geoShapes) {
+          g.x += g.vx * scale; g.y += g.vy * scale; g.rot += g.vRot * scale
+          if (g.x < -g.r) g.x = w + g.r; if (g.x > w + g.r) g.x = -g.r
+          if (g.y < -g.r) g.y = h + g.r; if (g.y > h + g.r) g.y = -g.r
+          ctx.beginPath()
+          for (let i = 0; i <= g.sides; i++) {
+            const a = g.rot + (i / g.sides) * Math.PI * 2
+            const px = g.x + Math.cos(a) * g.r
+            const py = g.y + Math.sin(a) * g.r
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
+          }
+          ctx.closePath()
+          ctx.strokeStyle = `rgba(${color}, 0.10)`
+          ctx.lineWidth = 1
+          ctx.stroke()
+          ctx.fillStyle = `rgba(${color}, 0.025)`
+          ctx.fill()
+        }
       }
 
       if (running) animId = requestAnimationFrame(draw)
@@ -243,7 +377,7 @@ export default function AnimatedBackground() {
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('resize', onResize)
     }
-  }, [animatedBackground, bgStyle, theme, style])
+  }, [animatedBackground, bgStyle, theme, accentColor, style])
 
   if (!animatedBackground || style === 'none') return null
   return <canvas ref={canvasRef} className="animated-bg" />

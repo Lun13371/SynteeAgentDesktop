@@ -28,6 +28,7 @@ import { extractAndSaveOutcomes } from '../../core/memory/outcomeExtractor'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
+import { getAccessToken } from '../services/tokenStore'
 import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
 import { extractFinalPlan } from '../../shared/planParser'
 import { IPC_EVENTS } from '../../shared/constants'
@@ -1127,6 +1128,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         catalogCachePath,
         modelId: mainAssignment?.modelId,
         providerId: mainAssignment?.providerId,
+        gatewayToken: getAccessToken(),
         fileCacheSnapshot: getFileCacheSnapshot(params.chatId),
         workdir: chatWorkdir,
         verificationCommand,

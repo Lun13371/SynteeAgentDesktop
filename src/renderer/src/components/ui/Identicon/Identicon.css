@@ -1,0 +1,12 @@
+.identicon {
+  display: inline-flex;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.identicon--img {
+  object-fit: cover;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+}
