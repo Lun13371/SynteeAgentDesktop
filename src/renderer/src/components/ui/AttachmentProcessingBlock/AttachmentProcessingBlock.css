@@ -1,0 +1,284 @@
+/* AttachmentProcessingBlock — в стиле FastContextBlock/ToolChain, консистентный с темой */
+
+.apb-wrap {
+  margin: 8px 0 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  transition: border-color 0.3s;
+}
+
+/* ── Header ── */
+.apb-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+.apb-header:hover {
+  background: var(--overlay-2);
+}
+.apb-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.apb-icon {
+  color: #34d399;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.apb-icon--spin {
+  animation: apb-spin 3s linear infinite;
+}
+.apb-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.apb-error-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+  padding: 1px 5px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.apb-images-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  color: #fb923c;
+  background: rgba(251, 146, 60, 0.12);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.apb-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.apb-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.apb-meta--live {
+  color: var(--accent);
+  font-weight: 600;
+}
+.apb-chevron {
+  display: flex;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* ── Body ── */
+.apb-body {
+  overflow: hidden;
+}
+
+/* ── Stages roadmap (live) ── */
+.apb-stages {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 6px;
+  flex-wrap: wrap;
+}
+.apb-stage {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--overlay-2);
+  transition: all 0.2s;
+}
+.apb-stage.done {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.1);
+}
+.apb-stage.active {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  font-weight: 600;
+}
+.apb-stage-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.apb-stage-icon--spin {
+  animation: apb-spin 1.5s linear infinite;
+}
+
+.apb-stage-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.apb-detail-spinner {
+  color: var(--accent);
+  animation: apb-spin 1s linear infinite;
+  flex-shrink: 0;
+}
+.apb-detail-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+/* ── Progress bar ── */
+.apb-progress-bar {
+  height: 3px;
+  background: var(--overlay-3);
+  margin: 0 12px 10px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.apb-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #34d399, #10b981);
+  border-radius: 2px;
+}
+
+/* ── Files list (final) ── */
+.apb-files {
+  padding: 4px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.apb-file-row {
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.apb-file-row:hover {
+  background: var(--overlay-2);
+}
+.apb-file-row--error {
+  background: rgba(248, 113, 113, 0.05);
+}
+.apb-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.apb-file-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--overlay-3);
+  color: var(--text-muted);
+}
+.apb-file-icon--text_inlined { color: #60a5fa; background: rgba(96, 165, 250, 0.1); }
+.apb-file-icon--image_described { color: #34d399; background: rgba(52, 211, 153, 0.1); }
+.apb-file-icon--binary_path { color: #94a3b8; background: var(--overlay-3); }
+.apb-file-icon--error { color: #f87171; background: rgba(248, 113, 113, 0.1); }
+.apb-file-icon--skipped { color: var(--text-muted); background: var(--overlay-2); }
+
+.apb-file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+.apb-file-size {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.apb-file-status {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--overlay-2);
+}
+.apb-file-status--text_inlined { color: #60a5fa; background: rgba(96, 165, 250, 0.1); }
+.apb-file-status--image_described { color: #34d399; background: rgba(52, 211, 153, 0.1); }
+.apb-file-status--binary_path { color: #94a3b8; background: var(--overlay-3); }
+.apb-file-status--error { color: #f87171; background: rgba(248, 113, 113, 0.1); }
+.apb-file-status--skipped { color: var(--text-muted); }
+
+.apb-file-chevron {
+  display: flex;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.apb-file-description {
+  padding: 6px 12px 8px 34px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  font-style: italic;
+  border-left: 2px solid var(--accent);
+  margin: 0 8px 4px;
+  background: var(--overlay-2);
+  border-radius: 0 6px 6px 0;
+}
+
+/* ── Shimmer (live placeholder) ── */
+.apb-shimmer-wrap {
+  padding: 4px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.apb-shimmer-line {
+  height: 8px;
+  background: var(--overlay-3);
+  border-radius: 4px;
+  animation: apb-shimmer 1.5s ease-in-out infinite;
+}
+.apb-shimmer-line--short {
+  width: 60%;
+}
+
+@keyframes apb-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes apb-shimmer {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}

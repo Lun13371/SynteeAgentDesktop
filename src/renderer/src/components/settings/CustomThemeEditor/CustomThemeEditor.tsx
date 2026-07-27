@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { v4 as uuid } from 'uuid'
-import ColorPicker from '../../ui/ColorPicker/ColorPicker'
+import ColorPickerPopover from '../../ui/ColorPicker/ColorPickerPopover'
 import { normalizeHex } from '../../../utils/colorUtils'
 import { applyCustomThemeToDOM } from '../../../App'
 import type { CustomTheme } from '../../../../../shared/types'
@@ -55,6 +55,11 @@ export default function CustomThemeEditor({ themes, activeId, onChange, onApply 
   const [importText, setImportText] = useState('')
   const [importError, setImportError] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
+  // Ref на активную swatch-кнопку для позиционирования ColorPickerPopover.
+  // Только один picker открыт одновременно, поэтому один ref достаточно.
+  // Picker рендерится через портал в document.body — иначе обрезается
+  // overflow:hidden у .cte-item и motion.div обёртки.
+  const activeSwatchRef = useRef<HTMLButtonElement>(null)
 
   const createTheme = () => {
     const name = `Моя тема ${themes.length + 1}`
@@ -220,6 +225,7 @@ export default function CustomThemeEditor({ themes, activeId, onChange, onApply 
                     <div key={keyStr} className="cte-color-field">
                       <label className="cte-color-label">{f.label}</label>
                       <button
+                        ref={openPicker === keyStr ? activeSwatchRef : undefined}
                         className="cte-color-swatch"
                         style={{ background: t.colors[f.key] }}
                         onClick={() => setOpenPicker(openPicker === keyStr ? null : keyStr)}
@@ -232,15 +238,14 @@ export default function CustomThemeEditor({ themes, activeId, onChange, onApply 
                           updateColor(t.id, f.key, v)
                         }}
                       />
-                      {openPicker === keyStr && (
-                        <div className="cte-picker-popover">
-                          <ColorPicker
-                            value={normalizeHex(t.colors[f.key]) || '#ffffff'}
-                            onChange={(c) => updateColor(t.id, f.key, c)}
-                            onCommit={(c) => updateColor(t.id, f.key, c)}
-                          />
-                        </div>
-                      )}
+                      <ColorPickerPopover
+                        open={openPicker === keyStr}
+                        onClose={() => setOpenPicker(null)}
+                        anchorRef={activeSwatchRef}
+                        value={normalizeHex(t.colors[f.key]) || '#ffffff'}
+                        onChange={(c) => updateColor(t.id, f.key, c)}
+                        onCommit={(c) => updateColor(t.id, f.key, c)}
+                      />
                     </div>
                     )
                   })}

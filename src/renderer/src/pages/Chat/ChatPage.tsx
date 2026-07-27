@@ -17,10 +17,11 @@ import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import HelpModal from '../../components/ui/HelpModal/HelpModal'
+import Logo from '../../components/ui/Logo/Logo'
 import { useChatStore, EMPTY_LIVE } from '../../store/chat.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
-import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta } from '../../../../shared/types'
+import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
 import './ChatPage.css'
 
 const itemStyle: React.CSSProperties = {
@@ -141,11 +142,16 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
   const [askMode, setAskMode] = useState(false)
+  // ── Вложения черновика (attachments) — переживают рестарт как и draft. ──
+  // Хранятся в chat_draft_attachments + файлы в userData/draft-attachments/.
+  // При отправке передаются в chat.send, draft очищается.
+  const [draftAttachments, setDraftAttachments] = useState<Attachment[]>([])
 
   // Refs для актуальных значений в эффекте сохранения при смене чата —
   // замыкание в useEffect видит значения на момент создания, а нам нужны
   // свежие draft/modes при переключении chatId.
   const draftRef = useRef('')
+  const draftAttachmentsRef = useRef<Attachment[]>([])
   const planningModeRef = useRef(false)
   const imageModeRef = useRef(false)
   const askModeRef = useRef(false)
@@ -156,8 +162,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const incognitoHistoryRef = useRef<Map<string, string[]>>(new Map())
   // Debounce-таймер для черновика — чтобы не писать в БД на каждый символ.
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Debounce-таймер для вложений черновика — аналогично draft.
+  const attachmentsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => { draftRef.current = draft }, [draft])
+  useEffect(() => { draftAttachmentsRef.current = draftAttachments }, [draftAttachments])
   useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
   useEffect(() => { askModeRef.current = askMode }, [askMode])
@@ -303,6 +312,21 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
   }
 
+  // ── Вложения черновика: debounced-сохранение в БД ──
+  // Аналогично draft — 300мс дебаунс. При смене чата сохраняем синхронно.
+  // Инкогнито-чаты: только in-memory (не персистим).
+  const handleAttachmentsChange = (atts: Attachment[]) => {
+    setDraftAttachments(atts)
+    draftAttachmentsRef.current = atts
+    if (currentChatId && !isIncognito) {
+      if (attachmentsSaveTimerRef.current) clearTimeout(attachmentsSaveTimerRef.current)
+      attachmentsSaveTimerRef.current = setTimeout(() => {
+        window.syntee.draft.setAttachments(currentChatId, atts).catch(() => {})
+        attachmentsSaveTimerRef.current = null
+      }, 300)
+    }
+  }
+
   // ── Загрузка/сохранение per-chat UI state при смене чата ──
   // При переключении chatId: сначала сохраняем draft/modes предыдущего
   // чата (если не инкогнито), затем загружаем draft/modes/history нового.
@@ -314,7 +338,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // Сохраняем старый чат (если был и не инкогнито)
     if (prevId && prevId !== currentChatId && !prevIncog) {
       if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null }
+      if (attachmentsSaveTimerRef.current) { clearTimeout(attachmentsSaveTimerRef.current); attachmentsSaveTimerRef.current = null }
       window.syntee.chat.setDraft(prevId, draftRef.current).catch(() => {})
+      window.syntee.draft.setAttachments(prevId, draftAttachmentsRef.current).catch(() => {})
       window.syntee.chat.setModes(prevId, {
         planningMode: planningModeRef.current,
         imageMode: imageModeRef.current,
@@ -328,27 +354,33 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setDraft('')
       setInputHistory([])
       setPlanningMode(false); setImageMode(false); setAskMode(false)
+      setDraftAttachments([])
       draftRef.current = ''
+      draftAttachmentsRef.current = []
       return
     }
     // Отменяем pending-debounce от прежнего чата
     if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null }
+    if (attachmentsSaveTimerRef.current) { clearTimeout(attachmentsSaveTimerRef.current); attachmentsSaveTimerRef.current = null }
 
     if (isIncognito) {
       // Инкогнито: дефолт-значения, история из in-memory Map
       setDraft('')
       setPlanningMode(false); setImageMode(false); setAskMode(false)
+      setDraftAttachments([])
       draftRef.current = ''
+      draftAttachmentsRef.current = []
       setInputHistory(incognitoHistoryRef.current.get(currentChatId) ?? [])
       return
     }
-    // Обычный чат: грузим modes/draft/history из БД параллельно
+    // Обычный чат: грузим modes/draft/history/attachments из БД параллельно
     let cancelled = false
     Promise.all([
       window.syntee.chat.getModes(currentChatId),
       window.syntee.chat.getDraft(currentChatId),
       window.syntee.chat.getInputHistory(currentChatId),
-    ]).then(([modes, draftText, history]) => {
+      window.syntee.draft.getAttachments(currentChatId),
+    ]).then(([modes, draftText, history, attachments]) => {
       if (cancelled || currentChatId !== prevChatIdRef.current) return
       setPlanningMode(!!modes.planningMode)
       setImageMode(!!modes.imageMode)
@@ -359,6 +391,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       const d = typeof draftText === 'string' ? draftText : ''
       setDraft(d)
       draftRef.current = d
+      // Вложения черновика
+      const atts = Array.isArray(attachments) ? attachments : []
+      setDraftAttachments(atts)
+      draftAttachmentsRef.current = atts
       // Дедупликация подряд идущих дубликатов + reverse → DESC (свежий первым)
       const raw = Array.isArray(history) ? history : []
       const dedup: string[] = []
@@ -370,6 +406,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }).catch(() => {
       if (cancelled) return
       setDraft(''); setPlanningMode(false); setImageMode(false); setAskMode(false); setInputHistory([])
+      setDraftAttachments([]); draftAttachmentsRef.current = []
     })
     return () => { cancelled = true }
   }, [currentChatId, isIncognito])
@@ -384,6 +421,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (id && !prevIsIncognitoRef.current) {
         try {
           window.syntee.chat.setDraft(id, draftRef.current).catch(() => {})
+          window.syntee.draft.setAttachments(id, draftAttachmentsRef.current).catch(() => {})
           window.syntee.chat.setModes(id, {
             planningMode: planningModeRef.current,
             imageMode: imageModeRef.current,
@@ -444,16 +482,48 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  // Загрузка чатов и проектов при старте
+  // Загрузка чатов и проектов.
+  // На ПЕРВОМ старте (currentChatId === null) — открываем первый чат.
+  // На REMOUNT (возврат из настроек/памяти, currentChatId уже есть) — НЕ
+  // дёргаем selectChat (он бы перерисовал текущий чат с stale-сообщениями
+  // из store, а потом ещё раз перезагрузил из БД → двойная загрузка).
+  // Вместо этого тихо освежаем chats (sidebar) и в фоне подтягиваем
+  // свежие messages для текущего чата — но только если они отличаются,
+  // иначе нулевой ре-рендер (нулевой визуальный флэш).
   useEffect(() => {
     window.syntee.projects.getAll().then((all: Project[]) => {
       setProjects(all)
     })
     window.syntee.chat.getAll().then((all: Chat[]) => {
       setChats(all)
-      if (all.length > 0) {
-        selectChat(all[0].id)
+      const store = useChatStore.getState()
+      const curId = store.currentChatId
+      // Чат удалён/архивирован пока пользователя не было — сброс.
+      const curExists = curId && all.some(c => c.id === curId)
+      if (!curExists) {
+        if (all.length > 0) selectChat(all[0].id)
+        return
       }
+      // Первый запуск — выбираем первый чат.
+      if (!curId) {
+        if (all.length > 0) selectChat(all[0].id)
+        return
+      }
+      // Remount: тихий фоновый refresh сообщений для текущего чата.
+      // Сравниваем длину + id последнего сообщения — если совпадает,
+      // не трогаем store (нулевой ре-рендер, нулевой флэш).
+      window.syntee.chat.getMessages(curId).then((msgs: Message[]) => {
+        const cur = useChatStore.getState().messages
+        // Пользователь мог сменить чат за время fetch — проверяем.
+        if (useChatStore.getState().currentChatId !== curId) return
+        const sameLength = cur.length === msgs.length
+        const sameLast = sameLength
+          ? (cur.length === 0 || cur[cur.length - 1].id === msgs[msgs.length - 1].id)
+          : false
+        if (!sameLast) {
+          setMessages(msgs)
+        }
+      }).catch(() => { /* ok — оставляем stale, не критично */ })
     })
   }, [])
 
@@ -625,13 +695,18 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // показываем накопленный прогресс (текст/шаги/thinking), а не пустой пузырь.
     // hydrateFromMain также подтягивает meta активного запуска для панели очереди.
     await hydrateFromMain(id)
+    // Race-guard: пока шли await'ы, пользователь мог кликнуть другой чат
+    // или переключить вкладку. Не пишем stale-данные в store.
+    if (useChatStore.getState().currentChatId !== id) return
     // Подтягиваем очередь ожидающих запросов из main — чтобы бейдж очереди
     // сразу показал счётчик при возврате в чат с queued-запросами.
     try {
       const queue = await window.syntee.chat.getQueue(id) as QueueItemMeta[]
+      if (useChatStore.getState().currentChatId !== id) return
       useChatStore.getState().setQueue(id, queue)
     } catch { /* ok — очередь пуста или ещё не загружена */ }
     const msgs: Message[] = await window.syntee.chat.getMessages(id)
+    if (useChatStore.getState().currentChatId !== id) return
     setMessages(msgs)
     if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
     setShowSkeleton(false)
@@ -933,8 +1008,18 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       createdAt: Date.now(),
       isPinned: 0,
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
+      attachments: draftAttachmentsRef.current.length > 0 ? draftAttachmentsRef.current : undefined,
     }
     setReplyTo([])
+
+    // Копия вложений для отправки — очистим draft до await, чтобы UI сразу
+    // обновился (чипы пропадут из инпута). main-процесс получит их в params.
+    const attachmentsToSend = [...draftAttachmentsRef.current]
+    if (!isIncognito && chatId) {
+      setDraftAttachments([])
+      draftAttachmentsRef.current = []
+      window.syntee.draft.clearAttachments(chatId).catch(() => {})
+    }
 
     // Отправляем запрос. Если в чате уже идёт генерация — main поставит
     // в очередь и вернёт { queued: true }. В этом случае НЕ добавляем
@@ -959,6 +1044,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       oneShotSkill,
       oneShotAllowedTools,
       oneShotMode,
+      // Прикреплённые файлы/изображения. main-процесс инлайнит текстовые
+      // файлы в content, картинки передаёт как путь (vision — Phase 2).
+      attachments: attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
     }) as { queued?: boolean; assistantMsgId?: string }
 
     if (result.queued && result.assistantMsgId) {
@@ -1053,6 +1141,16 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     load()
     return () => { cancelled = true }
+  }, [currentWorkdir])
+
+  // ── Запуск file indexer для @mention-пикера ──
+  // При смене workdir — запускаем chokidar-индексацию в main-процессе.
+  // Indexer держит in-memory кэш файлов для быстрого fuzzy-поиска в @пикере.
+  useEffect(() => {
+    if (!currentWorkdir) return
+    window.syntee.mentions.startIndexing(currentWorkdir).catch(() => {})
+    // Не останавливаем при размонтировании — main держит один watcher на
+    // workdir, может использоваться другими чатами того же проекта.
   }, [currentWorkdir])
 
   const activeProject = useMemo(() => {
@@ -1212,14 +1310,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
           ) : displayMessages.length === 0 && !isTyping ? (
             <div className="chat-empty-state">
               <div className="chat-empty-icon">
-                <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
-                  <polygon points="26,2 50,14 50,38 26,50 2,38 2,14"
-                    fill="none" stroke="var(--accent)" strokeWidth="1.5" opacity="0.5"/>
-                  <polygon points="26,10 42,18 42,34 26,42 10,34 10,18"
-                    fill="var(--accent)" opacity="0.05"/>
-                  <polygon points="26,18 34,22 34,30 26,34 18,30 18,22"
-                    fill="var(--accent)" opacity="0.15"/>
-                </svg>
+                <Logo size={52} />
               </div>
               <h2>Привет! Я Syntee.</h2>
               <p>Чем могу помочь сегодня?</p>
@@ -1335,6 +1426,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               workdir={currentWorkdir}
               compactSessionStats={compactSessionStats}
               customCommands={customCommands}
+              attachments={draftAttachments}
+              onAttachmentsChange={handleAttachmentsChange}
             />
           </div>
 

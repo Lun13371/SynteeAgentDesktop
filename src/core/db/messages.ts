@@ -6,8 +6,8 @@ import { touchChat } from './chats'
 
 export function saveMessage(msg: Message): void {
   getDB().prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
     msg.toolSteps ? JSON.stringify(msg.toolSteps) : null,
@@ -18,6 +18,8 @@ export function saveMessage(msg: Message): void {
     msg.todo ? JSON.stringify(msg.todo) : null,
     msg.compactSummary ?? null,
     msg.compactStats ? JSON.stringify(msg.compactStats) : null,
+    msg.attachments ? JSON.stringify(msg.attachments) : null,
+    msg.attachmentResult ? JSON.stringify(msg.attachmentResult) : null,
   )
   touchChat(msg.chatId)
 }
@@ -27,12 +29,12 @@ export function getMessages(chatId: string): Message[] {
     SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model,
            tool_steps as toolStepsJson, thinking, thinking_ms as thinkingMs, slash_command as slashCommandJson,
            iterations as iterationsJson, plan_data as planDataJson, todo as todoJson, compact_summary as compactSummary,
-           compact_stats as compactStatsJson
+           compact_stats as compactStatsJson, attachments as attachmentsJson, attachment_result as attachmentResultJson
     FROM messages WHERE chat_id = ?
     ORDER BY created_at ASC
-  `).all(chatId) as (Message & { toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string; planDataJson?: string; todoJson?: string; compactStatsJson?: string })[]
+  `).all(chatId) as (Message & { toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string; planDataJson?: string; todoJson?: string; compactStatsJson?: string; attachmentsJson?: string; attachmentResultJson?: string })[]
   return rows.map(r => {
-    const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, compactStatsJson, ...rest } = r
+    const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, compactStatsJson, attachmentsJson, attachmentResultJson, ...rest } = r
     return {
       ...rest,
       toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined,
@@ -41,6 +43,8 @@ export function getMessages(chatId: string): Message[] {
       planData: planDataJson ? JSON.parse(planDataJson) : undefined,
       todo: todoJson ? JSON.parse(todoJson) : undefined,
       compactStats: compactStatsJson ? JSON.parse(compactStatsJson) : undefined,
+      attachments: attachmentsJson ? JSON.parse(attachmentsJson) : undefined,
+      attachmentResult: attachmentResultJson ? JSON.parse(attachmentResultJson) : undefined,
     }
   })
 }

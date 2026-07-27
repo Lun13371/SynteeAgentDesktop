@@ -443,6 +443,45 @@ export function runMigrations(db: Database.Database): void {
       db.prepare(`ALTER TABLE chat_checkpoints ADD COLUMN name TEXT`).run()
     }
   }
+
+  // ── Attachments ──────────────────────────────────────────────────────────
+  // Колонка attachments в messages — JSON-массив Attachment[] (метаданные для
+  // рендера чипов над отправленным сообщением). Текстовое содержимое уже
+  // инлайнилось в content при отправке — здесь только UI-метаданные.
+  if (!cols.find(c => c.name === 'attachments')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN attachments TEXT`).run()
+  }
+  // Колонка attachment_result — JSON AttachmentProcessingResult (для
+  // AttachmentProcessingBlock в сохранённом сообщении). Заполняется только у
+  // user-сообщений с attachments, прошедших processAttachmentsAndStream.
+  if (!cols.find(c => c.name === 'attachment_result')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN attachment_result TEXT`).run()
+  }
+
+  // chat_draft_attachments — вложения черновика (переживают рестарт, не
+  // пропадают при смене чата). Картинки хранятся как файлы в
+  // userData/draft-attachments/{chatId}/, в БД — только путь + метаданные.
+  // Текстовые файлы из @mention хранят только путь (содержимое читается
+  // при отправке). DELETE CASCADE — удаляем при удалении чата.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_draft_attachments (
+      id          TEXT PRIMARY KEY,
+      chat_id     TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      kind        TEXT NOT NULL,
+      name        TEXT NOT NULL,
+      path        TEXT,
+      rel_path    TEXT,
+      mime        TEXT,
+      size        INTEGER,
+      source      TEXT NOT NULL,
+      data_url    TEXT,
+      skill_id    TEXT,
+      command_name TEXT,
+      snippet     TEXT,
+      attached_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cda_chat ON chat_draft_attachments(chat_id);
+  `)
 }
 
 /**

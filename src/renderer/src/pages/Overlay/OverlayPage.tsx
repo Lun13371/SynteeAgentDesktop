@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import IconButton from '../../components/ui/IconButton/IconButton'
+import Logo from '../../components/ui/Logo/Logo'
 import './OverlayPage.css'
 
 interface Selection {
@@ -208,10 +209,7 @@ export default function OverlayPage() {
             {/* Хедер popup */}
             <div className="overlay-popup-header">
               <div className="overlay-popup-logo">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <polygon points="8,1 15,4.5 15,11.5 8,15 1,11.5 1,4.5"
-                    fill="none" stroke="var(--accent)" strokeWidth="1.2"/>
-                </svg>
+                <Logo size={16} />
                 Syntee
               </div>
               <div className="overlay-popup-actions">

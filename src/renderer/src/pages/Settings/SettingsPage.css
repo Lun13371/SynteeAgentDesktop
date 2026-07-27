@@ -928,3 +928,33 @@
   .settings-field { animation: none; }
   .settings-nav-item:hover { transform: none; }
 }
+
+/* ── Гирька анимированного фона ── */
+.anim-bg-gear-wrap {
+  margin-top: 8px;
+}
+
+.anim-bg-gear {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.anim-bg-gear:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.anim-bg-gear--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}

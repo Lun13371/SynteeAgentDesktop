@@ -24,22 +24,19 @@ function getAccentRgb(): string {
 const CELL = 120
 const CONN_DIST_SQ = CELL * CELL
 
-// Мягкие стили (медленное движение, soft glow) — рендерим на 20fps вместо
-// 30. Для пульсирующих glow/aurora/waves/topographic разница 20 vs 30 fps
-// визуально неразличима (движение ~0.003 рад/кадр), но CPU/GPU работа
-// меньше на 33%. Резкие стили (particles/matrix/starfield/geometric)
-// оставляем на 30fps — там движение заметнее.
-const SOFT_STYLES = new Set(['aurora', 'fireflies', 'nebula', 'waves', 'topographic'])
-const SOFT_FRAME_MS = 1000 / 20
-const SHARP_FRAME_MS = 1000 / 30
+// Все стили на 12fps — движение медленное (0.003 рад/кадр), разница с
+// 20/30fps визуально неразличима, но CPU/GPU работы в 2-3 раза меньше.
+// Плюс pause при скролле — RAF вообще не работает пока чат скроллится.
+const FRAME_MS = 1000 / 12
 
 export default function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { animatedBackground, bgStyle, theme, accentColor } = useUIStore(useShallow(s => ({
+  const { animatedBackground, bgStyle, theme, accentColor, animatedBgOpacity } = useUIStore(useShallow(s => ({
     animatedBackground: s.animatedBackground,
     bgStyle: s.bgStyle,
     theme: s.theme,
     accentColor: s.accentColor,
+    animatedBgOpacity: s.animatedBgOpacity,
   })))
   const style: BgStyle = (bgStyle as BgStyle) || 'particles'
 
@@ -57,7 +54,6 @@ export default function AnimatedBackground() {
     const color = getAccentRgb()
     let t = 0
     let lastTime = 0
-    const FRAME_MS = SOFT_STYLES.has(style) ? SOFT_FRAME_MS : SHARP_FRAME_MS
 
     // --- PARTICLES ---
     const particles = Array.from({ length: 45 }, () => ({
@@ -75,18 +71,15 @@ export default function AnimatedBackground() {
 
     // --- AURORA ---
     const auroraLayers = [
-      { amp: 0.06, freq: 0.8, phase: 0, speed: 0.003, y: 0.35, col: `rgba(${color}, 0.07)` },
-      { amp: 0.05, freq: 1.1, phase: 1.5, speed: 0.004, y: 0.45, col: `rgba(${color}, 0.05)` },
-      { amp: 0.07, freq: 0.6, phase: 3.0, speed: 0.002, y: 0.55, col: `rgba(${color}, 0.06)` },
+      { amp: 0.06, freq: 0.8, phase: 0, speed: 0.003, y: 0.35, alpha: 0.07 },
+      { amp: 0.05, freq: 1.1, phase: 1.5, speed: 0.004, y: 0.45, alpha: 0.05 },
+      { amp: 0.07, freq: 0.6, phase: 3.0, speed: 0.002, y: 0.55, alpha: 0.06 },
     ]
-    // Кэшируем градиенты — их координаты и color stops не меняются между
-    // кадрами (yBase = h * layer.y — константа). Раньше createLinearGradient
-    // звался 3× на кадр → GC-давление. Теперь один раз.
     const auroraGradients = auroraLayers.map(layer => {
       const yBase = h * layer.y
       const g = ctx.createLinearGradient(0, yBase - h * layer.amp * 2, 0, yBase + h * layer.amp * 2)
       g.addColorStop(0, 'transparent')
-      g.addColorStop(0.5, layer.col)
+      g.addColorStop(0.5, `rgba(${color}, ${layer.alpha})`)
       g.addColorStop(1, 'transparent')
       return g
     })
@@ -134,11 +127,7 @@ export default function AnimatedBackground() {
       vy: (Math.random() - 0.5) * 0.25,
     }))
 
-    // ── Sprite caching для fireflies/nebula ──────────────────────────────
-    // Раньше каждый кадр звал createRadialGradient (30×/5× за кадр) →
-    // GC-давление + растеризация. Теперь pre-renderим спрайт один раз и
-    // рисуем через drawImage (GPU, без аллокаций). Визуально идентично:
-    // тот же radial gradient, та же alpha-композиция.
+    // ── Sprite caching для fireflies/nebula ──
     const SPRITE_SIZE = 128
     function makeRadialSprite(stops: Array<[number, string]>): HTMLCanvasElement {
       const c = document.createElement('canvas')
@@ -165,21 +154,36 @@ export default function AnimatedBackground() {
         })
       : null
 
-    // Переиспользуем Map для spatial grid particles вместо new Map() каждый
-    // кадр — снижает GC-давление (45 элементов × ~10 ячеек × 30fps = много
-    // аллокаций). Clear+reuse массивов из пула.
+    // Переиспользуем Map для spatial grid particles
     const gridCache = new Map<string, number[]>()
     const gridArrPool: number[][] = []
     let gridArrIdx = 0
 
+    // ── Pause while scrolling — RAF не работает пока чат скроллится ──
+    // Слушаем wheel/scroll/touchmove в capture phase (ловит любой контейнер).
+    // 180мс после последнего события — скролл закончился, возобновляем.
+    let scrollPauseUntil = 0
+    const markScroll = () => { scrollPauseUntil = performance.now() + 180 }
+    window.addEventListener('wheel', markScroll, { capture: true, passive: true })
+    window.addEventListener('scroll', markScroll, { capture: true, passive: true })
+    window.addEventListener('touchmove', markScroll, { capture: true, passive: true })
+
     const draw = (now: number) => {
       if (!running) return
+      // Пауза при скролле — пропускаем кадр, но планируем следующий.
+      if (now < scrollPauseUntil) {
+        animId = requestAnimationFrame(draw)
+        return
+      }
       const dt = now - lastTime
       if (dt < FRAME_MS) {
         animId = requestAnimationFrame(draw)
         return
       }
-      const scale = Math.min(dt / 16.667, 3)
+      // Скорость из настроек читается через getState() — не вызывает
+      // ре-инициализацию эффекта при изменении.
+      const speedMult = useUIStore.getState().animatedBgSpeed ?? 1
+      const scale = Math.min(dt / 16.667, 3) * speedMult
       lastTime = now
       t += scale
 
@@ -196,8 +200,6 @@ export default function AnimatedBackground() {
           ctx.fillStyle = `rgba(${color}, ${p.alpha})`
           ctx.fill()
         }
-        // Spatial grid for O(n) neighbor lookup instead of O(n²)
-        // Reuse Map + arrays from pool to avoid per-frame allocations.
         gridCache.clear()
         gridArrIdx = 0
         for (let i = 0; i < particles.length; i++) {
@@ -213,6 +215,12 @@ export default function AnimatedBackground() {
           arr.push(i)
         }
         ctx.lineWidth = 0.5
+        ctx.strokeStyle = `rgba(${color}, 0.05)`
+        // ── Батчинг: один Path2D для всех линий, один stroke ──
+        // Усредняем alpha (0.05 вместо 0.07*(1-d/120)) — визуально
+        // идентично, фон за полупрозрачным контентом. Было 300 stroke()
+        // за кадр, стал 1.
+        ctx.beginPath()
         for (let i = 0; i < particles.length; i++) {
           const cx = Math.floor(particles[i].x / CELL)
           const cy = Math.floor(particles[i].y / CELL)
@@ -226,17 +234,14 @@ export default function AnimatedBackground() {
                 const ddy = particles[i].y - particles[j].y
                 const distSq = ddx * ddx + ddy * ddy
                 if (distSq < CONN_DIST_SQ) {
-                  const dist = Math.sqrt(distSq)
-                  ctx.beginPath()
                   ctx.moveTo(particles[i].x, particles[i].y)
                   ctx.lineTo(particles[j].x, particles[j].y)
-                  ctx.strokeStyle = `rgba(${color}, ${0.07 * (1 - dist / 120)})`
-                  ctx.stroke()
                 }
               }
             }
           }
         }
+        ctx.stroke()
 
       } else if (style === 'matrix') {
         ctx.fillStyle = `rgba(0,0,0,${Math.min(0.04 * scale, 1)})`
@@ -297,12 +302,10 @@ export default function AnimatedBackground() {
           const pulse = (Math.sin(f.phase) + 1) / 2
           const alpha = pulse * 0.5 + 0.05
           const radius = f.r * (0.7 + pulse * 0.6)
-          // Glow через спрайт (вместо createRadialGradient каждый кадр).
           const glowD = radius * 8
           ctx.globalAlpha = alpha
           ctx.drawImage(glow, f.x - glowD / 2, f.y - glowD / 2, glowD, glowD)
           ctx.globalAlpha = 1
-          // Ядро — дешёвый solid fill.
           ctx.beginPath()
           ctx.arc(f.x, f.y, radius, 0, Math.PI * 2)
           ctx.fillStyle = `rgba(${color}, ${alpha * 1.5})`
@@ -347,7 +350,6 @@ export default function AnimatedBackground() {
           if (b.y < -b.r) b.y = h + b.r; if (b.y > h + b.r) b.y = -b.r
           const pulse = (Math.sin(b.phase) + 1) / 2
           const r = Math.max(20, b.r * (0.85 + pulse * 0.25))
-          // Спрайт вместо createRadialGradient (3-stop gradient baked).
           const d = r * 2
           ctx.drawImage(sprites[bi], b.x - r, b.y - r, d, d)
         }
@@ -433,9 +435,12 @@ export default function AnimatedBackground() {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('resize', onResize)
+      window.removeEventListener('wheel', markScroll, { capture: true } as EventListenerOptions)
+      window.removeEventListener('scroll', markScroll, { capture: true } as EventListenerOptions)
+      window.removeEventListener('touchmove', markScroll, { capture: true } as EventListenerOptions)
     }
   }, [animatedBackground, bgStyle, theme, accentColor, style])
 
   if (!animatedBackground || style === 'none') return null
-  return <canvas ref={canvasRef} className="animated-bg" />
+  return <canvas ref={canvasRef} className="animated-bg" style={{ opacity: (animatedBgOpacity ?? 60) / 100 }} />
 }

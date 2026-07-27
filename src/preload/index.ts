@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 // Типизированный API bridge для renderer
 const synteeAPI = {
@@ -17,10 +17,22 @@ const synteeAPI = {
   },
 
   // Background image — сохранение/загрузка файлов в userData/bg-images/
+  // Папка = библиотека: несколько картинок, переключение, удаление.
   bgImage: {
     save: (data: Uint8Array, ext: string) => ipcRenderer.invoke('bgImage:save', data, ext) as Promise<string | null>,
+    list: () => ipcRenderer.invoke('bgImage:list') as Promise<{ src: string; name: string; size: number; mtime: number }[]>,
     load: (src: string) => ipcRenderer.invoke('bgImage:load', src) as Promise<string | null>,
+    delete: (src: string) => ipcRenderer.invoke('bgImage:delete', src) as Promise<boolean>,
     clear: () => ipcRenderer.invoke('bgImage:clear') as Promise<boolean>,
+  },
+
+  // Sound files — кастомные звуки интерфейса в userData/sounds/.
+  // Встроенные (synth.*) генерируются в renderer через Web Audio.
+  sound: {
+    save: (data: Uint8Array, ext: string, originalName?: string) => ipcRenderer.invoke('sound:save', data, ext, originalName) as Promise<string | null>,
+    list: () => ipcRenderer.invoke('sound:list') as Promise<{ id: string; name: string; size: number; mtime: number }[]>,
+    load: (id: string) => ipcRenderer.invoke('sound:load', id) as Promise<string | null>,
+    delete: (id: string) => ipcRenderer.invoke('sound:delete', id) as Promise<boolean>,
   },
 
   // Syntee-Gateway авторизация и профиль
@@ -64,7 +76,10 @@ const synteeAPI = {
 
   // Syntee-Gateway модели и статусы (фаза 2)
   gateway: {
-    // Список моделей gateway (/v1/models). Пустой массив если не залогинен.
+    // Список моделей gateway (/v1/models). Возвращает { models, error }:
+    // при транзиентном сбое models = последний закэшированный список (stale),
+    // error = сообщение об ошибке. При успехе error = null.
+    // GatewayAuthError пробрасывается reject'ом (сценарий логаута).
     fetchModels: () => ipcRenderer.invoke('gateway:fetchModels'),
     // Per-model uptime buckets за 12 часов — для панели статуса.
     fetchModelStatus: () => ipcRenderer.invoke('gateway:fetchModelStatus'),
@@ -135,6 +150,7 @@ const synteeAPI = {
       oneShotSkill?: { name: string; instructions: string }
       oneShotAllowedTools?: string[]
       oneShotMode?: 'ask' | 'plan' | 'code'
+      attachments?: import('../../shared/types').Attachment[]
     }) => ipcRenderer.invoke('chat:send', params),
     delete: (chatId: string) => ipcRenderer.invoke('chat:delete', chatId),
     rename: (chatId: string, title: string) => ipcRenderer.invoke('chat:rename', chatId, title),
@@ -477,6 +493,57 @@ const synteeAPI = {
     buildSkillInstruction: (params: unknown) => ipcRenderer.invoke('marketplace:buildSkillInstruction', params),
     buildMcpUrlInstruction: (params: { url: string; scope: 'global' | { workdir: string } }) =>
       ipcRenderer.invoke('marketplace:buildMcpUrlInstruction', params),
+  },
+
+  // ── @mention-пикер ──────────────────────────────────────────────────────
+  // search — главный канал: возвращает плоский MentionItem[] (files + skills +
+  // commands), отфильтрованный через fuzzy-поиск. При пустом query — недавние
+  // файлы + все скиллы/команды. workdir — для файлового индекса.
+  // startIndexing/stopIndexing — управление chokidar-watcher'ом для workdir.
+  mentions: {
+    search: (params: { workdir?: string; query: string; limit?: number }) =>
+      ipcRenderer.invoke('mentions:search', params),
+    startIndexing: (workdir: string) =>
+      ipcRenderer.invoke('mentions:startIndexing', workdir),
+    stopIndexing: (workdir: string) =>
+      ipcRenderer.invoke('mentions:stopIndexing', workdir),
+  },
+
+  // ── Вложения (attachments) ──────────────────────────────────────────────
+  // readFile — прочитать текстовый файл для инлайна в content (бинарные → isBinary).
+  // saveImageFromBase64 — paste/drag&drop картинки → файл в userData + путь.
+  // saveFileFromPath — копировать файл с диска в userData (для drag&drop не из workdir).
+  // deleteFile — удалить файл вложения из userData (при удалении чипа).
+  // pickFile — native dialog Electron (кнопка «Прикрепить файл»).
+  attachments: {
+    readFile: (params: { path: string }) =>
+      ipcRenderer.invoke('attachments:readFile', params),
+    saveImageFromBase64: (params: { chatId: string; base64: string; mime?: string; suggestedName?: string }) =>
+      ipcRenderer.invoke('attachments:saveImageFromBase64', params),
+    saveFileFromPath: (params: { chatId: string; sourcePath: string }) =>
+      ipcRenderer.invoke('attachments:saveFileFromPath', params),
+    deleteFile: (params: { path: string }) =>
+      ipcRenderer.invoke('attachments:deleteFile', params),
+    pickFile: () =>
+      ipcRenderer.invoke('attachments:pickFile'),
+    // В Electron 32+ File.path удалён (contextIsolation + nodeIntegration:false).
+    // webUtils.getPathForFile — официальный replacement, доступен в preload
+    // при sandbox:false. Принимает File из renderer (drag&drop/paste) и
+    // возвращает абсолютный путь.
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
+  },
+
+  // ── Вложения черновика (draft attachments) ──────────────────────────────
+  // Переживают рестарт, не пропадают при смене чата. Хранятся в БД + файлы в
+  // userData/draft-attachments/{chatId}/. getAttachments — список чипов.
+  // setAttachments — заменить все (debounce в renderer). clear — после отправки.
+  draft: {
+    getAttachments: (chatId: string) =>
+      ipcRenderer.invoke('draft:getAttachments', chatId),
+    setAttachments: (chatId: string, attachments: import('../../shared/types').Attachment[]) =>
+      ipcRenderer.invoke('draft:setAttachments', chatId, attachments),
+    clearAttachments: (chatId: string) =>
+      ipcRenderer.invoke('draft:clearAttachments', chatId),
   },
 }
 

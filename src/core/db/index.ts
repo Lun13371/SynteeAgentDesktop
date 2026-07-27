@@ -8,6 +8,7 @@
 //   chats.ts           — CRUD чатов
 //   projects.ts        — CRUD проектов
 //   messages.ts        — сообщения (saveMessage/getMessages/...)
+//   attachments.ts     — вложения черновика (draft attachments, переживают рестарт)
 //   memory.ts          — clipboard/agent_logs/working_memory/summaries
 //                         (memory CRUD перенесён в memory/MemoryStore.ts)
 //   checkpoints.ts     — file_snapshots/context_snapshots/checkpoints/rewind_history
@@ -18,6 +19,7 @@ export * from './migrations'
 export * from './chats'
 export * from './projects'
 export * from './messages'
+export * from './attachments'
 export * from './memory'
 export * from './checkpoints'
 export * from './fastContextStore'

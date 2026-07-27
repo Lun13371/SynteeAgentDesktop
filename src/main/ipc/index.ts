@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 import { join } from 'path'
 import { app } from 'electron'
-import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync, readFileSync } from 'fs'
+import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync, readFileSync, statSync } from 'fs'
 import type Store from 'electron-store'
 import type { MainWindow } from '../windows/MainWindow'
 import type { OverlayWindow } from '../windows/OverlayWindow'
@@ -42,17 +42,24 @@ function registerSettingsIPC({ store }: IPCContext): void {
   // Картинки фона хранятся как файлы в userData/bg-images/, а не как
   // base64 dataURL в config.json (который раздувался бы мегабайтами).
   // settings.bgImage.src хранит путь к файлу (bg-images://filename).
+  // Папка = библиотека: юзер может держать несколько картинок и
+  // переключаться между ними. Активная = bgImage.src.
   const bgDir = join(app.getPath('userData'), 'bg-images')
+
+  // Защита от path traversal: убеждаемся, что filename не содержит
+  // разделителей путей и резолвится внутри bgDir.
+  function safeBgPath(filename: string): string | null {
+    if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+      return null
+    }
+    const filepath = join(bgDir, filename)
+    if (!filepath.startsWith(bgDir)) return null
+    return filepath
+  }
 
   ipcMain.handle('bgImage:save', async (_, data: Uint8Array, ext: string) => {
     try {
       if (!existsSync(bgDir)) mkdirSync(bgDir, { recursive: true })
-      // Очищаем старые картинки — храним только одну активную
-      try {
-        for (const f of readdirSync(bgDir)) {
-          unlinkSync(join(bgDir, f))
-        }
-      } catch { /* ok */ }
       const filename = `bg-${Date.now()}.${ext || 'png'}`
       const filepath = join(bgDir, filename)
       writeFileSync(filepath, Buffer.from(data))
@@ -60,6 +67,38 @@ function registerSettingsIPC({ store }: IPCContext): void {
     } catch (e) {
       console.error('[bgImage:save]', e)
       return null
+    }
+  })
+
+  ipcMain.handle('bgImage:list', async () => {
+    try {
+      if (!existsSync(bgDir)) return []
+      return readdirSync(bgDir)
+        .filter(f => !f.startsWith('.'))
+        .map(f => {
+          const filepath = join(bgDir, f)
+          let size = 0, mtime = 0
+          try { const st = statSync(filepath); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
+          return { src: `bg-images://${f}`, name: f, size, mtime }
+        })
+        .sort((a, b) => b.mtime - a.mtime)
+    } catch (e) {
+      console.error('[bgImage:list]', e)
+      return []
+    }
+  })
+
+  ipcMain.handle('bgImage:delete', async (_, src: string) => {
+    try {
+      if (!src || !src.startsWith('bg-images://')) return false
+      const filename = src.replace('bg-images://', '')
+      const filepath = safeBgPath(filename)
+      if (!filepath || !existsSync(filepath)) return false
+      unlinkSync(filepath)
+      return true
+    } catch (e) {
+      console.error('[bgImage:delete]', e)
+      return false
     }
   })
 
@@ -92,6 +131,96 @@ function registerSettingsIPC({ store }: IPCContext): void {
       }
       return true
     } catch { return false }
+  })
+
+  // ── Sound files persistence ───────────────────────────────────
+  // Кастомные звуки интерфейса хранятся как файлы в userData/sounds/.
+  // Схема та же что и bg-images: soundId = custom://<filename>.
+  // Встроенные звуки (synth.*) генерируются через Web Audio API в renderer.
+  const soundDir = join(app.getPath('userData'), 'sounds')
+
+  function safeSoundPath(filename: string): string | null {
+    if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+      return null
+    }
+    const filepath = join(soundDir, filename)
+    if (!filepath.startsWith(soundDir)) return null
+    return filepath
+  }
+
+  function extToMime(ext: string): string {
+    return ext === 'mp3' ? 'audio/mpeg'
+      : ext === 'wav' ? 'audio/wav'
+      : ext === 'ogg' ? 'audio/ogg'
+      : ext === 'm4a' ? 'audio/mp4'
+      : 'audio/mpeg'
+  }
+
+  ipcMain.handle('sound:save', async (_, data: Uint8Array, ext: string, originalName?: string) => {
+    try {
+      if (!existsSync(soundDir)) mkdirSync(soundDir, { recursive: true })
+      const safeExt = (ext || 'mp3').toLowerCase().replace(/[^a-z0-9]/g, '')
+      // Имя файла: из оригинала (sanitized) или timestamp
+      let base = `sound-${Date.now()}`
+      if (originalName) {
+        base = originalName.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9а-яА-Я_-]/g, '_').slice(0, 40) || base
+      }
+      const filename = `${base}-${Date.now()}.${safeExt}`
+      const filepath = join(soundDir, filename)
+      writeFileSync(filepath, Buffer.from(data))
+      return `custom://${filename}`
+    } catch (e) {
+      console.error('[sound:save]', e)
+      return null
+    }
+  })
+
+  ipcMain.handle('sound:list', async () => {
+    try {
+      if (!existsSync(soundDir)) return []
+      return readdirSync(soundDir)
+        .filter(f => !f.startsWith('.'))
+        .map(f => {
+          const filepath = join(soundDir, f)
+          let size = 0, mtime = 0
+          try { const st = statSync(filepath); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
+          return { id: `custom://${f}`, name: f, size, mtime }
+        })
+        .sort((a, b) => b.mtime - a.mtime)
+    } catch (e) {
+      console.error('[sound:list]', e)
+      return []
+    }
+  })
+
+  ipcMain.handle('sound:load', async (_, id: string) => {
+    if (!id || !id.startsWith('custom://')) return null
+    try {
+      const filename = id.replace('custom://', '')
+      const filepath = safeSoundPath(filename)
+      if (!filepath || !existsSync(filepath)) return null
+      const buf = readFileSync(filepath)
+      const base64 = buf.toString('base64')
+      const ext = filename.split('.').pop()?.toLowerCase() || 'mp3'
+      return `data:${extToMime(ext)};base64,${base64}`
+    } catch (e) {
+      console.error('[sound:load]', e)
+      return null
+    }
+  })
+
+  ipcMain.handle('sound:delete', async (_, id: string) => {
+    try {
+      if (!id || !id.startsWith('custom://')) return false
+      const filename = id.replace('custom://', '')
+      const filepath = safeSoundPath(filename)
+      if (!filepath || !existsSync(filepath)) return false
+      unlinkSync(filepath)
+      return true
+    } catch (e) {
+      console.error('[sound:delete]', e)
+      return false
+    }
   })
 }
 

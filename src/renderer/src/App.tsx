@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { useUIStore } from './store/ui.store'
 import { initExtensionsPushEvents, useExtensionsStore } from './store/extensions.store'
-import { setUiSoundsFlag } from './utils/sounds'
+import { setUiSoundsFlag, setSoundVolume, setSoundAssignmentsFlag } from './utils/sounds'
 import { useChatRunSubscription } from './hooks/useChatRunSubscription'
 import { useAuthStore } from './store/auth.store'
 import { useNavStore } from './store/nav.store'
@@ -10,6 +11,7 @@ import {
   startGatewayStatusPolling,
 } from './store/gatewayModels.store'
 import { useBillingStore } from './store/billing.store'
+import { useChatStore } from './store/chat.store'
 import { autoAssignGatewayModels, markAutoAssignDone, isAutoAssignDone } from './store/autoAssign'
 import { contrastText, withAlpha, hexToRgb, hslToHex } from './utils/colorUtils'
 import { startThemeScheduler } from './utils/themeScheduler'
@@ -27,6 +29,8 @@ import MemoryPage from './pages/Memory/MemoryPage'
 import './pages/Memory/MemoryPage.css'
 import LoginScreen from './pages/Login/LoginScreen'
 import './pages/Login/LoginScreen.css'
+import BootScreen from './components/ui/BootScreen/BootScreen'
+import './components/ui/BootScreen/BootScreen.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
 import AnimatedBackground from './components/ui/AnimatedBackground/AnimatedBackground'
@@ -106,10 +110,28 @@ export function applyGradientAccentToDOM(enabled: boolean, color2: string, angle
   if (!enabled) {
     root.style.removeProperty('--accent-gradient')
     root.style.setProperty('--accent-bg', 'var(--accent)')
+    // Восстанавливаем --accent-hover из текущего --accent (solid).
+    // applyAccentToDOM уже выставил rgba(r,g,b,0.85); при выключении
+    // gradient вызываем его повторно чтобы вернуть корректный hover.
+    const accent = root.style.getPropertyValue('--accent').trim()
+    if (accent) {
+      const hex = accent.replace('#', '')
+      const r = parseInt(hex.slice(0, 2), 16)
+      const g = parseInt(hex.slice(2, 4), 16)
+      const b = parseInt(hex.slice(4, 6), 16)
+      if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+        root.style.setProperty('--accent-hover', `rgba(${r}, ${g}, ${b}, 0.85)`)
+      }
+    }
     return
   }
-  root.style.setProperty('--accent-gradient', `linear-gradient(${angle}deg, ${color1}, ${color2})`)
-  root.style.setProperty('--accent-bg', `linear-gradient(${angle}deg, ${color1}, ${color2})`)
+  const grad = `linear-gradient(${angle}deg, ${color1}, ${color2})`
+  root.style.setProperty('--accent-gradient', grad)
+  root.style.setProperty('--accent-bg', grad)
+  // Hover-состояния тоже должны использовать gradient — иначе кнопка при
+  // наведении резко становится solid. 6 мест используют var(--accent-hover)
+  // в background — все они получат gradient.
+  root.style.setProperty('--accent-hover', grad)
 }
 
 export function applyCustomThemeToDOM(theme: CustomTheme | null) {
@@ -179,7 +201,10 @@ export function applyCustomThemeToDOM(theme: CustomTheme | null) {
   root.setAttribute('data-custom-theme', theme.id)
 }
 
-export async function applyBgImageToDOM(bgImage: { src: string; blur: number; opacity: number; tint: string; tintStrength: number } | null) {
+export async function applyBgImageToDOM(bgImage: {
+  src: string; blur: number; opacity: number; tint: string; tintStrength: number;
+  scale?: 'cover' | 'contain' | number; parallax?: boolean; parallaxStrength?: number;
+} | null) {
   const appRoot = document.querySelector('.app-root')
   document.getElementById('bg-image-layer')?.remove()
   document.getElementById('bg-image-tint')?.remove()
@@ -192,12 +217,17 @@ export async function applyBgImageToDOM(bgImage: { src: string; blur: number; op
     url = dataUrl
   }
 
+  const bgSize = typeof bgImage.scale === 'number'
+    ? `${bgImage.scale}%`
+    : bgImage.scale === 'contain' ? 'contain' : 'cover'
+
   const el = document.createElement('div')
   el.id = 'bg-image-layer'
   el.style.cssText = `
     position: absolute; inset: 0; z-index: 0; pointer-events: none;
     background-image: url(${url});
-    background-size: cover; background-position: center;
+    background-size: ${bgSize}; background-position: center;
+    background-repeat: no-repeat;
     filter: blur(${bgImage.blur}px);
     opacity: ${bgImage.opacity / 100};
   `
@@ -212,7 +242,7 @@ export async function applyBgImageToDOM(bgImage: { src: string; blur: number; op
     ov.id = 'bg-image-tint'
     ov.style.cssText = `
       position: absolute; inset: 0; z-index: 0; pointer-events: none;
-      background: ${bgImage.tint};
+      background: ${bgImage.tint || '#000000'};
       opacity: ${bgImage.tintStrength / 100};
     `
     if (appRoot) {
@@ -243,6 +273,14 @@ export default function App() {
   const [route, setRoute] = useState<Route>(getRoute())
   // authBoot: null — проверяем; 'login' — показать экран входа; 'app' — войдено/гость.
   const [authBoot, setAuthBoot] = useState<'login' | 'app' | null>(null)
+  // Boot readiness gate: пока не готовы visual settings + auth + chats/projects,
+  // показываем BootScreen вместо пустого экрана.
+  const [settingsReady, setSettingsReady] = useState(false)
+  const [dataReady, setDataReady] = useState(false)
+  // modelsReady — модели gateway загружены (для залогиненных) ИЛИ не нужны
+  // (гостевой режим). Boot ждёт это, чтобы ModelSelector сразу показал список.
+  const [modelsReady, setModelsReady] = useState(false)
+
   const mainPage = useNavStore(s => s.mainPage)
   const toggleMainPage = useNavStore(s => s.toggleMainPage)
   const openSettings = useNavStore(s => s.openSettings)
@@ -264,8 +302,10 @@ export default function App() {
         const [theme, bgStyle, msgAnim, accentColor, animatedBg,
           avatarStyle, showTime, userMarkdown, uiSounds, sendEffect,
           fontFamily, savedPanelWidth, savedPanelOpen,
-          glassBlur, density, accentGradient, rainbowAccent, bgImage,
-          customThemes, activeCustomThemeId, themeSchedule, recentAccents] = await Promise.all([
+          glassBlur, density, accentGradient, rainbowAccent, bgImage, bgImageEnabled,
+          animatedBgOpacity, animatedBgSpeed,
+          customThemes, activeCustomThemeId, themeSchedule, recentAccents,
+          soundVolume, soundAssignments] = await Promise.all([
           window.syntee.settings.get('theme'),
           window.syntee.settings.get('bgStyle'),
           window.syntee.settings.get('msgAnim'),
@@ -284,10 +324,15 @@ export default function App() {
           window.syntee.settings.get('accentGradient'),
           window.syntee.settings.get('rainbowAccent'),
           window.syntee.settings.get('bgImage'),
+          window.syntee.settings.get('bgImageEnabled'),
+          window.syntee.settings.get('animatedBgOpacity'),
+          window.syntee.settings.get('animatedBgSpeed'),
           window.syntee.settings.get('customThemes'),
           window.syntee.settings.get('activeCustomThemeId'),
           window.syntee.settings.get('themeSchedule'),
           window.syntee.settings.get('recentAccents'),
+          window.syntee.settings.get('soundVolume'),
+          window.syntee.settings.get('soundAssignments'),
         ])
         const st = useUIStore.getState()
         if (theme) st.setTheme(theme as any)
@@ -310,10 +355,15 @@ export default function App() {
         if (accentGradient) st.setAccentGradient(accentGradient as any)
         if (typeof rainbowAccent === 'boolean') st.setRainbowAccent(rainbowAccent)
         if (bgImage) st.setBgImage(bgImage as any)
+        if (typeof bgImageEnabled === 'boolean') st.setBgImageEnabled(bgImageEnabled)
+        if (typeof animatedBgOpacity === 'number') st.setAnimatedBgOpacity(animatedBgOpacity)
+        if (typeof animatedBgSpeed === 'number') st.setAnimatedBgSpeed(animatedBgSpeed)
         if (Array.isArray(customThemes)) st.setCustomThemes(customThemes as any)
         if (activeCustomThemeId !== undefined) st.setActiveCustomThemeId(activeCustomThemeId as any)
         if (themeSchedule) st.setThemeSchedule(themeSchedule as any)
         if (Array.isArray(recentAccents)) st.setRecentAccents(recentAccents as string[])
+        if (typeof soundVolume === 'number') { st.setSoundVolume(soundVolume); setSoundVolume(soundVolume) }
+        if (soundAssignments && typeof soundAssignments === 'object') { st.setSoundAssignments(soundAssignments as any); setSoundAssignmentsFlag(soundAssignments as any) }
 
         if (fontFamily) applyFontToDOM(fontFamily as string)
 
@@ -331,9 +381,13 @@ export default function App() {
           const ag = accentGradient as any
           applyGradientAccentToDOM(ag.enabled, ag.color2, ag.angle, (accentColor as string) || '#ffffff')
         }
-        if (bgImage) applyBgImageToDOM(bgImage as any)
+        if (bgImage) applyBgImageToDOM(bgImageEnabled === false ? null : bgImage as any)
         if (rainbowAccent) applyRainbowAccentToDOM(true)
       } catch { /* ok */ }
+      finally {
+        // Сигнал boot-gate'у: визуальные настройки применены, можно показывать UI.
+        setSettingsReady(true)
+      }
     }
     applyVisualSettings()
   }, [])
@@ -385,7 +439,8 @@ export default function App() {
   }, [accentGradient, accentColor])
 
   const bgImage = useUIStore(s => s.bgImage)
-  useEffect(() => { applyBgImageToDOM(bgImage) }, [bgImage])
+  const bgImageEnabled = useUIStore(s => s.bgImageEnabled)
+  useEffect(() => { applyBgImageToDOM(bgImageEnabled ? bgImage : null) }, [bgImage, bgImageEnabled])
 
   const customThemes = useUIStore(s => s.customThemes)
   const activeCustomThemeId = useUIStore(s => s.activeCustomThemeId)
@@ -434,6 +489,30 @@ export default function App() {
   const uiSounds = useUIStore(s => s.uiSounds)
   useEffect(() => { setUiSoundsFlag(uiSounds) }, [uiSounds])
 
+  // Громкость и назначения звуков синхронизируем с sounds.ts.
+  const soundVolume = useUIStore(s => s.soundVolume)
+  const soundAssignments = useUIStore(s => s.soundAssignments)
+  useEffect(() => { setSoundVolume(soundVolume) }, [soundVolume])
+  useEffect(() => { setSoundAssignmentsFlag(soundAssignments) }, [soundAssignments])
+
+  // Звук запуска приложения — после применения визуальных настроек.
+  useEffect(() => {
+    if (settingsReady) {
+      // Импортируем динамически чтобы избежать circular deps на этапе загрузки.
+      import('./utils/sounds').then(({ playActionSound }) => playActionSound('appStart'))
+    }
+  }, [settingsReady])
+
+  // Звук выхода — beforeunload. Может не успеть доиграть (рендерер
+  // закрывается), но синтез-звук короткий и обычно успевает.
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      import('./utils/sounds').then(({ playAppExitSound }) => playAppExitSound())
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+
   // Проверяем наличие сохранённой сессии при старте.
   // Логика:
   //  1. Есть токены → тянем профиль. Если профиль есть — 'app', иначе 'login'.
@@ -468,6 +547,47 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(fallback) }
   }, [authLoad])
 
+  // ── Предзагрузка критичных данных до показа основного UI ─────────────────
+  // Срабатывает когда auth определился как 'app' (пользователь вошёл или гость).
+  // Грузим chats + projects + первый чат (messages + queue) в store, чтобы
+  // ChatPage при монтировании уже имел данные → нет флэша пустого состояния
+  // и нет двойной загрузки. Это быстро (~30-60мс, SQLite IPC).
+  // Gateway models + billing НЕ входят — они грузятся в фоне со скелетонами.
+  useEffect(() => {
+    if (authBoot !== 'app' || dataReady) return
+    let cancelled = false
+    const preload = async () => {
+      try {
+        const [chats, projects] = await Promise.all([
+          window.syntee.chat.getAll(),
+          window.syntee.projects.getAll(),
+        ])
+        if (cancelled) return
+        const store = useChatStore.getState()
+        store.setChats(chats)
+        store.setProjects(projects)
+        if (chats.length > 0) {
+          const firstId = chats[0].id
+          // Параллельно: messages + queue для первого чата.
+          const [msgs, queue] = await Promise.all([
+            window.syntee.chat.getMessages(firstId),
+            window.syntee.chat.getQueue(firstId).catch(() => []),
+          ])
+          if (cancelled) return
+          store.setCurrentChat(firstId)
+          store.setMessages(msgs)
+          store.setQueue(firstId, queue as any)
+          store.markChatRead(firstId)
+        }
+      } catch { /* non-fatal — ChatPage сделает retry при монтировании */ }
+      finally {
+        if (!cancelled) setDataReady(true)
+      }
+    }
+    preload()
+    return () => { cancelled = true }
+  }, [authBoot, dataReady])
+
   // Подписка на logout из main-процесса (например, при истечении сессии)
   useEffect(() => {
     const off = window.syntee.auth.onLoggedOut(() => {
@@ -489,15 +609,27 @@ export default function App() {
   // ── Syntee-Gateway: загрузка моделей + polling статусов ─────────────────
   // При появлении юзера тянем модели и запускаем polling раз в 60с.
   // При logout — store очистится автоматически (load() проверяет user).
+  // Boot-gate ждёт modelsReady, чтобы ModelSelector сразу показал список.
+  // 8с таймаут — если gateway недоступен, не блокируем boot вечно.
   const gatewayLoad = useGatewayModelsStore(s => s.load)
   const gatewayLastFetch = useGatewayModelsStore(s => s.lastFetchAt)
   useEffect(() => {
-    if (authUser) {
-      gatewayLoad()
-      const stop = startGatewayStatusPolling()
-      return stop
+    if (authBoot !== 'app') return
+    if (!authUser) {
+      // Гостевой режим — модели gateway недоступны, не ждём.
+      setModelsReady(true)
+      return
     }
-  }, [authUser, gatewayLoad])
+    let cancelled = false
+    Promise.race([
+      gatewayLoad(),
+      new Promise(resolve => setTimeout(resolve, 8000)),
+    ]).finally(() => {
+      if (!cancelled) setModelsReady(true)
+    })
+    const stop = startGatewayStatusPolling()
+    return () => { cancelled = true; stop() }
+  }, [authBoot, authUser, gatewayLoad])
 
   // Авто-назначение ролей на модели gateway — один раз после первого fetch.
   useEffect(() => {
@@ -542,53 +674,85 @@ export default function App() {
   if (route === 'voice') return <VoicePage />
   if (route === 'spotlight') return <SpotlightPage />
 
-  // Пока проверяем — ничего не показываем.
-  // authLoading НЕ должен блокировать UI — он нужен только для индикатора
-  // внутри LoginScreen. Изначально loading=true, но если юзер не залогинен,
-  // load() не вызывается и loading никогда не сбросится → пустой экран.
-  if (authBoot === null) return null
+  // ── Boot gate: показываем BootScreen пока не готовы критичные данные ──────
+  // settingsReady — visual settings (theme/accent/font) применены к DOM,
+  //                 иначе UI мелькнёт с default темой.
+  // authBoot === null — auth check ещё идёт (auth.me HTTP, до 2с).
+  // authBoot === 'app' && !dataReady — chats/projects/messages предзагружаются.
+  // authBoot === 'app' && !modelsReady — модели gateway грузятся (до 8с).
+  const bootDone = settingsReady
+    && authBoot !== null
+    && (authBoot !== 'app' || (dataReady && modelsReady))
+  const bootStatus = !settingsReady
+    ? 'Загрузка интерфейса…'
+    : authBoot === null
+      ? 'Проверка авторизации…'
+      : !dataReady
+        ? 'Загрузка чатов…'
+        : !modelsReady
+          ? 'Загрузка моделей…'
+          : 'Готово'
 
-  // Не залогинен — экран входа (с возможностью пропуска как гость).
-  if (authBoot === 'login') {
-    return (
-      <LoginScreen
-        onContinueAsGuest={() => {
-          // Сохраняем флаг чтобы при следующем запуске не показывать
-          // экран входа — юзер уже решил работать в гостевом режиме.
-          window.syntee.settings.set('loginSkipped', true)
-          setAuthBoot('app')
-        }}
-      />
-    )
-  }
-
-  // Главное окно
   return (
-    <div className="app-root">
-      <AnimatedBackground />
-      <TitleBar
-        onSettingsClick={() => toggleMainPage('settings')}
-        onAgentClick={() => {
-          const st = useUIStore.getState()
-          const next = !st.agentPanelOpen
-          st.setAgentPanelOpen(next)
-          window.syntee.settings.set('agentPanelOpen', next)
-        }}
-        onMemoryClick={() => toggleMainPage('memory')}
-        onProfileClick={() => openSettings('profile')}
-      />
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
-          {mainPage === 'chat' && <ChatPage embedded />}
-          {mainPage === 'settings' && <SettingsPage />}
-          {mainPage === 'memory' && <MemoryPage />}
-        </div>
-        <RightPanelHost />
-      </div>
-      <BottomDock />
-      <ToastContainer />
-      <AgentConfirmDialog />
-      <QuestionPanel />
-    </div>
+    <AnimatePresence mode="sync">
+      {!bootDone && <BootScreen key="boot" status={bootStatus} />}
+      {bootDone && authBoot === 'login' && (
+        <motion.div
+          key="login"
+          className="app-boot-layer"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.5, ease: 'easeOut' }}
+        >
+          <LoginScreen
+            onContinueAsGuest={() => {
+              // Сохраняем флаг чтобы при следующем запуске не показывать
+              // экран входа — юзер уже решил работать в гостевом режиме.
+              window.syntee.settings.set('loginSkipped', true)
+              setAuthBoot('app')
+            }}
+          />
+        </motion.div>
+      )}
+      {bootDone && authBoot === 'app' && (
+        <motion.div
+          key="app"
+          className="app-boot-layer"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.5, ease: 'easeOut' }}
+        >
+          <div className="app-root">
+            <AnimatedBackground />
+            <TitleBar
+              onSettingsClick={() => toggleMainPage('settings')}
+              onAgentClick={() => {
+                const st = useUIStore.getState()
+                const next = !st.agentPanelOpen
+                st.setAgentPanelOpen(next)
+                window.syntee.settings.set('agentPanelOpen', next)
+                import('./utils/sounds').then(({ playPanelOpenSound, playPanelCloseSound }) => {
+                  if (next) playPanelOpenSound(); else playPanelCloseSound()
+                })
+              }}
+              onMemoryClick={() => toggleMainPage('memory')}
+              onProfileClick={() => openSettings('profile')}
+            />
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
+              <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+                {mainPage === 'chat' && <ChatPage embedded />}
+                {mainPage === 'settings' && <SettingsPage />}
+                {mainPage === 'memory' && <MemoryPage />}
+              </div>
+              <RightPanelHost />
+            </div>
+            <BottomDock />
+            <ToastContainer />
+            <AgentConfirmDialog />
+            <QuestionPanel />
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 }

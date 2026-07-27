@@ -58,7 +58,7 @@
 }
 
 .voice-wave--speaking .voice-wave-bar {
-  background: linear-gradient(180deg, var(--accent), var(--on-accent-muted));
+  background: var(--accent-bg);
 }
 
 /* Микрофон */

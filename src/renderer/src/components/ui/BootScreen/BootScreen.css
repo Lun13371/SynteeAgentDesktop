@@ -1,0 +1,68 @@
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--body-bg, #0e0e12);
+  z-index: 9999;
+}
+
+.boot-screen__bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 25% 30%, var(--accent-subtle, rgba(232, 232, 236, 0.08)) 0%, transparent 45%),
+    radial-gradient(circle at 75% 70%, var(--accent-subtle, rgba(232, 232, 236, 0.08)) 0%, transparent 50%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.boot-screen__content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  text-align: center;
+}
+
+.boot-screen__logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 18px var(--accent-subtle, rgba(232, 232, 236, 0.08)));
+  animation: pulse-ring 4s ease-in-out infinite;
+}
+
+.boot-screen__spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  height: 16px;
+}
+
+.boot-screen__status {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  background: linear-gradient(90deg,
+    var(--overlay-6, rgba(255, 255, 255, 0.1)) 0%,
+    var(--overlay-6, rgba(255, 255, 255, 0.1)) 30%,
+    var(--on-accent, rgba(255, 255, 255, 0.95)) 50%,
+    var(--overlay-6, rgba(255, 255, 255, 0.1)) 70%,
+    var(--overlay-6, rgba(255, 255, 255, 0.1)) 100%
+  );
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: boot-shimmer 2.4s ease-in-out infinite;
+}
+
+@keyframes boot-shimmer {
+  0%   { background-position: 150% center; }
+  100% { background-position: -150% center; }
+}

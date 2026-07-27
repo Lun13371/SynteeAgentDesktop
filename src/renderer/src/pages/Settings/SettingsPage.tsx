@@ -10,6 +10,9 @@ import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import Toggle from '../../components/ui/Toggle/Toggle'
 import ColorPicker from '../../components/ui/ColorPicker/ColorPicker'
 import CustomThemeEditor from '../../components/settings/CustomThemeEditor/CustomThemeEditor'
+import BgImageGallery from '../../components/settings/BgImageGallery/BgImageGallery'
+import SoundsPanel from '../../components/settings/SoundsPanel/SoundsPanel'
+import Popover from '../../components/ui/Popover/Popover'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
@@ -18,6 +21,7 @@ import ModelStatusSection from '../../components/settings/ModelStatusSection/Mod
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
 import ResetButton from '../../components/ui/ResetButton/ResetButton'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
+import { playNavigateSound, setSoundVolume as setSoundVolumeModule, setSoundAssignmentsFlag } from '../../utils/sounds'
 import { applyFontToDOM, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM } from '../../App'
 import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings, type CustomTheme } from '../../../../shared/types'
 import './SettingsPage.css'
@@ -89,14 +93,19 @@ export default function SettingsPage() {
   const { setTheme, setAccentColor, setBgStyle, setMsgAnim,
     setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect,
     setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
-    setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents } = useUIStore(useShallow(s => ({
+    setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
+    setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
+    setSoundVolume, setSoundAssignments } = useUIStore(useShallow(s => ({
     setTheme: s.setTheme, setAccentColor: s.setAccentColor, setBgStyle: s.setBgStyle,
     setMsgAnim: s.setMsgAnim, setAvatarStyle: s.setAvatarStyle, setShowTime: s.setShowTime,
     setUserMarkdown: s.setUserMarkdown, setUiSounds: s.setUiSounds, setSendEffect: s.setSendEffect,
     setGlassBlur: s.setGlassBlur, setDensity: s.setDensity, setAccentGradient: s.setAccentGradient,
     setRainbowAccent: s.setRainbowAccent, setBgImage: s.setBgImage,
+    setBgImageEnabled: s.setBgImageEnabled, setAnimatedBgOpacity: s.setAnimatedBgOpacity,
+    setAnimatedBgSpeed: s.setAnimatedBgSpeed,
     setCustomThemes: s.setCustomThemes, setActiveCustomThemeId: s.setActiveCustomThemeId,
     setThemeSchedule: s.setThemeSchedule, setRecentAccents: s.setRecentAccents,
+    setSoundVolume: s.setSoundVolume, setSoundAssignments: s.setSoundAssignments,
   })))
   const { add: toast } = useToast()
 
@@ -110,6 +119,7 @@ export default function SettingsPage() {
 
   // Обратная синхронизация: локальный выбор юзера пишем в nav store.
   const handleSectionChange = (s: Section) => {
+    if (s !== section) playNavigateSound()
     setSection(s)
     setNavSection(s)
   }
@@ -155,6 +165,15 @@ export default function SettingsPage() {
       }
     }
     if (key === 'bgImage') { setBgImage(value as any); applyBgImageToDOM(value as any) }
+    if (key === 'bgImageEnabled') {
+      setBgImageEnabled(value as boolean)
+      const st = useUIStore.getState()
+      applyBgImageToDOM(value ? st.bgImage : null)
+    }
+    if (key === 'animatedBgOpacity') setAnimatedBgOpacity(value as number)
+    if (key === 'animatedBgSpeed') setAnimatedBgSpeed(value as number)
+    if (key === 'soundVolume') { setSoundVolume(value as number); setSoundVolumeModule(value as number) }
+    if (key === 'soundAssignments') { setSoundAssignments(value as any); setSoundAssignmentsFlag(value as any) }
     if (key === 'customThemes') {
       setCustomThemes(value as CustomTheme[])
       const activeId = useUIStore.getState().activeCustomThemeId
@@ -175,7 +194,9 @@ export default function SettingsPage() {
     if (key === 'fontFamily') applyFontToDOM(value as string)
   }, [set, setTheme, setAccentColor, setBgStyle, setMsgAnim, setAvatarStyle, setShowTime,
     setUserMarkdown, setUiSounds, setSendEffect, setGlassBlur, setDensity, setAccentGradient,
-    setRainbowAccent, setBgImage, setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents])
+    setRainbowAccent, setBgImage, setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
+    setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
+    setSoundVolume, setSoundAssignments])
 
   return (
     <div className="settings-root">
@@ -418,9 +439,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
   const recentAccents = (settings['recentAccents'] as string[]) || []
   const rainbowAccent = settings['rainbowAccent'] as boolean
   const accentGradient = (settings['accentGradient'] as { enabled: boolean; color2: string; angle: number }) || { enabled: false, color2: '#a78bfa', angle: 135 }
-  const bgImage = settings['bgImage'] as { src: string; blur: number; opacity: number; tint: string; tintStrength: number } | null
   const themeSchedule = (settings['themeSchedule'] as any) || DEFAULT_THEME_SCHEDULE
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const commitAccent = useCallback((c: string) => {
     onSet('accentColor', c)
@@ -443,22 +462,6 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
       isCustom: true,
     })),
   ], [customThemes])
-
-  const onPickBgImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    e.target.value = ''
-    // Получаем расширение файла
-    const ext = file.name.split('.').pop()?.toLowerCase() || 'png'
-    // Читаем как ArrayBuffer и отправляем в main для сохранения в userData
-    const buf = await file.arrayBuffer()
-    const savedPath = await window.syntee.bgImage.save(new Uint8Array(buf), ext)
-    if (!savedPath) {
-      toast('Не удалось сохранить картинку фона', 'error')
-      return
-    }
-    onSet('bgImage', { src: savedPath, blur: bgImage?.blur ?? 8, opacity: bgImage?.opacity ?? 40, tint: bgImage?.tint ?? '#000000', tintStrength: bgImage?.tintStrength ?? 30 })
-  }
 
   return (
     <>
@@ -719,45 +722,11 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
             </motion.button>
           ))}
         </div>
+        <AnimatedBgGear settings={settings} onSet={onSet} />
       </Field>
 
-      <Field label="Фоновое изображение" description="Картинка как фон (под анимацией)" block>
-        <div className="settings-bgimage-controls">
-          <input ref={fileInputRef} type="file" accept="image/*" onChange={onPickBgImage} style={{ display: 'none' }} />
-          <motion.button
-            className="settings-btn"
-            whileTap={{ scale: 0.95 }}
-            onClick={() => fileInputRef.current?.click()}
-          >Загрузить</motion.button>
-          {bgImage && (
-            <>
-              <motion.button
-                className="settings-btn settings-btn--danger"
-                whileTap={{ scale: 0.95 }}
-                onClick={() => { window.syntee.bgImage.clear(); onSet('bgImage', null) }}
-              >Очистить</motion.button>
-            </>
-          )}
-        </div>
-        {bgImage && (
-          <div className="settings-bgimage-sliders">
-            <label>
-              <span>Размытие: {bgImage.blur}px</span>
-              <input type="range" min={0} max={40} value={bgImage.blur}
-                onChange={e => onSet('bgImage', { ...bgImage, blur: Number(e.target.value) })} className="settings-slider" />
-            </label>
-            <label>
-              <span>Непрозрачность: {bgImage.opacity}%</span>
-              <input type="range" min={0} max={100} value={bgImage.opacity}
-                onChange={e => onSet('bgImage', { ...bgImage, opacity: Number(e.target.value) })} className="settings-slider" />
-            </label>
-            <label>
-              <span>Затемнение: {bgImage.tintStrength}%</span>
-              <input type="range" min={0} max={100} value={bgImage.tintStrength}
-                onChange={e => onSet('bgImage', { ...bgImage, tint: '#000000', tintStrength: Number(e.target.value) })} className="settings-slider" />
-            </label>
-          </div>
-        )}
+      <Field label="Фоновое изображение" description="Картинка как фон (под анимацией). Несколько картинок, переключение, параметры." block>
+        <BgImageGallery onSet={onSet} />
       </Field>
 
       <Field label="Анимация сообщений" description="Наведи на карточку чтобы увидеть превью" block>
@@ -815,9 +784,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         <Toggle value={!!(settings['userMarkdown'])} onChange={v => onSet('userMarkdown', v)} />
       </Field>
 
-      <Field label="Звуки интерфейса" description="Звук отправки и получения сообщений">
-        <Toggle value={settings['uiSounds'] !== false} onChange={v => onSet('uiSounds', v)} />
-      </Field>
+      <SoundsPanel settings={settings} onSet={onSet} />
 
       <Field label="Эффект отправки" description="Ripple-вспышка на кнопке при отправке">
         <Toggle value={settings['sendEffect'] !== false} onChange={v => onSet('sendEffect', v)} />
@@ -878,6 +845,45 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
     </>
   )
 })
+
+// Гирька параметров анимированного фона: прозрачность + скорость.
+function AnimatedBgGear({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+  const [open, setOpen] = useState(false)
+  const gearRef = useRef<HTMLButtonElement>(null)
+  const opacity = (settings['animatedBgOpacity'] as number) ?? 60
+  const speed = (settings['animatedBgSpeed'] as number) ?? 1
+
+  return (
+    <div className="anim-bg-gear-wrap">
+      <button
+        ref={gearRef}
+        className={`anim-bg-gear${open ? ' anim-bg-gear--active' : ''}`}
+        onClick={() => setOpen(v => !v)}
+        title="Параметры анимации"
+      >
+        <AppIcon name="settings" size="sm" />
+        <span>Параметры анимации</span>
+      </button>
+      <Popover open={open} onClose={() => setOpen(false)} anchorRef={gearRef} side="auto" align="start">
+        <div className="bg-gear-panel">
+          <div className="bg-gear-title">Анимированный фон</div>
+          <label className="bg-gear-row">
+            <span>Прозрачность: {opacity}%</span>
+            <input type="range" min={0} max={100} value={opacity}
+              onChange={e => onSet('animatedBgOpacity', Number(e.target.value))}
+              className="settings-slider" />
+          </label>
+          <label className="bg-gear-row">
+            <span>Скорость: {speed.toFixed(1)}x</span>
+            <input type="range" min={0.2} max={3} step={0.1} value={speed}
+              onChange={e => onSet('animatedBgSpeed', Number(e.target.value))}
+              className="settings-slider" />
+          </label>
+        </div>
+      </Popover>
+    </div>
+  )
+}
 
 const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const hotkeys = (settings['hotkeys'] as Record<string, string>) || {}

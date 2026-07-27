@@ -37,6 +37,7 @@ import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
 import { registerPtyIPC } from './ipc/pty.ipc'
 import { registerFastContextIPC } from './ipc/fastContext.ipc'
 import { registerCommandsIPC } from './ipc/commands.ipc'
+import { registerMentionsIPC, shutdownMentions } from './ipc/mentions.ipc'
 import { registerAuthIPC, registerDeepLinks } from './ipc/auth.ipc'
 import { registerGatewayIPC } from './ipc/gateway.ipc'
 import { registerBillingIPC } from './ipc/billing.ipc'
@@ -154,6 +155,7 @@ app.whenReady().then(async () => {
   registerPtyIPC(mainWindow)
   registerFastContextIPC(store, () => mainWindow.getWindow())
   registerCommandsIPC()
+  registerMentionsIPC()
 
   // Syntee-Gateway auth + profile + deep-link (synteehelper://)
   registerDeepLinks(() => mainWindow.getWindow())
@@ -208,6 +210,7 @@ async function onFirstRun(): Promise<void> {
     join(userData, 'voices'),
     join(userData, 'screenshots'),
     join(userData, 'logs'),
+    join(userData, 'sounds'),
   ]
   dirs.forEach(d => mkdirSync(d, { recursive: true }))
 }
@@ -226,6 +229,8 @@ app.on('before-quit', () => {
   ptyManager.killAll()
   // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.
   stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
+  // Останавливаем file indexer для @mention-пикера.
+  shutdownMentions().catch(() => { /* indexer опционален */ })
 })
 
 app.on('will-quit', () => {

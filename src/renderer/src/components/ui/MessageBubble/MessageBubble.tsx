@@ -7,6 +7,9 @@ import rehypeKatex from 'rehype-katex'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import PlanCard from '../PlanCard/PlanCard'
+import Logo from '../Logo/Logo'
+import AttachmentChips from '../AttachmentChips/AttachmentChips'
+import AttachmentProcessingBlock from '../AttachmentProcessingBlock/AttachmentProcessingBlock'
 import type { Message, ToolOutputMode } from '../../../../../shared/types'
 import { extractPlanSegments } from '../../../../../shared/planParser'
 import AppIcon from '../AppIcon/AppIcon'
@@ -548,6 +551,13 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
+        {/* Чипы прикреплённых файлов/изображений — над текстом user-сообщения.
+            Показываем только для user-роли и когда есть attachments. read-only
+            — это уже отправленное сообщение, кнопка удаления скрыта. */}
+        {isUser && message.attachments && message.attachments.length > 0 && (
+          <AttachmentChips attachments={message.attachments} onRemove={() => {}} max={10} readOnly />
+        )}
+
         {(message as Message & { replyTo?: { role: string; content: string } }).replyTo && (
           <div className="message-reply-quote">
             <span className="message-reply-role">
@@ -672,6 +682,31 @@ const MessageContent = memo(function MessageContent({
           return todo && todo.length > 0 ? <TodoChecklist items={todo} /> : null
         })()}
 
+        {/* AttachmentProcessingBlock — блок обработки вложений.
+            Live: toolProgress['process_attachments'] — стрим идёт из
+            processAttachmentsAndStream (main) ДО старта воркера и во время
+            стриминга токенов. Показывает stages roadmap + прогресс-бар.
+            Пока stage !== 'done' — активная обработка (spinner + shimmer).
+            Когда stage === 'done' — обработка завершена, но стрим токенов
+            может ещё идти — показываем roadmap "всё готово" (без file list).
+            Persisted: message.attachmentResult (сохранено в БД на assistant-
+            сообщении) — финальный список файлов с описаниями. */}
+        {!isUser && (() => {
+          const liveAp = toolProgress?.['process_attachments']
+          if (liveAp) {
+            return (
+              <AttachmentProcessingBlock
+                result={message.attachmentResult ?? { files: [], totalProcessed: 0, totalErrors: 0, totalImages: 0, ms: 0, hasErrors: false }}
+                liveProgress={liveAp}
+              />
+            )
+          }
+          if (message.attachmentResult) {
+            return <AttachmentProcessingBlock result={message.attachmentResult} />
+          }
+          return null
+        })()}
+
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
         {!isUser && liveIters && liveIters.length > 0 ? (
           <div className="message-segments">
@@ -774,9 +809,12 @@ const MessageContent = memo(function MessageContent({
 function AssistantAvatar({ style }: { style: AvatarStyle }) {
   if (style === 'none') return null
   if (style === 'circle') return (
-    <div className="message-avatar message-avatar--circle">
-      <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="var(--accent)" opacity="0.7"/></svg>
-    </div>
+    <div className="message-avatar message-avatar--circle"
+      style={{
+        width: 10, height: 10, borderRadius: '50%',
+        background: 'var(--accent-bg)', opacity: 0.7,
+      }}
+    />
   )
   if (style === 'letter') return (
     <div className="message-avatar message-avatar--letter">S</div>
@@ -787,10 +825,7 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
   // hex (default)
   return (
     <div className="message-avatar">
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-        <polygon points="9,1 17,5 17,13 9,17 1,13 1,5" fill="none" stroke="var(--accent)" strokeWidth="1.2" opacity="0.8"/>
-        <polygon points="9,4 14,7 14,11 9,14 4,11 4,7" fill="var(--accent)" opacity="0.1"/>
-      </svg>
+      <Logo size={18} />
     </div>
   )
 }

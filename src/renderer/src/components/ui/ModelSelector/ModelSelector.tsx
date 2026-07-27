@@ -69,12 +69,25 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
   const modelStatusBuckets = useGatewayModelsStore(s => s.modelStatusBuckets)
   const gatewayModelsRaw = useGatewayModelsStore(s => s.models)
   const gatewayLoading = useGatewayModelsStore(s => s.loading)
+  const gatewayError = useGatewayModelsStore(s => s.error)
+  const gatewayLastFetch = useGatewayModelsStore(s => s.lastFetchAt)
+  const gatewayLoad = useGatewayModelsStore(s => s.load)
   const authUser = useAuthStore(s => s.user)
 
-  // Gateway-модели загружены, если есть хотя бы одна в raw store.
-  const gatewayReady = gatewayModelsRaw.length > 0
-  // Показываем skeleton для gateway, если юзер залогинен, но модели ещё не загружены.
-  const showGatewaySkeleton = !!authUser && !gatewayReady && !loading
+  // Skeleton показываем только пока фетч реально идёт или ещё не запускался.
+  // Раньше условие зависело лишь от models.length === 0, из-за чего спиннер
+  // висел вечно при пустом/упавшем фетче (модели при этом могли быть видны из
+  // протухшего кэша main-процесса). lastFetchAt === 0 → ещё не грузили,
+  // gatewayLoading → грузим прямо сейчас.
+  const showGatewaySkeleton = !!authUser
+    && gatewayModelsRaw.length === 0
+    && (gatewayLoading || gatewayLastFetch === 0)
+  // Фетч завершился (успех или провал), но моделей нет — показываем состояние
+  // ошибки/пустоты вместо вечного спиннера.
+  const showGatewayError = !!authUser
+    && gatewayModelsRaw.length === 0
+    && !gatewayLoading
+    && gatewayLastFetch > 0
 
   // Множество ID моделей-групп (type === 'group') — для сортировки выше обычных.
   const groupModelIds = useMemo(() => {
@@ -122,10 +135,20 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
       if (Date.now() - lastLoadedAtRef.current > 5000) loadData()
       loadRecent()
       setTimeout(() => inputRef.current?.focus(), 50)
+      // Авто-retry моделей gateway: если предыдущий фетч неуспешен/пуст и протух
+      // (или вовсе не запускался) — перетягиваем без спиннера. Самовосстановление
+      // без перелогина. При наличии ошибки порог снижен до 30с (vs 5мин в норме),
+      // чтобы селектор быстрее подхватил модели после кратковременного сбоя gateway.
+      if (authUser && gatewayModelsRaw.length === 0) {
+        const staleThreshold = gatewayError ? 30_000 : 300_000
+        if (gatewayLastFetch === 0 || Date.now() - gatewayLastFetch > staleThreshold) {
+          gatewayLoad(true)
+        }
+      }
     } else {
       setQuery('')
     }
-  }, [open])
+  }, [open, authUser, gatewayModelsRaw.length, gatewayLastFetch, gatewayError, gatewayLoad])
 
   // Закрытие по клику снаружи
   useEffect(() => {
@@ -437,6 +460,27 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                           <div className="model-selector-skeleton-text" />
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {/* Gateway: фетч завершён, но моделей нет — ошибка или пусто */}
+                  {showGatewayError && !query.trim() && (
+                    <div className="model-selector-gateway-loading">
+                      <div className="model-selector-gateway-loading-header">
+                        <div className="model-selector-gateway-loading-dot" />
+                        <span>Syntee-Gateway</span>
+                      </div>
+                      <div className="model-selector-gateway-error">
+                        <span className="model-selector-gateway-error-text">
+                          {gatewayError ? `Не удалось загрузить: ${gatewayError}` : 'Модели Syntee-Gateway не найдены'}
+                        </span>
+                        <button
+                          type="button"
+                          className="model-selector-gateway-retry"
+                          onClick={() => gatewayLoad()}
+                        >
+                          Повторить
+                        </button>
+                      </div>
                     </div>
                   )}
                   {rows.length > 0 && (

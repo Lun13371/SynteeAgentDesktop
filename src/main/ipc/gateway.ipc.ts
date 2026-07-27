@@ -109,7 +109,22 @@ function toModelMeta(m: GatewayModel): ModelMeta {
   }
 }
 
-async function gatewayFetch<T>(path: string): Promise<T> {
+/**
+ * Транзиентные ошибки (таймаут/сеть), при которых имеет смысл retry.
+ * Auth/HTTP-ошибки сюда не входят — их ретраить бессмысленно.
+ */
+function isTransientError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === 'AbortError') return true
+  // TypeError — fetch упал на сетевом уровне (DNS/CORS/ECONNREFUSED/...) в Node.
+  if (e instanceof TypeError) return true
+  return false
+}
+
+async function gatewayFetch<T>(
+  path: string,
+  opts: { timeoutMs?: number; retries?: number } = {},
+): Promise<T> {
+  const { timeoutMs = 10000, retries = 0 } = opts
   if (!hasTokens()) {
     throw new GatewayAuthError('Not authenticated with Syntee-Gateway')
   }
@@ -117,35 +132,76 @@ async function gatewayFetch<T>(path: string): Promise<T> {
   if (!token) {
     throw new GatewayAuthError('No valid session')
   }
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 10000)
-  let res: Response
-  try {
-    res = await fetch(`${getGatewayApiUrl()}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-  } finally {
+
+  let lastError: unknown
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let res: Response
+    try {
+      res = await fetch(`${getGatewayApiUrl()}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      })
+    } catch (e) {
+      clearTimeout(timer)
+      lastError = e
+      // Retry только для транзиентных ошибок (таймаут/сеть).
+      if (attempt < retries && isTransientError(e)) {
+        await new Promise(r => setTimeout(r, 1500))
+        continue
+      }
+      throw e
+    }
     clearTimeout(timer)
+    if (res.status === 401) {
+      throw new GatewayAuthError('Session expired', 401)
+    }
+    if (!res.ok) {
+      throw new Error(`Gateway ${path} → HTTP ${res.status}`)
+    }
+    return (await res.json()) as T
   }
-  if (res.status === 401) {
-    throw new GatewayAuthError('Session expired', 401)
-  }
-  if (!res.ok) {
-    throw new Error(`Gateway ${path} → HTTP ${res.status}`)
-  }
-  return (await res.json()) as T
+  // Недостижимо: цикл всегда либо return'ит, либо throw'ит на последней
+  // итерации. На случайfuture-рефакторинга — пробрасываем последнюю ошибку.
+  throw lastError instanceof Error ? lastError : new Error('gatewayFetch: no result')
+}
+
+// ── In-memory кэш сырых GatewayModel[] ──────────────────────────────────────
+// Последний успешно загруженный список моделей. При транзиентном сбое /v1/models
+// отдаём его как stale, чтобы рендерер не терял модели из-за кратковременного
+// лага сети/gateway. Отдельно от setGatewayModelsCache (ModelMeta[]) — тот
+// используется models:getAll и тоже обновляется только при успехе.
+let gatewayRawModelsCache: GatewayModel[] = []
+
+export interface FetchModelsResult {
+  models: GatewayModel[]
+  /** non-null, если запрос упал — рендерер показывает ошибку, но может
+   *  использовать models (stale-кэш) вместо пустого списка. */
+  error: string | null
 }
 
 export function registerGatewayIPC(): void {
-  ipcMain.handle('gateway:fetchModels', async (): Promise<GatewayModel[]> => {
+  ipcMain.handle('gateway:fetchModels', async (): Promise<FetchModelsResult> => {
+    // Контракт: при транзиентных сбоях (таймаут/сеть) НЕ reject'им —
+    // возвращаем последний закэшированный список + error. Это убирает спам
+    // "Error occurred in handler for 'gateway:fetchModels'" в консоли Electron
+    // и даёт рендереру stale-данные вместо пустоты.
+    // GatewayAuthError по-прежнему пробрасываем — это сценарий логаута,
+    // его обрабатывает auth-флоу в renderer.
     try {
-      const data = await gatewayFetch<GatewayModelsResponse>('/v1/models')
+      const data = await gatewayFetch<GatewayModelsResponse>('/v1/models', {
+        timeoutMs: 20000,
+        retries: 1,
+      })
       const models = data.data ?? []
+      gatewayRawModelsCache = models
       setGatewayModelsCache(models.map(toModelMeta))
-      return models
-    } catch {
-      return []
+      return { models, error: null }
+    } catch (e) {
+      if (e instanceof GatewayAuthError) throw e
+      const msg = e instanceof Error ? e.message : String(e)
+      return { models: gatewayRawModelsCache, error: msg }
     }
   })
 

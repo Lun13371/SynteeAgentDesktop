@@ -1,0 +1,89 @@
+.attachment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 6px;
+  align-items: center;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 8px;
+  border-radius: 8px;
+  background: var(--overlay-3);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: default;
+  user-select: none;
+  max-width: 220px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.attachment-chip:hover {
+  background: var(--overlay-4);
+  border-color: var(--overlay-6);
+}
+
+.attachment-chip-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+.attachment-chip--file .attachment-chip-icon { color: #60a5fa; }
+.attachment-chip--image .attachment-chip-icon { color: #34d399; }
+.attachment-chip--skill .attachment-chip-icon { color: #f59e0b; }
+.attachment-chip--command .attachment-chip-icon { color: #a78bfa; }
+
+.attachment-chip-thumb {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--overlay-4);
+}
+
+.attachment-chip-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+}
+
+.attachment-chip-remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.attachment-chip-remove:hover {
+  background: var(--overlay-6);
+  color: var(--text-primary);
+}
+
+.attachment-chip--limit {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #f59e0b;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+}
+
+.attachment-chip--image {
+  padding-left: 4px;
+}

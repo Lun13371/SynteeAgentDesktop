@@ -9,7 +9,14 @@ export type AvatarStyle = 'hex' | 'circle' | 'letter' | 'emoji' | 'none'
 export type ShowTime = 'always' | 'hover' | 'never'
 
 export interface AccentGradient { enabled: boolean; color2: string; angle: number }
-export interface BgImage { src: string; blur: number; opacity: number; tint: string; tintStrength: number }
+export interface BgImage {
+  src: string
+  blur: number
+  opacity: number
+  tint: string
+  tintStrength: number
+  scale: 'cover' | 'contain' | number
+}
 export interface ThemeSchedule {
   enabled: boolean
   dayTheme: string
@@ -46,10 +53,15 @@ interface UIStore {
   accentGradient: AccentGradient
   rainbowAccent: boolean
   bgImage: BgImage | null
+  bgImageEnabled: boolean
+  animatedBgOpacity: number
+  animatedBgSpeed: number
   customThemes: CustomTheme[]
   activeCustomThemeId: string | null
   themeSchedule: ThemeSchedule
   recentAccents: string[]
+  soundVolume: number
+  soundAssignments: Record<string, string | null>
   setTheme: (theme: Theme) => void
   setAccentColor: (color: string) => void
   setAgentPanelWidth: (width: number) => void
@@ -69,10 +81,15 @@ interface UIStore {
   setAccentGradient: (v: AccentGradient) => void
   setRainbowAccent: (v: boolean) => void
   setBgImage: (v: BgImage | null) => void
+  setBgImageEnabled: (v: boolean) => void
+  setAnimatedBgOpacity: (v: number) => void
+  setAnimatedBgSpeed: (v: number) => void
   setCustomThemes: (v: CustomTheme[]) => void
   setActiveCustomThemeId: (v: string | null) => void
   setThemeSchedule: (v: ThemeSchedule) => void
   setRecentAccents: (v: string[]) => void
+  setSoundVolume: (v: number) => void
+  setSoundAssignments: (v: Record<string, string | null>) => void
 }
 
 function clampAgentPanelWidth(w: number): number {
@@ -108,10 +125,15 @@ export const useUIStore = create<UIStore>((set) => ({
   accentGradient: { enabled: false, color2: '#a78bfa', angle: 135 },
   rainbowAccent: false,
   bgImage: null,
+  bgImageEnabled: true,
+  animatedBgOpacity: 60,
+  animatedBgSpeed: 1,
   customThemes: [],
   activeCustomThemeId: null,
   themeSchedule: DEFAULT_THEME_SCHEDULE,
   recentAccents: [],
+  soundVolume: 70,
+  soundAssignments: {},
 
   setTheme: (theme) => set({ theme }),
   setAccentColor: (accentColor) => set({ accentColor }),
@@ -132,8 +154,13 @@ export const useUIStore = create<UIStore>((set) => ({
   setAccentGradient: (accentGradient) => set({ accentGradient }),
   setRainbowAccent: (rainbowAccent) => set({ rainbowAccent }),
   setBgImage: (bgImage) => set({ bgImage }),
+  setBgImageEnabled: (bgImageEnabled) => set({ bgImageEnabled }),
+  setAnimatedBgOpacity: (animatedBgOpacity) => set({ animatedBgOpacity }),
+  setAnimatedBgSpeed: (animatedBgSpeed) => set({ animatedBgSpeed }),
   setCustomThemes: (customThemes) => set({ customThemes }),
   setActiveCustomThemeId: (activeCustomThemeId) => set({ activeCustomThemeId }),
   setThemeSchedule: (themeSchedule) => set({ themeSchedule }),
   setRecentAccents: (recentAccents) => set({ recentAccents }),
+  setSoundVolume: (soundVolume) => set({ soundVolume }),
+  setSoundAssignments: (soundAssignments) => set({ soundAssignments }),
 }))

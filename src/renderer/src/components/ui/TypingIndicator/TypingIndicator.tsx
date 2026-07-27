@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import Logo from '../Logo/Logo'
 import './TypingIndicator.css'
 
 export default function TypingIndicator() {
@@ -11,10 +12,7 @@ export default function TypingIndicator() {
       transition={{ type: 'spring', stiffness: 300, damping: 28 }}
     >
       <div className="typing-avatar">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <polygon points="7,1 13,4 13,10 7,13 1,10 1,4"
-            fill="none" stroke="var(--accent)" strokeWidth="1.2" opacity="0.8"/>
-        </svg>
+        <Logo size={14} />
       </div>
       <div className="typing-bubble glass">
         {[0, 1, 2].map(i => (
