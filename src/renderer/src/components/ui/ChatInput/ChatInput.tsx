@@ -93,7 +93,8 @@ export default function ChatInput({
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const plusBtnRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
-  const { uiSounds, sendEffect } = useUIStore()
+  const uiSounds = useUIStore(s => s.uiSounds)
+  const sendEffect = useUIStore(s => s.sendEffect)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   // ── История навигации по стрелкам вверх/вниз ──

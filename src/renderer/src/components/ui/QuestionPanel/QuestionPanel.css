@@ -42,7 +42,6 @@
     0 1px 0 var(--glass-highlight-1, rgba(255, 255, 255, 0.08)) inset;
   overflow: hidden;
   position: relative;
-  will-change: transform, opacity;
 }
 
 /* Диагональный highlight-градиент поверх стекла (как .liquid-glass::before) */

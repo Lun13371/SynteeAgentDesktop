@@ -68,7 +68,6 @@
   box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.5);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  will-change: opacity, transform;
 }
 
 .model-selector-search {

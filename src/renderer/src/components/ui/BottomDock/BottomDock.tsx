@@ -38,9 +38,11 @@ export default function BottomDock() {
   const dockOpen = useTerminalStore(s => s.dockOpen)
   const dockHeight = useTerminalStore(s => s.dockHeight)
   const activeSessionId = useTerminalStore(s => s.activeSessionId)
-  const sessionsByChat = useTerminalStore(s => s.sessionsByChat)
-  const aiBusySessionIds = useTerminalStore(s => s.aiBusySessionIds)
   const currentChatId = useChatStore(s => s.currentChatId)
+  // Узкий селектор: только сессии текущего чата. Раньше sessionsByChat
+  // целиком → ре-рендер при session change в ЛЮБОМ чате.
+  const sessions = (useTerminalStore(s => currentChatId ? s.sessionsByChat[currentChatId] : undefined) ?? [])
+  const aiBusySessionIds = useTerminalStore(s => s.aiBusySessionIds)
   const { createSession, closeSession, switchSession, setDockOpen, setDockHeight, setActiveChat } = useTerminalStore.getState()
 
   const [shells, setShells] = useState<ShellInfo[]>([])
@@ -52,7 +54,6 @@ export default function BottomDock() {
   const startYRef = useRef(0)
   const startHeightRef = useRef(DOCK_HEIGHT_DEFAULT)
 
-  const sessions = (currentChatId ? sessionsByChat[currentChatId] : undefined) ?? []
   const visibleSessions = sessions.filter(s => !s.dead)
 
   useEffect(() => {

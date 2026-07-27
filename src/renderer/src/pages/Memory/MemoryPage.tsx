@@ -39,6 +39,10 @@ interface Filter {
 
 type SearchMode = 'list' | 'semantic'
 
+// Module-scope константа — не создаём новый массив remarkPlugins при каждом
+// рендере (сбивает мемоизацию ReactMarkdown → ре-парс всех 200 элементов).
+const REMARK_PLUGINS = [remarkGfm]
+
 const KIND_META: Record<string, { label: string; icon: IconName }> = {
   user_fact: { label: 'О пользователе', icon: 'user' },
   project_decision: { label: 'Решения', icon: 'folder' },
@@ -96,6 +100,7 @@ export default function MemoryPage() {
   const [stats, setStats] = useState<{ total: number; byScope: Record<string, number>; byKind: Record<string, number> } | null>(null)
   const [categories, setCategories] = useState<Array<{ id: string; name: string; label: string; icon: string | null; scope: string }>>([])
   const [searchMode, setSearchMode] = useState<SearchMode>('list')
+  const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [filterScope, setFilterScope] = useState<string>('')
   const [filterKind, setFilterKind] = useState<string>('')
@@ -134,6 +139,11 @@ export default function MemoryPage() {
       const all = await (window.syntee as any).memory?.getAll(filter) || []
       setItems(all)
     }
+  }, [searchMode, search, filterScope, filterKind, filterCategory])
+
+  // Stats/categories меняются редко — только при add/delete/prune. Не тянем
+  // их на каждый поисковый запрос (раньше 3 IPC на каждое нажатие клавиши).
+  const loadStats = useCallback(async () => {
     try {
       const s = await (window.syntee as any).memory?.stats()
       setStats(s)
@@ -142,10 +152,12 @@ export default function MemoryPage() {
       const cats = await (window.syntee as any).memory?.getCategories()
       setCategories(cats || [])
     } catch { /* ok */ }
-  }, [searchMode, search, filterScope, filterKind, filterCategory])
+  }, [])
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [load])
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { loadStats() }, [])
 
   // Загружаем список проектов для tab'а графа
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -161,7 +173,7 @@ export default function MemoryPage() {
   const handleDelete = async (id: string) => {
     await (window.syntee as any).memory?.delete(id)
     setItems(prev => prev.filter(m => m.id !== id))
-    load()
+    loadStats()
   }
 
   const handlePin = async (id: string, pinned: boolean) => {
@@ -185,14 +197,16 @@ export default function MemoryPage() {
     setNewKey('')
     setAdding(false)
     load()
+    loadStats()
   }
 
-  const handleSearch = () => { load() }
+  const handleSearch = () => { setSearch(searchInput) }
 
   const handlePrune = async () => {
     const count = await (window.syntee as any).memory?.prune()
     if (count > 0) {
       load()
+      loadStats()
       alert(`Удалено ${count} устаревших записей`)
     } else {
       alert('Нет записей для удаления')
@@ -203,6 +217,7 @@ export default function MemoryPage() {
     const result = await (window.syntee as any).memory?.extractOutcomes()
     alert(result?.extracted ? `Извлечено ${result.extracted} уроков` : 'Уроков не найдено')
     load()
+    loadStats()
   }
 
   const handleReindex = async () => {
@@ -213,6 +228,7 @@ export default function MemoryPage() {
   const handleDeleteCategory = async (id: string) => {
     await (window.syntee as any).memory?.deleteCategory(id)
     load()
+    loadStats()
   }
 
   return (
@@ -494,8 +510,8 @@ export default function MemoryPage() {
         <input
           className="memory-search"
           placeholder={searchMode === 'semantic' ? 'Семантический поиск по смыслу...' : 'Поиск по содержимому...'}
-          value={search}
-          onChange={e => setSearch(e.target.value)}
+          value={searchInput}
+          onChange={e => setSearchInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSearch()}
         />
       </div>
@@ -547,7 +563,7 @@ export default function MemoryPage() {
                     {m.content && m.content !== m.title && (
                       <>
                         <div className={`memory-item-content-body ${expandedItems.has(m.id) ? 'memory-item-content-body--expanded' : ''}`}>
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                          <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{m.content}</ReactMarkdown>
                         </div>
                         {m.content.length > 120 && (
                           <button

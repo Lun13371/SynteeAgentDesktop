@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Provider, ModelAssignment, ModelParams, ModelRole, ModelCapability, ModelMeta } from '../../../../../shared/types'
 import { BUILTIN_PROVIDERS_META } from '../../../../../shared/data/builtinModels'
@@ -40,6 +40,15 @@ export default function AISettingsTab() {
   const [customForm, setCustomForm] = useState({ name: '', baseUrl: '', apiKey: '' })
   const [imageModelId, setImageModelId] = useState('')
   const [imageProviderId, setImageProviderId] = useState('')
+
+  // ── Debounce для systemPrompt textarea ──────────────────────────────
+  // Раньше updateParams({ systemPrompt }) звался на каждое нажатие → IPC
+  // per keystroke + setParams → ре-рендер всего таба. Теперь локальный
+  // draft отвечает мгновенно, IPC дебаунсится 400мс. Невидимо: тот же
+  // результат, но без фризов при печати.
+  const [systemPromptDraft, setSystemPromptDraft] = useState(params.systemPrompt)
+  const systemPromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => { setSystemPromptDraft(params.systemPrompt) }, [params.systemPrompt])
 
   useEffect(() => { load() }, [])
 
@@ -228,7 +237,6 @@ export default function AISettingsTab() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ type: 'spring', stiffness: 380, damping: 28, delay: i * 0.035 }}
                   whileHover={{ scale: 1.02, transition: { type: 'spring', stiffness: 500, damping: 30 } }}
-                  style={{ willChange: 'transform' }}
                 >
                   <div className="provider-card-header">
                     <BrandAvatar
@@ -539,8 +547,15 @@ export default function AISettingsTab() {
               className="ai-param-textarea"
               rows={6}
               placeholder="Например: отвечай коротко, используй примеры кода..."
-              value={params.systemPrompt}
-              onChange={e => updateParams({ systemPrompt: e.target.value })}
+              value={systemPromptDraft}
+              onChange={e => {
+                const v = e.target.value
+                setSystemPromptDraft(v)
+                if (systemPromptTimerRef.current) clearTimeout(systemPromptTimerRef.current)
+                systemPromptTimerRef.current = setTimeout(() => {
+                  updateParams({ systemPrompt: v })
+                }, 400)
+              }}
             />
           </div>
         </div>

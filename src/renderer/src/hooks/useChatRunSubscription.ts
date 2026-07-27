@@ -603,7 +603,7 @@ export function useChatRunSubscription() {
           callId: step.callId,
           serverName: step.serverName,
         }
-        buf.steps = [...buf.steps, newStep]
+        buf.steps.push(newStep)
 
         // Заменяем pending-карточку in-place по pendingCallId
         let replacedPending = false
@@ -665,7 +665,7 @@ export function useChatRunSubscription() {
           diff: step.diff,
           callId: step.callId,
         }
-        buf.steps = [...buf.steps, newStep]
+        buf.steps.push(newStep)
         if (buf.iters.length === 0) {
           liveSet(chatId, { steps: [...buf.steps] })
           return

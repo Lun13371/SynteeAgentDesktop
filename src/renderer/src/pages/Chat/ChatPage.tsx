@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { useShallow } from 'zustand/react/shallow'
 import { v4 as uuid } from 'uuid'
 import { useContextCounter } from '../../hooks/useContextCounter'
 import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../hooks/useChatRunSubscription'
@@ -86,19 +87,30 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
 )
 
 function ChatPage({ embedded = false }: { embedded?: boolean }) {
-  const {
-    chats, currentChatId, messages,
-    setChats, setCurrentChat, setMessages, addMessage,
-    pinMessage,
-    isIncognito,
-    activeMode,
-    projects, setProjects, activeProjectId, setActiveProject,
-    liveByChat, runStatusByChat, markChatRead,
-  } = useChatStore()
-  // Live-состояние текущего чата. Раньше было в useState ChatPage и было
-  // общим для всех чатов — при переключении утекало в чужой чат. Теперь
-  // читаем из store по currentChatId — каждый чат имеет свой LiveState.
-  const live = (currentChatId ? liveByChat[currentChatId] : undefined) ?? EMPTY_LIVE
+  // Узкие селекторы: подписываемся только на нужные поля. Раньше был
+  // useChatStore() без селектора — ре-рендер на любое изменение store
+  // (чужой чат стримит → liveByChat меняется → ChatPage ре-рендер 20×/сек).
+  // Теперь data-поля выбираем по одному, actions — через useShallow
+  // (стабильные ссылки, shallow-сравнение всегда равно → без ре-рендеров).
+  const currentChatId = useChatStore(s => s.currentChatId)
+  const messages = useChatStore(s => s.messages)
+  const chats = useChatStore(s => s.chats)
+  const isIncognito = useChatStore(s => s.isIncognito)
+  const activeMode = useChatStore(s => s.activeMode)
+  const projects = useChatStore(s => s.projects)
+  const activeProjectId = useChatStore(s => s.activeProjectId)
+  // Live-состояние ТОЛЬКО текущего чата. Селектор возвращает ссылку на
+  // liveByChat[currentChatId] — она меняется только при setLiveState для
+  // ЭТОГО chatId (спред копирует ссылки остальных). Чужой чат стримит —
+  // ref текущего не меняется → без ре-рендера.
+  const live = (useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId] : undefined) ?? EMPTY_LIVE)
+  const runStatus = useChatStore(s => s.currentChatId ? s.runStatusByChat[s.currentChatId] : undefined)
+  const { setChats, setCurrentChat, setMessages, addMessage, pinMessage,
+    setProjects, setActiveProject, markChatRead } = useChatStore(useShallow(s => ({
+    setChats: s.setChats, setCurrentChat: s.setCurrentChat, setMessages: s.setMessages,
+    addMessage: s.addMessage, pinMessage: s.pinMessage, setProjects: s.setProjects,
+    setActiveProject: s.setActiveProject, markChatRead: s.markChatRead,
+  })))
   const isTyping = live.isTyping
   const isAgentRunning = live.isAgentRunning
   const streamingText = live.text
@@ -205,7 +217,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   // Тосты при терминальных статусах запуска (ошибка/отмена) — только для текущего чата
   const prevRunStatusRef = useRef<string | undefined>(undefined)
-  const runStatus = currentChatId ? runStatusByChat[currentChatId] : undefined
   useEffect(() => {
     if (!runStatus) return
     const prev = prevRunStatusRef.current
@@ -1146,7 +1157,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     count: displayMessages.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
-    overscan: 3,
+    overscan: 5,
     measureElement: (el) => el.getBoundingClientRect().height,
   })
 

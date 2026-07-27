@@ -571,8 +571,9 @@ function BillingSection() {
             <div className="billing-chart">
               <div className="billing-chart__title">Запросы по часам</div>
               <div className="billing-chart__bars">
-                {timeseries.map((p, i) => {
+                {(() => {
                   const max = Math.max(...timeseries.map(x => x.requests), 1)
+                  return timeseries.map((p, i) => {
                   const h = Math.max(2, (p.requests / max) * 60)
                   return (
                     <div
@@ -582,7 +583,8 @@ function BillingSection() {
                       title={`${new Date(p.timestamp).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })} · ${p.requests} зап · $${p.cost.toFixed(4)}`}
                     />
                   )
-                })}
+                  })
+                })()}
               </div>
             </div>
           )}

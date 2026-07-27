@@ -105,12 +105,20 @@ export default function Sidebar({
   const unreadStatusByChat = useChatStore(s => s.unreadStatusByChat)
   const dropChatState = useChatStore(s => s.dropChatState)
 
+  // Ref для chats чтобы chat:renamed effect не ре-подписывался при каждом
+  // изменении chats (после каждого ответа setChats(all) → новый ref →
+  // teardown+resubscribe IPC listener). Невидимо — тот же behaviour.
+  const chatsRef = useRef(chats)
+  const onChatsUpdateRef = useRef(onChatsUpdate)
+  useEffect(() => { chatsRef.current = chats })
+  useEffect(() => { onChatsUpdateRef.current = onChatsUpdate })
+
   useEffect(() => {
     const off = window.syntee.on('chat:renamed', ({ chatId, title }: { chatId: string; title: string }) => {
-      onChatsUpdate?.(chats.map(c => c.id === chatId ? { ...c, title } : c))
+      onChatsUpdateRef.current?.(chatsRef.current.map(c => c.id === chatId ? { ...c, title } : c))
     })
     return () => off()
-  }, [chats, onChatsUpdate])
+  }, [])
 
   useEffect(() => { if (renamingId) renameRef.current?.focus() }, [renamingId])
   useEffect(() => { if (renamingProjectId) renameProjectRef.current?.focus() }, [renamingProjectId])

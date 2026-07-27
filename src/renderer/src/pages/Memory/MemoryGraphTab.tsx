@@ -222,6 +222,12 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
       }
     })
     networkRef.current = network
+    // Отключаем физику после стабилизации — без этого Barnes-Hut solver
+    // продолжает работать каждый кадр до размонтирования, потребляя CPU.
+    // После 200 итераций layout уже сходится, визуально ничего не меняется.
+    network.once('stabilizationIterationsDone', () => {
+      network.setOptions({ physics: { enabled: false } })
+    })
 
     return () => {
       network.destroy()
