@@ -15,6 +15,7 @@ interface Props {
   onPin: (chat: Chat) => void
   onArchive: (chat: Chat) => void
   onDuplicate: (chat: Chat) => void
+  onShare?: (chat: Chat) => void
   onExport: (chat: Chat, fmt: 'txt' | 'md') => void
   onDelete: (chat: Chat) => void
   onColor: (chat: Chat, color: string | null) => void
@@ -29,7 +30,7 @@ const COLORS = [
   { value: '#a78bfa', label: 'Фиолетовый' },
 ]
 
-export default function ChatContextMenu({ chat, pos, onClose, onRename, onPin, onArchive, onDuplicate, onExport, onDelete, onColor }: Props) {
+export default function ChatContextMenu({ chat, pos, onClose, onRename, onPin, onArchive, onDuplicate, onShare, onExport, onDelete, onColor }: Props) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -77,6 +78,9 @@ export default function ChatContextMenu({ chat, pos, onClose, onRename, onPin, o
           <CtxItem icon="pin" label={chat.isPinned ? 'Открепить' : 'Закрепить'} onClick={() => { onPin(chat); onClose() }} />
           <CtxItem icon="archive" label={chat.isArchived ? 'Разархивировать' : 'Архивировать'} onClick={() => { onArchive(chat); onClose() }} />
           <CtxItem icon="copy" label="Дублировать" onClick={() => { onDuplicate(chat); onClose() }} />
+          {onShare && (
+            <CtxItem icon="messageSquare" label="Поделиться с другом" onClick={() => { onShare(chat); onClose() }} />
+          )}
           {/* Открыть рабочую директорию в системном проводнике — только для
               чатов с привязанной папкой (новые Code-чаты после фичи workdir). */}
           {chat.workdir && (

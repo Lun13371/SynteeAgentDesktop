@@ -23,6 +23,7 @@
     "@tanstack/react-virtual": "^3.14.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/diff": "^7.0.2",
+    "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
@@ -50,6 +51,7 @@
     "vis-data": "^8.0.4",
     "vis-network": "^10.1.0",
     "web-tree-sitter": "^0.24.0",
+    "ws": "^8.21.1",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

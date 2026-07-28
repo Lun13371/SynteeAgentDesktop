@@ -7,6 +7,7 @@ import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
 import ExtensionsPopover from '../../ui/ExtensionsPopover/ExtensionsPopover'
 import { ProjectIndexModal } from '../../ui/ProjectIndexModal/ProjectIndexModal'
+import ShareChatModal from '../../ui/ShareChatModal/ShareChatModal'
 import UserCard from './UserCard'
 import { useChatStore } from '../../../store/chat.store'
 import './Sidebar.css'
@@ -97,6 +98,7 @@ export default function Sidebar({
   const verifyCmdRef = useRef<HTMLInputElement>(null)
   const [extPopoverOpen, setExtPopoverOpen] = useState(false)
   const [indexModalProject, setIndexModalProject] = useState<{ id: string; name: string } | null>(null)
+  const [shareTarget, setShareTarget] = useState<{ id: string; title: string } | null>(null)
 
   // Статусы запусков чатов для индикаторов (spinner/✓/✗). Подписываемся на
   // весь объект — Sidebar не большой, ре-рендер недорогой. Альтернатива
@@ -224,6 +226,10 @@ export default function Sidebar({
     await window.syntee.chat.duplicate(chat.id)
     const updated = await window.syntee.chat.getAll() as Chat[]
     onChatsUpdate?.(updated)
+  }
+
+  const handleShare = (chat: Chat) => {
+    setShareTarget({ id: chat.id, title: chat.title })
   }
 
   const handleDelete = async (chat: Chat) => {
@@ -587,9 +593,17 @@ export default function Sidebar({
         onPin={handlePin}
         onArchive={handleArchive}
         onDuplicate={handleDuplicate}
+        onShare={handleShare}
         onExport={handleExport}
         onDelete={handleDelete}
         onColor={handleColor}
+      />
+
+      <ShareChatModal
+        open={shareTarget !== null}
+        onClose={() => setShareTarget(null)}
+        chatId={shareTarget?.id ?? null}
+        chatTitle={shareTarget?.title ?? ''}
       />
 
       {/* Контекстное меню проекта. Рендерим всегда (без условия), чтобы

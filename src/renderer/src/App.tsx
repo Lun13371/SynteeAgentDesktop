@@ -12,6 +12,7 @@ import {
 } from './store/gatewayModels.store'
 import { useBillingStore } from './store/billing.store'
 import { useChatStore } from './store/chat.store'
+import { useMessengerStore } from './store/messenger.store'
 import { autoAssignGatewayModels, markAutoAssignDone, isAutoAssignDone } from './store/autoAssign'
 import { contrastText, withAlpha, hexToRgb, hslToHex } from './utils/colorUtils'
 import { startThemeScheduler } from './utils/themeScheduler'
@@ -27,6 +28,8 @@ import SettingsPage from './pages/Settings/SettingsPage'
 import './pages/Settings/SettingsPage.css'
 import MemoryPage from './pages/Memory/MemoryPage'
 import './pages/Memory/MemoryPage.css'
+import MessengerPage from './pages/Messenger/MessengerPage'
+import './pages/Messenger/MessengerPage.css'
 import LoginScreen from './pages/Login/LoginScreen'
 import './pages/Login/LoginScreen.css'
 import BootScreen from './components/ui/BootScreen/BootScreen'
@@ -654,6 +657,15 @@ export default function App() {
     }
   }, [authUser, billingLoad])
 
+  // ── Мессенджер: WS-подключение при входе, отключение при выходе ──────────
+  const messengerInit = useMessengerStore(s => s.init)
+  const messengerDisconnect = useMessengerStore(s => s.disconnect)
+  useEffect(() => {
+    if (!authUser) return
+    void messengerInit()
+    return () => { void messengerDisconnect() }
+  }, [authUser, messengerInit, messengerDisconnect])
+
   // Подписка на push-события MCP (статус подключения, обновление тулов).
   // Один раз за сессию — обновляет extensions.store в реальном времени.
   useEffect(() => {
@@ -736,6 +748,7 @@ export default function App() {
                 })
               }}
               onMemoryClick={() => toggleMainPage('memory')}
+              onMessengerClick={() => toggleMainPage('messenger')}
               onProfileClick={() => openSettings('profile')}
             />
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
@@ -743,6 +756,7 @@ export default function App() {
                 {mainPage === 'chat' && <ChatPage embedded />}
                 {mainPage === 'settings' && <SettingsPage />}
                 {mainPage === 'memory' && <MemoryPage />}
+                {mainPage === 'messenger' && <MessengerPage />}
               </div>
               <RightPanelHost />
             </div>

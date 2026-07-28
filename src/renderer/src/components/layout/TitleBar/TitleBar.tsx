@@ -4,17 +4,19 @@ import Logo from '../../ui/Logo/Logo'
 import { useTerminalStore } from '../../../store/terminal.store'
 import { useAuthStore } from '../../../store/auth.store'
 import { useBillingStore } from '../../../store/billing.store'
+import { useMessengerStore } from '../../../store/messenger.store'
 import './TitleBar.css'
 
 interface TitleBarProps {
   onSettingsClick?: () => void
   onAgentClick?: () => void
   onMemoryClick?: () => void
+  onMessengerClick?: () => void
   onProfileClick?: () => void
   currentChatId?: string | null
 }
 
-export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick, onProfileClick }: TitleBarProps) {
+export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick, onMessengerClick, onProfileClick }: TitleBarProps) {
   const handleMinimize = () => window.syntee.window.minimize()
   const handleHide = () => window.syntee.window.hide()
   const dockOpen = useTerminalStore(s => s.dockOpen)
@@ -23,6 +25,7 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
   }
   const user = useAuthStore(s => s.user)
   const planUsage = useBillingStore(s => s.planUsage)
+  const unreadTotal = useMessengerStore(s => s.conversations.reduce((n, c) => n + (c.unread_count || 0), 0))
 
   // Индикатор дневного лимита — кольцевой прогресс вокруг аватара.
   const dailyLimitPct = planUsage && planUsage.usage.today_total_tokens > 0
@@ -42,6 +45,20 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
 
       <div className="titlebar-right no-drag">
         {onMemoryClick && <IconButton icon="brain" label="Память" onClick={onMemoryClick} />}
+        {onMessengerClick && user && (
+          <div className="titlebar-messenger-wrap">
+            <IconButton
+              icon="messageSquare"
+              label="Мессенджер"
+              onClick={onMessengerClick}
+            />
+            {unreadTotal > 0 && (
+              <span className="titlebar-messenger-badge" title={`${unreadTotal} непрочитанных`}>
+                {unreadTotal > 99 ? '99+' : unreadTotal}
+              </span>
+            )}
+          </div>
+        )}
         <IconButton
           icon="terminal"
           label="Терминал"
