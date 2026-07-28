@@ -93,8 +93,7 @@ interface RequestOptions {
   timeoutMs?: number
 }
 
-async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, headers = {}, noAuth = false, responseType = 'json', timeoutMs = 15000 } = opts
+export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {  const { method = 'GET', body, headers = {}, noAuth = false, responseType = 'json', timeoutMs = 15000 } = opts
 
   const makeHeaders = (token: string | null): Record<string, string> => {
     const h: Record<string, string> = { 'Content-Type': 'application/json', ...headers }

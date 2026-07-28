@@ -9,19 +9,20 @@ import { getCatalogModel, inferSpeed, getCatalogStatus, type CatalogModelInfo } 
 // polling). Здесь хранится последняя загруженная версия, чтобы models:getAll
 // мог вернуть модели gateway синхронно вместе с остальными.
 let gatewayModelsCache: ModelMeta[] = []
-let gatewayModelsCacheAt = 0
 
 export function setGatewayModelsCache(models: ModelMeta[]): void {
   gatewayModelsCache = models
-  gatewayModelsCacheAt = Date.now()
 }
 
 export function getGatewayModelsCache(): ModelMeta[] {
-  // Считаем кэш валидным 5 минут. После — возвращаем пустой список, чтобы
-  // models:getAll не подмешивал протухшие модели, пока renderer не обновит
-  // их свежим gateway:fetchModels. Раньше обе ветки возвращали одно и то же,
-  // из-за чего пикер показывал stale-модели при текущем неуспешном фетче.
-  if (gatewayModelsCacheAt === 0 || Date.now() - gatewayModelsCacheAt > 300_000) return []
+  // Кэш не протухает по таймеру — однажды загруженные модели держатся до
+  // logout/рестарта. Раньше здесь был 5-минутный TTL, который молча обнулял
+  // список; т.к. в BUILTIN_MODELS нет записей 'syntee-gateway', группа
+  // исчезала из дропдауна без ошибки и не восстанавливалась (renderer-стор
+  // хранит свой непустой список и не триггерил retry). Stale-защита при
+  // транзиентном сбое /v1/models уже есть в gateway.ipc.ts (возвращаем
+  // последний raw-кэш + error) и в gatewayModels.store.ts (не затираем
+  // непустой список при ошибке) — TTL тут дублировал её с побочным эффектом.
   return gatewayModelsCache
 }
 

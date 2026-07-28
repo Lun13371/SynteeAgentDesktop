@@ -2,6 +2,8 @@ import type { Chat, Message, ChatMode } from '../../shared/types'
 import { v4 as uuid } from 'uuid'
 import { getDB } from './handle'
 import { stripPlanTags } from '../../shared/planParser'
+import { getMessages, saveMessage } from './messages'
+import { getWorkingMemory, getChatSummary, setWorkingMemory, setChatSummary } from './memory'
 
 // === CHATS ===
 
@@ -239,4 +241,84 @@ export function getChatDraft(chatId: string): string {
 
 export function setChatDraft(chatId: string, draft: string): void {
   getDB().prepare('UPDATE chats SET draft = ? WHERE id = ?').run(draft, chatId)
+}
+
+// === Chat sharing (Phase 3) ================================================
+// packChatForShare serializes a chat + messages + working memory + summary
+// into a plain JSON object that can round-trip through the gateway and be
+// re-imported by another SynteeHelper instance via importChatFromShare.
+//
+// Long-term memory (memory_items) is deliberately NOT included — it is
+// global/project-scoped personal knowledge, not part of the conversation.
+
+export interface ChatSnapshot {
+  version: 1
+  chat: {
+    title: string
+    mode: ChatMode
+    createdAt: number
+  }
+  messages: Array<Message>
+  workingMemory: string | null
+  summary: string | null
+}
+
+export function packChatForShare(chatId: string): ChatSnapshot | null {
+  const db = getDB()
+  const row = db.prepare(
+    'SELECT title, mode, created_at as createdAt FROM chats WHERE id = ?'
+  ).get(chatId) as { title: string; mode: ChatMode; createdAt: number } | undefined
+  if (!row) return null
+
+  const messages = getMessages(chatId)
+  const workingMemory = (() => { try { return getWorkingMemory(chatId) || null } catch { return null } })()
+  const summary = (() => { try { return getChatSummary(chatId) || null } catch { return null } })()
+
+  return {
+    version: 1,
+    chat: { title: row.title, mode: row.mode ?? 'code', createdAt: row.createdAt },
+    messages,
+    workingMemory,
+    summary,
+  }
+}
+
+export function importChatFromShare(snapshot: ChatSnapshot, titlePrefix?: string): { chatId: string; messages: Message[]; title: string } | { error: string } {
+  try {
+    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.messages)) {
+      return { error: 'Неверный формат снапшота чата' }
+    }
+    const db = getDB()
+    const newChat = createChat(false, snapshot.chat.mode ?? 'code', undefined)
+    const title = (titlePrefix && titlePrefix.trim())
+      ? titlePrefix.trim()
+      : `${snapshot.chat.title || 'Импортированный чат'} (импорт)`
+    renameChat(newChat.id, title)
+
+    // Set created_at to the original to keep chronological intent.
+    db.prepare('UPDATE chats SET created_at = ? WHERE id = ?').run(snapshot.chat.createdAt ?? Date.now(), newChat.id)
+
+    for (const msg of snapshot.messages) {
+      saveMessage({
+        ...msg,
+        id: uuid(),
+        chatId: newChat.id,
+      })
+    }
+
+    if (snapshot.workingMemory) {
+      try { setWorkingMemory(newChat.id, snapshot.workingMemory) } catch { /* ok */ }
+    }
+    if (snapshot.summary) {
+      try { setChatSummary(newChat.id, snapshot.summary) } catch { /* ok */ }
+    }
+
+    return {
+      chatId: newChat.id,
+      messages: getMessages(newChat.id),
+      title,
+    }
+  } catch (e) {
+    return { error: `Ошибка импорта: ${(e as Error).message}` }
+  }
 }

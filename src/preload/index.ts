@@ -105,6 +105,110 @@ const synteeAPI = {
     openTopup: () => ipcRenderer.invoke('billing:openTopup'),
   },
 
+  // ── Мессенджер (друзья + личные сообщения, фаза 1) ────────────────────
+  // WS-соединение живёт в main-процессе (токены не покидают main).
+  // connect/disconnect — жизненный цикл. ws:send — отправка envelope в WS.
+  // onEvent — подписка на все входящие WS-события + ws:open/ws:close.
+  messenger: {
+    connect: () => ipcRenderer.invoke('messenger:connect') as Promise<{ ok: boolean }>,
+    disconnect: () => ipcRenderer.invoke('messenger:disconnect') as Promise<{ ok: boolean }>,
+    wsSend: (envelope: { type: string; data: Record<string, unknown> }) =>
+      ipcRenderer.invoke('messenger:ws:send', envelope) as Promise<{ ok: boolean }>,
+    setActive: (conversationId: string | null) =>
+      ipcRenderer.invoke('messenger:setActive', conversationId) as Promise<{ ok: boolean }>,
+    onEvent: (cb: (envelope: { type: string; data: Record<string, unknown> }) => void) => {
+      const handler = (_e: unknown, envelope: { type: string; data: Record<string, unknown> }) => cb(envelope)
+      ipcRenderer.on('messenger:event', handler)
+      return () => ipcRenderer.removeListener('messenger:event', handler)
+    },
+    // ── Друзья ──
+    friends: {
+      list: () => ipcRenderer.invoke('messenger:friends:list'),
+      requests: () => ipcRenderer.invoke('messenger:friends:requests'),
+      search: (email: string) => ipcRenderer.invoke('messenger:friends:search', email),
+      request: (email: string) => ipcRenderer.invoke('messenger:friends:request', email),
+      accept: (userId: string) => ipcRenderer.invoke('messenger:friends:accept', userId),
+      decline: (userId: string) => ipcRenderer.invoke('messenger:friends:decline', userId),
+      unfriend: (userId: string) => ipcRenderer.invoke('messenger:friends:unfriend', userId),
+      block: (userId: string) => ipcRenderer.invoke('messenger:friends:block', userId),
+      unblock: (userId: string) => ipcRenderer.invoke('messenger:friends:unblock', userId),
+      hide: (userId: string) => ipcRenderer.invoke('messenger:friends:hide', userId),
+      unhide: (userId: string) => ipcRenderer.invoke('messenger:friends:unhide', userId),
+    },
+    // ── Диалоги и сообщения ──
+    conversations: {
+      list: () => ipcRenderer.invoke('messenger:conversations:list'),
+      create: (otherId: string) => ipcRenderer.invoke('messenger:conversations:create', otherId),
+    },
+    messages: {
+      list: (conversationId: string, cursor?: string | null, limit?: number) =>
+        ipcRenderer.invoke('messenger:messages:list', conversationId, cursor, limit),
+      send: (conversationId: string, payload: {
+        message_type?: 'text' | 'code' | 'image' | 'file'
+        body?: string | null
+        attachment_token?: string | null
+        attachment_filename?: string | null
+        attachment_mime?: string | null
+        attachment_size?: number | null
+        reply_to_id?: string | null
+      }) => ipcRenderer.invoke('messenger:messages:send', conversationId, payload),
+      read: (conversationId: string, messageId: string) =>
+        ipcRenderer.invoke('messenger:messages:read', conversationId, messageId),
+      typing: (conversationId: string) => ipcRenderer.invoke('messenger:messages:typing', conversationId),
+      react: (conversationId: string, messageId: string, emoji: string) =>
+        ipcRenderer.invoke('messenger:messages:react', conversationId, messageId, emoji),
+      delete: (conversationId: string, messageId: string) =>
+        ipcRenderer.invoke('messenger:messages:delete', conversationId, messageId),
+      search: (q: string, conversationId?: string) =>
+        ipcRenderer.invoke('messenger:messages:search', q, conversationId),
+    },
+    // ── Вложения ──
+    attachments: {
+      upload: (file: File) => ipcRenderer.invoke('messenger:attachments:upload', file),
+      fetch: (conversationId: string, messageId: string) =>
+        ipcRenderer.invoke('messenger:attachments:fetch', conversationId, messageId),
+    },
+    // ── Шаринг чатов (Фаза 3) ──
+    // shareChat упаковывает локальный чат и отправляет его другу через DM.
+    // importShare скачивает снапшот и импортирует в локальную SQLite.
+    shares: {
+      shareChat: (chatId: string, recipientId: string) =>
+        ipcRenderer.invoke('messenger:shareChat', chatId, recipientId) as Promise<
+          { ok: true; share: unknown } | { error: string }
+        >,
+      importShare: (shareId: string) =>
+        ipcRenderer.invoke('messenger:importShare', shareId) as Promise<
+          { chatId: string; messages: unknown[]; title: string } | { error: string }
+        >,
+    },
+    // ── Общий чат (Lounge, Фаза 2) ──
+    global: {
+      list: (cursor?: string | null, limit?: number) =>
+        ipcRenderer.invoke('messenger:global:list', cursor, limit),
+      send: (payload: {
+        message_type?: 'text' | 'code' | 'image' | 'file'
+        body?: string | null
+        attachment_token?: string | null
+        attachment_filename?: string | null
+        attachment_mime?: string | null
+        attachment_size?: number | null
+        reply_to_id?: string | null
+      }) => ipcRenderer.invoke('messenger:global:send', payload),
+      read: (messageId: string) => ipcRenderer.invoke('messenger:global:read', messageId),
+      unread: () => ipcRenderer.invoke('messenger:global:unread'),
+      react: (messageId: string, emoji: string) =>
+        ipcRenderer.invoke('messenger:global:react', messageId, emoji),
+      delete: (messageId: string) => ipcRenderer.invoke('messenger:global:delete', messageId),
+      typing: () => ipcRenderer.invoke('messenger:global:typing'),
+      fetchAttachment: (messageId: string) =>
+        ipcRenderer.invoke('messenger:global:fetchAttachment', messageId),
+      shareChat: (chatId: string) =>
+        ipcRenderer.invoke('messenger:global:shareChat', chatId) as Promise<
+          { ok: true; message: unknown } | { error: string }
+        >,
+    },
+  },
+
   // Система
   system: {
     info: () => ipcRenderer.invoke('system:info'),

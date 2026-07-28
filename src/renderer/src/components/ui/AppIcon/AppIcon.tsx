@@ -9,6 +9,7 @@ import {
   ListChecks, Briefcase, MessageSquare, GripVertical, PanelRight,
   History, Undo2, Puzzle, Power, ChevronLeft, Server, Wrench, Star, Download,
   Compass, HelpCircle, GitFork, Camera, Command, FlaskConical, Bug, Shuffle,
+  Users, UserPlus, Smile, Ban, Phone,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -43,6 +44,11 @@ const ICONS = {
   flaskConical: FlaskConical,
   bug: Bug,
   shuffle: Shuffle,
+  users: Users,
+  userPlus: UserPlus,
+  smile: Smile,
+  ban: Ban,
+  phone: Phone,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS

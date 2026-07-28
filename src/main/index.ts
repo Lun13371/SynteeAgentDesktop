@@ -41,6 +41,7 @@ import { registerMentionsIPC, shutdownMentions } from './ipc/mentions.ipc'
 import { registerAuthIPC, registerDeepLinks } from './ipc/auth.ipc'
 import { registerGatewayIPC } from './ipc/gateway.ipc'
 import { registerBillingIPC } from './ipc/billing.ipc'
+import { registerMessengerIPC } from './ipc/messenger.ipc'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initCommandManager } from '../core/commands/commandManager'
@@ -164,6 +165,8 @@ app.whenReady().then(async () => {
   registerGatewayIPC()
   // Syntee-Gateway биллинг (фаза 3)
   registerBillingIPC()
+  // Syntee-Gateway мессенджер: друзья + ЛС (фаза 1)
+  registerMessengerIPC(() => mainWindow.getWindow())
 
   // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
   ptyManager.setSender(mainWindow.getWindow())
