@@ -42,6 +42,9 @@ import { registerAuthIPC, registerDeepLinks } from './ipc/auth.ipc'
 import { registerGatewayIPC } from './ipc/gateway.ipc'
 import { registerBillingIPC } from './ipc/billing.ipc'
 import { registerMessengerIPC } from './ipc/messenger.ipc'
+import { registerUpdatesIPC } from './ipc/updates.ipc'
+import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
+import { ensureUpdater } from './updater/LauncherBridge'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initCommandManager } from '../core/commands/commandManager'
@@ -167,6 +170,12 @@ app.whenReady().then(async () => {
   registerBillingIPC()
   // Syntee-Gateway мессенджер: друзья + ЛС (фаза 1)
   registerMessengerIPC(() => mainWindow.getWindow())
+  // In-app update checker (informational; the Go launcher does the actual apply)
+  registerUpdatesIPC(() => mainWindow.getWindow())
+  startUpdatePolling()
+
+  // Ensure updater.exe exists next to the client; download from website if missing.
+  ensureUpdater().catch((e) => console.error('[updater] ensureUpdater failed:', e))
 
   // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
   ptyManager.setSender(mainWindow.getWindow())
@@ -230,6 +239,8 @@ app.on('window-all-closed', () => {})
 app.on('before-quit', () => {
   mainWindow?.flushBounds()
   ptyManager.killAll()
+  // Останавливаем опрос обновлений.
+  stopUpdatePolling()
   // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.
   stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
   // Останавливаем file indexer для @mention-пикера.

@@ -42,6 +42,9 @@ import AgentConfirmDialog from './components/ui/AgentConfirmDialog/AgentConfirmD
 import QuestionPanel from './components/ui/QuestionPanel/QuestionPanel'
 import BottomDock from './components/ui/BottomDock/BottomDock'
 import './components/ui/RightPanel/RightPanel.css'
+import UpdateAvailableModal from './components/ui/UpdateAvailableModal/UpdateAvailableModal'
+import ForceUpdateModal from './components/ui/ForceUpdateModal/ForceUpdateModal'
+import { useUpdateStore, selectForceUpdate } from './store/update.store'
 
 type Route = 'chat' | 'overlay' | 'voice' | 'spotlight'
 
@@ -600,6 +603,16 @@ export default function App() {
     return () => { off() }
   }, [])
 
+  // ── In-app update checker ──────────────────────────────────────────────
+  // Hydrate the update store on mount: fetches the current state from the
+  // main process and subscribes to live pushes (so the badge / force modal
+  // appear without polling from the renderer).
+  const [updateModalOpen, setUpdateModalOpen] = useState(false)
+  const forceUpdate = useUpdateStore(selectForceUpdate)
+  useEffect(() => {
+    useUpdateStore.getState().init()
+  }, [])
+
   // Когда юзер появился (успешный вход через браузер) — переключаемся в app.
   // Сбрасываем loginSkipped — юзер явно вошёл, больше не гость.
   useEffect(() => {
@@ -750,6 +763,7 @@ export default function App() {
               onMemoryClick={() => toggleMainPage('memory')}
               onMessengerClick={() => toggleMainPage('messenger')}
               onProfileClick={() => openSettings('profile')}
+              onUpdateClick={() => setUpdateModalOpen(true)}
             />
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
               <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
@@ -764,6 +778,8 @@ export default function App() {
             <ToastContainer />
             <AgentConfirmDialog />
             <QuestionPanel />
+            <UpdateAvailableModal open={updateModalOpen} onClose={() => setUpdateModalOpen(false)} />
+            <ForceUpdateModal open={forceUpdate !== null} />
           </div>
         </motion.div>
       )}

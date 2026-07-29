@@ -1,4 +1,4 @@
-// Shared types for IPC communication
+﻿// Shared types for IPC communication
 export interface IPCChannels {
   // Window
   'window:hide': () => void
@@ -23,9 +23,9 @@ export interface IPCChannels {
     oneShotSkill?: { name: string; instructions: string }
     oneShotAllowedTools?: string[]
     oneShotMode?: 'ask' | 'plan' | 'code'
-    /** Прикреплённые файлы/изображения, добавленные через @mention, drag&drop,
-     *  paste или кнопку «Прикрепить». Main-процесс инлайнит текстовые файлы
-     *  в content, картинки передаёт как путь (vision — Phase 2). */
+    /** РџСЂРёРєСЂРµРїР»С‘РЅРЅС‹Рµ С„Р°Р№Р»С‹/РёР·РѕР±СЂР°Р¶РµРЅРёСЏ, РґРѕР±Р°РІР»РµРЅРЅС‹Рµ С‡РµСЂРµР· @mention, drag&drop,
+     *  paste РёР»Рё РєРЅРѕРїРєСѓ В«РџСЂРёРєСЂРµРїРёС‚СЊВ». Main-РїСЂРѕС†РµСЃСЃ РёРЅР»Р°Р№РЅРёС‚ С‚РµРєСЃС‚РѕРІС‹Рµ С„Р°Р№Р»С‹
+     *  РІ content, РєР°СЂС‚РёРЅРєРё РїРµСЂРµРґР°С‘С‚ РєР°Рє РїСѓС‚СЊ (vision вЂ” Phase 2). */
     attachments?: Attachment[]
   }) => void
   'chat:create': (incognito?: boolean, mode?: ChatMode) => string
@@ -59,8 +59,8 @@ export interface Chat {
   isArchived: number
   mode: ChatMode
   color?: string
-  workdir?: string  // денормализованный кэш из projects (обратная совместимость)
-  projectId?: string  // FK на projects.id; NULL = «Без проекта»
+  workdir?: string  // РґРµРЅРѕСЂРјР°Р»РёР·РѕРІР°РЅРЅС‹Р№ РєСЌС€ РёР· projects (РѕР±СЂР°С‚РЅР°СЏ СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚СЊ)
+  projectId?: string  // FK РЅР° projects.id; NULL = В«Р‘РµР· РїСЂРѕРµРєС‚Р°В»
   lastMessage?: string
   messageCount?: number
 }
@@ -69,8 +69,8 @@ export interface Project {
   id: string
   name: string
   workdir: string
-  projectContext?: string  // результат analyzeProject при создании; не гоняем по IPC в каждый chats.list
-  verificationCommand?: string  // команда авто-проверки после серии правок (напр. "npm test")
+  projectContext?: string  // СЂРµР·СѓР»СЊС‚Р°С‚ analyzeProject РїСЂРё СЃРѕР·РґР°РЅРёРё; РЅРµ РіРѕРЅСЏРµРј РїРѕ IPC РІ РєР°Р¶РґС‹Р№ chats.list
+  verificationCommand?: string  // РєРѕРјР°РЅРґР° Р°РІС‚Рѕ-РїСЂРѕРІРµСЂРєРё РїРѕСЃР»Рµ СЃРµСЂРёРё РїСЂР°РІРѕРє (РЅР°РїСЂ. "npm test")
   createdAt: number
   lastUsed: number
 }
@@ -92,59 +92,59 @@ export interface Message {
   imageUrl?: string
   planData?: { title: string; content: string; summary: string; filePath: string }
   todo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
-  /** Ответы пользователя на ask_user-тул (для рендера в ToolChain). */
+  /** РћС‚РІРµС‚С‹ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РЅР° ask_user-С‚СѓР» (РґР»СЏ СЂРµРЅРґРµСЂР° РІ ToolChain). */
   questionAnswers?: QuestionAnswer[]
-  /** Прикреплённые пользователем файлы/изображения (для рендера чипов над
-   *  сообщением). Текстовое содержимое уже инлайнилось в content на этапе
-   *  отправки, здесь — только метаданные для UI. */
+  /** РџСЂРёРєСЂРµРїР»С‘РЅРЅС‹Рµ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј С„Р°Р№Р»С‹/РёР·РѕР±СЂР°Р¶РµРЅРёСЏ (РґР»СЏ СЂРµРЅРґРµСЂР° С‡РёРїРѕРІ РЅР°Рґ
+   *  СЃРѕРѕР±С‰РµРЅРёРµРј). РўРµРєСЃС‚РѕРІРѕРµ СЃРѕРґРµСЂР¶РёРјРѕРµ СѓР¶Рµ РёРЅР»Р°Р№РЅРёР»РѕСЃСЊ РІ content РЅР° СЌС‚Р°РїРµ
+   *  РѕС‚РїСЂР°РІРєРё, Р·РґРµСЃСЊ вЂ” С‚РѕР»СЊРєРѕ РјРµС‚Р°РґР°РЅРЅС‹Рµ РґР»СЏ UI. */
   attachments?: Attachment[]
-  /** Результат обработки вложений (processAttachmentsAndStream) — для
-   *  отображения AttachmentProcessingBlock в сохранённом сообщении.
-   *  Заполняется только у user-сообщений с attachments. Live-стриминг
-   *  идёт через toolProgress['process_attachments'] в Zustand, после
-   *  завершения результат сохраняется в БД для отображения после рестарта. */
+  /** Р РµР·СѓР»СЊС‚Р°С‚ РѕР±СЂР°Р±РѕС‚РєРё РІР»РѕР¶РµРЅРёР№ (processAttachmentsAndStream) вЂ” РґР»СЏ
+   *  РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ AttachmentProcessingBlock РІ СЃРѕС…СЂР°РЅС‘РЅРЅРѕРј СЃРѕРѕР±С‰РµРЅРёРё.
+   *  Р—Р°РїРѕР»РЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ Сѓ user-СЃРѕРѕР±С‰РµРЅРёР№ СЃ attachments. Live-СЃС‚СЂРёРјРёРЅРі
+   *  РёРґС‘С‚ С‡РµСЂРµР· toolProgress['process_attachments'] РІ Zustand, РїРѕСЃР»Рµ
+   *  Р·Р°РІРµСЂС€РµРЅРёСЏ СЂРµР·СѓР»СЊС‚Р°С‚ СЃРѕС…СЂР°РЅСЏРµС‚СЃСЏ РІ Р‘Р” РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ РїРѕСЃР»Рµ СЂРµСЃС‚Р°СЂС‚Р°. */
   attachmentResult?: AttachmentProcessingResult
-  /** Снимок резюме на момент сжатия контекста (для разворачивания разделителя).
-   *  Заполняется только у system-сообщений с slashCommand.name === 'compact'. */
+  /** РЎРЅРёРјРѕРє СЂРµР·СЋРјРµ РЅР° РјРѕРјРµРЅС‚ СЃР¶Р°С‚РёСЏ РєРѕРЅС‚РµРєСЃС‚Р° (РґР»СЏ СЂР°Р·РІРѕСЂР°С‡РёРІР°РЅРёСЏ СЂР°Р·РґРµР»РёС‚РµР»СЏ).
+   *  Р—Р°РїРѕР»РЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ Сѓ system-СЃРѕРѕР±С‰РµРЅРёР№ СЃ slashCommand.name === 'compact'. */
   compactSummary?: string
-  /** Статистика сжатия (заполняется только у compact-разделителей).
-   *  Используется ContextRing для показа кол-ва сжатий и сэкономленных токенов. */
+  /** РЎС‚Р°С‚РёСЃС‚РёРєР° СЃР¶Р°С‚РёСЏ (Р·Р°РїРѕР»РЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ Сѓ compact-СЂР°Р·РґРµР»РёС‚РµР»РµР№).
+   *  РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ ContextRing РґР»СЏ РїРѕРєР°Р·Р° РєРѕР»-РІР° СЃР¶Р°С‚РёР№ Рё СЃСЌРєРѕРЅРѕРјР»РµРЅРЅС‹С… С‚РѕРєРµРЅРѕРІ. */
   compactStats?: { removedCount: number; tokensBefore: number; tokensAfter: number; tokensSaved: number }
 }
 
-// ─── Attachments & Mentions ──────────────────────────────────────────────────
-// Attachment — прикреплённый файл/изображение к сообщению. Может прийти из:
-//   1. @mention-пикера (files проекта, skills, commands)
-//   2. Drag&Drop из проводника в инпут
-//   3. Paste изображения из буфера обмена (Ctrl+V)
-//   4. Кнопки «Прикрепить файл» (native dialog Electron)
+// в”Ђв”Ђв”Ђ Attachments & Mentions в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// Attachment вЂ” РїСЂРёРєСЂРµРїР»С‘РЅРЅС‹Р№ С„Р°Р№Р»/РёР·РѕР±СЂР°Р¶РµРЅРёРµ Рє СЃРѕРѕР±С‰РµРЅРёСЋ. РњРѕР¶РµС‚ РїСЂРёР№С‚Рё РёР·:
+//   1. @mention-РїРёРєРµСЂР° (files РїСЂРѕРµРєС‚Р°, skills, commands)
+//   2. Drag&Drop РёР· РїСЂРѕРІРѕРґРЅРёРєР° РІ РёРЅРїСѓС‚
+//   3. Paste РёР·РѕР±СЂР°Р¶РµРЅРёСЏ РёР· Р±СѓС„РµСЂР° РѕР±РјРµРЅР° (Ctrl+V)
+//   4. РљРЅРѕРїРєРё В«РџСЂРёРєСЂРµРїРёС‚СЊ С„Р°Р№Р»В» (native dialog Electron)
 //
-// Текстовые файлы инлайнятся в content при отправке (main-процесс).
-// Изображения в Phase 1 передаются только как путь+имя (vision — Phase 2).
-// Бинарные файлы — только путь+имя без содержимого.
+// РўРµРєСЃС‚РѕРІС‹Рµ С„Р°Р№Р»С‹ РёРЅР»Р°Р№РЅСЏС‚СЃСЏ РІ content РїСЂРё РѕС‚РїСЂР°РІРєРµ (main-РїСЂРѕС†РµСЃСЃ).
+// РР·РѕР±СЂР°Р¶РµРЅРёСЏ РІ Phase 1 РїРµСЂРµРґР°СЋС‚СЃСЏ С‚РѕР»СЊРєРѕ РєР°Рє РїСѓС‚СЊ+РёРјСЏ (vision вЂ” Phase 2).
+// Р‘РёРЅР°СЂРЅС‹Рµ С„Р°Р№Р»С‹ вЂ” С‚РѕР»СЊРєРѕ РїСѓС‚СЊ+РёРјСЏ Р±РµР· СЃРѕРґРµСЂР¶РёРјРѕРіРѕ.
 
-/** Тип вложения по источнику/способу добавления. */
+/** РўРёРї РІР»РѕР¶РµРЅРёСЏ РїРѕ РёСЃС‚РѕС‡РЅРёРєСѓ/СЃРїРѕСЃРѕР±Сѓ РґРѕР±Р°РІР»РµРЅРёСЏ. */
 export type AttachmentKind = 'file' | 'image' | 'skill' | 'command'
 
-/** Источник прикрепления (для UI-бейджа и логирования). */
+/** РСЃС‚РѕС‡РЅРёРє РїСЂРёРєСЂРµРїР»РµРЅРёСЏ (РґР»СЏ UI-Р±РµР№РґР¶Р° Рё Р»РѕРіРёСЂРѕРІР°РЅРёСЏ). */
 export type AttachmentSource = 'mention' | 'dragdrop' | 'paste' | 'dialog'
 
 /**
- * Attachment — прикреплённый к сообщению файл/изображение/сущность.
+ * Attachment вЂ” РїСЂРёРєСЂРµРїР»С‘РЅРЅС‹Р№ Рє СЃРѕРѕР±С‰РµРЅРёСЋ С„Р°Р№Р»/РёР·РѕР±СЂР°Р¶РµРЅРёРµ/СЃСѓС‰РЅРѕСЃС‚СЊ.
  *
- * Поля:
- *  - id: уникальный идентификатор (uuid) для key в React + удаления из draft.
- *  - kind: 'file' | 'image' | 'skill' | 'command' — определяет рендер чипа.
- *  - name: отображаемое имя (basename для файлов, label для skill/command).
- *  - path: абсолютный путь к файлу (для file/image). undefined для skill/command.
- *  - relPath: относительный путь от workdir (для отображения в tooltip).
- *  - mime: MIME-тип (для image — image/png и т.д.; для text — text/plain).
- *  - size: размер файла в байтах (для лимитов и отображения).
- *  - source: способ добавления (mention/dragdrop/paste/dialog).
- *  - dataUrl: data: URL для изображений из paste/dragdrop (когда файл ещё не
- *    сохранён на диск). После сохранения в userData — заменяется на path.
- *  - skillId / commandName: для kind='skill'/'command' — идентификатор сущности.
- *  - snippet: краткий preview содержимого (первые ~200 символов) для tooltip.
+ * РџРѕР»СЏ:
+ *  - id: СѓРЅРёРєР°Р»СЊРЅС‹Р№ РёРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ (uuid) РґР»СЏ key РІ React + СѓРґР°Р»РµРЅРёСЏ РёР· draft.
+ *  - kind: 'file' | 'image' | 'skill' | 'command' вЂ” РѕРїСЂРµРґРµР»СЏРµС‚ СЂРµРЅРґРµСЂ С‡РёРїР°.
+ *  - name: РѕС‚РѕР±СЂР°Р¶Р°РµРјРѕРµ РёРјСЏ (basename РґР»СЏ С„Р°Р№Р»РѕРІ, label РґР»СЏ skill/command).
+ *  - path: Р°Р±СЃРѕР»СЋС‚РЅС‹Р№ РїСѓС‚СЊ Рє С„Р°Р№Р»Сѓ (РґР»СЏ file/image). undefined РґР»СЏ skill/command.
+ *  - relPath: РѕС‚РЅРѕСЃРёС‚РµР»СЊРЅС‹Р№ РїСѓС‚СЊ РѕС‚ workdir (РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ РІ tooltip).
+ *  - mime: MIME-С‚РёРї (РґР»СЏ image вЂ” image/png Рё С‚.Рґ.; РґР»СЏ text вЂ” text/plain).
+ *  - size: СЂР°Р·РјРµСЂ С„Р°Р№Р»Р° РІ Р±Р°Р№С‚Р°С… (РґР»СЏ Р»РёРјРёС‚РѕРІ Рё РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ).
+ *  - source: СЃРїРѕСЃРѕР± РґРѕР±Р°РІР»РµРЅРёСЏ (mention/dragdrop/paste/dialog).
+ *  - dataUrl: data: URL РґР»СЏ РёР·РѕР±СЂР°Р¶РµРЅРёР№ РёР· paste/dragdrop (РєРѕРіРґР° С„Р°Р№Р» РµС‰С‘ РЅРµ
+ *    СЃРѕС…СЂР°РЅС‘РЅ РЅР° РґРёСЃРє). РџРѕСЃР»Рµ СЃРѕС…СЂР°РЅРµРЅРёСЏ РІ userData вЂ” Р·Р°РјРµРЅСЏРµС‚СЃСЏ РЅР° path.
+ *  - skillId / commandName: РґР»СЏ kind='skill'/'command' вЂ” РёРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ СЃСѓС‰РЅРѕСЃС‚Рё.
+ *  - snippet: РєСЂР°С‚РєРёР№ preview СЃРѕРґРµСЂР¶РёРјРѕРіРѕ (РїРµСЂРІС‹Рµ ~200 СЃРёРјРІРѕР»РѕРІ) РґР»СЏ tooltip.
  */
 export interface Attachment {
   id: string
@@ -159,19 +159,19 @@ export interface Attachment {
   skillId?: string
   commandName?: string
   snippet?: string
-  /** Время прикрепления (для сортировки недавних в @-пикере). */
+  /** Р’СЂРµРјСЏ РїСЂРёРєСЂРµРїР»РµРЅРёСЏ (РґР»СЏ СЃРѕСЂС‚РёСЂРѕРІРєРё РЅРµРґР°РІРЅРёС… РІ @-РїРёРєРµСЂРµ). */
   attachedAt: number
 }
 
 /**
- * Результат обработки вложений для AttachmentProcessingBlock.
+ * Р РµР·СѓР»СЊС‚Р°С‚ РѕР±СЂР°Р±РѕС‚РєРё РІР»РѕР¶РµРЅРёР№ РґР»СЏ AttachmentProcessingBlock.
  *
- * Заполняется в main-процессе (processAttachmentsAndStream) и сохраняется
- * в message.attachmentResult для отображения после рестарта. Live-стриминг
- * идёт через toolProgress['process_attachments'] с полями {stage, detail,
+ * Р—Р°РїРѕР»РЅСЏРµС‚СЃСЏ РІ main-РїСЂРѕС†РµСЃСЃРµ (processAttachmentsAndStream) Рё СЃРѕС…СЂР°РЅСЏРµС‚СЃСЏ
+ * РІ message.attachmentResult РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ РїРѕСЃР»Рµ СЂРµСЃС‚Р°СЂС‚Р°. Live-СЃС‚СЂРёРјРёРЅРі
+ * РёРґС‘С‚ С‡РµСЂРµР· toolProgress['process_attachments'] СЃ РїРѕР»СЏРјРё {stage, detail,
  * filesProcessed, filesTotal}.
  *
- * Структура как у FastContextResultData — files[], summary, ms.
+ * РЎС‚СЂСѓРєС‚СѓСЂР° РєР°Рє Сѓ FastContextResultData вЂ” files[], summary, ms.
  */
 export interface AttachmentProcessingFile {
   name: string
@@ -179,7 +179,7 @@ export interface AttachmentProcessingFile {
   status: 'text_inlined' | 'image_described' | 'binary_path' | 'error' | 'skipped'
   size?: number
   detail?: string
-  /** Для image_described — краткое описание (первые ~200 символов). */
+  /** Р”Р»СЏ image_described вЂ” РєСЂР°С‚РєРѕРµ РѕРїРёСЃР°РЅРёРµ (РїРµСЂРІС‹Рµ ~200 СЃРёРјРІРѕР»РѕРІ). */
   description?: string
 }
 
@@ -193,13 +193,13 @@ export interface AttachmentProcessingResult {
 }
 
 /**
- * MentionItem — элемент плоского списка в @-дропдауне.
+ * MentionItem вЂ” СЌР»РµРјРµРЅС‚ РїР»РѕСЃРєРѕРіРѕ СЃРїРёСЃРєР° РІ @-РґСЂРѕРїРґР°СѓРЅРµ.
  *
- * types: 'file' | 'image' | 'skill' | 'command' — соответствует AttachmentKind,
- *  но 'image' выделен отдельно чтобы в @-пикере показывать картинки с диска
- *  (даже если они вне workdir) с превью.
+ * types: 'file' | 'image' | 'skill' | 'command' вЂ” СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓРµС‚ AttachmentKind,
+ *  РЅРѕ 'image' РІС‹РґРµР»РµРЅ РѕС‚РґРµР»СЊРЅРѕ С‡С‚РѕР±С‹ РІ @-РїРёРєРµСЂРµ РїРѕРєР°Р·С‹РІР°С‚СЊ РєР°СЂС‚РёРЅРєРё СЃ РґРёСЃРєР°
+ *  (РґР°Р¶Рµ РµСЃР»Рё РѕРЅРё РІРЅРµ workdir) СЃ РїСЂРµРІСЊСЋ.
  *
- * Сортировка в filterMentions: точные совпадения по имени → недавние → остальные.
+ * РЎРѕСЂС‚РёСЂРѕРІРєР° РІ filterMentions: С‚РѕС‡РЅС‹Рµ СЃРѕРІРїР°РґРµРЅРёСЏ РїРѕ РёРјРµРЅРё в†’ РЅРµРґР°РІРЅРёРµ в†’ РѕСЃС‚Р°Р»СЊРЅС‹Рµ.
  */
 export type MentionItemType = 'file' | 'image' | 'skill' | 'command'
 
@@ -207,23 +207,23 @@ export interface MentionItem {
   id: string
   type: MentionItemType
   label: string
-  /** Краткое описание/путь для второй строки в дропдауне. */
+  /** РљСЂР°С‚РєРѕРµ РѕРїРёСЃР°РЅРёРµ/РїСѓС‚СЊ РґР»СЏ РІС‚РѕСЂРѕР№ СЃС‚СЂРѕРєРё РІ РґСЂРѕРїРґР°СѓРЅРµ. */
   description?: string
-  /** Абсолютный путь (для file/image). */
+  /** РђР±СЃРѕР»СЋС‚РЅС‹Р№ РїСѓС‚СЊ (РґР»СЏ file/image). */
   path?: string
-  /** Относительный путь от workdir. */
+  /** РћС‚РЅРѕСЃРёС‚РµР»СЊРЅС‹Р№ РїСѓС‚СЊ РѕС‚ workdir. */
   relPath?: string
-  /** id скилла (для type='skill'). */
+  /** id СЃРєРёР»Р»Р° (РґР»СЏ type='skill'). */
   skillId?: string
-  /** Имя команды (для type='command'). */
+  /** РРјСЏ РєРѕРјР°РЅРґС‹ (РґР»СЏ type='command'). */
   commandName?: string
-  /** MIME-тип (для image — чтобы решить, превью или иконку). */
+  /** MIME-С‚РёРї (РґР»СЏ image вЂ” С‡С‚РѕР±С‹ СЂРµС€РёС‚СЊ, РїСЂРµРІСЊСЋ РёР»Рё РёРєРѕРЅРєСѓ). */
   mime?: string
-  /** Размер файла (для отображения и лимитов). */
+  /** Р Р°Р·РјРµСЂ С„Р°Р№Р»Р° (РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ Рё Р»РёРјРёС‚РѕРІ). */
   size?: number
-  /** mtime файла (для сортировки недавних). */
+  /** mtime С„Р°Р№Р»Р° (РґР»СЏ СЃРѕСЂС‚РёСЂРѕРІРєРё РЅРµРґР°РІРЅРёС…). */
   mtime?: number
-  /** Количество упоминаний в этом чате (для буста в fuzzy). */
+  /** РљРѕР»РёС‡РµСЃС‚РІРѕ СѓРїРѕРјРёРЅР°РЅРёР№ РІ СЌС‚РѕРј С‡Р°С‚Рµ (РґР»СЏ Р±СѓСЃС‚Р° РІ fuzzy). */
   useCount?: number
 }
 
@@ -235,118 +235,118 @@ export interface ToolStep {
   content: string
   success?: boolean
   timestamp: number
-  imageUrl?: string  // путь к сгенерированному изображению
-  diff?: string      // unified diff для edit_file / multi_edit_file
-  callId?: string    // ID tool_call для связи call→result (реконструкция истории)
-  /** Имя MCP-сервера для MCP-тулов (mcp__server__tool). undefined для встроенных. */
+  imageUrl?: string  // РїСѓС‚СЊ Рє СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅРЅРѕРјСѓ РёР·РѕР±СЂР°Р¶РµРЅРёСЋ
+  diff?: string      // unified diff РґР»СЏ edit_file / multi_edit_file
+  callId?: string    // ID tool_call РґР»СЏ СЃРІСЏР·Рё callв†’result (СЂРµРєРѕРЅСЃС‚СЂСѓРєС†РёСЏ РёСЃС‚РѕСЂРёРё)
+  /** РРјСЏ MCP-СЃРµСЂРІРµСЂР° РґР»СЏ MCP-С‚СѓР»РѕРІ (mcp__server__tool). undefined РґР»СЏ РІСЃС‚СЂРѕРµРЅРЅС‹С…. */
   serverName?: string
 }
 
-// ─── ask_user: тул уточняющих вопросов пользователю ─────────────────────────
-// Спецификация одного вопроса, который AI задаёт пользователю через UI-панель.
+// в”Ђв”Ђв”Ђ ask_user: С‚СѓР» СѓС‚РѕС‡РЅСЏСЋС‰РёС… РІРѕРїСЂРѕСЃРѕРІ РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// РЎРїРµС†РёС„РёРєР°С†РёСЏ РѕРґРЅРѕРіРѕ РІРѕРїСЂРѕСЃР°, РєРѕС‚РѕСЂС‹Р№ AI Р·Р°РґР°С‘С‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ С‡РµСЂРµР· UI-РїР°РЅРµР»СЊ.
 export interface QuestionOption {
-  /** Идентификатор опции (для маппинга ответа обратно к модели). */
+  /** РРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ РѕРїС†РёРё (РґР»СЏ РјР°РїРїРёРЅРіР° РѕС‚РІРµС‚Р° РѕР±СЂР°С‚РЅРѕ Рє РјРѕРґРµР»Рё). */
   value: string
-  /** Отображаемый текст опции. */
+  /** РћС‚РѕР±СЂР°Р¶Р°РµРјС‹Р№ С‚РµРєСЃС‚ РѕРїС†РёРё. */
   label: string
-  /** Необязательное описание опции (пояснение). */
+  /** РќРµРѕР±СЏР·Р°С‚РµР»СЊРЅРѕРµ РѕРїРёСЃР°РЅРёРµ РѕРїС†РёРё (РїРѕСЏСЃРЅРµРЅРёРµ). */
   description?: string
 }
 
-/** Тип вопроса — определяет UI-рендер в QuestionPanel. */
+/** РўРёРї РІРѕРїСЂРѕСЃР° вЂ” РѕРїСЂРµРґРµР»СЏРµС‚ UI-СЂРµРЅРґРµСЂ РІ QuestionPanel. */
 export type QuestionType = 'text' | 'choice' | 'yesno'
 
-/** Условие показа вопроса (conditional). Вопрос скрыт пока условие не выполнено. */
+/** РЈСЃР»РѕРІРёРµ РїРѕРєР°Р·Р° РІРѕРїСЂРѕСЃР° (conditional). Р’РѕРїСЂРѕСЃ СЃРєСЂС‹С‚ РїРѕРєР° СѓСЃР»РѕРІРёРµ РЅРµ РІС‹РїРѕР»РЅРµРЅРѕ. */
 export interface QuestionCondition {
-  /** ID вопроса, ответ которого проверяется. */
+  /** ID РІРѕРїСЂРѕСЃР°, РѕС‚РІРµС‚ РєРѕС‚РѕСЂРѕРіРѕ РїСЂРѕРІРµСЂСЏРµС‚СЃСЏ. */
   questionId: string
-  /** Значение (или массив значений), при котором этот вопрос показывается. */
+  /** Р—РЅР°С‡РµРЅРёРµ (РёР»Рё РјР°СЃСЃРёРІ Р·РЅР°С‡РµРЅРёР№), РїСЂРё РєРѕС‚РѕСЂРѕРј СЌС‚РѕС‚ РІРѕРїСЂРѕСЃ РїРѕРєР°Р·С‹РІР°РµС‚СЃСЏ. */
   equals: string | string[]
 }
 
 export interface QuestionSpec {
-  /** ID вопроса — модель может указать свой; иначе генерируется. */
+  /** ID РІРѕРїСЂРѕСЃР° вЂ” РјРѕРґРµР»СЊ РјРѕР¶РµС‚ СѓРєР°Р·Р°С‚СЊ СЃРІРѕР№; РёРЅР°С‡Рµ РіРµРЅРµСЂРёСЂСѓРµС‚СЃСЏ. */
   id?: string
-  /** Текст вопроса. */
+  /** РўРµРєСЃС‚ РІРѕРїСЂРѕСЃР°. */
   question: string
-  /** Короткий заголовок (необязательно). */
+  /** РљРѕСЂРѕС‚РєРёР№ Р·Р°РіРѕР»РѕРІРѕРє (РЅРµРѕР±СЏР·Р°С‚РµР»СЊРЅРѕ). */
   header?: string
   /**
-   * Тип вопроса — определяет UI-рендер.
-   * - text (default) — свободный текстовый ответ
-   * - choice — выбор из options (с radio/checkbox)
-   * - yesno — две большие кнопки Да/Нет (быстрое подтверждение)
-   * Если не указан, авто-detect: есть options → choice, иначе text.
+   * РўРёРї РІРѕРїСЂРѕСЃР° вЂ” РѕРїСЂРµРґРµР»СЏРµС‚ UI-СЂРµРЅРґРµСЂ.
+   * - text (default) вЂ” СЃРІРѕР±РѕРґРЅС‹Р№ С‚РµРєСЃС‚РѕРІС‹Р№ РѕС‚РІРµС‚
+   * - choice вЂ” РІС‹Р±РѕСЂ РёР· options (СЃ radio/checkbox)
+   * - yesno вЂ” РґРІРµ Р±РѕР»СЊС€РёРµ РєРЅРѕРїРєРё Р”Р°/РќРµС‚ (Р±С‹СЃС‚СЂРѕРµ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ)
+   * Р•СЃР»Рё РЅРµ СѓРєР°Р·Р°РЅ, Р°РІС‚Рѕ-detect: РµСЃС‚СЊ options в†’ choice, РёРЅР°С‡Рµ text.
    */
   type?: QuestionType
-  /** Готовые варианты ответа (для type=choice). */
+  /** Р“РѕС‚РѕРІС‹Рµ РІР°СЂРёР°РЅС‚С‹ РѕС‚РІРµС‚Р° (РґР»СЏ type=choice). */
   options?: QuestionOption[]
-  /** Разрешить множественный выбор (только для type=choice). */
+  /** Р Р°Р·СЂРµС€РёС‚СЊ РјРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹Р№ РІС‹Р±РѕСЂ (С‚РѕР»СЊРєРѕ РґР»СЏ type=choice). */
   multiple?: boolean
-  /** Разрешить свой ответ (default true). Для yesno — игнорируется. */
+  /** Р Р°Р·СЂРµС€РёС‚СЊ СЃРІРѕР№ РѕС‚РІРµС‚ (default true). Р”Р»СЏ yesno вЂ” РёРіРЅРѕСЂРёСЂСѓРµС‚СЃСЏ. */
   allowCustom?: boolean
-  /** Вопрос обязательный (нельзя пропустить). */
+  /** Р’РѕРїСЂРѕСЃ РѕР±СЏР·Р°С‚РµР»СЊРЅС‹Р№ (РЅРµР»СЊР·СЏ РїСЂРѕРїСѓСЃС‚РёС‚СЊ). */
   required?: boolean
-  /** Предзаполненный ответ — модель предлагает предположение, юзер правит. */
+  /** РџСЂРµРґР·Р°РїРѕР»РЅРµРЅРЅС‹Р№ РѕС‚РІРµС‚ вЂ” РјРѕРґРµР»СЊ РїСЂРµРґР»Р°РіР°РµС‚ РїСЂРµРґРїРѕР»РѕР¶РµРЅРёРµ, СЋР·РµСЂ РїСЂР°РІРёС‚. */
   defaultValue?: string
-  /** Кастомный placeholder для текстового поля. */
+  /** РљР°СЃС‚РѕРјРЅС‹Р№ placeholder РґР»СЏ С‚РµРєСЃС‚РѕРІРѕРіРѕ РїРѕР»СЏ. */
   placeholder?: string
-  /** Пояснение под вопросом (раскрывающийся блок). Для контекста. */
+  /** РџРѕСЏСЃРЅРµРЅРёРµ РїРѕРґ РІРѕРїСЂРѕСЃРѕРј (СЂР°СЃРєСЂС‹РІР°СЋС‰РёР№СЃСЏ Р±Р»РѕРє). Р”Р»СЏ РєРѕРЅС‚РµРєСЃС‚Р°. */
   helpText?: string
-  /** Многострочное текстовое поле (5+ строк вместо 2). Для описательных ответов. */
+  /** РњРЅРѕРіРѕСЃС‚СЂРѕС‡РЅРѕРµ С‚РµРєСЃС‚РѕРІРѕРµ РїРѕР»Рµ (5+ СЃС‚СЂРѕРє РІРјРµСЃС‚Рѕ 2). Р”Р»СЏ РѕРїРёСЃР°С‚РµР»СЊРЅС‹С… РѕС‚РІРµС‚РѕРІ. */
   multiline?: boolean
-  /** Кастомный текст кнопки пропуска (default 'Пропустить'). */
+  /** РљР°СЃС‚РѕРјРЅС‹Р№ С‚РµРєСЃС‚ РєРЅРѕРїРєРё РїСЂРѕРїСѓСЃРєР° (default 'РџСЂРѕРїСѓСЃС‚РёС‚СЊ'). */
   skipLabel?: string
-  /** Условие показа — вопрос скрыт пока ответ на questionId не равен equals. */
+  /** РЈСЃР»РѕРІРёРµ РїРѕРєР°Р·Р° вЂ” РІРѕРїСЂРѕСЃ СЃРєСЂС‹С‚ РїРѕРєР° РѕС‚РІРµС‚ РЅР° questionId РЅРµ СЂР°РІРµРЅ equals. */
   showIf?: QuestionCondition
 }
 
-/** Ответ пользователя на один вопрос. */
+/** РћС‚РІРµС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РЅР° РѕРґРёРЅ РІРѕРїСЂРѕСЃ. */
 export interface QuestionAnswer {
-  /** ID вопроса из QuestionSpec (или сгенерированный). */
+  /** ID РІРѕРїСЂРѕСЃР° РёР· QuestionSpec (РёР»Рё СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅРЅС‹Р№). */
   id: string
-  /** Выбранные значения опций (для choice/multiple). */
+  /** Р’С‹Р±СЂР°РЅРЅС‹Рµ Р·РЅР°С‡РµРЅРёСЏ РѕРїС†РёР№ (РґР»СЏ choice/multiple). */
   values?: string[]
-  /** Свободный текстовый ответ (text/choice+allowCustom). */
+  /** РЎРІРѕР±РѕРґРЅС‹Р№ С‚РµРєСЃС‚РѕРІС‹Р№ РѕС‚РІРµС‚ (text/choice+allowCustom). */
   text?: string
-  /** Да/Нет (для yesno). */
+  /** Р”Р°/РќРµС‚ (РґР»СЏ yesno). */
   value?: boolean
 }
 
-// ─── Checkpoint / Rewind ─────────────────────────────────────────────────────
-// Точка отката сессии: пара (user_message_id, assistant_message_id) одного turn'а.
-// Используется правой панелью "Сессия" для таймлайна и кнопкой "Откатить" на
-// user-сообщениях.
+// в”Ђв”Ђв”Ђ Checkpoint / Rewind в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// РўРѕС‡РєР° РѕС‚РєР°С‚Р° СЃРµСЃСЃРёРё: РїР°СЂР° (user_message_id, assistant_message_id) РѕРґРЅРѕРіРѕ turn'Р°.
+// РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РїСЂР°РІРѕР№ РїР°РЅРµР»СЊСЋ "РЎРµСЃСЃРёСЏ" РґР»СЏ С‚Р°Р№РјР»Р°Р№РЅР° Рё РєРЅРѕРїРєРѕР№ "РћС‚РєР°С‚РёС‚СЊ" РЅР°
+// user-СЃРѕРѕР±С‰РµРЅРёСЏС….
 export interface CheckpointMeta {
   id: string
   chatId: string
   userMessageId: string
   assistantMessageId: string | null
-  userPromptPreview: string  // первые 120 символов user-промпта
-  filesChanged: number       // кол-во файлов, изменённых в этом turn'е
-  filePaths: string[]        // список путей изменённых файлов
+  userPromptPreview: string  // РїРµСЂРІС‹Рµ 120 СЃРёРјРІРѕР»РѕРІ user-РїСЂРѕРјРїС‚Р°
+  filesChanged: number       // РєРѕР»-РІРѕ С„Р°Р№Р»РѕРІ, РёР·РјРµРЅС‘РЅРЅС‹С… РІ СЌС‚РѕРј turn'Рµ
+  filePaths: string[]        // СЃРїРёСЃРѕРє РїСѓС‚РµР№ РёР·РјРµРЅС‘РЅРЅС‹С… С„Р°Р№Р»РѕРІ
   createdAt: number
-  /** Имя снапшота для /snapshot <name> + /restore <name>. NULL у обычных
-   *  auto-checkpoint'ов на каждый turn. Именованные — явно созданы пользователем. */
+  /** РРјСЏ СЃРЅР°РїС€РѕС‚Р° РґР»СЏ /snapshot <name> + /restore <name>. NULL Сѓ РѕР±С‹С‡РЅС‹С…
+   *  auto-checkpoint'РѕРІ РЅР° РєР°Р¶РґС‹Р№ turn. РРјРµРЅРѕРІР°РЅРЅС‹Рµ вЂ” СЏРІРЅРѕ СЃРѕР·РґР°РЅС‹ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј. */
   name?: string | null
 }
 
-// Результат chat:rewindTo — либо обновлённый массив сообщений, либо ошибка.
+// Р РµР·СѓР»СЊС‚Р°С‚ chat:rewindTo вЂ” Р»РёР±Рѕ РѕР±РЅРѕРІР»С‘РЅРЅС‹Р№ РјР°СЃСЃРёРІ СЃРѕРѕР±С‰РµРЅРёР№, Р»РёР±Рѕ РѕС€РёР±РєР°.
 export interface RewindResult {
   messages?: Message[]
   error?: string
 }
 
-// Метаданные одного запроса в очереди или активного запуска чата.
-// Используется UI-панелью очереди для отображения preview/управления.
+// РњРµС‚Р°РґР°РЅРЅС‹Рµ РѕРґРЅРѕРіРѕ Р·Р°РїСЂРѕСЃР° РІ РѕС‡РµСЂРµРґРё РёР»Рё Р°РєС‚РёРІРЅРѕРіРѕ Р·Р°РїСѓСЃРєР° С‡Р°С‚Р°.
+// РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ UI-РїР°РЅРµР»СЊСЋ РѕС‡РµСЂРµРґРё РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ preview/СѓРїСЂР°РІР»РµРЅРёСЏ.
 export interface QueueItemMeta {
-  queueId: string       // уникальный ID элемента (uuid)
+  queueId: string       // СѓРЅРёРєР°Р»СЊРЅС‹Р№ ID СЌР»РµРјРµРЅС‚Р° (uuid)
   chatId: string
-  msgId: string         // assistantMsgId (будущего ответа)
-  userMsgId: string     // id user-сообщения
-  preview: string       // первые ~80 симв. текста запроса
-  enqueuedAt: number    // ts постановки в очередь
-  startedAt?: number    // ts старта воркера (для active run)
+  msgId: string         // assistantMsgId (Р±СѓРґСѓС‰РµРіРѕ РѕС‚РІРµС‚Р°)
+  userMsgId: string     // id user-СЃРѕРѕР±С‰РµРЅРёСЏ
+  preview: string       // РїРµСЂРІС‹Рµ ~80 СЃРёРјРІ. С‚РµРєСЃС‚Р° Р·Р°РїСЂРѕСЃР°
+  enqueuedAt: number    // ts РїРѕСЃС‚Р°РЅРѕРІРєРё РІ РѕС‡РµСЂРµРґСЊ
+  startedAt?: number    // ts СЃС‚Р°СЂС‚Р° РІРѕСЂРєРµСЂР° (РґР»СЏ active run)
 }
 
 export interface DisplayInfo {
@@ -371,7 +371,7 @@ export interface AgentAction {
   timestamp: number
 }
 
-// ─── AI Providers & Models ───────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђ AI Providers & Models в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 export type ProviderType =
   | 'openai' | 'anthropic' | 'google' | 'groq' | 'cerebras' | 'mistral'
@@ -382,19 +382,19 @@ export type ProviderType =
   | 'syntee-gateway'
 
 export interface Provider {
-  id: string               // уникальный slug: 'openai', 'my-custom-1'
+  id: string               // СѓРЅРёРєР°Р»СЊРЅС‹Р№ slug: 'openai', 'my-custom-1'
   type: ProviderType
-  name: string             // отображаемое название
+  name: string             // РѕС‚РѕР±СЂР°Р¶Р°РµРјРѕРµ РЅР°Р·РІР°РЅРёРµ
   baseUrl: string          // https://api.openai.com/v1
-  apiKey: string           // основной ключ (обратная совместимость)
-  apiKeys?: string[]       // несколько ключей — round-robin
-  rrIndex?: number         // текущий индекс round-robin
+  apiKey: string           // РѕСЃРЅРѕРІРЅРѕР№ РєР»СЋС‡ (РѕР±СЂР°С‚РЅР°СЏ СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚СЊ)
+  apiKeys?: string[]       // РЅРµСЃРєРѕР»СЊРєРѕ РєР»СЋС‡РµР№ вЂ” round-robin
+  rrIndex?: number         // С‚РµРєСѓС‰РёР№ РёРЅРґРµРєСЃ round-robin
   enabled: boolean
   isCustom: boolean
-  iconUrl?: string         // для кастомных провайдеров
-  lastModelsFetch?: number // timestamp последнего парсинга
-  modelsOverride?: string[]// ручные модели добавленные пользователем
-  /** Провайдер работает без API-ключа (анонимный, шлёт Bearer public). */
+  iconUrl?: string         // РґР»СЏ РєР°СЃС‚РѕРјРЅС‹С… РїСЂРѕРІР°Р№РґРµСЂРѕРІ
+  lastModelsFetch?: number // timestamp РїРѕСЃР»РµРґРЅРµРіРѕ РїР°СЂСЃРёРЅРіР°
+  modelsOverride?: string[]// СЂСѓС‡РЅС‹Рµ РјРѕРґРµР»Рё РґРѕР±Р°РІР»РµРЅРЅС‹Рµ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј
+  /** РџСЂРѕРІР°Р№РґРµСЂ СЂР°Р±РѕС‚Р°РµС‚ Р±РµР· API-РєР»СЋС‡Р° (Р°РЅРѕРЅРёРјРЅС‹Р№, С€Р»С‘С‚ Bearer public). */
   anonymous?: boolean
 }
 
@@ -404,28 +404,28 @@ export type ModelSpeed = 'fast' | 'medium' | 'slow'
 
 export interface ModelMeta {
   id: string               // 'gpt-4o', 'claude-3-5-sonnet-20241022'
-  providerId: string       // ссылка на Provider.id
-  name: string             // красивое название
-  contextWindow: number    // в токенах
-  inputPrice?: number      // $ за 1M input токенов
-  outputPrice?: number     // $ за 1M output токенов
+  providerId: string       // СЃСЃС‹Р»РєР° РЅР° Provider.id
+  name: string             // РєСЂР°СЃРёРІРѕРµ РЅР°Р·РІР°РЅРёРµ
+  contextWindow: number    // РІ С‚РѕРєРµРЅР°С…
+  inputPrice?: number      // $ Р·Р° 1M input С‚РѕРєРµРЅРѕРІ
+  outputPrice?: number     // $ Р·Р° 1M output С‚РѕРєРµРЅРѕРІ
   speed: ModelSpeed
   capabilities: ModelCapability[]
   description?: string
-  isCustom?: boolean       // добавлена пользователем вручную
+  isCustom?: boolean       // РґРѕР±Р°РІР»РµРЅР° РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј РІСЂСѓС‡РЅСѓСЋ
 }
 
 export type ModelRole =
-  | 'main'        // основной чат
-  | 'fast'        // быстрые ответы, автотайтлы
+  | 'main'        // РѕСЃРЅРѕРІРЅРѕР№ С‡Р°С‚
+  | 'fast'        // Р±С‹СЃС‚СЂС‹Рµ РѕС‚РІРµС‚С‹, Р°РІС‚РѕС‚Р°Р№С‚Р»С‹
   | 'fastContext' // fast context retrieval (tree-sitter + fast LLM)
-  | 'vision'      // анализ изображений
+  | 'vision'      // Р°РЅР°Р»РёР· РёР·РѕР±СЂР°Р¶РµРЅРёР№
   | 'stt'         // speech-to-text
   | 'tts'         // text-to-speech
-  | 'embedding'   // векторный поиск / память
-  | 'memory'      // анализ памяти
-  | 'summary'     // авто-заголовки чатов
-  | 'subagent'    // суб-агенты
+  | 'embedding'   // РІРµРєС‚РѕСЂРЅС‹Р№ РїРѕРёСЃРє / РїР°РјСЏС‚СЊ
+  | 'memory'      // Р°РЅР°Р»РёР· РїР°РјСЏС‚Рё
+  | 'summary'     // Р°РІС‚Рѕ-Р·Р°РіРѕР»РѕРІРєРё С‡Р°С‚РѕРІ
+  | 'subagent'    // СЃСѓР±-Р°РіРµРЅС‚С‹
 
 export interface ModelAssignment {
   role: ModelRole
@@ -434,7 +434,7 @@ export interface ModelAssignment {
 }
 
 export interface ModelParams {
-  systemPrompt: string     // глобальная доп. инструкция (аппендится, не перезаписывает)
+  systemPrompt: string     // РіР»РѕР±Р°Р»СЊРЅР°СЏ РґРѕРї. РёРЅСЃС‚СЂСѓРєС†РёСЏ (Р°РїРїРµРЅРґРёС‚СЃСЏ, РЅРµ РїРµСЂРµР·Р°РїРёСЃС‹РІР°РµС‚)
   streaming: boolean
 }
 
@@ -454,9 +454,9 @@ export interface AgentSettings {
   maxRepeatedErrors: number
 }
 
-// Дефолтные настройки агента. Вынесены в shared, чтобы renderer (SettingsPage)
-// мог использовать их для кнопок «восстановить по умолчанию» без IPC-запроса.
-// main/ipc/agent.ipc.ts и main/ipc/chat.ipc.ts импортируют отсюда же.
+// Р”РµС„РѕР»С‚РЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё Р°РіРµРЅС‚Р°. Р’С‹РЅРµСЃРµРЅС‹ РІ shared, С‡С‚РѕР±С‹ renderer (SettingsPage)
+// РјРѕРі РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РёС… РґР»СЏ РєРЅРѕРїРѕРє В«РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋВ» Р±РµР· IPC-Р·Р°РїСЂРѕСЃР°.
+// main/ipc/agent.ipc.ts Рё main/ipc/chat.ipc.ts РёРјРїРѕСЂС‚РёСЂСѓСЋС‚ РѕС‚СЃСЋРґР° Р¶Рµ.
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   approvalMode: 'ask',
   maxSteps: 50,
@@ -469,7 +469,7 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxRepeatedErrors: 2,
 }
 
-// IPC channels для провайдеров/моделей
+// IPC channels РґР»СЏ РїСЂРѕРІР°Р№РґРµСЂРѕРІ/РјРѕРґРµР»РµР№
 export interface ProviderIPC {
   'providers:getAll': () => Provider[]
   'providers:save': (provider: Provider) => void
@@ -485,26 +485,26 @@ export interface ProviderIPC {
   'models:setParams': (params: Partial<ModelParams>) => void
 }
 
-// ─── MCP (Model Context Protocol) ───────────────────────────────────────────
+// в”Ђв”Ђв”Ђ MCP (Model Context Protocol) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
-/** Транспорт подключения к MCP-серверу. */
+/** РўСЂР°РЅСЃРїРѕСЂС‚ РїРѕРґРєР»СЋС‡РµРЅРёСЏ Рє MCP-СЃРµСЂРІРµСЂСѓ. */
 export type McpTransport = 'stdio' | 'sse' | 'streamable-http'
 
 /**
- * Область применения расширения (MCP-сервера или скилла).
- * - global  → применяется ко всем чатам
- * - projects → применяется только к чатам выбранных проектов (projectIds)
+ * РћР±Р»Р°СЃС‚СЊ РїСЂРёРјРµРЅРµРЅРёСЏ СЂР°СЃС€РёСЂРµРЅРёСЏ (MCP-СЃРµСЂРІРµСЂР° РёР»Рё СЃРєРёР»Р»Р°).
+ * - global  в†’ РїСЂРёРјРµРЅСЏРµС‚СЃСЏ РєРѕ РІСЃРµРј С‡Р°С‚Р°Рј
+ * - projects в†’ РїСЂРёРјРµРЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ Рє С‡Р°С‚Р°Рј РІС‹Р±СЂР°РЅРЅС‹С… РїСЂРѕРµРєС‚РѕРІ (projectIds)
  */
 export interface ExtensionScope {
   type: 'global' | 'projects'
   projectIds?: string[]
 }
 
-/** Конфигурация MCP-сервера (хранится в electron-store / .mcp.json). */
+/** РљРѕРЅС„РёРіСѓСЂР°С†РёСЏ MCP-СЃРµСЂРІРµСЂР° (С…СЂР°РЅРёС‚СЃСЏ РІ electron-store / .mcp.json). */
 export interface McpServerConfig {
-  /** Уникальный slug. Для проектных серверов — имя из .mcp.json. */
+  /** РЈРЅРёРєР°Р»СЊРЅС‹Р№ slug. Р”Р»СЏ РїСЂРѕРµРєС‚РЅС‹С… СЃРµСЂРІРµСЂРѕРІ вЂ” РёРјСЏ РёР· .mcp.json. */
   id: string
-  /** Отображаемое имя. */
+  /** РћС‚РѕР±СЂР°Р¶Р°РµРјРѕРµ РёРјСЏ. */
   name: string
   transport: McpTransport
   // stdio-only
@@ -514,45 +514,45 @@ export interface McpServerConfig {
   // sse-only
   url?: string
   headers?: Record<string, string>
-  /** Включён ли сервер (глобальный тумблер). */
+  /** Р’РєР»СЋС‡С‘РЅ Р»Рё СЃРµСЂРІРµСЂ (РіР»РѕР±Р°Р»СЊРЅС‹Р№ С‚СѓРјР±Р»РµСЂ). */
   enabled: boolean
   scope: ExtensionScope
-  /** 'global' (из electron-store) или 'project' (из .mcp.json). */
+  /** 'global' (РёР· electron-store) РёР»Рё 'project' (РёР· .mcp.json). */
   source: 'global' | 'project'
-  /** Для проектных серверов — id проекта, из workdir которого загружен. */
+  /** Р”Р»СЏ РїСЂРѕРµРєС‚РЅС‹С… СЃРµСЂРІРµСЂРѕРІ вЂ” id РїСЂРѕРµРєС‚Р°, РёР· workdir РєРѕС‚РѕСЂРѕРіРѕ Р·Р°РіСЂСѓР¶РµРЅ. */
   projectId?: string
 }
 
-/** Per-tool состояние (включён / подтверждение) — хранится отдельно от конфига. */
+/** Per-tool СЃРѕСЃС‚РѕСЏРЅРёРµ (РІРєР»СЋС‡С‘РЅ / РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ) вЂ” С…СЂР°РЅРёС‚СЃСЏ РѕС‚РґРµР»СЊРЅРѕ РѕС‚ РєРѕРЅС„РёРіР°. */
 export interface McpToolState {
   enabled: boolean
-  /** Спрашивать подтверждение перед вызовом этого тула. */
+  /** РЎРїСЂР°С€РёРІР°С‚СЊ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ РїРµСЂРµРґ РІС‹Р·РѕРІРѕРј СЌС‚РѕРіРѕ С‚СѓР»Р°. */
   requireApproval: boolean
 }
 
-/** Runtime-описание тулза MCP, агрегированное McpManager-ом для агента. */
+/** Runtime-РѕРїРёСЃР°РЅРёРµ С‚СѓР»Р·Р° MCP, Р°РіСЂРµРіРёСЂРѕРІР°РЅРЅРѕРµ McpManager-РѕРј РґР»СЏ Р°РіРµРЅС‚Р°. */
 export interface McpToolRuntime {
   serverId: string
   serverName: string
-  /** Полное имя тула: mcp__{serverName}__{toolName}. */
+  /** РџРѕР»РЅРѕРµ РёРјСЏ С‚СѓР»Р°: mcp__{serverName}__{toolName}. */
   name: string
-  /** Короткое имя тула (без префикса). */
+  /** РљРѕСЂРѕС‚РєРѕРµ РёРјСЏ С‚СѓР»Р° (Р±РµР· РїСЂРµС„РёРєСЃР°). */
   shortName: string
   description: string
   inputSchema: Record<string, unknown>
 }
 
-/** Статус подключения MCP-сервера. */
+/** РЎС‚Р°С‚СѓСЃ РїРѕРґРєР»СЋС‡РµРЅРёСЏ MCP-СЃРµСЂРІРµСЂР°. */
 export type McpConnectionStatus =
   | 'disconnected'
   | 'connecting'
   | 'connected'
   | 'error'
 
-/** Уровень записи в журнале подключения MCP-сервера. */
+/** РЈСЂРѕРІРµРЅСЊ Р·Р°РїРёСЃРё РІ Р¶СѓСЂРЅР°Р»Рµ РїРѕРґРєР»СЋС‡РµРЅРёСЏ MCP-СЃРµСЂРІРµСЂР°. */
 export type McpLogLevel = 'info' | 'warn' | 'error'
 
-/** Одна запись журнала подключения MCP-сервера (для UI лог-вьюера). */
+/** РћРґРЅР° Р·Р°РїРёСЃСЊ Р¶СѓСЂРЅР°Р»Р° РїРѕРґРєР»СЋС‡РµРЅРёСЏ MCP-СЃРµСЂРІРµСЂР° (РґР»СЏ UI Р»РѕРі-РІСЊСЋРµСЂР°). */
 export interface McpLogEntry {
   /** Unix ms. */
   ts: number
@@ -560,53 +560,53 @@ export interface McpLogEntry {
   message: string
 }
 
-/** Полное состояние сервера для UI (конфиг + runtime). */
+/** РџРѕР»РЅРѕРµ СЃРѕСЃС‚РѕСЏРЅРёРµ СЃРµСЂРІРµСЂР° РґР»СЏ UI (РєРѕРЅС„РёРі + runtime). */
 export interface McpServerRuntime extends McpServerConfig {
   status: McpConnectionStatus
   error?: string
   tools: McpToolRuntime[]
-  /** Per-tool состояние, сгруппированное по полному имени тула. */
+  /** Per-tool СЃРѕСЃС‚РѕСЏРЅРёРµ, СЃРіСЂСѓРїРїРёСЂРѕРІР°РЅРЅРѕРµ РїРѕ РїРѕР»РЅРѕРјСѓ РёРјРµРЅРё С‚СѓР»Р°. */
   toolStates: Record<string, McpToolState>
-  /** Timestamp начала последней попытки подключения (для UI-таймера). */
+  /** Timestamp РЅР°С‡Р°Р»Р° РїРѕСЃР»РµРґРЅРµР№ РїРѕРїС‹С‚РєРё РїРѕРґРєР»СЋС‡РµРЅРёСЏ (РґР»СЏ UI-С‚Р°Р№РјРµСЂР°). */
   connectStartedAt?: number
-  /** Журнал подключения (хронологически; накопительно, cap на стороне main). */
+  /** Р–СѓСЂРЅР°Р» РїРѕРґРєР»СЋС‡РµРЅРёСЏ (С…СЂРѕРЅРѕР»РѕРіРёС‡РµСЃРєРё; РЅР°РєРѕРїРёС‚РµР»СЊРЅРѕ, cap РЅР° СЃС‚РѕСЂРѕРЅРµ main). */
   logs?: McpLogEntry[]
 }
 
-// ─── Skills ─────────────────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђ Skills в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
-/** Источник скилла. */
+/** РСЃС‚РѕС‡РЅРёРє СЃРєРёР»Р»Р°. */
 export type SkillSource = 'builtin' | 'user' | 'project'
 
 /**
- * Скилл = markdown-инструкция, инжектищаяся в system prompt когда включён.
- * Загружается из .md-файла с YAML frontmatter.
+ * РЎРєРёР»Р» = markdown-РёРЅСЃС‚СЂСѓРєС†РёСЏ, РёРЅР¶РµРєС‚РёС‰Р°СЏСЃСЏ РІ system prompt РєРѕРіРґР° РІРєР»СЋС‡С‘РЅ.
+ * Р—Р°РіСЂСѓР¶Р°РµС‚СЃСЏ РёР· .md-С„Р°Р№Р»Р° СЃ YAML frontmatter.
  */
 export interface Skill {
-  /** Стабильный id: source + ':' + относительный путь/имя. */
+  /** РЎС‚Р°Р±РёР»СЊРЅС‹Р№ id: source + ':' + РѕС‚РЅРѕСЃРёС‚РµР»СЊРЅС‹Р№ РїСѓС‚СЊ/РёРјСЏ. */
   id: string
   name: string
   description: string
-  /** Тело файла (инструкции) — попадает в system prompt. */
+  /** РўРµР»Рѕ С„Р°Р№Р»Р° (РёРЅСЃС‚СЂСѓРєС†РёРё) вЂ” РїРѕРїР°РґР°РµС‚ РІ system prompt. */
   instructions: string
   source: SkillSource
-  /** Абсолютный путь к файлу. */
+  /** РђР±СЃРѕР»СЋС‚РЅС‹Р№ РїСѓС‚СЊ Рє С„Р°Р№Р»Сѓ. */
   filePath: string
-  /** Для проектных — id проекта. */
+  /** Р”Р»СЏ РїСЂРѕРµРєС‚РЅС‹С… вЂ” id РїСЂРѕРµРєС‚Р°. */
   projectId?: string
-  /** mtime файла для инвалидации кэша. */
+  /** mtime С„Р°Р№Р»Р° РґР»СЏ РёРЅРІР°Р»РёРґР°С†РёРё РєСЌС€Р°. */
   mtimeMs: number
 }
 
-/** Per-skill состояние (включён + область применения). */
+/** Per-skill СЃРѕСЃС‚РѕСЏРЅРёРµ (РІРєР»СЋС‡С‘РЅ + РѕР±Р»Р°СЃС‚СЊ РїСЂРёРјРµРЅРµРЅРёСЏ). */
 export interface SkillState {
   enabled: boolean
   scope: ExtensionScope
 }
 
-// ─── Marketplace (каталог MCP-серверов и Skills) ────────────────────────────
+// в”Ђв”Ђв”Ђ Marketplace (РєР°С‚Р°Р»РѕРі MCP-СЃРµСЂРІРµСЂРѕРІ Рё Skills) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
-/** Требование к переменной окружения MCP-сервера (из registry). */
+/** РўСЂРµР±РѕРІР°РЅРёРµ Рє РїРµСЂРµРјРµРЅРЅРѕР№ РѕРєСЂСѓР¶РµРЅРёСЏ MCP-СЃРµСЂРІРµСЂР° (РёР· registry). */
 export interface McpEnvVarRequirement {
   name: string
   description: string
@@ -614,7 +614,7 @@ export interface McpEnvVarRequirement {
   isSecret: boolean
 }
 
-/** Требование к HTTP-заголовку удалённого MCP-сервера. */
+/** РўСЂРµР±РѕРІР°РЅРёРµ Рє HTTP-Р·Р°РіРѕР»РѕРІРєСѓ СѓРґР°Р»С‘РЅРЅРѕРіРѕ MCP-СЃРµСЂРІРµСЂР°. */
 export interface McpHeaderRequirement {
   name: string
   description: string
@@ -623,23 +623,23 @@ export interface McpHeaderRequirement {
   value?: string
 }
 
-/** Вариант установки через удалённый транспорт (sse / streamable-http). */
+/** Р’Р°СЂРёР°РЅС‚ СѓСЃС‚Р°РЅРѕРІРєРё С‡РµСЂРµР· СѓРґР°Р»С‘РЅРЅС‹Р№ С‚СЂР°РЅСЃРїРѕСЂС‚ (sse / streamable-http). */
 export interface McpRemoteOption {
   type: 'sse' | 'streamable-http'
   url: string
   headers?: McpHeaderRequirement[]
 }
 
-/** Вариант установки через локальный пакет (stdio). */
+/** Р’Р°СЂРёР°РЅС‚ СѓСЃС‚Р°РЅРѕРІРєРё С‡РµСЂРµР· Р»РѕРєР°Р»СЊРЅС‹Р№ РїР°РєРµС‚ (stdio). */
 export interface McpPackageOption {
   registryType: 'npm' | 'pypi' | 'oci'
   identifier: string
   version: string
-  /** Подсказка исполняемой среды: 'npx' | 'uvx' | 'docker'. */
+  /** РџРѕРґСЃРєР°Р·РєР° РёСЃРїРѕР»РЅСЏРµРјРѕР№ СЃСЂРµРґС‹: 'npx' | 'uvx' | 'docker'. */
   runtimeHint?: string
   packageArguments?: string[]
   environmentVariables?: McpEnvVarRequirement[]
-  /** Позиционные параметры для GUI (пути, строки подключения и т.д.). */
+  /** РџРѕР·РёС†РёРѕРЅРЅС‹Рµ РїР°СЂР°РјРµС‚СЂС‹ РґР»СЏ GUI (РїСѓС‚Рё, СЃС‚СЂРѕРєРё РїРѕРґРєР»СЋС‡РµРЅРёСЏ Рё С‚.Рґ.). */
   positionalArgs?: Array<{
     label: string
     placeholder: string
@@ -648,7 +648,7 @@ export interface McpPackageOption {
   }>
 }
 
-/** Элемент каталога MCP Registry для маркетплейса. */
+/** Р­Р»РµРјРµРЅС‚ РєР°С‚Р°Р»РѕРіР° MCP Registry РґР»СЏ РјР°СЂРєРµС‚РїР»РµР№СЃР°. */
 export interface MarketplaceMcpServer {
   id: string
   title: string
@@ -661,7 +661,7 @@ export interface MarketplaceMcpServer {
   packages: McpPackageOption[]
 }
 
-/** Элемент каталога Skills (GitHub-репозиторий) для маркетплейса. */
+/** Р­Р»РµРјРµРЅС‚ РєР°С‚Р°Р»РѕРіР° Skills (GitHub-СЂРµРїРѕР·РёС‚РѕСЂРёР№) РґР»СЏ РјР°СЂРєРµС‚РїР»РµР№СЃР°. */
 export interface MarketplaceSkill {
   id: string
   name: string
@@ -675,7 +675,7 @@ export interface MarketplaceSkill {
   updatedAt: string
 }
 
-/** Пользовательская кастомная тема (полный редактор в настройках). */
+/** РџРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєР°СЏ РєР°СЃС‚РѕРјРЅР°СЏ С‚РµРјР° (РїРѕР»РЅС‹Р№ СЂРµРґР°РєС‚РѕСЂ РІ РЅР°СЃС‚СЂРѕР№РєР°С…). */
 export interface CustomTheme {
   id: string
   name: string
@@ -696,4 +696,39 @@ export interface CustomTheme {
     saturate: number
     opacity: number
   }
+}
+
+// ── Client auto-update (SynteeHelper desktop) ────────────────────────────
+// Mirrors the manifest returned by GET /api/public/updates/check on the
+// gateway. The launcher (syntee-launcher, Go) does the actual download+apply;
+// this in-app checker only displays UI and triggers quitAndInstall().
+
+export interface UpdateManifest {
+  version: string
+  channel: string
+  zip_url: string
+  zip_size: number
+  sha256: string
+  force: boolean
+  min_version: string | null
+  changelog: string | null
+  released_at: string
+}
+
+export interface ChangelogEntry {
+  version: string
+  changelog: string | null
+  released_at: string
+  force: boolean
+  is_current: boolean
+}
+
+export type UpdateStatus = 'idle' | 'checking' | 'available' | 'no-update' | 'error'
+
+export interface UpdateState {
+  status: UpdateStatus
+  available: UpdateManifest | null
+  dismissed: string[]
+  lastCheckedAt: number
+  error: string | null
 }

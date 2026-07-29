@@ -8,3 +8,16 @@ out
 tmp_out.txt
 # tree-sitter WASM files копируются через scripts/copy-tree-sitter-wasms.js (postinstall)
 resources/tree-sitter/*.wasm
+
+# Go launcher binary — built separately in ../syntee-launcher, copied here
+# before running build:win so the NSIS installer can ship it.
+resources/syntee-launcher.exe
+
+# Compiled TypeScript output (electron-vite outputs alongside sources)
+src/**/*.js
+src/**/*.jsx
+src/**/*.d.ts
+!src/preload/index.d.ts
+!src/renderer/src/vite-env.d.ts
+!src/renderer/src/window.d.ts
+!src/main/ipc/updates.ipc.d.ts

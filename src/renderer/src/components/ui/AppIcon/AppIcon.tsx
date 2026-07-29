@@ -9,7 +9,7 @@ import {
   ListChecks, Briefcase, MessageSquare, GripVertical, PanelRight,
   History, Undo2, Puzzle, Power, ChevronLeft, Server, Wrench, Star, Download,
   Compass, HelpCircle, GitFork, Camera, Command, FlaskConical, Bug, Shuffle,
-  Users, UserPlus, Smile, Ban, Phone,
+  Users, UserPlus, Smile, Ban, Phone, DownloadCloud,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -35,6 +35,7 @@ const ICONS = {
   history: History, rewind: Undo2,
   puzzle: Puzzle, power: Power, chevronLeft: ChevronLeft, server: Server, wrench: Wrench,
   star: Star, download: Download,
+  downloadCloud: DownloadCloud,
   compass: Compass,
   helpCircle: HelpCircle,
   gitFork: GitFork,
