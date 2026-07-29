@@ -5,6 +5,7 @@ import { useTerminalStore } from '../../../store/terminal.store'
 import { useAuthStore } from '../../../store/auth.store'
 import { useBillingStore } from '../../../store/billing.store'
 import { useMessengerStore } from '../../../store/messenger.store'
+import { useUpdateStore, selectUpdateAvailable } from '../../../store/update.store'
 import './TitleBar.css'
 
 interface TitleBarProps {
@@ -13,10 +14,11 @@ interface TitleBarProps {
   onMemoryClick?: () => void
   onMessengerClick?: () => void
   onProfileClick?: () => void
+  onUpdateClick?: () => void
   currentChatId?: string | null
 }
 
-export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick, onMessengerClick, onProfileClick }: TitleBarProps) {
+export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick, onMessengerClick, onProfileClick, onUpdateClick }: TitleBarProps) {
   const handleMinimize = () => window.syntee.window.minimize()
   const handleHide = () => window.syntee.window.hide()
   const dockOpen = useTerminalStore(s => s.dockOpen)
@@ -26,6 +28,8 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
   const user = useAuthStore(s => s.user)
   const planUsage = useBillingStore(s => s.planUsage)
   const unreadTotal = useMessengerStore(s => s.conversations.reduce((n, c) => n + (c.unread_count || 0), 0))
+  const updateAvailable = useUpdateStore(selectUpdateAvailable)
+  const updateVersion = useUpdateStore(s => s.available?.version)
 
   // Индикатор дневного лимита — кольцевой прогресс вокруг аватара.
   const dailyLimitPct = planUsage && planUsage.usage.today_total_tokens > 0
@@ -65,6 +69,17 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
           active={dockOpen}
           onClick={handleTerminalToggle}
         />
+        {updateAvailable && onUpdateClick && (
+          <div className="titlebar-update-wrap" title={`Доступно обновление ${updateVersion ? `v${updateVersion}` : ''}`}>
+            <IconButton
+              icon="downloadCloud"
+              label="Обновление"
+              onClick={onUpdateClick}
+              className="titlebar-update-btn"
+            />
+            <span className="titlebar-update-badge" />
+          </div>
+        )}
         {onAgentClick && <IconButton icon="panelRight" label="Панель" onClick={onAgentClick} />}
         {onSettingsClick && <IconButton icon="settings" label="Настройки" onClick={onSettingsClick} />}
         {user && onProfileClick && (

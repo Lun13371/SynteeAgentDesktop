@@ -649,6 +649,30 @@ const synteeAPI = {
     clearAttachments: (chatId: string) =>
       ipcRenderer.invoke('draft:clearAttachments', chatId),
   },
+
+  // ── Автообновление клиента ──────────────────────────────────────────────
+  // In-app informational checker. The Go launcher (syntee-launcher) does the
+  // real download+apply; this API only exposes state for the titlebar badge,
+  // the changelog modal, the force modal, and the settings "Changelog" tab.
+  //   - check(): manual re-check (settings button). Returns the new state.
+  //   - getStatus(): snapshot of current state (badge visibility, manifest).
+  //   - getHistory(): list of ever-activated releases for the settings tab.
+  //   - dismiss(version): hide the badge for this version (force ignores it).
+  //   - quitAndInstall(): app.quit() → launcher applies staged update.
+  //   - onStateChanged(cb): subscribe to live updates from the main process.
+  updates: {
+    check: () => ipcRenderer.invoke('updates:check') as Promise<import('../../shared/types').UpdateState>,
+    getStatus: () => ipcRenderer.invoke('updates:getStatus') as Promise<import('../../shared/types').UpdateState>,
+    getHistory: (params?: { channel?: string; limit?: number }) =>
+      ipcRenderer.invoke('updates:getHistory', params) as Promise<import('../../shared/types').ChangelogEntry[]>,
+    dismiss: (version: string) => ipcRenderer.invoke('updates:dismiss', version) as Promise<import('../../shared/types').UpdateState>,
+    quitAndInstall: () => ipcRenderer.invoke('updates:quitAndInstall') as Promise<void>,
+    onStateChanged: (cb: (state: import('../../shared/types').UpdateState) => void) => {
+      const handler = (_e: unknown, state: import('../../shared/types').UpdateState) => cb(state)
+      ipcRenderer.on('updates:state-changed', handler)
+      return () => ipcRenderer.removeListener('updates:state-changed', handler)
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld('syntee', synteeAPI)

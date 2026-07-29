@@ -16,6 +16,7 @@ import Popover from '../../components/ui/Popover/Popover'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
+import ChangelogSettingsTab from '../../components/settings/ChangelogSettingsTab/ChangelogSettingsTab'
 import ProfileSection from '../../components/settings/ProfileSection/ProfileSection'
 import ModelStatusSection from '../../components/settings/ModelStatusSection/ModelStatusSection'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
@@ -29,6 +30,7 @@ import './SettingsPage.css'
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
   | 'agent' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
+  | 'changelog'
 
 interface SectionDef { id: Section; label: string; icon: IconName }
 interface SectionGroup { title: string; items: SectionDef[] }
@@ -71,6 +73,7 @@ const SECTION_GROUPS: SectionGroup[] = [
     items: [
       { id: 'integrations', label: 'Интеграции', icon: 'link' },
       { id: 'data',         label: 'Данные',     icon: 'database' },
+      { id: 'changelog',    label: 'Обновления', icon: 'downloadCloud' },
     ],
   },
 ]
@@ -283,6 +286,9 @@ export default function SettingsPage() {
             )}
             {section === 'data' && (
               <DataSection settings={settings} onSet={handleSet} toast={toast} />
+            )}
+            {section === 'changelog' && (
+              <ChangelogSettingsTab />
             )}
           </motion.div>
       </div>

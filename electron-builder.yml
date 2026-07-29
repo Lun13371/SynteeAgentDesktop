@@ -8,29 +8,31 @@ directories:
 
 files:
   - out/**/*
-  - resources/**/*
   - package.json
 
+# Resources copied to the install root (next to the client exe).
+# The launcher binary is NOT included here — it's a separate 7 MB download
+# from the website. The zip target (used for updates) contains only the
+# client files that the launcher extracts into current/.
 extraResources:
   - from: resources/
-    to: resources/
+    to: ./
     filter:
       - "**/*"
+      - "!syntee-launcher.exe"
+      - "!installer.nsh"
+      - "!icon.ico"
 
 win:
   target:
-    - target: nsis
+    - target: zip
       arch: [x64]
-  icon: resources/icon.png
+  icon: resources/icon.ico
   requestedExecutionLevel: asInvoker
 
-nsis:
-  oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
-  installerIcon: resources/icon.png
-  uninstallerIcon: resources/icon.png
-  shortcutName: Syntee Helper
-  include: resources/installer.nsh
+# The zip is uploaded to the gateway admin and activated per channel.
+# The launcher downloads it on first install and on updates, extracts it
+# into current/, and swaps the old build out.
+artifactName: ${productName}-${version}-${arch}.${ext}
 
 publish: null
