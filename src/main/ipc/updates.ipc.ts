@@ -62,9 +62,9 @@ export function registerUpdatesIPC(getMainWindow: () => BrowserWindow | null): v
     return getUpdateState()
   })
 
-  // Quit so the launcher can apply a staged update.
+  // Launch the updater and exit the client so the update can be applied.
   ipcMain.handle('updates:quitAndInstall', async (): Promise<void> => {
-    quitAndInstall()
+    await quitAndInstall()
   })
 
   // Push state changes to the main window. The renderer listens via

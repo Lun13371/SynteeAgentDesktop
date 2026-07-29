@@ -1,0 +1,118 @@
+.changelog-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.changelog-settings-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.changelog-settings-check-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary, #fff);
+  transition: background 0.15s;
+}
+
+.changelog-settings-check-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.changelog-settings-check-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.changelog-settings-loading,
+.changelog-settings-empty,
+.changelog-settings-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--text-muted, #888);
+  font-size: 13px;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.changelog-settings-error {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.changelog-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.changelog-card {
+  padding: 16px 18px;
+  border-radius: 12px;
+}
+
+.changelog-card--current {
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
+}
+
+.changelog-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.changelog-card-version {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #fff);
+}
+
+.changelog-card-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.changelog-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.changelog-card-badge--current {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent, #3b82f6);
+}
+
+.changelog-card-badge--force {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.changelog-card-date {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+}

@@ -16,6 +16,7 @@ import { app } from 'electron'
 import Store from 'electron-store'
 import type { UpdateManifest, UpdateState, UpdateStatus } from '../../shared/types'
 import { checkUrl } from './config'
+import { ensureUpdater, launchUpdater } from './LauncherBridge'
 
 const POLL_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
 const FIRST_CHECK_DELAY_MS = 10_000
@@ -133,12 +134,42 @@ export function dismissUpdate(version: string): void {
 }
 
 /**
- * Quit the app so the launcher can apply a staged update. The launcher sees
- * the client exit, finds a downloaded zip in staging/, swaps it in, and
- * relaunches the new build.
+ * Launch the updater (launcher GUI) and force-quit the client so the updater
+ * can download, apply, and relaunch the new build.
+ *
+ * app.exit(0) is called in a finally block — the client ALWAYS exits, even if
+ * the updater can't be found or launched. This prevents the "swallowed to
+ * tray" bug where app.quit() is intercepted by the close handler.
  */
-export function quitAndInstall(): void {
-  app.quit()
+export async function quitAndInstall(): Promise<void> {
+  try {
+    const updaterPath = findUpdater()
+    if (updaterPath) {
+      console.log('[UpdateChecker] launching updater:', updaterPath)
+      launchUpdater(updaterPath)
+    } else {
+      console.warn('[UpdateChecker] updater.exe not found, trying download...')
+      try {
+        const downloaded = await Promise.race([
+          downloadUpdater(),
+          new Promise<null>((r) => setTimeout(() => r(null), 5000)),
+        ])
+        if (downloaded) {
+          launchUpdater(downloaded)
+        } else {
+          console.error('[UpdateChecker] could not get updater — exiting anyway')
+        }
+      } catch (e) {
+        console.error('[UpdateChecker] updater download failed:', e)
+      }
+    }
+  } catch (e) {
+    console.error('[UpdateChecker] quitAndInstall error:', e)
+  } finally {
+    // app.exit(0) bypasses 'close' event handlers (which hide to tray).
+    // This GUARANTEES the client process exits.
+    app.exit(0)
+  }
 }
 
 /**

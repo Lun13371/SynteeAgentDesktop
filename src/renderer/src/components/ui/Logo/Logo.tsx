@@ -33,7 +33,7 @@ export default function Logo({ size = 32, className }: LogoProps) {
         style={{
           fontFamily: 'system-ui, sans-serif',
           fontSize: size * (18 / 32),
-          fontWeight: 700,
+          fontWeight: 800,
           color: 'var(--on-accent)',
           lineHeight: 1,
           userSelect: 'none',

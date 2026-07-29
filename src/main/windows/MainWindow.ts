@@ -11,6 +11,10 @@ interface SavedBounds {
   height: number
 }
 
+function resourcesDir(): string {
+  return is.dev ? join(__dirname, '../../resources') : process.resourcesPath!
+}
+
 export class MainWindow {
   private win: BrowserWindow | null = null
   private boundsSaveTimer: NodeJS.Timeout | null = null
@@ -69,6 +73,7 @@ export class MainWindow {
       backgroundColor: '#1a1a1a',
       show: false,
       skipTaskbar: false,
+      icon: join(resourcesDir(), 'icon.png'),
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         contextIsolation: true,
