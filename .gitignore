@@ -21,3 +21,11 @@ src/**/*.d.ts
 !src/renderer/src/vite-env.d.ts
 !src/renderer/src/window.d.ts
 !src/main/ipc/updates.ipc.d.ts
+
+# Generated config artifacts
+electron.vite.config.js
+electron.vite.config.d.ts
+
+# Stray build output
+/index.js
+Upload
