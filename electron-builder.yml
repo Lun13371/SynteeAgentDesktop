@@ -21,7 +21,6 @@ extraResources:
       - "**/*"
       - "!syntee-launcher.exe"
       - "!installer.nsh"
-      - "!icon.ico"
 
 win:
   target:

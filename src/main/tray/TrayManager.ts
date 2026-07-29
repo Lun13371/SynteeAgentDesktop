@@ -17,9 +17,11 @@ export class TrayManager {
   ) {}
 
   init(): void {
-    const iconPath = join(__dirname, '../../resources/tray-idle.png')
-    const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
-
+    const iconPath = join(app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'), 'tray-idle.png')
+    let icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+    if (icon.isEmpty()) {
+      icon = nativeImage.createFromPath(join(app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'), 'icon.png')).resize({ width: 16, height: 16 })
+    }
     this.tray = new Tray(icon)
     this.tray.setToolTip('Syntee Helper')
     this.tray.on('double-click', () => this.callbacks.showMain())
@@ -68,11 +70,14 @@ export class TrayManager {
   startListeningAnimation(): void {
     if (!this.tray) return
     const frames = ['tray-listen-1.png', 'tray-listen-2.png', 'tray-listen-3.png']
+    const basePath = app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources')
     let i = 0
     this.animationInterval = setInterval(() => {
-      const iconPath = join(__dirname, '../../resources', frames[i % frames.length])
+      const iconPath = join(basePath, frames[i % frames.length])
       const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
-      this.tray?.setImage(icon)
+      if (!icon.isEmpty()) {
+        this.tray?.setImage(icon)
+      }
       i++
     }, 400)
   }
@@ -82,9 +87,11 @@ export class TrayManager {
       clearInterval(this.animationInterval)
       this.animationInterval = null
     }
-    const iconPath = join(__dirname, '../../resources/tray-idle.png')
+    const iconPath = join(app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources'), 'tray-idle.png')
     const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
-    this.tray?.setImage(icon)
+    if (!icon.isEmpty()) {
+      this.tray?.setImage(icon)
+    }
   }
 
   destroy(): void {
