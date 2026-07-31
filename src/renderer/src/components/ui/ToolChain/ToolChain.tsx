@@ -87,28 +87,55 @@ function buildIterations(steps: ToolStep[]): Iteration[] {
   const calls = steps.filter(s => s.type === 'tool_call')
   const results = steps.filter(s => s.type === 'tool_result')
 
+  // Сначала матчим строго по callId — это единственный надёжный ключ при
+  // параллельных тулах (Promise.all в Agent.ts создаёт несколько
+  // tool_call одновременно с одним toolName). Раньше дальше шёл жадный
+  // фолбэк «первый незаматченный result», который мог присвоить чужой
+  // результат не тому вызову → реальный вызов оставался без result →
+  // спиннер «Выполняется…» крутился бесконечно (running=true пока
+  // !iter.result). Теперь фолбэк только по toolName среди resultless
+  // вызовов, и orphan-результаты рендерятся как собственные итерации.
+  const matchedResultIds = new Set<string>()
   for (const call of calls) {
-    // Матчим по callId если есть, иначе по toolName (первый незаматченный result с тем же toolName)
     let result: ToolStep | undefined
     if (call.callId) {
       result = results.find(r => r.callId === call.callId)
     }
     if (!result) {
-      // Fallback: первый незаматченный result с тем же toolName
-      result = results.find(r => r.toolName === call.toolName && !(r as ToolStep & { _matched?: boolean })._matched)
-    }
-    if (!result) {
-      // Последний fallback: первый незаматченный result
-      result = results.find(r => !(r as ToolStep & { _matched?: boolean })._matched)
+      // Fallback: первый незаматченный result с тем же toolName (без
+      // чужого callId или с callId, которому уже нашли свою пару).
+      result = results.find(r =>
+        r.toolName === call.toolName &&
+        !matchedResultIds.has(r.id) &&
+        (!r.callId || r.callId === call.callId)
+      )
     }
     if (result) {
-      (result as ToolStep & { _matched?: boolean })._matched = true
+      matchedResultIds.add(result.id)
     }
     iters.push({ id: call.id, call, result })
   }
 
-  // Чистим временный флаг
-  results.forEach(r => { delete (r as ToolStep & { _matched?: boolean })._matched })
+  // Orphan-результаты (_error, _limit, _loop_guard, _verification) не имеют
+  // парного tool_call — раньше дропались или примагничивались к чужой
+  // итерации через жадный фолбэк. Теперь рендерим как собственные
+  // синтетические итерации, чтобы пользователь видел причину остановки.
+  for (const result of results) {
+    if (matchedResultIds.has(result.id)) continue
+    // Синтетический call с тем же toolName — итерация выглядит как обычный
+    // тул, но без аргументов (call.content = toolName).
+    const synthCall: ToolStep = {
+      id: `${result.id}-synth`,
+      type: 'tool_call',
+      toolName: result.toolName,
+      toolArgs: undefined,
+      content: result.toolName ?? 'tool',
+      success: undefined,
+      timestamp: result.timestamp,
+      callId: result.callId,
+    }
+    iters.push({ id: synthCall.id, call: synthCall, result })
+  }
 
   return iters
 }
@@ -240,6 +267,13 @@ const IterationBlock = memo(function IterationBlock({
     if ((running || pending) && !prevRunning.current) setOpen(true)
     prevRunning.current = running || pending
   }, [running, pending])
+
+  // Авто-раскрытие при сбое — раньше IterationBlock схлопывался при
+  // завершении (running → false), и текст ошибки прятался. Теперь при
+  // failed раскрываем автоматически, чтобы причина была видна.
+  useEffect(() => {
+    if (failed) setOpen(true)
+  }, [failed])
 
   const statusColor = failed ? '#f87171' : (running || pending) ? meta.color : meta.color
 
@@ -478,6 +512,14 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   const [collapsed, setCollapsed] = useState(true)  // свёрнут по дефолту
   const totalDone = iters.filter(i => i.result).length
   const hasFailed = iters.some(i => i.result?.success === false)
+  const failedCount = iters.filter(i => i.result?.success === false).length
+
+  // Авто-раскрытие цепочки при сбое — раньше ToolChain оставался свёрнутым,
+  // и пользователь видел только «⚠» без текста ошибки. Теперь при hasFailed
+  // раскрываем автоматически, чтобы упавшая итерация была видна.
+  useEffect(() => {
+    if (hasFailed) setCollapsed(false)
+  }, [hasFailed])
 
   // Считаем elapsed из timestamps если не передан явно
   const allSteps = steps.filter(s => s.timestamp)
@@ -529,8 +571,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
             : isRunning
               ? <><span className="tc2-spinner" /><span className="tc2-header-title">Агент работает</span></>
               : <span className="tc2-header-title">
-                  {hasFailed ? '⚠ ' : ''}
-                  {`${totalDone} ${totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}`}
+                  {hasFailed ? `⚠ ${failedCount} ${failedCount === 1 ? 'ошибка' : failedCount < 5 ? 'ошибки' : 'ошибок'} из ${totalDone}` : `${totalDone} ${totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}`}
                 </span>
           }
           {elapsedStr && !isRunning && (

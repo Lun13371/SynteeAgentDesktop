@@ -50,8 +50,14 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
 
   for (const step of steps) {
     if (step.type === 'tool_call') {
-      if (!currentIter || currentIter.calls.length > 0 || currentIter.results.size > 0) {
-        // Новая итерация
+      // Новая итерация только если предыдущая уже имеет results
+      // (т.е. предыдущий раунд завершён). Раньше условие было
+      // `calls.length > 0 || results.size > 0` — это разбивало
+      // параллельные tool_calls (из одного раунда) на отдельные
+      // итерации, и результаты попадали не в ту итерацию →
+      // assistant с tool_calls без results → провайдер 400 →
+      // чат ломался навсегда после первого раунда с параллельными тулами.
+      if (!currentIter || currentIter.results.size > 0) {
         currentIter = { calls: [], results: new Map() }
         iterations.push(currentIter)
       }
@@ -95,10 +101,26 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
 
   for (let i = 0; i < iterations.length; i++) {
     const iter = iterations[i]
+    const assistantContent = (i === 0 && hasContentBefore) ? contentBefore : ''
+
+    // Санитизация: строгий провайдер (glm/litellm) возвращает 400 на
+    // tool_calls без парных results. Если итерация сохранилась без
+    // results (error/падение до ensureToolResults в старых версиях) —
+    // рендерим её как обычный текстовый assistant, без tool_calls.
+    // Также скипаем tool_call с пустым callId (битый id → 400).
+    const validCalls = iter.calls.filter(c => c.callId && c.callId.length > 0)
+    if (validCalls.length === 0 || iter.results.size === 0) {
+      // Нет валидных calls или нет результатов — отдаём как текст.
+      // content уже включён в assistantContent для i===0; для i>0
+      // текста нет, но без tool_calls это пустое сообщение — скипаем.
+      if (i === 0 && hasContentBefore) {
+        result.push({ role: 'assistant', content: assistantContent })
+      }
+      continue
+    }
 
     // Assistant сообщение с tool_calls (включает текст ответа перед тулаами)
-    const assistantContent = (i === 0 && hasContentBefore) ? contentBefore : ''
-    const toolCalls = iter.calls.map(c => ({
+    const toolCalls = validCalls.map(c => ({
       id: c.callId,
       type: 'function' as const,
       function: {
@@ -113,12 +135,16 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
       tool_calls: toolCalls,
     })
 
-    // Tool результаты для каждого call
-    for (const call of iter.calls) {
+    // Tool результаты только для calls'ов, у которых есть результат.
+    // Раньше push'или tool с пустым content даже без result (строка
+    // toolResult?.content ?? '') — строгий провайдер 400 на пустой
+    // tool_call_id или на tool без парного assistant.tool_calls.
+    for (const call of validCalls) {
       const toolResult = iter.results.get(call.callId)
+      if (!toolResult) continue  // скип — result отсутствует
       result.push({
         role: 'tool',
-        content: toolResult?.content ?? '',
+        content: toolResult.content ?? '',
         tool_call_id: call.callId,
         name: call.toolName,
       })

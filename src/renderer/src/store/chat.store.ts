@@ -29,6 +29,13 @@ export interface ChatLiveState {
   isAgentRunning: boolean
   /** Live progress для долгих тулов (get_fast_context / run_command): {toolName → {stage, detail, sessionId, files...}} */
   toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  /** Структурированный ретрай для UI-счётчика «повтор 3/5». Не затирается
+   *  следующим onStatus (в отличие от agentStatus). Сбрасывается в null
+   *  при успехе/новом раунде. */
+  retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
+  /** Последняя ошибка тула/API для индикатора ожидания. Не затирается
+   *  generic «Думаю…» — показывается пока не придёт новый токен/успех. */
+  lastError?: string | null
 }
 
 export type RunStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'

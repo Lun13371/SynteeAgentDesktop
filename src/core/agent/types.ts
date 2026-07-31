@@ -28,7 +28,7 @@ export interface AgentCallbacks {
   onError: (error: Error) => void
   onStatus?: (text: string) => void
   onRateLimit?: (waitSec: number) => void
-  onRetry?: (attempt: number, reason: string, waitSec?: number) => void
+  onRetry?: (attempt: number, reason: string, waitSec?: number, maxAttempts?: number) => void
   onContextUpdate?: (tokens: number) => void
   onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>

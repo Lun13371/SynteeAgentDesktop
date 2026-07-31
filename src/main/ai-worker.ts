@@ -73,6 +73,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   // --- Стартовое сообщение — запуск агента (только один раз) ---
   if (agentStarted) return
   agentStarted = true
+  console.log('[ai-worker] START chatId=%s msgId=%s content=%d chars history=%d msgs enableTools=%s',
+    (msg as { chatId?: string }).chatId, (msg as { msgId?: string }).msgId,
+    ((msg as { content?: string }).content || '').length,
+    ((msg as { history?: unknown[] }).history || []).length,
+    (msg as { enableTools?: boolean }).enableTools)
 
   const {
     chatId, msgId, content, history,
@@ -175,6 +180,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
 
   const finalize = (details?: unknown) => {
     flushIter()
+    console.log('[ai-worker] finalize: fullText=%d chars, steps=%d, iters=%d', fullText.length, collectedSteps.length, collectedIters.length)
     // Если после последней итерации остался thinking или текст — создаём финальную итерацию
     if (collectedIters.length > 0 && (pendingThinking || pendingTextAfter.trim())) {
       collectedIters.push({
@@ -231,10 +237,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       const fcDbPath = (workerData as Record<string, unknown>).fastContextDbPath as string | undefined
       const fcWasmDir = (workerData as Record<string, unknown>).fastContextWasmDir as string | undefined
       if (fcDbPath) {
-        try { initFastContextDb(fcDbPath) } catch (e) { console.warn('[ai-worker] initFastContextDb failed:', e) }
+        try { initFastContextDb(fcDbPath) } catch (e) { console.warn('[ai-worker] initFastContextDb FAILED:', e) }
       }
       if (fcWasmDir) {
-        try { initFastContextWasmDir(fcWasmDir) } catch (e) { console.warn('[ai-worker] initFastContextWasmDir failed:', e) }
+        try { initFastContextWasmDir(fcWasmDir) } catch (e) { console.warn('[ai-worker] initFastContextWasmDir FAILED:', e) }
       }
       // Incognito-чаты (side chat) не пишут рабочую память — не ставим
       // callback, Agent сам короткозит через проверку !this.onUpdateWorkingMemory.
@@ -252,6 +258,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         }
       }
 
+      console.log('[ai-worker] calling agent.run()... content=%d chars, history=%d msgs', content.length, history.length)
       await agent.run(
         content,
         {
@@ -346,8 +353,21 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'token', chatId, msgId, token: step.content })
             }
           },
-          onDone: (_answer: string, details?: unknown) => finalize(details),
+          onDone: (_answer: string, details?: unknown) => {
+            // Если агент накопил текст через стриминг — fullText уже заполнен.
+            // Но если ответ пришёл без стриминга (hadStreamedTokens=false →
+            // onStep({type:'answer'}) по словам, или maxSteps/empty-retry
+            // пути вызывают onDone с текстом, но onStep не вызывался) —
+            // fullText пуст, и _answer терялся. Берём максимум.
+            if (!fullText.trim() && _answer.trim()) {
+              fullText = _answer
+            }
+            console.log('[ai-worker] onDone: _answer=%d chars, fullText=%d chars, steps=%d, iters=%d',
+              _answer.length, fullText.length, collectedSteps.length, collectedIters.length)
+            finalize(details)
+          },
           onError: (err) => {
+            console.log('[ai-worker] onError: %s | fullText=%d steps=%d iters=%d', err.message, fullText.length, collectedSteps.length, collectedIters.length)
             flushIter()
             send({
               type: 'error', chatId, error: err.message,
@@ -409,11 +429,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             send({ type: 'rate_limit', chatId, waitSec })
             send({ type: 'agent_status', chatId, msgId, text: `Rate limit — жду ${waitSec}с...` })
           },
-          onRetry: (attempt, reason, waitSec) => {
+          onRetry: (attempt, reason, waitSec, maxAttempts) => {
             const text = reason === 'rate_limit'
               ? `Лимит запросов, повтор через ${waitSec}с...`
-              : `Ошибка сети, повтор ${attempt}...`
+              : `Ошибка сети, повтор ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`
             send({ type: 'agent_status', chatId, msgId, text })
+            // Структурированное событие для UI-счётчика «повтор 3/5» —
+            // не затирается следующим onStatus (в отличие от agent_status).
+            send({ type: 'agent_retry', chatId, msgId, attempt, maxAttempts, reason, waitSec })
             if (reason === 'rate_limit' && waitSec) {
               send({ type: 'rate_limit', chatId, waitSec })
             }
@@ -687,11 +710,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onWaiting: () => {
             send({ type: 'agent_status', chatId, msgId, text: 'Ожидаю ответа...' })
           },
-          onRetry: (attempt, reason, waitSec) => {
+          onRetry: (attempt, reason, waitSec, maxAttempts) => {
             const text = reason === 'rate_limit'
               ? `Лимит запросов, повтор через ${waitSec}с...`
-              : `Ошибка сети, повтор ${attempt}...`
+              : `Ошибка сети, повтор ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`
             send({ type: 'agent_status', chatId, msgId, text })
+            // Структурированное событие для UI-счётчика «повтор 3/5» —
+            // не затирается следующим onStatus (в отличие от agent_status).
+            send({ type: 'agent_retry', chatId, msgId, attempt, maxAttempts, reason, waitSec })
             // Дублируем rate_limit для бара с таймером
             if (reason === 'rate_limit' && waitSec) {
               send({ type: 'rate_limit', chatId, waitSec })

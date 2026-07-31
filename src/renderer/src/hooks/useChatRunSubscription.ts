@@ -27,6 +27,8 @@ interface ChatBuffers {
   flushTimer: ReturnType<typeof setTimeout> | null  // id setTimeout для батч-флеша
   streamMsgId: string | null // msgId текущего стрима (для матчинга step→итерация)
   toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  retry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
+  lastError: string | null
 }
 
 const buffers = new Map<string, ChatBuffers>()
@@ -62,7 +64,7 @@ function getBuf(chatId: string): ChatBuffers {
       text: '', thinking: '', thinkingMs: undefined, isThinkingLive: false,
       iters: [], steps: [], todo: [], agentStatus: null, rateLimitSec: 0,
       tokenBuf: '', thinkingBuf: '', flushTimer: null, streamMsgId: null,
-      toolProgress: {},
+      toolProgress: {}, retry: null, lastError: null,
     }
     buffers.set(chatId, buf)
   }
@@ -92,6 +94,8 @@ export function initChatSend(chatId: string) {
   buf.rateLimitSec = 0
   buf.tokenBuf = ''
   buf.thinkingBuf = ''
+  buf.retry = null
+  buf.lastError = null
   useChatStore.getState().hydrateLiveState(chatId, {
     msgId: 'streaming-pending',
     text: '',
@@ -102,6 +106,8 @@ export function initChatSend(chatId: string) {
     todo: [],
     agentStatus: null,
     rateLimitSec: 0,
+    retry: null,
+    lastError: null,
     isTyping: true,
     isAgentRunning: false,
   })
@@ -120,6 +126,7 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       bufferedSteps: unknown[]; bufferedIters: unknown[]
       bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
       bufferedAgentStatus: string | null; bufferedRateLimitSec: number
+      bufferedRetry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
       meta: QueueItemMeta | null
     } | null
     if (!live || !live.isRunning) {
@@ -152,6 +159,7 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       todo: buf.todo,
       agentStatus: buf.agentStatus,
       rateLimitSec: buf.rateLimitSec,
+      retry: live.bufferedRetry ?? null,
       isTyping: true,
       isAgentRunning: buf.iters.length > 0 || buf.steps.length > 0,
     })
@@ -191,6 +199,8 @@ export function initSideChatSend(parentChatId: string) {
   buf.rateLimitSec = 0
   buf.tokenBuf = ''
   buf.thinkingBuf = ''
+  buf.retry = null
+  buf.lastError = null
   useChatStore.getState().hydrateSideLiveState(parentChatId, {
     msgId: 'streaming-pending',
     text: '',
@@ -201,6 +211,8 @@ export function initSideChatSend(parentChatId: string) {
     todo: [],
     agentStatus: null,
     rateLimitSec: 0,
+    retry: null,
+    lastError: null,
     isTyping: true,
     isAgentRunning: false,
   })
@@ -333,6 +345,14 @@ export function useChatRunSubscription() {
         if (buf.streamMsgId === 'streaming-pending') {
           promoteMsgId(data.chatId, data.msgId)
         }
+        // Пришли новые токены — ретрай/ошибка больше не актуальны,
+        // сбрасываем чтобы индикатор не показывал «повтор 3/5» после
+        // успешного восстановления.
+        if (buf.retry || buf.lastError) {
+          buf.retry = null
+          buf.lastError = null
+          liveSet(data.chatId, { retry: null, lastError: null })
+        }
         buf.tokenBuf += data.token
         scheduleFlush(data.chatId)
       }
@@ -340,6 +360,8 @@ export function useChatRunSubscription() {
 
     // CHAT_STREAM_DONE — финал стрима, сохранение в БД
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (data: { chatId: string; message: Message }) => {
+      console.log('[chat-flow] CHAT_STREAM_DONE chatId=%s msgId=%s content=%d chars steps=%d',
+        data.chatId, data.message.id, (data.message.content || '').length, data.message.toolSteps?.length ?? 0)
       const buf = buffers.get(data.chatId)
       // Синхронный финальный flush — ничего не теряется.
       if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) {
@@ -366,8 +388,13 @@ export function useChatRunSubscription() {
       }
     })
 
-    // CHAT_STREAM_ERROR — ошибка/остановка
+    // CHAT_STREAM_ERROR — ошибка/остановка. Раньше для основного чата
+    // тут был только liveClear без setRunStatus — сайдбар не показывал ✗,
+    // и ошибка пропадала невидимой (пользователь видел "ожидание ответа"
+    // пока live-пузырь не схлопнется). Теперь ставим runStatus='error' с
+    // текстом ошибки → бейдж ✗ в сайдбаре + сохраняется для показа.
     const offError = window.syntee.on(IPC_EVENTS.CHAT_STREAM_ERROR, (data: { chatId: string; error: string }) => {
+      console.log('[chat-flow] CHAT_STREAM_ERROR chatId=%s error=%s', data.chatId, data.error.slice(0, 200))
       const buf = buffers.get(data.chatId)
       if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) {
         clearTimeout(buf.flushTimer)
@@ -377,6 +404,10 @@ export function useChatRunSubscription() {
       buffers.delete(data.chatId)
       if (isSideChat(data.chatId)) {
         useChatStore.getState().setSideRunStatus(sideParent(data.chatId), 'error')
+      } else {
+        // Ставим error-статус с текстом — сайдбар покажет ✗ и при наведении
+        // текст. Раньше основной чат вообще не получал error-статус здесь.
+        useChatStore.getState().setRunStatus(data.chatId, 'error', data.error)
       }
     })
 
@@ -490,6 +521,28 @@ export function useChatRunSubscription() {
       const buf = getBuf(data.chatId)
       buf.agentStatus = data.text
       liveSet(data.chatId, { agentStatus: data.text })
+    })
+
+    // agent:retry — структурированный ретрай для UI-счётчика «повтор 3/5».
+    // Не затирается следующим onStatus (в отличие от agent_status) —
+    // хранится отдельно в live-стейте как retry. Сбрасывается в null
+    // при успехе (новый токен/шаг) в обработчиках CHAT_STREAM_TOKEN/step.
+    const offRetry = window.syntee.on('agent:retry', (data: {
+      msgId: string; chatId: string
+      attempt: number; maxAttempts?: number; reason: string; waitSec?: number
+    }) => {
+      if (!data.chatId) return
+      console.log('[chat-flow] agent:retry chatId=%s attempt=%d/%s reason=%s waitSec=%s',
+        data.chatId, data.attempt, data.maxAttempts ?? '?', data.reason, data.waitSec ?? '?')
+      const buf = getBuf(data.chatId)
+      buf.retry = { attempt: data.attempt, maxAttempts: data.maxAttempts, reason: data.reason, waitSec: data.waitSec }
+      // При rate_limit persist lastError как причину для индикатора
+      if (data.reason === 'rate_limit') {
+        buf.lastError = `Лимит запросов (повтор ${data.attempt}${data.maxAttempts ? `/${data.maxAttempts}` : ''})`
+      } else {
+        buf.lastError = `Ошибка сети (повтор ${data.attempt}${data.maxAttempts ? `/${data.maxAttempts}` : ''})`
+      }
+      liveSet(data.chatId, { retry: buf.retry, lastError: buf.lastError })
     })
 
     // agent:tool_progress — live progress для долгих тулов (get_fast_context,
@@ -617,7 +670,11 @@ export function useChatRunSubscription() {
         }
         buf.steps.push(newStep)
 
-        // Заменяем pending-карточку in-place по pendingCallId
+        // Заменяем pending-карточку in-place. Сначала по pendingCallId
+        // (точный ключ), затем — если pendingCallId не совпал — по
+        // toolName в последней итерации, чтобы не плодить дубль
+        // (раньше при несовпадении создавалась вторая итерация, а
+        // pending-карточка оставалась без результата → бесконечный спиннер).
         let replacedPending = false
         if (step.pendingCallId) {
           const itersForReplace = buf.iters.map(iter => {
@@ -630,6 +687,22 @@ export function useChatRunSubscription() {
           })
           if (replacedPending) {
             buf.iters = itersForReplace
+          }
+        }
+        if (!replacedPending && step.toolName) {
+          // Fallback: pending-карточка по toolName в последней итерации
+          // (pending-шаги не имеют реального callId, только pending-*).
+          const last = buf.iters[buf.iters.length - 1]
+          if (last) {
+            const stepIdx = last.steps.findIndex(s =>
+              s.type === 'tool_call' && s.toolName === step.toolName && s.pending
+            )
+            if (stepIdx !== -1) {
+              const nextSteps = [...last.steps]
+              nextSteps[stepIdx] = newStep
+              buf.iters = [...buf.iters.slice(0, -1), { ...last, steps: nextSteps }]
+              replacedPending = true
+            }
           }
         }
 
@@ -683,33 +756,85 @@ export function useChatRunSubscription() {
           return
         }
         const iters = buf.iters
-        // Матчим result в правильную итерацию по callId или toolName
-        let targetIterIdx = iters.length - 1
+        // Матчим result в правильную итерацию. Раньше дефолтом была
+        // последняя итерация (targetIterIdx = iters.length - 1) — при
+        // результате без callId (блок/отказ/MCP-ошибка) и дубликате
+        // toolName в нескольких итерациях findIndex брал первую, а
+        // дефолт оставлял последнюю → рассинхрон: реальный вызов без
+        // result → бесконечный спиннер. Теперь ищем самую старую
+        // resultless-итерацию с тем же toolName, иначе — самую старую
+        // resultless вообще (чтобы orphan-результат не повис).
+        let targetIterIdx = -1
         if (step.callId) {
           const idx = iters.findIndex(iter =>
             iter.steps.some(s => s.type === 'tool_call' && s.callId === step.callId)
           )
           if (idx !== -1) targetIterIdx = idx
-        } else if (step.toolName) {
+        }
+        if (targetIterIdx === -1 && step.toolName) {
+          // Самая старая итерация с toolName-вызовом и без результата
           const idx = iters.findIndex(iter =>
             iter.steps.some(s => s.type === 'tool_call' && s.toolName === step.toolName) &&
-            !iter.steps.some(s => s.type === 'tool_result' && s.toolName === step.toolName)
+            !iter.steps.some(s => s.type === 'tool_result')
           )
           if (idx !== -1) targetIterIdx = idx
         }
-        iters[targetIterIdx] = { ...iters[targetIterIdx], steps: [...iters[targetIterIdx].steps, newStep] }
+        if (targetIterIdx === -1) {
+          // Самая старая итерация без любого результата — покрывает
+          // orphan-результаты (_error/_limit без парного tool_call).
+          const idx = iters.findIndex(iter =>
+            !iter.steps.some(s => s.type === 'tool_result')
+          )
+          if (idx !== -1) targetIterIdx = idx
+        }
+        if (targetIterIdx === -1) {
+          // Нет подходящей итерации — создаём синтетическую, чтобы
+          // orphan-результат не потерялся (зеркало buildIterations).
+          buf.iters = [...iters, {
+            textBefore: '',
+            thinking: undefined,
+            thinkingMs: undefined,
+            steps: [
+              {
+                id: uuid(), type: 'tool_call' as const,
+                toolName: step.toolName, toolArgs: undefined,
+                content: step.toolName ?? 'tool', success: undefined,
+                timestamp: Date.now(), callId: step.callId,
+                pending: false,
+              } as ToolStep,
+              newStep,
+            ],
+          }]
+        } else {
+          iters[targetIterIdx] = { ...iters[targetIterIdx], steps: [...iters[targetIterIdx].steps, newStep] }
+        }
         // ОДИН setLiveState вместо двух (commitIters + commitSteps).
-        liveSet(chatId, {
-          iters: [...buf.iters],
-          steps: [...buf.steps],
-          isAgentRunning: true,
-          isTyping: true,
-        })
+        // При успешном результате тула сбрасываем retry/lastError —
+        // ретрай/ошибка больше не актуальны.
+        if (step.success && (buf.retry || buf.lastError)) {
+          buf.retry = null
+          buf.lastError = null
+          liveSet(chatId, {
+            iters: [...buf.iters],
+            steps: [...buf.steps],
+            retry: null,
+            lastError: null,
+            isAgentRunning: true,
+            isTyping: true,
+          })
+        } else {
+          liveSet(chatId, {
+            iters: [...buf.iters],
+            steps: [...buf.steps],
+            isAgentRunning: true,
+            isTyping: true,
+          })
+        }
       }
     })
 
     return () => {
-      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offStep(); offToolProgress()
+      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offRetry(); offStep(); offToolProgress()
     }
   }, [])
 }

@@ -15,6 +15,7 @@ import {
   truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD, getModelContextWindow,
   getHardLimitTokens, getHardLimitTargetTokens,
 } from '../context/contextManager'
+import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { statSync } from 'fs'
@@ -152,6 +153,16 @@ export class Agent {
       this.onUpdateWorkingMemory(this.chatId, structured, 'replace')
     }
 
+    // Счётчик последовательных ошибочных раундов (API/сеть). Раньше outer
+    // catch делал continue без лимита — при "превышено число попыток"
+    // (chatWithTools ретраит 5 раз и кидает) outer ловил, push user message,
+    // continue → снова 5 ретраев → снова throw → бесконечно до maxSteps=50.
+    // Это 50×5=250 запросов, "ожидание ответа" крутится часами, а контекст
+    // растёт от user-сообщений об ошибках. Теперь лимит 3 — после 3 ошибочных
+    // раундов подряд останавливаемся с onError.
+    let consecutiveErrors = 0
+    const MAX_CONSECUTIVE_ERRORS = 3
+
     for (let step = 0; ; step++) {
       if (signal?.aborted) {
         callbacks.onDone('')
@@ -163,6 +174,7 @@ export class Agent {
       // долго без реального прогресса, что выглядело как "зависание").
       // Теперь это реальный потолок: по достижении отдаём частичный ответ.
       if (step >= maxSteps) {
+        console.log('[Agent] maxSteps=%s reached, finishing with partial answer', maxSteps)
         log('[Agent] run() достигнут maxSteps=%s, завершаю с частичным ответом', maxSteps)
         callbacks.onStep({
           type: 'tool_result',
@@ -179,7 +191,18 @@ export class Agent {
 
       try {
         callbacks.onStatus?.('Ожидаю ответа...')
-        const response = await this.client.chatWithTools(
+        console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, maxSteps, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
+        log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, maxSteps, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
+        // Защитный таймаут на весь раунд chatWithTools. Если провайдер
+        // принял запрос, но stream завис (TCP open, нет данных) —
+        // for-await(chunk) висит вечно, signal не abort'ится, "Ожидаю
+        // ответа..." крутится часами без ошибки. OVERALL_TIMEOUT_MS
+        // внутри chatWithTools срабатывает только между retry-попытками,
+        // а сам stream-await его не проверяет. Внешний таймаут (3мин,
+        // чуть меньше 4мин overall) гарантирует, что раунд не висит
+        // бесконечно — кидает ошибку → catch → onError после 3 раундов.
+        const ROUND_TIMEOUT_MS = 90 * 1000
+        const roundPromise = this.client.chatWithTools(
           messages,
           toolSchemas ?? TOOL_SCHEMAS,
           signal,
@@ -190,11 +213,11 @@ export class Agent {
             callbacks.onStatus?.(`Rate limit — жду ${waitSec}с...`)
             callbacks.onRateLimit?.(waitSec)
           },
-          (attempt, reason, waitSec) => {
+          (attempt, reason, waitSec, maxAttempts) => {
             callbacks.onStatus?.(reason === 'rate_limit'
               ? `Лимит запросов, повтор через ${waitSec}с...`
-              : `Ошибка сети, повтор ${attempt}...`)
-            callbacks.onRetry?.(attempt, reason, waitSec)
+              : `Ошибка сети, повтор ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`)
+            callbacks.onRetry?.(attempt, reason, waitSec, maxAttempts)
           },
           callbacks.onUsage,
           callbacks.onThinkingToken,
@@ -211,14 +234,25 @@ export class Agent {
             })
           },
         )
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error(`Раунд chatWithTools превысил таймаут (${Math.round(ROUND_TIMEOUT_MS / 1000)}с) — провайдер не отвечает.`)), ROUND_TIMEOUT_MS)
+        })
+        const response = await Promise.race([roundPromise, timeoutPromise])
 
         if (signal?.aborted) {
           callbacks.onDone('')
           return
         }
 
+        // Раунд прошёл успешно (chatWithTools не бросил) — сбрасываем
+        // счётчик последовательных ошибок.
+        consecutiveErrors = 0
+        console.log('[Agent] round %s: chatWithTools OK — tool_calls=%d, content=%d chars', step, response.tool_calls?.length ?? 0, (response.content || '').length)
+        log('[Agent] round %s: chatWithTools OK — tool_calls=%d, content=%d chars', step, response.tool_calls?.length ?? 0, (response.content || '').length)
+
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
+          console.log('[Agent] no tool_calls: answer=%d chars, reasoning=%s', answer.length, response.reasoning ? `${response.reasoning.length} chars` : 'none')
 
           // ── Защита от пустого ответа после reasoning ──
           // Модель (например GLM) может стримить reasoning 80+ секунд,
@@ -227,6 +261,10 @@ export class Agent {
           // шанс дать ответ, добавив assistant-сообщение с reasoning
           // и user-промпт "продолжи".
           if (!answer.trim() && !signal?.aborted) {
+            console.log('[Agent] empty answer after reasoning, emptyRetries=%d', (messages.filter(m =>
+              m.role === 'user' && typeof m.content === 'string' &&
+              m.content.startsWith('[empty-reasoning-retry]')
+            ).length))
             // Считаем, сколько раз уже пытались продолжить — чтобы не зациклиться
             const emptyRetries = (messages.filter(m =>
               m.role === 'user' && typeof m.content === 'string' &&
@@ -242,7 +280,9 @@ export class Agent {
               continue
             }
             // Если уже дважды пытались — завершаем с пустым ответом
-            callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
+          log('[Agent] DONE: answer=%d chars, steps=%d, files=%d', answer.length, step, modifiedFiles.size)
+          console.log('[Agent] DONE: answer=%d chars, steps=%d, files=%d', answer.length, step, modifiedFiles.size)
+          callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
             return
           }
 
@@ -291,6 +331,7 @@ export class Agent {
         }
 
         messages.push({ role: 'assistant', content: response.content || '', tool_calls: response.tool_calls })
+        console.log('[Agent] tool_calls=%d, executing...', response.tool_calls.length)
 
         const resultMap = new Map<string, { contentForAI: string; callId: string; name: string }>()
         const pendingMutations: Array<() => void> = []
@@ -382,6 +423,15 @@ export class Agent {
                 role: 'user',
                 content: `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`,
               })
+              // Эмитим видимый шаг для UI — раньше этот loop-guard тоже
+              // уходил только в модель. Теперь пользователь видит, что
+              // агент зациклился и повторы остановлены.
+              callbacks.onStep({
+                type: 'tool_result',
+                toolName: '_loop_guard',
+                content: `${fn.name} повторён ${maxRepeatedToolCalls} раз с теми же аргументами — повторы остановлены. Смени стратегию.`,
+                success: false,
+              })
             }
           }
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool, pendingCallId, serverName: extractMcpServerName(fn.name) })
@@ -438,9 +488,21 @@ export class Agent {
           }
 
           callbacks.onStatus?.(`${fn.name}...`)
+          console.log('[Agent] exec tool: %s callId=%s (step=%d)', fn.name, callId, step)
+          log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
           try {
-            result = await this.executeTool(fn.name, args, tavilyKey, callbacks, dryRunMode)
+            // Защитный потолок выполнения одного тула. Без этого зависший
+            // тул (MCP stdio с повисшим пайпом, spawn_agent с зависшим
+            // суб-агентом, исключение до эмита результата) блокирует
+            // агентский цикл навсегда — UI крутит спиннер «Выполняется…»
+            // пока весь агент не завершится. Таймер гарантированно закрывает
+            // итерацию tool_result'ом с понятной причиной.
+            const toolPromise = this.executeTool(fn.name, args, tavilyKey, callbacks, dryRunMode)
+            const timeoutPromise = new Promise<ToolResult>((_, reject) => {
+              setTimeout(() => reject(new Error(`Тул ${fn.name} превысил таймаут выполнения (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}с). Возможно MCP-сервер завис или transport заблокирован.`)), MAX_TOOL_TIMEOUT_MS)
+            })
+            result = await Promise.race([toolPromise, timeoutPromise])
           } catch (toolErr) {
             // Раньше throw из executeTool протекал в outer try/catch и
             // интерпретировался как API/network error (emit '_error' +
@@ -515,6 +577,17 @@ export class Agent {
               messages.push({
                 role: 'user',
                 content: `Loop guard: ${fn.name} produced the same error ${maxRepeatedErrors} times. Do not retry it unchanged. Use a different tool or explain the blocker.`,
+              })
+              // Эмитим видимый шаг для UI — раньше loop-guard уходил только
+              // в модель, пользователь не видел что повторы остановлены.
+              // Теперь отдельная orphan-итерация _loop_guard рендерится
+              // в ToolChain (buildIterations → синтетический call) с
+              // понятным текстом, почему агент перестал ретраить.
+              callbacks.onStep({
+                type: 'tool_result',
+                toolName: '_loop_guard',
+                content: `${fn.name} повторил ошибку ${maxRepeatedErrors} раз — повторы остановлены. Смена стратегии или объясни блокер.`,
+                success: false,
               })
             }
           }
@@ -591,35 +664,105 @@ export class Agent {
           callbacks.onContextUpdate(msgTokens + TOOL_SCHEMAS_OVERHEAD)
         }
       } catch (err) {
-        const error = err as { name?: string; status?: number; message?: string }
+        const error = err as { name?: string; status?: number; statusCode?: number; message?: string }
+        const realStatus = error?.status ?? error?.statusCode ?? 0
+        console.log('[Agent] round %s CATCH: name=%s status=%s statusCode=%s msg=%s consecutive=%d/%d',
+          step, error?.name ?? '—', error?.status ?? '—', error?.statusCode ?? '—',
+          (error?.message ?? String(err)).slice(0, 200),
+          consecutiveErrors + 1, MAX_CONSECUTIVE_ERRORS)
+        log('[Agent] round %s CATCH: name=%s status=%s statusCode=%s msg=%s consecutiveErrors=%d/%d',
+          step, error?.name ?? '—', error?.status ?? '—', error?.statusCode ?? '—',
+          (error?.message ?? String(err)).slice(0, 200),
+          consecutiveErrors + 1, MAX_CONSECUTIVE_ERRORS)
         if (error?.name === 'AbortError' || signal?.aborted) {
           callbacks.onDone('')
           return
         }
-        const status = error?.status ?? 0
+        consecutiveErrors++
+        const status = realStatus
+        console.log('[Agent] error status=%s, consecutiveErrors=%d/%d', status, consecutiveErrors, MAX_CONSECUTIVE_ERRORS)
+        // 413/422 (context_length_exceeded) — контекст слишком большой.
+        // Раньше тут push user-сообщение об ошибке → контекст рос ещё
+        // больше → снова 413 → бесконечно, а dropOldestRoundsIfOverflow
+        // (в try) не вызывался (catch перехватывал). Теперь сначала
+        // пытаемся аварийно сжать контекст; если уже минимальный — стоп.
+        if (status === 413 || status === 422 || (error?.message?.toLowerCase().includes('context_length') ?? false) ||
+            (error?.message?.includes('413') ?? false) || (error?.message?.toLowerCase().includes('request too large') ?? false)) {
+          console.log('[Agent] 413/422 branch: status=%s, msg=%s, messages=%d', status, (error?.message ?? '').slice(0, 100), messages.length)
+          log('[Agent] 413/context_length — аварийная компрессия')
+          const beforeLen = messages.length
+          const overflowed = dropOldestRoundsIfOverflow(messages, hardLimitTokens, hardLimitTargetTokens)
+          if (overflowed !== messages && overflowed.length < beforeLen) {
+            messages.length = 0
+            messages.push(...overflowed)
+            log('[Agent] 413/context_length — аварийная компрессия: %d→%d сообщений', beforeLen, messages.length)
+            callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Контекст превышен — сжат до ${messages.length} сообщений. Попробуй упростить запрос.`, success: false })
+            // Не push user — это только увеличит контекст. Continue даёт
+            // шанс на следующем раунде с урезанным контекстом.
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              console.log('[Agent] STOP: 413 после сжатия, consecutiveErrors=%d', consecutiveErrors)
+              log('[Agent] STOP: 413 после сжатия, consecutiveErrors=%d', consecutiveErrors)
+              callbacks.onError(err instanceof Error ? err : new Error(`Контекст превышен даже после сжатия (${status}).`))
+              return
+            }
+            continue
+          }
+          // Сжать не получилось — контекст уже минимальный (или пустой).
+          // Это значит tool schemas сами по себе больше лимита модели
+          // (Groq gpt-oss-120b: TPM=8000, schemas=35K). Ретраи бесполезны.
+          // СРАЗУ onError — не ждём 3 ошибок, не пушим user-сообщение.
+          console.log('[Agent] STOP: 413 не сжимается (messages=%d) — schemas > model TPM limit', messages.length)
+          log('[Agent] STOP: 413 не сжимается — tool schemas больше лимита модели')
+          callbacks.onError(err instanceof Error ? err : new Error(
+            `Контекст превышен (${status}). Модель не может принять tool-схемы (возможно TPM/context limit модели слишком мал для работы с тулами). ` +
+            `Попробуй: сменить модель на с большим context window, или отключить тузы в настройках агента. ` +
+            `Ошибка: ${(error?.message ?? '').slice(0, 200)}`
+          ))
+          return
+        }
         if (status >= 400 && status < 500 && status !== 429) {
+          console.log('[Agent] 4xx branch: status=%s', status)
           // 401/403/404 — конфиг/авторизация, нет смысла продолжать
           if (status === 401 || status === 403 || status === 404) {
+            log('[Agent] STOP: auth error %s', status)
             callbacks.onError(err instanceof Error ? err : new Error(`API error ${status}: ${error?.message}`))
             return
           }
-          // 400/413/422 и прочие 4xx — часто это context_length_exceeded или
-          // временная ошибка формата. Не останавливаем агента, даём шанс
-          // продолжить — модель получит сообщение об ошибке и может
-          // переформулировать запрос или обойтись без этого раунда.
+          // 400/422 и прочие 4xx — временная ошибка формата. Даём шанс,
+          // но с лимитом consecutiveErrors — иначе бесконечно.
+          // НЕ пушим user-сообщение — растит контекст при каждой ошибке.
           callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `API error ${status}: ${error?.message || String(err)}`, success: false })
-          messages.push({ role: 'user', content: `Произошла ошибка API (${status}): ${error?.message}. Продолжи работу, возможно нужно упростить запрос.` })
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            log('[Agent] STOP: API %s ×%d', status, consecutiveErrors)
+            callbacks.onError(err instanceof Error ? err : new Error(`API error ${status} повторяется ${consecutiveErrors} раза подряд. Проверь провайдера/ключ.`))
+            return
+          }
           continue
         }
         if (error?.message?.includes('превышено число попыток') || error?.message?.includes('number of retries')) {
-          // Не останавливаем агента — просто сообщаем об ошибке и продолжаем
-          // цикл. Сетевые проблемы провайдера не должны обрывать работу агента.
-          callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Не удалось получить ответ после нескольких попыток. Продолжаю.`, success: false })
-          messages.push({ role: 'user', content: 'Произошла сетевая ошибка: не удалось получить ответ от API после нескольких попыток. Продолжи работу.' })
+          console.log('[Agent] retries-exhausted branch')
+          // chatWithTools уже ретраил 5 раз и не смог. Раньше тут было
+          // continue без лимита → 50 шагов × 5 ретраев = 250 запросов,
+          // "ожидание ответа" часами. Теперь после 3 таких раундов — стоп.
+          // НЕ пушим user-сообщение — растит контекст.
+          callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Не удалось получить ответ после нескольких попыток (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}).`, success: false })
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            log('[Agent] STOP: retries exhausted ×%d', consecutiveErrors)
+            callbacks.onError(err instanceof Error ? err : new Error('Сеть недоступна: превышено число попыток запросов к API после нескольких раундов. Проверь подключение или провайдера.'))
+            return
+          }
           continue
         }
+        console.log('[Agent] generic catch branch: status=%s msg=%s', status, (error?.message ?? '').slice(0, 100))
         callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Ошибка: ${error?.message || String(err)}`, success: false })
-        messages.push({ role: 'user', content: `Произошла сетевая ошибка: ${error?.message}. Продолжи работу.` })
+        // НЕ пушим user-сообщение — оно растит контекст, а при 4xx ошибке
+        // модель всё равно не сможет ответить. Rely on consecutiveErrors.
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          console.log('[Agent] STOP: generic error ×%d: %s', consecutiveErrors, error?.message)
+          log('[Agent] STOP: generic error ×%d: %s', consecutiveErrors, error?.message)
+          callbacks.onError(err instanceof Error ? err : new Error(`Сетевая ошибка повторяется ${consecutiveErrors} раза подряд: ${error?.message}`))
+          return
+        }
       }
     }
   }
