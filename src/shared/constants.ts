@@ -118,6 +118,7 @@ export const IPC_EVENTS = {
   CHAT_CHECKPOINT_CREATED: 'chat:checkpoint:created',
   CHAT_REWOUND: 'chat:rewound',
   CHAT_COMPACTED: 'chat:compacted',
+  CHAT_COMPACT_STREAM: 'chat:compact-stream',
   CONTEXT_USAGE: 'context:usage',
   MEMORY_MEMORIZED: 'memory:memorized',
   AGENT_ACTION: 'agent:action',

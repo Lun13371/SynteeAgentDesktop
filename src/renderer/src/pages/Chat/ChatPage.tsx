@@ -141,6 +141,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [showSkeleton, setShowSkeleton] = useState(false)
   const isInitialScrollRef = useRef(true)
   const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Guard: при manual /compact мы сами вызываем setMessages(result.messages)
+  // с синхронным возвратом IPC. Но main также эмитит CHAT_COMPACTED, и
+  // листенер дёрнет getMessagesPage(20)→setMessagesWindow — второй апдейт
+  // массива. С id-based getItemKey это безопасно, но лишний IPC-раунд и
+  // ререндр. Флаг выставается до invoke, гасится в листенере.
+  const manualCompactJustDoneRef = useRef(false)
 
   // Fix C: множество id сообщений, чья entrance-анимация уже отыграла.
   // Виртуализатор монтирует/демонтирует элементы при скролле; без этого
@@ -209,6 +215,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
   const [reasoningValue, setReasoningValue] = useState('')
   const [isCompacting, setIsCompacting] = useState(false)
+  // Стрим резюме при manual /compact: AI пишет резюме контекста в реальном
+  // времени, токены приходят через IPC chat:compact-stream и показываются
+  // в compacting-индикаторе (внизу чата). Сбрасывается при start-сигнале,
+  // смене чата и завершении /compact.
+  const [compactingSummary, setCompactingSummary] = useState('')
 
   // ── Кастомные slash-команды (из .md-файлов через CommandManager) ──
   // Загружаются при mount и при смене workdir (проектные команды).
@@ -289,6 +300,20 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const off = window.syntee.on('chat:compacted', (data: unknown) => {
       const d = data as { chatId: string; trigger: 'auto' | 'manual' }
       if (d.chatId !== currentChatId) return
+      // Manual /compact: invoke уже сделал setMessages(allMessages) с divider'ом
+      // в КОНЦЕ ленты (createdAt = Date.now()). НЕ дублируем getMessagesPage —
+      // иначе перетрёт последними 20, а divider может быть не в последних 20
+      // если сообщений > 20 (он в конце, но... нет, в конце — попадёт). Всё же
+      // не рискуем — guard пропускает setMessagesWindow. Скроллим в низ (divider
+      // там) + контекст-расчёт.
+      if (manualCompactJustDoneRef.current) {
+        manualCompactJustDoneRef.current = false
+        isInitialScrollRef.current = true
+        autoScrollRef.current = true
+        requestAnimationFrame(() => scrollToBottomInstant())
+        window.syntee.context.calculate(d.chatId).catch(() => {})
+        return
+      }
       // Compact меняет историю (удаляет старые сообщения, добавляет divider
       // у хвоста). Сбрасываем окно к свежей последней странице — это корректно
       // отражает пост-compact состояние и авто-скроллит к низу.
@@ -310,6 +335,25 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     })
     return () => { off() }
   }, [currentChatId, setMessagesWindow, toast])
+
+  // CHAT_COMPACT_STREAM — стрим резюме при manual /compact. AI пишет резюме
+  // контекста в реальном времени; токены аккумулируются в compactingSummary и
+  // показываются в compacting-индикаторе (внизу чата) как live-markdown. При
+  // start-сигнале — сброс, при chunk — аккумулямуляция. Только для manual
+  // /compact (авто-компакция стрим не шлёт — индикатора нет).
+  useEffect(() => {
+    const off = window.syntee.on('chat:compact-stream', (data: unknown) => {
+      const d = data as { chatId: string; chunk?: string; start?: boolean }
+      if (d.chatId !== currentChatId) return
+      if (d.start) { setCompactingSummary(''); return }
+      if (d.chunk) setCompactingSummary(s => s + d.chunk)
+    })
+    return () => { off() }
+  }, [currentChatId])
+
+  // Сброс стрима резюме при смене чата — иначе при возврате в чат, где
+  // ранее было сжатие, в индикаторе остался бы прошлогодний текст.
+  useEffect(() => { setCompactingSummary('') }, [currentChatId])
 
   // Смена чата — очищаем множество анимированных id, чтобы сообщения нового
   // чата анимировались при появлении (как при полном перемонте раньше).
@@ -1009,7 +1053,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
           const all: Chat[] = await window.syntee.chat.getAll()
           setChats(all)
           setCurrentChat(result.chatId)
-          if (result.messages) setMessages(result.messages)
+        if (result.messages) {
+          setMessages(result.messages)
+          // Скроллим к divider'у (он в середине ленты, не внизу), чтобы
+          // пользователь увидел результат сжатия. useEffect ниже найдёт
+          // индекс по id и вызовет virtualizer.scrollToIndex(center).
+          if (result.stats?.dividerMessageId) {
+            pendingScrollToDividerRef.current = result.stats.dividerMessageId
+          }
+        }
           toast(`Чат форкнут: ${result.title ?? 'новый чат'}`, 'success')
         }
       } catch (e) {
@@ -1089,6 +1141,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setIsCompacting(true)
       autoScrollRef.current = true
       setShowScrollDownBtn(false)
+      // Guard выставляем ДО invoke. Main эмитит CHAT_COMPACTED ещё во время
+      // хендлера (event.sender.send до return), invoke резолвится после.
+      // Guard НЕ гасим в finally — только в listener (по приходу CHAT_COMPACTED).
+      // Если погасить в finally раньше CHAT_COMPACTED → setMessagesWindow(20)
+      // перетрёт setMessages(allMessages) и divider (в конце ленты) может
+      // потеряться при > 20 сообщений. Timeout 10s — safety net.
+      manualCompactJustDoneRef.current = true
+      const compactGuardTimer = setTimeout(() => { manualCompactJustDoneRef.current = false }, 10000)
       try {
         const result = await window.syntee.chat.compact(currentChatId) as {
           messages?: Message[]
@@ -1107,7 +1167,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       } catch (e) {
         toast('Ошибка сжатия: ' + String((e as Error)?.message ?? e), 'error')
       } finally {
+        clearTimeout(compactGuardTimer)
         setIsCompacting(false)
+        setCompactingSummary('')
       }
       return
     }
@@ -1244,7 +1306,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         autoScrollRef.current = true
         setShowScrollDownBtn(false)
         scrollToBottomInstant()
-      })
+  })
     }
 
     // ── Обновляем историю навигации по стрелкам ──
@@ -1420,6 +1482,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // спиннером. Показывает что /compact работает (AI-суммаризация занимает
       // несколько секунд). После завершения заменяется реальным compact-
       // разделителем из обновлённой ленты messages.
+      // compactLiveSummary — стримящееся резюме (токены приходят через
+      // chat:compact-stream), показывается как live-markdown под бейджем.
       result = [...result, {
         id: 'compacting-indicator',
         chatId: currentChatId || '',
@@ -1428,16 +1492,30 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         createdAt: Date.now(),
         isPinned: 0,
         slashCommand: { name: 'compact', args: 'pending' },
-      } as Message]
+        compactLiveSummary: compactingSummary,
+      } as Message & { compactLiveSummary?: string }]
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, rateLimitSec, isCompacting, planningMode])
+  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, rateLimitSec, isCompacting, planningMode, compactingSummary])
+
+  // Ref на актуальный displayMessages для стабильного getItemKey. Виртуализатор
+  // кэширует высоты по ключу getItemKey. Дефолтный key = индекс позиции → при
+  // замене массива (compact вставляет divider в середину, сообщения сдвигаются
+  // на +1) кэш по индексу протухает (индекс N теперь указывает на другой
+  // message иной высоты) → 1-frame glitch: разделитель налезает на соседа.
+  // Привязка кэша к message.id решает проблему: divider (новый id) → cache-miss
+  // → измеряется реальной высотой сразу; сдвинутые сообщения (тот же id) →
+  // cache-hit → корректная высота. На перезаходе в чат тоже корректно.
+  const displayMessagesRef = useRef(displayMessages)
+  displayMessagesRef.current = displayMessages
+  const getItemKey = useCallback((index: number) => displayMessagesRef.current[index]?.id ?? index, [])
 
   const virtualizer = useVirtualizer({
     count: displayMessages.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
+    getItemKey,
     // overscan 10 (вместо 5): больше элементов держится смонтированными вокруг
     // вьюпорта → меньше mount/unmount циклов при скролле → меньше ре-парсов
     // markdown больших сообщений при переходе границы. Памяти чуть больше,

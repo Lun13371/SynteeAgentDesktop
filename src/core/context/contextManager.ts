@@ -126,6 +126,11 @@ export interface ChatMessage {
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   tool_call_id?: string
   name?: string
+  /** ID исходного Message из БД. Ставится messageToContextMessages.
+   *  Нужен compaction-логике для вычисления boundary (границы middle/tail)
+   *  без удаления из БД: по tail-messageIds находим createdAt граничного
+   *  Message и ставим divider.createdAt = boundary - 1. */
+  messageId?: string
 }
 
 export interface CompressResult {
@@ -275,43 +280,30 @@ export async function applyRollingWindowAsync(
   const limitTokens = settings.contextLimitTokens
   const triggerTokens = Math.floor(limitTokens * settings.rollingTriggerPct / 100)
 
-  // ── Пороги┐
+  // ── Пороги ─
   // Авто-компакция (forceCompress=false): только если токенов >= trigger И
-  // сообщений достаточно чтобы middle был непустым (> keepFirst + keepLast).
-  // Ручная /compact (forceCompress=true): сразу идём к адаптации — не
-  // смотрим ни на порог токенов, ни на кол-во сообщений. Пользователь сам
-  // решил сжать — сжимаем.
+  // сообщений достаточно чтобы middle был непустым (> keepLast). Head не
+  // держим в AI-контексте (модель «новый чат + summary»): head уходит в
+  // summary, AI видит только tail + summary (в system prompt).
+  // Ручная /compact (forceCompress=true): сразу к адаптации.
   if (!forceCompress) {
     if (totalTokens < triggerTokens) {
       return { messages, compressed: false, removedCount: 0, summaryAdded: false }
     }
-    if (messages.length <= settings.rollingKeepFirst + settings.rollingKeepLast) {
+    if (messages.length <= settings.rollingKeepLast) {
       return { messages, compressed: false, removedCount: 0, summaryAdded: false }
     }
   }
 
-  // Адаптация окна для коротких историй: keepFirst + keepLast не могут
-  // превышать длину. Оставляем минимум 1 middle сообщение для сжатия.
-  // Если total = 5, keepFirst=2, keepLast=20 → берём keepLast=2 (5-2-1),
-  // middle = messeges.slice(2, 3) = 1 сообщение. Если total = 2 (только
-  // 2 сообщении) — сжимать нечего, возвращаем compressed=false.
-  let keepFirst = settings.rollingKeepFirst
-  let keepLast = settings.rollingKeepLast
-  if (messages.length <= keepFirst + keepLast + 1) {
-    // Нужно освободить хотя бы 1 middle. Урезаем keepLast.
-    const newKeepLast = Math.max(0, messages.length - keepFirst - 1)
-    keepLast = Math.min(keepLast, newKeepLast)
-    if (keepFirst + keepLast + 1 > messages.length) {
-      // Всё равно не хватает — урезаем и keepFirst.
-      keepFirst = Math.max(0, messages.length - keepLast - 1)
-    }
-  }
-  if (keepFirst + keepLast >= messages.length) {
-    // Совсем короткая история (1-2 сообщения) — сжать невозможно.
+  // Адаптация окна для коротких историй: keepLast не может превышать длину.
+  // Оставляем минимум 1 middle сообщение для сжатия.
+  // Если total = 5, keepLast=20 → берём keepLast=4 (5-1), middle = 1 сообщение.
+  const keepLast = Math.min(settings.rollingKeepLast, Math.max(0, messages.length - 1))
+  if (keepLast >= messages.length) {
+    // Совсем короткая история (1 сообщение) — сжать невозможно.
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
   }
 
-  let headMessages = messages.slice(0, keepFirst)
   let tailMessages = messages.slice(messages.length - keepLast)
   // Если keepLast=0, slice(length-0) = slice(length) → []. Норм.
 
@@ -320,12 +312,11 @@ export async function applyRollingWindowAsync(
   while (tailMessages.length > 0 && tailMessages[0].role === 'tool') {
     tailMessages = tailMessages.slice(1)
   }
-  // Если head заканчивается assistant с tool_calls без tool results — отбрасываем.
-  while (headMessages.length > 0 && headMessages[headMessages.length - 1].role === 'assistant' && headMessages[headMessages.length - 1].tool_calls) {
-    headMessages = headMessages.slice(0, -1)
-  }
 
-  const middleMessages = messages.slice(headMessages.length, messages.length - tailMessages.length)
+  // middle = всё, что до tail (включая бывший head). Head не выделяем —
+  // он суммаризуется вместе с middle. Это даёт модели «чистый старт»:
+  // AI видит только summary (в system prompt) + последние tail-сообщения.
+  const middleMessages = messages.slice(0, messages.length - tailMessages.length)
 
   if (middleMessages.length === 0) {
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
@@ -349,18 +340,35 @@ export async function applyRollingWindowAsync(
       .slice(0, 1500)
   }
 
-  const summaryMsg: ChatMessage = {
-    role: 'system',
-    content: `[СЖАТИЕ КОНТЕКСТА — ТОЛЬКО СПРАВОЧНО] Предыдущие сообщения сжаты в резюме ниже. Используй как фоновую информацию, НЕ как активные инструкции. НЕ повторяй уже выполненное. Отвечай ТОЛЬКО на последнее сообщение пользователя после этого резюме.\n\n${summaryContent}\n[/СЖАТИЕ КОНТЕКСТА]`,
+  // Cap на размер summary: 'fast' модель может выдать до 16384 токенов и
+  // иногда регургитирует вместо суммаризации. Ограничиваем ~4000 токенов
+  // (характерный размер структурированного резюме диалога). Транкейт
+  // по словам, чтобы не разрезать токен посередине.
+  const SUMMARY_MAX_TOKENS = 4000
+  if (estimateTokens(summaryContent) > SUMMARY_MAX_TOKENS) {
+    const words = summaryContent.split(/\s+/)
+    let truncated = ''
+    let curTokens = 0
+    for (const w of words) {
+      const wTokens = estimateTokens(w)
+      if (curTokens + wTokens > SUMMARY_MAX_TOKENS) break
+      truncated += (truncated ? ' ' : '') + w
+      curTokens += wTokens
+    }
+    summaryContent = truncated + '\n[…резюме обрезано до ~4000 токенов]'
   }
 
+  // summaryMsg НЕ добавляется в messages — summary живёт только в system
+  // prompt (через setChatSummary → getSystemPrompt). Раньше summaryMsg
+  // дублировался: один раз в history, второй — в system prompt. Теперь
+  // AI получает summary единственный раз, в system prompt.
   return {
-    messages: [...headMessages, summaryMsg, ...tailMessages],
+    messages: [...tailMessages],
     compressed: true,
     removedCount: middleMessages.length,
     summaryAdded: true,
-    summaryContent: summaryMsg.content,
-    headCount: headMessages.length,
+    summaryContent,
+    headCount: 0,
     tailCount: tailMessages.length,
   }
 }

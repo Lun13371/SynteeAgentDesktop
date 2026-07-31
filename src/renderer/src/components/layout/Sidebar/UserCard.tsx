@@ -18,11 +18,25 @@ export default function UserCard() {
   const [panelPos, setPanelPos] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null)
 
   const planUsage = useBillingStore(s => s.planUsage)
-  const dailyLimitPct = planUsage && planUsage.usage.today_total_tokens > 0
-    ? Math.min(100, (planUsage.usage.today_tokens / planUsage.usage.today_total_tokens) * 100)
+
+  const dailyLimit = planUsage?.plan?.daily_token_limit ?? 0
+  const dailyUsed = planUsage?.usage?.today_tokens ?? 0
+  const dailyLimitPct = planUsage && dailyLimit > 0
+    ? Math.min(100, (dailyUsed / dailyLimit) * 100)
     : null
-  const limitCritical = dailyLimitPct !== null && dailyLimitPct >= 90
-  const limitWarning = dailyLimitPct !== null && dailyLimitPct >= 70 && dailyLimitPct < 90
+  const dailyCritical = dailyLimitPct !== null && dailyLimitPct >= 90
+  const dailyWarning = dailyLimitPct !== null && dailyLimitPct >= 70 && dailyLimitPct < 90
+
+  const weeklyLimit = planUsage?.plan?.weekly_token_limit ?? 0
+  const weeklyUsed = planUsage?.usage?.week_tokens ?? 0
+  const weeklyLimitPct = planUsage && weeklyLimit > 0
+    ? Math.min(100, (weeklyUsed / weeklyLimit) * 100)
+    : null
+  const weeklyCritical = weeklyLimitPct !== null && weeklyLimitPct >= 90
+  const weeklyWarning = weeklyLimitPct !== null && weeklyLimitPct >= 70 && weeklyLimitPct < 90
+
+  const balanceVal = planUsage?.balance?.balance
+  const heldVal = planUsage?.balance?.held ?? 0
 
   // После рендера панели — измеряем её высоту и позиционируем над карточкой.
   useLayoutEffect(() => {
@@ -104,8 +118,6 @@ export default function UserCard() {
 
   const displayName = user.display_name || user.email.split('@')[0]
   const planName = planUsage?.plan?.name
-  const todayTokens = planUsage?.usage?.today_tokens ?? 0
-  const dailyLimit = planUsage?.usage?.today_total_tokens ?? 0
 
   return (
     <>
@@ -161,6 +173,14 @@ export default function UserCard() {
                   {planName && (
                     <span className="usercard-panel-plan">{planName}</span>
                   )}
+                  {balanceVal !== undefined && (
+                    <div className="usercard-panel-balance">
+                      <span className="usercard-panel-balance-value">${balanceVal.toFixed(4)}</span>
+                      {heldVal > 0 && (
+                        <span className="usercard-panel-balance-held">· холд ${heldVal.toFixed(4)}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -170,8 +190,8 @@ export default function UserCard() {
                     <span className="usercard-panel-limit-label">Дневной лимит</span>
                     <span
                       className={`usercard-panel-limit-pct ${
-                        limitCritical ? 'usercard-panel-limit-pct--critical' :
-                        limitWarning ? 'usercard-panel-limit-pct--warning' : ''
+                        dailyCritical ? 'usercard-panel-limit-pct--critical' :
+                        dailyWarning ? 'usercard-panel-limit-pct--warning' : ''
                       }`}
                     >
                       {Math.round(dailyLimitPct)}%
@@ -180,14 +200,52 @@ export default function UserCard() {
                   <div className="usercard-panel-limit-bar">
                     <div
                       className={`usercard-panel-limit-fill ${
-                        limitCritical ? 'usercard-panel-limit-fill--critical' :
-                        limitWarning ? 'usercard-panel-limit-fill--warning' : ''
+                        dailyCritical ? 'usercard-panel-limit-fill--critical' :
+                        dailyWarning ? 'usercard-panel-limit-fill--warning' : ''
                       }`}
                       style={{ width: `${dailyLimitPct}%` }}
                     />
                   </div>
-                  <div className="usercard-panel-limit-tokens">
-                    {todayTokens.toLocaleString('ru')} / {dailyLimit.toLocaleString('ru')} токенов
+                  <div className="usercard-panel-limit-foot">
+                    <span>{fmtTokens(dailyUsed)} / {fmtTokens(dailyLimit)}</span>
+                    {planUsage?.usage?.today_reset_at && (
+                      <span className="usercard-panel-limit-reset">
+                        сброс {fmtReset(planUsage.usage.today_reset_at)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {weeklyLimitPct !== null && (
+                <div className="usercard-panel-limit usercard-panel-limit--last">
+                  <div className="usercard-panel-limit-header">
+                    <span className="usercard-panel-limit-label">Недельный лимит</span>
+                    <span
+                      className={`usercard-panel-limit-pct ${
+                        weeklyCritical ? 'usercard-panel-limit-pct--critical' :
+                        weeklyWarning ? 'usercard-panel-limit-pct--warning' : ''
+                      }`}
+                    >
+                      {Math.round(weeklyLimitPct)}%
+                    </span>
+                  </div>
+                  <div className="usercard-panel-limit-bar">
+                    <div
+                      className={`usercard-panel-limit-fill ${
+                        weeklyCritical ? 'usercard-panel-limit-fill--critical' :
+                        weeklyWarning ? 'usercard-panel-limit-fill--warning' : ''
+                      }`}
+                      style={{ width: `${weeklyLimitPct}%` }}
+                    />
+                  </div>
+                  <div className="usercard-panel-limit-foot">
+                    <span>{fmtTokens(weeklyUsed)} / {fmtTokens(weeklyLimit)}</span>
+                    {planUsage?.usage?.week_reset_at && (
+                      <span className="usercard-panel-limit-reset">
+                        сброс {fmtReset(planUsage.usage.week_reset_at)}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -217,4 +275,19 @@ export default function UserCard() {
       )}
     </>
   )
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
+function fmtReset(iso: string): string {
+  return new Date(iso).toLocaleString('ru', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }

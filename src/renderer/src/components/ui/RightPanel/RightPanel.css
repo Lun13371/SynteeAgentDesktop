@@ -1,8 +1,17 @@
 .right-panel-wrapper {
+  /* Overlay: панель выезжает ПОВЕРХ чата, не сжимая его (chat-main остаётся
+     full-width). Это убирает перемеривание виртуализатора и лаги при
+     открытии/ресайзе панели. position:absolute относительно родителя
+     (position:relative в App). z-index поверх чата. */
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 50;
   height: 100%;
-  flex-shrink: 0;
   overflow: hidden;
   display: flex;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
 }
 
 .right-panel-inner {

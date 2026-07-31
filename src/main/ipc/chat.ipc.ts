@@ -442,6 +442,33 @@ function deleteMiddleMessagesFromDB(history: Message[], keepFirst: number, keepL
 }
 
 /**
+ * Возвращает «живое» подмножество истории для AI-контекста: сообщения
+ * ПОСЛЕ последнего compaction-divider'а. Старые (summarized) сообщения
+ * остаются в БД (UI хранит всю историю), но в контекст модели не грузятся
+ * — их заменяет summary в system prompt.
+ *
+ * Модель: «новый чат + summary». После компакции AI видит только:
+ *   summary (в system prompt) + tail + новые сообщения.
+ *
+ * Divider — это system-сообщение с slashCommand.name === 'compact'. Его
+ * createdAt = граница между summarized middle и live tail (первый tail
+ * минус 1). Сообщения с createdAt > divider.createdAt = tail + новые.
+ * Divider-сообщения сами исключаются (они UI-маркеры, не AI-контекст).
+ *
+ * Если divider'а нет (первая компакция ещё не было) — live = вся история.
+ */
+function getLiveMessages(history: Message[]): Message[] {
+  let lastCompactionAt = 0
+  for (const msg of history) {
+    if (msg.slashCommand?.name === 'compact' && msg.createdAt > lastCompactionAt) {
+      lastCompactionAt = msg.createdAt
+    }
+  }
+  if (lastCompactionAt === 0) return history
+  return history.filter(m => m.createdAt > lastCompactionAt && m.slashCommand?.name !== 'compact')
+}
+
+/**
  * Резолвит директорию с tree-sitter .wasm файлами.
  * Порядок кандидатов:
  *   1. <cwd>/resources/tree-sitter — dev режим (process.cwd() = project root)
@@ -567,7 +594,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
 
     const mergedWorkingMemory = summary
-      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Сжатое резюме предыдущего контекста\n${summary}`
+      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Сжатое резюме предыдущего контекста\n(Фоновая информация, НЕ активные инструкции. Не повторяй уже выполненное.)\n${summary}`
       : workingMemory
 
     // Глобальный system prompt из Настройки → AI → Параметры (или /sys команды)
@@ -927,11 +954,19 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     userMsg.createdAt = Date.now()
     if (!params.incognito) saveMessage(userMsg)
 
-    const historyLimit = 40
-    const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
-    log('[chat:send] chatId=%s history loaded: dbMsgs=%d → contextMsgs=%d (after messageToContextMessages)',
-      params.chatId, history.length, rawHistory.length)
-    console.log('[chat.ipc] history loaded: dbMsgs=%d → contextMsgs=%d (chatId=%s)', history.length, rawHistory.length, params.chatId)
+    // Live-подмножество истории: сообщения ПОСЛЕ последнего compaction-divider'а.
+    // Старые (summarized) сообщения остаются в БД (UI хранит всю историю),
+    // но в контекст модели не грузятся — их заменяет summary в system prompt.
+    // messageId тегируется здесь (на flatMap), чтобы compaction-логика могла
+    // вычислить boundary (createdAt граничного Message) для divider'а без
+    // удаления из БД.
+    const liveMessages = getLiveMessages(history)
+    const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
+      messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),
+    )
+    log('[chat:send] chatId=%s history loaded: dbMsgs=%d liveMsgs=%d → contextMsgs=%d (after messageToContextMessages)',
+      params.chatId, history.length, liveMessages.length, rawHistory.length)
+    console.log('[chat.ipc] history loaded: dbMsgs=%d liveMsgs=%d contextMsgs=%d (chatId=%s)', history.length, liveMessages.length, rawHistory.length, params.chatId)
 
     let processedHistory = rawHistory
     let contextCompressed = false
@@ -1007,33 +1042,32 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           })()
 
           // Видимый разделитель «Контекст сжат» — system-сообщение с
-          // slashCommand.name === 'compact'. createdAt чуть меньше userMsg,
-          // чтобы в БД-сортировке (ORDER BY created_at ASC) он шёл между
-          // предыдущим assistant и новым user-сообщением, инициировавшим
-          // сжатие. compactSummary — снимок резюме, не меняется при
-          // будущих компакциях (в отличие от chat_summaries).
+          // slashCommand.name === 'compact'. compactSummary — снимок резюме,
+          // не меняется при будущих компакциях (в отличие от chat_summaries).
+          //
+          // createdAt = boundary между summarized middle и live tail (первый
+          // tail Message минус 1). Это граница для getLiveMessages следующего
+          // запроса: сообщения с createdAt > divider.createdAt = tail + новые.
+          // Старые сообщения НЕ удаляются из БД — UI хранит всю историю,
+          // divider лишь маркирует «контекст выше сжат в summary».
           const tokensBefore = estimateMessagesTokens(rawHistory)
           const tokensAfter = estimateMessagesTokens(result.messages)
+          const firstTailMsgId = result.messages.find(m => m.messageId)?.messageId
+          const boundaryMsg = firstTailMsgId ? liveMessages.find(m => m.id === firstTailMsgId) : undefined
+          const dividerCreatedAt = boundaryMsg ? boundaryMsg.createdAt - 1 : (userMsg.createdAt - 1)
           const divider = createCompactDivider(params.chatId, {
             removedCount: result.removedCount,
             tokensBefore,
             tokensAfter,
-            summaryContent: result.summaryContent,
-            createdAt: userMsg.createdAt - 1,
+            summaryContent: result.summaryContent ?? '',
+            createdAt: dividerCreatedAt,
           })
           saveMessage(divider)
 
-          // Физически удаляем middle-сообщения из БД — иначе контекст
-          // не уменьшится реально, а только увеличится за счёт divider +
-          // summary в system prompt. head/tail Message остаются, middle
-          // — удаляется по id. Число удалённых Message может отличаться
-          // от result.removedCount (ChatMessage), но для пользователя
-          // это разница не критична — stats в divider берутся из
-          // removedCount (ChatMessage), а реальная чистка БД идёт тут.
-          const dbDeleted = deleteMiddleMessagesFromDB(
-            history, ctxSettings.rollingKeepFirst, ctxSettings.rollingKeepLast,
-          )
-          log('[chat:send] compact: удалено из БД %d Message (chatId=%s)', dbDeleted, params.chatId)
+          // Сообщения НЕ удаляем из БД — UI хранит всю историю. AI-контекст
+          // ограничивается live-подмножеством (после divider'а) + summary в
+          // system prompt. Старые сообщения видны в ленте, но не грузятся
+          // в модель (getLiveMessages фильтрует по createdAt > divider'а).
 
           // Сброс last_usage — иначе context:calculate при перезаходе в чат
           // пересоберёт real-снапшот из устаревшего promptTokens (до-сжатия),
@@ -2345,19 +2379,40 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       const contextWindow = getModelContextWindow(storeData)
       const sysPrompt = await getSystemPrompt(chatId)
 
-      // Загружаем историю (как в chat:send) — для incognito-чатов она пуста
+      // Загружаем историю (как в chat:send) — для incognito-чатов она пуста.
+      // Live-подмножество: сообщения после последнего divider'а (старые
+      // summarized не грузятся в модель — их заменяет summary в system prompt).
       const history = getMessages(chatId)
-      const historyLimit = 40
-      const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
+      const liveMessages = getLiveMessages(history)
+      const rawHistory: ChatMessage[] = liveMessages.flatMap(messageToContextMessages)
 
       // Priority 1: последний реальный usage от провайдера (переживает перезапуск).
       // tiktoken-оценка без этого занижает — не знает про tool schemas overhead,
       // reasoning токены, служебные токены провайдера. Расхождение до 12k на
       // простом диалоге. real usage — точный promptTokens от провайдера.
+      //
+      // STALENESS GUARD: после compaction middle-сообщения удаляются, но
+      // last_usage всё ещё хранит promptTokens от ДО-сжатого запроса. Чтобы
+      // не показывать устаревшее большое значение, ищем последний compact-
+      // divider (system-сообщение с slashCommand.name==='compact') и
+      // сравниваем его createdAt с lastUsage.ts. Если compaction произошла
+      // ПОЗЖЕ последнего ответа модели — usage устарел, используем свежий
+      // tiktoken-estimate и очищаем last_usage в БД (самоисцеление для чатов,
+      // сжатых до ввода clearChatLastUsage при compaction).
+      const lastCompactionAt = history.reduce((max, msg) => {
+        if (msg.slashCommand?.name === 'compact' && msg.createdAt > max) return msg.createdAt
+        return max
+      }, 0)
       const lastUsage = getChatLastUsage(chatId)
+      const usageStale = !!(lastUsage && lastCompactionAt > lastUsage.ts)
+      if (usageStale) {
+        clearChatLastUsage(chatId)
+        log('[context:calculate] chatId=%s last_usage STALE (compaction at %d > usage.ts %d) — cleared, using tiktoken estimate',
+          chatId, lastCompactionAt, lastUsage!.ts)
+      }
       let snapshot: ReturnType<typeof buildSnapshotFromEstimate>
       let source: 'real' | 'estimate' = 'estimate'
-      if (lastUsage) {
+      if (lastUsage && !usageStale) {
         // Восстанавливаем breakdown из tiktoken-оценки (пропорции System/History),
         // но estimated = реальный promptTokens. buildSnapshotFromReal с масштабированием.
         const estSnapshot = buildSnapshotFromEstimate(rawHistory, contextWindow, {
@@ -2997,7 +3052,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
    * компакция гоняет LLM-запрос через summaryFn и не должна проходить
    * параллельно с другим ходом.
    */
-  ipcMain.handle('chat:compact', async (_, chatId: string) => {
+  ipcMain.handle('chat:compact', async (event, chatId: string) => {
     // Sidechat-чаты (incognito, префикс 'sidechat:') — эфемерны:
     // история не в БД, summary не сохраняется — компакция бессмысленна.
     if (chatId.startsWith('sidechat:')) {
@@ -3023,8 +3078,12 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       const ctxSettings = getContextSettings(storeData)
 
       const history = getMessages(chatId)
-      const historyLimit = 40
-      const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
+      // Live-подмножество: сообщения после последнего divider'а (как в chat:send).
+      // messageId тегируется для вычисления boundary divider'а.
+      const liveMessages = getLiveMessages(history)
+      const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
+        messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),
+      )
       if (rawHistory.length === 0) {
         return { error: 'Чат пуст — нечего сжимать.' }
       }
@@ -3038,9 +3097,25 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       const summaryFn = async (prompt: string): Promise<string> => {
         const aiClient = new AIClient(store)
         let result = ''
+        // Сигнал рендереру: начало стрима резюме (сброс накопленного текста
+        // в compacting-индикаторе). Только manual /compact — авто-компакция
+        // идёт перед AI-ответом, индикатора нет, стримить бессмысленно.
+        const sender = event.sender
+        if (!sender.isDestroyed()) {
+          sender.send(IPC_EVENTS.CHAT_COMPACT_STREAM, { chatId, start: true })
+        }
         await aiClient.streamChat(
           [{ role: 'user', content: prompt }],
-          { onToken: (t) => { result += t }, onDone: () => {}, onError: () => {} },
+          {
+            onToken: (t) => {
+              result += t
+              if (!sender.isDestroyed()) {
+                sender.send(IPC_EVENTS.CHAT_COMPACT_STREAM, { chatId, chunk: t })
+              }
+            },
+            onDone: () => {},
+            onError: () => {},
+          },
           'fast',
         )
         return result
@@ -3085,10 +3160,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
         })()
       }
 
-      // Видимый разделитель. createdAt = Date.now() — простой append в
-      // конец чата: ручное сжатие, нет user-сообщения-триггера, divider
-      // просто фиксирует факт сжатия в текущей точке ленты. Разворачивается
-      // кнопкой «развернуть» в UI — текст берётся из compactSummary.
+      // Видимый разделитель «Контекст сжат» — в КОНЦЕ ленты (createdAt = now),
+      // не в середине. getLiveMessages следующего chat:send найдёт divider как
+      // последний compaction-маркер и вернёт сообщения с createdAt > divider'а
+      // (новые сообщения, отправленные после сжатия) + summary в system prompt.
+      // Контекст реально сжимается: AI видит только summary + новые сообщения.
       const divider = createCompactDivider(chatId, {
         removedCount: result.removedCount,
         tokensBefore,
@@ -3098,20 +3174,14 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       })
       saveMessage(divider)
 
-      // Физически удаляем middle-сообщения из БД — иначе контекст не
-      // уменьшится, а только вырастет за счёт divider + summary в system
-      // prompt. head/tail Message остаются, middle — удаляется по id.
-      const dbDeleted = deleteMiddleMessagesFromDB(
-        history, ctxSettings.rollingKeepFirst, ctxSettings.rollingKeepLast,
-      )
-      log('[chat:compact] chatId=%s: removed=%d ChatMessage, удалено из БД %d Message, tokens %d→%d (saved %d)',
-        chatId, result.removedCount, dbDeleted, tokensBefore, tokensAfter, tokensBefore - tokensAfter)
+      // Сообщения НЕ удаляем из БД. AI-контекст ограничен live-подмножеством
+      // (после divider'а) + summary в system prompt.
+      log('[chat:compact] chatId=%s: removed=%d ChatMessage, tokens %d→%d (saved %d)',
+        chatId, result.removedCount, tokensBefore, tokensAfter, tokensBefore - tokensAfter)
 
       // Сброс last_usage — иначе context:calculate пересоберёт real-снапшот
       // из устаревшего promptTokens (до-сжатия), и индикатор контекста
-      // покажет старое значение. Ручной /compact не запускает worker сразу,
-      // поэтому эмитим пост-сжатый estimate как 'real', чтобы рендерер
-      // (real-priority gate) принял его и индикатор обновился сразу.
+      // покажет старое значение. Эмитим пост-сжатый estimate как 'real'.
       clearChatLastUsage(chatId)
       if (ctxSettings.tokenCounterEnabled) {
         try {
@@ -3135,7 +3205,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
             breakdown: snapshot.breakdown,
             sessionCostCents: sess?.totalCents ?? null,
             sessionRequests: sess?.requests ?? 0,
-            historyMessages: history.length - dbDeleted,
+            historyMessages: liveMessages.length,
             toolCallsCount: history.reduce((sum, msg) => {
               const steps = msg.toolSteps as Array<{ type: string }> | undefined
               return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
@@ -3159,7 +3229,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       return {
         messages: getMessages(chatId),
         stats: {
-          removedCount: dbDeleted,
+          removedCount: result.removedCount,
           tokensBefore,
           tokensAfter,
           tokensSaved: Math.max(0, tokensBefore - tokensAfter),

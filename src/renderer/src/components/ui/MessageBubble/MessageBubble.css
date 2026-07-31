@@ -785,7 +785,33 @@
   animation: ctx-compacting-pulse 1.4s ease-in-out infinite;
 }
 
+/* Когда AI стримит резюме — убираем пульсацию текста (контент уже живой) */
+.message-system-divider--compacting:has(.message-system-divider__summary--live) .message-system-divider__text {
+  animation: none;
+  opacity: 1;
+  font-style: normal;
+}
+
 @keyframes ctx-compacting-pulse {
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
+}
+
+/* ─── Live-панель стримящегося резюме ─── */
+.message-system-divider__summary--live {
+  border-style: dashed;
+  animation: ctx-compacting-pulse 1.8s ease-in-out infinite;
+}
+
+/* Стримящийся контент — cursor с мигающим «▮» в конце, как при наборе */
+.message-system-divider__summary-content--streaming::after {
+  content: ' ▮';
+  animation: ctx-cursor-blink 1s steps(2) infinite;
+  color: var(--accent, #6366f1);
+  font-weight: 700;
+}
+
+@keyframes ctx-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }

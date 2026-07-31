@@ -11,12 +11,13 @@ import AppIcon from '../AppIcon/AppIcon'
 // сжатие контекста и т.д.). Для rewind-сообщений с активной redo-точкой
 // показывает кнопку "Отменить откат". Для compact-сообщений — кнопку
 // "Развернуть"/"Свернуть" для раскрытия резюме (compactSummary).
-export function SystemDivider({ message, isRewind, isCompact, isCompacting, timeEl }: {
+export function SystemDivider({ message, isRewind, isCompact, isCompacting, timeEl, liveSummary }: {
   message: Message
   isRewind: boolean
   isCompact: boolean
   isCompacting: boolean
   timeEl: React.ReactNode
+  liveSummary?: string
 }) {
   const [canRedo, setCanRedo] = useState(false)
   const [redoing, setRedoing] = useState(false)
@@ -73,7 +74,9 @@ export function SystemDivider({ message, isRewind, isCompact, isCompacting, time
         {isCompacting
           ? <AppIcon name="refreshCw" size="xs" tone="accent" animation="spin" />
           : <AppIcon name={iconName} size="xs" tone={iconTone} />}
-        <span className="message-system-divider__text">{message.content}</span>
+        <span className="message-system-divider__text">
+          {isCompacting && liveSummary ? 'AI пишет резюме контекста…' : message.content}
+        </span>
         {timeEl}
         {isCompact && message.compactSummary && (
           <button
@@ -116,6 +119,25 @@ export function SystemDivider({ message, isRewind, isCompact, isCompacting, time
               rehypePlugins={[rehypeKatex]}
             >
               {message.compactSummary}
+            </ReactMarkdown>
+          </div>
+        </motion.div>
+      )}
+
+      {isCompacting && liveSummary && (
+        <motion.div
+          className="message-system-divider__summary message-system-divider__summary--live"
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          transition={{ duration: 0.18, ease: 'easeOut' }}
+        >
+          <div className="message-system-divider__summary-head">
+            <AppIcon name="layers" size="xs" tone="accent" animation="spin" />
+            <span>AI пишет резюме контекста</span>
+          </div>
+          <div className="message-system-divider__summary-content message-system-divider__summary-content--streaming selectable">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {liveSummary}
             </ReactMarkdown>
           </div>
         </motion.div>
