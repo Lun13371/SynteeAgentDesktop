@@ -32,8 +32,9 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
   const updateVersion = useUpdateStore(s => s.available?.version)
 
   // Индикатор дневного лимита — кольцевой прогресс вокруг аватара.
-  const dailyLimitPct = planUsage && planUsage.usage.today_total_tokens > 0
-    ? Math.min(100, (planUsage.usage.today_tokens / planUsage.usage.today_total_tokens) * 100)
+  const dailyLimitTotal = planUsage?.plan?.daily_token_limit ?? 0
+  const dailyLimitPct = planUsage && dailyLimitTotal > 0
+    ? Math.min(100, (planUsage.usage.today_tokens / dailyLimitTotal) * 100)
     : null
   const limitCritical = dailyLimitPct !== null && dailyLimitPct >= 90
   const limitWarning = dailyLimitPct !== null && dailyLimitPct >= 70 && dailyLimitPct < 90

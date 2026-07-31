@@ -1032,7 +1032,10 @@ const MessageBubble = memo(function MessageBubble({
     const isRewind = message.slashCommand?.name === 'rewind'
     const isCompact = message.slashCommand?.name === 'compact' && message.slashCommand?.args !== 'pending'
     const isCompacting = message.slashCommand?.name === 'compact' && message.slashCommand?.args === 'pending'
-    return <SystemDivider message={message} isRewind={isRewind} isCompact={isCompact} isCompacting={isCompacting} timeEl={timeEl} />
+    // liveSummary — стримящееся резюме при manual /compact (токены приходят
+    // через chat:compact-stream). Только у синтетического compacting-индикатора.
+    const liveSummary = (message as Message & { compactLiveSummary?: string }).compactLiveSummary
+    return <SystemDivider message={message} isRewind={isRewind} isCompact={isCompact} isCompacting={isCompacting} timeEl={timeEl} liveSummary={liveSummary} />
   }
 
   return (
