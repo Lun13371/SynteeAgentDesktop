@@ -18,7 +18,7 @@ export interface StreamCallbacks {
   onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void
   onContextCounted?: (promptTokens: number) => void
   onWaiting?: () => void                                      // запрос ушёл, ждём первый токен
-  onRetry?: (attempt: number, reason: string, waitSec?: number) => void  // ретрай с причиной
+  onRetry?: (attempt: number, reason: string, waitSec?: number, maxAttempts?: number) => void  // ретрай с причиной + лимит для UI «повтор 3/5»
 }
 
 export interface ChatMessage {
@@ -307,7 +307,7 @@ export class AIClient {
           const delay = backoffDelay(attempt)
           const waitSec = Math.round(delay / 1000)
           callbacks.onRateLimit?.(waitSec)
-          callbacks.onRetry?.(attempt + 1, 'rate_limit', waitSec)
+          callbacks.onRetry?.(attempt + 1, 'rate_limit', waitSec, this.maxRetries + 1)
           if (Date.now() >= deadlineMs) {
             callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
             return
@@ -323,7 +323,7 @@ export class AIClient {
           msg.includes('network') || msg.includes('socket')
         if (isNetwork && attempt < this.maxRetries) {
           const delay = backoffDelay(attempt)
-          callbacks.onRetry?.(attempt + 1, 'network')
+          callbacks.onRetry?.(attempt + 1, 'network', undefined, this.maxRetries + 1)
           if (Date.now() >= deadlineMs) {
             callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
             return
@@ -487,11 +487,12 @@ export class AIClient {
       : this.client
 
     let attempt = 0
-    const maxAttempts = 15
+    const maxAttempts = 5
     const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt < maxAttempts) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
+        console.log('[AIClient] chatWithTools: model=%s attempt=%d/%d messages=%d tools=%d', model, attempt + 1, maxAttempts, messages.length, tools.length)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const stream = await (client.chat.completions.create as any)({
           model,
@@ -504,6 +505,7 @@ export class AIClient {
           max_tokens: maxTokens,
           ...reasoningExtra,
         }, { signal })
+        console.log('[AIClient] stream opened, reading chunks...')
 
         let content = ''
         let reasoning = ''
@@ -600,16 +602,36 @@ export class AIClient {
           hadStreamedTokens: tokenBuffer.length > 0 && !tool_calls,
         }
       } catch (err: unknown) {
-        const error = err as { status?: number; code?: string; name?: string; message?: string }
-        // AbortError — не ретраим, бросаем сразу
+        const error = err as { status?: number; statusCode?: number; code?: string; name?: string; message?: string }
+        const realStatus = error?.status ?? error?.statusCode ?? 0
+        console.log('[AIClient] chatWithTools CATCH: status=%s statusCode=%s name=%s msg=%s (attempt=%d/%d)',
+          error?.status ?? '—', error?.statusCode ?? '—', error?.name ?? '—',
+          (error?.message ?? String(err)).slice(0, 200), attempt + 1, maxAttempts)
+        log('[AIClient] chatWithTools CATCH: status=%s statusCode=%s name=%s msg=%s (attempt=%d/%d)',
+          error?.status ?? '—', error?.statusCode ?? '—', error?.name ?? '—',
+          (error?.message ?? String(err)).slice(0, 200), attempt + 1, maxAttempts)
         if (error?.name === 'AbortError' || signal?.aborted) throw err
+        const errMsg = error?.message ?? String(err)
+        const errLower = errMsg.toLowerCase()
+        // 413 — Request too large. НЕРЕКУПЕРИРУЕМО: tool schemas не помещаются
+        // в лимит TPM модели (например Groq gpt-oss-120b: TPM=8000, schemas=35K).
+        // Ретраи бесполезны — контекст не уменьшится. Кидаем сразу с status=413
+        // чтобы Agent.ts пошёл в ветку 413 → dropOldestRoundsIfOverflow → onError.
+        if (realStatus === 413 || (errLower.includes('413') && errLower.includes('too large'))) {
+          console.log('[AIClient] 413 Request too large — НЕ ретраим, кидаем сразу')
+          log('[AIClient] 413 Request too large (model=%s): %s', model, errMsg.slice(0, 300))
+          if (!error?.status) {
+            try { (error as { status?: number }).status = 413 } catch { /* frozen */ }
+          }
+          throw err
+        }
         // 429 Rate limit — ретраим с backoff + уведомляем
-        if (error?.status === 429) {
+        if (realStatus === 429) {
           const delay = backoffDelay(attempt)
           const waitSec = Math.round(delay / 1000)
           log('[AIClient] 429 rate-limit, retry %d/%d через %ds (model=%s)', attempt + 1, maxAttempts, waitSec, model)
           onRateLimit?.(waitSec)
-          onRetry?.(attempt + 1, 'rate_limit', waitSec)
+          onRetry?.(attempt + 1, 'rate_limit', waitSec, maxAttempts)
           if (Date.now() >= deadlineMs) {
             throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
           }
@@ -617,12 +639,17 @@ export class AIClient {
           attempt++
           continue
         }
-        // Сетевые ошибки (ECONNRESET, ETIMEDOUT, ENOTFOUND, fetch failed) — ретраим
-        const msg = error?.message?.toLowerCase() ?? ''
-        const isNetwork = !error?.status || error.status >= 500 ||
-          msg.includes('econnreset') || msg.includes('etimedout') ||
-          msg.includes('enotfound') || msg.includes('fetch failed') ||
-          msg.includes('network') || msg.includes('socket')
+        // Сетевые ошибки (ECONNRESET, ETIMEDOUT, ENOTFOUND, fetch failed) — ретраим.
+        // ВАЖНО: `!error?.status` раньше ловил ВСЕ ошибки без status (включая
+        // 413 от прокси, который не выставляет .status) как "сетевые" →
+        // 413 ретраился 4 раза, потом кидался в Agent.ts где status=0 →
+        // попадал в generic catch → push user msg → continue → снова 413 →
+        // бесконечный цикл до maxSteps. Теперь: без status ретраим только если
+        // сообщение похоже на сетевую ошибку (fetch failed / connection и т.д.).
+        const hasNetworkKeyword = errLower.includes('econnreset') || errLower.includes('etimedout') ||
+          errLower.includes('enotfound') || errLower.includes('fetch failed') ||
+          errLower.includes('network') || errLower.includes('socket') || errLower.includes('connection')
+        const isNetwork = (realStatus === 0 && hasNetworkKeyword) || realStatus >= 500
         if (isNetwork && attempt < maxAttempts - 1) {
           const delay = backoffDelay(attempt)
           // Это единственная точка, где видна сырая причина обрыва стрима/
@@ -631,7 +658,7 @@ export class AIClient {
           // вида «зависло и само перезапустилось».
           log('[AIClient] сетевая ошибка, retry %d/%d (model=%s status=%s): %s',
             attempt + 1, maxAttempts, model, error?.status ?? '—', error?.message ?? String(err))
-          onRetry?.(attempt + 1, 'network')
+          onRetry?.(attempt + 1, 'network', undefined, maxAttempts)
           if (Date.now() >= deadlineMs) {
             throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
           }
@@ -639,9 +666,22 @@ export class AIClient {
           attempt++
           continue
         }
-        // Фатальная ошибка (4xx, неизвестная) — бросаем сразу
-        log('[AIClient] фатальная ошибка API (model=%s status=%s): %s',
-          model, error?.status ?? '—', error?.message ?? String(err))
+        // Фатальная ошибка (4xx, неизвестная) — бросаем сразу.
+        // ВАЖНО: если прокси не выставил error.status, добавляем его
+        // вручную из statusCode или из текста ошибки (413/429/400 и т.д.),
+        // чтобы Agent.ts мог правильно выбрать ветку обработки.
+        log('[AIClient] фатальная ошибка API (model=%s status=%s statusCode=%s): %s',
+          model, error?.status ?? '—', error?.statusCode ?? '—', error?.message ?? String(err))
+        if (!error?.status && realStatus > 0) {
+          try { (error as { status?: number }).status = realStatus } catch { /* frozen */ }
+        }
+        if (!error?.status) {
+          // Пытаемся извлечь status из текста ошибки ("413 Request too large...")
+          const statusMatch = (error?.message ?? '').match(/^(\d{3})\s/)
+          if (statusMatch) {
+            try { (error as { status?: number }).status = parseInt(statusMatch[1]) } catch { /* frozen */ }
+          }
+        }
         throw err
       }
     }

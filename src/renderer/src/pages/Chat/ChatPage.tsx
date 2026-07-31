@@ -231,6 +231,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const prev = prevRunStatusRef.current
     // Показываем тост только при переходе в error (не при cancel — это штатная остановка)
     if (runStatus.status === 'error' && prev !== 'error') {
+      console.log('[chat-flow] runStatus=error chatId=%s error=%s', currentChatId, runStatus.error)
       toast('Ошибка: ' + (runStatus.error ?? 'неизвестная'), 'error')
     }
     prevRunStatusRef.current = runStatus.status
@@ -1230,6 +1231,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         toolProgress: live.toolProgress,
         livePlanningMode: planningMode,
         rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
+        retry: live.retry,
+        lastError: live.lastError,
       } as Message & Record<string, unknown>]
     }
     if (isCompacting) {

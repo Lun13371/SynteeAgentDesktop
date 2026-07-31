@@ -360,12 +360,22 @@ const WAITING_PHRASES = [
   'Формулирую...',
 ]
 
-function WaitingIndicator({ rateLimitSec, agentStatus, filesChanged, commandsRun }: { rateLimitSec?: number; agentStatus?: string | null; filesChanged?: number; commandsRun?: number }) {
+function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesChanged, commandsRun }: {
+  rateLimitSec?: number
+  agentStatus?: string | null
+  retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
+  lastError?: string | null
+  filesChanged?: number
+  commandsRun?: number
+}) {
   const [phraseIdx, setPhraseIdx] = useState(0)
   const [visible, setVisible] = useState(true)
 
   useEffect(() => {
-    if (agentStatus || rateLimitSec) return
+    // При ретрае/ошибке/rate-limit морозим ротацию фраз — пользователь видит
+    // причину вместо generic «Думаю…». Раньше статус ретрая затирался
+    // следующим onStatus, и индикатор молчал о происходящем.
+    if (agentStatus || rateLimitSec || retry || lastError) return
     const interval = setInterval(() => {
       setVisible(false)
       setTimeout(() => {
@@ -374,17 +384,33 @@ function WaitingIndicator({ rateLimitSec, agentStatus, filesChanged, commandsRun
       }, 300)
     }, 2500)
     return () => clearInterval(interval)
-  }, [agentStatus, rateLimitSec])
+  }, [agentStatus, rateLimitSec, retry, lastError])
 
   const isRateLimit = rateLimitSec && rateLimitSec > 0
-  const text = isRateLimit
-    ? `Rate limit — жду ${rateLimitSec}с...`
-    : agentStatus ?? WAITING_PHRASES[phraseIdx]
-  const cls = isRateLimit
-    ? ' msg-waiting-shimmer--rl'
-    : agentStatus
-      ? ' msg-waiting-shimmer--status'
-      : ''
+  // Приоритет: rate-limit (секундный таймер) > retry (структурированный
+  // счётчик «повтор 3/5») > lastError (причина без счётчика) > agentStatus
+  // (свободный текст) > generic фраза.
+  let text: string
+  let cls: string
+  if (isRateLimit) {
+    text = `Rate limit — жду ${rateLimitSec}с...`
+    cls = ' msg-waiting-shimmer--rl'
+  } else if (retry) {
+    const max = retry.maxAttempts ? `/${retry.maxAttempts}` : ''
+    text = retry.reason === 'rate_limit'
+      ? `Лимит запросов · повтор ${retry.attempt}${max}${retry.waitSec ? ` через ${retry.waitSec}с` : ''}`
+      : `Ошибка сети · повтор ${retry.attempt}${max}`
+    cls = ' msg-waiting-shimmer--status'
+  } else if (lastError) {
+    text = lastError
+    cls = ' msg-waiting-shimmer--status'
+  } else if (agentStatus) {
+    text = agentStatus
+    cls = ' msg-waiting-shimmer--status'
+  } else {
+    text = WAITING_PHRASES[phraseIdx]
+    cls = ''
+  }
 
   // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
   const counterParts: string[] = []
@@ -431,7 +457,7 @@ const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, onRewind, message, isPinned, createdAt,
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
-  userMarkdown = true, timeEl, agentStatus, toolProgress,
+  userMarkdown = true, timeEl, agentStatus, toolProgress, retry, lastError,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -448,6 +474,8 @@ const MessageContent = memo(function MessageContent({
   userMarkdown?: boolean
   timeEl?: React.ReactNode
   agentStatus?: string | null
+  retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
+  lastError?: string | null
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }) {
   const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
@@ -669,7 +697,7 @@ const MessageContent = memo(function MessageContent({
 
         {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
         {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && !liveIters?.length && (
-          <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
+                    <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
         )}
 
         {/* §4.3 — видимый чек-лист плана (todo list).
@@ -748,7 +776,7 @@ const MessageContent = memo(function MessageContent({
                   })()}
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
                   {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && !liveThinking && (
-                    <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
+          <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
                   )}
                 </div>
               )
@@ -912,6 +940,8 @@ const MessageBubble = memo(function MessageBubble({
             userMarkdown={isUser ? userMarkdown : true}
             timeEl={timeEl}
             agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
+            retry={(message as Message & { retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null }).retry}
+            lastError={(message as Message & { lastError?: string | null }).lastError}
             toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
           />
         </div>
@@ -939,6 +969,8 @@ const MessageBubble = memo(function MessageBubble({
         userMarkdown={isUser ? userMarkdown : true}
         timeEl={timeEl}
         agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
+        retry={(message as Message & { retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null }).retry}
+        lastError={(message as Message & { lastError?: string | null }).lastError}
         toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
       />
       )}

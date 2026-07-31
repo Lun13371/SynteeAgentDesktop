@@ -76,6 +76,7 @@ interface ActiveRun {
   bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
   bufferedAgentStatus: string | null
   bufferedRateLimitSec: number
+  bufferedRetry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
   doneSent: boolean
   sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[], todo?: unknown[]) => void
   // ── Реконструкция итераций (зеркало ai-worker.ts:113-125) ──
@@ -927,6 +928,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     const historyLimit = 40
     const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
+    log('[chat:send] chatId=%s history loaded: dbMsgs=%d → contextMsgs=%d (after messageToContextMessages)',
+      params.chatId, history.length, rawHistory.length)
+    console.log('[chat.ipc] history loaded: dbMsgs=%d → contextMsgs=%d (chatId=%s)', history.length, rawHistory.length, params.chatId)
 
     let processedHistory = rawHistory
     let contextCompressed = false
@@ -1084,6 +1088,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       bufferedTodo: [],
       bufferedAgentStatus: null,
       bufferedRateLimitSec: 0,
+      bufferedRetry: null,
       doneSent: false,
       sendDone: () => { /* присваивается ниже после определения sendDone */ },
       pendingTextAfter: '',
@@ -1112,6 +1117,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     ) => {
       if (run.doneSent) return
       run.doneSent = true
+      log('[sendDone] chatId=%s msgId=%s text=%d chars steps=%d iters=%d',
+        params.chatId, assistantMsgId, fullText.length, steps?.length ?? 0, iters?.length ?? 0)
+      console.log('[chat.ipc] sendDone: chatId=%s text=%d steps=%d', params.chatId, fullText.length, steps?.length ?? 0)
       // Снимаем ссылку на активный запуск этого чата — следующий chat:send
       // увидит, что слот свободен, и стартует (или дрейнит очередь).
       if (activeRuns.get(params.chatId) === run) {
@@ -1138,6 +1146,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
 
       const todoArr = (todo as Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> | undefined)
+      // Санитизация steps перед сохранением: ensureToolResults добивает
+      // синтетический tool_result для любого tool_call без парного result.
+      // Без этого при error/падении воркера сохраняется битая история
+      // (assistant с tool_calls без results) → следующий chat:send
+      // разворачивает её через messageToContextMessages → строгий
+      // провайдер (glm/litellm) возвращает 400 → чат ломается НАВСЕГДА,
+      // каждый следующий запрос тоже падает. Раньше ensureToolResults
+      // применялся только в buildLiveIters (для live-снапшота), но
+      // sendDone при error обходил его.
+      const safeSteps = steps && steps.length > 0 ? ensureToolResults(steps as unknown[]) : steps
       const assistantMsg: Message & { iterations?: unknown } = {
         id: assistantMsgId,
         chatId: params.chatId,
@@ -1147,7 +1165,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         isPinned: 0,
         model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
           ?.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6',
-        toolSteps: steps && steps.length > 0 ? steps as never : undefined,
+        toolSteps: safeSteps && safeSteps.length > 0 ? safeSteps as never : undefined,
         iterations: iters && iters.length > 0 ? iters as never : undefined,
         thinking: thinkingText || undefined,
         thinkingMs,
@@ -1363,6 +1381,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         // Продолжаем с исходным content — лучше чем уронить весь запрос
       }
     }
+
+    log('[chat:send] worker created chatId=%s msgId=%s history=%d msgs → %d contextMsgs, content=%d chars',
+      params.chatId, assistantMsgId, history.length, processedHistory.length, effectiveContent.length)
+    console.log('[chat.ipc] worker start: chatId=%s history=%d→%d content=%d', params.chatId, history.length, processedHistory.length, effectiveContent.length)
 
     worker.on('message', (msg: Record<string, unknown>) => {
       switch (msg.type) {
@@ -1804,6 +1826,24 @@ ${subModeOutro}`,
           win?.webContents.send(IPC_EVENTS.RATE_LIMIT, { waitSec: msg.waitSec, chatId: params.chatId })
           break
 
+        case 'agent_retry': {
+          // Структурированный ретрай для UI-счётчика «повтор 3/5».
+          // bufferedRetry хранится в live-снапшоте для гидрации при возврате
+          // в чат; эвент 'agent:retry' принимается useChatRunSubscription.
+          run.bufferedRetry = {
+            attempt: msg.attempt as number,
+            maxAttempts: msg.maxAttempts as number | undefined,
+            reason: msg.reason as string,
+            waitSec: msg.waitSec as number | undefined,
+          }
+          win?.webContents.send('agent:retry', {
+            msgId: msg.msgId, chatId: msg.chatId,
+            attempt: msg.attempt, maxAttempts: msg.maxAttempts,
+            reason: msg.reason, waitSec: msg.waitSec,
+          })
+          break
+        }
+
         case 'update_working_memory': {
           const { chatId: wChatId, content: wContent, mode: wMode } = msg as { chatId: string; content: string; mode: 'replace' | 'append' }
           try {
@@ -1957,7 +1997,9 @@ ${subModeOutro}`,
           break
 
         case 'error': {
-          // Если агент успел что-то сделать (текст/тулы) до ошибки — сохраняем
+          console.log('[chat.ipc] worker ERROR: %s | fullText=%d steps=%d', msg.error, (msg.fullText as string)?.length ?? run.bufferedText.length, (msg.collectedSteps as unknown[])?.length ?? run.bufferedSteps.length)
+          log('[chat.ipc] worker ERROR chatId=%s: %s | fullText=%d steps=%d',
+            params.chatId, msg.error, (msg.fullText as string)?.length ?? run.bufferedText.length, (msg.collectedSteps as unknown[])?.length ?? run.bufferedSteps.length)
           // это в историю чата вместо того чтобы просто выбросить прогресс.
           if (msg.updatedProviders) {
             store.set('providers', msg.updatedProviders)
@@ -1978,10 +2020,29 @@ ${subModeOutro}`,
               (msg.fileSnapshots as Array<{ path: string; contentBefore: string | null }> | undefined),
             )
           } else {
-            // Нет прогресса — просто помечаем запуск завершённым и дрейним очередь.
+            // Нет прогресса — сохраняем сообщение с текстом ошибки чтобы
+            // пользователь ВИДЕЛ причину в чате, а не только тост.
+            log('[chat.ipc] error без прогресса — сохраняем error-сообщение chatId=%s', params.chatId)
+            const errorAssistantMsg: Message & { iterations?: unknown } = {
+              id: assistantMsgId,
+              chatId: params.chatId,
+              role: 'assistant',
+              content: `⚠ **Ошибка:** ${msg.error}`,
+              createdAt: Date.now(),
+              isPinned: 0,
+              model: 'error',
+              toolSteps: undefined,
+              iterations: undefined,
+            }
+            if (!params.incognito) saveMessage(errorAssistantMsg)
             run.doneSent = true
             if (activeRuns.get(params.chatId) === run) activeRuns.delete(params.chatId)
             activeRunMeta.delete(params.chatId)
+            win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
+              chatId: params.chatId,
+              msgId: assistantMsgId,
+              message: errorAssistantMsg,
+            })
             drainQueue(win, params.chatId)
           }
           emitRunStatus(win, params.chatId, 'error', assistantMsgId, msg.error as string)
@@ -1995,8 +2056,9 @@ ${subModeOutro}`,
     })
 
     worker.on('error', (err) => {
-      log('[Worker] error chatId=%s: %s', params.chatId, err.message)
-      console.error('[Worker] error:', err)
+      console.log('[chat.ipc] Worker CRASH: %s', err.message)
+      log('[Worker] CRASH chatId=%s: %s', params.chatId, err.message)
+      console.error('[Worker] CRASH:', err)
       sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
       emitRunStatus(win, params.chatId, 'error', assistantMsgId, err.message)
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
@@ -2006,6 +2068,9 @@ ${subModeOutro}`,
 
     worker.on('exit', () => {
       setImmediate(() => {
+        console.log('[chat.ipc] Worker exit: doneSent=%s text=%d steps=%d', run.doneSent, run.bufferedText.length, run.bufferedSteps.length)
+        log('[Worker] exit chatId=%s doneSent=%s text=%d steps=%d',
+          params.chatId, run.doneSent, run.bufferedText.length, run.bufferedSteps.length)
         // Если воркер был остановлен кнопкой Стоп или terminated — sendDone
         // уже вызван до terminate(), doneSent=true и flush здесь будет no-op.
         // Если же воркер упал/завершился сам, не дойдя до 'done' — сохраняем
@@ -2488,6 +2553,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       bufferedTodo: run.bufferedTodo,
       bufferedAgentStatus: run.bufferedAgentStatus,
       bufferedRateLimitSec: run.bufferedRateLimitSec,
+      bufferedRetry: run.bufferedRetry,
       meta: activeRunMeta.get(chatId) ?? null,
     }
   })

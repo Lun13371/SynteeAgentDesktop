@@ -23,6 +23,13 @@ import type { Readable } from 'stream'
 import type { McpServerConfig, McpToolRuntime, McpConnectionStatus, McpLogLevel, McpLogEntry } from '../../shared/types'
 import { log } from '../logger'
 
+// Защитный таймаут одного вызова MCP-тула. MCP-сервер (особенно stdio)
+// может зависнуть намертво — процесс жив, пайп заблокирован, SDK
+// await callTool() никогда не резолвится. Без потолка агентский цикл
+// блокируется навсегда (MAX_TOOL_TIMEOUT_MS в Agent.ts — внешний слой,
+// этот — внутренний, с информативным сообщением именно про MCP).
+export const MCP_CALL_TIMEOUT_MS = 120 * 1000  // 120 секунд
+
 // SDK импортируется лениво через require, чтобы:
 //  1) не тащить ESM-парсер на статический анализ vite
 //  2) работать в CJS-сборке main без ESM-маркеров
@@ -282,7 +289,16 @@ export class McpClient {
       return { success: false, output: '', error: msg }
     }
     try {
-      const result = await this.client.callTool({ name: toolName, arguments: args })
+      // Защитный таймаут: MCP-сервер может зависнуть (повисший процесс,
+      // заблокированный пайп), и SDK await callTool() никогда не
+      // резолвится. Promise.race отвязывает ожидание и возвращает
+      // информативную ошибку — внешний MAX_TOOL_TIMEOUT_MS в Agent.ts
+      // остаётся страховкой верхнего уровня.
+      const callPromise = this.client.callTool({ name: toolName, arguments: args })
+      const timeoutPromise = new Promise<{ content?: Array<{ type: string; text?: string }> }>((_, reject) => {
+        setTimeout(() => reject(new Error(`MCP-вызов ${toolName} превысил таймаут (${Math.round(MCP_CALL_TIMEOUT_MS / 1000)}с) — сервер ${this.config.name} не отвечает`)), MCP_CALL_TIMEOUT_MS)
+      })
+      const result = await Promise.race([callPromise, timeoutPromise])
       const content = result.content ?? []
       const textParts = content
         .filter(c => c.type === 'text' && c.text)

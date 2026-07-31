@@ -30,7 +30,7 @@ export async function chatWithToolsAnthropic(
   callbacks: {
     onToken?: (token: string) => void
     onRateLimit?: (waitSec: number) => void
-    onRetry?: (attempt: number, reason: string, waitSec?: number) => void
+    onRetry?: (attempt: number, reason: string, waitSec?: number, maxAttempts?: number) => void
     onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
     onThinkingToken?: (token: string) => void
     onThinkingDone?: (ms: number) => void
@@ -66,7 +66,7 @@ export async function chatWithToolsAnthropic(
   Object.assign(params, reasoningExtra)
 
   let attempt = 0
-  const maxAttempts = 15
+  const maxAttempts = 5
   const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
 
   while (attempt < maxAttempts) {
@@ -228,7 +228,7 @@ export async function chatWithToolsAnthropic(
         const waitSec = Math.round(delay / 1000)
         log('[AIClient/Anthropic] 429 rate-limit, retry %d/%d через %ds (model=%s)', attempt + 1, maxAttempts, waitSec, model)
         onRateLimit?.(waitSec)
-        onRetry?.(attempt + 1, 'rate_limit', waitSec)
+        onRetry?.(attempt + 1, 'rate_limit', waitSec, maxAttempts)
         if (Date.now() >= deadlineMs) {
           throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
         }
@@ -246,7 +246,7 @@ export async function chatWithToolsAnthropic(
         const delay = backoffDelay(attempt)
         log('[AIClient/Anthropic] сетевая ошибка, retry %d/%d (model=%s status=%s): %s',
           attempt + 1, maxAttempts, model, error?.status ?? '—', error?.message ?? String(err))
-        onRetry?.(attempt + 1, 'network')
+        onRetry?.(attempt + 1, 'network', undefined, maxAttempts)
         if (Date.now() >= deadlineMs) {
           throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
         }
