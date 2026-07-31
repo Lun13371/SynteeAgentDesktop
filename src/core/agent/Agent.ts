@@ -12,9 +12,10 @@ import {
   TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
 } from '../tools'
 import {
-  truncateToolResult, getContextSettings, estimateTokens, TOOL_SCHEMAS_OVERHEAD, getModelContextWindow,
+  truncateToolResult, getContextSettings, getModelContextWindow,
   getHardLimitTokens, getHardLimitTargetTokens,
 } from '../context/contextManager'
+import { computeContextSnapshot } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
@@ -660,8 +661,25 @@ export class Agent {
         }
 
         if (callbacks.onContextUpdate) {
-          const msgTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content || '') + 4, 0)
-          callbacks.onContextUpdate(msgTokens + TOOL_SCHEMAS_OVERHEAD)
+          // Единая оценка на актуальном массиве messages (system[0]+history
+          // с tool_calls+tool results+current user). breakdown консистентен
+          // с computeContextSnapshot / AIClient.onContextCounted — больше
+          // никаких отдельных формул, дающих другие числа.
+          const systemMsg = messages[0]?.role === 'system' ? messages[0] : undefined
+          const rest = systemMsg ? messages.slice(1) : messages
+          const snap = computeContextSnapshot(rest, Number.MAX_SAFE_INTEGER, {
+            systemPrompt: systemMsg?.content as string | undefined,
+            includeToolSchemas: true,
+          })
+          callbacks.onContextUpdate({
+            promptTokens: snap.estimated,
+            breakdown: {
+              history: snap.breakdown.history,
+              system: snap.breakdown.system,
+              tools: snap.breakdown.tools,
+              current: 0,  // current уже внутри history на этом этапе
+            },
+          })
         }
       } catch (err) {
         const error = err as { name?: string; status?: number; statusCode?: number; message?: string }

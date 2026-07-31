@@ -273,6 +273,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     incognito: isIncognito,
     enabled: showContextRing && !isIncognito,
     messageCount: messages.length,
+    isRunning: isStreaming,
   })
 
   // ── Wrapper'ы режимов инпут-бара ──

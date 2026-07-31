@@ -529,35 +529,60 @@ export default function App() {
   }, [])
 
   // Проверяем наличие сохранённой сессии при старте.
-  // Логика:
-  //  1. Есть токены → тянем профиль. Если профиль есть — 'app', иначе 'login'.
-  //  2. Нет токенов, но юзер ранее выбрал "гостевой режим" (loginSkipped=true)
-  //     → сразу 'app', без экрана входа.
-  //  3. Нет токенов и не пропускал → 'login' (первый запуск / явный logout).
+  // Логика (порядок важен — чтобы не выкидывать на экран входа того, кто
+  // уже решил работать локально, и не дёргать gateway в гостевом режиме):
+  //  1. loginSkipped=true → сразу 'app'. Юзер явно выбрал гостевой режим,
+  //     gateway не трогаем, экран входа не показываем.
+  //  2. Есть токены → тянем профиль (auth:me).
+  //     a. Профиль есть → 'app' (залогинен).
+  //     b. Профиля нет, но токены на месте → gateway/network лежат →
+  //        грузимся в app (оффлайн-деградация как гость, без логина).
+  //     c. Токены стёрты (GatewayAuthError → clearTokens в auth.ipc) →
+  //        сессия реально протухла → 'login' (нужен перевход).
+  //  3. Нет токенов и не гость → 'login' (первый запуск / явный logout).
   useEffect(() => {
     let cancelled = false
     const check = async () => {
       try {
+        // 1. Гостевой режим проверяем первым — он липкий и не требует сети.
+        const skipped = await window.syntee.settings.get('loginSkipped')
+        if (cancelled) return
+        if (skipped === true) {
+          setAuthBoot('app')
+          return
+        }
+
+        // 2. Есть ли сохранённые токены?
         const isLoggedIn = await window.syntee.auth.isLoggedIn()
         if (cancelled) return
         if (isLoggedIn) {
           await authLoad()
           if (cancelled) return
           const user = useAuthStore.getState().user
-          setAuthBoot(user ? 'app' : 'login')
-        } else {
-          // Нет токенов — проверяем, выбирал ли юзер гостевой режим ранее.
-          const skipped = await window.syntee.settings.get('loginSkipped')
+          if (user) {
+            setAuthBoot('app')
+            return
+          }
+          // Профиля нет. Различаем: токены целы (сеть/gateway лежат) —
+          // грузимся как гость без логина; токены стёрты — нужен перевход.
+          const stillHasTokens = await window.syntee.auth.isLoggedIn()
           if (cancelled) return
-          setAuthBoot(skipped === true ? 'app' : 'login')
+          setAuthBoot(stillHasTokens ? 'app' : 'login')
+        } else {
+          // 3. Нет токенов и не гость — первый запуск или явный logout.
+          setAuthBoot('login')
         }
       } catch {
-        if (!cancelled) setAuthBoot('login')
+        // Любой непредвиденный сбой — не валим пользователя на логин,
+        // грузим приложение в деградированном (гостевом) режиме.
+        if (!cancelled) setAuthBoot('app')
       }
     }
     check()
+    // Фолбэк: если IPC завис, грузим app, а не экран входа —
+    // зависший чек не должен отбрасывать юзера в логин.
     const fallback = setTimeout(() => {
-      if (!cancelled) setAuthBoot(prev => prev ?? 'login')
+      if (!cancelled) setAuthBoot(prev => prev ?? 'app')
     }, 5000)
     return () => { cancelled = true; clearTimeout(fallback) }
   }, [authLoad])

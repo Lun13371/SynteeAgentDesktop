@@ -150,6 +150,12 @@ export function runMigrations(db: Database.Database): void {
   if (!chatCols.find(c => c.name === 'image_mode'))    db.prepare(`ALTER TABLE chats ADD COLUMN image_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'ask_mode'))      db.prepare(`ALTER TABLE chats ADD COLUMN ask_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'draft'))         db.prepare(`ALTER TABLE chats ADD COLUMN draft TEXT`).run()
+  // last_usage — JSON последнего реального usage от провайдера
+  // {promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, ts}.
+  // Переживает перезапуск: context:calculate читает его, чтобы показывать
+  // точный контекст после перезахода в чат (tiktoken-оценка без этого
+  // занижает: не знает про tool schemas overhead, reasoning и т.д.).
+  if (!chatCols.find(c => c.name === 'last_usage'))   db.prepare(`ALTER TABLE chats ADD COLUMN last_usage TEXT`).run()
 
   // Миграция: verification_command на projects — команда авто-проверки
   // (напр. "npm test"), запускаемая после серии успешных правок файлов.

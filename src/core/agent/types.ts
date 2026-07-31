@@ -22,6 +22,17 @@ export interface AgentStep {
   pendingCallId?: string
 }
 
+export interface ContextCountedInfo {
+  promptTokens: number
+  breakdown: {
+    history: number
+    system: number
+    tools: number
+    current: number
+    toolResults?: number
+  }
+}
+
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
   onDone: (answer: string, details?: AgentSummaryDetails) => void
@@ -29,7 +40,10 @@ export interface AgentCallbacks {
   onStatus?: (text: string) => void
   onRateLimit?: (waitSec: number) => void
   onRetry?: (attempt: number, reason: string, waitSec?: number, maxAttempts?: number) => void
-  onContextUpdate?: (tokens: number) => void
+  /** Конец раунда: оценка контекста на актуальном массиве messages
+   *  (system[0] + history с tool_calls + current user + любые инъекции).
+   *  breakdown консистентен с computeContextSnapshot. */
+  onContextUpdate?: (info: ContextCountedInfo) => void
   onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
@@ -42,7 +56,9 @@ export interface AgentCallbacks {
    */
   onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean }>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
-  onContextCounted?: (promptTokens: number) => void
+  /** Начало раунда: tiktoken-оценка того, что уйдёт в запрос (system+history
+   *  с tool_calls+current user+tools schemas). breakdown консистентен. */
+  onContextCounted?: (info: ContextCountedInfo) => void
   onTodoUpdate?: (items: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>) => void
   onThinkingToken?: (token: string) => void
   onThinkingDone?: (ms: number) => void
