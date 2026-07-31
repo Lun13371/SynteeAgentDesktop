@@ -96,6 +96,12 @@ export const WINDOW_SIZES = {
   spotlightExpanded: { width: 600, height: 420 },
   voice: { width: 300, height: 300 },
   overlayChat: { width: 400, height: 600 },
+  // Кастомное трей-меню (frameless glass-окно у иконки трея).
+  // width — ширина карточки; height — базовая (свернутый «О программе»).
+  // С раскрытым блоком about высота растёт, окно пересоздаёт размер через
+  // setContentSize. Позиция считается динамически от tray.getBounds().
+  trayMenu: { width: 268, height: 392 },
+  trayMenuExpanded: { width: 268, height: 472 },
 }
 
 export const IPC_EVENTS = {

@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import TrayMenuApp from './pages/TrayMenu/TrayMenuApp'
 import './styles/fonts.css'
 import './styles/globals.css'
 import '@xterm/xterm/css/xterm.css'
@@ -10,6 +11,13 @@ declare global {
   interface Window {
     syntee: import('../../preload/index').SynteeAPI
   }
+}
+
+// Трей-меню — отдельное лёгкое окно (#/tray-menu). Рендерим TrayMenuApp
+// НАПРЯМУЮ, минуя App, чтобы не запускать messenger WS / gateway polling /
+// chat preload в этом окне (это frameless-меню, ему нужен только UI).
+function isTrayMenuRoute(): boolean {
+  return window.location.hash.replace('#/', '') === 'tray-menu'
 }
 
 // Заглушка для браузерного режима (вне Electron)
@@ -41,6 +49,7 @@ if (!window.syntee) {
       captureScreen: () => Promise.resolve([]),
       analyze: noop, saveScreenshot: () => Promise.resolve('') },
     spotlight: { show: noop, hide: noop, expand: noop, collapse: noop },
+    trayMenu: { hide: noop, action: noop, getMeta: () => Promise.resolve({ version: '0.0.0' }) },
     voice: { start: noop, stop: noop },
     chat: {
       getAll: () => Promise.resolve([]),
@@ -78,6 +87,6 @@ document.addEventListener('drop', (e) => e.preventDefault())
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    {isTrayMenuRoute() ? <TrayMenuApp /> : <App />}
   </React.StrictMode>
 )

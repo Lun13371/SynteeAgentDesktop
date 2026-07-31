@@ -1,5 +1,6 @@
-import { Tray, Menu, nativeImage, app } from 'electron'
+import { Tray, nativeImage, app, type Rectangle } from 'electron'
 import { join } from 'path'
+import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
 
 interface TrayCallbacks {
   showMain: () => void
@@ -8,12 +9,25 @@ interface TrayCallbacks {
   quit: () => void
 }
 
+/**
+ * Трей-иконка + кастомное HTML-меню.
+ *
+ * Раньше здесь было нативное Win32 контекст-меню (Menu.buildFromTemplate)
+ * с эмодзи в лейблах — его нельзя стилизовать под клиент (тема, glass,
+ * lucide-иконки). Теперь по правому клику открывается frameless
+ * glass-окно TrayMenuWindow, рендерящее карточку меню на React.
+ *
+ * Поведение кликов:
+ *  - двойной клик → показать главное окно (привычное Windows-поведение);
+ *  - правый клик   → показать кастомное меню у иконки.
+ */
 export class TrayManager {
   private tray: Tray | null = null
   private animationInterval: NodeJS.Timeout | null = null
 
   constructor(
-    private callbacks: TrayCallbacks
+    private callbacks: TrayCallbacks,
+    private menuWindow: TrayMenuWindow,
   ) {}
 
   init(): void {
@@ -25,45 +39,11 @@ export class TrayManager {
     this.tray = new Tray(icon)
     this.tray.setToolTip('Syntee Helper')
     this.tray.on('double-click', () => this.callbacks.showMain())
-    this.buildMenu()
-  }
-
-  private buildMenu(): void {
-    const menu = Menu.buildFromTemplate([
-      {
-        label: '✨ Открыть Syntee',
-        click: () => this.callbacks.showMain(),
-        accelerator: 'CommandOrControl+Shift+Space',
-      },
-      {
-        label: '🎤 Голосовой режим',
-        click: () => this.callbacks.showVoice(),
-      },
-      {
-        label: '🔍 Spotlight',
-        click: () => this.callbacks.showSpotlight(),
-      },
-      { type: 'separator' },
-      {
-        label: '⚙️ Настройки',
-        click: () => {
-          this.callbacks.showMain()
-        },
-      },
-      {
-        label: `ℹ️ О программе (v${app.getVersion()})`,
-        enabled: false,
-      },
-      { type: 'separator' },
-      {
-        label: '❌ Выход',
-        click: () => {
-          // Убираем перехват close перед выходом
-          app.exit(0)
-        },
-      },
-    ])
-    this.tray?.setContextMenu(menu)
+    // Правый клик — показать кастомное HTML-меню у иконки.
+    this.tray.on('right-click', (_e, bounds) => this.menuWindow.show(bounds as Rectangle | undefined))
+    // На некоторых системах left-click тоже стоит обрабатывать как вызов
+    // меню — но по решению пользователя левый/двойной клик открывают главное
+    // окно, поэтому здесь только right-click.
   }
 
   // Анимация иконки при прослушивании wake word

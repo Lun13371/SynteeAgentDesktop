@@ -1,0 +1,209 @@
+/* ========== TRAY MENU (custom HTML context menu) ==========
+   Frameless glass-карточка у иконки трея. Использует CSS-переменные
+   тем из globals.css (--bg-*, --glass-*, --accent, --overlay-*),
+   чтобы выглядеть консистентно с остальным клиентом во всех темах.
+
+   ВАЖНО: html/body должны быть transparent — иначе opaque --body-bg
+   из globals.css заливает всё прозрачное окно фоном. */
+
+html, body, #root {
+  background: transparent !important;
+}
+
+.tray-menu-root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  background: transparent;
+  overflow: hidden;
+}
+
+.tray-menu-card {
+  width: 100%;
+  max-width: 248px;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-tertiary);
+}
+
+/* ── Хедер ─────────────────────────────────────────────── */
+.tray-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tray-menu-header-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.tray-menu-header-title {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.tray-menu-header-version {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.tray-menu-update-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-subtle);
+  flex-shrink: 0;
+  animation: tray-badge-pulse 2s ease-in-out infinite;
+}
+
+@keyframes tray-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ── Список пунктов ────────────────────────────────────── */
+.tray-menu-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+
+.tray-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  text-align: left;
+  transition: background var(--transition), color var(--transition);
+  position: relative;
+}
+
+.tray-menu-item:hover,
+.tray-menu-item--active {
+  background: var(--overlay-5);
+}
+
+.tray-menu-item--active .tray-menu-item-label {
+  color: var(--text-primary);
+}
+
+.tray-menu-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.tray-menu-item-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+  transition: color var(--transition);
+}
+
+.tray-menu-item:hover .tray-menu-item-label,
+.tray-menu-item--active .tray-menu-item-label {
+  color: var(--text-primary);
+}
+
+.tray-menu-item-sub {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.tray-menu-item-chevron {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* Danger-пункт (Выход) */
+.tray-menu-item--danger .tray-menu-item-label {
+  color: #ff6b6b;
+}
+
+.tray-menu-item--danger:hover,
+.tray-menu-item--danger.tray-menu-item--active {
+  background: rgba(255, 107, 107, 0.1);
+}
+
+.tray-menu-item--danger:hover .tray-menu-item-label,
+.tray-menu-item--danger.tray-menu-item--active .tray-menu-item-label {
+  color: #ff6b6b;
+}
+
+/* ── Раскрывающийся блок «О программе» ─────────────────── */
+.tray-menu-about {
+  overflow: hidden;
+  margin: 2px 6px 4px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--overlay-2);
+}
+
+.tray-menu-about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 0;
+  font-size: var(--font-size-xs);
+}
+
+.tray-menu-about-row + .tray-menu-about-row {
+  border-top: 1px solid var(--border);
+}
+
+.tray-menu-about-key {
+  color: var(--text-muted);
+}
+
+.tray-menu-about-val {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.tray-menu-about-val--ok { color: #2ecc71; }
+.tray-menu-about-val--off { color: #ff6b6b; }
+.tray-menu-about-val--muted { color: var(--text-muted); }
+.tray-menu-about-val--accent { color: var(--accent); }
+
+/* ── Разделитель ───────────────────────────────────────── */
+.tray-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 8px;
+  flex-shrink: 0;
+}

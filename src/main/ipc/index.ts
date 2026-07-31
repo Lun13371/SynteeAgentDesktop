@@ -7,6 +7,7 @@ import type { MainWindow } from '../windows/MainWindow'
 import type { OverlayWindow } from '../windows/OverlayWindow'
 import type { VoiceWindow } from '../windows/VoiceWindow'
 import type { SpotlightWindow } from '../windows/SpotlightWindow'
+import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
 
 interface IPCContext {
   store: Store
@@ -14,6 +15,7 @@ interface IPCContext {
   overlayWindow: OverlayWindow
   voiceWindow: VoiceWindow
   spotlightWindow: SpotlightWindow
+  trayMenuWindow: TrayMenuWindow
 }
 
 export function registerAllIPC(ctx: IPCContext): void {
@@ -22,6 +24,7 @@ export function registerAllIPC(ctx: IPCContext): void {
   registerSystemIPC(ctx)
   registerOverlayIPC(ctx)
   registerSpotlightIPC(ctx)
+  registerTrayMenuIPC(ctx)
 }
 
 function registerWindowIPC({ mainWindow }: IPCContext): void {
@@ -260,4 +263,34 @@ function registerSpotlightIPC({ spotlightWindow }: IPCContext): void {
   ipcMain.handle('spotlight:hide', () => spotlightWindow.hide())
   ipcMain.handle('spotlight:expand', () => spotlightWindow.expand())
   ipcMain.handle('spotlight:collapse', () => spotlightWindow.collapse())
+}
+
+// ── Кастомное трей-меню ──────────────────────────────────────────────
+// Действия меню выполняются в main-процессе (доступ к окнам), renderer
+// только триггерит их по id и скрывает меню. openSettings показывает
+// главное окно и шлёт ему nav-событие — App.tsx слушает и переключает
+// страницу на settings.
+function registerTrayMenuIPC({ trayMenuWindow, mainWindow, voiceWindow, spotlightWindow }: IPCContext): void {
+  ipcMain.handle('tray-menu:hide', () => trayMenuWindow.hide())
+  ipcMain.handle('tray-menu:getMeta', () => ({ version: app.getVersion() }))
+  ipcMain.handle('tray-menu:action', (_, action: string) => {
+    switch (action) {
+      case 'showMain':
+        mainWindow.show()
+        break
+      case 'showVoice':
+        voiceWindow.show()
+        break
+      case 'showSpotlight':
+        spotlightWindow.show()
+        break
+      case 'openSettings':
+        mainWindow.show()
+        mainWindow.getWindow()?.webContents.send('nav:open-settings')
+        break
+      case 'quit':
+        app.exit(0)
+        break
+    }
+  })
 }
