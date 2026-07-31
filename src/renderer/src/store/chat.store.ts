@@ -89,6 +89,12 @@ interface ChatStore {
   activeProjectId: string | null
   currentChatId: string | null
   messages: Message[]
+  // Пагинация сообщений (reverse-infinite scroll). `messages` — загруженное
+  // окно (старейшее-загруженное → новейшее), а НЕ обязательно вся история.
+  // hasOlderMessages = в БД есть ещё более старые сообщения (не загружены).
+  // isLoadingOlder = идёт догрузка старой страницы (индикатор сверху).
+  hasOlderMessages: boolean
+  isLoadingOlder: boolean
   isTyping: boolean
   streamingText: string
   pinnedMessages: Message[]
@@ -118,6 +124,15 @@ interface ChatStore {
   setActiveProject: (id: string | null) => void
   setCurrentChat: (id: string | null) => void
   setMessages: (messages: Message[]) => void
+  // Установить окно сообщений (пагинированный загруз). Обновляет messages +
+  // hasOlderMessages + LRU-кеш messagesByChat[chatId]. messages (текущий чат)
+  // обновляется только если chatId === currentChatId.
+  setMessagesWindow: (chatId: string, messages: Message[], hasOlder: boolean) => void
+  // Догрузить старую страницу вперёд (reverse-infinite scroll). Присоединяет
+  // olderMessages в начало messages и обновляет hasOlderMessages + кеш.
+  prependOlderMessages: (chatId: string, olderMessages: Message[], hasOlder: boolean) => void
+  setIsLoadingOlder: (v: boolean) => void
+  setHasOlderMessages: (v: boolean) => void
   addMessage: (message: Message) => void
   appendStreamToken: (token: string) => void
   clearStream: () => void
@@ -147,7 +162,28 @@ interface ChatStore {
   clearSideLiveState: (parentId: string) => void
   setSideRunStatus: (parentId: string, status: RunStatus | null) => void
   resetSideChat: (parentId: string) => void
+
+  // ── LRU-кеш загруженных окон сообщений ──────────────────────────────────
+  // Переживает переключение чатов: при возврате в недавно открытый чат
+  // сообщения показываются мгновенно из кеша, без IPC + JSON-парсинга. Кеш
+  // хранит окно { messages, hasOlder } по chatId. cacheOrder — порядок доступа
+  // (новейшие первыми); при превышении CACHE_CAP старейшие вытесняются.
+  // Ограничение: лучше держать пару чатов под рукой (типичный back-and-forth).
+  messagesByChat: Record<string, { messages: Message[]; hasOlder: boolean }>
+  cacheOrder: string[]
+
+  // ── Boot gate ──
+  // bootRendered — ChatPage подтвердил что отрисовал реальный контент
+  // (сообщения или empty-state) после первого монтирования. App.tsx
+  // удерживает BootScreen пока это false, иначе UI мелькал пустым
+  // шеллом (чаты/сообщения появляются с задержкой после исчезновения сплэша).
+  bootRendered: boolean
+  setBootRendered: (v: boolean) => void
 }
+
+// LRU-кеш окон сообщений: максимум хранимых чатов. Большие чаты в кеше —
+// это массивы Message[]; капа удерживает память в рамках пары десятков МБ.
+const MSG_CACHE_CAP = 8
 
 export const useChatStore = create<ChatStore>((set) => ({
   chats: [],
@@ -155,6 +191,8 @@ export const useChatStore = create<ChatStore>((set) => ({
   activeProjectId: null,
   currentChatId: null,
   messages: [],
+  hasOlderMessages: false,
+  isLoadingOlder: false,
   isTyping: false,
   streamingText: '',
   pinnedMessages: [],
@@ -170,15 +208,79 @@ export const useChatStore = create<ChatStore>((set) => ({
 
   sideChatByChat: {},
 
+  messagesByChat: {},
+  cacheOrder: [],
+
+  bootRendered: false,
+  setBootRendered: (bootRendered) => set({ bootRendered }),
+
   setChats: (chats) => set({ chats }),
   setProjects: (projects) => set({ projects }),
   setActiveProject: (activeProjectId) => set({ activeProjectId }),
   setCurrentChat: (currentChatId) => set({ currentChatId }),
-  setMessages: (messages) => set({ messages }),
+  // setMessages — «полная» установка messages (вызывается rewind/compact/fork/
+  // snapshot IPC, которые возвращают всю историю, а также createNewChat с []).
+  // Для таких вызовов окно = вся история → hasOlderMessages=false. Кеш
+  // текущего чата обновляем полной версией.
+  setMessages: (messages) =>
+    set((s) => {
+      const cid = s.currentChatId
+      if (!cid) return { messages, hasOlderMessages: false, isLoadingOlder: false }
+      const byChat = { ...s.messagesByChat, [cid]: { messages, hasOlder: false } }
+      let order = [cid, ...s.cacheOrder.filter(c => c !== cid)]
+      if (order.length > MSG_CACHE_CAP) {
+        for (const c of order.slice(MSG_CACHE_CAP)) delete byChat[c]
+        order = order.slice(0, MSG_CACHE_CAP)
+      }
+      return { messages, hasOlderMessages: false, isLoadingOlder: false, messagesByChat: byChat, cacheOrder: order }
+    }),
+  // setMessagesWindow — пагинированная установка (selectChat, boot, compacted).
+  // messages (текущий чат) обновляется только если chatId === currentChatId,
+  // иначе правится только кеш (безопасно при фоновой сверке чужого чата).
+  setMessagesWindow: (chatId, messages, hasOlder) =>
+    set((s) => {
+      const byChat = { ...s.messagesByChat, [chatId]: { messages, hasOlder } }
+      let order = [chatId, ...s.cacheOrder.filter(c => c !== chatId)]
+      if (order.length > MSG_CACHE_CAP) {
+        for (const c of order.slice(MSG_CACHE_CAP)) delete byChat[c]
+        order = order.slice(0, MSG_CACHE_CAP)
+      }
+      const base = { messagesByChat: byChat, cacheOrder: order, isLoadingOlder: false }
+      if (s.currentChatId === chatId) return { ...base, messages, hasOlderMessages: hasOlder }
+      return base
+    }),
+  prependOlderMessages: (chatId, olderMessages, hasOlder) =>
+    set((s) => {
+      if (!olderMessages.length) return { hasOlderMessages: hasOlder, isLoadingOlder: false }
+      const merged = [...olderMessages, ...s.messages]
+      const byChat = { ...s.messagesByChat, [chatId]: { messages: merged, hasOlder } }
+      let order = [chatId, ...s.cacheOrder.filter(c => c !== chatId)]
+      if (order.length > MSG_CACHE_CAP) {
+        for (const c of order.slice(MSG_CACHE_CAP)) delete byChat[c]
+        order = order.slice(0, MSG_CACHE_CAP)
+      }
+      const base = { messagesByChat: byChat, cacheOrder: order, isLoadingOlder: false }
+      if (s.currentChatId === chatId) return { ...base, messages: merged, hasOlderMessages: hasOlder }
+      return base
+    }),
+  setIsLoadingOlder: (isLoadingOlder) => set({ isLoadingOlder }),
+  setHasOlderMessages: (hasOlderMessages) => set({ hasOlderMessages }),
   addMessage: (message) =>
     set((s) => {
       if (s.messages.some(m => m.id === message.id)) return s
-      return { messages: [...s.messages, message] }
+      const messages = [...s.messages, message]
+      // Держим кеш тёплым для chatId этого сообщения (чтобы при возврате в чат
+      // финальное сообщение уже было в окне). messages (текущий чат) обновляем
+      // как и раньше — сохраняем прежнее поведение для текущего отображения.
+      const cached = s.messagesByChat[message.chatId]
+      let byChat = s.messagesByChat
+      if (cached) {
+        byChat = {
+          ...s.messagesByChat,
+          [message.chatId]: { messages: [...cached.messages, message], hasOlder: cached.hasOlder },
+        }
+      }
+      return { messages, messagesByChat: byChat }
     }),
   appendStreamToken: (token) =>
     set((s) => ({ streamingText: s.streamingText + token })),
@@ -255,12 +357,15 @@ export const useChatStore = create<ChatStore>((set) => ({
       const nextQueue = { ...s.queueByChat }
       const nextActive = { ...s.activeRunByChat }
       const nextSide = { ...s.sideChatByChat }
+      const nextByChat = { ...s.messagesByChat }
+      const nextOrder = s.cacheOrder.filter(c => c !== chatId)
       delete nextLive[chatId]
       delete nextRun[chatId]
       delete nextUnread[chatId]
       delete nextQueue[chatId]
       delete nextActive[chatId]
       delete nextSide[chatId]
+      delete nextByChat[chatId]
       return {
         liveByChat: nextLive,
         runStatusByChat: nextRun,
@@ -268,6 +373,8 @@ export const useChatStore = create<ChatStore>((set) => ({
         queueByChat: nextQueue,
         activeRunByChat: nextActive,
         sideChatByChat: nextSide,
+        messagesByChat: nextByChat,
+        cacheOrder: nextOrder,
       }
     }),
 

@@ -4,7 +4,7 @@ import * as path from 'path'
 import type Store from 'electron-store'
 import { agentManager } from '../AgentManager'
 import {
-  createChat, getAllChats, getMessages, saveMessage,
+  createChat, getAllChats, getMessages, getMessagesPage, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB, getDB,
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
@@ -2262,6 +2262,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
 
   ipcMain.handle('chat:getAll', () => getAllChats())
   ipcMain.handle('chat:getMessages', (_, chatId: string) => getMessages(chatId))
+  // Окно сообщений для пагинации (reverse-infinite scroll). Возвращает
+  // { messages, hasMore } — последние `limit` сообщений либо старее курсора
+  // (beforeCreatedAt, beforeId). См. db/messages.ts getMessagesPage.
+  ipcMain.handle('chat:getMessagesPage', (_, chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) =>
+    getMessagesPage(chatId, limit ?? 20, beforeCreatedAt, beforeId))
   ipcMain.handle('chat:delete', (_, chatId: string) => {
     // Если в удаляемом чате работает воркер — убиваем его и чистим очередь.
     const run = activeRuns.get(chatId)
