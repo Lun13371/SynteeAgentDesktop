@@ -7,6 +7,8 @@ import type { Provider } from '../../shared/types'
 import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
 import { chatWithToolsAnthropic } from './anthropicNative'
+import { computeContextSnapshot } from '../tokens/usageTracker'
+import type { ContextCountedInfo } from '../agent/types'
 
 export interface StreamCallbacks {
   onToken: (token: string) => void
@@ -16,7 +18,7 @@ export interface StreamCallbacks {
   onThinkingToken?: (token: string) => void
   onThinkingDone?: (ms: number) => void
   onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void
-  onContextCounted?: (promptTokens: number) => void
+  onContextCounted?: (info: ContextCountedInfo) => void
   onWaiting?: () => void                                      // запрос ушёл, ждём первый токен
   onRetry?: (attempt: number, reason: string, waitSec?: number, maxAttempts?: number) => void  // ретрай с причиной + лимит для UI «повтор 3/5»
 }
@@ -144,17 +146,20 @@ export class AIClient {
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
 
-    // Считаем реальный контекст через tiktoken — то что идёт в запрос
+    // Считаем реальный контекст через tiktoken — то что идёт в запрос.
+    // Единая функция: breakdown {system, history, tools:0 (no-tools path), current:0}.
     if (callbacks.onContextCounted && modelType === 'main') {
       try {
-        const { estimateTokens } = await import('../context/contextManager')
-        let promptTokens = 0
-        for (const m of allMessages) {
-          const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
-          promptTokens += estimateTokens(content) + 4  // +4 per message (role overhead)
-        }
-        promptTokens += 2  // reply primer
-        callbacks.onContextCounted(promptTokens)
+        const systemMsg = allMessages[0]?.role === 'system' ? allMessages[0] : undefined
+        const rest = (systemMsg ? allMessages.slice(1) : allMessages) as Array<{ role: string; content: string; tool_calls?: unknown; tool_call_id?: string; name?: string }>
+        const snap = computeContextSnapshot(rest, Number.MAX_SAFE_INTEGER, {
+          systemPrompt: typeof systemMsg?.content === 'string' ? systemMsg.content : undefined,
+          includeToolSchemas: false,
+        })
+        callbacks.onContextCounted({
+          promptTokens: snap.estimated,
+          breakdown: snap.breakdown as ContextCountedInfo['breakdown'],
+        })
       } catch { /* ok — tiktoken не критичен */ }
     }
 
@@ -396,7 +401,7 @@ export class AIClient {
     signal?: AbortSignal,
     role: 'main' | 'subagent' = 'main',
     onToken?: (token: string) => void,
-    onContextCounted?: (promptTokens: number) => void,
+    onContextCounted?: (info: ContextCountedInfo) => void,
     onRateLimit?: (waitSec: number) => void,
     onRetry?: (attempt: number, reason: string, waitSec?: number) => void,
     onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void,
@@ -448,18 +453,22 @@ export class AIClient {
       }
     }
 
-    // Считаем реальный контекст через tiktoken перед каждым раундом агента
+    // Считаем реальный контекст через tiktoken перед каждым раундом агента.
+    // messages уже содержат system[0] + history (с tool_calls) + current user.
+    // Единая функция computeContextSnapshot даёт консистентный breakdown
+    // (раньше тут был inline `+3800+2` и весь breakdown клался в history).
     if (onContextCounted) {
       try {
-        const { estimateTokens } = await import('../context/contextManager')
-        let promptTokens = 0
-        for (const m of messages) {
-          const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
-          promptTokens += estimateTokens(content) + 4
-        }
-        // tool schemas overhead (статичный)
-        promptTokens += 3800 + 2
-        onContextCounted(promptTokens)
+        const systemMsg = messages[0]?.role === 'system' ? messages[0] : undefined
+        const rest = systemMsg ? messages.slice(1) : messages
+        const snap = computeContextSnapshot(rest, Number.MAX_SAFE_INTEGER, {
+          systemPrompt: systemMsg?.content as string | undefined,
+          includeToolSchemas: true,
+        })
+        onContextCounted({
+          promptTokens: snap.estimated,
+          breakdown: snap.breakdown as ContextCountedInfo['breakdown'],
+        })
       } catch { /* ok */ }
     }
 

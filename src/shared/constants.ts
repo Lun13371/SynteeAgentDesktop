@@ -31,6 +31,11 @@ export const DEFAULT_SETTINGS = {
   bgImageEnabled: true,
   autostart: false,
   onboardingCompleted: false,
+  // Гостевой режим: true если юзер нажал «Продолжить как гость» на экране
+  // входа. Проверяется первым при старте (App.tsx) — если true, gateway не
+  // дёргается и экран входа не показывается. Сбрасывается в false при явном
+  // входе в аккаунт.
+  loginSkipped: false,
   userName: '',
   // Глобальные apiKey/apiEndpoint больше не используются для OnlySQ —
   // модели идут через мульти-провайдерную систему (providers + assignments).

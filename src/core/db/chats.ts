@@ -322,3 +322,34 @@ export function importChatFromShare(snapshot: ChatSnapshot, titlePrefix?: string
     return { error: `Ошибка импорта: ${(e as Error).message}` }
   }
 }
+
+// ── Last real usage persistence ─────────────────────────────────────────────
+// Сохраняем последний реальный usage от провайдера, чтобы context:calculate
+// мог показать точный контекст после перезапуска приложения (tiktoken-оценка
+// без этого занижает — не знает про tool schemas overhead, reasoning токены
+// и т.д. — расхождение до 12k на простом диалоге).
+
+export interface LastUsage {
+  promptTokens: number
+  completionTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  ts: number
+}
+
+export function setChatLastUsage(chatId: string, usage: LastUsage): void {
+  try {
+    getDB().prepare(`UPDATE chats SET last_usage = ? WHERE id = ?`)
+      .run(JSON.stringify(usage), chatId)
+  } catch { /* ok — колонки может не быть до миграции */ }
+}
+
+export function getChatLastUsage(chatId: string): LastUsage | null {
+  try {
+    const row = getDB().prepare(`SELECT last_usage as lastUsage FROM chats WHERE id = ?`).get(chatId) as { lastUsage?: string } | undefined
+    if (!row?.lastUsage) return null
+    return JSON.parse(row.lastUsage) as LastUsage
+  } catch { /* ok */ }
+  return null
+}
+

@@ -9,7 +9,7 @@ import { Agent } from '../core/agent/Agent'
 import { classifyTool } from '../core/agent/commandSafety'
 import { writeFile, editFile, multiEditFile } from '../core/tools/index'
 import { buildPlanningInjection, buildAskInjection } from '../core/prompts/buildSystemPrompt'
-import { estimateTokens, getModelContextWindow, TOOL_SCHEMAS_OVERHEAD } from '../core/context/contextManager'
+import { getModelContextWindow } from '../core/context/contextManager'
 import { recordSessionCost, buildSnapshotFromReal } from '../core/tokens/usageTracker'
 import { initModelCatalog } from '../core/tokens/modelCatalog'
 import { getToolSchemas } from '../core/tools/index'
@@ -130,36 +130,18 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   let pendingThinking = ''
   let pendingThinkingMs: number | undefined
 
-  // Live token counter — считаем накопленный контекст агента
+  // Live token counter — оценка контекста agora comes from onContextCounted
+  // (начало раунда) и onContextUpdate (конец раунда) через единую функцию
+  // computeContextSnapshot. Больше НЕТ отдельной sendLiveContextUsage с
+  // stale historyBaseTokens — она была главным источником «скачков» кольца,
+  // т.к. считалась один раз на старте воркера и расходилась с реальным
+  // массивом messages в следующих раундах.
   const isSubAgentWorker = !!(workerData as Record<string, unknown>).isSubAgent
   const contextWindow = getModelContextWindow(storeData, isSubAgentWorker ? 'subagent' : 'main')
-  const sysPromptTokens = estimateTokens(systemPrompt) + 4
-  // Токены истории (начальный снапшот)
-  const historyBaseTokens = history.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0)
-  let toolResultTokensAccum = 0  // накопленные токены tool results за сессию
 
-  // Последний breakdown для мерджа с реальным usage
+  // Последний breakdown для мерджа с реальным usage (buildSnapshotFromReal
+  // масштабирует его пропорционально promptTokens вместо verbatim-наследования).
   let lastBreakdown: Record<string, number> | undefined
-
-  function sendLiveContextUsage() {
-    const estimated = historyBaseTokens + sysPromptTokens + TOOL_SCHEMAS_OVERHEAD + toolResultTokensAccum + estimateTokens(fullText) + 100
-    const pct = Math.min(100, Math.round(estimated / contextWindow * 100))
-    const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-    const breakdown = {
-      history: historyBaseTokens,
-      system: sysPromptTokens,
-      tools: TOOL_SCHEMAS_OVERHEAD,
-      toolResults: toolResultTokensAccum,
-      answer: estimateTokens(fullText),
-    }
-    lastBreakdown = breakdown
-    send({
-      type: 'context_usage',
-      pct, estimated, limit: contextWindow, status,
-      source: 'estimate',
-      breakdown,
-    })
-  }
 
   const flushIter = () => {
     if (currentIterSteps.length > 0) {
@@ -262,15 +244,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       await agent.run(
         content,
         {
-          onContextCounted: (promptTokens) => {            const pct = Math.min(100, Math.round(promptTokens / contextWindow * 100))
+          onContextCounted: (info) => {
+            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
             const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            const breakdown = { history: promptTokens, system: 0, tools: 3800, current: 0 }
-            lastBreakdown = breakdown
+            lastBreakdown = info.breakdown as Record<string, number>
             send({
               type: 'context_usage',
-              pct, estimated: promptTokens, limit: contextWindow, status,
+              pct, estimated: info.promptTokens, limit: contextWindow, status,
               source: 'estimate',
-              breakdown,
+              breakdown: info.breakdown,
             })
           },
           onStep: (step) => {
@@ -332,10 +314,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               currentIterSteps.push(ts)
               send({ type: 'step', chatId, msgId, step })
 
-              // Live обновление token counter после каждого tool result
-              const resultTokens = estimateTokens(step.content || '') + 4
-              toolResultTokensAccum += resultTokens
-              sendLiveContextUsage()
+              // Live-обновление token counter после tool_result больше НЕ
+              // эмитим отдельной sendLiveContextUsage — она считалась по
+              // stale historyBaseTokens и вызывала прыжки кольца. Точное
+              // значение придёт на onContextCounted следующего раунда и
+              // onContextUpdate (конец текущего) — обе через единую
+              // computeContextSnapshot на актуальном массиве messages.
 
             } else if (step.type === 'thought') {
               // Fallback — reasoning не стримился, пришёл одним блоком
@@ -378,16 +362,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               fileSnapshots: agent?.getFileSnapshots(),
             })
           },
-          onContextUpdate: (tokens: number) => {
-            const pct = Math.min(100, Math.round(tokens / contextWindow * 100))
+          onContextUpdate: (info) => {
+            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
             const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            const breakdown = { history: historyBaseTokens, system: sysPromptTokens, tools: 3800, current: tokens - historyBaseTokens - sysPromptTokens - 3800 }
-            lastBreakdown = breakdown
+            lastBreakdown = info.breakdown as Record<string, number>
             send({
               type: 'context_usage',
-              pct, estimated: tokens, limit: contextWindow, status,
+              pct, estimated: info.promptTokens, limit: contextWindow, status,
               source: 'estimate',
-              breakdown,
+              breakdown: info.breakdown,
             })
           },
           onUsage: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => {
@@ -653,16 +636,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       await aiClient.streamChat(
         contextMessages,
         {
-          onContextCounted: (promptTokens) => {
-            const pct = Math.min(100, Math.round(promptTokens / contextWindow * 100))
+          onContextCounted: (info) => {
+            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
             const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            const breakdown = { history: promptTokens, system: 0, tools: 0, current: 0 }
-            lastBreakdown = breakdown
+            lastBreakdown = info.breakdown as Record<string, number>
             send({
               type: 'context_usage',
-              pct, estimated: promptTokens, limit: contextWindow, status,
+              pct, estimated: info.promptTokens, limit: contextWindow, status,
               source: 'estimate',
-              breakdown,
+              breakdown: info.breakdown,
             })
           },
           onToken: (token) => {

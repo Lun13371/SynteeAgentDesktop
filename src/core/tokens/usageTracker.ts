@@ -33,9 +33,43 @@ export function estimateTokens(text: string): number {
   }
 }
 
+type MessageLike = {
+  role: string
+  content: string
+  tool_calls?: unknown
+  tool_call_id?: string
+  name?: string
+}
+
+/**
+ * Полная оценка токенов массива сообщений с учётом структуры tool_calls.
+ *
+ * Раньше считался только `m.content + 4` — токены tool_calls (function.name,
+ * JSON arguments), tool_call_id и name терялись. На длинных tool-раундах
+ * это занижало оценку на сотни токенов и вызывало рассинхрон между
+ * эмиттерами (live-оценка занижала, реальный usage от провайдера — нет).
+ *
+ * Теперь единая функция используется всеми эмиттерами context_usage.
+ */
+export function estimateMessagesTokensFull(messages: Array<MessageLike>): number {
+  return messages.reduce((sum, m) => {
+    let n = estimateTokens(m.content || '') + 4  // +4 служебных (role/разделители)
+    // tool_calls (assistant): {id, type:'function', function:{name, arguments(JSON)}}
+    if (m.tool_calls && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls as Array<Record<string, unknown>>) {
+        try { n += estimateTokens(JSON.stringify(tc)) } catch { /* ok */ }
+      }
+    }
+    // role:'tool' сообщения: tool_call_id + name
+    if (m.tool_call_id) n += estimateTokens(m.tool_call_id)
+    if (m.name) n += estimateTokens(m.name)
+    return sum + n
+  }, 0)
+}
+
+/** Тонкая обёртка над estimateMessagesTokensFull (обратная совместимость). */
 export function estimateMessagesTokens(messages: Array<{ role: string; content: string }>): number {
-  // Каждое сообщение = ~4 служебных токена (role, разделители) + контент
-  return messages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0)
+  return estimateMessagesTokensFull(messages as MessageLike[])
 }
 
 // ─── Единые пороги компакции контекста ────────────────────────────────────────
@@ -109,37 +143,85 @@ export function buildSnapshotFromReal(
 ): UsageSnapshot {
   const pct = Math.min(100, Math.round(real.promptTokens / limit * 100))
   const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+
+  // Раньше breakdown наследовался verbatim из последнего estimate-эмиттера —
+  // это показывало ЧУЖОЙ breakdown под видом 'real' (т.к. источники считали
+  // по разным формулам). Теперь масштабируем последний estimate-breakdown
+  // пропорционально реальному promptTokens, чтобы sum(breakdown)=promptTokens
+  // и пропорции System/History/Tools сохранялись. current=0 — реальный usage
+  // относится к уже отправленному запросу; live-typing для следующего сообщения
+  // добавится в renderer поверх (см. useContextCounter).
+  let breakdown: UsageSnapshot['breakdown']
+  if (prevBreakdown) {
+    const baseSum = (prevBreakdown.history || 0) + (prevBreakdown.system || 0) + (prevBreakdown.tools || 0) + (prevBreakdown.current || 0)
+    const scale = baseSum > 0 ? real.promptTokens / baseSum : 0
+    const history = Math.max(0, Math.round((prevBreakdown.history || 0) * scale))
+    const system = Math.max(0, Math.round((prevBreakdown.system || 0) * scale))
+    const tools = Math.max(0, Math.round((prevBreakdown.tools || 0) * scale))
+    // добиваем разницу округления в history
+    const fixed = history + system + tools
+    const drift = real.promptTokens - fixed
+    breakdown = {
+      history: drift !== 0 ? Math.max(0, history + drift) : history,
+      system,
+      tools,
+      current: 0,
+      toolResults: prevBreakdown.toolResults != null ? Math.max(0, Math.round(prevBreakdown.toolResults * scale)) : undefined,
+      completionTokens: real.completionTokens,
+      cacheReadTokens: real.cacheReadTokens,
+      cacheWriteTokens: real.cacheWriteTokens,
+    }
+  } else {
+    breakdown = {
+      history: real.promptTokens,
+      system: 0,
+      tools: 0,
+      current: 0,
+      completionTokens: real.completionTokens,
+      cacheReadTokens: real.cacheReadTokens,
+      cacheWriteTokens: real.cacheWriteTokens,
+    }
+  }
+
   return {
     estimated: real.promptTokens,
     limit,
     pct,
     status,
     source: 'real',
-    breakdown: {
-      history: prevBreakdown?.history ?? real.promptTokens,
-      system: prevBreakdown?.system ?? 0,
-      tools: prevBreakdown?.tools ?? 0,
-      current: prevBreakdown?.current ?? 0,
-      toolResults: prevBreakdown?.toolResults,
-      completionTokens: real.completionTokens,
-      cacheReadTokens: real.cacheReadTokens,
-      cacheWriteTokens: real.cacheWriteTokens,
-    },
+    breakdown,
   }
 }
 
-export function buildSnapshotFromEstimate(
-  messages: Array<{ role: string; content: string }>,
+/**
+ * Единая функция оценки контекста для всех эмиттеров context_usage (chat:send,
+ * context:calculate, Agent.onContextUpdate, AIClient.onContextCounted).
+ * Заменяет разрозненные inline-формулы и гарантирует консистентный breakdown.
+ *
+ * `messages` — массив сообщений как есть (может включать system[0], историю
+ * с tool_calls/tool results, текущее user-сообщение или нет — зависит от
+ * вызывающего кода). Функция НЕ добавляет и НЕ убирает system/current сама;
+ * опции `systemPrompt` / `currentMsgTokens` задаются отдельно, чтобы
+ * вызывающий код контролировал семантику.
+ *
+ *   history = estimateMessagesTokensFull(messages)   // всё что передано
+ *   system = opts.systemPrompt ? estimateTokens+4 : 0
+ *   tools  = opts.includeToolSchemas ? TOOL_SCHEMAS_OVERHEAD : 0
+ *   current= opts.currentMsgTokens ?? 0
+ *   estimated = history + system + tools + current + API_OVERHEAD
+ */
+export function computeContextSnapshot(
+  messages: Array<{ role: string; content: string; tool_calls?: unknown; tool_call_id?: string; name?: string }>,
   limit: number,
   opts: {
     systemPrompt?: string
     currentMsgTokens?: number
-    toolResultTokens?: number
     includeToolSchemas?: boolean
+    toolResultTokens?: number
   } = {},
 ): UsageSnapshot {
-  const historyTokens = estimateMessagesTokens(messages)
-  const systemPromptTokens = opts.systemPrompt ? estimateTokens(opts.systemPrompt) + 4 : 600
+  const historyTokens = estimateMessagesTokensFull(messages)
+  const systemPromptTokens = opts.systemPrompt ? estimateTokens(opts.systemPrompt) + 4 : 0
   const toolSchemasTokens = opts.includeToolSchemas === true ? TOOL_SCHEMAS_OVERHEAD : 0
   const currentMsgTokens = opts.currentMsgTokens ?? 0
   const toolResultTokens = opts.toolResultTokens ?? 0
@@ -162,6 +244,25 @@ export function buildSnapshotFromEstimate(
       toolResults: toolResultTokens > 0 ? toolResultTokens : undefined,
     },
   }
+}
+
+export function buildSnapshotFromEstimate(
+  messages: Array<{ role: string; content: string }>,
+  limit: number,
+  opts: {
+    systemPrompt?: string
+    currentMsgTokens?: number
+    toolResultTokens?: number
+    includeToolSchemas?: boolean
+  } = {},
+): UsageSnapshot {
+  // Тонкая обёртка: history=messages (без system), system/tools/current — опциями.
+  return computeContextSnapshot(messages, limit, {
+    systemPrompt: opts.systemPrompt,
+    currentMsgTokens: opts.currentMsgTokens,
+    includeToolSchemas: opts.includeToolSchemas,
+    toolResultTokens: opts.toolResultTokens,
+  })
 }
 
 // ─── Сессионная стоимость ─────────────────────────────────────────────────────

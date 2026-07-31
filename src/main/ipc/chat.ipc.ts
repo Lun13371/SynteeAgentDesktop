@@ -10,6 +10,7 @@ import {
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
   getChatModes, setChatModes, getChatDraft, setChatDraft, getUserMessageContents,
+  setChatLastUsage, getChatLastUsage,
   createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
   setProjectVerificationCommand,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
@@ -38,7 +39,7 @@ import {
   getModelContextWindow,
   type ChatMessage,
 } from '../../core/context/contextManager'
-import { buildSnapshotFromEstimate, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
+import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { startWatching as startFastContextWatch, stopWatching as stopFastContextWatch } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
@@ -1959,6 +1960,20 @@ ${subModeOutro}`,
         }
 
         case 'context_usage':
+          // Сохраняем последний real usage в БД — переживает перезапуск.
+          // context:calculate читает его, чтобы показывать точный контекст
+          // после перезахода (tiktoken-оценка без этого занижает до 12k).
+          if (msg.source === 'real' && params.chatId) {
+            try {
+              setChatLastUsage(params.chatId, {
+                promptTokens: msg.estimated,
+                completionTokens: msg.breakdown?.completionTokens ?? 0,
+                cacheReadTokens: msg.breakdown?.cacheReadTokens,
+                cacheWriteTokens: msg.breakdown?.cacheWriteTokens,
+                ts: Date.now(),
+              })
+            } catch { /* ok — не критично */ }
+          }
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
             chatId: params.chatId,
             pct: msg.pct,
@@ -2318,11 +2333,43 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       const historyLimit = 40
       const rawHistory: ChatMessage[] = history.slice(-historyLimit).flatMap(messageToContextMessages)
 
-      const snapshot = buildSnapshotFromEstimate(rawHistory, contextWindow, {
-        systemPrompt: sysPrompt,
-        currentMsgTokens: 0, // при смене чата ввод пуст
-        includeToolSchemas: true,
-      })
+      // Priority 1: последний реальный usage от провайдера (переживает перезапуск).
+      // tiktoken-оценка без этого занижает — не знает про tool schemas overhead,
+      // reasoning токены, служебные токены провайдера. Расхождение до 12k на
+      // простом диалоге. real usage — точный promptTokens от провайдера.
+      const lastUsage = getChatLastUsage(chatId)
+      let snapshot: ReturnType<typeof buildSnapshotFromEstimate>
+      let source: 'real' | 'estimate' = 'estimate'
+      if (lastUsage) {
+        // Восстанавливаем breakdown из tiktoken-оценки (пропорции System/History),
+        // но estimated = реальный promptTokens. buildSnapshotFromReal с масштабированием.
+        const estSnapshot = buildSnapshotFromEstimate(rawHistory, contextWindow, {
+          systemPrompt: sysPrompt,
+          currentMsgTokens: 0,
+          includeToolSchemas: true,
+        })
+        snapshot = buildSnapshotFromReal(
+          {
+            promptTokens: lastUsage.promptTokens,
+            completionTokens: lastUsage.completionTokens,
+            cacheReadTokens: lastUsage.cacheReadTokens,
+            cacheWriteTokens: lastUsage.cacheWriteTokens,
+          },
+          contextWindow,
+          estSnapshot.breakdown,
+        ) as ReturnType<typeof buildSnapshotFromEstimate>
+        source = 'real'
+        log('[context:calculate] chatId=%s using LAST_USAGE: promptTokens=%d (estHistory=%d)',
+          chatId, lastUsage.promptTokens, estSnapshot.breakdown.history)
+      } else {
+        snapshot = buildSnapshotFromEstimate(rawHistory, contextWindow, {
+          systemPrompt: sysPrompt,
+          currentMsgTokens: 0, // при смене чата ввод пуст
+          includeToolSchemas: true,
+        })
+        log('[context:calculate] chatId=%s dbMsgs=%d rawHistoryMsgs=%d historyTokens=%d systemTokens=%d estimated=%d sysPromptLen=%d (no lastUsage — tiktoken estimate)',
+          chatId, history.length, rawHistory.length, snapshot.breakdown.history, snapshot.breakdown.system, snapshot.estimated, sysPrompt?.length ?? 0)
+      }
       const sess = getSessionCost(chatId)
 
       // Метаданные для legacy-полей ContextRing (historyMessages / toolCallsCount)
@@ -2338,7 +2385,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
         estimated: snapshot.estimated,
         limit: snapshot.limit,
         status: snapshot.status,
-        source: 'estimate',
+        source,
         compressed: false,
         breakdown: snapshot.breakdown,
         sessionCostCents: sess?.totalCents ?? null,

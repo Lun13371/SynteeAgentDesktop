@@ -47,6 +47,10 @@ interface UseContextCounterOptions {
   incognito?: boolean
   enabled?: boolean
   messageCount?: number
+  /** Активен ли run (стриминг/тулы). При true live-typing токены НЕ
+   *  добавляются поверх real usage — они уже учтены в следующем раунде.
+   *  Убирает последний источник прыжков кольца mid-stream. */
+  isRunning?: boolean
 }
 
 interface UsagePush {
@@ -80,11 +84,18 @@ export function useContextCounter({
   currentInput,
   modelId,
   enabled = true,
+  isRunning = false,
 }: UseContextCounterOptions) {
   const [info, setInfo] = useState<ContextInfo | null>(null)
   const lastPushRef = useRef<UsagePush | null>(null)
   const inputTokensRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Phase 4: real-priority — после первого real usage храним его и не
+  // перетираем estimate'ом context:calculate. Как у opencode: real
+  // usage — источник истины после первого ответа модели.
+  const lastRealRef = useRef<UsagePush | null>(null)
+  const isRunningRef = useRef(isRunning)
+  useEffect(() => { isRunningRef.current = isRunning }, [isRunning])
 
   // Подписка на push-события context:usage из main (заменяет polling context:calculate)
   useEffect(() => {
@@ -94,7 +105,16 @@ export function useContextCounter({
       // при быстрой смене чатов A→B→C, когда ответ от A приходит позже).
       if (data.chatId && chatId && data.chatId !== chatId) return
       lastPushRef.current = data
-      setInfo(buildContextInfo(data, inputTokensRef.current, modelId))
+      // Phase 4: real-priority — real usage от провайдера храним отдельно;
+      // estimate от context:calculate игнорируем, если уже есть real.
+      if (data.source === 'real') {
+        lastRealRef.current = data
+      } else if (lastRealRef.current) {
+        // Уже есть real snapshot для этого чата — estimate не перетирает его
+        // (как в opencode: real — источник истины после первого ответа).
+        return
+      }
+      setInfo(buildContextInfo(data, inputTokensRef.current, modelId, isRunningRef.current))
     }
     const off = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, handler as (...args: unknown[]) => void)
     return off
@@ -108,6 +128,7 @@ export function useContextCounter({
     if (!enabled || !chatId) return
     setInfo(null)
     lastPushRef.current = null
+    lastRealRef.current = null
     inputTokensRef.current = 0
     // Просим main пересчитать контекст для нового чата — он эмитит CONTEXT_USAGE
     window.syntee.context.calculate(chatId).catch(() => { /* тихо — не критично */ })
@@ -121,8 +142,12 @@ export function useContextCounter({
       try {
         const result = await window.syntee.context.estimateInput({ text: currentInput }) as { tokens: number }
         inputTokensRef.current = result.tokens
-        if (lastPushRef.current) {
-          setInfo(buildContextInfo(lastPushRef.current, result.tokens, modelId))
+        // Покрываем real (если есть) и последний estimate. Для real во время
+        // run'а live-typing НЕ добавляем (isRunning gate) — токены текущего
+        // ввода станут историей только в следующем раунде.
+        const base = lastRealRef.current ?? lastPushRef.current
+        if (base) {
+          setInfo(buildContextInfo(base, result.tokens, modelId, isRunningRef.current))
         }
       } catch {
         // тихо — не критично
@@ -136,10 +161,16 @@ export function useContextCounter({
   return info
 }
 
-function buildContextInfo(push: UsagePush, inputTokens: number, modelId: string): ContextInfo {
+function buildContextInfo(push: UsagePush, inputTokens: number, modelId: string, isRunning = false): ContextInfo {
   const breakdown = push.breakdown ?? { history: 0, system: 0, tools: 0, current: 0 }
-  // Добавляем токены текущего ввода к estimate (если ещё не учтены)
-  const currentInputTokens = Math.max(0, inputTokens - (breakdown.current ?? 0))
+  // Добавляем токены текущего ввода к estimate. При real usage во время
+  // активного run'а (isRunning) НЕ добавляем — реальный promptTokens уже
+  // содержит всё отправленное, а текущий ввод относится к СЛЕДУЮЩЕМУ
+  // сообщению и будет учтён в следующем onContextCounted. Это убирает
+  // прыжки: real показывал X, пользователь печатал → кольцо ползло вверх,
+  // потом onContextCounted возвращал обратно.
+  const addLive = !(push.source === 'real' && isRunning)
+  const currentInputTokens = addLive ? Math.max(0, inputTokens - (breakdown.current ?? 0)) : 0
   const total = push.estimated + currentInputTokens
   const percent = push.limit > 0 ? Math.min(100, (total / push.limit) * 100) : push.pct
 
