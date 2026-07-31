@@ -24,29 +24,86 @@ export function saveMessage(msg: Message): void {
   touchChat(msg.chatId)
 }
 
+type MessageRow = Message & {
+  toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string
+  planDataJson?: string; todoJson?: string; compactStatsJson?: string
+  attachmentsJson?: string; attachmentResultJson?: string
+}
+
+function parseMessageRow(r: MessageRow): Message {
+  const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, compactStatsJson, attachmentsJson, attachmentResultJson, ...rest } = r
+  return {
+    ...rest,
+    toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined,
+    slashCommand: slashCommandJson ? JSON.parse(slashCommandJson) : undefined,
+    iterations: iterationsJson ? JSON.parse(iterationsJson) : undefined,
+    planData: planDataJson ? JSON.parse(planDataJson) : undefined,
+    todo: todoJson ? JSON.parse(todoJson) : undefined,
+    compactStats: compactStatsJson ? JSON.parse(compactStatsJson) : undefined,
+    attachments: attachmentsJson ? JSON.parse(attachmentsJson) : undefined,
+    attachmentResult: attachmentResultJson ? JSON.parse(attachmentResultJson) : undefined,
+  }
+}
+
+const MESSAGE_SELECT_COLS = `SELECT
+  id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model,
+  tool_steps as toolStepsJson, thinking, thinking_ms as thinkingMs, slash_command as slashCommandJson,
+  iterations as iterationsJson, plan_data as planDataJson, todo as todoJson, compact_summary as compactSummary,
+  compact_stats as compactStatsJson, attachments as attachmentsJson, attachment_result as attachmentResultJson`
+
 export function getMessages(chatId: string): Message[] {
   const rows = getDB().prepare(`
-    SELECT id, chat_id as chatId, role, content, created_at as createdAt, is_pinned as isPinned, model,
-           tool_steps as toolStepsJson, thinking, thinking_ms as thinkingMs, slash_command as slashCommandJson,
-           iterations as iterationsJson, plan_data as planDataJson, todo as todoJson, compact_summary as compactSummary,
-           compact_stats as compactStatsJson, attachments as attachmentsJson, attachment_result as attachmentResultJson
+    ${MESSAGE_SELECT_COLS}
     FROM messages WHERE chat_id = ?
     ORDER BY created_at ASC
-  `).all(chatId) as (Message & { toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string; planDataJson?: string; todoJson?: string; compactStatsJson?: string; attachmentsJson?: string; attachmentResultJson?: string })[]
-  return rows.map(r => {
-    const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, compactStatsJson, attachmentsJson, attachmentResultJson, ...rest } = r
-    return {
-      ...rest,
-      toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined,
-      slashCommand: slashCommandJson ? JSON.parse(slashCommandJson) : undefined,
-      iterations: iterationsJson ? JSON.parse(iterationsJson) : undefined,
-      planData: planDataJson ? JSON.parse(planDataJson) : undefined,
-      todo: todoJson ? JSON.parse(todoJson) : undefined,
-      compactStats: compactStatsJson ? JSON.parse(compactStatsJson) : undefined,
-      attachments: attachmentsJson ? JSON.parse(attachmentsJson) : undefined,
-      attachmentResult: attachmentResultJson ? JSON.parse(attachmentResultJson) : undefined,
-    }
-  })
+  `).all(chatId) as MessageRow[]
+  return rows.map(parseMessageRow)
+}
+
+/**
+ * Окно сообщений для пагинации (reverse-infinite scroll).
+ *
+ * Возвращает последние `limit` сообщений чата (если курсор не задан) либо
+ * сообщения строго старее курсора `(beforeCreatedAt, beforeId)`. Результат —
+ * в ASC порядке (старейшие первыми), готов для рендера.
+ *
+ * `hasMore` = есть ли в БД ещё более старые сообщения. Определяется +1-трюком:
+ * запрашиваем limit+1 строку; если она вернулась — hasMore=true и мы её
+ * отбрасываем. Отдельный COUNT-запрос не нужен.
+ *
+ * Курсор по паре (created_at, id) — устойчив к коллизиям created_at (Date.now()
+ * может совпасть для двух сообщений, сохранённых в одну миллисекунду).
+ */
+export function getMessagesPage(
+  chatId: string,
+  limit = 20,
+  beforeCreatedAt?: number,
+  beforeId?: string,
+): { messages: Message[]; hasMore: boolean } {
+  const fetchLimit = limit + 1
+  let rows: MessageRow[]
+  if (beforeCreatedAt != null && beforeId != null) {
+    rows = getDB().prepare(`
+      ${MESSAGE_SELECT_COLS}
+      FROM messages
+      WHERE chat_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(chatId, beforeCreatedAt, beforeCreatedAt, beforeId, fetchLimit) as MessageRow[]
+  } else {
+    rows = getDB().prepare(`
+      ${MESSAGE_SELECT_COLS}
+      FROM messages
+      WHERE chat_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(chatId, fetchLimit) as MessageRow[]
+  }
+  const hasMore = rows.length > limit
+  if (hasMore) rows = rows.slice(0, limit)
+  // rows — DESC (новейшие первыми). Разворачиваем в ASC для рендера.
+  rows.reverse()
+  return { messages: rows.map(parseMessageRow), hasMore }
 }
 
 export function pinMessage(id: string): void {

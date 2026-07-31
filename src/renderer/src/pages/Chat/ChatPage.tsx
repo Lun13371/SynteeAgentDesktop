@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -95,6 +95,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // (стабильные ссылки, shallow-сравнение всегда равно → без ре-рендеров).
   const currentChatId = useChatStore(s => s.currentChatId)
   const messages = useChatStore(s => s.messages)
+  const hasOlderMessages = useChatStore(s => s.hasOlderMessages)
+  const isLoadingOlder = useChatStore(s => s.isLoadingOlder)
   const chats = useChatStore(s => s.chats)
   const isIncognito = useChatStore(s => s.isIncognito)
   const activeMode = useChatStore(s => s.activeMode)
@@ -106,9 +108,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // ref текущего не меняется → без ре-рендера.
   const live = (useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId] : undefined) ?? EMPTY_LIVE)
   const runStatus = useChatStore(s => s.currentChatId ? s.runStatusByChat[s.currentChatId] : undefined)
-  const { setChats, setCurrentChat, setMessages, addMessage, pinMessage,
+  const { setChats, setCurrentChat, setMessages, setMessagesWindow, prependOlderMessages,
+    setIsLoadingOlder, setHasOlderMessages, addMessage, pinMessage,
     setProjects, setActiveProject, markChatRead } = useChatStore(useShallow(s => ({
     setChats: s.setChats, setCurrentChat: s.setCurrentChat, setMessages: s.setMessages,
+    setMessagesWindow: s.setMessagesWindow, prependOlderMessages: s.prependOlderMessages,
+    setIsLoadingOlder: s.setIsLoadingOlder, setHasOlderMessages: s.setHasOlderMessages,
     addMessage: s.addMessage, pinMessage: s.pinMessage, setProjects: s.setProjects,
     setActiveProject: s.setActiveProject, markChatRead: s.markChatRead,
   })))
@@ -147,7 +152,17 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // При отправке передаются в chat.send, draft очищается.
   const [draftAttachments, setDraftAttachments] = useState<Attachment[]>([])
 
-  // Refs для актуальных значений в эффекте сохранения при смене чата —
+  // ── Boot gate: сигнал App.tsx что ChatPage отрисовал контент ────────────
+  // Двойной rAF после монтирования — к этому моменту первый paint уже прошёл,
+  // store-данные (chats/messages из preload) отражены в DOM. App удерживает
+  // BootScreen пока это false, иначе UI мелькал пустым шеллом. rAF даёт
+  // браузеру шанс выполнить layout/paint перед снятием сплэша.
+  useEffect(() => {
+    const raf2 = requestAnimationFrame(() => requestAnimationFrame(() => {
+      useChatStore.getState().setBootRendered(true)
+    }))
+    return () => cancelAnimationFrame(raf2)
+  }, [])
   // замыкание в useEffect видит значения на момент создания, а нам нужны
   // свежие draft/modes при переключении chatId.
   const draftRef = useRef('')
@@ -255,15 +270,22 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const off = window.syntee.on('chat:compacted', (data: unknown) => {
       const d = data as { chatId: string; trigger: 'auto' | 'manual' }
       if (d.chatId !== currentChatId) return
-      window.syntee.chat.getMessages(d.chatId).then((msgs: Message[]) => {
-        setMessages(msgs)
+      // Compact меняет историю (удаляет старые сообщения, добавляет divider
+      // у хвоста). Сбрасываем окно к свежей последней странице — это корректно
+      // отражает пост-compact состояние и авто-скроллит к низу.
+      window.syntee.chat.getMessagesPage(d.chatId, 20).then((res: { messages: Message[]; hasMore: boolean }) => {
+        if (useChatStore.getState().currentChatId !== d.chatId) return
+        setMessagesWindow(d.chatId, res.messages, res.hasMore)
+        isInitialScrollRef.current = true
+        autoScrollRef.current = true
+        requestAnimationFrame(() => scrollToBottomInstant())
         if (d.trigger === 'auto') {
           toast('Контекст автоматически сжат', 'info')
         }
       }).catch(() => {})
     })
     return () => { off() }
-  }, [currentChatId, setMessages, toast])
+  }, [currentChatId, setMessagesWindow, toast])
 
   // Счётчик контекста
   const contextInfo = useContextCounter({
@@ -511,19 +533,25 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         if (all.length > 0) selectChat(all[0].id)
         return
       }
-      // Remount: тихий фоновый refresh сообщений для текущего чата.
-      // Сравниваем длину + id последнего сообщения — если совпадает,
-      // не трогаем store (нулевой ре-рендер, нулевой флэш).
-      window.syntee.chat.getMessages(curId).then((msgs: Message[]) => {
-        const cur = useChatStore.getState().messages
-        // Пользователь мог сменить чат за время fetch — проверяем.
+      // Remount: тихий фоновый refresh хвоста сообщений для текущего чата.
+      // С пагинацией: если окно полное (hasOlder=false) — сверяем хвост с
+      // свежей последней страницей и при расхождении заменяем окно. Если
+      // hasOlder=true (пользователь догрузил старые страницы) — НЕ трогаем
+      // messages, чтобы не сбросить позицию прокрутки; лишь правим флаг hasMore.
+      window.syntee.chat.getMessagesPage(curId, 20).then((res: { messages: Message[]; hasMore: boolean }) => {
         if (useChatStore.getState().currentChatId !== curId) return
-        const sameLength = cur.length === msgs.length
-        const sameLast = sameLength
-          ? (cur.length === 0 || cur[cur.length - 1].id === msgs[msgs.length - 1].id)
-          : false
-        if (!sameLast) {
-          setMessages(msgs)
+        const st = useChatStore.getState()
+        if (st.hasOlderMessages) {
+          if (st.hasOlderMessages !== res.hasMore) setHasOlderMessages(res.hasMore)
+          return
+        }
+        const cur = st.messages
+        const curLastId = cur.length ? cur[cur.length - 1].id : null
+        const freshLastId = res.messages.length ? res.messages[res.messages.length - 1].id : null
+        if (curLastId !== freshLastId) {
+          setMessagesWindow(curId, res.messages, res.hasMore)
+        } else if (st.hasOlderMessages !== res.hasMore) {
+          setHasOlderMessages(res.hasMore)
         }
       }).catch(() => { /* ok — оставляем stale, не критично */ })
     })
@@ -601,6 +629,46 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     el.scrollTop = el.scrollHeight - el.clientHeight
   }, [])
 
+  // ── Reverse-infinite scroll: догрузка старых сообщений вверх ──────────────
+  // prependingRef хранит scroll-геометрию ДО догрузки; useLayoutEffect после
+  // рендера компенсирует прирост высоты, выставляя scrollTop так, чтобы
+  // визуальная позиция чтения не прыгнула (иначе prepend «уезжает» к низу).
+  const prependingRef = useRef<{ oldScrollHeight: number; oldScrollTop: number } | null>(null)
+
+  const loadOlderMessages = useCallback(async () => {
+    const st = useChatStore.getState()
+    if (st.isLoadingOlder || !st.hasOlderMessages || !st.currentChatId) return
+    const oldest = st.messages[0]
+    if (!oldest) return
+    const el = scrollContainerRef.current
+    if (el) prependingRef.current = { oldScrollHeight: el.scrollHeight, oldScrollTop: el.scrollTop }
+    setIsLoadingOlder(true)
+    try {
+      const res = await window.syntee.chat.getMessagesPage(st.currentChatId, 20, oldest.createdAt, oldest.id) as { messages: Message[]; hasMore: boolean }
+      // Пока грузили — пользователь мог сменить чат. Не пишем в чужое окно.
+      if (useChatStore.getState().currentChatId !== st.currentChatId) return
+      prependOlderMessages(st.currentChatId, res.messages, res.hasMore)
+    } catch {
+      setIsLoadingOlder(false)
+    }
+  }, [prependOlderMessages, setIsLoadingOlder])
+
+  // Стабильный ref для handleScroll (чтобы не плодить её ре-рендеры).
+  const loadOlderMessagesRef = useRef(loadOlderMessages)
+  loadOlderMessagesRef.current = loadOlderMessages
+
+  // Компенсация скролла после prepend: визуальная позиция чтения сохраняется.
+  // Срабатывает только когда prependingRef выставлен (т.е. после догрузки).
+  useLayoutEffect(() => {
+    const snap = prependingRef.current
+    if (!snap) return
+    const el = scrollContainerRef.current
+    prependingRef.current = null
+    if (!el) return
+    const delta = el.scrollHeight - snap.oldScrollHeight
+    if (delta > 0) el.scrollTop = snap.oldScrollTop + delta
+  }, [messages.length])
+
   const handleScroll = useCallback(() => {
     if (scrollRafPendingRef.current) return
     scrollRafPendingRef.current = true
@@ -608,6 +676,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       scrollRafPendingRef.current = false
       const el = scrollContainerRef.current
       if (!el) return
+      // Reverse-infinite scroll: близко к верху и есть ещё старые → грузим.
+      if (el.scrollTop < 200 && hasOlderMessages && !isLoadingOlder && currentChatId) {
+        loadOlderMessagesRef.current()
+      }
       if (!hasScroll()) {
         setShowScrollDownBtn(false)
         return
@@ -620,7 +692,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }
       setShowScrollDownBtn(true)
     })
-  }, [hasScroll])
+  }, [hasScroll, hasOlderMessages, isLoadingOlder, currentChatId])
 
   // Колесо вверх → мгновенно отключаем авто-скролл.
   // onWheel срабатывает ТОЛЬКО от пользователя, никогда от scrollTop=.
@@ -707,9 +779,45 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (useChatStore.getState().currentChatId !== id) return
       useChatStore.getState().setQueue(id, queue)
     } catch { /* ok — очередь пуста или ещё не загружена */ }
-    const msgs: Message[] = await window.syntee.chat.getMessages(id)
+
+    // ── LRU-кеш окон сообщений ──
+    // Если чат недавно открывался — его окно уже в кеше. Показываем мгновенно
+    // (без IPC + JSON-парсинга всего чата), затем в фоне сверяем хвост: если
+    // пока пользователя не было пришли новые сообщения — заменяем окно на
+    // свежую последнюю страницу и авто-скроллим вниз.
+    const cached = useChatStore.getState().messagesByChat[id]
+    if (cached) {
+      setMessagesWindow(id, cached.messages, cached.hasOlder)
+      if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
+      setShowSkeleton(false)
+      setIsLoadingMessages(false)
+      // Фоновая сверка хвоста.
+      void (async () => {
+        try {
+          const res = await window.syntee.chat.getMessagesPage(id, 20) as { messages: Message[]; hasMore: boolean }
+          if (useChatStore.getState().currentChatId !== id) return
+          const st = useChatStore.getState()
+          const cachedLastId = st.messages.length ? st.messages[st.messages.length - 1].id : null
+          const freshLastId = res.messages.length ? res.messages[res.messages.length - 1].id : null
+          if (cachedLastId !== freshLastId) {
+            // Пока пользователя не было — пришли новые сообщения. Сбрасываем
+            // окно к свежей последней странице и прыгаем вниз.
+            setMessagesWindow(id, res.messages, res.hasMore)
+            isInitialScrollRef.current = true
+            autoScrollRef.current = true
+            requestAnimationFrame(() => scrollToBottomInstant())
+          } else if (st.hasOlderMessages !== res.hasMore) {
+            setHasOlderMessages(res.hasMore)
+          }
+        } catch { /* ok — оставляем кеш, не критично */ }
+      })()
+      return
+    }
+
+    // Cache miss → грузим последнюю страницу (newest 20).
+    const res = await window.syntee.chat.getMessagesPage(id, 20) as { messages: Message[]; hasMore: boolean }
     if (useChatStore.getState().currentChatId !== id) return
-    setMessages(msgs)
+    setMessagesWindow(id, res.messages, res.hasMore)
     if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
     setShowSkeleton(false)
     setIsLoadingMessages(false)
@@ -1344,6 +1452,24 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onScroll={handleScroll}
               onWheel={handleWheel}
             >
+              {isLoadingOlder && (
+                <div
+                  style={{
+                    position: 'absolute', top: 0, left: 0, right: 0,
+                    display: 'flex', justifyContent: 'center', alignItems: 'center',
+                    padding: '6px 0', zIndex: 2, pointerEvents: 'none',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 18, height: 18, borderRadius: '50%',
+                      border: '2px solid rgba(127,127,127,0.25)',
+                      borderTopColor: 'rgba(127,127,127,0.7)',
+                      animation: 'chat-older-spin 0.7s linear infinite',
+                    }}
+                  />
+                </div>
+              )}
               <div
                 style={{
                   height: virtualizer.getTotalSize(),

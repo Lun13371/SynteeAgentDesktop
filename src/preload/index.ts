@@ -249,6 +249,11 @@ const synteeAPI = {
     create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string) => ipcRenderer.invoke('chat:create', incognito, mode, projectId),
     getAll: () => ipcRenderer.invoke('chat:getAll'),
     getMessages: (chatId: string) => ipcRenderer.invoke('chat:getMessages', chatId),
+    // Окно сообщений для пагинации. Возвращает { messages, hasMore }.
+    // limit — размер страницы (по умолчанию 20). beforeCreatedAt/beforeId —
+    // курсор для догрузки старых сообщений вверх (пара из oldest текущего окна).
+    getMessagesPage: (chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) =>
+      ipcRenderer.invoke('chat:getMessagesPage', chatId, limit, beforeCreatedAt, beforeId) as Promise<{ messages: import('../../shared/types').Message[]; hasMore: boolean }>,
     send: (params: {
       chatId: string
       content: string

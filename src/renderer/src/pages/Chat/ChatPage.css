@@ -1,4 +1,4 @@
-﻿.chat-layout {
+.chat-layout {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -74,18 +74,19 @@
   width: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  /* Синхронизировано с реальной высотой .chat-input-wrap через
-     ResizeObserver (ChatPage.tsx) — иначе при появлении todo-бара
-     или бейджей (workdir/planning) фиксированный 120px отступ не
-     хватало и инпут-бар наезжал на сообщения ("прыжок" списка).
-     transition УБРАН намеренно: ResizeObserver стреляет каждый кадр
-     во время анимации todo, а CSS-transition пытается "догнать"
-     меняющееся значение — возникает feedback-петля и рывки. */
+  position: relative;
+  /* ���������������� � �������� ������� .chat-input-wrap �����
+     ResizeObserver (ChatPage.tsx) � ����� ��� ��������� todo-����
+     ��� ������� (workdir/planning) ������������� 120px ������ ��
+     ������� � �����-��� ������� �� ��������� ("������" ������).
+     transition ����� ���������: ResizeObserver �������� ������ ����
+     �� ����� �������� todo, � CSS-transition �������� "�������"
+     ���������� �������� � ��������� feedback-����� � �����. */
   padding: 0 0 var(--chat-input-h, 120px) 0;
 }
 
-/* Floating-кнопка «прокрутить вниз» — компактная, по центру, чуть выше
-   инпут-бара. Появляется когда пользователь отошёл от низа (autoScroll=false). */
+/* Floating-������ ����������� ���� � ����������, �� ������, ���� ����
+   �����-����. ���������� ����� ������������ ������ �� ���� (autoScroll=false). */
 .chat-scroll-down-btn {
   position: absolute;
   left: 50%;
@@ -143,7 +144,7 @@
   color: var(--text-secondary);
 }
 
-/* Подсказка о рабочей директории в пустом чате */
+/* ��������� � ������� ���������� � ������ ���� */
 .chat-empty-workdir-hint {
   display: flex;
   align-items: center;
@@ -296,7 +297,7 @@
   flex-shrink: 0;
 }
 
-/* ── /restore пикер именованных снапшотов ── */
+/* -- /restore ����� ����������� ��������� -- */
 .snapshot-picker-overlay {
   position: fixed;
   inset: 0;
@@ -401,3 +402,5 @@
   border-radius: 4px;
 }
 
+
+@keyframes chat-older-spin { to { transform: rotate(360deg); } }
