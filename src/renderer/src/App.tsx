@@ -852,13 +852,9 @@ export default function App() {
             <TitleBar
               onSettingsClick={() => toggleMainPage('settings')}
               onAgentClick={() => {
-                const st = useUIStore.getState()
-                const next = !st.agentPanelOpen
-                st.setAgentPanelOpen(next)
+                const next = !useUIStore.getState().agentPanelOpen
+                useUIStore.getState().setAgentPanelOpen(next)
                 window.syntee.settings.set('agentPanelOpen', next)
-                import('./utils/sounds').then(({ playPanelOpenSound, playPanelCloseSound }) => {
-                  if (next) playPanelOpenSound(); else playPanelCloseSound()
-                })
               }}
               onMemoryClick={() => toggleMainPage('memory')}
               onMessengerClick={() => toggleMainPage('messenger')}

@@ -8,6 +8,7 @@ import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
 import ModelSelector from '../ModelSelector/ModelSelector'
 import SlashMenu from '../SlashMenu/SlashMenu'
 import MentionMenu from '../MentionMenu/MentionMenu'
+import CommandArgMenu from '../CommandArgMenu/CommandArgMenu'
 import AttachmentChips from '../AttachmentChips/AttachmentChips'
 import QueuePanel from '../QueuePanel/QueuePanel'
 import ExtensionsBadge from '../ExtensionsBadge/ExtensionsBadge'
@@ -86,17 +87,19 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 /**
- * Рендерит содержимое mirror-слоя для подсветки @упоминаний.
+ * Рендерит содержимое mirror-слоя для подсветки @упоминаний и slash-команд.
  *
- * Ищет в тексте токены вида @имяФайла (соответствующие прикреплённым
- * Attachment) и обрамляет их в <span class="mention-highlight">. Остальной
- * текст рендерится как есть (color: transparent — виден только фон подсветки).
+ * 1. @упоминания — токены вида @имяФайла (соответствующие прикреплённым
+ *    Attachment) обрамляются в <span class="mention-highlight">.
+ * 2. slash-команды — если строка начинается с /command, имя команды
+ *    подсвечивается <span class="slash-command-highlight">, а текст аргументов
+ *    после первого пробела — <span class="slash-command-arg">. Внутри аргументов
+ *    @упоминания тоже подсвечиваются.
  *
- * Используем extractMentions из shared/mentions для парсинга.
+ * Остальной текст рендерится как есть (color: transparent — виден только фон
+ * подсветки).
  */
-function renderMirrorContent(text: string): JSX.Element {
-  // Делим текст по @упоминаниям. Простой split без полноценного markdown-парсера —
-  // mirror только для подсветки, не для форматирования.
+function renderMentions(text: string): JSX.Element {
   const parts: Array<{ text: string; isMention: boolean }> = []
   const re = /(?:^|\s)@[^\s@]+/g
   let lastIdx = 0
@@ -112,7 +115,6 @@ function renderMirrorContent(text: string): JSX.Element {
   if (lastIdx < text.length) {
     parts.push({ text: text.slice(lastIdx), isMention: false })
   }
-  // Если нет упоминаний — рендерим весь текст одним куском (быстрее)
   if (parts.length === 0) return <>{text}</>
   return (
     <>
@@ -121,6 +123,32 @@ function renderMirrorContent(text: string): JSX.Element {
           ? <span key={i} className="mention-highlight">{p.text}</span>
           : <span key={i}>{p.text}</span>
       ))}
+    </>
+  )
+}
+
+function renderMirrorContent(text: string): JSX.Element {
+  // Slash-команда в начале строки: /command args...
+  if (text.startsWith('/')) {
+    const m = text.match(/^(\S+)(\s*)([\s\S]*)$/)
+    if (m) {
+      const cmdPart = m[1]
+      const sep = m[2]
+      const rest = m[3]
+      return (
+        <>
+          <span className="slash-command-highlight">{cmdPart}</span>
+          <span>{sep}</span>
+          <span className="slash-command-arg">{renderMentions(rest)}</span>
+          {/* Трейлинг-пробел чтобы mirror не схлопывался */}
+          {' '}
+        </>
+      )
+    }
+  }
+  return (
+    <>
+      {renderMentions(text)}
       {/* Трейлинг-пробел чтобы mirror не схлопывался */}
       {' '}
     </>
@@ -156,6 +184,15 @@ export default function ChatInput({
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
   const [slashIdx, setSlashIdx] = useState(0)
+  // ── Пикер аргументов команды (многоуровневый enum-пикер) ──
+  // argPickerCmd — команда, для которой показываем пикер (null = скрыт).
+  // argPickerLevel — индекс текущего аргумента в cmd.arguments.
+  // argPickerChoices — отфильтрованные по префиксу опции текущего аргумента.
+  // argPickerIdx — выбранный индекс (как slashIdx).
+  const [argPickerCmd, setArgPickerCmd] = useState<SlashCommand | null>(null)
+  const [argPickerLevel, setArgPickerLevel] = useState(0)
+  const [argPickerChoices, setArgPickerChoices] = useState<string[]>([])
+  const [argPickerIdx, setArgPickerIdx] = useState(0)
   // ── @mention-меню ──
   // mentionItems — текущий список для дропдауна (fuzzy-отфильтрованный).
   // mentionIdx — выбранный индекс (как slashIdx).
@@ -237,6 +274,43 @@ export default function ChatInput({
       setSlashCmds([])
     }
 
+    // ── Пикер аргументов команды: синхронизация с ручным вводом ──
+    // Если argPicker активен — фильтруем choices текущего уровня по
+    // последнему вводимому токену-префиксу. Если юзер ушёл из формата
+    // /cmd или превысил уровень — закрываем пикер.
+    if (argPickerCmd) {
+      const cmd = argPickerCmd
+      // Slice-подход (а не regex m[2]) — \s* жадно съедает trailing-пробел,
+      // из-за чего для `/cmd choice ` rest терял финальный пробел и уровень
+      // считался на 1 меньше (picker показывал прошлый уровень, не следующий).
+      const head = text.match(/^\/(\S+)/)
+      if (!head || head[1].toLowerCase() !== cmd.name.toLowerCase()) {
+        closeArgPicker()
+      } else {
+        const after = text.slice(head[0].length)
+        const trimmed = after.trim()
+        const endsWithSpace = after.length > 0 && /\s$/.test(after)
+        const tokens = trimmed === '' ? [] : trimmed.split(/\s+/)
+        const level = endsWithSpace ? tokens.length : tokens.length - 1
+        const arg = cmd.arguments?.[level]
+        if (!arg?.choices || arg.choices.length === 0 || level >= (cmd.arguments?.length ?? 0)) {
+          closeArgPicker()
+        } else {
+          const prefix = endsWithSpace ? '' : (tokens.length > 0 ? tokens[tokens.length - 1] : '')
+          const filtered = prefix
+            ? arg.choices.filter(c => c.toLowerCase().startsWith(prefix.toLowerCase()))
+            : arg.choices
+          if (filtered.length === 0) {
+            closeArgPicker()
+          } else {
+            setArgPickerLevel(level)
+            setArgPickerChoices(filtered)
+            setArgPickerIdx(0)
+          }
+        }
+      }
+    }
+
     // ── @mention-детект: парсим токен у каретки ──
     const caretPos = textareaRef.current?.selectionStart ?? text.length
     const token = findMentionTokenAtCaret(text, caretPos)
@@ -265,7 +339,69 @@ export default function ChatInput({
     historyIdxRef.current = null
     onChangeValue(next)
     setSlashCmds([])
+    // Если у команды есть первый аргумент с choices — открываем пикер.
+    const firstArg = cmd.arguments?.[0]
+    if (firstArg?.choices && firstArg.choices.length > 0) {
+      setArgPickerCmd(cmd)
+      setArgPickerLevel(0)
+      setArgPickerChoices(firstArg.choices)
+      setArgPickerIdx(0)
+    } else {
+      setArgPickerCmd(null)
+      setArgPickerChoices([])
+    }
     setTimeout(() => textareaRef.current?.focus(), 0)
+  }
+
+  // ── Пикер аргументов: выбор опции ──
+  // Заменяем последний вводимый токен-префикс на выбранный choice и
+  // добавляем пробел. Если есть следующий аргумент с choices — переоткрываем
+  // пикер для него; иначе закрываем.
+  const selectArgChoice = (choice: string) => {
+    const cmd = argPickerCmd
+    if (!cmd) return
+    // Парсим структуру /cmdname [args...] через slice (а не regex m[2],
+    // который жадно съедает trailing-пробел и ломает определение endsWithSpace
+    // для начального состояния `/cmd ` → rest="" → push-ветка не срабатывала).
+    const head = value.match(/^\/(\S+)/)
+    if (!head || head[1].toLowerCase() !== cmd.name.toLowerCase()) {
+      setArgPickerCmd(null); setArgPickerChoices([]); return
+    }
+    const after = value.slice(head[0].length) // всё после /cmdname
+    const trimmed = after.trim()
+    const endsWithSpace = after.length > 0 && /\s$/.test(after)
+    const tokens = trimmed === '' ? [] : trimmed.split(/\s+/)
+    // Если каретка в конце завершённого токена (endsWithSpace) или токенов
+    // ещё нет — добавляем новый choice. Иначе заменяем последний (вводимый префикс).
+    const newTokens = [...tokens]
+    if (endsWithSpace || newTokens.length === 0) {
+      newTokens.push(choice)
+    } else {
+      newTokens[newTokens.length - 1] = choice
+    }
+    const newText = `/${cmd.name} ` + newTokens.join(' ') + ' '
+    historyIdxRef.current = null
+    onChangeValue(newText)
+    // Переоткрываем для следующего уровня (если есть choices).
+    const nextLevel = argPickerLevel + 1
+    const nextArg = cmd.arguments?.[nextLevel]
+    if (nextArg?.choices && nextArg.choices.length > 0) {
+      setArgPickerLevel(nextLevel)
+      setArgPickerChoices(nextArg.choices)
+      setArgPickerIdx(0)
+    } else {
+      setArgPickerCmd(null)
+      setArgPickerChoices([])
+    }
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }
+
+  // Закрытие пикера аргументов.
+  const closeArgPicker = () => {
+    setArgPickerCmd(null)
+    setArgPickerChoices([])
+    setArgPickerLevel(0)
+    setArgPickerIdx(0)
   }
 
   const handleSend = () => {
@@ -280,6 +416,7 @@ export default function ChatInput({
     setSlashCmds([])
     setMentionItems([])
     mentionTokenRef.current = null
+    closeArgPicker()
     // Вложения очищаются в ChatPage после отправки (после chat:send)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSendSound()
@@ -477,6 +614,29 @@ export default function ChatInput({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Навигация по пикеру аргументов команды — высший приоритет
+    // (открыт после выбора команды, пока юзер выбирает enum-опцию).
+    if (argPickerCmd && argPickerChoices.length > 0) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setArgPickerIdx(i => (i - 1 + argPickerChoices.length) % argPickerChoices.length)
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setArgPickerIdx(i => (i + 1) % argPickerChoices.length)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault()
+        selectArgChoice(argPickerChoices[argPickerIdx])
+        return
+      }
+      if (e.key === 'Escape') {
+        closeArgPicker()
+        return
+      }
+    }
     // Навигация по @mention-меню — высший приоритет (как slash)
     if (mentionItems.length > 0) {
       if (e.key === 'ArrowUp') {
@@ -613,6 +773,17 @@ export default function ChatInput({
           anchorRef={boxRef as React.RefObject<HTMLElement>}
           onSelect={selectMention}
           onClose={() => { setMentionItems([]); mentionTokenRef.current = null }}
+        />
+
+        {/* Пикер аргументов команды (многоуровневый enum-пикер) */}
+        <CommandArgMenu
+          cmd={argPickerCmd}
+          level={argPickerLevel}
+          choices={argPickerChoices}
+          selectedIndex={argPickerIdx}
+          anchorRef={boxRef as React.RefObject<HTMLElement>}
+          onSelect={selectArgChoice}
+          onClose={closeArgPicker}
         />
 
       {/* Строка статуса над инпутом: workdir-бейдж + planning/image-бейджи.

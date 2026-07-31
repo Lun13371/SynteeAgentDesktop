@@ -122,8 +122,6 @@ export default function BottomDock() {
     }
   }, [setDockHeight])
 
-  if (!dockOpen) return null
-
   return (
     <>
       <AnimatePresence>
