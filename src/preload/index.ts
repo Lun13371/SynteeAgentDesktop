@@ -235,6 +235,15 @@ const synteeAPI = {
     collapse: () => ipcRenderer.invoke('spotlight:collapse'),
   },
 
+  // Кастомное трей-меню (frameless glass-окно). action — id действия
+  // (showMain/showVoice/showSpotlight/openSettings/quit), выполняется в
+  // main-процессе. getMeta — версия приложения для хедера/блока «О программе».
+  trayMenu: {
+    hide: () => ipcRenderer.invoke('tray-menu:hide'),
+    action: (actionId: string) => ipcRenderer.invoke('tray-menu:action', actionId),
+    getMeta: () => ipcRenderer.invoke('tray-menu:getMeta') as Promise<{ version: string }>,
+  },
+
   // Чат
   chat: {
     create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string) => ipcRenderer.invoke('chat:create', incognito, mode, projectId),

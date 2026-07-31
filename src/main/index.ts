@@ -17,6 +17,7 @@ import { MainWindow } from './windows/MainWindow'
 import { OverlayWindow } from './windows/OverlayWindow'
 import { VoiceWindow } from './windows/VoiceWindow'
 import { SpotlightWindow } from './windows/SpotlightWindow'
+import { TrayMenuWindow } from './windows/TrayMenuWindow'
 import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
@@ -73,6 +74,7 @@ let mainWindow: MainWindow
 let overlayWindow: OverlayWindow
 let voiceWindow: VoiceWindow
 let spotlightWindow: SpotlightWindow
+let trayMenuWindow: TrayMenuWindow
 let trayManager: TrayManager
 let hotkeyManager: HotkeyManager
 
@@ -84,65 +86,42 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // Создаём окна
+  // Создаём окна (конструкторы — без загрузки контента)
   mainWindow = new MainWindow(store)
   overlayWindow = new OverlayWindow()
   voiceWindow = new VoiceWindow()
   spotlightWindow = new SpotlightWindow()
+  trayMenuWindow = new TrayMenuWindow()
 
-  const main = mainWindow.create()
-  overlayWindow.create()
-  voiceWindow.create()
-  spotlightWindow.create()
+  // ── Менеджеры ( ДО окон) ──────────────────────────────────────────
+  // IPC-хендлеры используют эти менеджеры, поэтому инициализируем их
+  // ДО регистрации IPC и ДО загрузки URL в окна (рендереры сразу стреляют
+  // IPC-вызовами при монтировании — хендлеры должны быть готовы).
 
-  // Трей
-  trayManager = new TrayManager({
-    showMain: () => mainWindow.show(),
-    showSpotlight: () => spotlightWindow.show(),
-    showVoice: () => voiceWindow.show(),
-    quit: () => app.quit(),
-  })
-  trayManager.init()
-
-  // Горячие клавиши
-  hotkeyManager = new HotkeyManager(store, {
-    toggleMain: () => mainWindow.toggle(),
-    showOverlay: () => overlayWindow.show(),
-    toggleVoice: () => voiceWindow.toggle(),
-    toggleSpotlight: () => spotlightWindow.toggle(),
-    quickQuestion: () => spotlightWindow.showQuick(),
-  })
-  hotkeyManager.registerAll()
-
-  // Каталог моделей (models.dev) — инициализируем из диск-кэша синхронно ДО IPC
+  // Каталог моделей (models.dev) — из диск-кэша синхронно.
   const catalogCachePath = join(app.getPath('userData'), 'modelsCatalog.json')
   initModelCatalog(catalogCachePath)
-  // Фоновое обновление (не блокирует старт). Периодически — раз в 24ч.
   refreshCatalog(catalogCachePath).catch(() => { /* ok — работаем на кэше/fallback */ })
   setInterval(() => { refreshCatalog(catalogCachePath).catch(() => {}) }, 86_400_000)
 
   // Skills-менеджер (загрузка .md-скиллов, состояние вкл/выкл, scope).
-  // Инициализируем ДО IPC — handlers используют getSkillManager().
   initSkillManager(store)
 
-  // Commands-менеджер (загрузка .md-кастомных slash-команд). Также до IPC.
+  // Commands-менеджер (загрузка .md-кастомных slash-команд).
   initCommandManager()
 
   // Миграция: переносим старые глобальные MCP из electron-store в файл
   // ~/.syntee/mcp.json (чтобы агент мог редактировать их через edit_file).
   migrateGlobalMcpToFile(store)
 
-  // MCP-менеджер (подключение серверов, тулы, approval). Также до IPC.
+  // MCP-менеджер (подключение серверов, тулы, approval). setWindow — ниже,
+  // после создания BrowserWindow.
   const mcpManager = initMcpManager(store)
-  mcpManager.setWindow(mainWindow.getWindow())
-  // Прогреваем включённые глобальные серверы сразу при старте приложения,
-  // в фоне (не await — не блокирует запуск). Раньше подключение было чисто
-  // lazy (при первом chat:send) — это делало ПЕРВОЕ сообщение в любом чате
-  // синхронно зависающим на холодном старте stdio-процесса.
-  mcpManager.warmupGlobalServers()
 
-  // IPC
-  registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow })
+  // ── IPC (ДО загрузки URL в окна) ──────────────────────────────────
+  // Регистрируем ВСЕ хендлеры до .create(), чтобы рендереры при монтировании
+  // находили готовые хендлеры (убирает flood "No handler registered").
+  registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow, trayMenuWindow })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerVoiceIPC(store, () => mainWindow.getWindow())
@@ -174,22 +153,55 @@ app.whenReady().then(async () => {
   registerUpdatesIPC(() => mainWindow.getWindow())
   startUpdatePolling()
 
-  // Ensure updater.exe exists next to the client; download from website if missing.
-  ensureUpdater().catch((e) => console.error('[updater] ensureUpdater failed:', e))
-
-  // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
-  ptyManager.setSender(mainWindow.getWindow())
-
   // Лёгкий обработчик оценки токенов текущего ввода (для live-обновления кольца при печати)
   ipcMain.handle('context:estimateInput', (_e, params: { text: string }) => {
     try {
-      // estimateTokens импортируется ленично, чтобы не тащить tiktoken в main-бандл раньше времени
+      // estimateTokens импортируется лениково, чтобы не тащить tiktoken в main-бандл раньше времени
       const { estimateTokens } = require('../core/tokens/usageTracker') as typeof import('../core/tokens/usageTracker')
       return { tokens: estimateTokens(params.text || '') }
     } catch {
       return { tokens: 0 }
     }
   })
+
+  // ── Загрузка контента в окна (теперь IPC-хендлеры готовы) ──────────
+  const main = mainWindow.create()
+  overlayWindow.create()
+  voiceWindow.create()
+  spotlightWindow.create()
+  trayMenuWindow.create()
+
+  // MCP: фиксируем sender + прогреваем глобальные серверы (нужно окно).
+  mcpManager.setWindow(mainWindow.getWindow())
+  mcpManager.warmupGlobalServers()
+
+  // Предзагрузка контента трей-меню (после IPC + создания окна).
+  trayMenuWindow.warmup()
+
+  // Трей
+  trayManager = new TrayManager({
+    showMain: () => mainWindow.show(),
+    showSpotlight: () => spotlightWindow.show(),
+    showVoice: () => voiceWindow.show(),
+    quit: () => app.quit(),
+  }, trayMenuWindow)
+  trayManager.init()
+
+  // Горячие клавиши
+  hotkeyManager = new HotkeyManager(store, {
+    toggleMain: () => mainWindow.toggle(),
+    showOverlay: () => overlayWindow.show(),
+    toggleVoice: () => voiceWindow.toggle(),
+    toggleSpotlight: () => spotlightWindow.toggle(),
+    quickQuestion: () => spotlightWindow.showQuick(),
+  })
+  hotkeyManager.registerAll()
+
+  // Ensure updater.exe exists next to the client; download from website if missing.
+  ensureUpdater().catch((e) => console.error('[updater] ensureUpdater failed:', e))
+
+  // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
+  ptyManager.setSender(mainWindow.getWindow())
 
   // Первый запуск
   if (!store.get('firstRunComplete')) {

@@ -421,6 +421,15 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
+  // Запрос на открытие раздела настроек из трей-меню (main-процесс шлёт
+  // nav:open-settings в webContents главного окна после его show()).
+  useEffect(() => {
+    const off = window.syntee.on('nav:open-settings', () => {
+      useNavStore.getState().toggleMainPage('settings')
+    })
+    return () => { off() }
+  }, [])
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     if (theme === 'custom') {
