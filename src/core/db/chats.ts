@@ -353,3 +353,15 @@ export function getChatLastUsage(chatId: string): LastUsage | null {
   return null
 }
 
+/**
+ * Сброс last_usage для чата — вызывается при compaction (auto/manual).
+ * Без этого context:calculate пересобирает real-снапшот из устаревшего
+ * promptTokens (до-сжатия), и индикатор контекста показывает старое
+ * большое значение, хотя реальные сообщения уже сжаты.
+ */
+export function clearChatLastUsage(chatId: string): void {
+  try {
+    getDB().prepare(`UPDATE chats SET last_usage = NULL WHERE id = ?`).run(chatId)
+  } catch { /* ok — колонки может не быть до миграции */ }
+}
+

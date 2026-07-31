@@ -10,7 +10,7 @@ import {
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
   getChatModes, setChatModes, getChatDraft, setChatDraft, getUserMessageContents,
-  setChatLastUsage, getChatLastUsage,
+  setChatLastUsage, getChatLastUsage, clearChatLastUsage,
   createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
   setProjectVerificationCommand,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
@@ -1035,6 +1035,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           )
           log('[chat:send] compact: удалено из БД %d Message (chatId=%s)', dbDeleted, params.chatId)
 
+          // Сброс last_usage — иначе context:calculate при перезаходе в чат
+          // пересоберёт real-снапшот из устаревшего promptTokens (до-сжатия),
+          // и индикатор контекста покажет старое значение. Пост-сжатый
+          // estimate ниже эмитится как 'real', чтобы рендерер (real-priority
+          // gate) принял его поверх устаревшего real.
+          clearChatLastUsage(params.chatId)
+
           emitChatCompacted(win, {
             chatId: params.chatId,
             dividerMessageId: divider.id,
@@ -1057,13 +1064,18 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         includeToolSchemas: true,
       })
       const sess = getSessionCost(params.chatId)
+      // Если сжатие произошло в этом запросе — эмитим как 'real', чтобы
+      // рендерер принял значение поверх устаревшего lastRealRef (до-сжатия).
+      // tiktoken-оценка пост-сжатого processedHistory достаточно точна для
+      // индикатора; следующий ответ модели перезапишет её честным real.
+      const compactionSource: 'real' | 'estimate' = contextCompressed ? 'real' : 'estimate'
       win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
         chatId: params.chatId,
         pct: snapshot.pct,
         estimated: snapshot.estimated,
         limit: snapshot.limit,
         status: snapshot.status,
-        source: 'estimate',
+        source: compactionSource,
         compressed: contextCompressed,
         breakdown: snapshot.breakdown,
         sessionCostCents: sess?.totalCents ?? null,
@@ -3094,6 +3106,45 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       )
       log('[chat:compact] chatId=%s: removed=%d ChatMessage, удалено из БД %d Message, tokens %d→%d (saved %d)',
         chatId, result.removedCount, dbDeleted, tokensBefore, tokensAfter, tokensBefore - tokensAfter)
+
+      // Сброс last_usage — иначе context:calculate пересоберёт real-снапшот
+      // из устаревшего promptTokens (до-сжатия), и индикатор контекста
+      // покажет старое значение. Ручной /compact не запускает worker сразу,
+      // поэтому эмитим пост-сжатый estimate как 'real', чтобы рендерер
+      // (real-priority gate) принял его и индикатор обновился сразу.
+      clearChatLastUsage(chatId)
+      if (ctxSettings.tokenCounterEnabled) {
+        try {
+          const contextWindow = realContextWindow
+          const sysPrompt = await getSystemPrompt(chatId)
+          const snapshot = buildSnapshotFromEstimate(result.messages, contextWindow, {
+            systemPrompt: sysPrompt,
+            currentMsgTokens: 0,
+            includeToolSchemas: true,
+          })
+          const sess = getSessionCost(chatId)
+          const win = mainWindow.getWindow()
+          win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+            chatId,
+            pct: snapshot.pct,
+            estimated: snapshot.estimated,
+            limit: snapshot.limit,
+            status: snapshot.status,
+            source: 'real',
+            compressed: true,
+            breakdown: snapshot.breakdown,
+            sessionCostCents: sess?.totalCents ?? null,
+            sessionRequests: sess?.requests ?? 0,
+            historyMessages: history.length - dbDeleted,
+            toolCallsCount: history.reduce((sum, msg) => {
+              const steps = msg.toolSteps as Array<{ type: string }> | undefined
+              return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
+            }, 0),
+          })
+        } catch (e) {
+          log('[chat:compact] post-compact CONTEXT_USAGE emit failed: %s', (e as Error).message)
+        }
+      }
 
       const win = mainWindow.getWindow()
       emitChatCompacted(win, {

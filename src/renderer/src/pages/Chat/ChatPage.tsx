@@ -19,6 +19,7 @@ import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import HelpModal from '../../components/ui/HelpModal/HelpModal'
 import Logo from '../../components/ui/Logo/Logo'
 import { useChatStore, EMPTY_LIVE } from '../../store/chat.store'
+import { useNavStore } from '../../store/nav.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
@@ -34,7 +35,7 @@ const itemStyle: React.CSSProperties = {
 const VirtualMessageItem = memo(function VirtualMessageItem({
   msg, vItemStart, vItemIndex, measureRef,
   toolOutputMode, onPin, onCopy, onReply, onRewind,
-  searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec,
+  searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate,
 }: {
   msg: Message
   vItemStart: number
@@ -50,6 +51,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   isStreaming?: boolean
   isWaiting?: boolean
   rateLimitSec?: number
+  shouldAnimate?: boolean
 }) {
   return (
     <div
@@ -69,6 +71,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
         isStreaming={isStreaming}
         isWaiting={isWaiting}
         rateLimitSec={rateLimitSec}
+        shouldAnimate={shouldAnimate}
       />
     </div>
   )
@@ -84,7 +87,8 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   prev.liveThinking === next.liveThinking &&
   prev.isStreaming === next.isStreaming &&
   prev.isWaiting === next.isWaiting &&
-  prev.rateLimitSec === next.rateLimitSec
+  prev.rateLimitSec === next.rateLimitSec &&
+  prev.shouldAnimate === next.shouldAnimate
 )
 
 function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -118,6 +122,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setActiveProject: s.setActiveProject, markChatRead: s.markChatRead,
   })))
   const isTyping = live.isTyping
+  // Ref-зеркало isTyping для ResizeObserver (RO замыкается один раз при mount,
+  // иначе не видел бы смены стриминг→idle). Используется чтобы гейтить
+  // авто-скролл по росту высоты ТОЛЬКО во время стриминга — иначе открытие/
+  // ресайз боковой панели (ширина меняется → сообщения пере-флоуются → высота
+  // растёт) ложно запускали smoothScrollToBottom rAF-цикл → лаги.
+  const isTypingRef = useRef(isTyping)
+  isTypingRef.current = isTyping
   const isAgentRunning = live.isAgentRunning
   const streamingText = live.text
 
@@ -130,6 +141,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [showSkeleton, setShowSkeleton] = useState(false)
   const isInitialScrollRef = useRef(true)
   const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Fix C: множество id сообщений, чья entrance-анимация уже отыграла.
+  // Виртуализатор монтирует/демонтирует элементы при скролле; без этого
+  // флага motion.div каждый раз пере-проигрывает initial→animate →
+  // «интерфейс плывёт». Анимируем только первое появление сообщения.
+  // При смене чата (currentChatId) множество чистится — новые сообщения
+  // анимируются свежо, как и было раньше при полном перемонте.
+  const animatedMsgIdsRef = useRef<Set<string>>(new Set())
 
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -282,10 +301,19 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         if (d.trigger === 'auto') {
           toast('Контекст автоматически сжат', 'info')
         }
+        // Двойная страховка: main уже эмитит CONTEXT_USAGE с source:'real'
+        // после compaction, но если push не дошёл — попросим свежий расчёт.
+        // lastRealRef в useContextCounter уже сброшен по этому же событию,
+        // так что context:calculate (даже с source:'estimate') будет принят.
+        window.syntee.context.calculate(d.chatId).catch(() => {})
       }).catch(() => {})
     })
     return () => { off() }
   }, [currentChatId, setMessagesWindow, toast])
+
+  // Смена чата — очищаем множество анимированных id, чтобы сообщения нового
+  // чата анимировались при появлении (как при полном перемонте раньше).
+  useEffect(() => { animatedMsgIdsRef.current = new Set() }, [currentChatId])
 
   // Счётчик контекста
   const contextInfo = useContextCounter({
@@ -295,7 +323,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     incognito: isIncognito,
     enabled: showContextRing && !isIncognito,
     messageCount: messages.length,
-    isRunning: isStreaming,
+    isRunning: isTyping,
   })
 
   // ── Wrapper'ы режимов инпут-бара ──
@@ -462,6 +490,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     let lastFireTime = 0
     const handleMouseUp = (e: MouseEvent) => {
+      // ChatPage keep-alive — игнорируем выделение, пока чат не активен.
+      if (useNavStore.getState().mainPage !== 'chat') return
       const now = Date.now()
       if (now - lastFireTime < 100) return
       lastFireTime = now
@@ -477,6 +507,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setSelectionPopup({ x: rect.left + rect.width / 2, y: rect.top - 8, text })
     }
     const handleMouseDown = (e: MouseEvent) => {
+      if (useNavStore.getState().mainPage !== 'chat') return
       if ((e.target as HTMLElement)?.closest('.selection-reply-popup')) return
       setSelectionPopup(null)
     }
@@ -496,6 +527,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // ChatPage теперь keep-alive (всегда смонтирован) — не реагируем на
+      // горячие клавиши чата, пока активна другая вкладка (settings/memory/...).
+      if (useNavStore.getState().mainPage !== 'chat') return
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault()
         setShowSearch(v => !v)
@@ -572,6 +606,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const autoScrollRef           = useRef(true)
   const scrollRafRef            = useRef<number | null>(null)
   const scrollRafPendingRef     = useRef(false)
+  // Последний известный scrollTop — для детектирования пользовательского
+  // скролла ВВЕРХ. Программный скролл (rAF-цикл к низу) и prepend-компенсация
+  // УВЕЛИЧИВАЮТ scrollTop; уменьшение = пользователь тянет вверх любым способом
+  // (полоса прокрутки / trackpad / PageUp). onWheel ловит только колесо —
+  // остальные способы уходили с autoScroll=true → rAF-цикл тянул обратно
+  // вниз → конкуренция → фризы/«плывёт» на 144Гц.
+  const lastScrollTopRef        = useRef(0)
   const [showScrollDownBtn, setShowScrollDownBtn] = useState(false)
 
   const hasScroll = useCallback(() => {
@@ -614,6 +655,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         const step = Math.max(diff * 0.5, 4)
         el.scrollTop = current + Math.min(step, diff)
       }
+      // Программный скролл вниз — обновляем lastScrollTopRef, чтобы onScroll
+      // не воспринял это как пользовательский скролл вверх (уменьшение).
+      lastScrollTopRef.current = el.scrollTop
       scrollRafRef.current = requestAnimationFrame(animate)
     }
     scrollRafRef.current = requestAnimationFrame(animate)
@@ -627,6 +671,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       scrollRafRef.current = null
     }
     el.scrollTop = el.scrollHeight - el.clientHeight
+    // Обновляем lastScrollTopRef, иначе первый onScroll после программного
+    // прыжка вниз воспринял бы уменьшение (старое значение было меньше) и
+    // ложно отключил бы авто-скролл.
+    lastScrollTopRef.current = el.scrollTop
   }, [])
 
   // ── Reverse-infinite scroll: догрузка старых сообщений вверх ──────────────
@@ -666,7 +714,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     prependingRef.current = null
     if (!el) return
     const delta = el.scrollHeight - snap.oldScrollHeight
-    if (delta > 0) el.scrollTop = snap.oldScrollTop + delta
+    if (delta > 0) {
+      el.scrollTop = snap.oldScrollTop + delta
+      lastScrollTopRef.current = el.scrollTop
+    }
   }, [messages.length])
 
   const handleScroll = useCallback(() => {
@@ -685,6 +736,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         return
       }
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      // Пользовательский скролл ВВЕРХ (scrollTop уменьшился) — отключаем
+      // авто-скролл, чтобы rAF-цикл smoothScrollToBottom не конкурировал
+      // (особенно для полосы прокрутки/trackpad, где onWheel не срабатывает).
+      // Программный скролл вниз увеличивает scrollTop → не триггерит.
+      if (el.scrollTop < lastScrollTopRef.current - 2) {
+        autoScrollRef.current = false
+      }
+      lastScrollTopRef.current = el.scrollTop
       if (distFromBottom < 24) {
         autoScrollRef.current = true
         setShowScrollDownBtn(false)
@@ -713,8 +772,22 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     const el = scrollContainerRef.current
     if (!el) return
+    // ResizeObserver на inner нужен для авто-скролла при росте контента
+    // (стриминг токенов). Но он срабатывает и при изменении ШИРИНЫ контейнера
+    // (открытие/закрытие/ресайз боковой панели) — сообщения пере-флоуются,
+    // высота растёт, и RO ложно запускал smoothScrollToBottom rAF-цикл
+    // (forced layout каждый кадр всю spring-анимацию панели) → лаги/«плывёт».
+    // Guard: скроллим только если autoScroll включён И идёт стриминг (isTyping).
+    // Не-стриминговый рост (ресайз панели, prepend старых) — не трогаем скролл.
+    let prevH = (el.firstElementChild as HTMLElement | null)?.scrollHeight ?? 0
     const ro = new ResizeObserver(() => {
-      if (autoScrollRef.current) smoothScrollToBottom()
+      const inner = el.firstElementChild as HTMLElement | null
+      if (!inner) return
+      const newH = inner.scrollHeight
+      if (autoScrollRef.current && isTypingRef.current && newH > prevH) {
+        smoothScrollToBottom()
+      }
+      prevH = newH
     })
     const inner = el.firstElementChild
     if (inner) ro.observe(inner as Element)
@@ -748,13 +821,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
   }, [messages.length, isTyping, isLoadingMessages, isCompacting, smoothScrollToBottom, scrollToBottomInstant])
 
-  // Автоскролл при стриминге — единый путь через smoothScrollToBottom.
-  // (Раньше тут был прямой прыжок el.scrollTop = ... — конкурировал с
-  // RAF-loop из ResizeObserver и вызывал рывки/джиттер.)
-  useEffect(() => {
-    if (!autoScrollRef.current || !isTyping) return
-    smoothScrollToBottom()
-  }, [streamingText, live.iters, live.steps, isTyping, smoothScrollToBottom])
+  // Автоскролл при стриминге покрывается ResizeObserver-эффектом выше
+  // (inner элемент растёт каждый токен → RO → smoothScrollToBottom). Раньше
+  // тут был отдельный effect на [streamingText, live.iters, live.steps],
+  // который дублировал RO и добавлял лишний ре-рендер/ре-флоу каждый токен.
+  // RO уже батчит и рейлит на rAF-loop — этого достаточно.
 
   const selectChat = async (id: string) => {
     setIsLoadingMessages(true)
@@ -1367,8 +1438,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     count: displayMessages.length,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
-    overscan: 5,
-    measureElement: (el) => el.getBoundingClientRect().height,
+    // overscan 10 (вместо 5): больше элементов держится смонтированными вокруг
+    // вьюпорта → меньше mount/unmount циклов при скролле → меньше ре-парсов
+    // markdown больших сообщений при переходе границы. Памяти чуть больше,
+    // но плавность скролла важнее.
+    overscan: 10,
+    // measureElement убран — отдаём tanstack дефолтный (ResizeObserver-based,
+    // батчит измерения вместо getBoundingClientRect на каждый вызов, который
+    // форсит synchronous reflow на каждом токене стрима).
   })
 
   return (
@@ -1483,6 +1560,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   const liveThinking = isLive && live.thinking
                     ? { text: live.thinking, isLive: live.isThinkingLive, ms: live.thinkingMs }
                     : undefined
+                  // Анимируем только первое появление сообщения; при scroll-remount
+                  // того же id виртуализатором — shouldAnimate=false (иначе «плывёт»).
+                  const shouldAnimate = !animatedMsgIdsRef.current.has(msg.id)
+                  if (shouldAnimate) animatedMsgIdsRef.current.add(msg.id)
                   return (
                     <VirtualMessageItem
                       key={msg.id}
@@ -1500,6 +1581,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       isStreaming={isLive && isTyping}
                       isWaiting={isLive && isTyping}
                       rateLimitSec={isLive ? rateLimitSec : undefined}
+                      shouldAnimate={shouldAnimate}
                     />
                   )
                 })}

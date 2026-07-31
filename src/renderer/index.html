@@ -15,21 +15,86 @@
         background: #0e0e12;
         z-index: 9999;
       }
+      /* Тот же radial-gradient фон, что в BootScreen.css, чтобы
+         переход inline→React BootScreen был бесшовным. */
+      #boot-splash__bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at 25% 30%, rgba(232, 232, 236, 0.08) 0%, transparent 45%),
+          radial-gradient(circle at 75% 70%, rgba(232, 232, 236, 0.08) 0%, transparent 50%);
+        opacity: 0.6;
+        pointer-events: none;
+      }
+      #boot-splash__content {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 20px;
+        text-align: center;
+      }
       #boot-splash__logo {
         animation: boot-splash-pulse 4s ease-in-out infinite;
         filter: drop-shadow(0 0 18px rgba(139, 92, 246, 0.3));
       }
+      #boot-splash__spinner {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: rgba(255, 255, 255, 0.5);
+        height: 16px;
+      }
+      #boot-splash__spinner::before {
+        content: "";
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.18);
+        border-top-color: rgba(255, 255, 255, 0.85);
+        border-radius: 50%;
+        animation: boot-splash-spin 0.9s linear infinite;
+      }
+      #boot-splash__status {
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        font-family: system-ui, sans-serif;
+        background: linear-gradient(90deg,
+          rgba(255, 255, 255, 0.1) 0%,
+          rgba(255, 255, 255, 0.1) 30%,
+          rgba(255, 255, 255, 0.95) 50%,
+          rgba(255, 255, 255, 0.1) 70%,
+          rgba(255, 255, 255, 0.1) 100%);
+        background-size: 300% auto;
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        animation: boot-splash-shimmer 2.4s ease-in-out infinite;
+      }
       @keyframes boot-splash-pulse {
         0%, 100% { transform: scale(0.9); opacity: 0.8; }
         50%      { transform: scale(1.05); opacity: 1; }
+      }
+      @keyframes boot-splash-spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes boot-splash-shimmer {
+        0%   { background-position: 150% center; }
+        100% { background-position: -150% center; }
       }
     </style>
   </head>
   <body>
     <div id="root">
       <div id="boot-splash">
-        <div id="boot-splash__logo" style="width:56px;height:56px;border-radius:12.25px;background:linear-gradient(135deg,#8b5cf6,#6366f1);display:flex;align-items:center;justify-content:center;line-height:1;">
-          <span style="font-family:system-ui,sans-serif;font-size:31.5px;font-weight:800;color:#fff;line-height:1;user-select:none;">S</span>
+        <div id="boot-splash__bg"></div>
+        <div id="boot-splash__content">
+          <div id="boot-splash__logo" style="width:56px;height:56px;border-radius:12.25px;background:linear-gradient(135deg,#8b5cf6,#6366f1);display:flex;align-items:center;justify-content:center;line-height:1;">
+            <span style="font-family:system-ui,sans-serif;font-size:31.5px;font-weight:800;color:#fff;line-height:1;user-select:none;">S</span>
+          </div>
+          <div id="boot-splash__spinner"></div>
+          <div id="boot-splash__status">Загрузка…</div>
         </div>
       </div>
     </div>

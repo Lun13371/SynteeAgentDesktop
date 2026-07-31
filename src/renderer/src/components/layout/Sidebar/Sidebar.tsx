@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Chat, Project, Message } from '../../../../../shared/types'
@@ -111,6 +111,7 @@ export default function Sidebar({
   // изменении chats (после каждого ответа setChats(all) → новый ref →
   // teardown+resubscribe IPC listener). Невидимо — тот же behaviour.
   const chatsRef = useRef(chats)
+  const listRef = useRef<HTMLDivElement>(null)
   const onChatsUpdateRef = useRef(onChatsUpdate)
   useEffect(() => { chatsRef.current = chats })
   useEffect(() => { onChatsUpdateRef.current = onChatsUpdate })
@@ -152,6 +153,55 @@ export default function Sidebar({
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [newProjectMenu])
+
+  // Авто-скролл списка чатов к активному чату: при смене currentChatId
+  // (и при первом входе) подскролливаем активный чат в зону видимости.
+  // Скроллим вручную через scrollTop (без scrollIntoView — он скроллит
+  // всех прокручиваемых предков, что вызывает лаг/дёрганье). Раскрываем
+  // свёрнутую группу только если элемента нет в DOM. Если чат уже виден —
+  // ничего не делаем (убирает лишнюю работу при возврате на видимый чат).
+  // useLayoutEffect (вместо useEffect) — выполняется ДО отрисовки браузера,
+  // иначе при ремонте сайдбара (chat→settings→chat) scrollTop сбрасывается в 0,
+  // а скролл прыгает в следующем кадре → видимый прыжок/«лаг».
+  useLayoutEffect(() => {
+    if (!currentChatId) return
+    const container = listRef.current
+    if (!container) return
+
+    const tryScroll = (): boolean => {
+      const el = container.querySelector<HTMLElement>(`[data-chat-id="${currentChatId}"]`)
+      if (!el) return false
+      const cRect = container.getBoundingClientRect()
+      const eRect = el.getBoundingClientRect()
+      // Уже в зоне видимости — скроллить не нужно.
+      if (eRect.top >= cRect.top && eRect.bottom <= cRect.bottom) return true
+      // Элемент выше — выравниваем по верху (с маленьким отступом).
+      // Элемент ниже — по низу.
+      const margin = 4
+      const target = eRect.top < cRect.top
+        ? container.scrollTop + (eRect.top - cRect.top) - margin
+        : container.scrollTop + (eRect.bottom - cRect.bottom) + margin
+      container.scrollTop = target
+      return true
+    }
+
+    // Если элемент уже в DOM (группа раскрыта) — скроллим сразу.
+    if (tryScroll()) return
+
+    // Элемента нет — возможно в свёрнутой группе. Раскрываем.
+    const chat = chatsRef.current.find(c => c.id === currentChatId)
+    if (!chat) return
+    const groupId = chat.projectId ?? '__noproject__'
+    setCollapsedProjects(prev => {
+      if (!prev.has(groupId)) return prev
+      const next = new Set(prev)
+      next.delete(groupId)
+      return next
+    })
+    // После раскрытия (framer-motion анимация ~150мс) скроллим на следующем rAF.
+    const raf = requestAnimationFrame(() => requestAnimationFrame(() => tryScroll()))
+    return () => cancelAnimationFrame(raf)
+  }, [currentChatId])
 
   // Фильтрация по поиску + активному селектору (Все/Проекты/Избранные/Архив).
   // archive-чаты по умолчанию скрыты (filter = 'all' показывает только не-архивные);
@@ -320,6 +370,7 @@ export default function Sidebar({
       ) : (
         <button
           className={`sidebar-chat-item ${currentChatId === chat.id ? 'sidebar-chat-item--active' : ''}`}
+          data-chat-id={chat.id}
           onClick={() => onSelectChat?.(chat.id)}
           onContextMenu={e => handleCtx(e, chat)}
         >
@@ -524,7 +575,7 @@ export default function Sidebar({
       </div>
 
       {/* Список */}
-      <div className="sidebar-list">
+      <div className="sidebar-list" ref={listRef}>
         {chatFilter === 'favorites' || chatFilter === 'archive' ? (
           flatChats.length === 0 ? (
             <div className="sidebar-empty">
