@@ -18,6 +18,21 @@ export type SlashCommandSource = 'builtin' | 'user' | 'project'
 
 export type SlashCommandMode = 'ask' | 'plan' | 'code'
 
+/**
+ * Описание одного аргумента slash-команды для пикера опций (enum).
+ * Если у команды задано `arguments` с непустым `choices`, после выбора
+ * команды открывается многоуровневый пикер: первый аргумент → второй → …
+ * Аргумент без choices — свободный текст (подсказка через description).
+ */
+export interface CommandArgument {
+  name: string
+  description?: string
+  /** Predefined опции для enum-пикера. Пустой/undefined — свободный текст. */
+  choices?: string[]
+  required?: boolean
+  default?: string
+}
+
 export interface SlashCommand {
   name: string
   label: string
@@ -26,6 +41,13 @@ export interface SlashCommand {
   placeholder?: string
   /** Подсказка для аргумента (например "путь к файлу"). Показывается в меню. */
   argumentHint?: string
+  /**
+   * Структурированные аргументы команды для многоуровневого пикера опций.
+   * Опционально — старые команды без этого поля работают как раньше
+   * (свободный текст после `/name`). Для custom .md-команд парсится из
+   * YAML-блока `arguments:` в frontmatter.
+   */
+  arguments?: CommandArgument[]
   systemPrompt: (args: string) => string
   /** Источник: builtin (в коде или вшитый .md), user (userData), project (.syntee/commands). */
   source?: SlashCommandSource
@@ -51,6 +73,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     icon: 'image',
     placeholder: 'описание изображения...',
     source: 'builtin',
+    arguments: [
+      {
+        name: 'style',
+        description: 'Стиль изображения',
+        choices: ['realistic', 'art', 'anime', 'pixel', '3d'],
+        default: 'realistic',
+      },
+    ],
     systemPrompt: (args) =>
       `Пользователь хочет сгенерировать изображение. Описание: "${args}". Используй инструмент generate_image. Если инструмент недоступен, создай подробный промпт для Midjourney/DALL-E.`,
   },
@@ -116,6 +146,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     icon: 'cpu',
     placeholder: 'задача для распределения...',
     source: 'builtin',
+    arguments: [
+      {
+        name: 'strategy',
+        description: 'Стратегия оркестрации суб-агентов',
+        choices: ['spawn', 'parallel', 'sequential'],
+        default: 'spawn',
+      },
+    ],
     systemPrompt: (args) =>
       `Пользователь хочет решить задачу с помощью суб-агентов: "${args}".
 

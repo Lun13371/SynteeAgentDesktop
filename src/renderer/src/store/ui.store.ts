@@ -105,7 +105,7 @@ export const DEFAULT_THEME_SCHEDULE: ThemeSchedule = {
   nightTime: '20:00',
 }
 
-export const useUIStore = create<UIStore>((set) => ({
+export const useUIStore = create<UIStore>((set, get) => ({
   theme: 'dark',
   accentColor: '#ffffff',
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
@@ -138,7 +138,13 @@ export const useUIStore = create<UIStore>((set) => ({
   setTheme: (theme) => set({ theme }),
   setAccentColor: (accentColor) => set({ accentColor }),
   setAgentPanelWidth: (agentPanelWidth) => set({ agentPanelWidth: clampAgentPanelWidth(agentPanelWidth) }),
-  setAgentPanelOpen: (agentPanelOpen) => set({ agentPanelOpen }),
+  setAgentPanelOpen: (open) => {
+    const prev = get().agentPanelOpen
+    set({ agentPanelOpen: open })
+    if (open !== prev) {
+      import('../utils/sounds').then((m) => open ? m.playPanelOpenSound() : m.playPanelCloseSound())
+    }
+  },
   setCurrentPage: (currentPage) => set({ currentPage }),
   setLoading: (isLoading) => set({ isLoading }),
   setBgStyle: (bgStyle) => set({ bgStyle }),

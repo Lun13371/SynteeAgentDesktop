@@ -528,3 +528,25 @@
   margin: 0 -1px;
 }
 
+/* ── Подсветка slash-команды в mirror-слое ──────────────────────────────── */
+/* Имя команды (/command) — акцентный фон, отличает от @mention. */
+.chat-input-mirror .slash-command-highlight {
+  background: color-mix(in srgb, #a855f7 26%, transparent);
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 1px;
+  margin: 0 -1px;
+  font-weight: 600;
+}
+/* Аргументы команды (текст после /command) — приглушённый фон. */
+.chat-input-mirror .slash-command-arg {
+  color: transparent;
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  border-radius: 3px;
+  padding: 0 1px;
+  margin: 0 -1px;
+}
+/* Внутри аргумента @mention сохраняет свой акцентный фон (приоритет по
+   специфичности ниже, поэтому mention-highlight выше по дереву — но т.к.
+   оба transparent color, эффект только фоновый). */
+

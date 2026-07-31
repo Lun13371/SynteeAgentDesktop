@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion, useMotionValue, animate } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
@@ -15,7 +15,9 @@ import './RightPanel.css'
 export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal'
 
 interface RightPanelProps {
+  open: boolean
   onClose: () => void
+  onExitComplete: () => void
   focusAgentId?: string | null
   currentChatId?: string | null
 }
@@ -29,28 +31,38 @@ const TABS: Array<{ id: RightPanelTab; label: string; icon: 'git-branch' | 'fold
   { id: 'terminal', label: 'Терминал', icon: 'terminal' },
 ]
 
-export default function RightPanel({ onClose, focusAgentId, currentChatId }: RightPanelProps) {
+export default function RightPanel({ open, onClose, onExitComplete, focusAgentId, currentChatId }: RightPanelProps) {
   const [tab, setTab] = useState<RightPanelTab>('sidechat')
   const [workdir, setWorkdir] = useState<string | null>(null)
   const [contentReady, setContentReady] = useState(false)
-  const [closing, setClosing] = useState(false)
   const setAgentPanelWidth = useUIStore(s => s.setAgentPanelWidth)
 
   // ── useMotionValue: ширина и прозрачность обходят React полностью ────
   // Во время dragging widthMV.set() пишет напрямую в DOM — 0 ре-рендеров.
   const widthMV = useMotionValue(0)
   const opacityMV = useMotionValue(0)
-  const closeControlsRef = useRef<ReturnType<typeof animate> | null>(null)
 
-  // Открытие: 0 → panelWidth+6 (spring). После — contentReady=true.
+  // Анимацией открыт/закрыт управляет проп open. Стор падает мгновенно
+  // (toggle в топ-баре всегда читает актуальное состояние), а RightPanelHost
+  // держит панель смонтированной пока open=false для exit-анимации.
   useEffect(() => {
-    const w = useUIStore.getState().agentPanelWidth + 6
-    const ctrlW = animate(widthMV, w, { type: 'spring', stiffness: 380, damping: 32 })
-    const ctrlO = animate(opacityMV, 1, { duration: 0.15 })
-    const timer = setTimeout(() => setContentReady(true), 250)
-    return () => { ctrlW.stop(); ctrlO.stop(); clearTimeout(timer) }
+    if (open) {
+      const w = useUIStore.getState().agentPanelWidth + 6
+      const ctrlW = animate(widthMV, w, { type: 'spring', stiffness: 380, damping: 32 })
+      const ctrlO = animate(opacityMV, 1, { duration: 0.15 })
+      const timer = setTimeout(() => setContentReady(true), 250)
+      return () => { ctrlW.stop(); ctrlO.stop(); clearTimeout(timer) }
+    }
+    // open === false → exit-анимация
+    setContentReady(false)
+    const ctrlW = animate(widthMV, 0, {
+      type: 'spring', stiffness: 380, damping: 32,
+      onComplete: () => onExitComplete(),
+    })
+    const ctrlO = animate(opacityMV, 0, { duration: 0.15 })
+    return () => { ctrlW.stop(); ctrlO.stop() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [open])
 
   useEffect(() => {
     if (!currentChatId) return
@@ -75,23 +87,6 @@ export default function RightPanel({ onClose, focusAgentId, currentChatId }: Rig
     window.syntee.settings.set('agentPanelWidth', w)
   }, [widthMV, setAgentPanelWidth])
 
-  // Закрытие: анимируем width→0 и opacity→0, ПОТОМ зовём onClose().
-  // Без AnimatePresence — нет конфликта exit props с useMotionValue,
-  // нет перекрытия старой/новой панели при быстром reopen.
-  const handleClose = useCallback(() => {
-    if (closing) return
-    setClosing(true)
-    setContentReady(false)
-    closeControlsRef.current?.stop()
-    closeControlsRef.current = animate(widthMV, 0, {
-      type: 'spring', stiffness: 380, damping: 32,
-      onComplete: () => onClose(),
-    })
-    animate(opacityMV, 0, { duration: 0.15 })
-  }, [closing, widthMV, opacityMV, onClose])
-
-  useEffect(() => () => { closeControlsRef.current?.stop() }, [])
-
   return (
     <motion.div
       className="right-panel-wrapper"
@@ -114,7 +109,7 @@ export default function RightPanel({ onClose, focusAgentId, currentChatId }: Rig
                 </button>
               ))}
             </div>
-            <IconButton icon="x" label="Закрыть панель" size="sm" onClick={handleClose} />
+            <IconButton icon="x" label="Закрыть панель" size="sm" onClick={onClose} />
           </div>
 
           <div className="right-panel__content">

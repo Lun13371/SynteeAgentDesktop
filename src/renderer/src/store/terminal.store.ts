@@ -124,8 +124,15 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   switchSession: (sessionId) => set({ activeSessionId: sessionId }),
 
-  setDockOpen: (open) => set({ dockOpen: open }),
-  toggleDock: () => set((st) => ({ dockOpen: !st.dockOpen })),
+  setDockOpen: (open) => {
+    set({ dockOpen: open })
+    import('../utils/sounds').then((m) => open ? m.playPanelOpenSound() : m.playPanelCloseSound())
+  },
+  toggleDock: () => {
+    const next = !get().dockOpen
+    set({ dockOpen: next })
+    import('../utils/sounds').then((m) => next ? m.playPanelOpenSound() : m.playPanelCloseSound())
+  },
   setDockHeight: (h) => set({ dockHeight: Math.max(DOCK_HEIGHT_MIN, Math.round(h)) }),
   markAiBusy: (sessionId, busy) => set((st) => {
     const next = new Set(st.aiBusySessionIds)

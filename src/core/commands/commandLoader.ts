@@ -28,7 +28,7 @@
 import { existsSync, statSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import type { SlashCommand, SlashCommandSource, SlashCommandMode } from '../../shared/slashCommands'
+import type { SlashCommand, SlashCommandSource, SlashCommandMode, CommandArgument } from '../../shared/slashCommands'
 
 interface ParsedFrontmatter {
   name?: string
@@ -39,6 +39,7 @@ interface ParsedFrontmatter {
   mode?: SlashCommandMode
   skill?: string
   allowedTools?: string[]
+  arguments?: CommandArgument[]
   raw: Record<string, string>
 }
 
@@ -67,8 +68,77 @@ function parseFlatYaml(text: string): ParsedFrontmatter {
     allowedTools: raw['allowed-tools']
       ? raw['allowed-tools'].split(',').map(s => s.trim()).filter(Boolean)
       : undefined,
+    arguments: parseArgumentsBlock(text),
     raw,
   }
+}
+
+/**
+ * Парсер блока `arguments:` из frontmatter. Поддерживает минимальный
+ * YAML-массив объектов с отступами:
+ *
+ *   arguments:
+ *     - name: mode
+ *       description: Режим выполнения
+ *       choices: ask, plan, code
+ *       default: ask
+ *       required: true
+ *     - name: target
+ *       choices: frontend, backend
+ *
+ * Под-поля (description/choices/default/required) привязываются к
+ * текущему аргументу. choices — comma-separated строка (как allowed-tools).
+ * Возвращает undefined если блока нет или он пуст.
+ */
+function parseArgumentsBlock(fmText: string): CommandArgument[] | undefined {
+  const lines = fmText.split(/\r?\n/)
+  let i = 0
+  // Ищем строку `arguments:` на верхнем уровне (без отступа, без значения).
+  for (; i < lines.length; i++) {
+    if (/^arguments\s*:\s*$/.test(lines[i])) { i++; break }
+  }
+  if (i >= lines.length) return undefined
+  const args: CommandArgument[] = []
+  let cur: CommandArgument | null = null
+  for (; i < lines.length; i++) {
+    const line = lines[i]
+    // Конец блока — строка без отступа и непустая (новый топ-уровень ключ).
+    if (line.length > 0 && !/^\s/.test(line)) break
+    // Пропуск пустых строк внутри блока.
+    if (!line.trim()) continue
+    // Новый аргумент: `- name: value`
+    const itemMatch = line.match(/^\s+-\s+name\s*:\s*(.*)$/)
+    if (itemMatch) {
+      if (cur) args.push(cur)
+      cur = { name: unquote(itemMatch[1].trim()) }
+      continue
+    }
+    if (!cur) continue
+    // Под-поле текущего аргумента.
+    const fieldMatch = line.match(/^\s+(description|choices|default|required)\s*:\s*(.*)$/)
+    if (!fieldMatch) continue
+    const key = fieldMatch[1]
+    const val = fieldMatch[2].trim()
+    if (key === 'choices') {
+      cur.choices = val ? val.split(',').map(s => unquote(s.trim())).filter(Boolean) : []
+    } else if (key === 'required') {
+      cur.required = val === 'true' || val === 'yes' || val === '1'
+    } else if (key === 'default') {
+      cur.default = unquote(val) || undefined
+    } else if (key === 'description') {
+      cur.description = unquote(val) || undefined
+    }
+  }
+  if (cur) args.push(cur)
+  return args.length > 0 ? args : undefined
+}
+
+/** Снимает окружающие кавычки (одинарные/двойные). */
+function unquote(s: string): string {
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1)
+  }
+  return s
 }
 
 /**
@@ -95,6 +165,7 @@ function parseCommandFile(filePath: string, source: SlashCommandSource): SlashCo
   let mode: SlashCommandMode | undefined
   let skill: string | undefined
   let allowedTools: string[] | undefined
+  let cmdArguments: CommandArgument[] | undefined
   let template = content
 
   // frontmatter: файл начинается с --- на первой строке
@@ -109,6 +180,7 @@ function parseCommandFile(filePath: string, source: SlashCommandSource): SlashCo
     mode = fm.mode
     skill = fm.skill
     allowedTools = fm.allowedTools
+    cmdArguments = fm.arguments
     template = fmMatch[2] ?? ''
   } else {
     // Без frontmatter: первая непустая строка = описание
@@ -149,6 +221,7 @@ function parseCommandFile(filePath: string, source: SlashCommandSource): SlashCo
     allowedTools,
     mode,
     skill,
+    arguments: cmdArguments,
     custom: true,
   }
 }
