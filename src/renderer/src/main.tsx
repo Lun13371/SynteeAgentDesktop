@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { Component, type ErrorInfo, type ReactNode } from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import TrayMenuApp from './pages/TrayMenu/TrayMenuApp'
@@ -18,6 +18,67 @@ declare global {
 // chat preload в этом окне (это frameless-меню, ему нужен только UI).
 function isTrayMenuRoute(): boolean {
   return window.location.hash.replace('#/', '') === 'tray-menu'
+}
+
+/**
+ * Страховка от зависания inline #boot-splash при падении React.
+ *
+ * Inline-сплэш из index.html удаляется только когда React монтируется через
+ * createRoot().render() (он заменяет детей #root). Если во время рендера App
+ * произойдёт исключение, React не смонтируется и #boot-splash останется на
+ * экране навсегда — пользователь увидит зависший логотип без способа
+ * восстановиться. Этот boundary ловит ошибку, убирает #boot-splash вручную и
+ * показывает fallback с кнопкой перезагрузки.
+ */
+class RootErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false }
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    // Убираем зависший inline-сплэш — React не смог его заменить.
+    document.getElementById('boot-splash')?.remove()
+    // Пробуем логировать в main-процесс как остальные ошибки в приложении.
+    try { window.syntee?.system?.logError?.(String(error), info.componentStack ?? '') } catch { /* noop */ }
+  }
+
+  render(): ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 20,
+          background: '#0e0e12', color: '#fff', fontFamily: 'system-ui, sans-serif',
+          textAlign: 'center', padding: 24, zIndex: 9999,
+        }}>
+          <div style={{
+            width: 56, height: 56, borderRadius: 12.25,
+            background: 'linear-gradient(135deg,#8b5cf6,#6366f1)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 31.5, fontWeight: 800, lineHeight: 1,
+          }}>S</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>Что-то пошло не так</div>
+          <div style={{ fontSize: 13, opacity: 0.6, maxWidth: 360 }}>
+            Приложение столкнулось с неожиданной ошибкой при запуске.
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              marginTop: 8, padding: '10px 20px', borderRadius: 8,
+              border: '1px solid rgba(255,255,255,0.18)',
+              background: 'rgba(255,255,255,0.06)', color: '#fff',
+              fontSize: 14, fontWeight: 500, cursor: 'pointer',
+            }}
+          >
+            Перезагрузить
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 // Заглушка для браузерного режима (вне Electron)
@@ -87,6 +148,8 @@ document.addEventListener('drop', (e) => e.preventDefault())
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    {isTrayMenuRoute() ? <TrayMenuApp /> : <App />}
+    <RootErrorBoundary>
+      {isTrayMenuRoute() ? <TrayMenuApp /> : <App />}
+    </RootErrorBoundary>
   </React.StrictMode>
 )

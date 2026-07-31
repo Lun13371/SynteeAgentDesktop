@@ -286,6 +286,20 @@ export default function App() {
   // modelsReady — модели gateway загружены (для залогиненных) ИЛИ не нужны
   // (гостевой режим). Boot ждёт это, чтобы ModelSelector сразу показал список.
   const [modelsReady, setModelsReady] = useState(false)
+  // fontsReady — document.fonts.ready отрезолвился. Убирает мелькание шрифтов
+  // (FOUT/FOIT) сразу после исчезновения BootScreen.
+  const [fontsReady, setFontsReady] = useState(false)
+  // uiPainted — основной UI (login/app-слой) успел сделать первый layout
+  // (двойной rAF). BootScreen не запускает exit пока это false, иначе crossfade
+  // покажет пустой/недоотрисованный контейнер вместо готового UI.
+  const [uiPainted, setUiPainted] = useState(false)
+  // minBootShown — минимум ~500мс показа BootScreen, чтобы он не мелькал
+  // одним кадром при быстрых загрузках (SQLite IPC ~30-60мс).
+  const [minBootShown, setMinBootShown] = useState(false)
+  // bootRendered — ChatPage подтвердил первый рендер реального контента.
+  // Гейтит исчезновение BootScreen в app-режиме: app-обёртка может отрисоваться
+  // раньше, чем ChatPage внутри (virtualizer, sidebar) отрисует данные из store.
+  const bootRendered = useChatStore(s => s.bootRendered)
 
   const mainPage = useNavStore(s => s.mainPage)
   const toggleMainPage = useNavStore(s => s.toggleMainPage)
@@ -396,6 +410,22 @@ export default function App() {
       }
     }
     applyVisualSettings()
+  }, [])
+
+  // Ждём готовности веб-шрифтов, чтобы после исчезновения BootScreen не было
+  // мелькания (FOUT/FOIT) при подмене fallback-шрифтов на целевые.
+  useEffect(() => {
+    if (!('fonts' in document)) { setFontsReady(true); return }
+    let cancelled = false
+    document.fonts.ready.then(() => { if (!cancelled) setFontsReady(true) })
+    return () => { cancelled = true }
+  }, [])
+
+  // Min-display BootScreen: минимум 500мс показа, чтобы при быстрых загрузках
+  // он не мелькал одним кадром (SQLite IPC ~30-60мс).
+  useEffect(() => {
+    const t = setTimeout(() => setMinBootShown(true), 500)
+    return () => clearTimeout(t)
   }, [])
 
   // При ресайзе окна — ре-клампим ширину панели. Если окно сузили,
@@ -608,14 +638,15 @@ export default function App() {
         store.setProjects(projects)
         if (chats.length > 0) {
           const firstId = chats[0].id
-          // Параллельно: messages + queue для первого чата.
-          const [msgs, queue] = await Promise.all([
-            window.syntee.chat.getMessages(firstId),
+          // Параллельно: последняя страница сообщений + queue для первого чата.
+          // Пагинация: грузим только хвост (20), остальное — по скроллу вверх.
+          const [page, queue] = await Promise.all([
+            window.syntee.chat.getMessagesPage(firstId, 20),
             window.syntee.chat.getQueue(firstId).catch(() => []),
           ])
           if (cancelled) return
           store.setCurrentChat(firstId)
-          store.setMessages(msgs)
+          store.setMessagesWindow(firstId, (page as { messages: unknown[] }).messages as any, (page as { hasMore: boolean }).hasMore)
           store.setQueue(firstId, queue as any)
           store.markChatRead(firstId)
         }
@@ -649,9 +680,13 @@ export default function App() {
 
   // Когда юзер появился (успешный вход через браузер) — переключаемся в app.
   // Сбрасываем loginSkipped — юзер явно вошёл, больше не гость.
+  // Также сбрасываем bootRendered — ChatPage будет перемонтирован (с login-слоя
+  // на app-слой), он снова должен подтвердить первый рендер, иначе BootScreen
+  // уйдёт раньше, чем ChatPage отрисует данные вошедшего пользователя.
   useEffect(() => {
     if (authUser && authBoot !== 'app') {
       window.syntee.settings.set('loginSkipped', false)
+      useChatStore.getState().setBootRendered(false)
       setAuthBoot('app')
     }
   }, [authUser, authBoot])
@@ -739,9 +774,16 @@ export default function App() {
   // authBoot === null — auth check ещё идёт (auth.me HTTP, до 2с).
   // authBoot === 'app' && !dataReady — chats/projects/messages предзагружаются.
   // authBoot === 'app' && !modelsReady — модели gateway грузятся (до 8с).
-  const bootDone = settingsReady
+  // fontsReady — веб-шрифты загружены, не будет FOUT после исчезновения сплэша.
+  // minBootShown — минимум 500мс показа BootScreen, чтобы он не мелькал.
+  // uiPainted — основной UI сделал первый layout; BootScreen не уходит раньше.
+  // Замечание: при браузер-логине authBoot меняется 'login'→'app', и в этот
+  // момент dataReady/modelsReady ещё false → bootDone падает в false →
+  // BootScreen сам повторно показывается (без отдельной postLoginLoading-логики).
+  const dataBootDone = settingsReady
     && authBoot !== null
     && (authBoot !== 'app' || (dataReady && modelsReady))
+  const bootDone = dataBootDone && fontsReady && minBootShown
   const bootStatus = !settingsReady
     ? 'Загрузка интерфейса…'
     : authBoot === null
@@ -751,10 +793,34 @@ export default function App() {
         : !modelsReady
           ? 'Загрузка моделей…'
           : 'Готово'
+  // BootScreen остаётся, пока не готовы данные ИЛИ UI ещё не отрисован.
+  // uiPainted гейтит момент запуска exit-анимации — app-обёртка должна быть
+  // отрисована, иначе crossfade покажет пустой контейнер.
+  // bootRendered (только для app-режима) — ChatPage внутри app-слоя подтвердил
+  // что отрисовал чаты/сообщения, а не пустой шелл. LoginScreen не выставляет
+  // этот флаг, поэтому в login-режиме он не гейтит.
+  const showBootScreen = !bootDone
+    || !uiPainted
+    || (authBoot === 'app' && !bootRendered)
+
+  // Когда bootDone готов — даём UI-слою смонтироваться и зафиксировать первый
+  // layout (двойной rAF), только тогда помечаем uiPainted=true — BootScreen
+  // получает разрешение на exit. При повторном показе (браузер-логин) uiPainted
+  // сбрасывается, снова ждём отрисовку.
+  useEffect(() => {
+    if (bootDone) {
+      const raf2 = requestAnimationFrame(() => requestAnimationFrame(() => {
+        setUiPainted(true)
+      }))
+      return () => cancelAnimationFrame(raf2)
+    } else {
+      setUiPainted(false)
+    }
+  }, [bootDone])
 
   return (
     <AnimatePresence mode="sync">
-      {!bootDone && <BootScreen key="boot" status={bootStatus} />}
+      {showBootScreen && <BootScreen key="boot" status={bootStatus} />}
       {bootDone && authBoot === 'login' && (
         <motion.div
           key="login"
@@ -800,8 +866,14 @@ export default function App() {
               onUpdateClick={() => setUpdateModalOpen(true)}
             />
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
-              <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
-                {mainPage === 'chat' && <ChatPage embedded />}
+              <div style={{ flex: 1, overflow: 'hidden', display: 'flex', position: 'relative' }}>
+                {/* ChatPage держится всегда смонтированным (keep-alive):
+                    сайдбар/virtualizer не ре-инициализируются при переключении
+                    вкладок → нет лага при возврате в чат. Скрываем через
+                    visibility:hidden (сохраняет размеры для virtualizer). */}
+                <div className={`page-host ${mainPage === 'chat' ? '' : 'page-host--hidden'}`}>
+                  <ChatPage embedded />
+                </div>
                 {mainPage === 'settings' && <SettingsPage />}
                 {mainPage === 'memory' && <MemoryPage />}
                 {mainPage === 'messenger' && <MessengerPage />}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import mermaid from 'mermaid'
 
 mermaid.initialize({
@@ -24,6 +24,12 @@ mermaid.initialize({
 
 let idCounter = 0
 
+// Module-level кэш SVG по коду диаграммы. Виртуализатор монтирует/демонтирует
+// MessageBubble при скролле; без кэша MermaidBlock терял SVG при демонтировании
+// и ре-рендерил mermaid (после 500мс debounce) при каждом возврате в зону видимости
+// → мигания «···» и расход CPU. С кэшем — мгновенно готовый SVG.
+const svgCache = new Map<string, string>()
+
 // Код считается "завершённым" если последняя непустая строка — не стрелка/разделитель
 function isLikelyComplete(code: string): boolean {
   const trimmed = code.trim()
@@ -37,14 +43,20 @@ function isLikelyComplete(code: string): boolean {
   return true
 }
 
-export default function MermaidBlock({ code }: { code: string }) {
-  const [svg, setSvg] = useState<string>('')
+const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
+  // Стартовое состояние — из кэша, если диаграмма уже рендерилась (скролл-remount).
+  const [svg, setSvg] = useState<string>(() => svgCache.get(code) ?? '')
   const [error, setError] = useState<string | null>(null)
   const idRef = useRef(`mermaid-${++idCounter}`)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeRef = useRef(0)  // версия — отменяем устаревшие рендеры
 
   useEffect(() => {
+    // Уже в кэше — сразу показываем, mermaid не дёргаем.
+    if (svgCache.has(code)) {
+      setSvg(svgCache.get(code)!)
+      return
+    }
     // Не рендерим незавершённый код во время стриминга
     if (!isLikelyComplete(code)) return
 
@@ -59,6 +71,7 @@ export default function MermaidBlock({ code }: { code: string }) {
         // Если за время рендера пришёл новый вызов — игнорируем
         if (version !== activeRef.current) return
         setError(null)
+        svgCache.set(code, result.svg)
         setSvg(result.svg)
       } catch (e: unknown) {
         if (version !== activeRef.current) return
@@ -97,4 +110,6 @@ export default function MermaidBlock({ code }: { code: string }) {
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   )
-}
+})
+
+export default MermaidBlock

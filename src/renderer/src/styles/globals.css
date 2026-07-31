@@ -559,3 +559,17 @@ body {
 .rounded-md { border-radius: var(--radius-md); }
 .rounded-lg { border-radius: var(--radius-lg); }
 .rounded-xl { border-radius: var(--radius-xl); }
+
+/* Keep-alive хост для страниц. ChatPage держится всегда смонтированным
+   (сайдбар/virtualizer не ре-инициализируются при переключении вкладок);
+   скрытие через visibility:hidden сохраняет размеры контейнера, чтобы
+   virtualizer не рендерил 0 элементов и не требовал re-measure при показе. */
+.page-host { flex: 1; min-width: 0; overflow: hidden; display: flex; }
+.page-host--hidden {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  z-index: -1;
+}

@@ -134,6 +134,23 @@ export function useContextCounter({
     window.syntee.context.calculate(chatId).catch(() => { /* тихо — не критично */ })
   }, [chatId, enabled])
 
+  // Compaction: main эмитит CHAT_COMPACTED после сжатия, затем шлёт свежий
+  // CONTEXT_USAGE с source:'real' на основе пост-сжатого estimate. Но если
+  // по какой-то причине CONTEXT_USAGE не дошёл/пришёл раньше CHAT_COMPACTED,
+  // lastRealRef может держать устаревший real-снапшот (до-сжатия). Сбрасываем
+  // его по факту compaction-события — это разблокирует real-priority gate
+  // для следующего CONTEXT_USAGE (post-compact real или estimate).
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    const handler = (data: unknown) => {
+      const d = data as { chatId?: string }
+      if (d.chatId && d.chatId !== chatId) return
+      lastRealRef.current = null
+    }
+    const off = window.syntee.on(IPC_EVENTS.CHAT_COMPACTED, handler as (...args: unknown[]) => void)
+    return off
+  }, [enabled, chatId])
+
   // Live-обновление при печати — лёгкий estimateInput (только текущий текст, без истории)
   useEffect(() => {
     if (!enabled) return

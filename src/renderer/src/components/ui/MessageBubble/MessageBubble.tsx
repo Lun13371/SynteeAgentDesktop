@@ -4,8 +4,69 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+// PrismLight вместо полного Prism: регистрируем только нужные языки, а не
+// все ~270 грамматик. Подсветка идентична, но бандл меньше и каждый вызов
+// ре-токенизации кода (в т.ч. при стриминге) дешевле.
+import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx'
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript'
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript'
+import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx'
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python'
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json'
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
+import shell from 'react-syntax-highlighter/dist/esm/languages/prism/shell-session'
+import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql'
+import go from 'react-syntax-highlighter/dist/esm/languages/prism/go'
+import rust from 'react-syntax-highlighter/dist/esm/languages/prism/rust'
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
+import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown'
+import css from 'react-syntax-highlighter/dist/esm/languages/prism/css'
+import html from 'react-syntax-highlighter/dist/esm/languages/prism/markup'
+import java from 'react-syntax-highlighter/dist/esm/languages/prism/java'
+import c from 'react-syntax-highlighter/dist/esm/languages/prism/c'
+import cpp from 'react-syntax-highlighter/dist/esm/languages/prism/cpp'
+import csharp from 'react-syntax-highlighter/dist/esm/languages/prism/csharp'
+import php from 'react-syntax-highlighter/dist/esm/languages/prism/php'
+import ruby from 'react-syntax-highlighter/dist/esm/languages/prism/ruby'
+import diffLang from 'react-syntax-highlighter/dist/esm/languages/prism/diff'
+
+SyntaxHighlighter.registerLanguage('tsx', tsx)
+SyntaxHighlighter.registerLanguage('typescript', typescript)
+SyntaxHighlighter.registerLanguage('ts', typescript)
+SyntaxHighlighter.registerLanguage('javascript', javascript)
+SyntaxHighlighter.registerLanguage('js', javascript)
+SyntaxHighlighter.registerLanguage('jsx', jsx)
+SyntaxHighlighter.registerLanguage('python', python)
+SyntaxHighlighter.registerLanguage('py', python)
+SyntaxHighlighter.registerLanguage('json', json)
+SyntaxHighlighter.registerLanguage('bash', bash)
+SyntaxHighlighter.registerLanguage('sh', bash)
+SyntaxHighlighter.registerLanguage('shell', shell)
+SyntaxHighlighter.registerLanguage('console', shell)
+SyntaxHighlighter.registerLanguage('sql', sql)
+SyntaxHighlighter.registerLanguage('go', go)
+SyntaxHighlighter.registerLanguage('rust', rust)
+SyntaxHighlighter.registerLanguage('rs', rust)
+SyntaxHighlighter.registerLanguage('yaml', yaml)
+SyntaxHighlighter.registerLanguage('yml', yaml)
+SyntaxHighlighter.registerLanguage('markdown', markdown)
+SyntaxHighlighter.registerLanguage('md', markdown)
+SyntaxHighlighter.registerLanguage('css', css)
+SyntaxHighlighter.registerLanguage('html', html)
+SyntaxHighlighter.registerLanguage('xml', html)
+SyntaxHighlighter.registerLanguage('markup', html)
+SyntaxHighlighter.registerLanguage('java', java)
+SyntaxHighlighter.registerLanguage('c', c)
+SyntaxHighlighter.registerLanguage('cpp', cpp)
+SyntaxHighlighter.registerLanguage('c++', cpp)
+SyntaxHighlighter.registerLanguage('csharp', csharp)
+SyntaxHighlighter.registerLanguage('cs', csharp)
+SyntaxHighlighter.registerLanguage('php', php)
+SyntaxHighlighter.registerLanguage('ruby', ruby)
+SyntaxHighlighter.registerLanguage('rb', ruby)
+SyntaxHighlighter.registerLanguage('diff', diffLang)
 import PlanCard from '../PlanCard/PlanCard'
 import Logo from '../Logo/Logo'
 import AttachmentChips from '../AttachmentChips/AttachmentChips'
@@ -80,6 +141,10 @@ interface MessageBubbleProps {
   isStreaming?: boolean
   isWaiting?: boolean
   rateLimitSec?: number
+  /** Проигрывать ли entrance-анимацию. true только при первом монтировании
+   * сообщения; false при scroll-remount того же сообщения виртуализатором,
+   * иначе анимация повторяется при каждом скролле → «интерфейс плывёт». */
+  shouldAnimate?: boolean
 }
 
 const codeStyle = {
@@ -109,6 +174,26 @@ const CodeHighlighter = memo(function CodeHighlighter({ raw, lang }: { raw: stri
     </SyntaxHighlighter>
   )
 }, (prev, next) => prev.raw === next.raw && prev.lang === next.lang)
+
+// Кнопка копирования код-блока — владеет своим copied-состоянием локально.
+// Раньше copiedBlock жил в MessageContent и при каждом клике пересоздавал
+// mdComponents → ре-парс ВСЕХ ReactMarkdown-сегментов в сообщении. Теперь
+// mdComponents стабилен (useMemo []), копирование не триггерит ре-парс.
+const CopyButton = memo(function CopyButton({ raw }: { raw: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      className={`code-copy-btn ${copied ? 'code-copy-btn--copied' : ''}`}
+      onClick={() => {
+        navigator.clipboard.writeText(raw)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }}
+    >
+      {copied ? '✓ Скопировано' : 'Копировать'}
+    </button>
+  )
+})
 
 // Diff рендерер
 const DiffBlock = memo(function DiffBlock({ code }: { code: string }) {
@@ -153,6 +238,23 @@ const AdmonitionBlock = memo(function AdmonitionBlock({ kind, title, children }:
 // allowPlanCard: если false — <plan>-теги НЕ парсятся, остаются как текст.
 // Это защищает от рендеринга <plan> вне режима планирования (модель может
 // ошибочно написать тег, но он не должен стать PlanCard).
+// Module-level кэш segments из parseContent. parseContent делает строковое
+// разбиение (admonitions/plan) — не тяжёлое, но при scroll-mount большого
+// сообщения каждый раз пересоздаёт массивы. Кэш переиспользуется跨 mounts
+// виртуализатора. Ключ — text+allowPlanCard (строки, иммутабельные).
+const parseContentCache = new Map<string, ReturnType<typeof parseContent>>()
+function parseContentCached(raw: string, allowPlanCard = false): ReturnType<typeof parseContent> {
+  const key = allowPlanCard ? '1' + raw : '0' + raw
+  let segs = parseContentCache.get(key)
+  if (!segs) {
+    segs = parseContent(raw, allowPlanCard)
+    // Ограничиваем размер кэша, чтобы не текло по памяти на длинных чатах.
+    if (parseContentCache.size > 500) parseContentCache.clear()
+    parseContentCache.set(key, segs)
+  }
+  return segs
+}
+
 function parseContent(raw: string, allowPlanCard = false): Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> {
   // 1. Если PlanCard не разрешён — пропускаем <plan>-парсинг, весь текст как md.
   if (!allowPlanCard) {
@@ -236,14 +338,12 @@ function parseContent(raw: string, allowPlanCard = false): Array<{ type: 'md' | 
 
 // ── renderParsedSegments: рендер массива сегментов из parseContent ─────────
 // Переиспользуется в 4 местах (основной рендер, iterations, liveTextAfter).
-// Принимает memoизированные remarkPlugins/rehypePlugins/mdComponents чтобы
-// не создавать новые экземпляры. plan-сегменты рендерятся в PlanCard (live
-// во время стрима — partial=true, после — с filePath из message.planData).
+// Использует module-level mdComponents (стабилен). plan-сегменты рендерятся
+// в PlanCard (live во время стрима — partial=true, после — с filePath).
 function renderParsedSegments(
   segs: ReturnType<typeof parseContent>,
   remarkPlugins: readonly unknown[],
   rehypePlugins: readonly unknown[],
-  mdComponents: Record<string, unknown>,
   planFilePath?: string,
 ): React.ReactNode {
   return segs.map((s, i) => {
@@ -279,29 +379,85 @@ function renderParsedSegments(
   })
 }
 
+// ── Module-level mdComponents: единый стабильный объект для всех экземпляров
+// MessageContent. Компоненты (CodeHighlighter/MermaidBlock/DiffBlock/CopyButton)
+// module-level и не имеют instance-state → mdComponents можно поднять наверх.
+// Это даёт две выгоды: (1) стабилен навсегда — не пересоздаётся, ре-парс не
+// срабатывает при копировании; (2) позволяет кэшировать ReactNode-дерево
+// ParsedContent по text безопасно (компоненты те же во всех экземплярах).
+const mdComponents: Record<string, unknown> = {
+  code({ className, children }: { className?: string; children?: React.ReactNode }) {
+    const match = /language-(\w+)/.exec(className || '')
+    const raw = String(children).replace(/\n$/, '')
+    const isInline = !match && !raw.includes('\n')
+    if (isInline) return <code className="inline-code">{children}</code>
+    const lang = match?.[1] || 'text'
+    if (lang === 'mermaid') return <MermaidBlock code={raw} />
+    if (lang === 'diff') return <DiffBlock code={raw} />
+    return (
+      <div className="code-block">
+        <div className="code-block-header">
+          <span className="code-lang">{lang.toUpperCase()}</span>
+          <CopyButton raw={raw} />
+        </div>
+        <CodeHighlighter raw={raw} lang={lang} />
+      </div>
+    )
+  },
+  table({ children }: { children?: React.ReactNode }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
+  thead({ children }: { children?: React.ReactNode }) { return <thead className="md-thead">{children}</thead> },
+  tr({ children }: { children?: React.ReactNode }) { return <tr className="md-tr">{children}</tr> },
+  th({ children }: { children?: React.ReactNode }) { return <th className="md-th">{children}</th> },
+  td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
+  blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
+  a({ href, children }: { href?: string; children?: React.ReactNode }) { return <a href={href} className="md-link" target="_blank" rel="noreferrer">{children}</a> },
+  hr() { return <hr className="md-hr" /> },
+  p({ children }: { children?: React.ReactNode }) { return <p>{children}</p> },
+}
+
+// ── Module-level кэш отрендеренного ReactNode-дерева по text.
+// Виртуализатор монтирует/демонтирует MessageBubble при скролле; ParsedContent
+// memo per-instance теряется при unmount → ReactMarkdown заново парсит весь
+// markdown (remark→mdast→hast→JSX). Для большого сообщения это 0.3–0.5с фриз
+// на КАЖДОМ scroll-remount. Кэш хранит готовое React-дерево; при remount
+// берём из кэша — ре-парс пропускается. Безопасно: mdComponents module-level
+// стабилен, компоненты (CodeHighlighter/MermaidBlock/CopyButton) те же.
+// Ключ: text + allowPlanCard + набор плагинов (стрим/не-стрим/math/нет-math).
+const parsedRenderCache = new Map<string, React.ReactNode>()
+
 // ── ParsedContent: мемоизированный рендер parseContent ──────────────────
 // Раньше parseContent(...) звался инлайн при каждом флеше стрима (20×/сек),
 // ре-парся markdown AST + KaTeX каждый раз. Теперь каждый экземпляр
 // мемоизирует парс на [text, allowPlanCard] — ре-парс только если текст
 // реально изменился. Невидимо: вывод идентичный.
 const ParsedContent = memo(function ParsedContent({
-  text, allowPlanCard, remarkPlugins, rehypePlugins, mdComponents, planFilePath,
+  text, allowPlanCard, remarkPlugins, rehypePlugins, planFilePath,
 }: {
   text: string
   allowPlanCard: boolean
   remarkPlugins: readonly unknown[]
   rehypePlugins: readonly unknown[]
-  mdComponents: Record<string, unknown>
   planFilePath?: string
 }) {
-  const segs = useMemo(() => parseContent(text, allowPlanCard), [text, allowPlanCard])
-  return <>{renderParsedSegments(segs, remarkPlugins, rehypePlugins, mdComponents, planFilePath)}</>
+  const segs = useMemo(() => parseContentCached(text, allowPlanCard), [text, allowPlanCard])
+  // Ключ кэша: text + allowPlanCard + идентитеты плагинов (стабильные массивы
+  // из useMemo). planFilePath влияет на PlanCard filePath → включаем.
+  const cacheKey = text + '|' + (allowPlanCard ? '1' : '0')
+    + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
+    + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
+    + '|' + (planFilePath ?? '')
+  let node = parsedRenderCache.get(cacheKey)
+  if (!node) {
+    node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath)
+    if (parsedRenderCache.size > 400) parsedRenderCache.clear()
+    parsedRenderCache.set(cacheKey, node)
+  }
+  return <>{node}</>
 }, (prev, next) =>
   prev.text === next.text &&
   prev.allowPlanCard === next.allowPlanCard &&
   prev.remarkPlugins === next.remarkPlugins &&
   prev.rehypePlugins === next.rehypePlugins &&
-  prev.mdComponents === next.mdComponents &&
   prev.planFilePath === next.planFilePath
 )
 
@@ -478,7 +634,6 @@ const MessageContent = memo(function MessageContent({
   lastError?: string | null
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
 }) {
-  const [copiedBlock, setCopiedBlock] = useState<number | null>(null)
   const [showActions, setShowActions] = useState(false)
 
   // PlanCard разрешён только если: (1) план уже сохранён для этого сообщения
@@ -508,49 +663,23 @@ const MessageContent = memo(function MessageContent({
     return { filesChanged, commandsRun }
   }, [toolSteps])
 
-  // Мемоизированные remarkPlugins — не создаём новый массив при каждом рендере
-  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], [])
-  const rehypePlugins = useMemo(() => [rehypeKatex], [])
-
-  // Стабильные components для ReactMarkdown — без inline функций
-  const mdComponents = useMemo(() => {
-    let codeBlockIdx = 0
-    return {
-      code({ className, children }: { className?: string; children?: React.ReactNode }) {
-        const match = /language-(\w+)/.exec(className || '')
-        const raw = String(children).replace(/\n$/, '')
-        const isInline = !match && !raw.includes('\n')
-        if (isInline) return <code className="inline-code">{children}</code>
-        const lang = match?.[1] || 'text'
-        if (lang === 'mermaid') return <MermaidBlock code={raw} />
-        if (lang === 'diff') return <DiffBlock code={raw} />
-        const idx = codeBlockIdx++
-        return (
-          <div className="code-block">
-            <div className="code-block-header">
-              <span className="code-lang">{lang.toUpperCase()}</span>
-              <button
-                className={`code-copy-btn ${copiedBlock === idx ? 'code-copy-btn--copied' : ''}`}
-                onClick={() => { navigator.clipboard.writeText(raw); setCopiedBlock(idx); setTimeout(() => setCopiedBlock(null), 1500) }}
-              >
-                {copiedBlock === idx ? '✓ Скопировано' : 'Копировать'}
-              </button>
-            </div>
-            <CodeHighlighter raw={raw} lang={lang} />
-          </div>
-        )
-      },
-      table({ children }: { children?: React.ReactNode }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
-      thead({ children }: { children?: React.ReactNode }) { return <thead className="md-thead">{children}</thead> },
-      tr({ children }: { children?: React.ReactNode }) { return <tr className="md-tr">{children}</tr> },
-      th({ children }: { children?: React.ReactNode }) { return <th className="md-th">{children}</th> },
-      td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
-      blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
-      a({ href, children }: { href?: string; children?: React.ReactNode }) { return <a href={href} className="md-link" target="_blank" rel="noreferrer">{children}</a> },
-      hr() { return <hr className="md-hr" /> },
-      p({ children }: { children?: React.ReactNode }) { return <p>{children}</p> },
-    }
-  }, [copiedBlock]) // только copiedBlock меняет кнопку
+  // Две стабильные пары плагинов. Во время стриминга используем лёгкий набор
+  // БЕЗ remark-math/rehype-katex: KaTeX ре-парсит все math-узлы на каждом
+  // токене (O(n²) по длине ответа) — это главный источник «фризит пока
+  // печатает». remarkGfm (таблицы/списки/код) дёшево ре-парсится каждый токен.
+  // Когда стрим закончен (isStreaming=false) — полный набор, финальный вид
+  // идентичен (math появится в момент окончания стрима, незаметно).
+  // Доп. оптимия для скролла: даже в не-стриминге (история) большинство
+  // сообщений не содержат математики → пропускаем remark-math/rehype-katex
+  // целиком. Каждый scroll-mount виртуализатора ре-парсит markdown; без
+  // KaTeX-прохода это заметно дешевле → меньше фризов при быстром скролле.
+  const hasMath = useMemo(() => /\$/.test(content), [content])
+  const streamingRemark = useMemo(() => [remarkGfm], [])
+  const fullRemark = useMemo(() => hasMath ? [remarkGfm, remarkMath] : [remarkGfm], [hasMath])
+  const emptyRehype = useMemo<readonly unknown[]>(() => [], [])
+  const fullRehype = useMemo(() => hasMath ? [rehypeKatex] : emptyRehype, [hasMath, emptyRehype])
+  const remarkPlugins = isStreaming ? streamingRemark : fullRemark
+  const rehypePlugins = isStreaming ? emptyRehype : fullRehype
 
   const handleMouseEnter = useCallback(() => setShowActions(true), [])
   const handleMouseLeave = useCallback(() => setShowActions(false), [])
@@ -616,7 +745,7 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} planFilePath={message.planData?.filePath} />
+                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
                     </div>
                   )}
                   {iter.steps.length > 0 && (
@@ -750,7 +879,7 @@ const MessageContent = memo(function MessageContent({
                   {/* Текст ДО тулчейна */}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} planFilePath={message.planData?.filePath} />
+                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
                     </div>
                   )}
                   {/* Тулчейн итерации */}
@@ -793,7 +922,7 @@ const MessageContent = memo(function MessageContent({
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
             {liveTextAfter && (
               <div className="message-content selectable">
-                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} planFilePath={message.planData?.filePath} />
+                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
               </div>
             )}
           </div>
@@ -809,7 +938,7 @@ const MessageContent = memo(function MessageContent({
                 {isUser && !userMarkdown ? (
                   <p>{content}</p>
                 ) : (
-                  renderParsedSegments(segments as ReturnType<typeof parseContent>, remarkPlugins, rehypePlugins, mdComponents, message.planData?.filePath)
+                  renderParsedSegments(segments as ReturnType<typeof parseContent>, remarkPlugins, rehypePlugins, message.planData?.filePath)
                 )}
               </div>
             )
@@ -860,7 +989,7 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
 
 
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec,
+  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -909,7 +1038,10 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <motion.div
       className={`message-wrap ${isUser ? 'message-wrap--user' : 'message-wrap--assistant'} ${searchQuery ? 'message-wrap--search-match' : ''}`}
-      initial={anim.initial}
+      // shouldAnimate=false → initial={false}: framer-motion сразу рисует в
+      // финальном состоянии без проигрывания entrance. При scroll-remount того
+      // же сообщения анимация не повторяется (убирает «плывущий» скролл).
+      initial={shouldAnimate ? anim.initial : false}
       animate={anim.animate}
       transition={anim.transition}
     >
