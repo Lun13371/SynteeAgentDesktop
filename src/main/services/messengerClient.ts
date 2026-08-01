@@ -11,6 +11,7 @@ import { request, getGatewayApiUrl } from './gatewayClient'
 export interface UserBrief {
   id: string
   email: string
+  username?: string | null
   display_name?: string | null
   avatar_url?: string | null
 }
@@ -71,15 +72,15 @@ export async function listFriendRequests(): Promise<FriendResponse[]> {
   return request<FriendResponse[]>('/api/user/friends/requests')
 }
 
-export async function searchUsers(email: string): Promise<UserBrief[]> {
+export async function searchUsers(username: string): Promise<UserBrief[]> {
   const data = await request<{ results: UserBrief[] }>(
-    `/api/user/friends/search?email=${encodeURIComponent(email)}`,
+    `/api/user/friends/search?username=${encodeURIComponent(username)}`,
   )
   return data.results
 }
 
-export async function sendFriendRequest(email: string): Promise<UserBrief> {
-  return request<UserBrief>('/api/user/friends/request', { method: 'POST', body: { email } })
+export async function sendFriendRequest(username: string): Promise<UserBrief> {
+  return request<UserBrief>('/api/user/friends/request', { method: 'POST', body: { username } })
 }
 
 export async function acceptFriendRequest(userId: string): Promise<UserBrief> {

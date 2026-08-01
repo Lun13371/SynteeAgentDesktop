@@ -6,6 +6,7 @@ import { useAuthStore } from './auth.store'
 export interface UserBrief {
   id: string
   email: string
+  username?: string | null
   display_name?: string | null
   avatar_url?: string | null
 }
@@ -123,7 +124,7 @@ interface MessengerStore {
   handleEvent: (envelope: { type: string; data: Record<string, unknown> }) => void
 
   // friends mutations
-  sendFriendRequest: (email: string) => Promise<void>
+  sendFriendRequest: (username: string) => Promise<void>
   acceptFriendRequest: (userId: string) => Promise<void>
   declineFriendRequest: (userId: string) => Promise<void>
   unfriend: (userId: string) => Promise<void>
@@ -526,9 +527,9 @@ export const useMessengerStore = create<MessengerStore>((set, get) => ({
     }
   },
 
-  sendFriendRequest: async (email) => {
+  sendFriendRequest: async (username) => {
     try {
-      await window.syntee.messenger.friends.request(email)
+      await window.syntee.messenger.friends.request(username)
       useToast.getState().add('Заявка отправлена', 'success')
       await get().loadFriends()
     } catch (err) {

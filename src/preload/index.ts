@@ -65,8 +65,9 @@ const synteeAPI = {
 
   // Профиль пользователя gateway (имя, аватар, пароль, API-ключи)
   profile: {
-    update: (payload: { display_name?: string | null; avatar_url?: string | null }) =>
+    update: (payload: { display_name?: string | null; avatar_url?: string | null; username?: string }) =>
       ipcRenderer.invoke('profile:update', payload),
+    checkUsername: (username: string) => ipcRenderer.invoke('profile:checkUsername', username),
     changePassword: (currentPassword: string, newPassword: string) =>
       ipcRenderer.invoke('profile:changePassword', currentPassword, newPassword),
     listApiKeys: () => ipcRenderer.invoke('profile:listApiKeys'),
@@ -125,8 +126,8 @@ const synteeAPI = {
     friends: {
       list: () => ipcRenderer.invoke('messenger:friends:list'),
       requests: () => ipcRenderer.invoke('messenger:friends:requests'),
-      search: (email: string) => ipcRenderer.invoke('messenger:friends:search', email),
-      request: (email: string) => ipcRenderer.invoke('messenger:friends:request', email),
+      search: (username: string) => ipcRenderer.invoke('messenger:friends:search', username),
+      request: (username: string) => ipcRenderer.invoke('messenger:friends:request', username),
       accept: (userId: string) => ipcRenderer.invoke('messenger:friends:accept', userId),
       decline: (userId: string) => ipcRenderer.invoke('messenger:friends:decline', userId),
       unfriend: (userId: string) => ipcRenderer.invoke('messenger:friends:unfriend', userId),

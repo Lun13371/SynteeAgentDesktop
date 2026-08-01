@@ -1,10 +1,19 @@
 import { defineConfig, externalizeDepsPlugin, bytecodePlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
-import { obfuscate, type ObfuscatorOptions } from 'javascript-obfuscator'
+import JavaScriptObfuscator from 'javascript-obfuscator'
 import type { Plugin } from 'vite'
 import { resolve } from 'path'
 
+const { obfuscate } = JavaScriptObfuscator
+type ObfuscatorOptions = typeof JavaScriptObfuscator extends { obfuscate: (code: string, opts?: infer O) => unknown }
+  ? O
+  : Record<string, unknown>
 // ── Source-code protection ───────────────────────────────────────────────
+// Включается ТОЛЬКО через SYNTEE_PROTECT=1 (его выставляют build-release.bat
+// и build-release-dev.bat). Дебаг-сборки (run.bat / run-debug.bat /
+// run-prod.bat / npm run dev) идут БЕЗ защиты: читаемый JS, сорсмапы,
+// быстрая сборка.
+//
 // main / preload : компиляция в V8-байткод (.jsc) через bytecodePlugin.
 //                  removeBundleJS: true — не оставлять читаемый .js рядом
 //                  с .jsc (иначе исходник утекает в app.asar как _index.js).
@@ -15,6 +24,8 @@ import { resolve } from 'path'
 //                  чтобы не сломать mermaid/katex/React и не убить перф.
 //                  Чанки, состоящие только из node_modules (публичные либы),
 //                  пропускаются — защищаем только свой код.
+
+const protect = process.env.SYNTEE_PROTECT === '1'
 
 const RENDERER_OBFUSCATOR_OPTIONS: ObfuscatorOptions = {
   compact: true,
@@ -57,9 +68,49 @@ function rendererObfuscatorPlugin(): Plugin {
   }
 }
 
+// ── Bake gateway URL into the main bundle ───────────────────────────────
+// Vite `define` does NOT replace `process.env.*` in the main (SSR/Node) build
+// because in Node `process.env` is a real runtime object, not a polyfill.
+// So we do a literal text replacement via a transform plugin instead — this
+// is the only reliable way to bake SYNTEE_API_URL / SYNTEE_WEB_URL into the
+// packaged exe at build time. Without this, the production client falls back
+// to localhost:8000 and can never reach the gateway.
+// Only replaces when the env var is actually set (build-release.bat sets it);
+// dev/debug runs leave the live `process.env.*` lookup in place so the
+// localhost fallback keeps working.
+function bakeEnvPlugin(): Plugin {
+  const replacements: Record<string, string> = {}
+  if (process.env.SYNTEE_API_URL) {
+    replacements['process.env.SYNTEE_API_URL'] = JSON.stringify(process.env.SYNTEE_API_URL)
+  }
+  if (process.env.SYNTEE_WEB_URL) {
+    replacements['process.env.SYNTEE_WEB_URL'] = JSON.stringify(process.env.SYNTEE_WEB_URL)
+  }
+  return {
+    name: 'syntee-bake-env',
+    apply: 'build',
+    enforce: 'post',
+    renderChunk(code, chunk) {
+      if (Object.keys(replacements).length === 0) return null
+      if (chunk.moduleIds.length > 0 && chunk.moduleIds.every((id) => id.includes('node_modules'))) {
+        return null
+      }
+      let out = code
+      let changed = false
+      for (const [from, to] of Object.entries(replacements)) {
+        if (out.includes(from)) {
+          out = out.split(from).join(to)
+          changed = true
+        }
+      }
+      return changed ? { code: out, map: null } : null
+    }
+  }
+}
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin(), bytecodePlugin({ removeBundleJS: true })],
+    plugins: [externalizeDepsPlugin(), bakeEnvPlugin(), ...(protect ? [bytecodePlugin({ removeBundleJS: true })] : [])],
     build: {
       rollupOptions: {
         input: {
@@ -78,10 +129,10 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin(), bytecodePlugin({ removeBundleJS: true })]
+    plugins: [externalizeDepsPlugin(), ...(protect ? [bytecodePlugin({ removeBundleJS: true })] : [])]
   },
   renderer: {
-    plugins: [react(), rendererObfuscatorPlugin()],
+    plugins: [react(), ...(protect ? [rendererObfuscatorPlugin()] : [])],
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),

@@ -75,6 +75,10 @@
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;
+  /* Scroll-компенсация при prepend делается вручную в ChatPage
+     (useLayoutEffect на messages.length) — отключаем встроенный
+     scroll-anchoring Chromium, чтобы он не дублировал компенсацию. */
+  overflow-anchor: none;
   /* ���������������� � �������� ������� .chat-input-wrap �����
      ResizeObserver (ChatPage.tsx) � ����� ��� ��������� todo-����
      ��� ������� (workdir/planning) ������������� 120px ������ ��
@@ -182,6 +186,11 @@
   background: rgba(77,159,255,0.06);
   border-top: 1px solid rgba(77,159,255,0.12);
   text-align: center;
+  /* Эти две декларации раньше висели осиротевшими (потерян селектор
+     ниже, после .context-usage-bar--critical ...__label) — возвращаем
+     на место: плавное появление бара при rate-limit. */
+  flex-shrink: 0;
+  animation: fade-in-up 0.3s ease;
 }
 
 /* Context usage bar */
@@ -221,9 +230,6 @@
 }
 .context-usage-bar--warn .context-usage-bar__label { color: rgba(251,191,36,0.85); }
 .context-usage-bar--critical .context-usage-bar__label { color: rgba(248,81,73,0.9); }
-  flex-shrink: 0;
-  animation: fade-in-up 0.3s ease;
-}
 
 /* Selection reply popup */
 .selection-reply-popup {

@@ -242,6 +242,18 @@ const AdmonitionBlock = memo(function AdmonitionBlock({ kind, title, children }:
 // разбиение (admonitions/plan) — не тяжёлое, но при scroll-mount большого
 // сообщения каждый раз пересоздаёт массивы. Кэш переиспользуется跨 mounts
 // виртуализатора. Ключ — text+allowPlanCard (строки, иммутабельные).
+// Мягкий эвикшн кэшей: при переполнении удаляем старейшие записи до `keep`
+// (Map упорядочен по вставке). Раньше делали .clear() — это вызывало
+// одномоментный ре-парс всех видимых сообщений посреди скролла (фриз).
+function evictOldest<T>(map: Map<string, T>, keep: number) {
+  let toDelete = map.size - keep
+  for (const key of map.keys()) {
+    if (toDelete <= 0) break
+    map.delete(key)
+    toDelete--
+  }
+}
+
 const parseContentCache = new Map<string, ReturnType<typeof parseContent>>()
 function parseContentCached(raw: string, allowPlanCard = false): ReturnType<typeof parseContent> {
   const key = allowPlanCard ? '1' + raw : '0' + raw
@@ -249,7 +261,7 @@ function parseContentCached(raw: string, allowPlanCard = false): ReturnType<type
   if (!segs) {
     segs = parseContent(raw, allowPlanCard)
     // Ограничиваем размер кэша, чтобы не текло по памяти на длинных чатах.
-    if (parseContentCache.size > 500) parseContentCache.clear()
+    if (parseContentCache.size > 500) evictOldest(parseContentCache, 375)
     parseContentCache.set(key, segs)
   }
   return segs
@@ -449,7 +461,7 @@ const ParsedContent = memo(function ParsedContent({
   let node = parsedRenderCache.get(cacheKey)
   if (!node) {
     node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath)
-    if (parsedRenderCache.size > 400) parsedRenderCache.clear()
+    if (parsedRenderCache.size > 400) evictOldest(parsedRenderCache, 300)
     parsedRenderCache.set(cacheKey, node)
   }
   return <>{node}</>
@@ -462,21 +474,37 @@ const ParsedContent = memo(function ParsedContent({
 )
 
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
+type AgentCardData = {
+  id: string; status: string; model: string; steps: unknown[]
+  summary: string; error?: string; createdAt: number; finishedAt?: number
+}
+// Module-level кэш: виртуализатор монтирует/демонтирует сообщения при
+// скролле — без кэша каждый remount карточки дёргал IPC agent.get.
+// Обновления приходят через agent:update (кэш актуализируется событием).
+const agentCardCache = new Map<string, AgentCardData>()
+
 function AgentCardLive({ agentId, task }: {
   agentId: string
   task: string
 }) {
-  const [agent, setAgent] = useState<{
-    id: string; status: string; model: string; steps: unknown[]
-    summary: string; error?: string; createdAt: number; finishedAt?: number
-  } | null>(null)
+  const [agent, setAgent] = useState<AgentCardData | null>(() => agentCardCache.get(agentId) ?? null)
 
   useEffect(() => {
-    window.syntee.agent.get(agentId).then((a: unknown) => {
-      if (a) setAgent(a as never)
-    })
+    // IPC только при cache-miss — scroll-remount не дёргает main повторно.
+    if (!agentCardCache.has(agentId)) {
+      window.syntee.agent.get(agentId).then((a: unknown) => {
+        if (a) {
+          if (agentCardCache.size > 200) evictOldest(agentCardCache, 150)
+          agentCardCache.set(agentId, a as AgentCardData)
+          setAgent(a as never)
+        }
+      })
+    }
     const off = window.syntee.on('agent:update', (updated: { id: string } & Record<string, unknown>) => {
-      if (updated.id === agentId) setAgent(updated as never)
+      if (updated.id === agentId) {
+        agentCardCache.set(agentId, updated as AgentCardData)
+        setAgent(updated as never)
+      }
     })
     return () => off()
   }, [agentId])
@@ -646,7 +674,7 @@ const MessageContent = memo(function MessageContent({
       ? [{ type: 'plain' as const, content }]
       : isUser
         ? [{ type: 'md' as const, content }]
-        : parseContent(content, allowPlanCard),
+        : parseContentCached(content, allowPlanCard),
     [content, isUser, userMarkdown, allowPlanCard]
   )
 
@@ -793,6 +821,8 @@ const MessageContent = memo(function MessageContent({
                 src={`file://${s.imageUrl}`}
                 alt="Сгенерированное изображение"
                 className="message-image"
+                loading="lazy"
+                decoding="async"
                 onClick={() => window.open(`file://${s.imageUrl}`, '_blank')}
               />
             </div>
@@ -806,6 +836,8 @@ const MessageContent = memo(function MessageContent({
               src={message.imageUrl}
               alt="Generated"
               className="message-image"
+              loading="lazy"
+              decoding="async"
               onClick={() => window.open(message.imageUrl, '_blank')}
             />
           </div>
@@ -937,8 +969,14 @@ const MessageContent = memo(function MessageContent({
               <div className="message-content selectable">
                 {isUser && !userMarkdown ? (
                   <p>{content}</p>
-                ) : (
+                ) : isUser ? (
+                  // User-сообщения: один md-сегмент, парсинг admonition/plan не нужен.
                   renderParsedSegments(segments as ReturnType<typeof parseContent>, remarkPlugins, rehypePlugins, message.planData?.filePath)
+                ) : (
+                  // Ассистентские сообщения — через ParsedContent с module-level
+                  // кэшем: scroll-remount виртуализатора и hover (showActions)
+                  // больше не ре-парсят markdown (0.3–0.5с фриз на большом сообщении).
+                  <ParsedContent text={content} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
                 )}
               </div>
             )

@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, memo } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Chat, Project, Message } from '../../../../../shared/types'
@@ -65,7 +65,11 @@ function shortWorkdir(workdir: string): string {
   return '… / ' + segs.slice(-2).join(' / ')
 }
 
-export default function Sidebar({
+// memo: ChatPage ре-рендерится ~20×/сек при стриминге и на каждый
+// scroll-range-change виртуализатора — без memo Sidebar (806 строк JSX,
+// весь список чатов) перерисовывался бы каждый раз. Пропсы стабилизированы
+// в ChatPage (useCallback-хендлеры, store-refs).
+function Sidebar({
   chats = [],
   projects = [],
   activeProjectId = null,
@@ -346,6 +350,9 @@ export default function Sidebar({
     // Бейдж исчезает при открытии чата (markChatRead в selectChat).
     const status = runStatusByChat[chat.id]?.status
     const unread = unreadStatusByChat[chat.id]
+    // cleanPreview (5 regex-проходов) считаем один раз — раньше звучало дважды
+    // на строку на каждый рендер Sidebar.
+    const preview = chat.lastMessage ? cleanPreview(chat.lastMessage) : ''
     return (
     <motion.div
       key={chat.id}
@@ -382,9 +389,9 @@ export default function Sidebar({
               {!!chat.isPinned && <AppIcon name="pin" size="xs" tone="accent" />}
               <span className="sidebar-chat-title-text">{chat.title}</span>
             </div>
-            {chat.lastMessage && cleanPreview(chat.lastMessage) && (
+            {preview && (
               <div className="sidebar-chat-preview">
-                {cleanPreview(chat.lastMessage)}
+                {preview}
               </div>
             )}
           </div>
@@ -804,3 +811,5 @@ function createNewProjectMenu(
     document.body
   )
 }
+
+export default memo(Sidebar)

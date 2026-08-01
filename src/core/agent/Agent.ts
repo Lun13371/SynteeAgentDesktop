@@ -495,17 +495,28 @@ export class Agent {
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
           try {
-            // Защитный потолок выполнения одного тула. Без этого зависший
-            // тул (MCP stdio с повисшим пайпом, spawn_agent с зависшим
-            // суб-агентом, исключение до эмита результата) блокирует
-            // агентский цикл навсегда — UI крутит спиннер «Выполняется…»
-            // пока весь агент не завершится. Таймер гарантированно закрывает
-            // итерацию tool_result'ом с понятной причиной.
             const toolPromise = this.executeTool(fn.name, args, tavilyKey, callbacks, dryRunMode)
-            const timeoutPromise = new Promise<ToolResult>((_, reject) => {
-              setTimeout(() => reject(new Error(`Тул ${fn.name} превысил таймаут выполнения (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}с). Возможно MCP-сервер завис или transport заблокирован.`)), MAX_TOOL_TIMEOUT_MS)
-            })
-            result = await Promise.race([toolPromise, timeoutPromise])
+            if (fn.name === 'spawn_agent') {
+              // spawn_agent — блокирующий вызов до полного завершения суб-агента
+              // (его собственный цикл до MAX_STEPS). Суб-агент имеет свои потолки
+              // на каждый свой тул (MAX_TOOL_TIMEOUT_MS 180с, MCP_CALL_TIMEOUT_MS
+              // 120с) — зависший тул внутри суб-агента ловится там. Внешний
+              // MAX_TOOL_TIMEOUT_MS тут только убивал легитимно длинные суб-агенты
+              // (большой рефакторинг/исследование много минут). Безопасность
+              // висения: worker'а on('error'/'exit') и cancel() в AgentManager
+              // резолвят промис spawn_agent → родитель не блокируется навсегда.
+              result = await toolPromise
+            } else {
+              // Защитный потолок выполнения одного тула. Без этого зависший
+              // тул (MCP stdio с повисшим пайпом, исключение до эмита результата)
+              // блокирует агентский цикл навсегда — UI крутит спиннер
+              // «Выполняется…» пока весь агент не завершится. Таймер гарантированно
+              // закрывает итерацию tool_result'ом с понятной причиной.
+              const timeoutPromise = new Promise<ToolResult>((_, reject) => {
+                setTimeout(() => reject(new Error(`Тул ${fn.name} превысил таймаут выполнения (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}с). Возможно MCP-сервер завис или transport заблокирован.`)), MAX_TOOL_TIMEOUT_MS)
+              })
+              result = await Promise.race([toolPromise, timeoutPromise])
+            }
           } catch (toolErr) {
             // Раньше throw из executeTool протекал в outer try/catch и
             // интерпретировался как API/network error (emit '_error' +

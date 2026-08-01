@@ -1069,6 +1069,13 @@ function CuratedMcpGrid({ onInstall }: { onInstall: (server: CuratedMcpServer) =
     { key: 'comms', label: 'Коммуникации' },
     { key: 'devops', label: 'DevOps' },
     { key: 'utils', label: 'Утилиты' },
+    { key: 'security', label: 'Безопасность' },
+    { key: 'social', label: 'Соцсети' },
+    { key: 'media', label: 'Медиа' },
+    { key: 'science', label: 'Наука' },
+    { key: 'cloud', label: 'Cloud' },
+    { key: 'design', label: 'Дизайн' },
+    { key: 'finance', label: 'Финансы' },
   ]
 
   const filtered = filter === 'all'

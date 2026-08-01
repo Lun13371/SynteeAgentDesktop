@@ -15,6 +15,8 @@ const GATEWAY_API_URL = (process.env.SYNTEE_API_URL ?? 'http://localhost:8000').
 export interface GatewayUser {
   id: string
   email: string
+  username?: string | null
+  username_is_auto?: boolean
   role: string
   display_name?: string | null
   avatar_url?: string | null
@@ -183,8 +185,20 @@ export async function getMe(): Promise<GatewayUser> {
 export async function updateProfile(payload: {
   display_name?: string | null
   avatar_url?: string | null
+  username?: string
 }): Promise<GatewayUser> {
   return request<GatewayUser>('/api/user/auth/me', { method: 'PATCH', body: payload })
+}
+
+export interface CheckUsernameResponse {
+  available: boolean
+  reason: string | null
+}
+
+export async function checkUsername(username: string): Promise<CheckUsernameResponse> {
+  return request<CheckUsernameResponse>(
+    `/api/user/auth/check-username?username=${encodeURIComponent(username)}`,
+  )
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {

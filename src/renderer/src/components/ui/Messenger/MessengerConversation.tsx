@@ -25,7 +25,7 @@ export default function MessengerConversation() {
       </div>
     )
   }
-  return <ConversationBody convId={conv.id} otherUserId={conv.other_user.id} otherName={conv.other_user.display_name || conv.other_user.email} otherAvatar={conv.other_user.avatar_url} otherEmail={conv.other_user.email} />
+  return <ConversationBody convId={conv.id} otherUserId={conv.other_user.id} otherName={conv.other_user.username ? `@${conv.other_user.username}` : conv.other_user.display_name || conv.other_user.email} otherAvatar={conv.other_user.avatar_url} otherEmail={conv.other_user.email} />
 }
 
 interface BodyProps {
@@ -419,7 +419,9 @@ function GlobalMessageBubble({
   replyTarget: GlobalMessageResponse | null
 }) {
   const [showPicker, setShowPicker] = useState(false)
-  const senderName = msg.sender?.display_name || msg.sender?.email || 'Пользователь'
+  const senderName = msg.sender
+    ? (msg.sender.username ? `@${msg.sender.username}` : msg.sender.display_name || msg.sender.email)
+    : 'Пользователь'
   return (
     <div className={`msgr-msg ${mine ? 'msgr-msg--mine' : ''}`} data-id={msg.id}>
       {!mine && msg.sender && (

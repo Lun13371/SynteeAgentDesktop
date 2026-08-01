@@ -23,6 +23,7 @@ import {
   createApiKey,
   deleteApiKey,
   getGatewayWebUrl,
+  checkUsername,
   type GatewayUser,
   type GatewayApiKey,
   type GatewayApiKeyCreated,
@@ -172,10 +173,14 @@ export function registerAuthIPC(getMainWindow: () => BrowserWindow | null): void
 
   ipcMain.handle(
     'profile:update',
-    async (_e, payload: { display_name?: string | null; avatar_url?: string | null }) => {
+    async (
+      _e,
+      payload: { display_name?: string | null; avatar_url?: string | null; username?: string },
+    ) => {
       return updateProfile(payload)
     },
   )
+  ipcMain.handle('profile:checkUsername', (_e, username: string) => checkUsername(username))
 
   ipcMain.handle(
     'profile:changePassword',

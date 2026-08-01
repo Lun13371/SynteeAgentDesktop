@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, KeyboardEvent, DragEvent, ClipboardEvent } from 'react'
+import { useState, useRef, useEffect, memo, KeyboardEvent, DragEvent, ClipboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
@@ -155,7 +155,11 @@ function renderMirrorContent(text: string): JSX.Element {
   )
 }
 
-export default function ChatInput({
+// memo: ChatPage ре-рендерится ~20×/сек при стриминге и на scroll-range
+// изменениях виртуализатора — без memo инпут-бар (1000+ строк JSX,
+// mirror-рендер draft'а, ModelSelector) перерисовывался бы каждый раз.
+// Пропсы стабилизированы в ChatPage (useCallback-хендлеры).
+function ChatInput({
   chatId,
   onSend, disabled, isIncognito,
   replyTo, onCancelReply,
@@ -1122,3 +1126,5 @@ export default function ChatInput({
     </div>
   )
 }
+
+export default memo(ChatInput)

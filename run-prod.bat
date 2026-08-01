@@ -6,8 +6,8 @@ REM ── Syntee-Gateway endpoints (production) ──
 REM API_URL — куда main-процесс стучится за /v1/* и /api/user/* (через nginx:80).
 REM WEB_URL — сайт gateway с consent-страницей /auth/desktop (тот же origin).
 REM HTTP сейчас, HTTPS добавим позже — код поддержит переключение.
-set SYNTEE_API_URL=http://153.52.66.137
-set SYNTEE_WEB_URL=http://153.52.66.137
+set SYNTEE_API_URL=http://85.137.90.68
+set SYNTEE_WEB_URL=http://85.137.90.68
 
 call node node_modules/electron-vite/bin/electron-vite.js build
 if %errorlevel% neq 0 (

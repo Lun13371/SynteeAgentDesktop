@@ -1,9 +1,24 @@
 import { useState, memo } from 'react'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+// PrismLight вместо полного Prism (~270 грамматик): языки регистрируются
+// в MessageBubble.tsx (общий singleton). Здесь дорегистрируем те, что
+// нужны только тул-выводам (getLanguage ниже может их вернуть).
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
+import scss from 'react-syntax-highlighter/dist/esm/languages/prism/scss'
+import powershell from 'react-syntax-highlighter/dist/esm/languages/prism/powershell'
+import graphql from 'react-syntax-highlighter/dist/esm/languages/prism/graphql'
+import docker from 'react-syntax-highlighter/dist/esm/languages/prism/docker'
 import type { ToolStep } from './ToolChain'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import './ToolResultRenderer.css'
+
+// registerLanguage идемпотентен для нашего случая (перезапись тем же набором).
+SyntaxHighlighter.registerLanguage('toml', toml)
+SyntaxHighlighter.registerLanguage('scss', scss)
+SyntaxHighlighter.registerLanguage('powershell', powershell)
+SyntaxHighlighter.registerLanguage('graphql', graphql)
+SyntaxHighlighter.registerLanguage('docker', docker)
 
 // ── Утилиты ────────────────────────────────────────────────────────────────
 
@@ -32,40 +47,69 @@ function tryParseJSON(text: string): unknown | null {
   try { return JSON.parse(text) } catch { return null }
 }
 
+// ── Прогрессивное раскрытие («Показать ещё») ────────────────────────────────
+// Вместо «60 строк или всё целиком (9999)» — чанки: начальный кап + кнопка
+// «Показать ещё N». Длинные выводы не монтируют тысячи DOM-узлов и не
+// токенизируются Prism'ом целиком при раскрытии тулчейна/скролле.
+// Паттерн `extra`-state: visible = initialLines + extra → при смене режима
+// (normal↔detailed) видимое окно подстраивается без сброса state.
+
+const CODE_CHUNK = 60
+
 // ── Суб-рендеры ────────────────────────────────────────────────────────────
 
-const CodeResult = memo(function CodeResult({ content, lang, maxLines }: { content: string; lang: string; maxLines: number }) {
-  const { text, truncated } = truncateLines(content, maxLines)
+const CodeResult = memo(function CodeResult({ content, lang, initialLines }: { content: string; lang: string; initialLines: number }) {
+  const [extra, setExtra] = useState(0)
+  const visible = initialLines + extra
+  const total = content.split('\n').length
+  const { text, truncated } = truncateLines(content, visible)
   return (
     <div className="trr-code-wrap">
       <SyntaxHighlighter
         language={lang}
         style={oneDark}
         customStyle={{ margin: 0, borderRadius: 8, fontSize: 12, maxHeight: 400, overflow: 'auto' }}
-        showLineNumbers={content.split('\n').length > 3}
+        showLineNumbers={total > 3}
       >
         {text}
       </SyntaxHighlighter>
-      {truncated && <div className="trr-truncated">... обрезано ({content.split('\n').length} строк всего)</div>}
+      {truncated && (
+        <button className="trr-expand-btn" onClick={() => setExtra(e => e + CODE_CHUNK)}>
+          Показать ещё {Math.min(CODE_CHUNK, total - visible)} из {total} строк
+        </button>
+      )}
     </div>
   )
-}, (prev, next) => prev.content === next.content && prev.lang === next.lang && prev.maxLines === next.maxLines)
+}, (prev, next) => prev.content === next.content && prev.lang === next.lang && prev.initialLines === next.initialLines)
 
-const TerminalResult = memo(function TerminalResult({ content, maxLines }: { content: string; maxLines: number }) {
-  const { text, truncated } = truncateLines(content.trim(), maxLines)
+const TerminalResult = memo(function TerminalResult({ content, initialLines }: { content: string; initialLines: number }) {
+  const [extra, setExtra] = useState(0)
+  const visible = initialLines + extra
+  const trimmed = content.trim()
+  const total = trimmed.split('\n').length
+  const { text, truncated } = truncateLines(trimmed, visible)
   return (
     <div className="trr-terminal">
       <pre className="trr-terminal-pre">{text}</pre>
-      {truncated && <div className="trr-truncated">... обрезано ({content.split('\n').length} строк)</div>}
+      {truncated && (
+        <button className="trr-expand-btn" onClick={() => setExtra(e => e + CODE_CHUNK)}>
+          Показать ещё {Math.min(CODE_CHUNK, total - visible)} из {total} строк
+        </button>
+      )}
     </div>
   )
-}, (prev, next) => prev.content === next.content && prev.maxLines === next.maxLines)
+}, (prev, next) => prev.content === next.content && prev.initialLines === next.initialLines)
 
-function FileListResult({ content }: { content: string }) {
+const FILELIST_CHUNK = 200
+
+const FileListResult = memo(function FileListResult({ content }: { content: string }) {
+  const [extra, setExtra] = useState(0)
+  const visible = FILELIST_CHUNK + extra
   const lines = content.split('\n').filter(l => l.trim())
+  const shown = lines.slice(0, visible)
   return (
     <div className="trr-filelist">
-      {lines.map((line, i) => {
+      {shown.map((line, i) => {
         const isDir = line.endsWith('/') || line.endsWith('\\') || !line.includes('.')
         return (
           <div key={i} className="trr-filelist-item">
@@ -74,16 +118,26 @@ function FileListResult({ content }: { content: string }) {
           </div>
         )
       })}
+      {lines.length > visible && (
+        <button className="trr-expand-btn" onClick={() => setExtra(e => e + FILELIST_CHUNK)}>
+          Показать ещё {Math.min(FILELIST_CHUNK, lines.length - visible)} из {lines.length}
+        </button>
+      )}
     </div>
   )
-}
+}, (prev, next) => prev.content === next.content)
 
-function WebSearchResult({ content }: { content: string }) {
+const SEARCH_CHUNK = 5
+
+const WebSearchResult = memo(function WebSearchResult({ content }: { content: string }) {
+  const [extra, setExtra] = useState(0)
+  const visible = SEARCH_CHUNK + extra
   const parsed = tryParseJSON(content)
   if (Array.isArray(parsed)) {
+    const arr = parsed as Array<{ title?: string; url?: string; snippet?: string; content?: string }>
     return (
       <div className="trr-search-results">
-        {(parsed as Array<{ title?: string; url?: string; snippet?: string; content?: string }>).slice(0, 5).map((r, i) => (
+        {arr.slice(0, visible).map((r, i) => (
           <div key={i} className="trr-search-card">
             {r.title && <div className="trr-search-title">{r.title}</div>}
             {r.url && <div className="trr-search-url">{r.url}</div>}
@@ -92,29 +146,45 @@ function WebSearchResult({ content }: { content: string }) {
             )}
           </div>
         ))}
+        {arr.length > visible && (
+          <button className="trr-expand-btn" onClick={() => setExtra(e => e + SEARCH_CHUNK)}>
+            Показать ещё {Math.min(SEARCH_CHUNK, arr.length - visible)} из {arr.length}
+          </button>
+        )}
       </div>
     )
   }
   // Plain text fallback
   return <pre className="trr-pre">{content.slice(0, 600)}</pre>
-}
+}, (prev, next) => prev.content === next.content)
 
-function KeyValueResult({ content }: { content: string }) {
+const KV_CHUNK = 50
+const KV_VALUE_MAX = 500
+
+const KeyValueResult = memo(function KeyValueResult({ content }: { content: string }) {
+  const [extra, setExtra] = useState(0)
+  const visible = KV_CHUNK + extra
   const parsed = tryParseJSON(content)
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const entries = Object.entries(parsed as Record<string, unknown>)
     return (
       <div className="trr-kv">
-        {Object.entries(parsed as Record<string, unknown>).map(([k, v]) => (
+        {entries.slice(0, visible).map(([k, v]) => (
           <div key={k} className="trr-kv-row">
             <span className="trr-kv-key">{k}</span>
-            <span className="trr-kv-val">{String(v)}</span>
+            <span className="trr-kv-val">{String(v).slice(0, KV_VALUE_MAX)}</span>
           </div>
         ))}
+        {entries.length > visible && (
+          <button className="trr-expand-btn" onClick={() => setExtra(e => e + KV_CHUNK)}>
+            Показать ещё {Math.min(KV_CHUNK, entries.length - visible)} из {entries.length}
+          </button>
+        )}
       </div>
     )
   }
   return <pre className="trr-pre">{content.slice(0, 400)}</pre>
-}
+}, (prev, next) => prev.content === next.content)
 
 function FileWrittenResult({ content, args }: { content: string; args?: Record<string, unknown> }) {
   const path = String(args?.path ?? args?.file_path ?? '')
@@ -128,19 +198,45 @@ function FileWrittenResult({ content, args }: { content: string; args?: Record<s
   )
 }
 
-function SearchCodeResult({ content }: { content: string }) {
+const MATCHES_CHUNK = 20
+
+const SearchCodeResult = memo(function SearchCodeResult({ content }: { content: string }) {
+  const [extra, setExtra] = useState(0)
+  const visible = MATCHES_CHUNK + extra
   const lines = content.split('\n').filter(l => l.trim())
   return (
     <div className="trr-code-matches">
-      {lines.slice(0, 20).map((line, i) => (
+      {lines.slice(0, visible).map((line, i) => (
         <div key={i} className="trr-code-match-line">
           <pre>{line}</pre>
         </div>
       ))}
-      {lines.length > 20 && <div className="trr-truncated">... ещё {lines.length - 20} совпадений</div>}
+      {lines.length > visible && (
+        <button className="trr-expand-btn" onClick={() => setExtra(e => e + MATCHES_CHUNK)}>
+          Показать ещё {Math.min(MATCHES_CHUNK, lines.length - visible)} из {lines.length} совпадений
+        </button>
+      )}
     </div>
   )
-}
+}, (prev, next) => prev.content === next.content)
+
+/** Дефолтный pre-рендер с чанкованием (используется в default-ветке). */
+const ChunkedPre = memo(function ChunkedPre({ content, initialLines }: { content: string; initialLines: number }) {
+  const [extra, setExtra] = useState(0)
+  const visible = initialLines + extra
+  const total = content.split('\n').length
+  const { text, truncated } = truncateLines(content, visible)
+  return (
+    <>
+      <pre className="trr-pre">{text}</pre>
+      {truncated && (
+        <button className="trr-expand-btn" onClick={() => setExtra(e => e + CODE_CHUNK)}>
+          Показать ещё {Math.min(CODE_CHUNK, total - visible)} из {total} строк
+        </button>
+      )}
+    </>
+  )
+}, (prev, next) => prev.content === next.content && prev.initialLines === next.initialLines)
 
 // ── Главный компонент ──────────────────────────────────────────────────────
 
@@ -150,12 +246,17 @@ interface Props {
   mode: ToolOutputMode
 }
 
+// Начальный кап строк: normal — 60 (как раньше), detailed — 500 (раньше было
+// 9999 = фактически без капа; на файлах в тысячи строк Prism токенизировал
+// всё целиком и монтировал тысячи DOM-узлов). Дальше — чанки «Показать ещё».
+const NORMAL_LINES = 60
+const DETAILED_LINES = 500
+
 const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode }: Props) {
-  const [expanded, setExpanded] = useState(false)
   const toolName = call.toolName ?? ''
   const content = result.content ?? ''
   const args = call.toolArgs ?? {}
-  const maxLines = mode === 'detailed' || expanded ? 9999 : 60
+  const initialLines = mode === 'detailed' ? DETAILED_LINES : NORMAL_LINES
 
   // ── detailed: показываем аргументы ──
   const showArgs = mode === 'detailed'
@@ -183,13 +284,7 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
           </div>
         )}
 
-        {renderResult(toolName, content, args, maxLines)}
-
-        {mode === 'normal' && content.split('\n').length > 60 && !expanded && (
-          <button className="trr-expand-btn" onClick={() => setExpanded(true)}>
-            Показать полностью ({content.split('\n').length} строк)
-          </button>
-        )}
+        {renderResult(toolName, content, args, initialLines)}
       </div>
     </div>
   )
@@ -197,12 +292,12 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
 
 export default ToolResultRenderer
 
-function renderResult(toolName: string, content: string, args: Record<string, unknown>, maxLines: number) {
+function renderResult(toolName: string, content: string, args: Record<string, unknown>, initialLines: number) {
   // read_file → code с подсветкой
   if (toolName === 'read_file' || toolName === 'read_files') {
     const path = String(args.path ?? args.file_path ?? '')
     const lang = getLanguage(path)
-    return <CodeResult content={content} lang={lang} maxLines={maxLines} />
+    return <CodeResult content={content} lang={lang} initialLines={initialLines} />
   }
 
   // write_file / edit_file / multi_edit_file → плашка успеха
@@ -212,7 +307,7 @@ function renderResult(toolName: string, content: string, args: Record<string, un
 
   // run_command → terminal
   if (toolName === 'run_command') {
-    return <TerminalResult content={content} maxLines={maxLines} />
+    return <TerminalResult content={content} initialLines={initialLines} />
   }
 
   // find_files / list_directory → файловое дерево
@@ -252,18 +347,12 @@ function renderResult(toolName: string, content: string, args: Record<string, un
       const parsed = JSON.parse(content)
       if (typeof parsed === 'object' && parsed !== null) {
         const formatted = JSON.stringify(parsed, null, 2)
-        return <TerminalResult content={formatted} maxLines={maxLines} />
+        return <TerminalResult content={formatted} initialLines={initialLines} />
       }
     } catch { /* не JSON — рендерим как текст */ }
-    return <TerminalResult content={content} maxLines={maxLines} />
+    return <TerminalResult content={content} initialLines={initialLines} />
   }
 
-  // default → pre
-  const { text, truncated } = truncateLines(content, maxLines)
-  return (
-    <>
-      <pre className="trr-pre">{text}</pre>
-      {truncated && <div className="trr-truncated">... обрезано</div>}
-    </>
-  )
+  // default → pre с чанкованием
+  return <ChunkedPre content={content} initialLines={initialLines} />
 }

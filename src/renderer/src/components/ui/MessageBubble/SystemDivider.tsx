@@ -6,6 +6,12 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import type { Message } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
+import { useChatRemeasure } from './remeasure'
+
+// Module-level кэш redo-статуса. Виртуализатор монтирует/демонтирует
+// разделители при скролле — без кэша каждый remount дёргал IPC canRedo.
+// Инвалидируется целиком при chat:rewound (событие редкое).
+const redoStatusCache = new Map<string, boolean>()
 
 // System-разделитель — полоса поперёк чата для system-сообщений (откаты,
 // сжатие контекста и т.д.). Для rewind-сообщений с активной redo-точкой
@@ -22,18 +28,27 @@ export function SystemDivider({ message, isRewind, isCompact, isCompacting, time
   const [canRedo, setCanRedo] = useState(false)
   const [redoing, setRedoing] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  // Перемер ряда виртуализатора после settle. Анимация height:0→'auto' ниже
+  // может оставить в кэше промежуточную высоту → следующий ряд налезает на этот.
+  // onAnimationComplete форсит resizeItem с финальной высотой. Вне провайдера
+  // (превью/сайдчат без виртуализатора) — null, просто noop.
+  const remeasure = useChatRemeasure()
 
   // Проверяем — доступна ли отмена отката (есть redo-точка в БД).
   useEffect(() => {
     if (!isRewind || !message.chatId) { setCanRedo(false); return }
     let cancelled = false
+    const key = `${message.chatId}:${message.id}`
     const check = async () => {
+      const cached = redoStatusCache.get(key)
+      if (cached !== undefined) { if (!cancelled) setCanRedo(cached); return }
       const result = await window.syntee.chat.canRedo(message.chatId, message.id) as boolean
+      redoStatusCache.set(key, result)
       if (!cancelled) setCanRedo(result)
     }
     check()
     // Проверяем снова при получении события CHAT_REWOUND (redo мог быть отменён).
-    const off = window.syntee.on('chat:rewound', () => { if (!cancelled) check() })
+    const off = window.syntee.on('chat:rewound', () => { redoStatusCache.clear(); if (!cancelled) check() })
     return () => { cancelled = true; off() }
   }, [isRewind, message.chatId, message.id])
 
@@ -108,6 +123,7 @@ export function SystemDivider({ message, isRewind, isCompact, isCompacting, time
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           transition={{ duration: 0.22, ease: 'easeOut' }}
+          onAnimationComplete={() => remeasure?.()}
         >
           <div className="message-system-divider__summary-head">
             <AppIcon name="layers" size="xs" tone="accent" />
@@ -130,6 +146,7 @@ export function SystemDivider({ message, isRewind, isCompact, isCompacting, time
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
+          onAnimationComplete={() => remeasure?.()}
         >
           <div className="message-system-divider__summary-head">
             <AppIcon name="layers" size="xs" tone="accent" animation="spin" />

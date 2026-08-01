@@ -151,7 +151,8 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 function ProfileHeader({ user }: { user: GatewayUser }) {
-  const displayName = user.display_name || user.email.split('@')[0]
+  const handle = user.username ? `@${user.username}` : user.email.split('@')[0]
+  const displayName = user.display_name || handle
   return (
     <div className="profile-header">
       <Identicon
@@ -162,7 +163,7 @@ function ProfileHeader({ user }: { user: GatewayUser }) {
       />
       <div className="profile-header__info">
         <div className="profile-header__name">{displayName}</div>
-        <div className="profile-header__email">{user.email}</div>
+        <div className="profile-header__email">{handle}</div>
         <div className="profile-header__role">
           {user.role === 'user' ? 'Пользователь' : user.role}
         </div>
@@ -176,6 +177,14 @@ function ProfileForm({ user, onUpdated }: { user: GatewayUser; onUpdated: () => 
   const [avatarUrl, setAvatarUrl] = useState(user.avatar_url || '')
   const [saving, setSaving] = useState(false)
   const { add: toast } = useToast()
+
+  // Username claim state — only relevant while the account still holds an
+  // auto-generated placeholder handle (username_is_auto === true).
+  const isAuto = !!user.username_is_auto
+  const [draftUsername, setDraftUsername] = useState('')
+  const [claimTaken, setClaimTaken] = useState(false)
+  const [claimChecking, setClaimChecking] = useState(false)
+  const [claimSaving, setClaimSaving] = useState(false)
 
   // Если юзер обновился извне (например, после load) — синхронизируем поля.
   useEffect(() => {
@@ -202,9 +211,97 @@ function ProfileForm({ user, onUpdated }: { user: GatewayUser; onUpdated: () => 
     }
   }
 
+  const usernameErr = (() => {
+    const u = draftUsername.trim().toLowerCase().replace(/^@/, '')
+    if (!u) return isAuto ? '' : ''
+    if (u.length < 3 || u.length > 32) return '3–32 символа'
+    if (!/^[a-z0-9_]+$/.test(u)) return 'Только a-z, 0-9 и _'
+    if (/^username\d+$/.test(u)) return 'Зарезервировано системой'
+    return ''
+  })()
+  const usernameValid = !usernameErr && !claimTaken && draftUsername.trim().length > 0
+
+  const checkClaim = async () => {
+    if (usernameErr) return
+    setClaimChecking(true)
+    try {
+      const res = await window.syntee.profile.checkUsername(draftUsername.trim().replace(/^@/, ''))
+      setClaimTaken(!res.available)
+    } catch {
+      /* сервер перепроверит при отправке */
+    } finally {
+      setClaimChecking(false)
+    }
+  }
+
+  const handleClaim = async () => {
+    if (!usernameValid) return
+    setClaimSaving(true)
+    try {
+      await window.syntee.profile.update({ username: draftUsername.trim().toLowerCase().replace(/^@/, '') })
+      await onUpdated()
+      setDraftUsername('')
+      setClaimTaken(false)
+      toast('Логин забронирован', 'success')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Не удалось забронировать логин'
+      toast(msg, 'error')
+    } finally {
+      setClaimSaving(false)
+    }
+  }
+
   return (
     <div className="profile-form">
       <h3 className="profile-form__title">Основное</h3>
+
+      <label className="profile-field">
+        <span className="profile-field__label">Логин (username)</span>
+        {isAuto ? (
+          <>
+            <input
+              type="text"
+              className="profile-field__input"
+              value={draftUsername}
+              onChange={(e) => { setDraftUsername(e.target.value); setClaimTaken(false) }}
+              onBlur={checkClaim}
+              placeholder={user.username ?? 'выберите_логин'}
+            />
+            <span className="profile-field__hint">
+              {claimChecking ? 'Проверка…' :
+                usernameErr ? usernameErr :
+                claimTaken ? 'Этот логин уже занят' :
+                '3–32 символа: a-z, 0-9, _. Задаётся один раз, затем неизменен.'}
+            </span>
+            <button
+              type="button"
+              className="profile-btn profile-btn--primary"
+              onClick={handleClaim}
+              disabled={!usernameValid || claimSaving}
+              style={{ marginTop: 8 }}
+            >
+              {claimSaving ? (
+                <>
+                  <AppIcon name="loader" size="sm" animation="spin" />
+                  Бронирование…
+                </>
+              ) : (
+                <>Забронировать логин</>
+              )}
+            </button>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              className="profile-field__input"
+              value={user.username ? `@${user.username}` : ''}
+              readOnly
+            />
+            <span className="profile-field__hint">Логин постоянный и не может быть изменён.</span>
+          </>
+        )}
+      </label>
 
       <label className="profile-field">
         <span className="profile-field__label">Отображаемое имя</span>

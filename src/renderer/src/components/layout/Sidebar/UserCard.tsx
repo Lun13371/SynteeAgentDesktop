@@ -116,7 +116,8 @@ export default function UserCard() {
     )
   }
 
-  const displayName = user.display_name || user.email.split('@')[0]
+  const handle = user.username ? `@${user.username}` : user.email.split('@')[0]
+  const displayName = user.display_name || handle
   const planName = planUsage?.plan?.name
 
   return (
@@ -135,7 +136,7 @@ export default function UserCard() {
           />
           <div className="usercard-info">
             <div className="usercard-name">{displayName}</div>
-            <div className="usercard-email">{user.email}</div>
+            <div className="usercard-email">{handle}</div>
           </div>
           <AppIcon name={panelOpen ? 'chevronDown' : 'chevronRight'} size="xs" tone="muted" />
         </button>
@@ -169,7 +170,7 @@ export default function UserCard() {
                 />
                 <div className="usercard-panel-user">
                   <div className="usercard-panel-name">{displayName}</div>
-                  <div className="usercard-panel-email">{user.email}</div>
+                  <div className="usercard-panel-email">{handle}</div>
                   {planName && (
                     <span className="usercard-panel-plan">{planName}</span>
                   )}
