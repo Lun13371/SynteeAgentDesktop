@@ -78,8 +78,8 @@ export function registerMessengerIPC(getMainWindow: () => BrowserWindow | null):
   // ── Friends ──
   ipcMain.handle('messenger:friends:list', () => listFriends())
   ipcMain.handle('messenger:friends:requests', () => listFriendRequests())
-  ipcMain.handle('messenger:friends:search', (_e, email: string) => searchUsers(email))
-  ipcMain.handle('messenger:friends:request', (_e, email: string) => sendFriendRequest(email))
+  ipcMain.handle('messenger:friends:search', (_e, username: string) => searchUsers(username))
+  ipcMain.handle('messenger:friends:request', (_e, username: string) => sendFriendRequest(username))
   ipcMain.handle('messenger:friends:accept', (_e, userId: string) => acceptFriendRequest(userId))
   ipcMain.handle('messenger:friends:decline', (_e, userId: string) => declineFriendRequest(userId))
   ipcMain.handle('messenger:friends:unfriend', (_e, userId: string) => unfriend(userId))

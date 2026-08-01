@@ -215,15 +215,21 @@ const LiveCommandOutput = memo(function LiveCommandOutput({ sessionId }: { sessi
   )
 }, (prev, next) => prev.sessionId === next.sessionId)
 
-// Цветной diff блок
-function DiffBlock({ diff }: { diff: string }) {
+// Цветной diff блок. memo + чанкование: большие diff'ы (тысячи строк) раньше
+// монтировали div на КАЖДУЮ строку при раскрытии итерации → фриз. Теперь
+// первые DIFF_CHUNK строк + кнопка «Показать ещё».
+const DIFF_CHUNK = 500
+const DiffBlock = memo(function DiffBlock({ diff }: { diff: string }) {
+  const [extra, setExtra] = useState(0)
+  const visible = DIFF_CHUNK + extra
   const lines = diff.split('\n').filter((_, i, arr) => {
     // Убираем пустую последнюю строку
     return !(i === arr.length - 1 && arr[i] === '')
   })
+  const shown = lines.slice(0, visible)
   return (
     <div className="tc2-diff-pre">
-      {lines.map((line, i) => {
+      {shown.map((line, i) => {
         let cls = 'tc2-diff-line'
         if (line.startsWith('+++') || line.startsWith('---')) cls += ' tc2-diff-meta'
         else if (line.startsWith('+')) cls += ' tc2-diff-add'
@@ -232,13 +238,18 @@ function DiffBlock({ diff }: { diff: string }) {
         else cls += ' tc2-diff-ctx'
         return <div key={i} className={cls}>{line || '\u00a0'}</div>
       })}
+      {lines.length > visible && (
+        <button className="tc2-show-more" onClick={() => setExtra(e => e + DIFF_CHUNK)}>
+          Показать ещё {Math.min(DIFF_CHUNK, lines.length - visible)} из {lines.length} строк
+        </button>
+      )}
     </div>
   )
-}
+}, (prev, next) => prev.diff === next.diff)
 
 // Один блок итерации
 const IterationBlock = memo(function IterationBlock({
-  iter, index, isLast, isRunning, mode, defaultOpen, liveSessionId,
+  iter, index, isLast, isRunning, mode, defaultOpen, liveSessionId, animateEntrance,
 }: {
   iter: Iteration
   index: number
@@ -247,6 +258,11 @@ const IterationBlock = memo(function IterationBlock({
   mode: ToolOutputMode
   defaultOpen: boolean
   liveSessionId?: string
+  // Entrance-анимация только для живых цепочек. Для сохранённых (история)
+  // анимация бесполезна и вредна: при scroll-remount и при раскрытии
+  // 100-итерационной цепочки stagger delay=index*0.04 давал последним
+  // итерациям 4+ секунды задержки.
+  animateEntrance: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
   const meta = getToolMeta(iter.call.toolName, iter.call.serverName)
@@ -268,21 +284,21 @@ const IterationBlock = memo(function IterationBlock({
     prevRunning.current = running || pending
   }, [running, pending])
 
-  // Авто-раскрытие при сбое — раньше IterationBlock схлопывался при
-  // завершении (running → false), и текст ошибки прятался. Теперь при
-  // failed раскрываем автоматически, чтобы причина была видна.
-  useEffect(() => {
-    if (failed) setOpen(true)
-  }, [failed])
+  // НЕТ авто-раскрытия при сбое: в больших чатах failed-итерации при скролле
+  // монтировали полные тела (подсветка/diff) → фризы. Ошибка видна по бейджу
+  // «ошибка» в заголовке — раскрытие по клику. (Во время live-прогона тело
+  // и так уже раскрыто эффектом выше, так что ошибку видно сразу.)
 
   const statusColor = failed ? '#f87171' : (running || pending) ? meta.color : meta.color
 
   return (
     <motion.div
       className="tc2-iter"
-      initial={{ opacity: 0, y: 6 }}
+      initial={animateEntrance ? { opacity: 0, y: 6 } : false}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.04, type: 'spring', stiffness: 420, damping: 32 }}
+      transition={animateEntrance
+        ? { delay: Math.min(index, 10) * 0.04, type: 'spring', stiffness: 420, damping: 32 }
+        : { duration: 0 }}
     >
       <div className="tc2-rail">
         <div
@@ -440,6 +456,8 @@ const IterationBlock = memo(function IterationBlock({
                           src={`file://${iter.result.imageUrl}`}
                           alt="Результат"
                           className="tc2-image"
+                          loading="lazy"
+                          decoding="async"
                           onClick={() => window.open(`file://${iter.result!.imageUrl}`, '_blank')}
                         />
                       </div>
@@ -493,7 +511,11 @@ const IterationBlock = memo(function IterationBlock({
   )
 }, (prev, next) => prev.iter === next.iter && prev.isLast === next.isLast &&
   prev.isRunning === next.isRunning && prev.mode === next.mode && prev.defaultOpen === next.defaultOpen &&
-  prev.liveSessionId === next.liveSessionId)
+  prev.liveSessionId === next.liveSessionId && prev.animateEntrance === next.animateEntrance)
+
+// Сколько итераций показываем при раскрытии цепочки и шаг догрузки.
+const ITERS_PAGE = 15
+const ITERS_CHUNK = 10
 
 const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elapsed, summary, toolProgress }: {
   steps: ToolStep[]
@@ -510,16 +532,18 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   const runCmdSessionId = toolProgress?.['run_command']?.sessionId
   const runCmdActive = toolProgress?.['run_command']?.stage === 'start'
   const [collapsed, setCollapsed] = useState(true)  // свёрнут по дефолту
+  // Окно видимых итераций: длинные цепочки (100+ тулов) при раскрытии раньше
+  // монтировали ВСЕ IterationBlock разом (со stagger-анимациями и springs) →
+  // фриз. Показываем последние ITERS_PAGE, кнопка «предыдущие» расширяет окно
+  // к началу. Live-хвост (последние действия) виден всегда.
+  const [itersExtra, setItersExtra] = useState(0)
   const totalDone = iters.filter(i => i.result).length
   const hasFailed = iters.some(i => i.result?.success === false)
   const failedCount = iters.filter(i => i.result?.success === false).length
 
-  // Авто-раскрытие цепочки при сбое — раньше ToolChain оставался свёрнутым,
-  // и пользователь видел только «⚠» без текста ошибки. Теперь при hasFailed
-  // раскрываем автоматически, чтобы упавшая итерация была видна.
-  useEffect(() => {
-    if (hasFailed) setCollapsed(false)
-  }, [hasFailed])
+  // НЕТ авто-раскрытия цепочки при сбое: в больших чатах failed-цепочки
+  // авто-раскрывались при скролле и монтировали все тела с подсветкой →
+  // фризы. Заголовок показывает «⚠ M ошибок из N» — раскрытие по клику.
 
   // Считаем elapsed из timestamps если не передан явно
   const allSteps = steps.filter(s => s.timestamp)
@@ -537,6 +561,11 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
     : null
 
   if (iters.length === 0 && !isRunning) return null
+
+  // Видимое окно итераций (хвост + расширение к началу по клику).
+  const visibleCount = Math.min(iters.length, ITERS_PAGE + itersExtra)
+  const hiddenCount = iters.length - visibleCount
+  const visibleIters = iters.slice(hiddenCount)
 
   if (mode === 'compact') {
     return (
@@ -606,18 +635,27 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
           >
-            {iters.map((iter, idx) => (
-              <IterationBlock
-                key={iter.id}
-                iter={iter}
-                index={idx}
-                isLast={idx === iters.length - 1}
-                isRunning={!!isRunning}
-                mode={mode}
-                defaultOpen={!!isRunning && idx === iters.length - 1}
-                liveSessionId={runCmdActive && iter.call.toolName === 'run_command' && !iter.result ? runCmdSessionId : undefined}
-              />
-            ))}
+            {hiddenCount > 0 && (
+              <button className="tc2-show-more" onClick={() => setItersExtra(e => e + ITERS_CHUNK)}>
+                Показать ещё {Math.min(ITERS_CHUNK, hiddenCount)} из {hiddenCount} предыдущих действий
+              </button>
+            )}
+            {visibleIters.map((iter, vIdx) => {
+              const idx = hiddenCount + vIdx
+              return (
+                <IterationBlock
+                  key={iter.id}
+                  iter={iter}
+                  index={vIdx}
+                  isLast={idx === iters.length - 1}
+                  isRunning={!!isRunning}
+                  mode={mode}
+                  defaultOpen={!!isRunning && idx === iters.length - 1}
+                  liveSessionId={runCmdActive && iter.call.toolName === 'run_command' && !iter.result ? runCmdSessionId : undefined}
+                  animateEntrance={!!isRunning}
+                />
+              )
+            })}
 
             {/* Пульс — ждём следующего тула */}
             {isRunning && iters.length > 0 && iters[iters.length - 1].result && (

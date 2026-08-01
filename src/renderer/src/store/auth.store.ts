@@ -3,6 +3,8 @@ import { create } from 'zustand'
 export interface GatewayUser {
   id: string
   email: string
+  username?: string | null
+  username_is_auto?: boolean
   role: string
   display_name?: string | null
   avatar_url?: string | null

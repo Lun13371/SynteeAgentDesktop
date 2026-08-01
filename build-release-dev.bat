@@ -150,6 +150,9 @@ if exist "%APPDATA%\electron-builder\Cache" rmdir /s /q "%APPDATA%\electron-buil
 echo  [OK] Clean
 
 echo  Building client (V8 bytecode + renderer obfuscation)...
+REM Enable source protection for this build (electron.vite.config reads it).
+REM Debug runs (run.bat / run-debug.bat / run-prod.bat) build WITHOUT it.
+set SYNTEE_PROTECT=1
 call npm run build:win
 if errorlevel 1 (
     echo.

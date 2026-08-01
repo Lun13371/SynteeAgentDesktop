@@ -429,7 +429,8 @@
   background: var(--overlay-3, rgba(255, 255, 255, 0.06));
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
   color: var(--text-secondary, #9a9aa5);
-  transition: all var(--transition, 200ms);
+  /* transition: all → scoped: hover меняет только background/border/color */
+  transition: background var(--transition, 200ms), color var(--transition, 200ms), border-color var(--transition, 200ms);
 }
 
 .tc2-ask-q-opt--selected {
@@ -619,4 +620,23 @@
 @keyframes tc2-pulse-opacity {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.35; }
+}
+
+/* Кнопка догрузки («Показать ещё») — для окна итераций и chunked DiffBlock.
+   Визуально повторяет .trr-expand-btn из ToolResultRenderer.css. */
+.tc2-show-more {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  align-self: flex-start;
+  margin: 4px 0 4px 26px;
+}
+.tc2-show-more:hover {
+  background: var(--overlay-3);
+  color: var(--text-primary);
 }

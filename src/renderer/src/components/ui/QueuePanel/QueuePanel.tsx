@@ -15,6 +15,11 @@ const DROP_W = 340
 const HOVER_OPEN_DELAY = 120
 const HOVER_CLOSE_DELAY = 220
 
+// Стабильная пустая ссылка: `?? []` прямо в селекторе создавал НОВЫЙ массив
+// на каждый вызов → zustand видел «изменение» → QueuePanel ре-рендерился на
+// каждое обновление store, включая 50мс-флеши стриминга (20×/сек).
+const EMPTY_QUEUE: QueueItemMeta[] = []
+
 /**
  * Бейдж очереди запросов чата + раскрывающаяся панель управления.
  *
@@ -41,7 +46,7 @@ export default function QueuePanel({ chatId }: QueueBadgeProps) {
   const openTimer = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
 
-  const queue = useChatStore(s => s.queueByChat[chatId] ?? [])
+  const queue = useChatStore(s => s.queueByChat[chatId] ?? EMPTY_QUEUE)
   const activeRun = useChatStore(s => s.activeRunByChat[chatId] ?? null)
 
   // Бейдж показывается ТОЛЬКО когда есть ожидающие (queued) запросы.

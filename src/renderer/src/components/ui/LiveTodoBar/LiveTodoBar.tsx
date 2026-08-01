@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import './LiveTodoBar.css'
 
@@ -23,7 +23,9 @@ const EASE_SMOOTH = [0.4, 0, 0.2, 1] as const
 // (сначала меняет форму, потом контент появляется).
 const EXPAND_MS = 0.32
 
-export default function LiveTodoBar({ items, active = true }: LiveTodoBarProps) {
+// memo: чистый пропс-компонент (подписок нет) — memo отсекает ре-рендеры
+// от родителя ChatPage (стриминг/скролл), пока items/active не меняются.
+function LiveTodoBar({ items, active = true }: LiveTodoBarProps) {
   const [expanded, setExpanded] = useState(false)
 
   const done = items.filter(i => i.status === 'done').length
@@ -147,3 +149,5 @@ export default function LiveTodoBar({ items, active = true }: LiveTodoBarProps) 
     </div>
   )
 }
+
+export default memo(LiveTodoBar)

@@ -52,6 +52,7 @@ import { getMcpManager } from '../../core/mcp/McpManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult } from '../../shared/types'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { messageToContextMessages, formatTodoForContext } from './chatContextHelpers'
+import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
 
 /**
  * Состояние одного активного запуска chat:send.
@@ -92,6 +93,14 @@ interface ActiveRun {
   pendingTextAfter: string
   pendingThinking: string
   pendingThinkingMs?: number
+  // ── UI-батчинг токенов ──
+  // Раньше каждый LLM-токен летел отдельным IPC-событием (50-200/сек на
+  // быстрых моделях) — structured-clone + dispatch на каждый. Рендерер всё
+  // равно буферизует с флешем 50мс, поэтому батчим симметрично: копим в
+  // uiTokenBuf/uiThinkingBuf и шлём пачкой раз в UI_FLUSH_MS.
+  uiTokenBuf: string
+  uiThinkingBuf: string
+  uiFlushTimer: ReturnType<typeof setTimeout> | null
   currentIterTextBefore: string
   currentIterSteps: unknown[]
   currentIterThinking: string
@@ -1144,6 +1153,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       pendingTextAfter: '',
       pendingThinking: '',
       pendingThinkingMs: undefined,
+      uiTokenBuf: '',
+      uiThinkingBuf: '',
+      uiFlushTimer: null,
       currentIterTextBefore: '',
       currentIterSteps: [],
       currentIterThinking: '',
@@ -1154,6 +1166,30 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // сохраняется в assistantMsg через sendDone для отображения
       // AttachmentProcessingBlock после рестарта.
       attachmentResult: null as AttachmentProcessingResult | null,
+    }
+
+    // ── UI-батчинг токенов: флеш накопленного перед любыми другими
+    // событиями (step/done/thinking_done), чтобы порядок текста и шагов
+    // в рендерере сохранялся. ──
+    const UI_FLUSH_MS = 50
+    const flushUiTokens = () => {
+      if (run.uiFlushTimer) { clearTimeout(run.uiFlushTimer); run.uiFlushTimer = null }
+      if (run.uiTokenBuf) {
+        win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+          chatId: run.chatId, msgId: run.msgId, token: run.uiTokenBuf,
+        })
+        run.uiTokenBuf = ''
+      }
+      if (run.uiThinkingBuf) {
+        win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
+          chatId: run.chatId, msgId: run.msgId, thinkingToken: run.uiThinkingBuf,
+        })
+        run.uiThinkingBuf = ''
+      }
+    }
+    const scheduleUiFlush = () => {
+      if (run.uiFlushTimer) return
+      run.uiFlushTimer = setTimeout(flushUiTokens, UI_FLUSH_MS)
     }
 
     const sendDone = (
@@ -1167,6 +1203,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     ) => {
       if (run.doneSent) return
       run.doneSent = true
+      // Сначала сливаем накопленные токены — иначе хвост ответа пришёл бы
+      // в renderer ПОСЛЕ done-события и потерялся бы.
+      flushUiTokens()
       log('[sendDone] chatId=%s msgId=%s text=%d chars steps=%d iters=%d',
         params.chatId, assistantMsgId, fullText.length, steps?.length ?? 0, iters?.length ?? 0)
       console.log('[chat.ipc] sendDone: chatId=%s text=%d steps=%d', params.chatId, fullText.length, steps?.length ?? 0)
@@ -1298,7 +1337,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
         chatId: params.chatId,
         msgId: assistantMsgId,
-        message: assistantMsg,
+        // В БД выше сохранено полное сообщение; в UI — slim-копия.
+        message: slimMessageForUI(assistantMsg),
       })
 
       // Эмитим терминальный статус для сайдбара (бейдж ✓).
@@ -1443,24 +1483,25 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         case 'token':
           run.bufferedText += (msg.token as string) || ''
           run.pendingTextAfter += (msg.token as string) || ''
-          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-            chatId: msg.chatId, msgId: msg.msgId, token: msg.token,
-          })
+          // Батчинг: IPC пачкой раз в UI_FLUSH_MS, а не на каждый токен.
+          run.uiTokenBuf += (msg.token as string) || ''
+          scheduleUiFlush()
           break
 
         case 'thinking_token': {
           const tok = typeof msg.token === 'string' ? msg.token : ''
           run.bufferedThinking += tok
           run.pendingThinking += tok
-          win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-            chatId: msg.chatId, msgId: msg.msgId, thinkingToken: tok,
-          })
+          run.uiThinkingBuf += tok
+          scheduleUiFlush()
           break
         }
 
         case 'thinking_done':
           run.bufferedThinkingMs = msg.thinkingMs as number
           run.pendingThinkingMs = msg.thinkingMs as number
+          // Сливаем накопленные thinking-токены ДО маркера завершения.
+          flushUiTokens()
           win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
             chatId: msg.chatId, msgId: msg.msgId,
             thinkingDone: true, thinkingMs: msg.thinkingMs,
@@ -1468,6 +1509,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           break
 
         case 'step': {
+          // Сливаем текст ДО шага — в renderer текст итерации должен
+          // зафиксироваться раньше, чем придёт tool_call.
+          flushUiTokens()
           const rawStep = msg.step as Record<string, unknown>
           // tool_call_pending — временный ранний сигнал для UI (см. Agent.ts
           // onToolCallStarted), заменяется настоящим tool_call через
@@ -2102,6 +2146,8 @@ ${subModeOutro}`,
             }
             if (!params.incognito) saveMessage(errorAssistantMsg)
             run.doneSent = true
+            // Сливаем накопленные UI-токены (могли остаться thinking-токены).
+            flushUiTokens()
             if (activeRuns.get(params.chatId) === run) activeRuns.delete(params.chatId)
             activeRunMeta.delete(params.chatId)
             win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
@@ -2312,12 +2358,17 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
   })
 
   ipcMain.handle('chat:getAll', () => getAllChats())
-  ipcMain.handle('chat:getMessages', (_, chatId: string) => getMessages(chatId))
+  // ВНИМАНИЕ: в renderer сообщения уходят ТОЛЬКО через slimMessagesForUI —
+  // полные tool-пейлоады (тела файлов, diff'ы, выводы) остаются в БД для
+  // AI-контекста (messageToContextMessages), UI показывает урезанную копию.
+  ipcMain.handle('chat:getMessages', (_, chatId: string) => slimMessagesForUI(getMessages(chatId)))
   // Окно сообщений для пагинации (reverse-infinite scroll). Возвращает
   // { messages, hasMore } — последние `limit` сообщений либо старее курсора
   // (beforeCreatedAt, beforeId). См. db/messages.ts getMessagesPage.
-  ipcMain.handle('chat:getMessagesPage', (_, chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) =>
-    getMessagesPage(chatId, limit ?? 20, beforeCreatedAt, beforeId))
+  ipcMain.handle('chat:getMessagesPage', (_, chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) => {
+    const res = getMessagesPage(chatId, limit ?? 20, beforeCreatedAt, beforeId)
+    return { ...res, messages: slimMessagesForUI(res.messages) }
+  })
   ipcMain.handle('chat:delete', (_, chatId: string) => {
     // Если в удаляемом чате работает воркер — убиваем его и чистим очередь.
     const run = activeRuns.get(chatId)
@@ -2957,8 +3008,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       log('[chat:rewindTo] chatId=%s userMsgId=%s: restored %d files, deleted %d messages',
         chatId, userMessageId, restoredFiles.length, deletedMessages)
 
-      // 9. Возвращаем обновлённые сообщения для renderer.
-      return { messages: getMessages(chatId) }
+      // 9. Возвращаем обновлённые сообщения для renderer (slim-копии).
+      return { messages: slimMessagesForUI(getMessages(chatId)) }
     } catch (e) {
       log('[chat:rewindTo] error chatId=%s: %s', chatId, (e as Error).message)
       return { error: `Ошибка отката: ${(e as Error).message}` }
@@ -3037,7 +3088,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
 
       log('[chat:redo] done: restored %d files, %d messages', restoredFiles.length, entry.deletedMessages.length)
 
-      return { messages: getMessages(chatId) }
+      return { messages: slimMessagesForUI(getMessages(chatId)) }
     } catch (e) {
       log('[chat:redo] error chatId=%s: %s', chatId, (e as Error).message)
       return { error: `Ошибка отмены отката: ${(e as Error).message}` }
@@ -3232,7 +3283,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       })
 
       return {
-        messages: getMessages(chatId),
+        messages: slimMessagesForUI(getMessages(chatId)),
         stats: {
           removedCount: result.removedCount,
           tokensBefore,
@@ -3303,7 +3354,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
 
       return {
         chatId: forkedChatId,
-        messages: getMessages(forkedChatId),
+        messages: slimMessagesForUI(getMessages(forkedChatId)),
         title: forkTitle,
       }
     } catch (e) {

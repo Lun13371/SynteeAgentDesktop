@@ -18,8 +18,12 @@ export default function MessengerSidebar({ onOpenFriends }: Props) {
   const [filter, setFilter] = useState('')
 
   const filtered = filter.trim()
-    ? conversations.filter(c =>
-      (c.other_user.display_name || c.other_user.email).toLowerCase().includes(filter.toLowerCase()))
+    ? conversations.filter(c => {
+        const label = c.other_user.username
+          ? `@${c.other_user.username}`
+          : (c.other_user.display_name || c.other_user.email)
+        return label.toLowerCase().includes(filter.toLowerCase())
+      })
     : conversations
 
   const totalUnread = conversations.reduce((n, c) => n + (c.unread_count || 0), 0)
@@ -88,7 +92,9 @@ export default function MessengerSidebar({ onOpenFriends }: Props) {
 function ConversationRow({
   conv, online, active, onOpen,
 }: { conv: ConversationResponse; online: boolean; active: boolean; onOpen: () => void }) {
-  const name = conv.other_user.display_name || conv.other_user.email
+  const name = conv.other_user.username
+    ? `@${conv.other_user.username}`
+    : conv.other_user.display_name || conv.other_user.email
   const last = conv.last_message
   const preview = !last
     ? 'Нет сообщений'

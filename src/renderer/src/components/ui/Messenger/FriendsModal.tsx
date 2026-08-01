@@ -20,16 +20,16 @@ export default function FriendsModal({ open, onClose }: Props) {
   const blockUser = useMessengerStore(s => s.blockUser)
   const startConversationWith = useMessengerStore(s => s.startConversationWith)
 
-  const [email, setEmail] = useState('')
-  const [searchResults, setSearchResults] = useState<{ id: string; email: string; display_name?: string | null; avatar_url?: string | null }[]>([])
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<{ id: string; email: string; username?: string | null; display_name?: string | null; avatar_url?: string | null }[]>([])
   const [searching, setSearching] = useState(false)
 
   const incoming = requests.filter(r => r.direction === 'incoming')
   const outgoing = requests.filter(r => r.direction === 'outgoing')
 
   const runSearch = async (q: string) => {
-    setEmail(q)
-    if (q.trim().length < 3) { setSearchResults([]); return }
+    setQuery(q)
+    if (q.trim().replace(/^@/, '').length < 3) { setSearchResults([]); return }
     setSearching(true)
     try {
       const res = await window.syntee.messenger.friends.search(q)
@@ -39,10 +39,15 @@ export default function FriendsModal({ open, onClose }: Props) {
   }
 
   const handleAdd = async (addr: string) => {
-    await sendFriendRequest(addr)
-    setEmail('')
+    await sendFriendRequest(addr.replace(/^@/, ''))
+    setQuery('')
     setSearchResults([])
   }
+
+  const labelOf = (u: { username?: string | null; display_name?: string | null; email: string }) =>
+    u.username ? `@${u.username}` : u.display_name || u.email
+  const secondaryOf = (u: { username?: string | null; display_name?: string | null; email: string }) =>
+    u.username ? (u.display_name || u.email) : null
 
   return (
     <AnimatePresence>
@@ -73,12 +78,12 @@ export default function FriendsModal({ open, onClose }: Props) {
                 <div className="friends-add">
                   <input
                     type="text"
-                    placeholder="Введите email…"
-                    value={email}
+                    placeholder="Введите @username…"
+                    value={query}
                     onChange={e => void runSearch(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && email.trim()) void handleAdd(email.trim()) }}
+                    onKeyDown={e => { if (e.key === 'Enter' && query.trim()) void handleAdd(query.trim()) }}
                   />
-                  <button className="friends-add-btn" onClick={() => email.trim() && handleAdd(email.trim())} disabled={!email.trim()}>
+                  <button className="friends-add-btn" onClick={() => query.trim() && handleAdd(query.trim())} disabled={!query.trim()}>
                     <AppIcon name="userPlus" size="sm" /> Отправить
                   </button>
                 </div>
@@ -87,12 +92,12 @@ export default function FriendsModal({ open, onClose }: Props) {
                   <div className="friends-search-results">
                     {searchResults.map(u => (
                       <div key={u.id} className="friends-user-row">
-                        <Identicon seed={u.id || u.email} src={u.avatar_url} size={28} alt={u.email} />
+                        <Identicon seed={u.id || u.email} src={u.avatar_url} size={28} alt={labelOf(u)} />
                         <div className="friends-user-info">
-                          <span className="friends-user-name">{u.display_name || u.email}</span>
-                          {u.display_name && <span className="friends-user-email">{u.email}</span>}
+                          <span className="friends-user-name">{labelOf(u)}</span>
+                          {secondaryOf(u) && <span className="friends-user-email">{secondaryOf(u)}</span>}
                         </div>
-                        <button className="friends-action-btn" onClick={() => void handleAdd(u.email)}>
+                        <button className="friends-action-btn" onClick={() => void handleAdd(u.username ?? u.email)}>
                           <AppIcon name="userPlus" size="xs" /> Добавить
                         </button>
                       </div>
@@ -106,10 +111,10 @@ export default function FriendsModal({ open, onClose }: Props) {
                   <h3>Входящие заявки ({incoming.length})</h3>
                   {incoming.map(r => (
                     <div key={r.id} className="friends-user-row">
-                      <Identicon seed={r.user.id || r.user.email} src={r.user.avatar_url} size={28} alt={r.user.email} />
+                      <Identicon seed={r.user.id || r.user.email} src={r.user.avatar_url} size={28} alt={labelOf(r.user)} />
                       <div className="friends-user-info">
-                        <span className="friends-user-name">{r.user.display_name || r.user.email}</span>
-                        {r.user.display_name && <span className="friends-user-email">{r.user.email}</span>}
+                        <span className="friends-user-name">{labelOf(r.user)}</span>
+                        {secondaryOf(r.user) && <span className="friends-user-email">{secondaryOf(r.user)}</span>}
                       </div>
                       <div className="friends-action-group">
                         <button className="friends-action-btn friends-action-btn--primary" onClick={() => void acceptFriendRequest(r.user.id)}>
@@ -129,9 +134,9 @@ export default function FriendsModal({ open, onClose }: Props) {
                   <h3>Исходящие заявки ({outgoing.length})</h3>
                   {outgoing.map(r => (
                     <div key={r.id} className="friends-user-row">
-                      <Identicon seed={r.user.id || r.user.email} src={r.user.avatar_url} size={28} alt={r.user.email} />
+                      <Identicon seed={r.user.id || r.user.email} src={r.user.avatar_url} size={28} alt={labelOf(r.user)} />
                       <div className="friends-user-info">
-                        <span className="friends-user-name">{r.user.display_name || r.user.email}</span>
+                        <span className="friends-user-name">{labelOf(r.user)}</span>
                       </div>
                       <span className="friends-hint">Ожидает подтверждения</span>
                     </div>
@@ -144,10 +149,10 @@ export default function FriendsModal({ open, onClose }: Props) {
                 {friends.length === 0 && <div className="friends-hint">Список друзей пуст.</div>}
                 {friends.map(u => (
                   <div key={u.id} className="friends-user-row">
-                    <Identicon seed={u.id || u.email} src={u.avatar_url} size={28} alt={u.email} />
+                    <Identicon seed={u.id || u.email} src={u.avatar_url} size={28} alt={labelOf(u)} />
                     <div className="friends-user-info">
-                      <span className="friends-user-name">{u.display_name || u.email}</span>
-                      {u.display_name && <span className="friends-user-email">{u.email}</span>}
+                      <span className="friends-user-name">{labelOf(u)}</span>
+                      {secondaryOf(u) && <span className="friends-user-email">{secondaryOf(u)}</span>}
                     </div>
                     <div className="friends-action-group">
                       <button className="friends-action-btn friends-action-btn--primary" onClick={async () => { const id = await startConversationWith(u.id); if (id) onClose() }}>

@@ -10,6 +10,7 @@ import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
 import { playDoneSound } from '../../utils/sounds'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
+import { ChatRemeasureContext } from '../../components/ui/MessageBubble/remeasure'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import LiveTodoBar from '../../components/ui/LiveTodoBar/LiveTodoBar'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
@@ -56,6 +57,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   return (
     <div
       data-index={vItemIndex}
+      data-msg-id={msg.id}
       ref={measureRef}
       style={{ ...itemStyle, transform: `translateY(${vItemStart}px)` }}
     >
@@ -135,7 +137,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const { add: toast } = useToast()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const chatInputWrapRef = useRef<HTMLDivElement>(null)
-  const [rateLimitSec, setRateLimitSec] = useState(0)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [showSkeleton, setShowSkeleton] = useState(false)
@@ -229,19 +230,22 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // ── /restore пикер именованных снапшотов ──
   const [snapshotPicker, setSnapshotPicker] = useState<CheckpointMeta[] | null>(null)
 
-  const handleReasoningChange = (value: string) => {
+  // Хендлеры ниже обёрнуты в useCallback — ChatInput/Sidebar/LiveTodoBar
+  // мемоизированы (React.memo), нестабильные ссылки на функции пробивали
+  // бы memo при каждом ре-рендере ChatPage (стриминг 20×/сек, скролл).
+  const handleReasoningChange = useCallback((value: string) => {
     setReasoningValue(value)
     window.syntee.settings.set('reasoningValue', value).catch(() => {})
-  }
+  }, [])
 
-  const handleMainModelChange = async (modelId: string, providerId: string) => {
+  const handleMainModelChange = useCallback(async (modelId: string, providerId: string) => {
     try {
       await window.syntee.models.setAssignment({ role: 'main', modelId, providerId })
       setMainModelId(modelId)
     } catch (e) {
       console.error('[ChatPage] setAssignment error', e)
     }
-  }
+  }, [])
 
   useEffect(() => {
     window.syntee.settings.get('showContextRing').then((v: unknown) => {
@@ -264,10 +268,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     window.syntee.fastContext.setActive(activeProjectId).catch(() => {})
   }, [activeProjectId])
 
-  // Слежение за rateLimitSec из live-состояния (для WaitingIndicator)
-  useEffect(() => {
-    setRateLimitSec(live.rateLimitSec)
-  }, [live.rateLimitSec])
+  // rateLimitSec читаем напрямую из live (live.rateLimitSec) — раньше был
+  // зеркальный local state + effect, что добавляло лишний ре-рендер на
+  // каждый тик countdown'а при rate-limit.
 
   // Тосты при терминальных статусах запуска (ошибка/отмена) — только для текущего чата
   const prevRunStatusRef = useRef<string | undefined>(undefined)
@@ -375,28 +378,28 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // image_mode / ask_mode) для переживания перезапуска. Инкогнито не
   // пишется — только in-memory state. Пишем все 3 режима разом: один
   // UPDATE в SQLite дешевле, чем три IPC-вызова.
-  const persistModes = (chatId: string, p: boolean, i: boolean, a: boolean) => {
+  const persistModes = useCallback((chatId: string, p: boolean, i: boolean, a: boolean) => {
     if (!chatId || isIncognito) return
     window.syntee.chat.setModes(chatId, { planningMode: p, imageMode: i, askMode: a }).catch(() => {})
-  }
-  const handlePlanningModeChange = (v: boolean) => {
+  }, [isIncognito])
+  const handlePlanningModeChange = useCallback((v: boolean) => {
     setPlanningMode(v)
     persistModes(currentChatId ?? '', v, imageModeRef.current, askModeRef.current)
-  }
-  const handleImageModeChange = (v: boolean) => {
+  }, [currentChatId, persistModes])
+  const handleImageModeChange = useCallback((v: boolean) => {
     setImageMode(v)
     persistModes(currentChatId ?? '', planningModeRef.current, v, askModeRef.current)
-  }
-  const handleAskModeChange = (v: boolean) => {
+  }, [currentChatId, persistModes])
+  const handleAskModeChange = useCallback((v: boolean) => {
     setAskMode(v)
     persistModes(currentChatId ?? '', planningModeRef.current, imageModeRef.current, v)
-  }
+  }, [currentChatId, persistModes])
 
   // ── Черновик: debounced-сохранение в БД ──
   // 300мс задержка — чтобы не дёргать IPC на каждое нажатие. При смене
   // чата / размонтировании pending-таймер отменяется и сохранение идёт
   // синхронно в эффекте ниже.
-  const handleDraftChange = (text: string) => {
+  const handleDraftChange = useCallback((text: string) => {
     setDraft(text)
     draftRef.current = text
     if (currentChatId && !isIncognito) {
@@ -406,12 +409,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         draftSaveTimerRef.current = null
       }, 300)
     }
-  }
+  }, [currentChatId, isIncognito])
 
   // ── Вложения черновика: debounced-сохранение в БД ──
   // Аналогично draft — 300мс дебаунс. При смене чата сохраняем синхронно.
   // Инкогнито-чаты: только in-memory (не персистим).
-  const handleAttachmentsChange = (atts: Attachment[]) => {
+  const handleAttachmentsChange = useCallback((atts: Attachment[]) => {
     setDraftAttachments(atts)
     draftAttachmentsRef.current = atts
     if (currentChatId && !isIncognito) {
@@ -421,7 +424,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         attachmentsSaveTimerRef.current = null
       }, 300)
     }
-  }
+  }, [currentChatId, isIncognito])
 
   // ── Загрузка/сохранение per-chat UI state при смене чата ──
   // При переключении chatId: сначала сохраняем draft/modes предыдущего
@@ -633,6 +636,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         }
       }).catch(() => { /* ok — оставляем stale, не критично */ })
     })
+    // Намеренно mount-once: selectChat объявлен ниже по коду (const), включать
+    // его в deps нельзя — deps вычисляется во время рендера и упал бы с TDZ
+    // (ReferenceError: cannot access before initialization). Ссылки внутри
+    // тела эффекта безопасны — оно выполняется после рендера.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // АВТОСКРОЛЛ — один источник истины (autoScrollRef), плавный RAF-loop
@@ -871,7 +879,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // который дублировал RO и добавлял лишний ре-рендер/ре-флоу каждый токен.
   // RO уже батчит и рейлит на rAF-loop — этого достаточно.
 
-  const selectChat = async (id: string) => {
+  const selectChat = useCallback(async (id: string) => {
     setIsLoadingMessages(true)
     isInitialScrollRef.current = true
     autoScrollRef.current = true
@@ -936,9 +944,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
     setShowSkeleton(false)
     setIsLoadingMessages(false)
-  }
+    // Deps: все используемые значения — стабильные store-actions/useCallback'и.
+  }, [setCurrentChat, markChatRead, setMessagesWindow, setHasOlderMessages, scrollToBottomInstant])
 
-  const createNewChat = async (projectId?: string) => {
+  const createNewChat = useCallback(async (projectId?: string) => {
     let pid = projectId ?? activeProjectId
     if (!pid) {
       const picked = await window.syntee.projects.pickWorkdir()
@@ -956,9 +965,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setMessages([])
     autoScrollRef.current = true
     isInitialScrollRef.current = true
-  }
+  }, [activeProjectId, isIncognito, activeMode, setProjects, setActiveProject, setChats, setCurrentChat, setMessages])
 
-  const createNewProject = async (mode: 'empty' | 'existing' = 'existing') => {
+  const createNewProject = useCallback(async (mode: 'empty' | 'existing' = 'existing') => {
     const picked = mode === 'empty'
       ? await window.syntee.projects.pickNewWorkdir()
       : await window.syntee.projects.pickWorkdir()
@@ -967,9 +976,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const allProjects: Project[] = await window.syntee.projects.getAll()
     setProjects(allProjects)
     setActiveProject(project.id)
-  }
+  }, [setProjects, setActiveProject])
 
-  const createChatWithoutProject = async () => {
+  const createChatWithoutProject = useCallback(async () => {
     const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, undefined)
     const all: Chat[] = await window.syntee.chat.getAll()
     setChats(all)
@@ -977,7 +986,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setMessages([])
     autoScrollRef.current = true
     isInitialScrollRef.current = true
-  }
+  }, [isIncognito, activeMode, setChats, setCurrentChat, setMessages])
 
   /**
    * Вызывается после установки MCP/Skill через маркетплейс расширений —
@@ -987,7 +996,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
    * не инициализируется (streamMsgId остаётся null) и прогресс агента/финальный
    * ответ не отображаются, хотя агент реально работает в фоне.
    */
-  const handleExtensionInstalled = async (chatId: string, projectId: string | undefined, userMsg: Message) => {
+  const handleExtensionInstalled = useCallback(async (chatId: string, projectId: string | undefined, userMsg: Message) => {
     if (projectId) {
       const allProjects: Project[] = await window.syntee.projects.getAll()
       setProjects(allProjects)
@@ -1001,9 +1010,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     initChatSend(chatId)
     autoScrollRef.current = true
     isInitialScrollRef.current = true
-  }
+  }, [setProjects, setActiveProject, setChats, setCurrentChat, setMessages, addMessage])
 
-  const handleSend = async (text: string) => {
+  const handleSend = useCallback(async (text: string) => {
     const raw = text.trim()
     const slash = parseSlashCommandWithCustom(raw, customCommands)
 
@@ -1332,7 +1341,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         setInputHistory(dedup)
       }).catch(() => {})
     }
-  }
+    // Deps: refs и store-actions стабильны; меняются только редкие
+    // data-значения (режимы, replyTo, customCommands) — во время стриминга
+    // ссылка handleSend стабильна, memo ChatInput не пробивается.
+  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, scrollToBottomInstant])
 
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
@@ -1345,6 +1357,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const handleReply = useCallback((msg: Message) => {
     setReplyTo(prev => prev.find(r => r.id === msg.id) ? prev : [...prev, msg])
   }, [])
+
+  const handleCancelReply = useCallback((id: string) => {
+    setReplyTo(prev => prev.filter(r => r.id !== id))
+  }, [])
+
+  const handleStop = useCallback(() => {
+    if (currentChatId) window.syntee.chat.stop(currentChatId)
+  }, [currentChatId])
 
   const handleRewind = useCallback(async (userMessageId: string) => {
     if (!currentChatId) return
@@ -1472,7 +1492,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         agentStatus: live.agentStatus,
         toolProgress: live.toolProgress,
         livePlanningMode: planningMode,
-        rateLimitSec: rateLimitSec > 0 ? rateLimitSec : undefined,
+        rateLimitSec: live.rateLimitSec > 0 ? live.rateLimitSec : undefined,
         retry: live.retry,
         lastError: live.lastError,
       } as Message & Record<string, unknown>]
@@ -1497,7 +1517,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, rateLimitSec, isCompacting, planningMode, compactingSummary])
+  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, live.rateLimitSec, isCompacting, planningMode, compactingSummary])
 
   // Ref на актуальный displayMessages для стабильного getItemKey. Виртуализатор
   // кэширует высоты по ключу getItemKey. Дефолтный key = индекс позиции → при
@@ -1521,10 +1541,35 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // markdown больших сообщений при переходе границы. Памяти чуть больше,
     // но плавность скролла важнее.
     overscan: 10,
+    // useAnimationFrameWithResizeObserver (v3.17): батчит колбэки ResizeObserver
+    // с requestAnimationFrame вместо синхронного срабатывания. Во время стрима
+    // RO может стрелять на каждом flush'е токенов (50мс) → без батчинга
+    // возникают reflow-бури и рассинхрон кэша высот с реальным DOM. С rAF-батчингом
+    // замеры стабильнее → реже «прилипание» сообщений к соседу. Визуально ноль.
+    useAnimationFrameWithResizeObserver: true,
     // measureElement убран — отдаём tanstack дефолтный (ResizeObserver-based,
     // батчит измерения вместо getBoundingClientRect на каждый вызов, который
     // форсит synchronous reflow на каждом токене стрима).
   })
+
+  // Принудительный перемер смонтированных рядов: дёргает virtualizer.resizeItem
+  // с реальной высотой DOM для каждого видимого ряда. Лечит устаревший кэш высот
+  // (когда RO не успел поймать финальную высоту — анимация height:0→'auto' у
+  // SystemDivider, асинхронный Mermaid SVG, нагруженный main thread) — иначе
+  // следующий ряд позиционируется по устаревшей (меньшей) высоте и налезает на
+  // предыдущий. См. комментарии в remeasure.ts. Вызывается листьями
+  // (MermaidBlock, SystemDivider) по факту дорисовки, НЕ на каждом токене.
+  const requestRemeasure = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const rows = el.querySelectorAll('[data-index]')
+    if (rows.length === 0) return
+    rows.forEach((node) => {
+      const idx = Number((node as HTMLElement).getAttribute('data-index'))
+      if (!Number.isFinite(idx)) return
+      virtualizer.resizeItem(idx, Math.ceil(node.getBoundingClientRect().height))
+    })
+  }, [virtualizer])
 
   return (
     <div className={`chat-layout ${embedded ? 'chat-layout--embedded' : ''}`}>
@@ -1625,14 +1670,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   />
                 </div>
               )}
-              <div
-                style={{
-                  height: virtualizer.getTotalSize(),
-                  width: '100%',
-                  position: 'relative',
-                }}
-              >
-                {virtualizer.getVirtualItems().map(vItem => {
+              <ChatRemeasureContext.Provider value={requestRemeasure}>
+                <div
+                  style={{
+                    height: virtualizer.getTotalSize(),
+                    width: '100%',
+                    position: 'relative',
+                  }}
+                >
+                  {virtualizer.getVirtualItems().map(vItem => {
                   const msg = displayMessages[vItem.index]
                   const isLive = msg.id === 'live-streaming-bubble'
                   const liveThinking = isLive && live.thinking
@@ -1658,12 +1704,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       liveThinking={liveThinking}
                       isStreaming={isLive && isTyping}
                       isWaiting={isLive && isTyping}
-                      rateLimitSec={isLive ? rateLimitSec : undefined}
+                      rateLimitSec={isLive ? live.rateLimitSec : undefined}
                       shouldAnimate={shouldAnimate}
                     />
                   )
                 })}
-              </div>
+                </div>
+              </ChatRemeasureContext.Provider>
             </div>
           )}
 
@@ -1695,9 +1742,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               disabled={isTyping || isCompacting}
               isIncognito={isIncognito}
               replyTo={replyTo}
-              onCancelReply={(id) => setReplyTo(prev => prev.filter(r => r.id !== id))}
+              onCancelReply={handleCancelReply}
               isGenerating={isTyping || isAgentRunning || isCompacting}
-              onStop={() => currentChatId && window.syntee.chat.stop(currentChatId)}
+              onStop={handleStop}
               contextInfo={contextInfo}
               showContextRing={showContextRing}
               value={draft}

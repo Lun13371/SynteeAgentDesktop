@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import mermaid from 'mermaid'
+import { useChatRemeasure } from './remeasure'
 
 mermaid.initialize({
   startOnLoad: false,
@@ -30,6 +31,20 @@ let idCounter = 0
 // → мигания «···» и расход CPU. С кэшем — мгновенно готовый SVG.
 const svgCache = new Map<string, string>()
 
+// LRU-кап: раньше кэш рос безгранично (длинные сессии со множеством
+// диаграмм). При переполнении удаляем старейшие 25 (Map упорядочен по
+// вставке). Рендер удалённой диаграммы просто перевыполнится при показе.
+function svgCacheSet(code: string, svg: string) {
+  if (svgCache.size > 100) {
+    let toDelete = 25
+    for (const key of svgCache.keys()) {
+      if (toDelete-- <= 0) break
+      svgCache.delete(key)
+    }
+  }
+  svgCache.set(code, svg)
+}
+
 // Код считается "завершённым" если последняя непустая строка — не стрелка/разделитель
 function isLikelyComplete(code: string): boolean {
   const trimmed = code.trim()
@@ -47,6 +62,9 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   // Стартовое состояние — из кэша, если диаграмма уже рендерилась (скролл-remount).
   const [svg, setSvg] = useState<string>(() => svgCache.get(code) ?? '')
   const [error, setError] = useState<string | null>(null)
+  // Перемер ряда после асинхронной дорисовки SVG (RO может не успеть поймать
+  // финальную высоту под нагрузкой). Вне провайдера — null, noop.
+  const remeasure = useChatRemeasure()
   const idRef = useRef(`mermaid-${++idCounter}`)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeRef = useRef(0)  // версия — отменяем устаревшие рендеры
@@ -71,8 +89,10 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
         // Если за время рендера пришёл новый вызов — игнорируем
         if (version !== activeRef.current) return
         setError(null)
-        svgCache.set(code, result.svg)
+        svgCacheSet(code, result.svg)
         setSvg(result.svg)
+        // rAF, чтобы SVG успел влиться в layout до замера высоты ряда.
+        requestAnimationFrame(() => remeasure?.())
       } catch (e: unknown) {
         if (version !== activeRef.current) return
         const msg = e instanceof Error ? e.message : String(e)
@@ -85,7 +105,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [code])
+  }, [code, remeasure])
 
   if (error) {
     return (
