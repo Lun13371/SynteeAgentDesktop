@@ -30,6 +30,7 @@ import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
 import { getAccessToken } from '../services/tokenStore'
+import { getGatewayAuthToken } from '../services/gatewayClient'
 import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
 import { extractFinalPlan } from '../../shared/planParser'
 import { IPC_EVENTS } from '../../shared/constants'
@@ -734,8 +735,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   ): Promise<{ content: string; result: AttachmentProcessingResult | null }> {
     if (attachments.length === 0) return { content, result: null }
 
-    const { readFile: fsReadFile, stat: fsStat } = await import('fs/promises')
-    const { readFileSync } = await import('fs')
+    // require вместо await import для builtin: нативный import() не работает в V8-байткоде.
+    // (относительные import() ниже rollup компилирует в require — они безопасны)
+    const { readFile: fsReadFile, stat: fsStat } = require('fs/promises')
+    const { readFileSync } = require('fs')
     const { isTextMime, isImageMime } = await import('../../shared/mentions')
     const { AIClient } = await import('../../core/ai/AIClient')
 
@@ -1389,7 +1392,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         catalogCachePath,
         modelId: mainAssignment?.modelId,
         providerId: mainAssignment?.providerId,
-        gatewayToken: getAccessToken(),
+        // Свежий токен с авто-refresh: воркер не может рефрешить сам
+        // (electron-store/tokenStore в worker_threads недоступны).
+        gatewayToken: await getGatewayAuthToken().catch(() => getAccessToken()),
         fileCacheSnapshot: getFileCacheSnapshot(params.chatId),
         workdir: chatWorkdir,
         verificationCommand,
@@ -2251,7 +2256,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
     })
     if (result.canceled || !result.filePath) return null
     try {
-      const fs = await import('fs')
+      const fs = require('fs') // require: нативный import() не работает в V8-байткоде
       if (fs.existsSync(result.filePath)) {
         const entries = fs.readdirSync(result.filePath)
         if (entries.length > 0) {
@@ -2838,7 +2843,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
 
       // REDO: сохраняем текущее состояние файлов (contentAfter) до отката —
       // чтобы при отмене отката вернуть файлы обратно.
-      const { readFileSync, existsSync: pathExistsBefore } = await import('fs')
+      const { readFileSync, existsSync: pathExistsBefore } = require('fs') // require: нативный import() не работает в V8-байткоде
       const fileChangesForRedo: Array<{ path: string; contentAfter: string | null }> = []
       const seenPaths = new Set<string>()
       for (const snap of snapshots) {
@@ -2858,7 +2863,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       // 3. Восстанавливаем файлы в обратном порядке (последняя правка первой).
       //    contentBefore = null → файл был создан later-turn'ом → удаляем.
       //    Иначе → перезаписываем contentBefore.
-      const { writeFileSync, unlinkSync, existsSync: pathExists } = await import('fs')
+      const { writeFileSync, unlinkSync, existsSync: pathExists } = require('fs') // require: нативный import() не работает в V8-байткоде
       const restoredFiles: string[] = []
       const failedFiles: string[] = []
       for (const snap of snapshots) {
@@ -2871,8 +2876,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
             }
           } else {
             // Перезаписываем содержимое до правки последующего turn'а.
-            const { dirname } = await import('path')
-            const { mkdirSync } = await import('fs')
+            const { dirname } = require('path') // require: нативный import() не работает в V8-байткоде
+            const { mkdirSync } = require('fs')
             try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
             writeFileSync(snap.path, snap.contentBefore, 'utf-8')
             restoredFiles.push(`восстановлен: ${snap.path}`)
@@ -2992,8 +2997,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
         chatId, rewindMessageId, entry.deletedMessages.length, entry.fileChanges.length)
 
       // 1. Восстанавливаем файлы — пишем contentAfter (состояние до отката).
-      const { writeFileSync, unlinkSync, existsSync: pathExists, mkdirSync } = await import('fs')
-      const { dirname } = await import('path')
+      const { writeFileSync, unlinkSync, existsSync: pathExists, mkdirSync } = require('fs') // require: нативный import() не работает в V8-байткоде
+      const { dirname } = require('path')
       const restoredFiles: string[] = []
       const failedFiles: string[] = []
       for (const fc of entry.fileChanges) {

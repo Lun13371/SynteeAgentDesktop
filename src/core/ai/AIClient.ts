@@ -1,6 +1,10 @@
 import OpenAI from 'openai'
 import Anthropic from '@anthropic-ai/sdk'
 import type Store from 'electron-store'
+// СТАТИЧЕСКИЙ импорт: нативный import() не работает внутри V8-байткода
+// (bytenode-лоадер компилирует через vm.Script без importModuleDynamically —
+// "A dynamic import callback was not specified"). require — безопасен.
+import { isMainThread, workerData } from 'worker_threads'
 import { buildReasoningParams } from '../../shared/reasoningModels'
 import { getNextApiKey } from '../../shared/roundRobin'
 import type { Provider } from '../../shared/types'
@@ -114,11 +118,13 @@ export class AIClient {
       // Токен передаётся из main через workerData.gatewayToken.
       // В main-процессе workerData недоступен, используем lazy import.
       let token: string | null = null
-      try {
-        const { workerData } = await import('worker_threads')
+      if (!isMainThread) {
+        // Worker thread: gatewayClient/tokenStore импортировать НЕЛЬЗЯ —
+        // electron-store делает require('electron') на верхнем уровне, а его
+        // нет в worker (в packaged-сборке падает с MODULE_NOT_FOUND).
+        // Токен приходит только через workerData от main-процесса.
         token = (workerData as Record<string, unknown> | undefined)?.gatewayToken as string | null
-      } catch { /* не в worker */ }
-      if (!token) {
+      } else {
         const { getGatewayAuthToken } = await import('../../main/services/gatewayClient')
         token = await getGatewayAuthToken()
       }
@@ -425,11 +431,13 @@ export class AIClient {
     if (isGateway) {
       // Worker thread не имеет доступа к electron-store/tokenStore.
       // Токен передаётся из main через workerData.gatewayToken.
-      try {
-        const { workerData } = await import('worker_threads')
+      if (!isMainThread) {
+        // Worker thread: gatewayClient/tokenStore импортировать НЕЛЬЗЯ —
+        // electron-store делает require('electron') на верхнем уровне, а его
+        // нет в worker (в packaged-сборке падает с MODULE_NOT_FOUND).
+        // Токен приходит только через workerData от main-процесса.
         gatewayToken = (workerData as Record<string, unknown> | undefined)?.gatewayToken as string | null
-      } catch { /* не в worker */ }
-      if (!gatewayToken) {
+      } else {
         const { getGatewayAuthToken } = await import('../../main/services/gatewayClient')
         gatewayToken = await getGatewayAuthToken()
       }

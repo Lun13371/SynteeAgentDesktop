@@ -1067,6 +1067,7 @@ function CuratedMcpGrid({ onInstall }: { onInstall: (server: CuratedMcpServer) =
     { key: 'productivity', label: 'Продуктивность' },
     { key: 'ai', label: 'AI' },
     { key: 'comms', label: 'Коммуникации' },
+    { key: 'devops', label: 'DevOps' },
     { key: 'utils', label: 'Утилиты' },
   ]
 

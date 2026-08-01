@@ -66,8 +66,9 @@ export function registerOverlayIPC(
 
   // Сохранить скриншот в файл
   ipcMain.handle('overlay:saveScreenshot', async (_, base64: string) => {
-    const { writeFileSync } = await import('fs')
-    const { mkdirSync } = await import('fs')
+    // require вместо await import: нативный import() не работает в V8-байткоде
+    const { writeFileSync } = require('fs')
+    const { mkdirSync } = require('fs')
     const dir = join(app.getPath('userData'), 'screenshots')
     mkdirSync(dir, { recursive: true })
     const filename = `screenshot-${Date.now()}.png`

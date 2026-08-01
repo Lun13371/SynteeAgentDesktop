@@ -52,9 +52,10 @@ async function doStreamTest(
   apiKey: string,
   model: string
 ): Promise<unknown[]> {
-  const https = await import('https')
-  const http  = await import('http')
-  const { URL } = await import('url')
+  // require вместо await import: нативный import() не работает в V8-байткоде
+  const https = require('https')
+  const http  = require('http')
+  const { URL } = require('url')
 
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({

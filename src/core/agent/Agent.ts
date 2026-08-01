@@ -91,6 +91,8 @@ export class Agent {
     toolSchemas?: typeof TOOL_SCHEMAS,
     options?: AgentRuntimeOptions
   ): Promise<void> {
+    const EFFECTIVE_MAX_STEPS = 1024
+    void maxSteps
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt || FALLBACK_SYSTEM_PROMPT },
       ...(history ?? []).map(m => ({
@@ -174,17 +176,17 @@ export class Agent {
       // цикл был фактически бесконечным (агент мог гонять тулы неограниченно
       // долго без реального прогресса, что выглядело как "зависание").
       // Теперь это реальный потолок: по достижении отдаём частичный ответ.
-      if (step >= maxSteps) {
-        console.log('[Agent] maxSteps=%s reached, finishing with partial answer', maxSteps)
-        log('[Agent] run() достигнут maxSteps=%s, завершаю с частичным ответом', maxSteps)
+      if (step >= EFFECTIVE_MAX_STEPS) {
+        console.log('[Agent] maxSteps=%s reached, finishing with partial answer', EFFECTIVE_MAX_STEPS)
+        log('[Agent] run() достигнут maxSteps=%s, завершаю с частичным ответом', EFFECTIVE_MAX_STEPS)
         callbacks.onStep({
           type: 'tool_result',
           toolName: '_limit',
-          content: `Достигнут лимит шагов агента (${maxSteps}). Заверши текущую работу: кратко суммируй что уже сделано, что осталось, и предложи следующие шаги. Пользователь может сказать «продолжай» — история сохранится.`,
+          content: `Достигнут лимит шагов агента (${EFFECTIVE_MAX_STEPS}). Заверши текущую работу: кратко суммируй что уже сделано, что осталось, и предложи следующие шаги. Пользователь может сказать «продолжай» — история сохранится.`,
           success: false,
         })
         callbacks.onDone(
-          `Достигнут лимит в ${maxSteps} шагов агента.\n\n**Что сделано:** ${this._summarizeProgress(modifiedFiles)}\n\n**Что осталось:** смотри план выше (незавершённые пункты).\n\nСкажи «продолжай» — я подхвачу с того же места. Для больших задач эффективнее делегировать через spawn_agent, чтобы не упереться в лимит.`,
+          `Достигнут лимит в ${EFFECTIVE_MAX_STEPS} шагов агента.\n\n**Что сделано:** ${this._summarizeProgress(modifiedFiles)}\n\n**Что осталось:** смотри план выше (незавершённые пункты).\n\nСкажи «продолжай» — я подхвачу с того же места. Для больших задач эффективнее делегировать через spawn_agent, чтобы не упереться в лимит.`,
           this.buildSummaryDetails(modifiedFiles),
         )
         return
@@ -192,8 +194,8 @@ export class Agent {
 
       try {
         callbacks.onStatus?.('Ожидаю ответа...')
-        console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, maxSteps, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
-        log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, maxSteps, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
+        console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
+        log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
         // Защитный таймаут на весь раунд chatWithTools. Если провайдер
         // принял запрос, но stream завис (TCP open, нет данных) —
         // for-await(chunk) висит вечно, signal не abort'ится, "Ожидаю
@@ -1144,7 +1146,8 @@ export class Agent {
         if (this.undoStack.length === 0) {
           return { success: false, output: '', error: 'Нет изменений для отката (undo-стек пуст)' }
         }
-        const { writeFileSync, unlinkSync } = await import('fs')
+        // require вместо await import: нативный import() не работает в V8-байткоде
+        const { writeFileSync, unlinkSync } = require('fs')
         const reverted: string[] = []
         for (let i = 0; i < Math.min(steps, this.undoStack.length); i++) {
           const entry = this.undoStack.pop()!
