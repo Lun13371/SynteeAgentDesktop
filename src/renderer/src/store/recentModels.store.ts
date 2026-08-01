@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { ModelMeta, Provider } from '../../../shared/types'
-import { getBrandLogo, getProviderColor } from '../utils/modelFormat'
+import { getBrandLogo, getProviderColor, type BrandLogo } from '../utils/modelFormat'
 
 export interface RecentModel {
   modelId: string
@@ -84,9 +84,9 @@ export function resolveRecentModels(
   recent: RecentModel[],
   models: ModelMeta[],
   providers: Provider[],
-): { model: ModelMeta; provider: Provider; logo: string | null; color: string }[] {
+): { model: ModelMeta; provider: Provider; logo: BrandLogo | null; color: string }[] {
   const providerMap = new Map(providers.map(p => [p.id, p]))
-  const result: { model: ModelMeta; provider: Provider; logo: string | null; color: string }[] = []
+  const result: { model: ModelMeta; provider: Provider; logo: BrandLogo | null; color: string }[] = []
   for (const r of recent) {
     const model = models.find(m => m.id === r.modelId && m.providerId === r.providerId)
     if (!model) continue
@@ -106,9 +106,9 @@ export function resolvePinnedModels(
   pinned: PinnedModel[],
   models: ModelMeta[],
   providers: Provider[],
-): { model: ModelMeta; provider: Provider; logo: string | null; color: string }[] {
+): { model: ModelMeta; provider: Provider; logo: BrandLogo | null; color: string }[] {
   const providerMap = new Map(providers.map(p => [p.id, p]))
-  const result: { model: ModelMeta; provider: Provider; logo: string | null; color: string }[] = []
+  const result: { model: ModelMeta; provider: Provider; logo: BrandLogo | null; color: string }[] = []
   for (const p of pinned) {
     const model = models.find(m => m.id === p.modelId && m.providerId === p.providerId)
     if (!model) continue

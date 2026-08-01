@@ -27,6 +27,9 @@ export interface CatalogModelInfo {
   outputPricePerM: number  // центы за 1M output токенов
   cacheReadPerM?: number
   cacheWritePerM?: number
+  /** true, если models.dev отдал cost-данные по модели. Отличает «бесплатно»
+   *  (цена известна и равна $0) от «цена неизвестна» (cost отсутствует). */
+  hasPricing?: boolean
   // Расширенные статы из models.dev:
   displayName?: string               // models.dev: model.name — отображаемое имя
   description?: string               // models.dev: model.description
@@ -248,6 +251,43 @@ function globalSearch(modelId: string): CatalogModelInfo | null {
   return null
 }
 
+// ─── Деривация capabilities из сырых полей models.dev ─────────────────────────
+
+interface ModelsDevModel {
+  name?: string
+  description?: string
+  reasoning?: boolean
+  tool_call?: boolean
+  attachment?: boolean
+  modalities?: { input?: string[]; output?: string[] }
+  limit?: { context?: number; output?: number }
+  cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number }
+}
+
+/**
+ * Деривация capabilities из полей models.dev.
+ * modalities.input: text/image/audio/video/pdf; output: text/image/video/audio/pdf
+ * (проверено по живому api.json — отдельной модальности 'embeddings' нет,
+ * embedding-модели определяем по имени, как и code — models.dev не отдаёт
+ * для них флагов, а для фильтров в UI теги нужны).
+ */
+function deriveCapabilities(modelId: string, model: ModelsDevModel): ModelCapability[] {
+  const caps = new Set<ModelCapability>()
+  const input = model.modalities?.input ?? []
+  const output = model.modalities?.output ?? []
+
+  if (input.includes('image') || input.includes('video') || input.includes('pdf') || model.attachment) caps.add('vision')
+  if (input.includes('audio')) caps.add('stt')
+  if (output.includes('audio')) caps.add('tts')
+  if (output.includes('image')) caps.add('image_gen')
+  if (model.reasoning) caps.add('reasoning')
+  if (model.tool_call) caps.add('tools')
+  if (/\bembed|embed-/i.test(modelId)) caps.add('embedding')
+  if (/(code|codestral|coder|codex|starcoder|devstral)/i.test(modelId)) caps.add('code')
+
+  return [...caps]
+}
+
 // ─── Фоновое обновление (только main-процесс) ─────────────────────────────────
 
 export async function refreshCatalog(cachePath?: string, force?: boolean): Promise<{ ok: boolean; error?: string; modelCount: number }> {
@@ -267,18 +307,7 @@ export async function refreshCatalog(cachePath?: string, force?: boolean): Promi
       return { ok: false, error: `HTTP ${res.status}`, modelCount: 0 }
     }
 
-    const data = await res.json() as Record<string, {
-      models?: Record<string, {
-        name?: string
-        description?: string
-        reasoning?: boolean
-        tool_call?: boolean
-        attachment?: boolean
-        modalities?: { input?: string[]; output?: string[] }
-        limit?: { context?: number; output?: number }
-        cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number }
-      }>
-    }>
+    const data = await res.json() as Record<string, { models?: Record<string, ModelsDevModel> }>
 
     const flattened: Record<string, CatalogModelInfo> = {}
 
@@ -287,22 +316,23 @@ export async function refreshCatalog(cachePath?: string, force?: boolean): Promi
       for (const [modelKey, model] of Object.entries(prov.models)) {
         const ctx = model.limit?.context ?? 0
         const out = model.limit?.output ?? 0
-        // models.dev цены в $ за 1M токенов → переводим в центы за 1M (×100)
+        // models.dev цены в $ за 1M токенов → переводим в центы за 1M (×100).
+        // hasPricing — models.dev отдал cost-поле (даже нулевое → модель
+        // бесплатна). Без него «бесплатно» и «цена неизвестна» неотличимы.
+        const hasPricing = model.cost != null && (model.cost.input != null || model.cost.output != null)
         const inputCents = model.cost?.input != null ? Math.round(model.cost.input * 100) : 0
         const outputCents = model.cost?.output != null ? Math.round(model.cost.output * 100) : 0
-        if (ctx === 0 && inputCents === 0 && outputCents === 0) continue
+        // Пропускаем записи вообще без полезных данных (нет ни лимитов, ни цен).
+        if (ctx === 0 && !hasPricing) continue
 
-        // Деривим capabilities из modalities/reasoning/tool_call
-        const caps: ModelCapability[] = []
-        if (model.modalities?.input?.includes('image') || model.attachment) caps.push('vision')
-        if (model.reasoning) caps.push('reasoning')
-        if (model.tool_call) caps.push('tools')
+        const caps = deriveCapabilities(modelKey, model)
 
         flattened[`${provKey}:${modelKey}`] = {
           contextWindow: ctx,
           maxOutput: out,
           inputPricePerM: inputCents,
           outputPricePerM: outputCents,
+          hasPricing,
           cacheReadPerM: model.cost?.cache_read != null ? Math.round(model.cost.cache_read * 100) : undefined,
           cacheWritePerM: model.cost?.cache_write != null ? Math.round(model.cost.cache_write * 100) : undefined,
           displayName: model.name,

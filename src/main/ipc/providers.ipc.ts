@@ -245,8 +245,10 @@ export function registerProviderIPC(store: Store): void {
             id, providerId,
             name: fromCatalog?.displayName ?? id,
             contextWindow: fromCatalog?.contextWindow ?? 0,
-            inputPrice: fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined,
-            outputPrice: fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined,
+            // Цена — только если models.dev реально отдал cost (hasPricing);
+            // иначе undefined = «цена неизвестна» (не путаем с «бесплатно»).
+            inputPrice: fromCatalog?.hasPricing ? fromCatalog.inputPricePerM / 100 : undefined,
+            outputPrice: fromCatalog?.hasPricing ? fromCatalog.outputPricePerM / 100 : undefined,
             speed: inferSpeed(id),
             capabilities: fromCatalog?.capabilities ?? [],
             description: fromCatalog?.description ?? '',
@@ -306,11 +308,13 @@ export function registerProviderIPC(store: Store): void {
 
     const all = [...builtin]
 
-    // Cached/custom модели. Если модель сохранена до расширения каталога
-    // (пустые capabilities + нет description) — дозаполняем статы «на лету».
+    // Cached/custom модели. Дозаполняем статы из каталога models.dev «на лету»:
+    // каталог мог расшириться после сохранения модели (новые capabilities,
+    // цены, описания). Триггер — хоть один пробел в данных модели.
     for (const m of [...cached, ...custom]) {
       if (all.find(x => x.id === m.id && x.providerId === m.providerId)) continue
-      const needsEnrich = m.capabilities.length === 0 && !m.description
+      const needsEnrich = m.capabilities.length === 0 || !m.description
+        || m.inputPrice === undefined || m.contextWindow === 0
       if (needsEnrich) {
         const fromCatalog = getCatalogModelCached(m.providerId, m.id)
         if (fromCatalog) {
@@ -318,10 +322,12 @@ export function registerProviderIPC(store: Store): void {
             ...m,
             name: m.name === m.id ? (fromCatalog.displayName ?? m.name) : m.name,
             contextWindow: m.contextWindow || fromCatalog.contextWindow,
-            inputPrice: m.inputPrice ?? (fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined),
-            outputPrice: m.outputPrice ?? (fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined),
-            capabilities: fromCatalog.capabilities ?? m.capabilities,
-            description: fromCatalog.description ?? m.description,
+            // Цена — только известная (hasPricing); своя цена приоритетнее.
+            inputPrice: m.inputPrice ?? (fromCatalog.hasPricing ? fromCatalog.inputPricePerM / 100 : undefined),
+            outputPrice: m.outputPrice ?? (fromCatalog.hasPricing ? fromCatalog.outputPricePerM / 100 : undefined),
+            // Union capabilities: свои + свежие из каталога (без дублей).
+            capabilities: [...new Set([...m.capabilities, ...(fromCatalog.capabilities ?? [])])],
+            description: m.description || (fromCatalog.description ?? ''),
           })
           continue
         }
@@ -337,8 +343,10 @@ export function registerProviderIPC(store: Store): void {
             id, providerId: p.id,
             name: fromCatalog?.displayName ?? id,
             contextWindow: fromCatalog?.contextWindow ?? 0,
-            inputPrice: fromCatalog ? fromCatalog.inputPricePerM / 100 : undefined,
-            outputPrice: fromCatalog ? fromCatalog.outputPricePerM / 100 : undefined,
+            // Цена — только если models.dev реально отдал cost (hasPricing);
+            // иначе undefined = «цена неизвестна» (не путаем с «бесплатно»).
+            inputPrice: fromCatalog?.hasPricing ? fromCatalog.inputPricePerM / 100 : undefined,
+            outputPrice: fromCatalog?.hasPricing ? fromCatalog.outputPricePerM / 100 : undefined,
             speed: inferSpeed(id),
             capabilities: fromCatalog?.capabilities ?? [],
             description: fromCatalog?.description ?? '',
