@@ -43,7 +43,9 @@ async function initNeural(): Promise<void> {
   _neuralInitAttempted = true
 
   try {
-    const { pipeline, env } = await import('@huggingface/transformers')
+    // require вместо await import: нативный import() не работает в V8-байткоде
+    // (пакет имеет CJS-сборку dist/transformers.node.cjs для require-экспорта)
+    const { pipeline, env } = require('@huggingface/transformers')
     try {
       env.backends.onnx.wasm.numThreads = 1
     } catch { /* onnx may not be configured */ }

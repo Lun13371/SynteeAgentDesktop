@@ -221,8 +221,9 @@ app.whenReady().then(async () => {
 })
 
 async function onFirstRun(): Promise<void> {
-  const { mkdirSync } = await import('fs')
-  const { join } = await import('path')
+  // require вместо await import: нативный import() не работает в V8-байткоде
+  // (join уже импортирован наверху файла)
+  const { mkdirSync } = require('fs')
   const userData = app.getPath('userData')
 
   // Создаём нужные папки но НЕ ставим firstRunComplete —

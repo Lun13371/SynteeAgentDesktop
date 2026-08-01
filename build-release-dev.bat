@@ -85,6 +85,13 @@ pushd "%LAUNCHER_DIR%"
 echo  Building launcher (Go, no CGO)...
 if exist syntee-launcher.exe del /q syntee-launcher.exe
 
+REM NOTE: garble obfuscation is NOT used for the launcher on purpose:
+REM Windows Defender (and other AV) flags garble-built binaries as malware
+REM (verified 2026-08: even a plain "garble build" gets blocked).
+REM The launcher is what users download from the website - an AV block
+REM there is fatal. Client protection (the main IP): V8 bytecode
+REM + renderer obfuscation (done inside npm run build:win).
+
 go build -ldflags="-s -w -H windowsgui -X github.com/Lun13371/syntee-launcher/internal/config.DefaultUpdateServer=http://localhost:8000/api/public/updates" -o syntee-launcher.exe .
 if errorlevel 1 (
     echo.
@@ -142,7 +149,7 @@ if exist "%LOCALAPPDATA%\electron-builder\Cache" rmdir /s /q "%LOCALAPPDATA%\ele
 if exist "%APPDATA%\electron-builder\Cache" rmdir /s /q "%APPDATA%\electron-builder\Cache"
 echo  [OK] Clean
 
-echo  Building client...
+echo  Building client (V8 bytecode + renderer obfuscation)...
 call npm run build:win
 if errorlevel 1 (
     echo.
@@ -154,6 +161,14 @@ if errorlevel 1 (
 
 echo.
 echo  [OK] Client built
+
+echo.
+echo  Verifying source protection (V8 bytecode)...
+if exist "out\main\index.jsc" (
+    echo  [OK] V8 bytecode applied: out\main\*.jsc
+) else (
+    echo  [WARNING] out\main\index.jsc not found - client sources may be UNPROTECTED!
+)
 
 echo.
 echo  ------------------------------------------------------------

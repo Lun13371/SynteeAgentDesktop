@@ -6,6 +6,7 @@ import type { ChatMode } from '../shared/types'
 import { getToolSchemas } from '../core/tools'
 import { getFileCacheSnapshot, mergeFileCache } from '../core/context/fileReadCache'
 import { getAccessToken } from './services/tokenStore'
+import { getGatewayAuthToken } from './services/gatewayClient'
 import {
   createSubagentWorktree,
   mergeWorktreeBack,
@@ -247,6 +248,10 @@ class AgentManager {
     }
     const effectiveWorkdir = record.worktreeInfo?.worktreePath ?? context?.workdir
 
+    // Токен для воркера — с авто-refresh (сам воркер рефрешить не может:
+    // electron-store/tokenStore в worker_threads недоступны).
+    const gatewayToken = await getGatewayAuthToken().catch(() => getAccessToken())
+
     return new Promise((resolve) => {
       const workerPath = join(__dirname, 'ai-worker.js')
       this.resolvers.set(record.id, resolve)
@@ -258,7 +263,7 @@ class AgentManager {
             storeData,
             isSubAgent: true,
             mode: record.mode,
-            gatewayToken: getAccessToken(),
+            gatewayToken,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
             workdir: effectiveWorkdir,
             projectId: context?.projectId,
