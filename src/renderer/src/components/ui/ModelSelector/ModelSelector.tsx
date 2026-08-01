@@ -1,11 +1,13 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { ModelMeta, ModelAssignment, Provider } from '../../../../../shared/types'
+import type { ModelMeta, ModelAssignment, Provider, ModelCapability } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import BrandAvatar from '../BrandAvatar/BrandAvatar'
-import { CAP_LABELS, SPEED_LABEL, SPEED_COLOR, formatCtx, formatPrice, getProviderColor, getBrandLogo } from '../../../utils/modelFormat'
+import ModelFilterBar from '../ModelFilterBar/ModelFilterBar'
+import { CAP_LABELS, SPEED_LABEL, SPEED_COLOR, formatCtx, getProviderColor, getBrandLogo } from '../../../utils/modelFormat'
+import { filterModels, isModelFree, tooltipPrice, CAP_ICONS, type PriceFilter } from '../../../utils/modelFilters'
 import { useGatewayModelsStore, normalizeStatus, GATEWAY_PROVIDER_ID } from '../../../store/gatewayModels.store'
 import { useRecentModelsStore, resolveRecentModels, resolvePinnedModels } from '../../../store/recentModels.store'
 import { useAuthStore } from '../../../store/auth.store'
@@ -24,17 +26,44 @@ const DROP_H = 420
 export default function ModelSelector({ modelId, onChange }: ModelSelectorProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  // Фильтры: capabilities (AND-логика) + цена. Панель сворачивается
+  // кнопкой-воронкой в строке поиска. Состояние живёт между открытиями
+  // дропдауна (компонент не размонтируется) — точка на воронке сигналит.
+  const [activeCaps, setActiveCaps] = useState<ModelCapability[]>([])
+  const [priceFilter, setPriceFilter] = useState<PriceFilter>('any')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filtersActive = activeCaps.length > 0 || priceFilter !== 'any'
   const [models, setModels] = useState<ModelMeta[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
   const [assignment, setAssignment] = useState<ModelAssignment | null>(null)
   const [loading, setLoading] = useState(true)
-  const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number; openUp: boolean } | null>(null)
+  const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number; openUp: boolean; maxH: number } | null>(null)
   const [hovered, setHovered] = useState<ModelMeta | null>(null)
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
   const btnRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+
+  // Закреплённые/недавние — только без поиска и без активных фильтров
+  // (иначе секции показывали бы неотфильтрованные модели).
+  const showSections = !query.trim() && !filtersActive
+
+  // Секции над виртуализированным списком (закреплённые, недавние,
+  // gateway-скелетон/ошибка) живут в ЕДИНОМ скролл-контейнере со списком.
+  // Их высота уходит в scrollMargin виртуализатора — поэтому меряем её
+  // callback-ref'ом + ResizeObserver (чипсы переносятся на новые ряды).
+  const [sectionsH, setSectionsH] = useState(0)
+  const sectionsRORef = useRef<ResizeObserver | null>(null)
+  const sectionsRef = useCallback((el: HTMLDivElement | null) => {
+    sectionsRORef.current?.disconnect()
+    sectionsRORef.current = null
+    if (!el) { setSectionsH(0); return }
+    setSectionsH(el.offsetHeight)
+    const ro = new ResizeObserver(() => setSectionsH(el.offsetHeight))
+    ro.observe(el)
+    sectionsRORef.current = ro
+  }, [])
 
   // Загружаем модели + провайдеров + main-назначение при открытии
   // (также один раз на маунте для бейджа). Провайдеры нужны для аватаров —
@@ -185,14 +214,20 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
     if (!btnRef.current) return
     const r = btnRef.current.getBoundingClientRect()
     const spaceBelow = window.innerHeight - r.bottom
-    const openUp = spaceBelow < DROP_H + 12
-    const dropW = 320
+    const spaceAbove = r.top
+    // Открываем вверх, если снизу не хватает места (и сверху его больше).
+    const openUp = spaceBelow < DROP_H + 12 && spaceAbove > spaceBelow
+    const dropW = 360
+    // Высота адаптивная: занимаем свободное место в сторону открытия,
+    // но не выше 560px (и не ниже 240px, чтобы фильтры+список помещались).
+    const maxH = Math.max(240, Math.min((openUp ? spaceAbove : spaceBelow) - 12, 560))
     const rawLeft = r.right - dropW
     const left = Math.max(8, Math.min(rawLeft, window.innerWidth - dropW - 8))
     setDropPos({
       left,
       width: dropW,
       openUp,
+      maxH,
       ...(openUp ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
     })
     setOpen(o => !o)
@@ -240,20 +275,16 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
     ? getBrandLogo(currentProvider.type, displayModelId, displayName, currentProvider.iconUrl)
     : null
 
-  // Фильтрация по поиску + группировка по провайдеру. Мемоизируем по
-  // [models, query] — иначе grouped был бы новым объектом на каждый
-  // рендер (включая hover/scroll), и useMemo(rows, [grouped]) ниже
-  // не давал бы эффекта, съедая пользу от виртуализации (Fix 7).
+  // Единый пайплайн фильтрации (поиск → capabilities → цена) — общий
+  // с ModelPicker через utils/modelFilters. Мемоизируем по входам —
+  // иначе grouped был бы новым объектом на каждый рендер (включая
+  // hover/scroll), съедая пользу от виртуализации (Fix 7).
+  const filtered = useMemo(
+    () => filterModels(models, { query, caps: activeCaps, price: priceFilter }),
+    [models, query, activeCaps, priceFilter],
+  )
+
   const grouped = useMemo(() => {
-    let filtered = models
-    if (query.trim()) {
-      const q = query.toLowerCase()
-      filtered = filtered.filter(m =>
-        m.name.toLowerCase().includes(q) ||
-        m.id.toLowerCase().includes(q) ||
-        m.providerId.toLowerCase().includes(q)
-      )
-    }
     const raw = filtered.reduce<Record<string, ModelMeta[]>>((acc, m) => {
       if (!acc[m.providerId]) acc[m.providerId] = []
       acc[m.providerId].push(m)
@@ -280,7 +311,7 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
       if (k !== GATEWAY_PROVIDER_ID) ordered[k] = v
     }
     return ordered
-  }, [models, query, statusByModel, groupModelIds])
+  }, [filtered, statusByModel, groupModelIds])
 
   // Fix 7: виртуализация списка. Строим плоский массив рядов
   // (header | item), чтобы один useVirtualizer покрывал весь список.
@@ -311,6 +342,10 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
       return 32
     },
     overscan: 8,
+    // Секции (закреплённые/недавние/gateway-блок) занимают sectionsH px
+    // сверху в том же скролл-контейнере — виртуализатор учитывает их
+    // как offset; при рендере вычитаем scrollMargin из translateY.
+    scrollMargin: sectionsH,
   })
 
   const handleSelect = (m: ModelMeta) => {
@@ -334,7 +369,13 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
       >
         <BrandAvatar logo={currentLogo} fallbackColor={getProviderColor(displayProviderId)} size={16} className="model-selector-logo" />
         <span className="model-selector-name">{displayName}</span>
-        <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="xs" />
+        <motion.span
+          style={{ display: 'inline-flex' }}
+          animate={{ rotate: open ? 180 : 0 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 32 }}
+        >
+          <AppIcon name="chevronDown" size="xs" />
+        </motion.span>
       </motion.button>
 
       {createPortal(
@@ -348,6 +389,7 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                   position: 'fixed',
                   left: dropPos.left,
                   width: dropPos.width,
+                  maxHeight: dropPos.maxH,
                   zIndex: 9999,
                   ...(dropPos.openUp ? { bottom: dropPos.bottom } : { top: dropPos.top }),
                 }}
@@ -357,7 +399,7 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                 transition={{ type: 'spring', stiffness: 420, damping: 32 }}
                 onMouseDown={e => e.stopPropagation()}
               >
-                {/* Поиск */}
+                {/* Поиск + кнопка фильтров */}
                 <div className="model-selector-search">
                   <AppIcon name="search" size="sm" />
                   <input
@@ -372,65 +414,128 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                       <AppIcon name="x" size="xs" />
                     </button>
                   )}
+                  <button
+                    className={`model-filter-toggle ${filtersOpen ? 'model-filter-toggle--open' : ''}`}
+                    onClick={() => setFiltersOpen(o => !o)}
+                    title="Фильтры: возможности и цена"
+                  >
+                    <AppIcon name="filter" size="xs" />
+                    {filtersActive && <span className="model-filter-toggle-dot" />}
+                  </button>
                 </div>
 
-                {/* Закреплённые модели — только без поискового запроса */}
-                {!query.trim() && resolvedPinned.length > 0 && (
-                  <div className="model-selector-pinned">
-                    <div className="model-selector-section-title">
-                      <AppIcon name="pin" size="xs" tone="accent" />
-                      Закреплённые
-                    </div>
-                    <div className="model-selector-chips">
-                      {resolvedPinned.map(({ model, logo, color }) => {
-                        const isActive = model.id === displayModelId && model.providerId === displayProviderId
-                        return (
-                          <button
-                            key={`pin-${model.id}-${model.providerId}`}
-                            className={`model-selector-chip ${isActive ? 'model-selector-chip--active' : ''}`}
-                            onClick={() => handleSelect(model)}
-                            onContextMenu={e => handleContextMenu(e, model)}
-                            title={model.name}
-                          >
-                            <BrandAvatar logo={logo} fallbackColor={color} size={12} className="model-selector-chip-logo" />
-                            <span className="model-selector-chip-name">{model.name}</span>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
+                {/* Панель фильтров: capabilities + цена (сворачиваемая) */}
+                <ModelFilterBar
+                  models={models}
+                  activeCaps={activeCaps}
+                  onCapsChange={setActiveCaps}
+                  priceFilter={priceFilter}
+                  onPriceChange={setPriceFilter}
+                  expanded={filtersOpen}
+                  resultCount={filtered.length}
+                  totalCount={models.length}
+                />
 
-                {/* Недавно использованные модели — компактная строка */}
-                {!query.trim() && resolvedRecent.length > 0 && (
-                  <div className="model-selector-recent">
-                    <div className="model-selector-section-title">Недавние</div>
-                    <div className="model-selector-chips">
-                      {resolvedRecent.map(({ model, logo, color }) => {
-                        const isActive = model.id === displayModelId && model.providerId === displayProviderId
-                        return (
-                          <button
-                            key={`recent-${model.id}-${model.providerId}`}
-                            className={`model-selector-chip ${isActive ? 'model-selector-chip--active' : ''}`}
-                            onClick={() => handleSelect(model)}
-                            onContextMenu={e => handleContextMenu(e, model)}
-                            title={model.name}
-                          >
-                            <BrandAvatar logo={logo} fallbackColor={color} size={12} className="model-selector-chip-logo" />
-                            <span className="model-selector-chip-name">{model.name}</span>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Список (виртуализированный — Fix 7) */}
+                {/* Единый вертикальный скролл: секции (закреплённые, недавние,
+                    gateway-блок) + виртуализированный список в одном контейнере.
+                    Высота секций уходит в scrollMargin виртуализатора. */}
                 <div
                   className="model-selector-list"
                   ref={listRef}
                   onScroll={() => setHovered(null)}
                 >
+                  {(showSections || showGatewaySkeleton || showGatewayError) && (
+                    <div ref={sectionsRef} className="model-selector-above">
+                      {/* Закреплённые модели — чипсы переносятся по рядам */}
+                      {showSections && resolvedPinned.length > 0 && (
+                        <div className="model-selector-pinned">
+                          <div className="model-selector-section-title">
+                            <AppIcon name="pin" size="xs" tone="accent" />
+                            Закреплённые
+                          </div>
+                          <div className="model-selector-chips">
+                            {resolvedPinned.map(({ model, logo, color }) => {
+                              const isActive = model.id === displayModelId && model.providerId === displayProviderId
+                              return (
+                                <button
+                                  key={`pin-${model.id}-${model.providerId}`}
+                                  className={`model-selector-chip ${isActive ? 'model-selector-chip--active' : ''}`}
+                                  onClick={() => handleSelect(model)}
+                                  onContextMenu={e => handleContextMenu(e, model)}
+                                  title={model.name}
+                                >
+                                  <BrandAvatar logo={logo} fallbackColor={color} size={12} className="model-selector-chip-logo" />
+                                  <span className="model-selector-chip-name">{model.name}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Недавно использованные модели */}
+                      {showSections && resolvedRecent.length > 0 && (
+                        <div className="model-selector-recent">
+                          <div className="model-selector-section-title">Недавние</div>
+                          <div className="model-selector-chips">
+                            {resolvedRecent.map(({ model, logo, color }) => {
+                              const isActive = model.id === displayModelId && model.providerId === displayProviderId
+                              return (
+                                <button
+                                  key={`recent-${model.id}-${model.providerId}`}
+                                  className={`model-selector-chip ${isActive ? 'model-selector-chip--active' : ''}`}
+                                  onClick={() => handleSelect(model)}
+                                  onContextMenu={e => handleContextMenu(e, model)}
+                                  title={model.name}
+                                >
+                                  <BrandAvatar logo={logo} fallbackColor={color} size={12} className="model-selector-chip-logo" />
+                                  <span className="model-selector-chip-name">{model.name}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Skeleton для gateway-моделей, которые ещё грузятся */}
+                      {showGatewaySkeleton && !query.trim() && (
+                        <div className="model-selector-gateway-loading">
+                          <div className="model-selector-gateway-loading-header">
+                            <div className="model-selector-gateway-loading-dot" />
+                            <span>Syntee-Gateway</span>
+                            <AppIcon name="loader" size="xs" animation="spin" tone="muted" />
+                          </div>
+                          {[0, 1, 2].map(i => (
+                            <div key={i} className="model-selector-skeleton-row" style={{ animationDelay: `${i * 0.08}s` }}>
+                              <div className="model-selector-skeleton-icon" />
+                              <div className="model-selector-skeleton-text" />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {/* Gateway: фетч завершён, но моделей нет — ошибка или пусто */}
+                      {showGatewayError && !query.trim() && (
+                        <div className="model-selector-gateway-loading">
+                          <div className="model-selector-gateway-loading-header">
+                            <div className="model-selector-gateway-loading-dot" />
+                            <span>Syntee-Gateway</span>
+                          </div>
+                          <div className="model-selector-gateway-error">
+                            <span className="model-selector-gateway-error-text">
+                              {gatewayError ? `Не удалось загрузить: ${gatewayError}` : 'Модели Syntee-Gateway не найдены'}
+                            </span>
+                            <button
+                              type="button"
+                              className="model-selector-gateway-retry"
+                              onClick={() => gatewayLoad()}
+                            >
+                              Повторить
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {loading && rows.length === 0 && (
                     <div className="model-selector-skeleton">
                       {[0, 1, 2, 3, 4, 5].map(i => (
@@ -443,44 +548,20 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                   )}
                   {!loading && rows.length === 0 && (
                     <div className="model-selector-empty">
-                      {query ? 'Ничего не найдено' : 'Модели не найдены'}
-                    </div>
-                  )}
-                  {/* Skeleton для gateway-моделей, которые ещё грузятся */}
-                  {showGatewaySkeleton && !query.trim() && (
-                    <div className="model-selector-gateway-loading">
-                      <div className="model-selector-gateway-loading-header">
-                        <div className="model-selector-gateway-loading-dot" />
-                        <span>Syntee-Gateway</span>
-                        <AppIcon name="loader" size="xs" animation="spin" tone="muted" />
-                      </div>
-                      {[0, 1, 2].map(i => (
-                        <div key={i} className="model-selector-skeleton-row" style={{ animationDelay: `${i * 0.08}s` }}>
-                          <div className="model-selector-skeleton-icon" />
-                          <div className="model-selector-skeleton-text" />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {/* Gateway: фетч завершён, но моделей нет — ошибка или пусто */}
-                  {showGatewayError && !query.trim() && (
-                    <div className="model-selector-gateway-loading">
-                      <div className="model-selector-gateway-loading-header">
-                        <div className="model-selector-gateway-loading-dot" />
-                        <span>Syntee-Gateway</span>
-                      </div>
-                      <div className="model-selector-gateway-error">
-                        <span className="model-selector-gateway-error-text">
-                          {gatewayError ? `Не удалось загрузить: ${gatewayError}` : 'Модели Syntee-Gateway не найдены'}
-                        </span>
+                      <span>
+                        {query ? 'Ничего не найдено'
+                          : filtersActive ? 'Нет моделей с такими фильтрами'
+                          : 'Модели не найдены'}
+                      </span>
+                      {filtersActive && !query && (
                         <button
                           type="button"
-                          className="model-selector-gateway-retry"
-                          onClick={() => gatewayLoad()}
+                          className="model-selector-empty-reset"
+                          onClick={() => { setActiveCaps([]); setPriceFilter('any') }}
                         >
-                          Повторить
+                          Сбросить фильтры
                         </button>
-                      </div>
+                      )}
                     </div>
                   )}
                   {rows.length > 0 && (
@@ -493,7 +574,9 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                     >
                       {virtualizer.getVirtualItems().map(vRow => {
                         const row = rows[vRow.index]
-                        const startY = vRow.start
+                        // scrollMargin = высота секций над списком — вычитаем,
+                        // чтобы координаты были относительно virtual-контейнера.
+                        const startY = vRow.start - virtualizer.options.scrollMargin
                         if (row.type === 'header') {
                           const prov = providerMap.current.get(row.providerId)
                           const groupLogo = prov ? getBrandLogo(prov.type, '', '', prov.iconUrl) : null
@@ -546,13 +629,37 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                             <div className="model-selector-item-row">
                               <BrandAvatar logo={mLogo} fallbackColor={getProviderColor(m.providerId)} size={16} className="model-selector-item-logo" />
                               <span className="model-selector-item-name">{m.name}</span>
+                              {/* Мини-иконки capabilities + бейдж FREE. Иконки,
+                                  совпадающие с активным фильтром, подсвечены. */}
+                              {(m.capabilities.length > 0 || isModelFree(m)) && (
+                                <span className="model-selector-item-meta">
+                                  {m.capabilities.slice(0, 4).map(c => (
+                                    <AppIcon
+                                      key={c}
+                                      name={CAP_ICONS[c]}
+                                      size="xs"
+                                      className={`model-selector-cap-icon ${activeCaps.includes(c) ? 'model-selector-cap-icon--active' : ''}`}
+                                    />
+                                  ))}
+                                  {isModelFree(m) && <span className="model-free-badge">FREE</span>}
+                                </span>
+                              )}
                               {isGatewayModel && status !== 'unknown' && (
                                 <span
                                   className={`model-status-badge model-status-badge--${status}`}
                                   title={`Статус: ${status}`}
                                 />
                               )}
-                              {isActive && <AppIcon name="check" size="xs" tone="accent" />}
+                              {isActive && (
+                                <motion.span
+                                  style={{ display: 'inline-flex' }}
+                                  initial={{ scale: 0.5, opacity: 0 }}
+                                  animate={{ scale: 1, opacity: 1 }}
+                                  transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                                >
+                                  <AppIcon name="check" size="xs" tone="accent" />
+                                </motion.span>
+                              )}
                             </div>
                             {isGatewayModel && uptimeBuckets && uptimeBuckets.length > 0 && (
                               <div className="model-selector-item-uptime">
@@ -588,11 +695,15 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                 </div>
                 <div className="mpt-row">
                   <span className="mpt-label">Вход</span>
-                  <span className="mpt-val">{formatPrice(hovered.inputPrice)} / 1M</span>
+                  <span className="mpt-val">
+                    {tooltipPrice(hovered, hovered.inputPrice)}{!isModelFree(hovered) && ' / 1M'}
+                  </span>
                 </div>
                 <div className="mpt-row">
                   <span className="mpt-label">Выход</span>
-                  <span className="mpt-val">{formatPrice(hovered.outputPrice)} / 1M</span>
+                  <span className="mpt-val">
+                    {tooltipPrice(hovered, hovered.outputPrice)}{!isModelFree(hovered) && ' / 1M'}
+                  </span>
                 </div>
                 <div className="mpt-row">
                   <span className="mpt-label">Скорость</span>
@@ -607,7 +718,11 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                     ))}
                   </div>
                 )}
-                {hovered.description && <div className="mpt-desc">{hovered.description}</div>}
+                {hovered.description
+                  ? <div className="mpt-desc">{hovered.description}</div>
+                  : hovered.capabilities.length === 0 && (
+                    <div className="mpt-desc">Данные о возможностях отсутствуют</div>
+                  )}
               </motion.div>
             )}
           </AnimatePresence>

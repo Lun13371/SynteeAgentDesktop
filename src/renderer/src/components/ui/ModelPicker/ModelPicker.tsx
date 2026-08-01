@@ -5,7 +5,9 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type { ModelMeta, ModelCapability, Provider } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import BrandAvatar from '../BrandAvatar/BrandAvatar'
-import { CAP_LABELS, SPEED_LABEL, SPEED_COLOR, formatCtx, formatPrice, getProviderColor, getBrandLogo } from '../../../utils/modelFormat'
+import ModelFilterBar from '../ModelFilterBar/ModelFilterBar'
+import { CAP_LABELS, SPEED_LABEL, SPEED_COLOR, formatCtx, getProviderColor, getBrandLogo } from '../../../utils/modelFormat'
+import { filterModels, isModelFree, tooltipPrice, type PriceFilter } from '../../../utils/modelFilters'
 import { useGatewayModelsStore, normalizeStatus, GATEWAY_PROVIDER_ID } from '../../../store/gatewayModels.store'
 import { useAuthStore } from '../../../store/auth.store'
 import MiniUptimeBar from '../MiniUptimeBar/MiniUptimeBar'
@@ -27,7 +29,6 @@ interface ModelPickerProps {
 }
 
 const DROP_H = 460
-const ALL_CAPS: ModelCapability[] = ['vision', 'tools', 'reasoning', 'code', 'image_gen', 'embedding', 'tts', 'stt']
 
 export default function ModelPicker({ value, providerId, onChange, filterCaps, placeholder, sharedModels, sharedProviders }: ModelPickerProps) {
   const [open, setOpen] = useState(false)
@@ -35,7 +36,10 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
   const [models, setModels] = useState<ModelMeta[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
   const [activeCaps, setActiveCaps] = useState<ModelCapability[]>(filterCaps ?? [])
-  const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number; openUp: boolean } | null>(null)
+  // Фильтр по цене + видимость панели фильтров (общий ModelFilterBar).
+  const [priceFilter, setPriceFilter] = useState<PriceFilter>('any')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number; openUp: boolean; maxH: number } | null>(null)
   const [hovered, setHovered] = useState<ModelMeta | null>(null)
   const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 })
   const [loading, setLoading] = useState(false)
@@ -152,14 +156,18 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
     if (!btnRef.current) return
     const r = btnRef.current.getBoundingClientRect()
     const spaceBelow = window.innerHeight - r.bottom
-    const openUp = spaceBelow < DROP_H + 12
+    const spaceAbove = r.top
+    const openUp = spaceBelow < DROP_H + 12 && spaceAbove > spaceBelow
     const dropW = Math.max(r.width, 320)
+    // Адаптивная высота: свободное место в сторону открытия, до 560px.
+    const maxH = Math.max(240, Math.min((openUp ? spaceAbove : spaceBelow) - 12, 560))
     const rawLeft = r.left
     const left = Math.min(rawLeft, window.innerWidth - dropW - 8)
     setDropPos({
       left,
       width: dropW,
       openUp,
+      maxH,
       ...(openUp ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
     })
     setOpen(o => !o)
@@ -172,33 +180,17 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
     return () => document.removeEventListener('mousedown', close)
   }, [open])
 
-  const toggleCap = (cap: ModelCapability) => {
-    setActiveCaps(prev =>
-      prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]
-    )
-  }
-
-  // Какие caps реально есть в текущих моделях — чтобы не показывать пустые кнопки
-  const availableCaps = useMemo(
-    () => ALL_CAPS.filter(c => models.some(m => m.capabilities.includes(c))),
-    [models]
-  )
-
-  // Фильтрация + группировка. Мемоизируем по [models, activeCaps, query] —
+  // Единый пайплайн фильтрации (поиск → capabilities → цена) — общий
+  // с ModelSelector через utils/modelFilters. Мемоизируем по входам —
   // иначе grouped был бы новым объектом на каждый рендер (включая
   // hover/scroll), и useMemo(rows, [grouped]) ниже не давал бы эффекта,
   // съедая пользу от виртуализации (Fix 7).
+  const filtered = useMemo(
+    () => filterModels(models, { query, caps: activeCaps, price: priceFilter }),
+    [models, query, activeCaps, priceFilter]
+  )
+
   const grouped = useMemo(() => {
-    let filtered = models
-    if (activeCaps.length) filtered = filtered.filter(m => activeCaps.every(c => m.capabilities.includes(c)))
-    if (query.trim()) {
-      const q = query.toLowerCase()
-      filtered = filtered.filter(m =>
-        m.name.toLowerCase().includes(q) ||
-        m.id.toLowerCase().includes(q) ||
-        m.providerId.toLowerCase().includes(q)
-      )
-    }
     const raw = filtered.reduce<Record<string, ModelMeta[]>>((acc, m) => {
       if (!acc[m.providerId]) acc[m.providerId] = []
       acc[m.providerId].push(m)
@@ -225,7 +217,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
       if (k !== GATEWAY_PROVIDER_ID) ordered[k] = v
     }
     return ordered
-  }, [models, activeCaps, query, statusByModel, groupModelIds])
+  }, [filtered, statusByModel, groupModelIds])
 
   // Fix 7: виртуализация списка. Плоский массив рядов (header | item),
   // один useVirtualizer на весь список. Раньше рендерились ВСЕ модели с
@@ -307,6 +299,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                   position: 'fixed',
                   left: dropPos.left,
                   width: dropPos.width,
+                  maxHeight: dropPos.maxH,
                   zIndex: 9999,
                   ...(dropPos.openUp ? { bottom: dropPos.bottom } : { top: dropPos.top }),
                 }}
@@ -316,7 +309,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                 transition={{ type: 'spring', stiffness: 420, damping: 32 }}
                 onMouseDown={e => e.stopPropagation()}
               >
-                {/* Поиск */}
+                {/* Поиск + кнопка фильтров */}
                 <div className="model-picker-search">
                   <AppIcon name="search" size="sm" />
                   <input
@@ -331,32 +324,27 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                       <AppIcon name="x" size="xs" />
                     </button>
                   )}
+                  <button
+                    className={`model-filter-toggle ${filtersOpen ? 'model-filter-toggle--open' : ''}`}
+                    onClick={() => setFiltersOpen(o => !o)}
+                    title="Фильтры: возможности и цена"
+                  >
+                    <AppIcon name="filter" size="xs" />
+                    {(activeCaps.length > 0 || priceFilter !== 'any') && <span className="model-filter-toggle-dot" />}
+                  </button>
                 </div>
 
-                {/* Фильтры по capability */}
-                {availableCaps.length > 0 && (
-                  <div className="model-picker-caps-row">
-                    {availableCaps.map(cap => (
-                      <button
-                        key={cap}
-                        className={`model-picker-cap-pill ${activeCaps.includes(cap) ? 'model-picker-cap-pill--active' : ''}`}
-                        onClick={() => toggleCap(cap)}
-                        title={CAP_LABELS[cap]}
-                      >
-                        {CAP_LABELS[cap]}
-                      </button>
-                    ))}
-                    {activeCaps.length > 0 && (
-                      <button
-                        className="model-picker-cap-clear"
-                        onClick={() => setActiveCaps([])}
-                        title="Сбросить фильтры"
-                      >
-                        <AppIcon name="x" size="xs" />
-                      </button>
-                    )}
-                  </div>
-                )}
+                {/* Панель фильтров: capabilities + цена (общая с ModelSelector) */}
+                <ModelFilterBar
+                  models={models}
+                  activeCaps={activeCaps}
+                  onCapsChange={setActiveCaps}
+                  priceFilter={priceFilter}
+                  onPriceChange={setPriceFilter}
+                  expanded={filtersOpen}
+                  resultCount={filtered.length}
+                  totalCount={models.length}
+                />
 
                 {/* Список (виртуализированный — Fix 7) */}
                 <div
@@ -376,7 +364,9 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                   )}
                   {!loading && rows.length === 0 && (
                     <div className="model-picker-empty">
-                      {activeCaps.length ? 'Нет моделей с такими фильтрами' : 'Модели не найдены'}
+                      {(activeCaps.length > 0 || priceFilter !== 'any') && !query
+                        ? 'Нет моделей с такими фильтрами'
+                        : query ? 'Ничего не найдено' : 'Модели не найдены'}
                     </div>
                   )}
                   {/* Skeleton для gateway-моделей, которые ещё грузятся */}
@@ -485,6 +475,7 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                                     {CAP_LABELS[c]}
                                   </span>
                                 ))}
+                                {isModelFree(m) && <span className="model-free-badge">FREE</span>}
                               </div>
                               {isGatewayModel && status !== 'unknown' && (
                                 <span
@@ -528,11 +519,15 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                 </div>
                 <div className="mpt-row">
                   <span className="mpt-label">Вход</span>
-                  <span className="mpt-val">{formatPrice(hovered.inputPrice)} / 1M</span>
+                  <span className="mpt-val">
+                    {tooltipPrice(hovered, hovered.inputPrice)}{!isModelFree(hovered) && ' / 1M'}
+                  </span>
                 </div>
                 <div className="mpt-row">
                   <span className="mpt-label">Выход</span>
-                  <span className="mpt-val">{formatPrice(hovered.outputPrice)} / 1M</span>
+                  <span className="mpt-val">
+                    {tooltipPrice(hovered, hovered.outputPrice)}{!isModelFree(hovered) && ' / 1M'}
+                  </span>
                 </div>
                 <div className="mpt-row">
                   <span className="mpt-label">Скорость</span>
@@ -547,7 +542,11 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                     ))}
                   </div>
                 )}
-                {hovered.description && <div className="mpt-desc">{hovered.description}</div>}
+                {hovered.description
+                  ? <div className="mpt-desc">{hovered.description}</div>
+                  : hovered.capabilities.length === 0 && (
+                    <div className="mpt-desc">Данные о возможностях отсутствуют</div>
+                  )}
               </motion.div>
             )}
           </AnimatePresence>

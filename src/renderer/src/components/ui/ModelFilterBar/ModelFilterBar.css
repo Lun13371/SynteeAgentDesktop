@@ -1,0 +1,137 @@
+/* ── Панель фильтров моделей (общая: ModelSelector + ModelPicker) ── */
+.model-filter-bar {
+  flex-shrink: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+.model-filter-bar-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 10px 9px;
+}
+
+.model-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* Пилюля фильтра — компактная, glass, в духе chips селектора */
+.model-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s, border-color 0.14s, color 0.14s, box-shadow 0.14s;
+}
+.model-filter-pill:hover {
+  background: var(--accent-subtle);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--text-primary);
+}
+.model-filter-pill--active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+              0 0 10px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Иконочная пилюля capability — квадратная, подпись в тултипе */
+.model-filter-pill--icon {
+  width: 24px;
+  padding: 0;
+}
+
+/* Кнопка сброса фильтров */
+.model-filter-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 2px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.model-filter-reset:hover {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Счётчик «N из M» — только когда фильтры активны */
+.model-filter-count {
+  margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Кнопка-воронка в строке поиска (рендерится родителем, стили тут — общие) */
+.model-filter-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.14s, color 0.14s;
+}
+.model-filter-toggle:hover {
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  color: var(--text-primary);
+}
+.model-filter-toggle--open {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+/* Точка-индикатор активных фильтров на воронке */
+.model-filter-toggle-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* Бейдж бесплатной модели в строках списка (оба пикера) */
+.model-free-badge {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  color: #4ade80;
+  background: color-mix(in srgb, #4ade80 14%, transparent);
+  border: 1px solid color-mix(in srgb, #4ade80 35%, transparent);
+}
