@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { useToast } from '../components/ui/Toast/Toast'
+import { useAuthStore } from './auth.store'
 
 // ── Types (mirror backend schemas) ───────────────────────────────────────
 export interface UserBrief {
@@ -230,12 +231,19 @@ export const useMessengerStore = create<MessengerStore>((set, get) => ({
 
   loadFriends: async () => {
     try {
-      const [friends, requests] = await Promise.all([
-        window.syntee.messenger.friends.list(),
-        window.syntee.messenger.friends.requests(),
-      ])
-      set({ friends, friendRequests: requests as FriendRequestRow[] })
-    } catch { /* ignore */ }
+      const all = await window.syntee.messenger.friends.list()
+      const meId = useAuthStore.getState().user?.id
+      set({ friends: meId ? all.filter((f) => f.id !== meId) : all })
+    } catch (e) {
+      useToast.getState().add('Не удалось загрузить список друзей', 'error')
+      set({ friends: [] })
+    }
+    try {
+      const requests = await window.syntee.messenger.friends.requests()
+      set({ friendRequests: requests as FriendRequestRow[] })
+    } catch {
+      /* запросы не критичны */
+    }
   },
 
   openConversation: async (id) => {
@@ -243,6 +251,12 @@ export const useMessengerStore = create<MessengerStore>((set, get) => ({
     await window.syntee.messenger.setActive(id)
     if (id && !get().pages[id]) {
       await get().loadMore(id)
+    }
+    // clear unread badge on open — mark the latest visible message as read
+    if (id) {
+      const page = get().pages[id]
+      const lastMsg = page?.messages[0]
+      if (lastMsg) void get().markRead(id, lastMsg.id)
     }
   },
 
@@ -354,12 +368,14 @@ export const useMessengerStore = create<MessengerStore>((set, get) => ({
       // bump conversation preview
       const convs = get().conversations.slice()
       const conv = convs.find(c => c.id === msg.conversation_id)
+      const meId = useAuthStore.getState().user?.id
+      const isOwnMessage = meId === msg.sender_id
       if (!conv) {
         // new conversation appeared — reload list
         void get().loadConversations()
       } else {
         const updated = { ...conv, last_message: msg, last_message_at: msg.created_at }
-        if (get().activeConversationId !== msg.conversation_id) {
+        if (get().activeConversationId !== msg.conversation_id && !isOwnMessage) {
           updated.unread_count = (conv.unread_count ?? 0) + 1
         }
         const idx = convs.indexOf(conv)
@@ -369,12 +385,12 @@ export const useMessengerStore = create<MessengerStore>((set, get) => ({
         convs.unshift(updated)
         set({ conversations: convs })
       }
-      // sound + toast when not the active conversation
-      if (get().activeConversationId !== msg.conversation_id) {
+      // sound + toast when not the active conversation and not our own message
+      if (get().activeConversationId !== msg.conversation_id && !isOwnMessage) {
         import('../utils/sounds').then(({ playActionSound }) => playActionSound('message' as never)).catch(() => {})
         const otherName = conv?.other_user.display_name || conv?.other_user.email || 'Собеседник'
         useToast.getState().add(`${otherName}: ${msg.body ?? '📎 вложение'}`, 'info', 4000)
-      } else {
+      } else if (get().activeConversationId === msg.conversation_id) {
         // active conversation → mark read
         void get().markRead(msg.conversation_id, msg.id)
       }
