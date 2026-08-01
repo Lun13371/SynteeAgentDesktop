@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Search, Send, X } from 'lucide-react'
 import Identicon from '../Identicon/Identicon'
 import { useMessengerStore } from '../../../store/messenger.store'
+import { useAuthStore } from '../../../store/auth.store'
 import { useToast } from '../Toast/Toast'
 import type { UserBrief } from '../../../store/messenger.store'
 import './ShareChatModal.css'
@@ -23,6 +24,7 @@ interface Props {
 export default function ShareChatModal({ open, onClose, chatId, chatTitle }: Props) {
   const friends = useMessengerStore((s) => s.friends)
   const loadFriends = useMessengerStore((s) => s.loadFriends)
+  const me = useAuthStore((s) => s.user)
   const [filter, setFilter] = useState('')
   const [sending, setSending] = useState<string | null>(null)
   const [sendingGlobal, setSendingGlobal] = useState(false)
@@ -31,9 +33,10 @@ export default function ShareChatModal({ open, onClose, chatId, chatTitle }: Pro
     if (open) void loadFriends()
   }, [open, loadFriends])
 
+  const friendsExceptMe = me ? friends.filter((f) => f.id !== me.id) : friends
   const filtered = filter.trim()
-    ? friends.filter((f) => (f.display_name || f.email).toLowerCase().includes(filter.toLowerCase()))
-    : friends
+    ? friendsExceptMe.filter((f) => (f.display_name || f.email).toLowerCase().includes(filter.toLowerCase()))
+    : friendsExceptMe
 
   const handleShare = async (friend: UserBrief) => {
     if (!chatId) return
@@ -125,7 +128,7 @@ export default function ShareChatModal({ open, onClose, chatId, chatTitle }: Pro
 
               {filtered.length === 0 && (
                 <div className="share-chat-empty">
-                  {friends.length === 0
+                  {friendsExceptMe.length === 0
                     ? 'Список друзей пуст. Добавьте друга в мессенджере.'
                     : 'Никто не найден.'}
                 </div>
