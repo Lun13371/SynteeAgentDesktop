@@ -247,7 +247,7 @@ export interface ToolStep {
   success?: boolean
   timestamp: number
   imageUrl?: string  // РїСѓС‚СЊ Рє СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅРЅРѕРјСѓ РёР·РѕР±СЂР°Р¶РµРЅРёСЋ
-  diff?: string      // unified diff РґР»СЏ edit_file / multi_edit_file
+  diff?: string      // unified diff РґР»СЏ edit_file
   callId?: string    // ID tool_call РґР»СЏ СЃРІСЏР·Рё callв†’result (СЂРµРєРѕРЅСЃС‚СЂСѓРєС†РёСЏ РёСЃС‚РѕСЂРёРё)
   /** РРјСЏ MCP-СЃРµСЂРІРµСЂР° РґР»СЏ MCP-С‚СѓР»РѕРІ (mcp__server__tool). undefined РґР»СЏ РІСЃС‚СЂРѕРµРЅРЅС‹С…. */
   serverName?: string

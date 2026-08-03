@@ -1195,6 +1195,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
           messages?: Message[]
           stats?: { removedCount: number; tokensBefore: number; tokensAfter: number; tokensSaved: number; dividerMessageId: string }
           error?: string
+          cancelled?: boolean
+        }
+        // User-initiated cancel (Stop-кнопка) — чат остался без изменений,
+        // summary/divider не применялись. Мягкий info-toast, не error.
+        if (result.cancelled) {
+          toast('Сжатие отменено — контекст не изменён', 'info')
+          return
         }
         if (result.error) {
           toast(result.error, 'error')
@@ -1395,8 +1402,19 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [])
 
   const handleStop = useCallback(() => {
-    if (currentChatId) window.syntee.chat.stop(currentChatId)
-  }, [currentChatId])
+    if (!currentChatId) return
+    if (isCompacting) {
+      window.syntee.chat.compactCancel(currentChatId)
+      manualCompactJustDoneRef.current = false
+    } else {
+      // Оптимально сбрасываем live-state, чтобы UI мгновенно отразил стоп
+      // (stop-кнопка → send, live-пузырь схлопывается, "формулирую" гаснет).
+      // Бэкендовые CHAT_STREAM_DONE/CHAT_RUN_STATUS работают как страховка;
+      // clearLiveState идемпотентна (no-op если уже очищено).
+      useChatStore.getState().clearLiveState(currentChatId)
+      window.syntee.chat.stop(currentChatId)
+    }
+  }, [currentChatId, isCompacting])
 
   const handleRewind = useCallback(async (userMessageId: string) => {
     if (!currentChatId) return

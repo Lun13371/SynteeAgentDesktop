@@ -9,7 +9,7 @@ import {
   searchWeb, getSystemInfo, generateImage,
   readFiles, searchCode, analyzeProject,
   httpRequest, getDiagnostics, smartTrimOutput,
-  TOOL_SCHEMAS, type ToolResult, editFile, multiEditFile,
+  TOOL_SCHEMAS, type ToolResult, editFile,
 } from '../tools'
 import {
   truncateToolResult, getContextSettings, getModelContextWindow,
@@ -131,6 +131,9 @@ export class Agent {
     const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
     const maxRepeatedToolCalls = Math.max(2, options?.maxRepeatedToolCalls ?? 3)
     const maxRepeatedErrors = Math.max(2, options?.maxRepeatedErrors ?? 2)
+    // planningMode — для явного напоминания в defense-in-depth (executeTool),
+    // когда модель галлюцинирует вызовы тулов, отсутствующих в activeSchemas.
+    const planningMode = !!options?.planningMode
     // Реальный лимит контекста активной модели — для аварийного клапана.
     // Раньше здесь был Math.max(32_000, realContextWindow) — искусственный пол,
     // который мог занижать эффективный лимит для моделей с честным большим
@@ -203,51 +206,76 @@ export class Agent {
         callbacks.onStatus?.('Ожидаю ответа...')
         console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
         log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
-        // Защитный таймаут на весь раунд chatWithTools. Если провайдер
-        // принял запрос, но stream завис (TCP open, нет данных) —
+        // Защитный таймаут по бездействию на раунд chatWithTools. Если
+        // провайдер принял запрос, но stream завис (TCP open, нет данных) —
         // for-await(chunk) висит вечно, signal не abort'ится, "Ожидаю
         // ответа..." крутится часами без ошибки. OVERALL_TIMEOUT_MS
         // внутри chatWithTools срабатывает только между retry-попытками,
-        // а сам stream-await его не проверяет. Внешний таймаут (3мин,
-        // чуть меньше 4мин overall) гарантирует, что раунд не висит
-        // бесконечно — кидает ошибку → catch → onError после 3 раундов.
-        const ROUND_TIMEOUT_MS = 90 * 1000
-        const roundPromise = this.client.chatWithTools(
-          messages,
-          toolSchemas ?? TOOL_SCHEMAS,
-          signal,
-          this.role,
-          (token) => callbacks.onStep({ type: 'answer', content: token }),
-          callbacks.onContextCounted,
-          (waitSec) => {
-            callbacks.onStatus?.(`Rate limit — жду ${waitSec}с...`)
-            callbacks.onRateLimit?.(waitSec)
-          },
-          (attempt, reason, waitSec, maxAttempts) => {
-            callbacks.onStatus?.(reason === 'rate_limit'
-              ? `Лимит запросов, повтор через ${waitSec}с...`
-              : `Ошибка сети, повтор ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`)
-            callbacks.onRetry?.(attempt, reason, waitSec, maxAttempts)
-          },
-          callbacks.onUsage,
-          callbacks.onThinkingToken,
-          callbacks.onThinkingDone,
-          (index, rawToolName) => {
-            const normalizedName = normalizeToolName(rawToolName, activeSchemas)
-            const isHidden = normalizedName === 'think' || normalizedName === 'update_working_memory' || normalizedName === 'update_todo'
-            if (isHidden) return
-            callbacks.onStep({
-              type: 'tool_call_pending',
-              toolName: normalizedName,
-              content: normalizedName,
-              callId: `pending-${step}-${index}`,
-            })
-          },
-        )
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error(`Раунд chatWithTools превысил таймаут (${Math.round(ROUND_TIMEOUT_MS / 1000)}с) — провайдер не отвечает.`)), ROUND_TIMEOUT_MS)
+        // а сам stream-await его не проверяет.
+        //
+        // Раньше был АБСОЛЮТНЫЙ таймаут 90с — но он ложно срабатывал на
+        // длинных reasoning-стримах (GLM стримит reasoning 80+ секунд) и
+        // убивал нормальный агент-ран. Теперь таймер сбрасывается на
+        // каждом входящем токене (answer/thinking) — срабатывает ТОЛЬКО
+        // при реальном зависании стрима (нет данных N секунд подряд).
+        // Порог 220с — покрывает медленных провайдеров и долгий reasoning,
+        // но ловит реально мёртвые соединения.
+        const INACTIVITY_TIMEOUT_MS = 220 * 1000
+        let inactivityTimer: ReturnType<typeof setTimeout> | null = null
+        let inactivityReject: ((e: Error) => void) | null = null
+        const inactivityTimeoutPromise = new Promise<never>((_, reject) => {
+          inactivityReject = reject
         })
-        const response = await Promise.race([roundPromise, timeoutPromise])
+        const resetInactivityTimer = () => {
+          if (inactivityTimer) clearTimeout(inactivityTimer)
+          inactivityTimer = setTimeout(() => {
+            log('[Agent] round %s: inactivity timeout fired (%ds без токенов)', step, Math.round(INACTIVITY_TIMEOUT_MS / 1000))
+            inactivityReject?.(new Error(`Раунд chatWithTools: нет данных от провайдера ${Math.round(INACTIVITY_TIMEOUT_MS / 1000)}с — возможно стрим завис.`))
+          }, INACTIVITY_TIMEOUT_MS)
+        }
+        resetInactivityTimer()
+        let response!: Awaited<ReturnType<typeof this.client.chatWithTools>>
+        try {
+          response = await Promise.race([
+            this.client.chatWithTools(
+              messages,
+              toolSchemas ?? TOOL_SCHEMAS,
+              signal,
+              this.role,
+              (token) => { resetInactivityTimer(); callbacks.onStep({ type: 'answer', content: token }) },
+              callbacks.onContextCounted,
+              (waitSec) => {
+                resetInactivityTimer()
+                callbacks.onStatus?.(`Rate limit — жду ${waitSec}с...`)
+                callbacks.onRateLimit?.(waitSec)
+              },
+              (attempt, reason, waitSec, maxAttempts) => {
+                resetInactivityTimer()
+                callbacks.onStatus?.(reason === 'rate_limit'
+                  ? `Лимит запросов, повтор через ${waitSec}с...`
+                  : `Ошибка сети, повтор ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`)
+                callbacks.onRetry?.(attempt, reason, waitSec, maxAttempts)
+              },
+              callbacks.onUsage,
+              (tok) => { resetInactivityTimer(); callbacks.onThinkingToken?.(tok) },
+              callbacks.onThinkingDone,
+              (index, rawToolName) => {
+                const normalizedName = normalizeToolName(rawToolName, activeSchemas)
+                const isHidden = normalizedName === 'think' || normalizedName === 'update_working_memory' || normalizedName === 'update_todo'
+                if (isHidden) return
+                callbacks.onStep({
+                  type: 'tool_call_pending',
+                  toolName: normalizedName,
+                  content: normalizedName,
+                  callId: `pending-${step}-${index}`,
+                })
+              },
+            ),
+            inactivityTimeoutPromise,
+          ])
+        } finally {
+          if (inactivityTimer) clearTimeout(inactivityTimer)
+        }
 
         if (signal?.aborted) {
           callbacks.onDone('')
@@ -468,7 +496,11 @@ export class Agent {
           const schemaNameSet = new Set(activeSchemas.map(s => s.function.name))
           if (!schemaNameSet.has(fn.name)) {
             const allowed = [...schemaNameSet].join(', ')
-            const blockedMsg = `Инструмент "${fn.name}" недоступен в текущем режиме (read-only/планирование/side-чат). Разрешены только: ${allowed}. Не вызывай его больше — используй разрешённые тулы для исследования.`
+            // В planning-режиме даём явное напоминание вместо generic-блока —
+            // модель могла скопировать edit/run тулы из старой истории чата.
+            const blockedMsg = planningMode
+              ? `Ты в РЕЖИМЕ ПЛАНИРОВАНИЯ (read-only). "${fn.name}" запрещён — edit/write/run тулы недоступны. Вернись к протоколу: Шаг 2 — read-only исследование (get_fast_context, read_file, search_code, analyze_project, spawn_agent) + ask_user про hard parts. Шаг 3 — план внутри <plan title="..." summary="...">…</plan> с per-phase Ownership/Verification/Edge cases. Шаг 4 — review против исходного запроса. Разрешённые тулы: ${allowed}. Не вызывай "${fn.name}" снова.`
+              : `Инструмент "${fn.name}" недоступен в текущем режиме (read-only/планирование/side-чат). Разрешены только: ${allowed}. Не вызывай его больше — используй разрешённые тулы для исследования.`
             resultMap.set(callId, { contentForAI: blockedMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockedMsg, success: false, callId, hidden: isHiddenTool })
             return
@@ -554,7 +586,7 @@ export class Agent {
             result = { success: false, output: '', error: `Внутренняя ошибка тула ${fn.name}: ${errMsg}` }
           }
 
-          if (result.success && !dryRunMode && (fn.name === 'write_file' || fn.name === 'edit_file' || fn.name === 'multi_edit_file')) {
+          if (result.success && !dryRunMode && (fn.name === 'write_file' || fn.name === 'edit_file')) {
             const p = args.path as string | undefined
             if (p) {
               const diff = (result as { diff?: string }).diff
@@ -860,10 +892,12 @@ export class Agent {
         if (callbacks?.onShellExec && this.role === 'main' && !args.shell) {
           const shellRes = await callbacks.onShellExec(cmd, effectiveCwd, timeoutSec)
           // PTY-вывод содержит raw ANSI-коды и возможные остатки маркера
-          // завершения (__SYNTEE_DONE_...:N). feedExec срезает маркер, но при
+          // завершения (__SYNTEE_DONE_...__:N). feedExec срезает маркер, но при
           // дроблении чанков могут остаться огрызки — вырезаем надёжно.
+          // Regex учитывает формат __SYNTEE_DONE_<hex>__:<digits> — два __
+          // между hex и двоеточием (часть markerId, не separator).
           const cleanShellOutput = (raw: string) => {
-            const noMarker = raw.replace(/__SYNTEE_DONE_[a-f0-9]+:\d+\s*$/m, '')
+            const noMarker = raw.replace(/__SYNTEE_DONE_[a-f0-9]+__:\d+\s*$/m, '')
             return noMarker
           }
           if (shellRes.timedOut) {
@@ -972,8 +1006,6 @@ export class Agent {
         return writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir })
       case 'edit_file':
         return editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun, workdir: this.workdir })
-      case 'multi_edit_file':
-        return multiEditFile({ ...(args as Parameters<typeof multiEditFile>[0]), dryRun, workdir: this.workdir })
       case 'list_directory':
         return listDirectory(args.path as string, {
           recursive: args.recursive as boolean | undefined,
@@ -1189,36 +1221,6 @@ export class Agent {
         const thought = args.thought as string
         if (!thought) return { success: false, output: '', error: 'thought is required' }
         return { success: true, output: 'OK. Continue with the plan.', hidden: true }
-      }
-      case 'revert_last_change': {
-        // §1.8 — undo/rollback: восстанавливаем последний изменённый файл
-        const steps = args.steps as number | undefined ?? 1
-        if (this.undoStack.length === 0) {
-          return { success: false, output: '', error: 'Нет изменений для отката (undo-стек пуст)' }
-        }
-        // require вместо await import: нативный import() не работает в V8-байткоде
-        const { writeFileSync, unlinkSync } = require('fs')
-        const reverted: string[] = []
-        for (let i = 0; i < Math.min(steps, this.undoStack.length); i++) {
-          const entry = this.undoStack.pop()!
-          if (entry.originalContent === null) {
-            // Файл был создан — удаляем
-            try { unlinkSync(entry.path); reverted.push(`удалён: ${entry.path}`) }
-            catch { reverted.push(`не удалось удалить: ${entry.path}`) }
-          } else {
-            try {
-              writeFileSync(entry.path, entry.originalContent, 'utf-8')
-              reverted.push(`восстановлен: ${entry.path}`)
-            } catch (e: any) {
-              reverted.push(`ошибка восстановления ${entry.path}: ${e.message}`)
-            }
-          }
-          // Чистим кэш чтения для этого файла
-          for (const key of Array.from(this.readFileCache.keys())) {
-            if (key.startsWith(entry.path + ':')) this.readFileCache.delete(key)
-          }
-        }
-        return { success: true, output: `Откат ${reverted.length} изменений:\n${reverted.join('\n')}` }
       }
       case 'update_todo': {
         // §3.1/§4.3 — видимый чек-лист для многошаговых задач

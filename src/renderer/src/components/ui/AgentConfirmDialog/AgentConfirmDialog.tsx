@@ -20,7 +20,6 @@ const TOOL_LABELS: Record<string, { label: string; icon: string }> = {
   run_command:    { label: 'Выполнить команду',   icon: 'terminal' },
   write_file:     { label: 'Записать файл',        icon: 'fileText' },
   edit_file:      { label: 'Редактировать файл',   icon: 'filePen'  },
-  multi_edit_file:{ label: 'Мульти-редактирование',icon: 'filePen'  },
   read_file:      { label: 'Прочитать файл',       icon: 'fileText' },
   list_directory: { label: 'Просмотр папки',       icon: 'folder'   },
   search_web:     { label: 'Поиск в интернете',    icon: 'globe'    },

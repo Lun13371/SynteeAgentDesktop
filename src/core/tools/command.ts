@@ -14,21 +14,31 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
       // Windows: PowerShell по умолчанию — понимает ls/cat/rm/mkdir/grep и т.д.
       // cmd только если явно указан shell: 'cmd'
       if (shell === 'cmd') {
-        execCmd = cmd
+        // chcp 65001 переключает code page консоли на UTF-8 ДО запуска
+        // пользовательской команды. Без этого нативные exe (aapt2, git,
+        // tsc) пишут логи в OEM-кодировке (cp866 на русской локали) —
+        // Node декодирует stdout как utf8 и получает `attr/??` вместо
+        // реальных кириллических имён. `>nul` глушит вывод "65001" из
+        // chcp, чтобы он не засорял результат команды.
+        execCmd = `chcp 65001 >nul && ${cmd}`
         execOpts = {
           cwd: cwd || homedir(),
           timeout: timeoutMs,
           shell: 'cmd.exe',
           encoding: 'utf8',
           maxBuffer,
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         }
       } else {
         // PowerShell: используем -EncodedCommand (base64 UTF-16LE) вместо
         // встраивания команды в двойные кавычки. Это полностью устраняет
         // проблему экранирования (", $(), backtick и т.д.) — команда передаётся
         // как данные, а не как часть shell-строки.
-        const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${cmd}`
+        // OutputEncoding — как PS декодирует stdout нативных exe в строки.
+        // InputEncoding — как PS кодирует строки при записи в консоль и
+        // pipe; без него кириллица в аргументах/pipe ломается в PS 5.1.
+        // pwsh 7+ UTF-8 по умолчанию — обе строки безвредны (idempotent).
+        const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Console]::InputEncoding=[System.Text.Encoding]::UTF8; ${cmd}`
         const encoded = Buffer.from(psScript, 'utf16le').toString('base64')
         execCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
         execOpts = {
@@ -36,11 +46,11 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
           timeout: timeoutMs,
           encoding: 'utf8',
           maxBuffer,
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         }
       }
     } else {
-      // Linux/Mac — bash напрямую
+      // Linux/Mac — bash напрямую. LANG/LC_ALL — на случай не-UTF локали.
       execCmd = cmd
       execOpts = {
         cwd: cwd || homedir(),
@@ -48,7 +58,13 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         shell: '/bin/bash',
         encoding: 'utf8',
         maxBuffer,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: 'utf-8',
+          PYTHONUTF8: '1',
+          LANG: 'en_US.UTF-8',
+          LC_ALL: 'en_US.UTF-8',
+        },
       }
     }
 

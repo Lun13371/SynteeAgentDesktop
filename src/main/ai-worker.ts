@@ -7,7 +7,7 @@ import { parentPort, workerData } from 'worker_threads'
 import { AIClient, setGatewayToken, setGatewayTokenRefresher } from '../core/ai/AIClient'
 import { Agent } from '../core/agent/Agent'
 import { classifyTool } from '../core/agent/commandSafety'
-import { writeFile, editFile, multiEditFile } from '../core/tools/index'
+import { writeFile, editFile } from '../core/tools/index'
 import { buildPlanningInjection, buildAskInjection } from '../core/prompts/buildSystemPrompt'
 import { getModelContextWindow } from '../core/context/contextManager'
 import { recordSessionCost, buildSnapshotFromReal } from '../core/tokens/usageTracker'
@@ -493,9 +493,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 } else if (toolName === 'edit_file') {
                   const r = await editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun: true })
                   previewDiff = r.diff ?? ''
-                } else if (toolName === 'multi_edit_file') {
-                  const r = await multiEditFile({ ...(args as Parameters<typeof multiEditFile>[0]), dryRun: true })
-                  previewDiff = r.diff ?? ''
                 }
               } catch { /* превью опционально */ }
               send({
@@ -652,13 +649,16 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         agentSettings.maxSteps,
         undefined,
         systemPrompt,
-        // Инъекция режимного промпта: planning имеет приоритет над ask
-        // (planning строже — требует <plan>). ask только ограничивает read-only.
-        // Если активны оба — работает planning-инъекция, тулы read-only в любом случае.
+        // Инъекция режимного промпта в КОНЕЦ history (последний элемент перед
+        // новым user-сообщением) — максимальный вес у LLM. Раньше инъекция
+        // стояла в начале history и при длинной истории «забывалась» моделью.
+        // planning имеет приоритет над ask (он строже — требует <plan>).
+        // Дублируется в самом system prompt (buildSystemPrompt → buildPlanningInjection)
+        // для надёжности при компакции истории.
         (planningMode
-          ? [{ role: 'system', content: buildPlanningInjection() }, ...history]
+          ? [...history, { role: 'system', content: buildPlanningInjection() }]
           : askMode
-            ? [{ role: 'system', content: buildAskInjection() }, ...history]
+            ? [...history, { role: 'system', content: buildAskInjection() }]
             : history),
         (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
           planningMode,
@@ -671,6 +671,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           maxRepeatedToolCalls: agentSettings.maxRepeatedToolCalls ?? 3,
           maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,
           fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, import('../core/context/fileCacheTypes').FileCacheEntry> | undefined,
+          planningMode,
         }
       )
     } else {

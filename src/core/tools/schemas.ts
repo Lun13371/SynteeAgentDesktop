@@ -25,32 +25,6 @@ export const TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
-      name: 'multi_edit_file',
-      description: 'Несколько замен в одном файле за один вызов. Используй когда нужно изменить 2+ независимых места в файле.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Путь к файлу' },
-          edits: {
-            type: 'array',
-            description: 'Список замен — применяются последовательно',
-            items: {
-              type: 'object',
-              properties: {
-                old_str: { type: 'string', description: 'Уникальный фрагмент для замены' },
-                new_str: { type: 'string', description: 'Новый фрагмент' },
-              },
-              required: ['old_str', 'new_str'],
-            },
-          },
-        },
-        required: ['path', 'edits'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
       name: 'run_command',
       description: 'Выполнить команду в терминале. Windows: PowerShell по умолчанию (ls/cat/rm/Get-Process/$env:PATH и т.д.), cmd — через shell:"cmd". Linux/Mac: bash. Указывай cwd для проектов, timeout для долгих операций.',
       parameters: {
@@ -99,7 +73,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: 'ПОЛНАЯ ПЕРЕЗАПИСЬ файла целиком. Для изменений в существующем файле используй edit_file (mode=replace или overwrite) — он безопаснее и возвращает diff. write_file только для создания нового файла с нуля или полного замены содержимого. Возвращает diff.',
+      description: 'СОЗДАНИЕ нового файла с нуля. Если файл уже существует — используй edit_file (mode=replace/insert/overwrite/apply_patch) для правок. write_file запрещён для перезаписи существующего файла (вернёт ошибку). Возвращает diff.',
       parameters: {
         type: 'object',
         properties: {
@@ -310,19 +284,6 @@ export const TOOL_SCHEMAS = [
           },
         },
         required: ['thought'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'revert_last_change',
-      description: 'Откатить последние изменения файлов (undo/rollback). Восстанавливает оригинальное содержимое. Используй когда понял, что сделал неправильную правку.',
-      parameters: {
-        type: 'object',
-        properties: {
-          steps: { type: 'number', description: 'Сколько последних изменений откатить (по умолч. 1)' },
-        },
       },
     },
   },
@@ -638,11 +599,9 @@ export function getToolSchemas(options: {
   } else {
     // Обычный режим: правки файлов + команды + верификация.
     names.push('edit_file')
-    names.push('multi_edit_file')
     names.push('write_file')
     names.push('run_command')
     names.push('get_diagnostics')
-    names.push('revert_last_change')
     names.push('analyze_project')
     names.push('get_fast_context')
   }

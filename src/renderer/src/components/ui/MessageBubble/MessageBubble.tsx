@@ -303,12 +303,24 @@ function parseContent(raw: string, allowPlanCard = false): Array<{ type: 'md' | 
   }
 
   // 2. PlanCard разрешён — парсим <plan>-теги через shared-парсер.
+  // Пока план стримится (partial=true, нет </plan>) — рендерим его контент
+  // как обычный markdown, чтобы текст лился плавно токен-за-токеном (как
+  // обычное сообщение), а не «кусками» через PlanCard с debounce. PlanCard
+  // появляется только когда </plan> пришёл — план стал цельным артефактом.
   const { segments: planSegs } = extractPlanSegments(raw)
 
   // 2. Каждый text-сегмент дополнительно разбиваем на md + admonition.
   const result: Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> = []
   for (const seg of planSegs) {
     if (seg.type === 'plan') {
+      if (seg.partial) {
+        // Стрим идёт — план как обычный markdown. Title/summary показываем
+        // заголовком/цитатой, чтобы было понятно что это план.
+        const header = seg.title ? `# 📋 ${seg.title}\n` : '# 📋 План\n'
+        const summ = seg.summary ? `> ${seg.summary}\n\n` : ''
+        result.push({ type: 'md', content: header + summ + seg.content })
+        continue
+      }
       result.push({
         type: 'plan',
         content: seg.content,
@@ -785,7 +797,7 @@ const MessageContent = memo(function MessageContent({
     if (!toolSteps) return { filesChanged: 0, commandsRun: 0 }
     const filesChanged = toolSteps.filter(s =>
       s.type === 'tool_result' && s.success &&
-      ['write_file', 'edit_file', 'multi_edit_file'].includes(s.toolName || '')
+      ['write_file', 'edit_file'].includes(s.toolName || '')
     ).length
     const commandsRun = toolSteps.filter(s =>
       s.type === 'tool_call' && s.toolName === 'run_command'

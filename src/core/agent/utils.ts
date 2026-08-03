@@ -50,7 +50,7 @@ export function findMissingRequiredArgs(
 
 export function getToolErrorHint(toolName: string, error: string): string {
   const e = error.toLowerCase()
-  if ((toolName === 'edit_file' || toolName === 'multi_edit_file') && (e.includes('not found') || e.includes('old_str'))) {
+  if (toolName === 'edit_file' && (e.includes('not found') || e.includes('old_str'))) {
     return '\n\n[Hint: refresh the file with read_file before retrying edit_file.]'
   }
   if ((toolName === 'read_file' || toolName === 'write_file') && (e.includes('no such file') || e.includes('enoent') || e.includes('not found'))) {
@@ -79,7 +79,6 @@ export function getToolErrorHint(toolName: string, error: string): string {
 export function isSequentialTool(name: string): boolean {
   return name === 'write_file' ||
     name === 'edit_file' ||
-    name === 'multi_edit_file' ||
     name === 'run_command'
 }
 

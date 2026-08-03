@@ -311,8 +311,8 @@ function renderResult(toolName: string, content: string, args: Record<string, un
     return <CodeResult content={content} lang={lang} initialLines={initialLines} />
   }
 
-  // write_file / edit_file / multi_edit_file → плашка успеха
-  if (toolName === 'write_file' || toolName === 'edit_file' || toolName === 'multi_edit_file') {
+  // write_file / edit_file → плашка успеха
+  if (toolName === 'write_file' || toolName === 'edit_file') {
     return <FileWrittenResult content={content} args={args} />
   }
 

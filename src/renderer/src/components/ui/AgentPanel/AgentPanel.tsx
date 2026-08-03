@@ -42,7 +42,7 @@ const TOOL_ICONS: Record<string, IconName> = {
   read_files: 'fileText', search_code: 'search', analyze_project: 'folder',
   spawn_agent: 'git-branch',
   list_extensions: 'puzzle', get_skill: 'puzzle', think: 'brain', update_todo: 'listChecks',
-  update_working_memory: 'database', revert_last_change: 'rewind',
+  update_working_memory: 'database',
 }
 
 function getAgentToolIcon(toolName: string): IconName {

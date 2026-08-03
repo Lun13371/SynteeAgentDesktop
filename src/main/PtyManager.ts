@@ -21,7 +21,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 
-export type ShellType = 'powershell' | 'cmd' | 'bash' | 'wsl'
+export type ShellType = 'powershell' | 'cmd' | 'bash' | 'wsl' | 'nushell' | 'fish'
 
 export interface ShellInfo {
   type: ShellType
@@ -66,7 +66,10 @@ interface PtySession {
   preMountBuf: string
 }
 
-const DEFAULT_COLS = 80
+// 200 колонок по умолчанию — больше не wrap-ит длинные команды и вывод при
+// AI-exec (когда юзер не открыл терминал-панель, PTY остаётся на дефолтной
+// ширине). При mount xterm вызывает fitTerminal → resize под реальную ширину.
+const DEFAULT_COLS = 200
 const DEFAULT_ROWS = 24
 /** Кап pre-mount буфера — при превышении дропаем хвост с маркером обрезки.
  *  Без этого команда с мегабайтами вывода + открытие панели = синхронный
@@ -112,6 +115,18 @@ export function detectShells(): ShellInfo[] {
     if (wsl) {
       list.push({ type: 'wsl', label: 'WSL (Ubuntu)', file: wsl, args: [], available: true })
     }
+
+    // Nushell
+    const nu = which('nu.exe')
+    if (nu) {
+      list.push({ type: 'nushell', label: 'Nushell', file: nu, args: ['-l'], available: true })
+    }
+
+    // Fish
+    const fish = which('fish.exe')
+    if (fish) {
+      list.push({ type: 'fish', label: 'Fish', file: fish, args: ['-l'], available: true })
+    }
   } else {
     // Unix
     const bash = which('bash') ?? '/bin/bash'
@@ -153,7 +168,16 @@ class PtyManager {
     if (!info) throw new Error(`No shell available for type ${shell}`)
 
     const id = randomUUID()
-    const env = { ...process.env, PYTHONIOENCODING: 'utf-8' } as Record<string, string>
+    // Базовый env: UTF-8 для Python (PYTHONIOENCODING + PYTHONUTF8) и для
+    // unix-шеллов (LANG/LC_ALL) — устраняет кракозябры в Git Bash/WSL при
+    // выводе кириллицы нативными exe (git, tsc, aapt2) и python-скриптами.
+    const isUnixLikeShell = info.type === 'bash' || info.type === 'wsl' || info.type === 'nushell' || info.type === 'fish'
+    const env = {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUTF8: '1',
+      ...(isUnixLikeShell ? { LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' } : {}),
+    } as Record<string, string>
     const effectiveCwd = cwd || homedir()
 
     const proc = pty.spawn(info.file, info.args, {
@@ -163,6 +187,34 @@ class PtyManager {
       cwd: effectiveCwd,
       env,
     })
+
+    // Принудительная установка UTF-8 в коде страницы шелла на старте сессии.
+    // Без этого на русской локали Windows PS 5.1 держит cp866 в консоли, а
+    // cmd — cp866: нативные exe (aapt2/git/tsc) пишут логи в OEM-кодировке,
+    // и AI видит `attr/??` вместо реального имени атрибута.
+    //
+    // Дополнительно для PowerShell определяем helper-функцию __SDE — она
+    // инкапсулирует длинную логику извлечения exit code ($LASTEXITCODE с
+    // fallback на $?) и вывода маркера. Без неё суффикс каждой AI-команды
+    // был бы ~160 символов: эхо PTY wrap-ит его на 80 колонках → в выводе
+    // появляется месиво из обрезанных строк и PS prompt-продолжения ($>).
+    // С функцией суффикс = `__SDE 12345678` (15 символов, влезает в 1 строку).
+    // Clear-Host в конце — затирает эхо строки инициализации (функция + UTF-8)
+    // чтобы юзер видел чистый промпт, а не 3 строки технического мусора.
+    //
+    //   PS 5.1: $OutputEncoding относится только к pipe-вводу в нативные exe,
+    //   поэтому ставим [Console]::OutputEncoding И InputEncoding.
+    //   pwsh 7+: UTF-8 по умолчанию, строки безвредны (idempotent).
+    //   cmd: `chcp 65001` переключает code page для последующих команд.
+    //   nushell/fish — UTF-8 по умолчанию, ничего не делаем.
+    // Пишем ВНУТРЬ PTY (\r = Enter); не в pending-exec — это одноразовая
+    // инициализация, она не должна матчить маркер (pending всё равно null).
+    const utf8Init = info.type === 'powershell'
+      ? `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;[Console]::InputEncoding=[System.Text.Encoding]::UTF8;function __SDE([string]$i){$e=if($LASTEXITCODE-ne$null){[int]$LASTEXITCODE}else{[int](-not$?)};Write-Output "__SYNTEE_DONE_\${i}__:$e"};Clear-Host\r`
+      : info.type === 'cmd'
+        ? 'chcp 65001 >nul\r'
+        : ''
+    if (utf8Init) proc.write(utf8Init)
 
     const session: PtySession = {
       id,
@@ -226,7 +278,7 @@ class PtyManager {
     if (!p) return
     p.buf += data
     // Ищем маркер только в хвосте буфера — новый data + backfill на случай
-    // если маркер разрезан между чанками. Маркер ~50 chars, backfill 128.
+    // если маркер разрезан между чанками. Маркер ~30 chars, backfill 128.
     // Раньше было p.buf.match(new RegExp(...)) на КАЖДОМ чанке по ВЕСЬ буфер
     // → O(n²) для команды с N чанков вывода → блокировка main process.
     const backfill = Math.min(128, p.buf.length - data.length)
@@ -237,9 +289,17 @@ class PtyManager {
     const exitCode = Number(m[1])
     // Обрезаем вывод до маркера (маркер не должен попасть в результат AI)
     const output = p.buf.slice(0, actualIndex)
-    // Стираем маркер из PTY-экрана: очищаем текущую строку. AI-вывод уже
-    // отрисован, маркер был на новой строке — затрём его.
-    session.proc.write('\r\x1b[2K')
+    // Стираем маркер и его эхо из PTY-экрана. После выполнения суффикса
+    // (echo / __SDE ...) курсор стоит на строке промпта (строка N+2):
+    //   N:   эхо суффикса (echo "__SD_12345678__:$?" или __SDE 12345678)
+    //   N+1: вывод маркера (__SYNTEE_DONE_12345678__:0)
+    //   N+2: промпт PS C:\...>  ← курсор здесь
+    // \r\x1b[A → поднимаемся на N+1 (вывод маркера)
+    // \x1b[J   → очищаем от N+1 до конца экрана (маркер + промпт)
+    // Эхо суффикса (N) оставляем — с коротким суффиксом это одна короткая
+    // строка, не мешает. Раньше \r\x1b[2K чистило только промпт (N+2),
+    // маркер оставался видимым.
+    session.proc.write('\r\x1b[A\x1b[J')
     // Резолв через wrapper — он же чистит timer/pending (см. execInSession).
     p.resolve({ output, exitCode, timedOut: false })
   }
@@ -255,20 +315,37 @@ class PtyManager {
     if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
     if (session.pending) return { output: '[shell busy]', exitCode: 1 }
 
-    const markerId = `__SYNTEE_DONE_${randomUUID().replace(/-/g, '')}__`
-    const isWinShell = session.shell === 'powershell' || session.shell === 'cmd'
-    // PowerShell: отдаём $LASTEXITCODE (нативные exe — npm/git/tsc/node и т.д.
-    // выставляют именно его), с fallback на $? для cmdlets, которые $LASTEXITCODE
-    // не трогают. Старый вариант `$(if($?){0}else{1})` всегда давал 0/1 — AI
-    // не видел реальный код и мог зациклиться на одной и той же "ошибке".
-    //   $ec = if ($LASTEXITCODE -ne $null) { [int]$LASTEXITCODE }
-    //         else { [int](-not $?) }
-    // Совместимо с PS 5.1 (без тернарника/null-coalescing).
-    const suffix = isWinShell
-      ? (session.shell === 'powershell'
-          ? `$ec = if ($LASTEXITCODE -ne $null) { [int]$LASTEXITCODE } else { [int](-not $?) }; Write-Output ("${markerId}:" + $ec)`
-          : `echo ${markerId}:%errorlevel%`)
-      : `echo "${markerId}:$?"`
+    // 8 hex chars = 32 bits = ~4 млрд комбинаций. Маркер живёт ~1 секунду
+    // (время выполнения команды до прихода echo), коллизия невозможна.
+    // Раньше был 32-char UUID — суффикс получался ~160 символов, wrap-ился
+    // на 80 колонках и ломал PS prompt-продолжением ($>).
+    const markerHex = randomUUID().replace(/-/g, '').slice(0, 8)
+    const markerId = `__SYNTEE_DONE_${markerHex}__`
+    // Маркер завершения команды + exit code. Синтаксис зависит от шелла:
+    //   powershell: вызов helper-функции __SDE (определена в create()).
+    //     Инкапсулирует $LASTEXITCODE с fallback на $? для cmdlets.
+    //     Суффикс = 15 символов вместо ~160 — не wrap-ится, не ломает вывод.
+    //     Если функцию удалили (Remove-Item Function:__SDE) — суффикс
+    //     вызовет несуществующую функцию → нет маркера → timeout → новая
+    //     сессия с пересозданной функцией (self-healing).
+    //   cmd: %errorlevel% — аналог $LASTEXITCODE для cmd.exe.
+    //   bash/wsl: $? — стандартный exit code последней команды.
+    //   fish: $status (fish НЕ понимает $? — это bashism).
+    //   nushell: $env.LAST_EXIT_CODE (nushell не имеет $?, использует env).
+    const suffix = (() => {
+      switch (session.shell) {
+        case 'powershell':
+          return `__SDE ${markerHex}`
+        case 'cmd':
+          return `echo ${markerId}:%errorlevel%`
+        case 'fish':
+          return `echo "${markerId}:$status"`
+        case 'nushell':
+          return `echo $"${markerId}:($env.LAST_EXIT_CODE)"`
+        default: // bash, wsl
+          return `echo "${markerId}:$?"`
+      }
+    })()
 
     return new Promise(resolve => {
       let settled = false
