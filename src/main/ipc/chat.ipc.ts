@@ -117,6 +117,11 @@ interface ActiveRun {
 }
 
 const activeRuns = new Map<string, ActiveRun>()
+// AbortController-ы для отмены /compact. Один на chatId — компакция и
+// chat:send взаимоисключающи (chat:compact отклоняет если activeRuns.has).
+// Используется chat:compact:cancel чтобы прервать LLM-стрим резюме БЕЗ
+// применения частичного/пустого результата к чату.
+const compactRuns = new Map<string, AbortController>()
 // Метаданные активного запуска для UI очереди (preview/userMsgId/startedAt).
 // Дублирует часть ActiveRun, но хранится отдельно — т.к. ActiveRun содержит
 // тяжёлые буферы токенов/шагов, а meta нужна для лёгкого снапшота в renderer.
@@ -531,7 +536,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
   } catch { /* БД ещё пуста — ок */ }
 
-  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }): Promise<string> => {
+  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, planningMode?: boolean, askMode?: boolean): Promise<string> => {
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
     let workingMemory = ''
@@ -623,7 +628,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let globalSkillsDir = ''
     try { globalSkillsDir = path.join(app.getPath('userData'), 'skills') } catch { /* app может быть недоступен */ }
 
-    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir })
+    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode })
   }
 
   /**
@@ -971,6 +976,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     userMsg.createdAt = Date.now()
     if (!params.incognito) saveMessage(userMsg)
 
+    // ── Режимные флаги текущего прогона ──────────────────────────────────────
+    // Объявляем ДО первого использования в getSystemPrompt (token estimation,
+    // см. ниже) и workerData. oneShotMode активирует read-only (ask) или
+    // planning-режим на этот прогон, не меняя глобальные тогглы. planning имеет
+    // приоритет над ask (он строже — требует <plan>).
+    const effectivePlanningMode = !!params.planningMode || params.oneShotMode === 'plan'
+    const effectiveAskMode = !!params.askMode
+      || params.slashCommand?.name === 'ask'
+      || params.oneShotMode === 'ask'
+
     // Live-подмножество истории: сообщения ПОСЛЕ последнего compaction-divider'а.
     // Старые (summarized) сообщения остаются в БД (UI хранит всю историю),
     // но в контекст модели не грузятся — их заменяет summary в system prompt.
@@ -1107,7 +1122,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     if (ctxSettings.tokenCounterEnabled) {
       const contextWindow = getModelContextWindow(storeData)
-      const sysPrompt = await getSystemPrompt(dbChatId, params.incognito)
+      const sysPrompt = await getSystemPrompt(dbChatId, params.incognito, undefined, effectivePlanningMode, effectiveAskMode)
       const currentMsgTokens = estimateTokens(params.content)
       const snapshot = buildSnapshotFromEstimate(processedHistory, contextWindow, {
         systemPrompt: sysPrompt,
@@ -1433,14 +1448,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const fastContextWasmDir = resolveTreeSitterWasmDir()
 
     // ── Применение one-shot параметров кастомной команды ──
-    // oneShotMode активирует read-only (ask) или planning-режим на этот прогон,
-    // не меняя глобальные тогглы. oneShotSkill инъектирует инструкции скилла в
-    // system prompt. oneShotAllowedTools фильтрует schemas до указанного списка.
-    // Объявляем ДО создания Worker — workerData ниже использует эти значения.
-    const effectivePlanningMode = !!params.planningMode || params.oneShotMode === 'plan'
-    const effectiveAskMode = !!params.askMode
-      || params.slashCommand?.name === 'ask'
-      || params.oneShotMode === 'ask'
+    // oneShotSkill инъектирует инструкции скилла в system prompt.
+    // oneShotAllowedTools фильтрует schemas до указанного списка.
+    // effectivePlanningMode/effectiveAskMode объявлены выше (до token
+    // estimation) — workerData ниже использует эти значения.
 
     const worker = new Worker(workerPath, {
       workerData: {
@@ -2253,7 +2264,7 @@ ${subModeOutro}`,
 
 Ниже — системный промпт и контекст основного чата (проект, рабочая память, сводка):
 
-${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
+${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)}`
       : undefined
 
     let sideToolSchemas = getToolSchemas({
@@ -2304,7 +2315,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       // (текстовые файлы + описания картинок от vision-модели).
       content: effectiveContent,
       history: processedHistory,
-      systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill),
+      systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode),
       enableTools: true,
       incognito: !!params.incognito,
       agentSettings,
@@ -2793,7 +2804,12 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       // сохранённый в историю. sendDone также сбрасывает activeRunMeta и
       // дрейнит очередь этого чата.
       run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
-      emitRunStatus(win, run.chatId, 'cancelled', run.msgId)
+      // 'cancelled' шлём ТОЛЬКО если sendDone не зарегистрировал 'done'.
+      // sendDone первым делом ставит doneSent=true и в норме эмитит 'done'
+      // (CHAT_STREAM_DONE + CHAT_RUN_STATUS:'done'). Переопределение 'done'
+      // на 'cancelled' давало рандомный бейдж «Отменено» в сайдбаре на чате,
+      // который по факту завершился штатно (пусть и досрочно).
+      if (!run.doneSent) emitRunStatus(win, run.chatId, 'cancelled', run.msgId)
     }
     if (chatId) {
       const run = activeRuns.get(chatId)
@@ -2809,6 +2825,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
         if (chatQueues.has(chatId)) {
           chatQueues.delete(chatId)
           emitQueueUpdate(win, chatId)
+          // Шлём terminal 'cancelled' чтобы renderer сбросил live-state
+          // (defensive liveClear в терминальной ветке CHAT_RUN_STATUS).
+          // Без этого UI для queued-запроса никогда не получал терминального
+          // события и live-пузырь зависал.
+          emitRunStatus(win, chatId, 'cancelled')
         }
       }
     } else {
@@ -3195,6 +3216,15 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       const realContextWindow = getModelContextWindow(storeData)
       const rollingSettings = { ...ctxSettings, contextLimitTokens: realContextWindow }
 
+      // AbortController для отмены /compact пользователем (Stop-кнопка).
+      // chat:compact:cancel зовёт controller.abort() → streamChat разрывает
+      // стрим и onDone'ит с partial-текстом; summaryFn возвращает partial;
+      // applyRollingWindowAsync возвращает CompressResult; но пост-awaits
+      // guard'ы ниже НЕ пускают запись summary/divider в БД — чат остаётся
+      // байт-идентичным состоянию до компакции.
+      const controller = new AbortController()
+      compactRuns.set(chatId, controller)
+
       const summaryFn = async (prompt: string): Promise<string> => {
         const aiClient = new AIClient(store)
         let result = ''
@@ -3218,6 +3248,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
             onError: () => {},
           },
           'fast',
+          undefined,
+          controller.signal,
         )
         return result
       }
@@ -3235,11 +3267,55 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
 
       const tokensAfter = estimateMessagesTokens(result.messages)
 
+      // ═══════ Guard от user-initiated cancel ═══════
+      // Если пользователь нажал Stop во время LLM-стрима summaryFn,
+      // controller.signal.aborted=true. В этом случае НЕ применяем
+      // результат к чату: не пишем summary, не вставляем divider, не шлём
+      // CONTEXT_USAGE/CHAT_COMPACTED. Чат остаётся байт-идентичен
+      // состоянию до компакции (прежнее summary в chat_summaries на месте,
+      // новый divider не вставлен, getLiveMessages следующего chat:send
+      // вернёт то же live-подмножество что и раньше).
+      //
+      // Проверку делаем ДВАЖДЫ — перед транзакцией и внутри неё перед
+      // commit — чтобы закрыть race-окно между setChatSummary и
+      // saveMessage(divider) (abort прилетает между двумя writes).
+      if (controller.signal.aborted) {
+        log('[chat:compact] aborted chatId=%s — summary & divider NOT applied', chatId)
+        return { cancelled: true, error: 'Сжатие отменено' }
+      }
+
+      // Видимый разделитель «Контекст сжат» — в КОНЦЕ ленты (createdAt = now),
+      // не в середине. getLiveMessages следующего chat:send найдёт divider как
+      // последний compaction-маркер и вернёт сообщения с createdAt > divider'а
+      // (новые сообщения, отправленные после сжатия) + summary в system prompt.
+      // Контекст реально сжимается: AI видит только summary + новые сообщения.
+      const divider = createCompactDivider(chatId, {
+        removedCount: result.removedCount,
+        tokensBefore,
+        tokensAfter,
+        summaryContent: result.summaryContent ?? '',
+        createdAt: Date.now(),
+      })
+
+      // Атомарная транзакция: summary + divider коммитятся вместе. Если abort
+      // прилетит между двумя writes — rollback отменит оба. Defense-in-depth
+      // поверх основного guard'а выше.
+      const db = getDB()
+      const tx = db.transaction(() => {
+        if (result.summaryContent) setChatSummary(chatId, result.summaryContent)
+        saveMessage(divider)
+      })
+      if (controller.signal.aborted) {
+        log('[chat:compact] aborted (pre-tx) chatId=%s — summary & divider NOT applied', chatId)
+        return { cancelled: true, error: 'Сжатие отменено' }
+      }
+      tx()
+
       // Пишем summary в chat_summaries (перезаписывает старое, как при
       // авто-компакции). Это нужно для будущего system prompt AI.
+      // (Выше уже выполнено в транзакции; этот блок памяти extraction
+      // запускаем только если summary реально записан.)
       if (result.summaryContent) {
-        setChatSummary(chatId, result.summaryContent)
-
         // Фаза 3: compaction-триггер памяти — sync summary → memory_items
         // (episodic). Fire-and-forget — не блокируем /compact.
         ;(async () => {
@@ -3260,20 +3336,6 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
           }
         })()
       }
-
-      // Видимый разделитель «Контекст сжат» — в КОНЦЕ ленты (createdAt = now),
-      // не в середине. getLiveMessages следующего chat:send найдёт divider как
-      // последний compaction-маркер и вернёт сообщения с createdAt > divider'а
-      // (новые сообщения, отправленные после сжатия) + summary в system prompt.
-      // Контекст реально сжимается: AI видит только summary + новые сообщения.
-      const divider = createCompactDivider(chatId, {
-        removedCount: result.removedCount,
-        tokensBefore,
-        tokensAfter,
-        summaryContent: result.summaryContent ?? '',
-        createdAt: Date.now(),
-      })
-      saveMessage(divider)
 
       // Сообщения НЕ удаляем из БД. AI-контекст ограничен live-подмножеством
       // (после divider'а) + summary в system prompt.
@@ -3340,7 +3402,29 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
     } catch (e) {
       log('[chat:compact] error chatId=%s: %s', chatId, (e as Error).message)
       return { error: `Ошибка сжатия контекста: ${(e as Error).message}` }
+    } finally {
+      // Всегда убираем AbortController из map — даже на cancel/error/early-return.
+      // Без этого повторный /compact после cancel думал бы что он ещё активен.
+      compactRuns.delete(chatId)
     }
+  })
+
+  // ── chat:compact:cancel — отмена ручной компакции по Stop-кнопке ──────
+  // Прерывает LLM-стрим резюме (controller.abort) БЕЗ применения частичного
+  // результата. chat:compact сам выйдет через guard `if (aborted)` и вернёт
+  // {cancelled:true} — renderer покажет toast и сбросит isCompacting.
+  // Идемпотентно: повторный cancel для уже завершённого/несуществующего
+  // run'а возвращает {cancelled:false} — UI это игнорирует.
+  ipcMain.handle('chat:compact:cancel', (_, chatId?: string) => {
+    if (!chatId) return { cancelled: false }
+    const controller = compactRuns.get(chatId)
+    if (!controller) return { cancelled: false }
+    controller.abort()
+    // Удаление из map сделает сам chat:compact в своём finally; здесь
+    // не трогаем — иначе abort потеряет ссылку на controller до того,
+    // как chat:compact проверит signal.aborted.
+    log('[chat:compact:cancel] aborted chatId=%s', chatId)
+    return { cancelled: true }
   })
 
   // === /fork — дублировать чат с этого места ==================================

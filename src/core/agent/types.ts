@@ -182,6 +182,9 @@ export type AgentRuntimeOptions = {
   maxRepeatedToolCalls?: number
   maxRepeatedErrors?: number
   fileCacheSnapshot?: Record<string, FileCacheEntry>
+  /** Режим планирования активен — defense-in-depth в executeTool выдаёт
+   *  явное напоминание вместо generic-блока (см. Agent.ts ~line 469). */
+  planningMode?: boolean
 }
 
 export type AgentToolCallFingerprint = {

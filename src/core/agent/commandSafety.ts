@@ -1,7 +1,7 @@
 /**
  * commandSafety.ts — единый источник правды для классификации опасности
  * действий агента. Покрывает как run_command, так и файловые тулы
- * (write_file/edit_file/multi_edit_file). UI (AgentConfirmDialog) должен
+ * (write_file/edit_file). UI (AgentConfirmDialog) должен
  * импортировать классификацию отсюда, а не дублировать шаблоны.
  *
  * Уровни опасности:
@@ -10,8 +10,6 @@
  *   DANGEROUS — необратимо опасно (auto блокирует, ask спрашивает)
  *   BLOCKED   — всегда блокировать независимо от режима (fork bomb, disk wipe и т.д.)
  */
-import { existsSync } from 'fs'
-import { resolveToolPath } from '../tools/_shared'
 
 export type DangerLevel = 'safe' | 'warn' | 'dangerous' | 'blocked'
 
@@ -334,13 +332,12 @@ const WARN_CHECKS: Array<{ test: (cmd: string) => boolean; reason: string }> = [
 // ─── Классификация файловых тулов ───────────────────────────────────────────
 
 /**
- * Классифицирует опасность файлового тула (write_file/edit_file/multi_edit_file).
+ * Классифицирует опасность файлового тула (write_file/edit_file).
  *
  * Правила:
  *   - Путь в forbiddenPaths → BLOCKED (нельзя трогать системные папки)
- *   - write_file поверх существующего файла → WARN (полная перезапись)
- *   - write_file нового файла → SAFE (создание)
- *   - edit_file/multi_edit_file → SAFE (точечные правки, есть diff для отката)
+ *   - write_file → SAFE (создание нового файла; перезапись запрещена в fileEdit.ts)
+ *   - edit_file → SAFE (точечные правки, есть diff)
  */
 export function classifyFileTool(
   toolName: string,
@@ -358,33 +355,16 @@ export function classifyFileTool(
     }
   }
 
-  // 2. write_file: новый файл → safe (создание), существующий → warn (перезапись).
-  //    Резолвим путь той же логикой, что fileEdit.ts, и проверяем existsSync.
+  // 2. write_file — теперь всегда safe: создаёт только новый файл, перезапись
+  //    существующего блокируется в fileEdit.ts (вернёт ошибку модели).
   if (toolName === 'write_file') {
     if (!path) {
-      return { level: 'warn', reason: 'write_file без path — нельзя проверить существование файла', matchedPattern: 'write_no_path' }
+      return { level: 'warn', reason: 'write_file без path — нельзя проверить путь', matchedPattern: 'write_no_path' }
     }
-    try {
-      const resolved = resolveToolPath(path, opts?.workdir)
-      if (existsSync(resolved)) {
-        return {
-          level: 'warn',
-          reason: 'write_file перезаписывает существующий файл. Используй edit_file для точечных правок.',
-          matchedPattern: 'write_overwrite',
-        }
-      }
-      return { level: 'safe', reason: 'Создание нового файла', matchedPattern: 'write_create' }
-    } catch {
-      // Не удалось резолвнуть/проверить путь — лучше спросить (безопасный fallback).
-      return {
-        level: 'warn',
-        reason: 'write_file: не удалось проверить существование файла — запрашиваем подтверждение.',
-        matchedPattern: 'write_check_failed',
-      }
-    }
+    return { level: 'safe', reason: 'Создание нового файла (перезапись запрещена)', matchedPattern: 'write_create' }
   }
 
-  // 3. edit_file / multi_edit_file — точечные правки, безопасны (есть diff)
+  // 3. edit_file — точечные правки, безопасны (есть diff)
   return { level: 'safe', reason: 'Точечная правка файла (есть diff для отката)' }
 }
 
@@ -410,7 +390,7 @@ export function classifyTool(
     return base
   }
 
-  if (toolName === 'write_file' || toolName === 'edit_file' || toolName === 'multi_edit_file') {
+  if (toolName === 'write_file' || toolName === 'edit_file') {
     return classifyFileTool(toolName, args, opts)
   }
 

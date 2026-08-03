@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
+import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './PlanCard.css'
@@ -52,23 +51,12 @@ export default function PlanCard({ title, summary, content, filePath, partial }:
   // Во время стрима план развёрнут (видно как пишется). После — тоже развёрнут.
   // Сворачивает только пользователь. partial не в зависимостях — начальное
   // состояние берётся из пропса при первом монтировании.
+  // NOTE: partial сейчас не передаётся из parseContent — пока план стримится,
+  // он рендерится как обычный markdown в самом сообщении. PlanCard монтируется
+  // только когда </plan> пришёл (готовый план). partial оставлен в props для
+  // обратной совместимости / будущих случаев.
   const [expanded, setExpanded] = useState(true)
   const [copied, setCopied] = useState(false)
-
-  // Debounce content для ReactMarkdown во время стрима (partial=true).
-  // Токены приходят каждые ~50мс (20fps) → без debounce ReactMarkdown ре-парсит
-  // весь markdown AST 20×/сек, что даёт просадки FPS. 250мс визуально почти
-  // незаметно (текст «догоняет» через четверть секунды), но снижает частоту
-  // ре-парса до 4×/сек. После стрима (partial=false) — content напрямую, без
-  // задержки и без состояния (componentent instance всегда либо стримится
-  // до конца, либо монтируется свежим для готового плана).
-  const [debouncedContent, setDebouncedContent] = useState(content)
-  useEffect(() => {
-    if (!partial) return
-    const t = setTimeout(() => setDebouncedContent(content), 250)
-    return () => clearTimeout(t)
-  }, [content, partial])
-  const renderContent = partial ? debouncedContent : content
 
   const handleOpen = () => {
     if (filePath) window.syntee.shell?.openPath(filePath)
@@ -104,18 +92,15 @@ export default function PlanCard({ title, summary, content, filePath, partial }:
         // → layout thrash каждый кадр. С plain div (grid 1fr, без transition-
         // триггера) высота растёт естественно. --open ставится всегда (ветка
         // gated by `expanded`, если пользователь свернул — div не монтируется).
+        // NOTE: этот branch сейчас мёртвый — parseContent не передаёт partial.
+        // Оставлен для обратной совместимости / будущих случаев.
         expanded && (
           <div className="plan-card-body plan-card-body--open">
             <div className="plan-card-body-inner">
               <div className="plan-card-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderContent}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
                 <div className="plan-card-streaming-indicator">
-                  <motion.span
-                    animate={{ opacity: [0.3, 1, 0.3] }}
-                    transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
-                  >
-                    пишу план…
-                  </motion.span>
+                  пишу план…
                 </div>
               </div>
             </div>
@@ -131,7 +116,7 @@ export default function PlanCard({ title, summary, content, filePath, partial }:
         <div className={`plan-card-body${expanded ? ' plan-card-body--open' : ''}`}>
           <div className="plan-card-body-inner">
             <div className="plan-card-markdown">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderContent}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
             </div>
           </div>
         </div>

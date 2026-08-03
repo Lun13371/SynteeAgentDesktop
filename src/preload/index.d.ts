@@ -258,6 +258,7 @@ declare const synteeAPI: {
         redo: (chatId: string, rewindMessageId: string) => Promise<any>;
         canRedo: (chatId: string, rewindMessageId: string) => Promise<any>;
         compact: (chatId: string) => Promise<any>;
+        compactCancel: (chatId: string) => Promise<any>;
         fork: (chatId: string, title?: string) => Promise<any>;
         snapshotCreate: (chatId: string, name: string) => Promise<any>;
         snapshotList: (chatId: string) => Promise<any>;

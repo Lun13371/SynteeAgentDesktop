@@ -306,6 +306,10 @@ const synteeAPI = {
     // dividerMessageId } для toast'а. При активном чате / пустом чате —
     // { error: string }.
     compact: (chatId: string) => ipcRenderer.invoke('chat:compact', chatId),
+    // Отмена ручной /compact по Stop-кнопке. Прерывает LLM-стрим резюме
+    // БЕЗ применения частичного результата к чату (summary/divider не
+    // пишутся). Возвращает { cancelled: boolean }.
+    compactCancel: (chatId: string) => ipcRenderer.invoke('chat:compact:cancel', chatId),
     // ── /fork — дублировать чат с этого места ──
     // Создаёт новый чат, копируя сообщения+working memory+summary+project.
     // Возвращает { chatId, messages, title } нового чата или { error }.

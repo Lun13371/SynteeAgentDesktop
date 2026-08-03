@@ -424,6 +424,9 @@ export function useChatRunSubscription() {
           const buf = buffers.get(data.chatId)
           if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) clearTimeout(buf.flushTimer)
           if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
+          // Defensive cleanup (см. аналог в основной ветке ниже).
+          liveClear(data.chatId)
+          buffers.delete(data.chatId)
         }
         return
       }
@@ -450,6 +453,14 @@ export function useChatRunSubscription() {
         const buf = buffers.get(data.chatId)
         if (buf?.flushTimer !== null && buf?.flushTimer !== undefined) clearTimeout(buf.flushTimer)
         if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
+        // Defensive cleanup: CHAT_STREAM_DONE/CHAT_STREAM_ERROR обычно уже
+        // почистили live+buffers, но если событие потеряно/запаздывает/
+        // пришло не в том порядке (например при user-initiated stop, когда
+        // бэк шлёт 'done' из sendDone, а затем 'cancelled' из stopRun),
+        // терминальный статус сам сбрасывает isTyping/isThinkingLive/msgId.
+        // Идемпотентно — delete на отсутствующем ключе это noop.
+        liveClear(data.chatId)
+        buffers.delete(data.chatId)
       }
     })
 

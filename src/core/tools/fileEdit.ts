@@ -6,31 +6,47 @@ export interface EditResult extends ToolResult {
   diff?: string
 }
 
+// Запись файла с авто-добавлением UTF-8 BOM для .ps1. PowerShell 5.1 (он же
+// Windows PowerShell, powershell.exe) читает текстовые файлы без BOM как
+// cp1251 — кириллические строки в .ps1 превращаются в мусор, падает парсер.
+// pwsh 7+ UTF-8 по умолчанию и BOM переваривает нормально. Поэтому всегда
+// добавляем BOM для .ps1: файл остаётся читаемым и в PS 5.1, и в pwsh 7+,
+// и в VS Code. Node при `readFile(path,'utf-8')` BOM автоматически стрипает,
+// так что все diff/patch-сравнения работают с чистым контентом без BOM.
+function writeWithOptionalBom(filePath: string, content: string): Promise<void> {
+  if (/\.ps1$/i.test(filePath)) {
+    // EF BB BF — UTF-8 BOM
+    const buf = Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(content, 'utf-8')])
+    return fsWriteFile(filePath, buf)
+  }
+  return fsWriteFile(filePath, content, 'utf-8')
+}
+
 export async function writeFile(path: string, content: string, opts?: { dryRun?: boolean; workdir?: string }): Promise<ToolResult> {
   try {
     path = resolveToolPath(path, opts?.workdir)
-    await ensureDirFor(path)
-    // Читаем оригинал для diff (если файл существует). originalContent = null
-    // сигнализирует снапшот-системе что файл был СОЗДАН (→ unlink при rewind),
-    // а не перезаписан пустым содержимым.
-    let original = ''
-    let originalContent: string | null = null
-    const fileExists = existsSync(path)
-    if (fileExists) {
-      try { original = await fsReadFile(path, 'utf-8'); originalContent = original } catch { /* ok */ }
+    // write_file — СОЗДАНИЕ нового файла с нуля. Перезапись существующего
+    // запрещена: для правок используй edit_file (mode=replace/insert/
+    // overwrite/apply_patch) — он возвращает diff и сохраняет оригинал для
+    // undo/rewind. Без этой проверки модель часто звала write_file для
+    // точечных правок, теряя весь контент файла.
+    if (existsSync(path)) {
+      return {
+        success: false,
+        output: '',
+        error: 'Файл уже существует. write_file только для создания нового файла. Для правок существующего используй edit_file (mode=replace/insert/overwrite/apply_patch).',
+      }
     }
     // dryRun — не записываем, только возвращаем diff-превью
     if (opts?.dryRun) {
-      const diff = makeDiff(original, content, path)
-      const action = fileExists ? 'ПЕРЕЗАПИСЬ существующего файла' : 'СОЗДАНИЕ нового файла'
-      return { success: true, output: `[DRY RUN] ${action}: ${path}\n${diff}`.slice(0, 4000), diff }
+      const diff = `+++ ${path}\n${content.split('\n').map(l => '+' + l).join('\n')}`
+      return { success: true, output: `[DRY RUN] СОЗДАНИЕ нового файла: ${path}\n${diff}`.slice(0, 4000), diff }
     }
-    await fsWriteFile(path, content, 'utf-8')
+    await ensureDirFor(path)
+    await writeWithOptionalBom(path, content)
     const lines = content.split('\n').length
-    // Генерируем diff как у edit_file
-    const diff = makeDiff(original, content, path)
-    const changedLines = countChangedLines(diff)
-    return { success: true, output: `Файл записан: ${path} (${lines} строк, ${changedLines} строк изменено)`, diff, originalContent }
+    const diff = `+++ ${path}\n${content.split('\n').map(l => '+' + l).join('\n')}`
+    return { success: true, output: `Файл создан: ${path} (${lines} строк)`, diff, originalContent: null }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
@@ -127,7 +143,7 @@ export async function editFile(params: {
         }
         await ensureDirFor(params.path)
         const initial = params.content ?? params.new_str ?? ''
-        await fsWriteFile(params.path, initial, 'utf-8')
+        await writeWithOptionalBom(params.path, initial)
         return { success: true, output: `Файл создан: ${params.path}`, diff: `+++ ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}` }
       }
       return { success: false, output: '', error: 'Файл не найден: ' + params.path }
@@ -193,44 +209,9 @@ export async function editFile(params: {
       const changedLines = countChangedLines(diff)
       return { success: true, output: `[DRY RUN] Правка ${params.mode} для: ${params.path} (${changedLines} строк изменено)\n${diff}`.slice(0, 4000), diff }
     }
-    await fsWriteFile(params.path, updated, 'utf-8')
+    await writeWithOptionalBom(params.path, updated)
     const changedLines2 = countChangedLines(diff)
     return { success: true, output: `Файл обновлён: ${params.path} (${changedLines2} строк изменено)`, diff, originalContent: original }
-  } catch (e: any) {
-    return { success: false, output: '', error: e.message }
-  }
-}
-
-export async function multiEditFile(params: {
-  path: string
-  edits: Array<{ old_str: string; new_str: string }>
-  dryRun?: boolean
-  workdir?: string
-}): Promise<EditResult> {
-  try {
-    params.path = resolveToolPath(params.path, params.workdir)
-    if (!existsSync(params.path)) return { success: false, output: '', error: 'Файл не найден: ' + params.path }
-    const original = await fsReadFile(params.path, 'utf-8')
-    let updated = original
-    const failed: string[] = []
-
-    for (const edit of params.edits) {
-      if (updated.includes(edit.old_str)) {
-        updated = updated.replace(edit.old_str, edit.new_str)
-      } else {
-        failed.push(edit.old_str.slice(0, 60) + '…')
-      }
-    }
-
-    const diff = makeDiff(original, updated, params.path)
-    const changedLines = countChangedLines(diff)
-    const warn = failed.length ? `\nНе найдено ${failed.length} фрагментов: ${failed.join('; ')}` : ''
-    // dryRun — не записываем
-    if (params.dryRun) {
-      return { success: true, output: `[DRY RUN] Мульти-правка для: ${params.path} (${changedLines} строк изменено)${warn}\n${diff}`.slice(0, 4000), diff }
-    }
-    await fsWriteFile(params.path, updated, 'utf-8')
-    return { success: true, output: `Файл обновлён: ${params.path} (${changedLines} строк изменено)${warn}`, diff, originalContent: original }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }

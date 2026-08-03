@@ -160,8 +160,8 @@ function smartSummarizeToolResult(toolName: string, content: string): string {
     const total = linesMatch?.[2] ?? totalMatch?.[1] ?? lines
     return `[${toolName}] прочитан ${file} (${total} строк, ${chars} символов)`
   }
-  // edit_file / multi_edit_file
-  if (toolName === 'edit_file' || toolName === 'multi_edit_file') {
+  // edit_file
+  if (toolName === 'edit_file') {
     const fileMatch = content.match(/([^\s]+\.[a-z]+)/i)
     const file = fileMatch?.[1] ?? '?'
     return `[${toolName}] изменён ${file}`

@@ -14,7 +14,7 @@ export interface ToolStep {
   success?: boolean
   timestamp: number
   imageUrl?: string
-  diff?: string  // unified diff для edit_file / multi_edit_file
+  diff?: string  // unified diff для edit_file
   callId?: string  // id tool_call из API — для матчинга call↔result при параллельных тулах
   /** Имя MCP-сервера для MCP-тулов (mcp__server__tool). */
   serverName?: string
@@ -26,7 +26,6 @@ export interface ToolStep {
 
 const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
   edit_file:       { label: 'Редактировать', icon: 'filePen',   color: '#fb923c' },
-  multi_edit_file: { label: 'Мульти-правка', icon: 'filePen',   color: '#fb923c' },
   run_command:     { label: 'Команда',       icon: 'terminal',  color: '#f59e0b' },
   write_file:      { label: 'Запись файла',  icon: 'fileText',  color: '#f87171' },
   read_file:       { label: 'Чтение файла',  icon: 'fileText',  color: '#60a5fa' },
@@ -46,7 +45,6 @@ const TOOL_META: Record<string, { label: string; icon: string; color: string }> 
   think:           { label: 'Размышление',   icon: 'brain',     color: '#94a3b8' },
   update_todo:     { label: 'План',          icon: 'listChecks', color: '#60a5fa' },
   update_working_memory: { label: 'Память',  icon: 'database',  color: '#34d399' },
-  revert_last_change: { label: 'Откат',      icon: 'rewind',    color: '#f87171' },
   ask_user:        { label: 'Вопрос',        icon: 'helpCircle', color: '#c084fc' },
 }
 
