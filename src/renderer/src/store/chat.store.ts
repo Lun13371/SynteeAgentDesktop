@@ -101,6 +101,15 @@ interface ChatStore {
   isIncognito: boolean
   activeMode: ChatMode  // оставлен как 'code' — Work-режим удалён, но поле нужно для обратной совместимости с IPC
 
+  // ── Сплит-режим (второй чат рядом с основным, 50/50) ────────────────────
+  // splitChatId — id чата в правой половине экрана (null = сплит закрыт).
+  // Сплит-чат ≠ вкладка: закрытие сплита не закрывает вкладку в шапке.
+  // Персистится в electron-store ('splitChatTab'), восстанавливается в App.tsx
+  // при boot (валидация: чат жив, ≠ активному, не архив).
+  // Автозакрытие: чат удалён (dropChatState) или заархивирован/стал активным
+  // (подписка в tabs.store.ts) → splitChatId сбрасывается в null.
+  splitChatId: string | null
+
   // Per-chat live state — ключом является chatId. Параллельные чаты
   // каждый имеют свой LiveState, не перетирая друг друга.
   liveByChat: Record<string, ChatLiveState>
@@ -141,6 +150,7 @@ interface ChatStore {
   unpinMessage: (id: string) => void
   toggleIncognito: () => void
   setActiveMode: (mode: ChatMode) => void
+  setSplitChat: (id: string | null) => void
 
   // Live-state actions
   setLiveState: (chatId: string, partial: Partial<ChatLiveState>) => void
@@ -185,7 +195,7 @@ interface ChatStore {
 // это массивы Message[]; капа удерживает память в рамках пары десятков МБ.
 const MSG_CACHE_CAP = 8
 
-export const useChatStore = create<ChatStore>((set) => ({
+export const useChatStore = create<ChatStore>((set, get) => ({
   chats: [],
   projects: [],
   activeProjectId: null,
@@ -198,6 +208,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   pinnedMessages: [],
   isIncognito: false,
   activeMode: 'code',
+  splitChatId: null,
 
   liveByChat: {},
   runStatusByChat: {},
@@ -297,6 +308,13 @@ export const useChatStore = create<ChatStore>((set) => ({
   toggleIncognito: () => set((s) => ({ isIncognito: !s.isIncognito })),
   setActiveMode: (activeMode) => set({ activeMode }),
 
+  setSplitChat: (splitChatId) => {
+    set({ splitChatId })
+    try {
+      void window.syntee?.settings?.set('splitChatTab', splitChatId)
+    } catch { /* ок — вне electron (браузерный dev) */ }
+  },
+
   setLiveState: (chatId, partial) =>
     set((s) => {
       const prev = s.liveByChat[chatId] ?? EMPTY_LIVE
@@ -349,7 +367,9 @@ export const useChatStore = create<ChatStore>((set) => ({
       return { unreadStatusByChat: next }
     }),
 
-  dropChatState: (chatId) =>
+  dropChatState: (chatId) => {
+    // Удалённый чат был открыт в сплите — закрываем сплит.
+    if (get().splitChatId === chatId) get().setSplitChat(null)
     set((s) => {
       const nextLive = { ...s.liveByChat }
       const nextRun = { ...s.runStatusByChat }
@@ -376,7 +396,8 @@ export const useChatStore = create<ChatStore>((set) => ({
         messagesByChat: nextByChat,
         cacheOrder: nextOrder,
       }
-    }),
+    })
+  },
 
   setQueue: (chatId, queue) =>
     set((s) => ({

@@ -3,6 +3,8 @@ declare const synteeAPI: {
         hide: () => Promise<any>;
         minimize: () => Promise<any>;
         show: () => Promise<any>;
+        maximizeToggle: () => Promise<any>;
+        isMaximized: () => Promise<boolean>;
     };
     settings: {
         get: (key: string) => Promise<any>;

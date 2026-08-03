@@ -88,6 +88,21 @@ export class MainWindow {
       return { action: 'deny' }
     })
 
+    // Форвард смены maximize-состояния в renderer — кнопка в кастомной
+    // шапке (frame: false) меняет иконку «развернуть» ↔ «восстановить».
+    // События срабатывают на любой путь: кнопка, даблклик по drag-зоне,
+    // Win+Up, aero-snap.
+    this.win.on('maximize', () => {
+      if (this.win && !this.win.isDestroyed()) {
+        this.win.webContents.send('window:maximize-changed', true)
+      }
+    })
+    this.win.on('unmaximize', () => {
+      if (this.win && !this.win.isDestroyed()) {
+        this.win.webContents.send('window:maximize-changed', false)
+      }
+    })
+
     // Сохраняем bounds окна при resize/move (с debounce — drag/resize
     // генерирует множество событий, не хотим дёргать electron-store на каждый).
     this.win.on('resize', () => this.scheduleSaveBounds())
@@ -144,6 +159,17 @@ export class MainWindow {
 
   minimize(): void {
     this.win?.minimize()
+  }
+
+  /** Переключить maximize ↔ restore (кнопка в кастомной шапке). */
+  maximizeToggle(): void {
+    if (!this.win) return
+    if (this.win.isMaximized()) this.win.unmaximize()
+    else this.win.maximize()
+  }
+
+  isMaximized(): boolean {
+    return this.win?.isMaximized() ?? false
   }
 
   getWindow(): BrowserWindow | null {

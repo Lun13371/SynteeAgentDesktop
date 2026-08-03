@@ -1,0 +1,59 @@
+/* ── SplitChatPane — вторая половина экрана (сплит-режим) ─────────────────
+   Рядом с основным .chat-main в .chat-body: оба flex:1 → 50/50.
+   Общие классы чата (chat-main, chat-messages, chat-skeleton,
+   chat-empty-state, chat-scroll-down-btn) — из ChatPage.css. */
+
+.split-chat-pane {
+  flex: 1;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+}
+
+/* Шапка сплит-панели: название чата + крестик закрытия. */
+.split-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px 0 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.split-chat-header-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.split-chat-header-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.split-chat-close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--transition), color var(--transition);
+}
+
+.split-chat-close:hover {
+  background: rgba(255, 80, 80, 0.15);
+  color: #ff5555;
+}

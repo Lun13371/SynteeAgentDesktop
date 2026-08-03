@@ -9,7 +9,8 @@ import {
   ListChecks, Briefcase, MessageSquare, GripVertical, PanelRight,
   History, Undo2, Puzzle, Power, ChevronLeft, Server, Wrench, Star, Download,
   Compass, HelpCircle, GitFork, Camera, Command, FlaskConical, Bug, Shuffle,
-  Users, UserPlus, Smile, Ban, Phone, DownloadCloud, AppWindow,
+  Users, UserPlus, Smile, Ban, Phone, DownloadCloud, AppWindow, Columns2,
+  Square,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -51,6 +52,11 @@ const ICONS = {
   ban: Ban,
   phone: Phone,
   appWindow: AppWindow,
+  columns: Columns2,
+  // Оконные кнопки кастомной шапки: maximize — пустой квадрат (как в Windows),
+  // restore — два перекрывающихся квадрата.
+  maximize: Square,
+  restore: Copy,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS
