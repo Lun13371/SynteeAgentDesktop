@@ -10,7 +10,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 0;            /* расстояние между точками создаёт padding кнопки */
   padding: 6px 4px;
   border-radius: var(--radius-pill, 999px);
   background: color-mix(in srgb, var(--bg-secondary) 55%, transparent);
@@ -20,52 +20,68 @@
   overflow: hidden;
 }
 
-/* ...кроме точек — они кликабельны. */
+/* ...кроме точек — они кликабельны. Сама кнопка — прозрачная hit-зона
+   (padding 3px вокруг), видимая точка рисуется в ::before. Так легче
+   попадать мышкой, не увеличивая визуальный размер точки. */
 .chat-minimap-dot {
   pointer-events: auto;
   flex-shrink: 0;
-  padding: 0;
+  padding: 3px;            /* прозрачная hit-зона */
   border: none;
-  border-radius: 50%;
+  background: transparent;
   cursor: pointer;
-  background: var(--text-muted);
-  opacity: 0.45;
-  transition: opacity 0.12s, transform 0.12s, background 0.12s;
+  position: relative;
+  box-sizing: content-box;
+  outline: none;
 }
 
-.chat-minimap-dot:hover {
+.chat-minimap-dot::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--dot-size, 7px);
+  height: var(--dot-size, 7px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.45;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat-minimap-dot:hover::before {
   opacity: 1;
-  transform: scale(1.5);
+  transform: translate(-50%, -50%) scale(1.45);
 }
 
 /* Цвет по роли: user — акцент, assistant — приглушённый, system — тонкий. */
-.chat-minimap-dot--user {
+.chat-minimap-dot--user::before {
   background: var(--accent);
   opacity: 0.7;
 }
 
-.chat-minimap-dot--system {
+.chat-minimap-dot--system::before {
   background: transparent;
   box-shadow: inset 0 0 0 1.5px var(--text-muted);
   opacity: 0.5;
 }
 
 /* Активная (в центре вьюпорта) — яркая и чуть крупнее. */
-.chat-minimap-dot--active {
+.chat-minimap-dot--active::before {
   opacity: 1;
-  transform: scale(1.35);
-  box-shadow: 0 0 6px var(--accent);
+  transform: translate(-50%, -50%) scale(1.3);
+  box-shadow: 0 0 7px var(--accent);
 }
 
-.chat-minimap-dot--system.chat-minimap-dot--active {
-  box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 6px var(--accent);
+.chat-minimap-dot--system.chat-minimap-dot--active::before {
+  box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 7px var(--accent);
 }
 
 /* ── Превью сообщения при ховере ── */
 .chat-minimap-preview {
   position: fixed;
   right: 32px;
-  width: 260px;
+  width: 280px;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
@@ -73,6 +89,12 @@
   box-shadow: var(--shadow);
   pointer-events: none; /* превью не должно гасить hover соседних точек */
   z-index: 100;
+  animation: chat-minimap-preview-in 0.16s ease-out;
+}
+
+@keyframes chat-minimap-preview-in {
+  from { opacity: 0; transform: translateX(10px) scale(0.96); }
+  to   { opacity: 1; transform: translateX(0)    scale(1);    }
 }
 
 .chat-minimap-preview-head {
