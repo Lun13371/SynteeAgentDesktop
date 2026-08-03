@@ -720,11 +720,12 @@ export default function App() {
     let cancelled = false
     const preload = async () => {
       try {
-        const [chats, projects, savedTabs, savedActive] = await Promise.all([
+        const [chats, projects, savedTabs, savedActive, savedSplit] = await Promise.all([
           window.syntee.chat.getAll(),
           window.syntee.projects.getAll(),
           window.syntee.settings.get('openChatTabs').catch(() => null),
           window.syntee.settings.get('activeChatTab').catch(() => null),
+          window.syntee.settings.get('splitChatTab').catch(() => null),
         ])
         if (cancelled) return
         const store = useChatStore.getState()
@@ -743,6 +744,15 @@ export default function App() {
             : chats[0].id
           if (!tabs.includes(firstId)) tabs.push(firstId)
           useTabsStore.getState().setTabs(tabs)
+          // ── Восстановление сплита (второй чат 50/50) ──
+          // Только если чат жив, не архив и ≠ активному (сплит на тот же чат
+          // бессмысленен — подписка в tabs.store и так бы его закрыла).
+          if (typeof savedSplit === 'string' && savedSplit !== firstId) {
+            const splitAlive = chats.some(
+              (c: { id: string; isArchived?: number }) => c.id === savedSplit && !c.isArchived
+            )
+            if (splitAlive) store.setSplitChat(savedSplit)
+          }
           // Параллельно: последняя страница сообщений + queue для первого чата.
           // Пагинация: грузим только хвост (20), остальное — по скроллу вверх.
           const [page, queue] = await Promise.all([

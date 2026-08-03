@@ -31,6 +31,8 @@ function registerWindowIPC({ mainWindow }: IPCContext): void {
   ipcMain.handle('window:hide', () => mainWindow.hide())
   ipcMain.handle('window:minimize', () => mainWindow.minimize())
   ipcMain.handle('window:show', () => mainWindow.show())
+  ipcMain.handle('window:maximizeToggle', () => mainWindow.maximizeToggle())
+  ipcMain.handle('window:isMaximized', () => mainWindow.isMaximized())
 }
 
 function registerSettingsIPC({ store }: IPCContext): void {

@@ -7,6 +7,10 @@ const synteeAPI = {
     hide: () => ipcRenderer.invoke('window:hide'),
     minimize: () => ipcRenderer.invoke('window:minimize'),
     show: () => ipcRenderer.invoke('window:show'),
+    // Развернуть/восстановить (кнопка в кастомной шапке). Смена состояния
+    // приходит событием 'window:maximize-changed' через syntee.on().
+    maximizeToggle: () => ipcRenderer.invoke('window:maximizeToggle'),
+    isMaximized: () => ipcRenderer.invoke('window:isMaximized') as Promise<boolean>,
   },
 
   // Настройки

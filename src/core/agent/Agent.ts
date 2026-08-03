@@ -72,6 +72,11 @@ export class Agent {
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
   private recentToolFingerprints: AgentToolCallFingerprint[] = []
   private recentErrorFingerprints: string[] = []
+  // Счётчик срабатываний loop-guard на конкретный тул+args. Ключ
+  // `${toolName}|${argsKey}`. 1-2 — мягкое предупреждение, 3 — hard block
+  // (тул не выполняется). Не сбрасывается между turn'ами в run() — ловим
+  // меж-turn зацикливание тоже (session-level).
+  private loopGuardHits = new Map<string, number>()
   // §1.8 — undo/rollback: стек {path, originalContent} для отмены последних изменений
   private undoStack: Array<{ path: string; originalContent: string | null }> = []
 
@@ -120,7 +125,11 @@ export class Agent {
     this.readFileCache = new Map<string, string>()
     this.pendingDiffEntries = []
     this.fileMap = new Map()
-    this.recentToolFingerprints = []
+    // recentToolFingerprints / loopGuardHits НЕ сбрасываем между run() —
+    // session-level loop detection ловит зацикливание через несколько
+    // turn'ов пользователя (модель «по кд» повторяет одно и то же в
+    // разных сообщениях). recentErrorFingerprints сбрасываем — ошибки
+    // привязаны к конкретному контексту/файлу, между turn'ами они unrelated.
     this.recentErrorFingerprints = []
     this.commandsRun = []
     // Инициализируем персистентный кэш из снимка (передаётся из main через worker)
@@ -449,20 +458,45 @@ export class Agent {
           if (!isHiddenTool) {
             const fingerprint = buildToolFingerprint(fn.name, args)
             this.recentToolFingerprints.push(fingerprint)
-            if (this.recentToolFingerprints.length > maxRepeatedToolCalls) {
+            // Окно 8 (вместо 3) позволяет ловить чередования вида
+            // A,B,A,B,A,B — 2 уникальных fingerprint'а на 8 записей.
+            // При окне 3 окно [B,A,B] / [A,B,A] никогда не совпадало
+            // полностью → guard не срабатывал на пинг-понге.
+            if (this.recentToolFingerprints.length > 8) {
               this.recentToolFingerprints.shift()
             }
-            const repeatedCalls = this.recentToolFingerprints.length >= maxRepeatedToolCalls &&
+            const fpCount = this.recentToolFingerprints.length
+            const repeatedCalls = fpCount >= maxRepeatedToolCalls &&
               this.recentToolFingerprints.every(entry =>
                 entry.toolName === fingerprint.toolName && entry.argsKey === fingerprint.argsKey,
               )
-            if (repeatedCalls) {
-              const loopMsg = fn.name === 'search_code'
-                ? `Loop guard: ты вызвал search_code с похожими паттернами ${maxRepeatedToolCalls} раз. Смени подход: сузь path/file_glob к конкретной подпапке, используй get_fast_context для навигации по проекту, или read_file конкретного файла с outline_only=true. Не перебирай больше варианты паттерна.`
+            // Чередование: в окне ≥6 записей всего 2 уникальных fingerprint'а,
+            // и оба повторяются ≥2 раза. Ловит A,B,A,B / A,B,C,A,B,C и т.п.
+            const alternation = fpCount >= 6 && (() => {
+              const keys = this.recentToolFingerprints.map(f => `${f.toolName}|${f.argsKey}`)
+              const unique = new Set(keys)
+              if (unique.size !== 2) return false
+              const counts = new Map<string, number>()
+              for (const k of keys) counts.set(k, (counts.get(k) ?? 0) + 1)
+              return [...counts.values()].every(c => c >= 2)
+            })()
+            if (repeatedCalls || alternation) {
+              // Считаем сколько раз подряд сработал guard на этом тул+args.
+              // 1-2 раза — мягкое предупреждение (текст в messages).
+              // 3+ раза (т.е. 3× maxRepeatedToolCalls = 9 фактических вызовов) —
+              // hard block: тул НЕ выполняется, возвращаем ошибку в AI.
+              const blockKey = `${fingerprint.toolName}|${fingerprint.argsKey}`
+              const guardHits = (this.loopGuardHits.get(blockKey) ?? 0) + 1
+              this.loopGuardHits.set(blockKey, guardHits)
+              const hardBlock = guardHits >= 3
+              const loopMsg = alternation
+                ? `Loop guard: ты чередуешь ${fingerprint.toolName} с другим тулом в цикле (${fpCount} последних вызовов, 2 уникальных). Смени стратегию: проанализируй что уже сделано, и выбери другой подход.`
                 : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
               messages.push({
                 role: 'user',
-                content: loopMsg,
+                content: hardBlock
+                  ? `${loopMsg}\n\nВНИМАНИЕ: тул "${fn.name}" заблокирован на этом run() после ${guardHits} loop-guard предупреждений (${guardHits * maxRepeatedToolCalls} фактических вызовов). Он НЕ выполнен. Смени стратегию или спроси пользователя.`
+                  : loopMsg,
               })
               // Эмитим видимый шаг для UI — раньше этот loop-guard тоже
               // уходил только в модель. Теперь пользователь видит, что
@@ -470,9 +504,28 @@ export class Agent {
               callbacks.onStep({
                 type: 'tool_result',
                 toolName: '_loop_guard',
-                content: `${fn.name} повторён ${maxRepeatedToolCalls} раз с теми же аргументами — повторы остановлены. Смени стратегию.`,
+                content: hardBlock
+                  ? `${fn.name} заблокирован после ${guardHits * maxRepeatedToolCalls} повторов (hard loop guard).`
+                  : `${fn.name} повторён ${maxRepeatedToolCalls} раз с теми же аргументами — предупреждение ${guardHits}/3. Hard block после 3.`,
                 success: false,
               })
+              if (hardBlock) {
+                // Hard block: не выполняем тул, возвращаем ошибку в AI.
+                resultMap.set(callId, {
+                  contentForAI: `Hard loop guard: тул "${fn.name}" заблокирован — повторён ${guardHits * maxRepeatedToolCalls} раз с теми же/похожими аргументами. Вызов НЕ выполнен. Смени стратегию: используй другой тул, другие аргументы, или спроси пользователя.`,
+                  callId,
+                  name: fn.name,
+                })
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: fn.name,
+                  content: '[Заблокирован loop guard — тул не выполняется]',
+                  success: false,
+                  callId,
+                  hidden: isHiddenTool,
+                })
+                return
+              }
             }
           }
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool, pendingCallId, serverName: extractMcpServerName(fn.name) })
@@ -640,10 +693,17 @@ export class Agent {
           // возвращает компактную структуру — дефолтный toolMaxChars (6000)
           // безжалостно выкидывал средние файлы / половину outline, из-за чего
           // модель теряла контекст и перебирала search-паттерны в лупе.
+          // read_file / read_files — тоже ИСКЛЮЧАЕМ из символьной обрезки:
+          // у них своя обрезка по строкам (DEFAULT_LINES=400) с правильной
+          // подсказкой «используй offset=N для продолжения». truncateToolResult
+          // поверх резал середину без подсказки → модель теряла нужный кусок
+          // и перечитывала тот же файл → ощущение «контекст пропадает».
+          const noTruncTool = fn.name === 'search_code' || fn.name === 'get_file_outline'
+            || fn.name === 'read_file' || fn.name === 'read_files'
           const perToolMax = (fn.name === 'search_code' || fn.name === 'get_file_outline')
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars
-          const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled)
+          const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
             ? truncateToolResult((rawContent || '') + errorHint, perToolMax)
             : ((rawContent || '') + errorHint)
 

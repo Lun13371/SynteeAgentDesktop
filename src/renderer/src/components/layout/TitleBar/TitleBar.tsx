@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import IconButton from '../../ui/IconButton/IconButton'
 import Identicon from '../../ui/Identicon/Identicon'
 import Logo from '../../ui/Logo/Logo'
@@ -22,6 +23,16 @@ interface TitleBarProps {
 export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick, onMessengerClick, onProfileClick, onUpdateClick }: TitleBarProps) {
   const handleMinimize = () => window.syntee.window.minimize()
   const handleHide = () => window.syntee.window.hide()
+  // Maximize/restore — кастомная шапка (frame: false), поэтому своя кнопка.
+  // Начальное состояние — из main; дальше live-обновления событием (любой
+  // путь: кнопка, даблклик по drag-зоне, Win+Up, aero-snap).
+  const [maximized, setMaximized] = useState(false)
+  useEffect(() => {
+    window.syntee.window.isMaximized().then(setMaximized).catch(() => {})
+    const off = window.syntee.on('window:maximize-changed', (v: unknown) => setMaximized(!!v))
+    return () => { off() }
+  }, [])
+  const handleMaximizeToggle = () => window.syntee.window.maximizeToggle()
   const dockOpen = useTerminalStore(s => s.dockOpen)
   const handleTerminalToggle = () => {
     useTerminalStore.getState().toggleDock()
@@ -117,6 +128,11 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
           </button>
         )}
         <IconButton icon="minus" label="Свернуть" onClick={handleMinimize} />
+        <IconButton
+          icon={maximized ? 'restore' : 'maximize'}
+          label={maximized ? 'Восстановить' : 'Развернуть'}
+          onClick={handleMaximizeToggle}
+        />
         <IconButton icon="x" label="В трей" onClick={handleHide} danger className="titlebar-btn titlebar-btn--close" />
       </div>
     </div>

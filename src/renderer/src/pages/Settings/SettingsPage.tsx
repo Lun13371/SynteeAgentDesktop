@@ -346,6 +346,9 @@ const GeneralSection = memo(function GeneralSection({ settings, onSet }: { setti
       <Field label="Счётчик контекста" description="Кружок с заполнением контекста в поле ввода">
         <Toggle value={(settings['showContextRing'] as boolean) ?? true} onChange={v => onSet('showContextRing', v)} />
       </Field>
+      <Field label="Миникарта сообщений" description="Точки навигации по сообщениям справа в чате">
+        <Toggle value={(settings['chatMinimap'] as boolean) ?? true} onChange={v => onSet('chatMinimap', v)} />
+      </Field>
     </>
   )
 })

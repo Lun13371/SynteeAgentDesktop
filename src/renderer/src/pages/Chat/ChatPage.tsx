@@ -5,6 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useShallow } from 'zustand/react/shallow'
 import { v4 as uuid } from 'uuid'
 import { useContextCounter } from '../../hooks/useContextCounter'
+import { useChatAutoscroll } from '../../hooks/useChatAutoscroll'
 import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../hooks/useChatRunSubscription'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
@@ -19,6 +20,9 @@ import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import HelpModal from '../../components/ui/HelpModal/HelpModal'
 import Logo from '../../components/ui/Logo/Logo'
+import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
+import ChatMinimap from '../../components/ui/ChatMinimap/ChatMinimap'
+import { useSettingsStore } from '../../store/settings.store'
 import { useChatStore, EMPTY_LIVE } from '../../store/chat.store'
 import { useNavStore } from '../../store/nav.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
@@ -114,6 +118,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const activeMode = useChatStore(s => s.activeMode)
   const projects = useChatStore(s => s.projects)
   const activeProjectId = useChatStore(s => s.activeProjectId)
+  // Сплит-режим: второй чат рядом с основным (50/50). Рендерим панель только
+  // если сплит-чат жив, ≠ текущему (подписка в tabs.store закрывает такой
+  // сплит, здесь — страховка от кадра-гонки) и не в архиве.
+  const splitChatId = useChatStore(s => s.splitChatId)
+  const setSplitChat = useChatStore(s => s.setSplitChat)
   // Live-состояние ТОЛЬКО текущего чата. Селектор возвращает ссылку на
   // liveByChat[currentChatId] — она меняется только при setLiveState для
   // ЭТОГО chatId (спред копирует ссылки остальных). Чужой чат стримит —
@@ -130,13 +139,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setActiveProject: s.setActiveProject, markChatRead: s.markChatRead,
   })))
   const isTyping = live.isTyping
-  // Ref-зеркало isTyping для ResizeObserver (RO замыкается один раз при mount,
-  // иначе не видел бы смены стриминг→idle). Используется чтобы гейтить
-  // авто-скролл по росту высоты ТОЛЬКО во время стриминга — иначе открытие/
-  // ресайз боковой панели (ширина меняется → сообщения пере-флоуются → высота
-  // растёт) ложно запускали smoothScrollToBottom rAF-цикл → лаги.
-  const isTypingRef = useRef(isTyping)
-  isTypingRef.current = isTyping
   const isAgentRunning = live.isAgentRunning
   const streamingText = live.text
 
@@ -318,8 +320,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (manualCompactJustDoneRef.current) {
         manualCompactJustDoneRef.current = false
         isInitialScrollRef.current = true
-        autoScrollRef.current = true
-        requestAnimationFrame(() => scrollToBottomInstant())
+        requestAnimationFrame(() => pinAutoscroll(true))
         window.syntee.context.calculate(d.chatId).catch(() => {})
         return
       }
@@ -330,8 +331,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         if (useChatStore.getState().currentChatId !== d.chatId) return
         setMessagesWindow(d.chatId, res.messages, res.hasMore)
         isInitialScrollRef.current = true
-        autoScrollRef.current = true
-        requestAnimationFrame(() => scrollToBottomInstant())
+        requestAnimationFrame(() => pinAutoscroll(true))
         if (d.trigger === 'auto') {
           toast('Контекст автоматически сжат', 'info')
         }
@@ -343,7 +343,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }).catch(() => {})
     })
     return () => { off() }
-  }, [currentChatId, setMessagesWindow, toast])
+  }, [currentChatId, setMessagesWindow, toast, pinAutoscroll])
 
   // CHAT_COMPACT_STREAM — стрим резюме при manual /compact. AI пишет резюме
   // контекста в реальном времени; токены аккумулируются в compactingSummary и
@@ -649,91 +649,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // АВТОСКРОЛЛ — один источник истины (autoScrollRef), плавный RAF-loop
-  // АВТОСКРОЛЛ — максимально простая и надёжная модель.
-  //
-  // autoScrollRef меняется ТОЛЬКО в трёх случаях:
-  //   1. onWheel с deltaY < 0 (колесо вверх) → false (пользователь ушёл вверх)
-  //   2. handleSend / selectChat / initial scroll → true (принудительное закрепление)
-  //   3. handleScroll когда distFromBottom < 24 → true (пользователь сам доехал до низа)
-  //
-  // onScroll НЕ отключает autoScroll при отходе от низа — это была главная
-  // причина багов: virtualizer перемеряет элементы → scrollHeight меняется →
-  // scroll event → ложное отключение. Теперь отключение только через onWheel.
-  // onScroll используется исключительно для показа/скрытия кнопки "вниз".
-  const autoScrollRef           = useRef(true)
-  const scrollRafRef            = useRef<number | null>(null)
-  const scrollRafPendingRef     = useRef(false)
-  // Последний известный scrollTop — для детектирования пользовательского
-  // скролла ВВЕРХ. Программный скролл (rAF-цикл к низу) и prepend-компенсация
-  // УВЕЛИЧИВАЮТ scrollTop; уменьшение = пользователь тянет вверх любым способом
-  // (полоса прокрутки / trackpad / PageUp). onWheel ловит только колесо —
-  // остальные способы уходили с autoScroll=true → rAF-цикл тянул обратно
-  // вниз → конкуренция → фризы/«плывёт» на 144Гц.
-  const lastScrollTopRef        = useRef(0)
-  const [showScrollDownBtn, setShowScrollDownBtn] = useState(false)
-
-  const hasScroll = useCallback(() => {
-    const el = scrollContainerRef.current
-    if (!el) return false
-    return el.scrollHeight - el.clientHeight > 24
-  }, [])
-
-  const smoothScrollToBottom = useCallback(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
-    // Если loop уже активен — не перезапускаем. Loop в каждом кадре читает
-    // свежий scrollHeight и сам двигается к актуальному низу. Перезапуск
-    // (cancel + start) создавал "покадровый" дёрганый скролл.
-    if (scrollRafRef.current !== null) return
-
-    const animate = () => {
-      if (!el) return
-      // Пользователь скроллил вверх (onWheel выставил false) — останавливаемся.
-      if (!autoScrollRef.current) {
-        scrollRafRef.current = null
-        return
-      }
-      const target = el.scrollHeight - el.clientHeight
-      const current = el.scrollTop
-      const diff = target - current
-      if (diff <= 1) {
-        if (diff > 0) el.scrollTop = target
-        scrollRafRef.current = null
-        return
-      }
-      // Если отставание большое (>40px — контент вырос быстрее) — прыгаем
-      // мгновенно к низу. Это убирает "не успевает за ответом": при быстром
-      // стриминге скролл следует за контентом без отставания.
-      // Если diff маленький — плавный шаг для мягкого сближения у низа.
-      if (diff > 40) {
-        el.scrollTop = target
-      } else {
-        // Плавный шаг: Math.max(diff * 0.5, 4) — быстро сходится, минимум 4px.
-        const step = Math.max(diff * 0.5, 4)
-        el.scrollTop = current + Math.min(step, diff)
-      }
-      // Программный скролл вниз — обновляем lastScrollTopRef, чтобы onScroll
-      // не воспринял это как пользовательский скролл вверх (уменьшение).
-      lastScrollTopRef.current = el.scrollTop
-      scrollRafRef.current = requestAnimationFrame(animate)
-    }
-    scrollRafRef.current = requestAnimationFrame(animate)
-  }, [])
-
-  const scrollToBottomInstant = useCallback(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
-    if (scrollRafRef.current) {
-      cancelAnimationFrame(scrollRafRef.current)
-      scrollRafRef.current = null
-    }
-    el.scrollTop = el.scrollHeight - el.clientHeight
-    // Обновляем lastScrollTopRef, иначе первый onScroll после программного
-    // прыжка вниз воспринял бы уменьшение (старое значение было меньше) и
-    // ложно отключил бы авто-скролл.
-    lastScrollTopRef.current = el.scrollTop
-  }, [])
+  // АВТОСКРОЛЛ — умный движок «прилип/отлип» (useChatAutoscroll).
+  // Прилип к низу → rAF-loop плавно догоняет любой рост контента; колесо
+  // вверх / touch-drag вверх / скроллбар вверх → мгновенный отлип; ручной
+  // доезд до низа / отправка / кнопка «вниз» → прилип. Подробности — в хуке.
+  // Хук подключается ниже (после loadOlderMessagesRef — onScrollExtra едит его).
 
   // ── Reverse-infinite scroll: догрузка старых сообщений вверх ──────────────
   // prependingRef хранит scroll-геометрию ДО догрузки; useLayoutEffect после
@@ -763,6 +683,32 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const loadOlderMessagesRef = useRef(loadOlderMessages)
   loadOlderMessagesRef.current = loadOlderMessages
 
+  // Подключение движка автоскролла. onScrollExtra — догрузка старых сообщений
+  // у верхнего края (reverse-infinite scroll), вызывается в rAF-throttled
+  // scroll-хендлере хука.
+  const {
+    showScrollDownBtn,
+    pin: pinAutoscroll,
+    syncScrollState,
+    handleScroll,
+    handleWheel,
+    handleTouchStart,
+    handleTouchMove,
+  } = useChatAutoscroll({
+    scrollContainerRef,
+    onScrollExtra: () => {
+      const el = scrollContainerRef.current
+      if (!el) return
+      // Reverse-infinite scroll: близко к верху и есть ещё старые → грузим.
+      if (el.scrollTop < 200 && hasOlderMessages && !isLoadingOlder && currentChatId) {
+        loadOlderMessagesRef.current()
+      }
+    },
+  })
+
+  // Плавный скролл вниз по клику на floating-кнопку + закрепление.
+  const handleScrollDownClick = () => pinAutoscroll()
+
   // Компенсация скролла после prepend: визуальная позиция чтения сохраняется.
   // Срабатывает только когда prependingRef выставлен (т.е. после догрузки).
   useLayoutEffect(() => {
@@ -774,83 +720,21 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const delta = el.scrollHeight - snap.oldScrollHeight
     if (delta > 0) {
       el.scrollTop = snap.oldScrollTop + delta
-      lastScrollTopRef.current = el.scrollTop
+      // Внешняя запись scrollTop — синхронизируем refs движка автоскролла.
+      syncScrollState()
     }
-  }, [messages.length])
+  }, [messages.length, syncScrollState])
 
-  const handleScroll = useCallback(() => {
-    if (scrollRafPendingRef.current) return
-    scrollRafPendingRef.current = true
-    requestAnimationFrame(() => {
-      scrollRafPendingRef.current = false
-      const el = scrollContainerRef.current
-      if (!el) return
-      // Reverse-infinite scroll: близко к верху и есть ещё старые → грузим.
-      if (el.scrollTop < 200 && hasOlderMessages && !isLoadingOlder && currentChatId) {
-        loadOlderMessagesRef.current()
-      }
-      if (!hasScroll()) {
-        setShowScrollDownBtn(false)
-        return
-      }
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      // Пользовательский скролл ВВЕРХ (scrollTop уменьшился) — отключаем
-      // авто-скролл, чтобы rAF-цикл smoothScrollToBottom не конкурировал
-      // (особенно для полосы прокрутки/trackpad, где onWheel не срабатывает).
-      // Программный скролл вниз увеличивает scrollTop → не триггерит.
-      if (el.scrollTop < lastScrollTopRef.current - 2) {
-        autoScrollRef.current = false
-      }
-      lastScrollTopRef.current = el.scrollTop
-      if (distFromBottom < 24) {
-        autoScrollRef.current = true
-        setShowScrollDownBtn(false)
-        return
-      }
-      setShowScrollDownBtn(true)
-    })
-  }, [hasScroll, hasOlderMessages, isLoadingOlder, currentChatId])
-
-  // Колесо вверх → мгновенно отключаем авто-скролл.
-  // onWheel срабатывает ТОЛЬКО от пользователя, никогда от scrollTop=.
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (e.deltaY < 0) {
-      autoScrollRef.current = false
-      setShowScrollDownBtn(true)
-    }
-  }, [])
-
-  // Плавный скролл вниз по клику на floating-кнопку + закрепление.
-  const handleScrollDownClick = useCallback(() => {
-    autoScrollRef.current = true
-    setShowScrollDownBtn(false)
-    smoothScrollToBottom()
-  }, [smoothScrollToBottom])
-
+  // Загрузка тоггла миникарты сообщений в settings store — дальше компонент
+  // ChatMinimap читает его оттуда (переключение в настройках применяется live,
+  // без перезапуска; дефолт — включено).
   useEffect(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
-    // ResizeObserver на inner нужен для авто-скролла при росте контента
-    // (стриминг токенов). Но он срабатывает и при изменении ШИРИНЫ контейнера
-    // (открытие/закрытие/ресайз боковой панели) — сообщения пере-флоуются,
-    // высота растёт, и RO ложно запускал smoothScrollToBottom rAF-цикл
-    // (forced layout каждый кадр всю spring-анимацию панели) → лаги/«плывёт».
-    // Guard: скроллим только если autoScroll включён И идёт стриминг (isTyping).
-    // Не-стриминговый рост (ресайз панели, prepend старых) — не трогаем скролл.
-    let prevH = (el.firstElementChild as HTMLElement | null)?.scrollHeight ?? 0
-    const ro = new ResizeObserver(() => {
-      const inner = el.firstElementChild as HTMLElement | null
-      if (!inner) return
-      const newH = inner.scrollHeight
-      if (autoScrollRef.current && isTypingRef.current && newH > prevH) {
-        smoothScrollToBottom()
+    window.syntee.settings.get('chatMinimap').then((v: unknown) => {
+      if (v !== null && v !== undefined) {
+        useSettingsStore.setState(s => ({ settings: { ...s.settings, chatMinimap: v } }))
       }
-      prevH = newH
-    })
-    const inner = el.firstElementChild
-    if (inner) ro.observe(inner as Element)
-    return () => ro.disconnect()
-  }, [smoothScrollToBottom])
+    }).catch(() => {})
+  }, [])
 
   // Динамический отступ под ChatInput
   useEffect(() => {
@@ -867,29 +751,20 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => ro.disconnect()
   }, [])
 
-  // Скролл при новых сообщениях / начале стриминга
+  // Первый скролл при открытии чата — мгновенно к низу + прилип. Дальнейшее
+  // следование за ростом контента (токены, тулы, todo) делает rAF-loop
+  // движка автоскролла — отдельные эффекты/RO не нужны.
   useEffect(() => {
     if (isLoadingMessages || displayMessages.length === 0) return
     if (isInitialScrollRef.current) {
-      requestAnimationFrame(() => { scrollToBottomInstant(); isInitialScrollRef.current = false })
-      autoScrollRef.current = true
-      setShowScrollDownBtn(false)
-    } else if (autoScrollRef.current) {
-      smoothScrollToBottom()
+      requestAnimationFrame(() => { pinAutoscroll(true); isInitialScrollRef.current = false })
     }
-  }, [messages.length, isTyping, isLoadingMessages, isCompacting, smoothScrollToBottom, scrollToBottomInstant])
-
-  // Автоскролл при стриминге покрывается ResizeObserver-эффектом выше
-  // (inner элемент растёт каждый токен → RO → smoothScrollToBottom). Раньше
-  // тут был отдельный effect на [streamingText, live.iters, live.steps],
-  // который дублировал RO и добавлял лишний ре-рендер/ре-флоу каждый токен.
-  // RO уже батчит и рейлит на rAF-loop — этого достаточно.
+  }, [messages.length, isTyping, isLoadingMessages, isCompacting, pinAutoscroll])
 
   const selectChat = useCallback(async (id: string) => {
     setIsLoadingMessages(true)
     isInitialScrollRef.current = true
-    autoScrollRef.current = true
-    if (scrollRafRef.current) { cancelAnimationFrame(scrollRafRef.current); scrollRafRef.current = null }
+    pinAutoscroll()
     skeletonTimerRef.current = setTimeout(() => setShowSkeleton(true), 120)
     setCurrentChat(id)
     // Сбрасываем unread-бейдж этого чата (пользователь его увидел)
@@ -933,8 +808,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
             // окно к свежей последней странице и прыгаем вниз.
             setMessagesWindow(id, res.messages, res.hasMore)
             isInitialScrollRef.current = true
-            autoScrollRef.current = true
-            requestAnimationFrame(() => scrollToBottomInstant())
+            requestAnimationFrame(() => pinAutoscroll(true))
           } else if (st.hasOlderMessages !== res.hasMore) {
             setHasOlderMessages(res.hasMore)
           }
@@ -951,7 +825,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setShowSkeleton(false)
     setIsLoadingMessages(false)
     // Deps: все используемые значения — стабильные store-actions/useCallback'и.
-  }, [setCurrentChat, markChatRead, setMessagesWindow, setHasOlderMessages, scrollToBottomInstant])
+  }, [setCurrentChat, markChatRead, setMessagesWindow, setHasOlderMessages, pinAutoscroll])
 
   const createNewChat = useCallback(async (projectId?: string) => {
     let pid = projectId ?? activeProjectId
@@ -969,9 +843,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setChats(all)
     setCurrentChat(chat.id)
     setMessages([])
-    autoScrollRef.current = true
+    pinAutoscroll()
     isInitialScrollRef.current = true
-  }, [activeProjectId, isIncognito, activeMode, setProjects, setActiveProject, setChats, setCurrentChat, setMessages])
+  }, [activeProjectId, isIncognito, activeMode, setProjects, setActiveProject, setChats, setCurrentChat, setMessages, pinAutoscroll])
 
   const createNewProject = useCallback(async (mode: 'empty' | 'existing' = 'existing') => {
     const picked = mode === 'empty'
@@ -990,9 +864,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setChats(all)
     setCurrentChat(chat.id)
     setMessages([])
-    autoScrollRef.current = true
+    pinAutoscroll()
     isInitialScrollRef.current = true
-  }, [isIncognito, activeMode, setChats, setCurrentChat, setMessages])
+  }, [isIncognito, activeMode, setChats, setCurrentChat, setMessages, pinAutoscroll])
 
   /**
    * Вызывается после установки MCP/Skill через маркетплейс расширений —
@@ -1014,9 +888,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     setMessages([])
     addMessage(userMsg)
     initChatSend(chatId)
-    autoScrollRef.current = true
+    pinAutoscroll()
     isInitialScrollRef.current = true
-  }, [setProjects, setActiveProject, setChats, setCurrentChat, setMessages, addMessage])
+  }, [setProjects, setActiveProject, setChats, setCurrentChat, setMessages, addMessage, pinAutoscroll])
 
   // ── Вкладки чатов в шапке ──
   // Любой путь выбора чата (сайдбар, boot, fork, slash-команды, установка
@@ -1048,11 +922,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const raw = text.trim()
     const slash = parseSlashCommandWithCustom(raw, customCommands)
 
-    // При отправке сообщения — принудительно закрепляем авто-скролл.
+    // При отправке сообщения — принудительно закрепляем автоскролл.
     // Пользователь ожидает увидеть своё сообщение и ответ, даже если до этого
     // скроллил вверх по истории.
-    autoScrollRef.current = true
-    setShowScrollDownBtn(false)
+    pinAutoscroll()
 
     if (slash?.command.name === 'clear') {
       if (currentChatId) { setMessages([]); toast('Чат очищен', 'info') }
@@ -1180,8 +1053,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (slash?.command.name === 'compact') {
       if (!currentChatId) { toast('Создай чат перед /compact', 'info'); return }
       setIsCompacting(true)
-      autoScrollRef.current = true
-      setShowScrollDownBtn(false)
+      pinAutoscroll()
       // Guard выставляем ДО invoke. Main эмитит CHAT_COMPACTED ещё во время
       // хендлера (event.sender.send до return), invoke резолвится после.
       // Guard НЕ гасим в finally — только в listener (по приходу CHAT_COMPACTED).
@@ -1350,11 +1222,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Принудительно скроллим вниз в следующем кадре — addMessage обновит
       // DOM, и scrollHeight станет актуальным. Без этого в новом чате
       // (где isInitialScrollRef=true) эффект мог не сработать вовремя.
-      requestAnimationFrame(() => {
-        autoScrollRef.current = true
-        setShowScrollDownBtn(false)
-        scrollToBottomInstant()
-  })
+      requestAnimationFrame(() => pinAutoscroll(true))
     }
 
     // ── Обновляем историю навигации по стрелкам ──
@@ -1383,7 +1251,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // Deps: refs и store-actions стабильны; меняются только редкие
     // data-значения (режимы, replyTo, customCommands) — во время стриминга
     // ссылка handleSend стабильна, memo ChatInput не пробивается.
-  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, scrollToBottomInstant])
+  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll])
 
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
@@ -1710,6 +1578,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               ref={scrollContainerRef}
               onScroll={handleScroll}
               onWheel={handleWheel}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
             >
               {isLoadingOlder && (
                 <div
@@ -1776,6 +1646,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
           {/* Floating-кнопка «прокрутить вниз» — компактная, по центру,
               чуть выше инпут-бара. Появляется когда пользователь отошёл
               от низа (autoScroll=false). Клик — плавный скролл + закрепление. */}
+          {/* Миникарта сообщений — точки навигации справа по центру. */}
+          <ChatMinimap
+            virtualizer={virtualizer}
+            messages={displayMessages}
+            scrollContainerRef={scrollContainerRef}
+          />
+
           <AnimatePresence>
             {showScrollDownBtn && (
               <motion.button
@@ -1924,6 +1801,18 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
             document.body,
           )}
         </main>
+
+        {/* Сплит-панель: второй чат в правой половине (50/50 с основным).
+            showSplit — страховка от кадра-гонки: автозакрытие (удаление/архив/
+            активация сплит-чата) идёт через подписки в tabs.store, между
+            событием и ре-рендером splitChatId может указывать на мёртвый чат. */}
+        {splitChatId && splitChatId !== currentChatId &&
+          chats.some(c => c.id === splitChatId && !c.isArchived) && (
+          <SplitChatPane
+            chatId={splitChatId}
+            onClose={() => setSplitChat(null)}
+          />
+        )}
       </div>
       {!embedded && (
         <ToastContainer />

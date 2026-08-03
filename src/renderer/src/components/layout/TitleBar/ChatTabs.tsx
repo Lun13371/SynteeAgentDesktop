@@ -1,16 +1,23 @@
+import { useState } from 'react'
 import { Reorder } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
+import ChatTabContextMenu from './ChatTabContextMenu'
 import { useChatStore } from '../../../store/chat.store'
 import { useNavStore } from '../../../store/nav.store'
 import { useTabsStore, tabActions } from '../../../store/tabs.store'
+import type { MenuPos } from '../../../utils/contextMenuPosition'
+import type { Chat } from '../../../../../shared/types'
 
 // Вкладки открытых чатов в шапке — как в браузере: переключение по клику,
 // drag&drop для перестановки (Reorder из framer-motion, прецедент —
-// QueuePanel), закрытие крестиком или средней кнопкой мыши.
+// QueuePanel), закрытие крестиком или средней кнопкой мыши, контекстное
+// меню по правому клику (открыть/сплит/закрыть вкладку).
 // Данные чатов — из chat.store, порядок вкладок — из tabs.store, действия
 // (select/create) — через tabActions (мост в ChatPage, который keep-alive).
 // no-drag на вкладках и «+»: шапка — drag-region окна, без no-drag клики
 // не дошли бы до renderer. Пустое место полосы остаётся drag-зоной.
+// В конце полосы — чип открытого сплит-чата (второй чат 50/50): индикатор
+// + крестик закрытия сплита.
 export default function ChatTabs() {
   const openTabIds = useTabsStore(s => s.openTabIds)
   const reorderTabs = useTabsStore(s => s.reorderTabs)
@@ -18,6 +25,9 @@ export default function ChatTabs() {
   const chats = useChatStore(s => s.chats)
   const currentChatId = useChatStore(s => s.currentChatId)
   const runStatusByChat = useChatStore(s => s.runStatusByChat)
+  const splitChatId = useChatStore(s => s.splitChatId)
+  const setSplitChat = useChatStore(s => s.setSplitChat)
+  const [ctxMenu, setCtxMenu] = useState<{ chat: Chat; pos: MenuPos } | null>(null)
 
   // Значения Reorder.Group должны 1:1 соответствовать Reorder.Item —
   // фильтруем вкладки без живого чата (гонка удаления/переименования).
@@ -47,6 +57,16 @@ export default function ChatTabs() {
     tabActions.createInContext?.()
   }
 
+  // Правый клик по вкладке — контекстное меню (открыть/сплит/закрыть).
+  const handleCtx = (e: React.MouseEvent, chat: Chat) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setCtxMenu({ chat, pos: { x: e.clientX, y: e.clientY } })
+  }
+
+  // Чип сплит-чата в конце полосы — показывает что открыто 2 чата.
+  const splitChat = splitChatId ? chatById.get(splitChatId) : undefined
+
   return (
     <div className="titlebar-tabs">
       <Reorder.Group
@@ -68,6 +88,7 @@ export default function ChatTabs() {
               value={id}
               className={`titlebar-tab no-drag ${active ? 'titlebar-tab--active' : ''}`}
               onClick={() => handleSelect(id)}
+              onContextMenu={e => handleCtx(e, chat)}
               onAuxClick={(e: React.MouseEvent) => {
                 // Средняя кнопка — закрытие, как в браузере.
                 // preventDefault — не дать Chromium включить auto-scroll.
@@ -106,6 +127,40 @@ export default function ChatTabs() {
       >
         <AppIcon name="plus" size="sm" />
       </button>
+
+      {/* Чип сплит-чата: виден пока открыта вторая половина экрана.
+          Крестик закрывает сплит (вкладка чата остаётся). */}
+      {splitChat && (() => {
+        const splitStatus = runStatusByChat[splitChat.id]?.status
+        const splitRunning = splitStatus === 'running' || splitStatus === 'queued'
+        return (
+        <div className="titlebar-split-chip no-drag" title={`Сплит: ${splitChat.title}`}>
+          <AppIcon name="columns" size="xs" tone="accent" />
+          {splitRunning ? (
+            <span className="titlebar-tab-spinner" title={splitStatus === 'queued' ? 'В очереди' : 'Работает'} />
+          ) : (
+            splitChat.color && <span className="titlebar-tab-color" style={{ background: splitChat.color }} />
+          )}
+          <span className="titlebar-split-chip-title">{splitChat.title}</span>
+          <button
+            className="titlebar-tab-close titlebar-split-chip-close"
+            onClick={() => setSplitChat(null)}
+            title="Закрыть сплит"
+          >
+            <AppIcon name="x" size="xs" />
+          </button>
+        </div>
+        )
+      })()}
+
+      <ChatTabContextMenu
+        chat={ctxMenu?.chat ?? null}
+        pos={ctxMenu?.pos ?? null}
+        onClose={() => setCtxMenu(null)}
+        onSelectChat={handleSelect}
+        onCloseTab={handleClose}
+        tabsCount={tabIds.length}
+      />
     </div>
   )
 }

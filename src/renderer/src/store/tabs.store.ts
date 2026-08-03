@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { useChatStore } from './chat.store'
+import { useToast } from '../components/ui/Toast/Toast'
+import type { Chat } from '../../../shared/types'
 
 // ── Вкладки открытых чатов в шапке (как в браузере) ────────────────────
 // openTabIds — порядок вкладок слева направо. Вкладка ≠ чат: закрытие
@@ -67,16 +69,60 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 // ПОСЛЕ setChats, поэтому к моменту появления tabIds chats уже живые.
 // Гейт по ссылке на chats: subscribe стреляет на ЛЮБОЕ изменение chat.store
 // (стриминг ~20×/сек), а фильтровать нужно только при смене списка чатов.
+// Здесь же — автозакрытие сплита: чат удалён или заархивирован.
 let lastChats: unknown = null
 useChatStore.subscribe((s) => {
   if (s.chats === lastChats) return
   lastChats = s.chats
   const { openTabIds, setTabs } = useTabsStore.getState()
-  if (openTabIds.length === 0) return
   const alive = new Set(s.chats.map(c => c.id))
-  const pruned = openTabIds.filter(id => alive.has(id))
-  if (pruned.length !== openTabIds.length) setTabs(pruned)
+  if (openTabIds.length > 0) {
+    const pruned = openTabIds.filter(id => alive.has(id))
+    if (pruned.length !== openTabIds.length) setTabs(pruned)
+  }
+  // Сплит: чат исчез или ушёл в архив → закрываем сплит.
+  if (s.splitChatId) {
+    const splitChat = s.chats.find(c => c.id === s.splitChatId)
+    if (!splitChat || splitChat.isArchived) s.setSplitChat(null)
+  }
 })
+
+// Сплит ≠ вкладка: сплит-чат не может одновременно быть основным. Если
+// пользователь активировал сплит-чат (клик по вкладке/сайдбару — любой путь
+// идёт через setCurrentChat) — закрываем сплит, иначе обе половины показывали
+// бы один и тот же чат.
+let lastCurrentChatId: string | null = null
+useChatStore.subscribe((s) => {
+  if (s.currentChatId === lastCurrentChatId) return
+  lastCurrentChatId = s.currentChatId
+  if (s.currentChatId && s.currentChatId === s.splitChatId) s.setSplitChat(null)
+})
+
+// Минимальная ширина окна для сплита: ~1200px = сайдбар (~280px) + по ~460px
+// на каждую половину чата. Уже — чаты сжимаются до неюзабельных размеров.
+const SPLIT_MIN_WINDOW_WIDTH = 1200
+
+/**
+ * Открыть чат во второй половине экрана (сплит 50/50).
+ * Гейты: чат уже активный — тост-отказ; узкое окно — тост «недостаточно места».
+ * Возвращает true, если сплит открыт (вызывающий может навигировать на
+ * страницу чата — меню вкладки доступно с любой страницы).
+ * Используется из контекстного меню сайдбара и меню вкладки в шапке.
+ */
+export function openInSplit(chat: Chat): boolean {
+  const st = useChatStore.getState()
+  if (chat.id === st.currentChatId) {
+    useToast.getState().add('Это уже активный чат — выберите другой для сплита', 'info')
+    return false
+  }
+  if (chat.id === st.splitChatId) return true // уже открыт в сплите
+  if (window.innerWidth < SPLIT_MIN_WINDOW_WIDTH) {
+    useToast.getState().add('Недостаточно места для сплита — расширьте окно', 'info')
+    return false
+  }
+  st.setSplitChat(chat.id)
+  return true
+}
 
 // Мост между TitleBar (рендерится в App) и ChatPage (владелец логики
 // выбора/создания чатов). ChatPage регистрирует свои колбэки при

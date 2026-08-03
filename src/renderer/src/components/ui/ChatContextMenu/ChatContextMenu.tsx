@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import type { Chat } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
 import { getContextMenuPosition } from '../../../utils/contextMenuPosition'
+import { useChatStore } from '../../../store/chat.store'
+import { openInSplit } from '../../../store/tabs.store'
 import './ChatContextMenu.css'
 
 export interface ContextMenuPos { x: number; y: number }
@@ -35,6 +37,11 @@ const COLORS = [
 
 export default function ChatContextMenu({ chat, pos, onClose, onOpenInTab, onRename, onPin, onArchive, onDuplicate, onShare, onExport, onDelete, onColor }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  // Для пунктов сплита: активный чат нельзя открыть в сплите (он и так на
+  // экране), текущий сплит-чат предлагаем закрыть.
+  const currentChatId = useChatStore(s => s.currentChatId)
+  const splitChatId = useChatStore(s => s.splitChatId)
+  const setSplitChat = useChatStore(s => s.setSplitChat)
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -50,6 +57,10 @@ export default function ChatContextMenu({ chat, pos, onClose, onOpenInTab, onRen
   // открывается ВВЕРХ от клика — низ не уйдёт за окно независимо от высоты.
   // (Хардкод menuH = 320 занижал высоту с опциональными пунктами → обрезка.)
   const { openUp, ...menuStyle } = getContextMenuPosition(pos)
+
+  // Divider после блока «открыть во вкладке/в сплите» — если виден хотя бы
+  // один из этих пунктов (для активного не-сплит чата скрыты оба).
+  const hasOpenBlock = !!onOpenInTab || chat.id === splitChatId || chat.id !== currentChatId
 
   return createPortal(
     <AnimatePresence>
@@ -81,11 +92,17 @@ export default function ChatContextMenu({ chat, pos, onClose, onOpenInTab, onRen
               в новой вкладке» в браузере). Клик по чату и так открывает вкладку
               с переключением, поэтому пункт только про фоновое открытие. */}
           {onOpenInTab && (
-            <>
-              <CtxItem icon="appWindow" label="Открыть во вкладке" onClick={() => { onOpenInTab(chat); onClose() }} />
-              <div className="ctx-divider" />
-            </>
+            <CtxItem icon="appWindow" label="Открыть во вкладке" onClick={() => { onOpenInTab(chat); onClose() }} />
           )}
+
+          {/* Сплит: чат во второй половине экрана. Активный чат открыть нельзя
+              (он и так на экране), для текущего сплит-чата — пункт закрытия. */}
+          {chat.id === splitChatId ? (
+            <CtxItem icon="columns" label="Закрыть сплит" onClick={() => { setSplitChat(null); onClose() }} />
+          ) : chat.id !== currentChatId && (
+            <CtxItem icon="columns" label="Открыть в сплите" onClick={() => { openInSplit(chat); onClose() }} />
+          )}
+          {hasOpenBlock && <div className="ctx-divider" />}
 
           <CtxItem icon="edit" label="Переименовать" onClick={() => { onRename(chat); onClose() }} />
           <CtxItem icon="pin" label={chat.isPinned ? 'Открепить' : 'Закрепить'} onClick={() => { onPin(chat); onClose() }} />

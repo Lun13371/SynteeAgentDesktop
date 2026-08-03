@@ -26,7 +26,7 @@ export async function readFile(path: string, offset?: number, limit?: number, ou
 
     if (offset !== undefined || limit !== undefined) {
       const from = Math.max(0, (offset ?? 1) - 1)  // offset 1-indexed
-      const count = limit ?? 200
+      const count = limit ?? 400
       const slice = lines.slice(from, from + count)
       const numbered = slice.map((l, i) => `${from + i + 1}|${l}`).join('\n')
       const hasMore = from + count < totalLines
@@ -39,8 +39,13 @@ export async function readFile(path: string, offset?: number, limit?: number, ou
       }
     }
 
-    // Без offset — читаем первые 200 строк, если файл больше — добавляем авто-outline
-    const DEFAULT_LINES = 200
+    // Без offset — читаем первые 400 строк, если файл больше — добавляем авто-outline.
+    // Дефолт 400 (а не 200) снижает round-trips на больших файлах: классы по
+    // 400-800 строк читаются за 1-2 вызова вместо 3-5. Контекст-лимит read_file
+    // всё ещё контролируется сверху (но в Agent.ts truncateToolResult для
+    // read_file отключён — своя обрезка по строкам уже даёт правильную
+    // подсказку с готовым offset для продолжения).
+    const DEFAULT_LINES = 400
     const truncated = totalLines > DEFAULT_LINES
     const slice = lines.slice(0, DEFAULT_LINES)
     const numbered = slice.map((l, i) => `${i + 1}|${l}`).join('\n')
@@ -188,7 +193,7 @@ export async function readFiles(paths: string[], workdir?: string): Promise<Tool
       }
       const content = await fsReadFile(rp, 'utf-8')
       const lines = content.split('\n')
-      const MAX_LINES = 150
+      const MAX_LINES = 250
       const truncated = lines.length > MAX_LINES
       const slice = lines.slice(0, MAX_LINES).map((l, i) => `${i + 1}|${l}`).join('\n')
       const info = truncated
