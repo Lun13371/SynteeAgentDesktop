@@ -16,9 +16,9 @@ const PSEUDO_IDS = new Set(['live-streaming-bubble', 'compacting-indicator', 'sp
 const MIN_MESSAGES = 3
 /** Максимальная высота полосы — доля от высоты контейнера. */
 const STRIP_MAX_RATIO = 0.45
-const DOT_GAP = 3
-const DOT_MAX = 7
-const DOT_MIN = 2
+const DOT_GAP = 6
+const DOT_MAX = 10
+const DOT_MIN = 4
 
 /** Очистка markdown для сниппета (как cleanPreview в сайдбаре, короче). */
 function snippet(text: string | undefined): string {
@@ -188,6 +188,7 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
   const hoverMsg = hover ? messages[hover.origIndex] : null
 
   return (
+    <>
     <div className="chat-minimap" style={{ maxHeight: `${STRIP_MAX_RATIO * 100}%` }}>
       {dots.map((d, i) => (
         <button
@@ -198,33 +199,36 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
             `chat-minimap-dot--${d.role}`,
             i === activeDotIdx ? 'chat-minimap-dot--active' : '',
           ].filter(Boolean).join(' ')}
-          style={{ width: dotSize, height: dotSize }}
+          style={{ width: dotSize, height: dotSize, '--dot-size': `${dotSize}px` } as React.CSSProperties}
           onClick={() => handleClick(d.origIndex)}
           onMouseEnter={e => setHover({ origIndex: d.origIndex, clientY: e.clientY })}
           onMouseLeave={() => setHover(null)}
           aria-label={`Сообщение ${i + 1} из ${dots.length}`}
         />
       ))}
-
-      {/* Превью сообщения при наведении на точку. position: fixed — не
-          клипается overflow контейнера. */}
-      {hover && hoverMsg && (
-        <div
-          className="chat-minimap-preview"
-          style={{ top: Math.min(Math.max(hover.clientY - 40, 8), window.innerHeight - 140) }}
-        >
-          <div className="chat-minimap-preview-head">
-            <span className={`chat-minimap-preview-role chat-minimap-preview-role--${hoverMsg.role}`}>
-              {roleLabel(hoverMsg.role)}
-            </span>
-            <span className="chat-minimap-preview-time">{formatTime(hoverMsg.createdAt)}</span>
-          </div>
-          <div className="chat-minimap-preview-text">
-            {snippet(hoverMsg.content) || '[вложение]'}
-          </div>
-        </div>
-      )}
     </div>
+
+    {/* Превью сообщения при ховере на точку. Рендерим ВНЕ .chat-minimap:
+        у контейнера transform + overflow:hidden — fixed-потомок клипился бы.
+        position: fixed — не клипается overflow родителя. */}
+    {hover && hoverMsg && (
+      <div
+        key={hover.origIndex}
+        className="chat-minimap-preview"
+        style={{ top: Math.min(Math.max(hover.clientY - 40, 8), window.innerHeight - 140) }}
+      >
+        <div className="chat-minimap-preview-head">
+          <span className={`chat-minimap-preview-role chat-minimap-preview-role--${hoverMsg.role}`}>
+            {roleLabel(hoverMsg.role)}
+          </span>
+          <span className="chat-minimap-preview-time">{formatTime(hoverMsg.createdAt)}</span>
+        </div>
+        <div className="chat-minimap-preview-text">
+          {snippet(hoverMsg.content) || '[вложение]'}
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 
