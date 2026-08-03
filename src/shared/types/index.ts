@@ -86,6 +86,11 @@ export interface Message {
   toolSteps?: ToolStep[]
   thinking?: string
   thinkingMs?: number
+  /** Anthropic extended thinking blocks (with signatures). Required to echo
+   *  back in subsequent rounds when the assistant message had tool_use —
+   *  Anthropic API rejects the next request with 400 if thinking blocks
+   *  (with their signatures) are stripped. Each block has {thinking, signature}. */
+  thinkingBlocks?: Array<{ thinking: string; signature: string }>
   slashCommand?: { name: string; args: string }
   iterations?: Array<{ label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: ToolStep[] }>
   liveSegments?: Array<{ text: string; steps: ToolStep[] }>

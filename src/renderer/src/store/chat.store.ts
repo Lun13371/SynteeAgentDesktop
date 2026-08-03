@@ -29,6 +29,11 @@ export interface ChatLiveState {
   isAgentRunning: boolean
   /** Live progress для долгих тулов (get_fast_context / run_command): {toolName → {stage, detail, sessionId, files...}} */
   toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  /** Live-маппинг саб-агентов, запущенных в текущем стриме. Ключ — agentId.
+   *  Заполняется событием agent:spawn (эмитится из main ДО запуска worker'а
+   *  суб-агента). Renderer матчит запись с live-шагом tool_call spawn_agent
+   *  по callId (или по task как fallback) и сразу рисует карточку саб-агента. */
+  spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
   /** Структурированный ретрай для UI-счётчика «повтор 3/5». Не затирается
    *  следующим onStatus (в отличие от agentStatus). Сбрасывается в null
    *  при успехе/новом раунде. */
@@ -64,6 +69,7 @@ export const EMPTY_LIVE: ChatLiveState = {
   isTyping: false,
   isAgentRunning: false,
   toolProgress: {},
+  spawnedAgents: [],
 }
 
 // ── Side chat (параллельный доп-чат в правой панели) ───────────────────
@@ -194,6 +200,21 @@ interface ChatStore {
 // LRU-кеш окон сообщений: максимум хранимых чатов. Большие чаты в кеше —
 // это массивы Message[]; капа удерживает память в рамках пары десятков МБ.
 const MSG_CACHE_CAP = 8
+
+// Порог «большого чата»: чаты с messageCount > порога НЕ догружаются тихим
+// фоном целиком (рисково по памяти/перформансу на 10k+). Для них остаётся
+// старый reverse-infinite scroll по требованию (со спиннером сверху). Чаты
+// меньше порога грузятся полностью в фоне — минимапа стабильна, спиннер
+// не показывается никогда. См. хук useBackgroundLoadFullChat.
+export const LARGE_CHAT_THRESHOLD = 500
+
+/** Селектор: является ли чат «большим» (по messageCount из списка chats).
+ *  messageCount приходит из БД (COUNT(*)) при загрузке списка чатов. */
+export function selectIsLargeChat(chats: Chat[], chatId: string | null | undefined): boolean {
+  if (!chatId) return false
+  const chat = chats.find(c => c.id === chatId)
+  return (chat?.messageCount ?? 0) > LARGE_CHAT_THRESHOLD
+}
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   chats: [],

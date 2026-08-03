@@ -15,7 +15,7 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
   if (message.planData) {
     return [{
       role: message.role as ChatMessage['role'],
-      content: `[ПЛАН: "${message.planData.title}"]\n${message.planData.content}\n[Файл: ${message.planData.filePath}]`,
+      content: `[PLAN: "${message.planData.title}"]\n${message.planData.content}\n[File: ${message.planData.filePath}]`,
     }]
   }
 
@@ -29,9 +29,29 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
     // что todo сохраняется между сообщениями и не может продолжить.
     if (message.role === 'assistant' && message.todo?.length) {
       return [
-        { role: 'assistant' as const, content: message.content },
+        {
+          role: 'assistant' as const,
+          content: message.content,
+          ...(message.thinkingBlocks?.length ? { thinking_blocks: message.thinkingBlocks } : {}),
+          ...(message.thinking ? { reasoning_content: message.thinking } : {}),
+        },
         { role: 'user' as const, content: formatTodoForContext(message.todo) },
       ]
+    }
+    if (message.role === 'assistant' && message.thinkingBlocks?.length) {
+      return [{
+        role: message.role as ChatMessage['role'],
+        content: message.content,
+        thinking_blocks: message.thinkingBlocks,
+        ...(message.thinking ? { reasoning_content: message.thinking } : {}),
+      }]
+    }
+    if (message.role === 'assistant' && message.thinking) {
+      return [{
+        role: message.role as ChatMessage['role'],
+        content: message.content,
+        reasoning_content: message.thinking,
+      }]
     }
     return [{ role: message.role as ChatMessage['role'], content: message.content }]
   }
@@ -87,9 +107,16 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
   if (iterations.length === 0) {
     if (message.todo?.length) {
       return [
-        { role: 'assistant' as const, content: message.content },
+        {
+          role: 'assistant' as const,
+          content: message.content,
+          ...(message.thinking ? { reasoning_content: message.thinking } : {}),
+        },
         { role: 'user' as const, content: formatTodoForContext(message.todo) },
       ]
+    }
+    if (message.thinking) {
+      return [{ role: 'assistant', content: message.content, reasoning_content: message.thinking }]
     }
     return [{ role: 'assistant', content: message.content }]
   }
@@ -103,18 +130,52 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
     const iter = iterations[i]
     const assistantContent = (i === 0 && hasContentBefore) ? contentBefore : ''
 
-    // Санитизация: строгий провайдер (glm/litellm) возвращает 400 на
-    // tool_calls без парных results. Если итерация сохранилась без
-    // results (error/падение до ensureToolResults в старых версиях) —
-    // рендерим её как обычный текстовый assistant, без tool_calls.
-    // Также скипаем tool_call с пустым callId (битый id → 400).
+    // Sanitization: a strict provider (glm/litellm) returns 400 on
+    // tool_calls without paired results. If an iteration survived without
+    // results (error/crash before ensureToolResults in older versions) —
+    // we previously rendered it as plain text and dropped the tool_calls,
+    // so the AI did not know it had tried and failed, and repeated the
+    // same calls. Now we emit a synthetic tool_result with a clear message
+    // so the AI sees "I tried this and it did not complete" instead of
+    // "I never tried it". Also skip tool_calls with empty callId (broken
+    // id → 400).
     const validCalls = iter.calls.filter(c => c.callId && c.callId.length > 0)
-    if (validCalls.length === 0 || iter.results.size === 0) {
-      // Нет валидных calls или нет результатов — отдаём как текст.
-      // content уже включён в assistantContent для i===0; для i>0
-      // текста нет, но без tool_calls это пустое сообщение — скипаем.
+    if (validCalls.length === 0) {
+      // No valid calls — but without tool_calls this is an empty message; skip.
       if (i === 0 && hasContentBefore) {
-        result.push({ role: 'assistant', content: assistantContent })
+        const emptyIterThinking = message.iterations?.[0]?.thinking ?? message.thinking
+        result.push({
+          role: 'assistant',
+          content: assistantContent,
+          ...(emptyIterThinking ? { reasoning_content: emptyIterThinking } : {}),
+        })
+      }
+      continue
+    }
+    if (iter.results.size === 0) {
+      // Calls exist but no results — emit assistant with tool_calls + a
+      // synthetic tool_result for each call so the AI knows it tried and
+      // the call did not complete (old/broken history). Previously the
+      // whole iteration was silently dropped → AI repeated the same calls.
+      const synthIterThinking = message.iterations?.[i]?.thinking
+        ?? (i === 0 ? message.thinking : undefined)
+      result.push({
+        role: 'assistant',
+        content: assistantContent,
+        tool_calls: validCalls.map(c => ({
+          id: c.callId,
+          type: 'function' as const,
+          function: { name: c.toolName, arguments: JSON.stringify(c.toolArgs) },
+        })),
+        ...(synthIterThinking ? { reasoning_content: synthIterThinking } : {}),
+      })
+      for (const call of validCalls) {
+        result.push({
+          role: 'tool',
+          content: `[No result was captured for this tool call — it was likely interrupted or failed before a result was saved. Do not retry blindly: check the current state of the file/project first.]`,
+          tool_call_id: call.callId,
+          name: call.toolName,
+        })
       }
       continue
     }
@@ -129,10 +190,32 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
       },
     }))
 
+    // Per-iteration reasoning (OpenAI reasoning_content). Prefer the
+    // saved iteration's own thinking when available — message.thinking is
+    // cumulative across all rounds of the turn and would be wrong for i>0.
+    // For i===0 fall back to message.thinking (covers old messages without
+    // per-iteration thinking, and single-round turns where they're equal).
+    const iterThinking = message.iterations?.[i]?.thinking
+      ?? (i === 0 ? message.thinking : undefined)
+
     result.push({
       role: 'assistant',
       content: assistantContent,
       tool_calls: toolCalls,
+      // Anthropic extended thinking blocks must be echoed back alongside
+      // the first assistant tool_use message — attach to iteration 0 only.
+      // Subsequent iterations within one Message are separate model rounds;
+      // their thinking blocks were not preserved separately and would be
+      // rejected with invalid signatures if reused.
+      ...(i === 0 && message.thinkingBlocks && message.thinkingBlocks.length > 0
+        ? { thinking_blocks: message.thinkingBlocks }
+        : {}),
+      // OpenAI-compatible reasoning_content echo (GLM/DeepSeek/Qwen thinking
+      // mode). Some providers (LiteLLM proxy for glm-*) return 400 if the
+      // assistant turn that produced reasoning_content is sent back in the
+      // next request WITHOUT the field — the proxy validates thinking-mode
+      // output is round-tripped. Anthropic native path ignores this field.
+      ...(iterThinking ? { reasoning_content: iterThinking } : {}),
     })
 
     // Tool результаты только для calls'ов, у которых есть результат.
@@ -176,7 +259,7 @@ export function formatTodoForContext(todo: Array<{ text: string; status: 'pendin
   })
   const unfinished = todo.filter(t => t.status === 'pending' || t.status === 'in_progress').length
   const suffix = unfinished > 0
-    ? `\n\nЭто твой незавершённый план из предыдущего ответа (${unfinished} пункт(ов) осталось). Продолжи работу по нему — не создавай новый план, если этот ещё актуален.`
-    : '\n\nЭто твой завершённый план из предыдущего ответа (все пункты выполнены).'
-  return `[АКТУАЛЬНЫЙ ПЛАН ЗАДАЧИ — состояние на момент предыдущего сообщения]\n${lines.join('\n')}${suffix}`
+    ? `\n\nThis is your unfinished plan from the previous response (${unfinished} item(s) remaining). Continue working on it — do not create a new plan if this one is still relevant.`
+    : '\n\nThis is your completed plan from the previous response (all items done).'
+  return `[CURRENT TASK PLAN — state as of the previous message]\n${lines.join('\n')}${suffix}`
 }

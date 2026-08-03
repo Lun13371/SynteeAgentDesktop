@@ -759,14 +759,29 @@ export function getMemoryStatsForProject(projectId?: string): {
     ? (db.prepare(`SELECT COUNT(*) as c FROM memory_items WHERE scope = 'project' AND project_id = ?`).get(projectId) as { c: number }).c
     : 0
   const globalByKindRows = db.prepare(`SELECT kind, COUNT(*) as c FROM memory_items WHERE scope = 'global' GROUP BY kind`).all() as Array<{ kind: string; c: number }>
+  // Bug 1: was `.get(projectId)` — get() returns a single row (object), not
+  // an array, so `.map` below threw "(projectByKindRows || []).map is not a
+  // function" whenever projectId was set. Must be `.all(projectId)`.
   const projectByKindRows = projectId
-    ? (db.prepare(`SELECT kind, COUNT(*) as c FROM memory_items WHERE scope = 'project' AND project_id = ? GROUP BY kind`).get(projectId) as Array<{ kind: string; c: number }>)
+    ? (db.prepare(`SELECT kind, COUNT(*) as c FROM memory_items WHERE scope = 'project' AND project_id = ? GROUP BY kind`).all(projectId) as Array<{ kind: string; c: number }>)
     : []
-  const byCategoryRows = db.prepare(
-    `SELECT COALESCE(category, 'без категории') as cat, COUNT(*) as c FROM memory_items
-     WHERE scope = 'global' ${projectId ? `OR (scope = 'project' AND project_id = ?)` : ''}
-     GROUP BY cat ORDER BY c DESC`
-  ).all(projectId) as Array<{ cat: string; c: number }>
+  // Bug 2: the placeholder `?` only appears in SQL when projectId is set,
+  // but `.all(projectId)` always passed projectId (even undefined) →
+  // better-sqlite3 threw "Too many parameter values were provided" when
+  // projectId was undefined. Build the statement conditionally and pass
+  // params only when needed.
+  const byCategoryStmt = projectId
+    ? db.prepare(
+        `SELECT COALESCE(category, 'uncategorized') as cat, COUNT(*) as c FROM memory_items
+         WHERE scope = 'global' OR (scope = 'project' AND project_id = ?)
+         GROUP BY cat ORDER BY c DESC`
+      )
+    : db.prepare(
+        `SELECT COALESCE(category, 'uncategorized') as cat, COUNT(*) as c FROM memory_items
+         WHERE scope = 'global'
+         GROUP BY cat ORDER BY c DESC`
+      )
+  const byCategoryRows = (projectId ? byCategoryStmt.all(projectId) : byCategoryStmt.all()) as Array<{ cat: string; c: number }>
   return {
     globalCount,
     projectCount,

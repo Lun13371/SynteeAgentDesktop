@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { v4 as uuid } from 'uuid'
 import { useContextCounter } from '../../hooks/useContextCounter'
 import { useChatAutoscroll } from '../../hooks/useChatAutoscroll'
+import { useBackgroundLoadFullChat } from '../../hooks/useBackgroundLoadFullChat'
 import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../hooks/useChatRunSubscription'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
@@ -23,7 +24,7 @@ import Logo from '../../components/ui/Logo/Logo'
 import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
 import ChatMinimap from '../../components/ui/ChatMinimap/ChatMinimap'
 import { useSettingsStore } from '../../store/settings.store'
-import { useChatStore, EMPTY_LIVE } from '../../store/chat.store'
+import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.store'
 import { useNavStore } from '../../store/nav.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
@@ -114,6 +115,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const hasOlderMessages = useChatStore(s => s.hasOlderMessages)
   const isLoadingOlder = useChatStore(s => s.isLoadingOlder)
   const chats = useChatStore(s => s.chats)
+  // isLargeChat — по messageCount из списка chats (БД COUNT(*)). Большие чаты
+  // (> LARGE_CHAT_THRESHOLD) не догружаются фоном целиком — для них остаётся
+  // reverse-infinite scroll со спиннером; малые грузятся тихо в фоне.
+  const isLargeChat = useChatStore(s => selectIsLargeChat(s.chats, s.currentChatId))
   const isIncognito = useChatStore(s => s.isIncognito)
   const activeMode = useChatStore(s => s.activeMode)
   const projects = useChatStore(s => s.projects)
@@ -327,7 +332,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Compact меняет историю (удаляет старые сообщения, добавляет divider
       // у хвоста). Сбрасываем окно к свежей последней странице — это корректно
       // отражает пост-compact состояние и авто-скроллит к низу.
-      window.syntee.chat.getMessagesPage(d.chatId, 20).then((res: { messages: Message[]; hasMore: boolean }) => {
+      window.syntee.chat.getMessagesPage(d.chatId, 50).then((res: { messages: Message[]; hasMore: boolean }) => {
         if (useChatStore.getState().currentChatId !== d.chatId) return
         setMessagesWindow(d.chatId, res.messages, res.hasMore)
         isInitialScrollRef.current = true
@@ -343,7 +348,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }).catch(() => {})
     })
     return () => { off() }
-  }, [currentChatId, setMessagesWindow, toast, pinAutoscroll])
+    // pinAutoscroll объявлен ниже по коду (const), включать его в deps нельзя —
+    // deps вычисляется во время рендера и упал бы с TDZ (ReferenceError:
+    // cannot access before initialization). Ссылка внутри тела эффекта
+    // безопасна — оно выполняется после рендера.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentChatId, setMessagesWindow, toast])
 
   // CHAT_COMPACT_STREAM — стрим резюме при manual /compact. AI пишет резюме
   // контекста в реальном времени; токены аккумулируются в compactingSummary и
@@ -625,7 +635,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // свежей последней страницей и при расхождении заменяем окно. Если
       // hasOlder=true (пользователь догрузил старые страницы) — НЕ трогаем
       // messages, чтобы не сбросить позицию прокрутки; лишь правим флаг hasMore.
-      window.syntee.chat.getMessagesPage(curId, 20).then((res: { messages: Message[]; hasMore: boolean }) => {
+      window.syntee.chat.getMessagesPage(curId, 50).then((res: { messages: Message[]; hasMore: boolean }) => {
         if (useChatStore.getState().currentChatId !== curId) return
         const st = useChatStore.getState()
         if (st.hasOlderMessages) {
@@ -670,7 +680,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (el) prependingRef.current = { oldScrollHeight: el.scrollHeight, oldScrollTop: el.scrollTop }
     setIsLoadingOlder(true)
     try {
-      const res = await window.syntee.chat.getMessagesPage(st.currentChatId, 20, oldest.createdAt, oldest.id) as { messages: Message[]; hasMore: boolean }
+      const res = await window.syntee.chat.getMessagesPage(st.currentChatId, 50, oldest.createdAt, oldest.id) as { messages: Message[]; hasMore: boolean }
       // Пока грузили — пользователь мог сменить чат. Не пишем в чужое окно.
       if (useChatStore.getState().currentChatId !== st.currentChatId) return
       prependOlderMessages(st.currentChatId, res.messages, res.hasMore)
@@ -689,9 +699,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const {
     showScrollDownBtn,
     pin: pinAutoscroll,
+    unpin: unpinAutoscroll,
     syncScrollState,
     handleScroll,
     handleWheel,
+    handleMouseDown,
     handleTouchStart,
     handleTouchMove,
   } = useChatAutoscroll({
@@ -724,6 +736,20 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       syncScrollState()
     }
   }, [messages.length, syncScrollState])
+
+  // ── Тихая фоновая догрузка всей истории (для чатов ≤ LARGE_CHAT_THRESHOLD)
+  // Переиспользует prependingRef для скролл-компенсации (тот же useLayoutEffect
+  // выше). Большие чаты пропускаются — для них reverse-infinite scroll со
+  // спиннером. Дедуп со скролл-триггером — через стор-флаг isLoadingOlder
+  // (он же используется loadOlderMessages). Подробности — в хуке.
+  useBackgroundLoadFullChat({
+    chatId: currentChatId,
+    isLargeChat,
+    prependingRef,
+    scrollContainerRef,
+    isBusy: () => useChatStore.getState().isLoadingOlder,
+    setBusy: (v) => useChatStore.getState().setIsLoadingOlder(v),
+  })
 
   // Загрузка тоггла миникарты сообщений в settings store — дальше компонент
   // ChatMinimap читает его оттуда (переключение в настройках применяется live,
@@ -798,7 +824,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Фоновая сверка хвоста.
       void (async () => {
         try {
-          const res = await window.syntee.chat.getMessagesPage(id, 20) as { messages: Message[]; hasMore: boolean }
+          const res = await window.syntee.chat.getMessagesPage(id, 50) as { messages: Message[]; hasMore: boolean }
           if (useChatStore.getState().currentChatId !== id) return
           const st = useChatStore.getState()
           const cachedLastId = st.messages.length ? st.messages[st.messages.length - 1].id : null
@@ -818,7 +844,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
 
     // Cache miss → грузим последнюю страницу (newest 20).
-    const res = await window.syntee.chat.getMessagesPage(id, 20) as { messages: Message[]; hasMore: boolean }
+    const res = await window.syntee.chat.getMessagesPage(id, 50) as { messages: Message[]; hasMore: boolean }
     if (useChatStore.getState().currentChatId !== id) return
     setMessagesWindow(id, res.messages, res.hasMore)
     if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
@@ -1409,6 +1435,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         liveTodo: live.todo,
         agentStatus: live.agentStatus,
         toolProgress: live.toolProgress,
+        spawnedAgents: live.spawnedAgents,
         livePlanningMode: planningMode,
         rateLimitSec: live.rateLimitSec > 0 ? live.rateLimitSec : undefined,
         retry: live.retry,
@@ -1435,7 +1462,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, live.rateLimitSec, isCompacting, planningMode, compactingSummary])
+  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, live.spawnedAgents, live.rateLimitSec, isCompacting, planningMode, compactingSummary])
 
   // getItemKey: привязываем кэш высот к message.id (не к индексу позиции) —
   // иначе при замене массива (compact вставляет divider, окно сдвигается на 1)
@@ -1578,10 +1605,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               ref={scrollContainerRef}
               onScroll={handleScroll}
               onWheel={handleWheel}
+              onMouseDown={handleMouseDown}
               onTouchStart={handleTouchStart}
               onTouchMove={handleTouchMove}
             >
-              {isLoadingOlder && (
+              {isLoadingOlder && isLargeChat && (
                 <div
                   style={{
                     position: 'absolute', top: 0, left: 0, right: 0,
@@ -1651,6 +1679,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
             virtualizer={virtualizer}
             messages={displayMessages}
             scrollContainerRef={scrollContainerRef}
+            onJump={unpinAutoscroll}
           />
 
           <AnimatePresence>

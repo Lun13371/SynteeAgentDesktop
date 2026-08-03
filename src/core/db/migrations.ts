@@ -374,6 +374,32 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_mge_to ON memory_graph_edges(to_node);
     CREATE INDEX IF NOT EXISTS idx_mge_type ON memory_graph_edges(project_id, type);
 
+    -- === Subagents: персистентные записи суб-агентов ===
+    -- AgentManager хранит running-агентов in-memory, но после рестарта приложения
+    -- воркеры мертвы. Таблица позволяет восстановить карточки саб-агентов в чате
+    -- (AgentCardLive читает agent:get) и сохранить полный ToolChain в AgentPanel.
+    -- FK ON DELETE CASCADE — при удалении чата подчищаются и его саб-агенты.
+    -- steps — JSON AgentStep[] (полные, с content/diff/toolArgs).
+    CREATE TABLE IF NOT EXISTS subagents (
+      id             TEXT PRIMARY KEY,
+      parent_id      TEXT,
+      chat_id        TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      task           TEXT NOT NULL,
+      status         TEXT NOT NULL,
+      model          TEXT,
+      mode           TEXT,
+      steps          TEXT,
+      result         TEXT,
+      summary        TEXT,
+      created_at     INTEGER NOT NULL,
+      finished_at    INTEGER,
+      error          TEXT,
+      workdir        TEXT,
+      isolation_mode TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_subagents_chat ON subagents(chat_id);
+    CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_id);
+
     -- === FTS5 полнотекстовый поиск по messages ===
     -- Используется recall_memory для поиска по истории чатов проекта.
     -- tokenize='trigram' — подстрочный поиск (находит 'авториз' в 'авторизация'),
@@ -485,6 +511,13 @@ export function runMigrations(db: Database.Database): void {
   // user-сообщений с attachments, прошедших processAttachmentsAndStream.
   if (!cols.find(c => c.name === 'attachment_result')) {
     db.prepare(`ALTER TABLE messages ADD COLUMN attachment_result TEXT`).run()
+  }
+  // thinking_blocks — JSON массив [{thinking, signature}] для Anthropic
+  // extended thinking. Без signatures Anthropic API отвергает thinking
+  // blocks при resubmission в следующем раунде. Поле хранит signatures,
+  // чтобы после перезахода в чат агент мог продолжить с extended thinking.
+  if (!cols.find(c => c.name === 'thinking_blocks')) {
+    db.prepare(`ALTER TABLE messages ADD COLUMN thinking_blocks TEXT`).run()
   }
 
   // chat_draft_attachments — вложения черновика (переживают рестарт, не

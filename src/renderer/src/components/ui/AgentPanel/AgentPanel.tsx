@@ -81,9 +81,14 @@ export default function AgentPanel({ focusAgentId, currentChatId }: AgentPanelPr
     return () => off()
   }, [])
 
-  // Если focusAgentId передан — выбираем его
+  // Если focusAgentId передан — выбираем его и снимаем фильтр по чату,
+  // чтобы агент гарантированно был виден в списке (он может быть из другого
+  // chatId, если кликнули по карточке в чате, который уже не активен).
   useEffect(() => {
-    if (focusAgentId) setSelected(focusAgentId)
+    if (focusAgentId) {
+      setSelected(focusAgentId)
+      setFilterChat(null)
+    }
   }, [focusAgentId])
 
   // Синхронизируем filterChat с текущим чатом
@@ -91,6 +96,9 @@ export default function AgentPanel({ focusAgentId, currentChatId }: AgentPanelPr
     if (currentChatId) setFilterChat(currentChatId)
   }, [currentChatId])
 
+  // selectedAgent — ищем по ВСЕМ агентам, не только по filterChat. Иначе при
+  // фильтре по другому чату клик по карточке саб-агента открывает панель, но
+  // агент не находится (он в другом chatId) → пустая правая колонка.
   const selectedAgent = agents.find(a => a.id === selected) ?? null
 
   // Уникальные chatId из всех агентов

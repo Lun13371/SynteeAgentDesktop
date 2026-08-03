@@ -1,146 +1,245 @@
-.agent-card {
+/* AgentCard — компактная карточка саб-агента.
+   НЕ копия FastContextBlock — это тонкая inline-плитка: маленькая полоска
+   статуса + одна строка с задачей/статусом + опционально разворачиваемое
+   тело с chips/shimmer/summary. Использует тему (var(--*)) и цветные
+   акценты по статусу. */
+
+.agent-c {
   position: relative;
   display: flex;
-  border-radius: 12px;
-  background: var(--bg-secondary);
+  margin: 6px 0;
+  border-radius: 10px;
   border: 1px solid var(--border);
+  background: var(--bg-secondary);
   overflow: hidden;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, transform 0.1s;
-  margin: 6px 0;
+  transition: border-color 0.18s, background 0.18s, transform 0.1s;
+  font-size: 12px;
 }
-.agent-card:hover {
-  border-color: var(--accent);
+.agent-c:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
   background: var(--bg-tertiary);
 }
-.agent-card:active { transform: scale(0.99); }
+.agent-c:active { transform: scale(0.995); }
+.agent-c--live {
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+}
 
-/* Цветная полоска слева */
-.agent-card__stripe {
+/* Левая цветная полоска — узкая, индикатор статуса */
+.agent-c__stripe {
   width: 3px;
   flex-shrink: 0;
 }
-.agent-card__stripe--pending   { background: var(--text-muted); }
-.agent-card__stripe--running   { background: var(--accent-bg); }
-.agent-card__stripe--done      { background: #4ade80; }
-.agent-card__stripe--error     { background: #f87171; }
-.agent-card__stripe--cancelled { background: var(--text-muted); }
+.agent-c__stripe--pending   { background: var(--text-muted); opacity: 0.5; }
+.agent-c__stripe--running   { background: var(--accent); }
+.agent-c__stripe--done      { background: #4ade80; }
+.agent-c__stripe--error     { background: #f87171; }
+.agent-c__stripe--cancelled { background: var(--text-muted); opacity: 0.4; }
 
-.agent-card__body {
+.agent-c__main {
   flex: 1;
-  padding: 10px 12px;
   min-width: 0;
+  padding: 7px 10px;
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
-/* Заголовок */
-.agent-card__header {
+/* ── Строка-заголовок (компактная, одна строка) ── */
+.agent-c__row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
+  cursor: pointer;
+  user-select: none;
 }
-.agent-card__icon-wrap {
+.agent-c__row:hover .agent-c__task { color: var(--text-primary); }
+
+.agent-c__status-icon {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.agent-c__task {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.15s;
+}
+
+/* Текущий тул — inline pill справа от задачи (live) */
+.agent-c__current-tool {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--overlay-3);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-c__current-tool span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Status badge */
+.agent-c__badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 6px;
+  letter-spacing: 0.2px;
+}
+.agent-c__badge--pending   { color: var(--text-muted); background: var(--overlay-3); }
+.agent-c__badge--running   { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.agent-c__badge--done      { color: #4ade80; background: color-mix(in srgb, #4ade80 14%, transparent); }
+.agent-c__badge--error     { color: #f87171; background: color-mix(in srgb, #f87171 14%, transparent); }
+.agent-c__badge--cancelled { color: var(--text-muted); background: var(--overlay-3); }
+
+.agent-c__chevron {
+  flex-shrink: 0;
+  transition: transform 0.2s;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+.agent-c__chevron--closed {
+  transform: rotate(-90deg);
+}
+
+/* ── Разворачиваемое тело ── */
+.agent-c__body {
+  overflow: hidden;
+  padding-left: 0;
+}
+
+/* Tool chips — компактная строка */
+.agent-c__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0 4px;
+}
+.agent-c__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--overlay-2);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  white-space: nowrap;
+}
+.agent-c__chip .app-icon {
   color: var(--accent);
   opacity: 0.8;
 }
-.agent-card__title-wrap {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.agent-card__title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.agent-card__badge {
-  flex-shrink: 0;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  color: var(--accent);
-  font-weight: 600;
-}
 
-/* Статус */
-.agent-card__status {
-  flex-shrink: 0;
+/* Shimmer — тонкий, как индикатор активности */
+.agent-c__shimmer {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 8px;
+  padding: 2px 0;
 }
-.agent-card__status--pending   { color: var(--text-muted); background: var(--bg-tertiary); }
-.agent-card__status--running   { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.agent-card__status--done      { color: #4ade80; background: color-mix(in srgb, #4ade80 12%, transparent); }
-.agent-card__status--error     { color: #f87171; background: color-mix(in srgb, #f87171 12%, transparent); }
-.agent-card__status--cancelled { color: var(--text-muted); background: var(--bg-tertiary); }
-
-/* Текущий шаг */
-.agent-card__step {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-secondary);
+.agent-c__shimmer-line {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--overlay-3);
+  animation: agent-c-shimmer 1.6s ease-in-out infinite;
 }
-.agent-card__step-dot {
-  width: 5px; height: 5px;
-  border-radius: 50%;
-  background: var(--accent-bg);
-  flex-shrink: 0;
-  animation: pulse 1.4s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-.agent-card__step-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.agent-c__shimmer-line--short { width: 50%; }
+@keyframes agent-c-shimmer {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.65; }
 }
 
-/* Итог / ошибка */
-.agent-card__summary {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.4;
-}
-.agent-card__error {
+/* Error */
+.agent-c__error {
   font-size: 11px;
   color: #f87171;
   line-height: 1.4;
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-/* Футер */
-.agent-card__footer {
+/* Summary */
+.agent-c__summary-wrap {
+  padding-top: 2px;
+}
+.agent-c__summary-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 0;
+  transition: color 0.15s;
+}
+.agent-c__summary-toggle:hover { color: var(--text-primary); }
+.agent-c__summary {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 2px 0 0;
+}
+
+/* Empty (cancelled) */
+.agent-c__empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  opacity: 0.7;
+  padding: 2px 0;
+}
+
+/* ── Мета-футер — компактный, всегда виден ── */
+.agent-c__meta {
   display: flex;
   align-items: center;
   gap: 5px;
   font-size: 10px;
   color: var(--text-muted);
-  margin-top: 2px;
+  opacity: 0.75;
 }
-.agent-card__dot { opacity: 0.4; }
-.agent-card__hint {
+.agent-c__meta-model {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-c__meta-dot { opacity: 0.4; }
+.agent-c__meta-steps,
+.agent-c__meta-time { white-space: nowrap; }
+.agent-c__meta-hint {
   margin-left: auto;
+  font-size: 9.5px;
+  color: var(--accent);
   opacity: 0;
   transition: opacity 0.15s;
-  font-size: 10px;
-  color: var(--accent);
 }
-.agent-card:hover .agent-card__hint { opacity: 0.7; }
+.agent-c:hover .agent-c__meta-hint { opacity: 0.7; }

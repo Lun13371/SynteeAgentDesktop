@@ -69,7 +69,7 @@ export async function searchCode(
         return {
           success: true,
           output: body + (truncated
-            ? `\n...[обрезано, показано ${body.length} из ${full.length} символов — увеличь max_chars или сузь file_glob/path]`
+            ? `\n...[truncated, shown ${body.length} of ${full.length} chars — increase max_chars or narrow file_glob/path]`
             : ''),
         }
       }
@@ -119,13 +119,13 @@ async function searchCodePowerShell(
     `Where-Object { $_.FullName -notmatch '${ignoreRegex}' -and -not $_.PSIsContainer } | ` +
     `Select-String ${strFlags} -Pattern '${sq(pattern)}' -Context ${context},${context} -ErrorAction SilentlyContinue | ` +
     `Select-Object -First ${maxResults}; ` +
-    `if ($r) { $r | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ': ' + $_.Line.Trim() } } else { 'Совпадений не найдено' }`
+    `if ($r) { $r | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ': ' + $_.Line.Trim() } } else { 'No matches found' }`
   const encoded = Buffer.from(psScript, 'utf16le').toString('base64')
   const psCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
   try {
     const { stdout } = await execAsync(psCmd, { timeout: 25000, maxBuffer: 10 * 1024 * 1024 })
     const trimmed = stdout.trim()
-    if (!trimmed || trimmed === 'Совпадений не найдено') {
+    if (!trimmed || trimmed === 'No matches found') {
       return { success: true, output: buildEmptyHint(opts) }
     }
     return { success: true, output: trimmed }
@@ -136,11 +136,11 @@ async function searchCodePowerShell(
 
 /** Подсказка при пустом результате — направляет модель к альтернативам вместо слепых ретраев. */
 function buildEmptyHint(opts?: { literal?: boolean; fileGlob?: string; ignoreCase?: boolean }): string {
-  const hints: string[] = ['Совпадений не найдено.']
-  if (!opts?.literal) hints.push('Для дословного поиска со спецсимволами (точки, $, [], () ) используй literal=true.')
-  if (!opts?.fileGlob) hints.push('Сузь file_glob (напр. "*.ts") или path к подпапке.')
-  if (!opts?.ignoreCase) hints.push('Попробуй ignore_case=true если регистр не важен.')
-  hints.push('Для структуры файла используй read_file с outline_only=true; для навигации по проекту — get_fast_context.')
+  const hints: string[] = ['No matches found.']
+  if (!opts?.literal) hints.push('For a literal search with special chars (dots, $, [], () ) use literal=true.')
+  if (!opts?.fileGlob) hints.push('Narrow file_glob (e.g. "*.ts") or path to a subfolder.')
+  if (!opts?.ignoreCase) hints.push('Try ignore_case=true if case does not matter.')
+  hints.push('For file structure use read_file with outline_only=true; for project navigation — get_fast_context.')
   return hints.join(' ')
 }
 
@@ -202,14 +202,14 @@ function formatRgOutput(raw: string, max: number, _opts?: { pattern?: string; ig
   const out: string[] = []
   const fileCount = files.size
   const matchCount = totalMatches
-  out.push(`[search_code: ${matchCount} совпадений в ${fileCount} файлах${droppedFiles > 0 ? `, показано ${fileCount} из ${seenFiles} (лимит ${max})` : ''}]`)
+  out.push(`[search_code: ${matchCount} matches in ${fileCount} files${droppedFiles > 0 ? `, shown ${fileCount} of ${seenFiles} (limit ${max})` : ''}]`)
   files.forEach((entry, file) => {
     out.push(`\n● ${file}`)
     out.push(...entry.rows.slice(0, 30))
-    if (entry.rows.length > 30) out.push(`  ... ещё ${entry.rows.length - 30} строк`)
+    if (entry.rows.length > 30) out.push(`  ... ${entry.rows.length - 30} more lines`)
   })
   if (droppedFiles > 0) {
-    out.push(`\n... [лимит ${max} совпадений — ещё совпадения в ${droppedFiles} файлах не показаны. Сузь file_glob или path к подпапке, либо подними max_results.]`)
+    out.push(`\n... [limit ${max} matches — matches in ${droppedFiles} more files are not shown. Narrow file_glob or path to a subfolder, or raise max_results.]`)
   }
   return { formatted: out.join('\n').trim(), matchCount, fileCount, totalFilesHint: seenFiles }
 }

@@ -544,9 +544,55 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let workdir: string | undefined
     let projectContext: string | undefined
     let promptProjectId: string | undefined
+    // Retry helper for transient SQLITE_BUSY/SQLITE_LOCKED. Previously all
+    // 9 reads below were wrapped in `catch { /* ok */ }` — one transient
+    // lock = the agent started with NO working memory, NO summary, NO
+    // project instructions, NO MCP, NO skills — silently. The AI "forgot"
+    // everything with no signal in the UI or logs. Now we retry transient
+    // locks (3× with 50ms backoff) and log any remaining failures so the
+    // issue is diagnosable instead of a silent ghost.
+    const withRetry = async <T>(label: string, fn: () => Promise<T> | T, fallback: T): Promise<T> => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          return await fn()
+        } catch (e: any) {
+          const code = String(e?.code ?? e?.errno ?? '')
+          const isBusy = code === '5' || code === '6' || e?.message?.toLowerCase().includes('database is locked') || e?.message?.toLowerCase().includes('sqlite_busy')
+          if (isBusy && attempt < 3) {
+            await new Promise(r => setTimeout(r, 50 * attempt))
+            continue
+          }
+          console.warn(`[getSystemPrompt] ${label} failed (attempt ${attempt}): ${e?.message ?? e}`)
+          log('[getSystemPrompt] %s failed: %s', label, (e?.message ?? String(e)).slice(0, 200))
+          return fallback
+        }
+      }
+      return fallback
+    }
+    // Sync variant (better-sqlite3 is sync) — same retry logic but for sync fns
+    const withRetrySync = <T>(label: string, fn: () => T, fallback: T): T => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          return fn()
+        } catch (e: any) {
+          const code = String(e?.code ?? e?.errno ?? '')
+          const isBusy = code === '5' || code === '6' || e?.message?.toLowerCase().includes('database is locked') || e?.message?.toLowerCase().includes('sqlite_busy')
+          if (isBusy && attempt < 3) {
+            // sync sleep is not possible; use Atomics.wait for a real blocking sleep
+            const ms = 50 * attempt
+            try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } catch { /* SharedArrayBuffer may be unavailable */ }
+            continue
+          }
+          console.warn(`[getSystemPrompt] ${label} failed (attempt ${attempt}): ${e?.message ?? e}`)
+          log('[getSystemPrompt] %s failed: %s', label, (e?.message ?? String(e)).slice(0, 200))
+          return fallback
+        }
+      }
+      return fallback
+    }
     try {
       if (chatId) {
-        const wctx = getChatWorkdirContext(chatId)
+        const wctx = withRetrySync('getChatWorkdirContext', () => getChatWorkdirContext(chatId), { workdir: undefined as string | undefined, projectContext: undefined as string | undefined })
         workdir = wctx.workdir
         projectContext = wctx.projectContext
         if (workdir) {
@@ -554,79 +600,79 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           promptProjectId = found?.id
         }
       }
-    } catch { /* ok */ }
+    } catch (e: any) {
+      console.warn('[getSystemPrompt] workdir resolution failed:', e?.message ?? e)
+      log('[getSystemPrompt] workdir failed: %s', (e?.message ?? String(e)).slice(0, 200))
+    }
     // Curated memory summary: top global user_facts + top project_decisions.
-    // Заменяет полный дамп getAllMemoriesForContext — бюджет ~400 токенов.
-    try { memoryContext = buildCuratedSummary(promptProjectId) } catch { /* ok */ }
-    try { if (chatId) workingMemory = getWorkingMemory(chatId) } catch { /* ok */ }
-    try { if (chatId) summary = getChatSummary(chatId) } catch { /* ok */ }
+    // Replaces the full getAllMemoriesForContext dump — ~400 token budget.
+    memoryContext = withRetrySync('buildCuratedSummary', () => buildCuratedSummary(promptProjectId), '')
+    workingMemory = withRetrySync('workingMemory', () => chatId ? getWorkingMemory(chatId) : '', '')
+    summary = withRetrySync('chatSummary', () => chatId ? getChatSummary(chatId) : '', '')
 
-    // Live-read AGENTS.md/CLAUDE.md/.syntee/instructions.md из workdir.
-    // mtime-кэш внутри readProjectInstructions — повторные вызовы дёшевы.
+    // Live-read AGENTS.md/CLAUDE.md/.syntee/instructions.md from workdir.
+    // mtime-cache inside readProjectInstructions — repeated calls are cheap.
     let projectInstructions: Awaited<ReturnType<typeof readProjectInstructions>> = null
-    try { projectInstructions = await readProjectInstructions(workdir) } catch { /* ok */ }
+    projectInstructions = await withRetry('readProjectInstructions', () => readProjectInstructions(workdir), null)
 
-    // Активные скиллы для чата. В инкогнито — пусто (приватность).
-    // projectId достаём через projects-таблицу по workdir.
+    // Active skills for the chat. In incognito — empty (privacy).
+    // projectId is pulled via the projects table by workdir.
     let activeSkills: import('../../shared/types').Skill[] = []
     if (!isIncognito) {
-      try {
+      activeSkills = withRetrySync('activeSkills', () => {
         let skillProjectId: string | undefined
         if (workdir) {
           const found = getAllProjects().find(p => p.workdir === workdir)
           skillProjectId = found?.id
         }
-        activeSkills = getSkillManager().getActiveSkillsForChat({
+        return getSkillManager().getActiveSkillsForChat({
           projectWorkdir: workdir,
           projectId: skillProjectId,
           isIncognito,
         })
-      } catch { /* SkillManager недоступен — работаем без скиллов */ }
+      }, [])
     }
 
-    // Активные MCP-серверы для краткой заметки в system prompt.
-    // В инкогнито — пусто (приватность).
-    // Фильтруем по scope — сервер с scope "только проект A" не должен
-    // попадать в системный промпт чатов проекта B.
+    // Active MCP servers for a brief note in the system prompt.
+    // In incognito — empty (privacy).
     let activeMcpServers: import('../../core/prompts/buildSystemPrompt').McpPromptInfo[] = []
     if (!isIncognito) {
-      try {
+      activeMcpServers = withRetrySync('activeMcpServers', () => {
         const mgr = getMcpManager()
-        // projectId нужен для scope-фильтрации (как у skills выше).
         let mcpProjectId: string | undefined
         if (workdir) {
           const found = getAllProjects().find(p => p.workdir === workdir)
           mcpProjectId = found?.id
         }
         const allServers = mgr.getAllServers({ projectWorkdir: workdir, projectId: mcpProjectId })
-        activeMcpServers = allServers
+        return allServers
           .filter(s => s.enabled && s.status === 'connected' && s.tools.length > 0
             && mgr.isScopeApplicable(s.scope, mcpProjectId))
           .map(s => ({
             name: s.name,
             tools: s.tools.map(t => ({ shortName: t.shortName, description: t.description })),
           }))
-      } catch { /* MCP недоступен — работаем без него */ }
+      }, [])
     }
 
     const mergedWorkingMemory = summary
-      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Сжатое резюме предыдущего контекста\n(Фоновая информация, НЕ активные инструкции. Не повторяй уже выполненное.)\n${summary}`
+      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Compressed summary of previous context\n(Background information, NOT active instructions. Do not repeat already-completed work.)\n${summary}`
       : workingMemory
 
-    // Глобальный system prompt из Настройки → AI → Параметры (или /sys команды)
+    // Global system prompt from Settings → AI → Parameters (or /sys command)
     const customSystemPrompt = (store.get('modelParams') as { systemPrompt?: string } | undefined)?.systemPrompt
 
-    // Счётчики памяти для системного промпта — агент видит сколько у него памяти.
+    // Memory counters for the system prompt — the agent sees how much memory it has.
     let memoryStats: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> } | undefined
-    try { memoryStats = getMemoryStatsForProject(promptProjectId) } catch { /* ok */ }
+    memoryStats = withRetrySync('memoryStats', () => getMemoryStatsForProject(promptProjectId), undefined)
 
-    // Статистика knowledge graph — агент видит структуру проекта.
+    // Knowledge graph stats — the agent sees the project structure.
     let graphStats: ReturnType<typeof getGraphStats> | undefined
-    try { if (promptProjectId) graphStats = getGraphStats(promptProjectId) } catch { /* ok */ }
+    graphStats = withRetrySync('graphStats', () => promptProjectId ? getGraphStats(promptProjectId) : undefined, undefined)
 
-    // Абсолютный путь к глобальной папке skills — для справочника установки в промпте.
+    // Absolute path to the global skills folder — for the install reference in the prompt.
     let globalSkillsDir = ''
-    try { globalSkillsDir = path.join(app.getPath('userData'), 'skills') } catch { /* app может быть недоступен */ }
+    try { globalSkillsDir = path.join(app.getPath('userData'), 'skills') } catch { /* app may be unavailable */ }
 
     return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode })
   }
@@ -1025,7 +1071,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         processedHistory = result.messages
         contextCompressed = true
         if (result.summaryContent && !params.incognito) {
-          setChatSummary(params.chatId, result.summaryContent)
           storedSummary = result.summaryContent
 
           // Фаза 3: compaction-триггер памяти — sync summary → memory_items
@@ -1082,6 +1127,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // запроса: сообщения с createdAt > divider.createdAt = tail + новые.
           // Старые сообщения НЕ удаляются из БД — UI хранит всю историю,
           // divider лишь маркирует «контекст выше сжат в summary».
+          // Atomic: setChatSummary + divider save in one transaction.
+          // Previously these were two separate writes — if the process
+          // crashed between them (or an abort arrived mid-flight) the AI
+          // got a divider pointing at a summary that was never persisted,
+          // so getChatSummary() returned empty and the agent started the
+          // next round with no memory of the conversation. Now both writes
+          // commit together or not at all.
           const tokensBefore = estimateMessagesTokens(rawHistory)
           const tokensAfter = estimateMessagesTokens(result.messages)
           const firstTailMsgId = result.messages.find(m => m.messageId)?.messageId
@@ -1094,7 +1146,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             summaryContent: result.summaryContent ?? '',
             createdAt: dividerCreatedAt,
           })
-          saveMessage(divider)
+          try {
+            getDB().transaction(() => {
+              if (result.summaryContent) setChatSummary(params.chatId, result.summaryContent)
+              saveMessage(divider)
+            })()
+          } catch (e) {
+            log('[chat:send] compaction transaction failed: %s', (e as Error).message)
+            throw e
+          }
 
           // Сообщения НЕ удаляем из БД — UI хранит всю историю. AI-контекст
           // ограничивается live-подмножеством (после divider'а) + summary в
@@ -1693,6 +1753,18 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
         case 'spawn_agent': {
           ;(async () => {
+            // Эмитим agent:spawn ДО запуска суб-агента — renderer сразу
+            // показывает live-карточку на позиции tool_call'а (маппинг по
+            // callId из live-итерации), не дожидаясь финального tool_result.
+            win?.webContents.send('agent:spawn', {
+              agentId: msg.id as string,
+              task: msg.task as string,
+              callId: msg.callId as string | undefined,
+              msgId: msg.msgId as string,
+              chatId: msg.chatId as string,
+              model: msg.model as string | undefined,
+              ts: Date.now(),
+            })
             const parentSummary = getChatSummary(msg.chatId as string)
             const parentWorkingMemory = getWorkingMemory(msg.chatId as string)
             const subModeIntro = 'Сначала пойми релевантный код и ограничения, потом выполни только свою часть работы.'
@@ -1985,14 +2057,31 @@ ${subModeOutro}`,
 
         case 'update_working_memory': {
           const { chatId: wChatId, content: wContent, mode: wMode } = msg as { chatId: string; content: string; mode: 'replace' | 'append' }
+          // Retry on SQLITE_BUSY: previously a `catch { /* ok */ }` here
+          // meant a transient lock silently discarded the agent's
+          // working-memory update — the next round the AI saw stale
+          // memory and could not understand why its notes were lost.
           try {
-            if (wMode === 'append') {
-              const existing = getWorkingMemory(wChatId)
-              setWorkingMemory(wChatId, existing ? existing + '\n' + wContent : wContent)
-            } else {
-              setWorkingMemory(wChatId, wContent)
+            const apply = () => {
+              if (wMode === 'append') {
+                const existing = getWorkingMemory(wChatId)
+                setWorkingMemory(wChatId, existing ? existing + '\n' + wContent : wContent)
+              } else {
+                setWorkingMemory(wChatId, wContent)
+              }
             }
-          } catch { /* ok */ }
+            let attempt = 0
+            for (; attempt < 3; attempt++) {
+              try { apply(); break } catch (e: any) {
+                const code = String(e?.code ?? e?.errno ?? '')
+                const isBusy = code === '5' || code === '6' || e?.message?.toLowerCase().includes('database is locked')
+                if (!isBusy || attempt === 2) throw e
+                try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1)) } catch { /* SAB unavailable */ }
+              }
+            }
+          } catch (e) {
+            log('[update_working_memory] failed: %s', (e as Error).message)
+          }
           break
         }
 

@@ -100,7 +100,7 @@ export class Agent {
     maxSteps = 8,
     signal?: AbortSignal,
     systemPrompt?: string,
-    history?: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
+    history?: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string; thinking_blocks?: Array<{ thinking: string; signature: string }>; reasoning_content?: string }>,
     toolSchemas?: typeof TOOL_SCHEMAS,
     options?: AgentRuntimeOptions
   ): Promise<void> {
@@ -114,6 +114,8 @@ export class Agent {
         ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.name ? { name: m.name } : {}),
+        ...(m.thinking_blocks ? { thinking_blocks: m.thinking_blocks } : {}),
+        ...(m.reasoning_content ? { reasoning_content: m.reasoning_content } : {}),
       })),
       { role: 'user', content: userMessage },
     ]
@@ -201,18 +203,18 @@ export class Agent {
         callbacks.onStep({
           type: 'tool_result',
           toolName: '_limit',
-          content: `Достигнут лимит шагов агента (${EFFECTIVE_MAX_STEPS}). Заверши текущую работу: кратко суммируй что уже сделано, что осталось, и предложи следующие шаги. Пользователь может сказать «продолжай» — история сохранится.`,
+          content: `Reached the agent step limit (${EFFECTIVE_MAX_STEPS}). Wrap up the current work: briefly summarize what is done, what remains, and suggest next steps. The user can say "continue" — the history will persist.`,
           success: false,
         })
         callbacks.onDone(
-          `Достигнут лимит в ${EFFECTIVE_MAX_STEPS} шагов агента.\n\n**Что сделано:** ${this._summarizeProgress(modifiedFiles)}\n\n**Что осталось:** смотри план выше (незавершённые пункты).\n\nСкажи «продолжай» — я подхвачу с того же места. Для больших задач эффективнее делегировать через spawn_agent, чтобы не упереться в лимит.`,
+          `Reached the limit of ${EFFECTIVE_MAX_STEPS} agent steps.\n\n**Done:** ${this._summarizeProgress(modifiedFiles)}\n\n**Remaining:** see the plan above (unfinished items).\n\nSay "continue" — I will pick up from the same spot. For large tasks it is more efficient to delegate via spawn_agent, so as not to hit the limit.`,
           this.buildSummaryDetails(modifiedFiles),
         )
         return
       }
 
       try {
-        callbacks.onStatus?.('Ожидаю ответа...')
+        callbacks.onStatus?.('Waiting for response...')
         console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
         log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
         // Защитный таймаут по бездействию на раунд chatWithTools. Если
@@ -239,7 +241,7 @@ export class Agent {
           if (inactivityTimer) clearTimeout(inactivityTimer)
           inactivityTimer = setTimeout(() => {
             log('[Agent] round %s: inactivity timeout fired (%ds без токенов)', step, Math.round(INACTIVITY_TIMEOUT_MS / 1000))
-            inactivityReject?.(new Error(`Раунд chatWithTools: нет данных от провайдера ${Math.round(INACTIVITY_TIMEOUT_MS / 1000)}с — возможно стрим завис.`))
+            inactivityReject?.(new Error(`chatWithTools round: no data from the provider for ${Math.round(INACTIVITY_TIMEOUT_MS / 1000)}s — the stream may be stuck.`))
           }, INACTIVITY_TIMEOUT_MS)
         }
         resetInactivityTimer()
@@ -255,14 +257,14 @@ export class Agent {
               callbacks.onContextCounted,
               (waitSec) => {
                 resetInactivityTimer()
-                callbacks.onStatus?.(`Rate limit — жду ${waitSec}с...`)
+                callbacks.onStatus?.(`Rate limit — waiting ${waitSec}s...`)
                 callbacks.onRateLimit?.(waitSec)
               },
               (attempt, reason, waitSec, maxAttempts) => {
                 resetInactivityTimer()
                 callbacks.onStatus?.(reason === 'rate_limit'
-                  ? `Лимит запросов, повтор через ${waitSec}с...`
-                  : `Ошибка сети, повтор ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`)
+                  ? `Rate limit — waiting ${waitSec}s...`
+                  : `Network error, retry ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`)
                 callbacks.onRetry?.(attempt, reason, waitSec, maxAttempts)
               },
               callbacks.onUsage,
@@ -319,10 +321,21 @@ export class Agent {
             ).length)
             if (emptyRetries < 2) {
               // Добавляем assistant-сообщение (чтобы модель видела свой reasoning)
-              messages.push({ role: 'assistant', content: response.reasoning || '(reasoning)' })
+              // ВАЖНО: reasoning должен вернуться как reasoning_content, а не как
+              // content. Строгие провайдеры thinking-mode (GLM/LiteLLM proxy)
+              // требуют, чтобы assistant-сообщение, в котором модель выдала
+              // reasoning_content, при следующем запросе возвращалось обратно
+              // с этим полем — иначе 400 "reasoning_content in thinking mode
+              // must be passed back to the API". Раньше reasoning пихался в
+              // content, что ломало следующий раунд.
+              messages.push({
+                role: 'assistant',
+                content: '',
+                ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
+              })
               messages.push({
                 role: 'user',
-                content: '[empty-reasoning-retry] Твой предыдущий ответ содержал только рассуждение, но не содержал финального ответа. Дай краткий ответ на задачу без повторного рассуждения.',
+                content: '[empty-reasoning-retry] Your previous answer contained only reasoning but no final answer. Give a brief answer to the task without re-reasoning.',
               })
               continue
             }
@@ -377,7 +390,23 @@ export class Agent {
           return
         }
 
-        messages.push({ role: 'assistant', content: response.content || '', tool_calls: response.tool_calls })
+        messages.push({
+          role: 'assistant',
+          content: response.content || '',
+          tool_calls: response.tool_calls,
+          // Anthropic extended thinking: blocks MUST be echoed back in
+          // subsequent rounds alongside the assistant's tool_use, with the
+          // original signature — otherwise Anthropic API returns 400 on
+          // the next request. We preserve them here; convertMessagesToAnthropic
+          // renders them as {type:'thinking', thinking, signature} blocks.
+          ...(response.thinking_blocks ? { thinking_blocks: response.thinking_blocks } : {}),
+          // OpenAI-compatible reasoning_content (GLM/DeepSeek/Qwen thinking
+          // mode). Same round-trip requirement as Anthropic thinking_blocks:
+          // strict providers (LiteLLM proxy for glm-*) return 400 if the
+          // assistant turn that produced reasoning_content is echoed back
+          // without the field in the next round of the same agent loop.
+          ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
+        })
         console.log('[Agent] tool_calls=%d, executing...', response.tool_calls.length)
 
         const resultMap = new Map<string, { contentForAI: string; callId: string; name: string }>()
@@ -490,36 +519,32 @@ export class Agent {
               this.loopGuardHits.set(blockKey, guardHits)
               const hardBlock = guardHits >= 3
               const loopMsg = alternation
-                ? `Loop guard: ты чередуешь ${fingerprint.toolName} с другим тулом в цикле (${fpCount} последних вызовов, 2 уникальных). Смени стратегию: проанализируй что уже сделано, и выбери другой подход.`
+                ? `Loop guard: you are alternating ${fingerprint.toolName} with another tool in a loop (${fpCount} recent calls, 2 unique). Change strategy: analyze what is already done and choose a different approach.`
                 : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
               messages.push({
                 role: 'user',
                 content: hardBlock
-                  ? `${loopMsg}\n\nВНИМАНИЕ: тул "${fn.name}" заблокирован на этом run() после ${guardHits} loop-guard предупреждений (${guardHits * maxRepeatedToolCalls} фактических вызовов). Он НЕ выполнен. Смени стратегию или спроси пользователя.`
+                  ? `${loopMsg}\n\nATTENTION: tool "${fn.name}" is blocked for this run() after ${guardHits} loop-guard warnings (${guardHits * maxRepeatedToolCalls} actual calls). It was NOT executed. Change strategy or ask the user.`
                   : loopMsg,
               })
-              // Эмитим видимый шаг для UI — раньше этот loop-guard тоже
-              // уходил только в модель. Теперь пользователь видит, что
-              // агент зациклился и повторы остановлены.
               callbacks.onStep({
                 type: 'tool_result',
                 toolName: '_loop_guard',
                 content: hardBlock
-                  ? `${fn.name} заблокирован после ${guardHits * maxRepeatedToolCalls} повторов (hard loop guard).`
-                  : `${fn.name} повторён ${maxRepeatedToolCalls} раз с теми же аргументами — предупреждение ${guardHits}/3. Hard block после 3.`,
+                  ? `${fn.name} blocked after ${guardHits * maxRepeatedToolCalls} repeats (hard loop guard).`
+                  : `${fn.name} repeated ${maxRepeatedToolCalls} times with the same arguments — warning ${guardHits}/3. Hard block after 3.`,
                 success: false,
               })
               if (hardBlock) {
-                // Hard block: не выполняем тул, возвращаем ошибку в AI.
                 resultMap.set(callId, {
-                  contentForAI: `Hard loop guard: тул "${fn.name}" заблокирован — повторён ${guardHits * maxRepeatedToolCalls} раз с теми же/похожими аргументами. Вызов НЕ выполнен. Смени стратегию: используй другой тул, другие аргументы, или спроси пользователя.`,
+                  contentForAI: `Hard loop guard: tool "${fn.name}" is blocked — repeated ${guardHits * maxRepeatedToolCalls} times with the same/similar arguments. The call was NOT executed. Change strategy: use a different tool, different arguments, or ask the user.`,
                   callId,
                   name: fn.name,
                 })
                 callbacks.onStep({
                   type: 'tool_result',
                   toolName: fn.name,
-                  content: '[Заблокирован loop guard — тул не выполняется]',
+                  content: '[Blocked by loop guard — tool not executed]',
                   success: false,
                   callId,
                   hidden: isHiddenTool,
@@ -532,7 +557,7 @@ export class Agent {
 
           const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
           if (missingArgs.length > 0) {
-            const missingMsg = `${fn.name}: отсутствуют обязательные аргументы: ${missingArgs.join(', ')}. Повтори вызов с полным набором аргументов.`
+            const missingMsg = `${fn.name}: missing required arguments: ${missingArgs.join(', ')}. Repeat the call with the full set of arguments.`
             resultMap.set(callId, { contentForAI: missingMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: missingMsg, success: false, callId, hidden: isHiddenTool })
             return
@@ -552,8 +577,8 @@ export class Agent {
             // В planning-режиме даём явное напоминание вместо generic-блока —
             // модель могла скопировать edit/run тулы из старой истории чата.
             const blockedMsg = planningMode
-              ? `Ты в РЕЖИМЕ ПЛАНИРОВАНИЯ (read-only). "${fn.name}" запрещён — edit/write/run тулы недоступны. Вернись к протоколу: Шаг 2 — read-only исследование (get_fast_context, read_file, search_code, analyze_project, spawn_agent) + ask_user про hard parts. Шаг 3 — план внутри <plan title="..." summary="...">…</plan> с per-phase Ownership/Verification/Edge cases. Шаг 4 — review против исходного запроса. Разрешённые тулы: ${allowed}. Не вызывай "${fn.name}" снова.`
-              : `Инструмент "${fn.name}" недоступен в текущем режиме (read-only/планирование/side-чат). Разрешены только: ${allowed}. Не вызывай его больше — используй разрешённые тулы для исследования.`
+              ? `You are in PLANNING MODE (read-only). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Return to the protocol: Step 2 — read-only research (get_fast_context, read_file, search_code, analyze_project, spawn_agent) + ask_user about hard parts. Step 3 — plan inside <plan title="..." summary="...">…</plan> with per-phase Ownership/Verification/Edge cases. Step 4 — review against the original request. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
+              : `Tool "${fn.name}" is unavailable in the current mode (read-only/planning/side-chat). Allowed only: ${allowed}. Do not call it again — use the allowed tools for research.`
             resultMap.set(callId, { contentForAI: blockedMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockedMsg, success: false, callId, hidden: isHiddenTool })
             return
@@ -588,7 +613,7 @@ export class Agent {
           }
 
           if (effectiveApproval.block) {
-            const blockMsg = `Действие заблокировано (режим ${mode}): ${effectiveApproval.reason}`
+            const blockMsg = `Action blocked (mode ${mode}): ${effectiveApproval.reason}`
             resultMap.set(callId, { contentForAI: blockMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockMsg, success: false })
             return
@@ -598,7 +623,7 @@ export class Agent {
             const approved = await callbacks.onConfirm(fn.name, args)
             if (!approved) {
               resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
-              callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: 'Отклонено пользователем', success: false })
+              callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: 'Rejected by the user', success: false })
               return
             }
           }
@@ -608,7 +633,7 @@ export class Agent {
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
           try {
-            const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode)
+            const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId)
             if (fn.name === 'spawn_agent') {
               // spawn_agent — блокирующий вызов до полного завершения суб-агента
               // (его собственный цикл до MAX_STEPS). Суб-агент имеет свои потолки
@@ -626,7 +651,7 @@ export class Agent {
               // «Выполняется…» пока весь агент не завершится. Таймер гарантированно
               // закрывает итерацию tool_result'ом с понятной причиной.
               const timeoutPromise = new Promise<ToolResult>((_, reject) => {
-                setTimeout(() => reject(new Error(`Тул ${fn.name} превысил таймаут выполнения (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}с). Возможно MCP-сервер завис или transport заблокирован.`)), MAX_TOOL_TIMEOUT_MS)
+                setTimeout(() => reject(new Error(`Tool ${fn.name} exceeded the execution timeout (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}s). The MCP server may be hung or the transport is blocked.`)), MAX_TOOL_TIMEOUT_MS)
               })
               result = await Promise.race([toolPromise, timeoutPromise])
             }
@@ -636,7 +661,7 @@ export class Agent {
             // "Сеть недоступна"). Теперь — честный tool_result с реальным
             // сообщением, агент может обработать и продолжить.
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr)
-            result = { success: false, output: '', error: `Внутренняя ошибка тула ${fn.name}: ${errMsg}` }
+            result = { success: false, output: '', error: `Internal tool error in ${fn.name}: ${errMsg}` }
           }
 
           if (result.success && !dryRunMode && (fn.name === 'write_file' || fn.name === 'edit_file')) {
@@ -686,7 +711,7 @@ export class Agent {
           const imageUrl = imageMatch ? imageMatch[1] : undefined
           const rawContent = imageUrl
             ? 'Image generated and shown to the user.'
-            : (result.success ? result.output : `Ошибка: ${result.error}`)
+            : (result.success ? result.output : `Error: ${result.error}`)
           const errorHint = !result.success ? getToolErrorHint(fn.name, result.error ?? '') : ''
           // Per-tool потолок обрезки: search_code уже сам режет до 20 000 симв.
           // по границам файлов (sliceOnFileBoundary), read_file с outline_only
@@ -708,7 +733,12 @@ export class Agent {
             : ((rawContent || '') + errorHint)
 
           if (!result.success && !isHiddenTool) {
-            const errorFingerprint = `${fn.name}:${(result.error ?? '').slice(0, 180)}`
+            // Fingerprint ошибки включает args (через buildToolFingerprint —
+            // как и tool-call guard выше), иначе параллельные вызовы одного
+            // тула с разными args (напр. 3 spawn_agent с разными task),
+            // упавшие с одинаковой generic-ошибкой, ложно триггерят guard.
+            const errFp = buildToolFingerprint(fn.name, args)
+            const errorFingerprint = `${fn.name}:${errFp.argsKey}:${(result.error ?? '').slice(0, 120)}`
             this.recentErrorFingerprints.push(errorFingerprint)
             if (this.recentErrorFingerprints.length > maxRepeatedErrors) {
               this.recentErrorFingerprints.shift()
@@ -728,7 +758,7 @@ export class Agent {
               callbacks.onStep({
                 type: 'tool_result',
                 toolName: '_loop_guard',
-                content: `${fn.name} повторил ошибку ${maxRepeatedErrors} раз — повторы остановлены. Смена стратегии или объясни блокер.`,
+                content: `${fn.name} repeated the same error ${maxRepeatedErrors} times — retries stopped. Change strategy or explain the blocker.`,
                 success: false,
               })
             }
@@ -855,13 +885,13 @@ export class Agent {
             messages.length = 0
             messages.push(...overflowed)
             log('[Agent] 413/context_length — аварийная компрессия: %d→%d сообщений', beforeLen, messages.length)
-            callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Контекст превышен — сжат до ${messages.length} сообщений. Попробуй упростить запрос.`, success: false })
+            callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Context exceeded — compressed to ${messages.length} messages. Try to simplify the request.`, success: false })
             // Не push user — это только увеличит контекст. Continue даёт
             // шанс на следующем раунде с урезанным контекстом.
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
               console.log('[Agent] STOP: 413 после сжатия, consecutiveErrors=%d', consecutiveErrors)
               log('[Agent] STOP: 413 после сжатия, consecutiveErrors=%d', consecutiveErrors)
-              callbacks.onError(err instanceof Error ? err : new Error(`Контекст превышен даже после сжатия (${status}).`))
+              callbacks.onError(err instanceof Error ? err : new Error(`Context exceeded even after compression (${status}).`))
               return
             }
             continue
@@ -873,9 +903,9 @@ export class Agent {
           console.log('[Agent] STOP: 413 не сжимается (messages=%d) — schemas > model TPM limit', messages.length)
           log('[Agent] STOP: 413 не сжимается — tool schemas больше лимита модели')
           callbacks.onError(err instanceof Error ? err : new Error(
-            `Контекст превышен (${status}). Модель не может принять tool-схемы (возможно TPM/context limit модели слишком мал для работы с тулами). ` +
-            `Попробуй: сменить модель на с большим context window, или отключить тузы в настройках агента. ` +
-            `Ошибка: ${(error?.message ?? '').slice(0, 200)}`
+            `Context exceeded (${status}). The model cannot accept tool schemas (possibly the model TPM/context limit is too small for tool work). ` +
+            `Try: switch to a model with a larger context window, or disable tools in the agent settings. ` +
+            `Error: ${(error?.message ?? '').slice(0, 200)}`
           ))
           return
         }
@@ -904,7 +934,7 @@ export class Agent {
           // continue без лимита → 50 шагов × 5 ретраев = 250 запросов,
           // "ожидание ответа" часами. Теперь после 3 таких раундов — стоп.
           // НЕ пушим user-сообщение — растит контекст.
-          callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Не удалось получить ответ после нескольких попыток (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}).`, success: false })
+          callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Could not get an answer after several attempts (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}).`, success: false })
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             log('[Agent] STOP: retries exhausted ×%d', consecutiveErrors)
             callbacks.onError(err instanceof Error ? err : new Error('Сеть недоступна: превышено число попыток запросов к API после нескольких раундов. Проверь подключение или провайдера.'))
@@ -913,13 +943,13 @@ export class Agent {
           continue
         }
         console.log('[Agent] generic catch branch: status=%s msg=%s', status, (error?.message ?? '').slice(0, 100))
-        callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Ошибка: ${error?.message || String(err)}`, success: false })
+        callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Error: ${error?.message || String(err)}`, success: false })
         // НЕ пушим user-сообщение — оно растит контекст, а при 4xx ошибке
         // модель всё равно не сможет ответить. Rely on consecutiveErrors.
         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
           console.log('[Agent] STOP: generic error ×%d: %s', consecutiveErrors, error?.message)
           log('[Agent] STOP: generic error ×%d: %s', consecutiveErrors, error?.message)
-          callbacks.onError(err instanceof Error ? err : new Error(`Сетевая ошибка повторяется ${consecutiveErrors} раза подряд: ${error?.message}`))
+          callbacks.onError(err instanceof Error ? err : new Error(`Network error repeating ${consecutiveErrors} times in a row: ${error?.message}`))
           return
         }
       }
@@ -930,7 +960,8 @@ export class Agent {
     name: string,
     args: Record<string, unknown>,
     callbacks?: AgentCallbacks,
-    dryRun?: boolean
+    dryRun?: boolean,
+    callId?: string
   ): Promise<ToolResult> {
     switch (name) {
       case 'run_command': {
@@ -939,7 +970,7 @@ export class Agent {
           return { success: false, output: '', error: `run_command: missing "command". Received: ${JSON.stringify(args)}` }
         }
         if (dryRun) {
-          return { success: true, output: `[DRY RUN] Команда не выполнена. Была бы запущена:\n${cmd}`.slice(0, 4000) }
+          return { success: true, output: `[DRY RUN] Command not executed. Would have been run:\n${cmd}`.slice(0, 4000) }
         }
         // cwd модели → workdir чата → (внутри runCommand/persistent shell) homedir()
         // Модель может явно переопределить cwd; иначе берём workdir чата.
@@ -967,14 +998,14 @@ export class Agent {
             const partial = smartTrimOutput(cleanShellOutput(shellRes.output || ''))
             cmdResult = {
               success: false,
-              output: `[timeout после ${timeoutSec}с — команда прервана Ctrl+C]\n${partial || '(нет вывода)'}`,
-              error: 'Команда превысила таймаут',
+              output: `[timeout after ${timeoutSec}s — command interrupted via Ctrl+C]\n${partial || '(no output)'}`,
+              error: 'Command exceeded the timeout',
             }
           } else {
-            const out = smartTrimOutput(cleanShellOutput(shellRes.output)) || '(нет вывода)'
+            const out = smartTrimOutput(cleanShellOutput(shellRes.output)) || '(no output)'
             cmdResult = shellRes.exitCode === 0
               ? { success: true, output: `[exit: 0]\n${out}` }
-              : { success: false, output: `[exit: ${shellRes.exitCode}]\n${out}`, error: out.slice(0, 500) || 'Команда завершилась с ошибкой' }
+              : { success: false, output: `[exit: ${shellRes.exitCode}]\n${out}`, error: out.slice(0, 500) || 'Command failed' }
           }
         } else {
           cmdResult = await runCommand(cmd, effectiveCwd, args.shell as string | undefined, timeoutSec)
@@ -1165,8 +1196,16 @@ export class Agent {
           model: args.model as string | undefined,
           approvalMode: args.approval_mode as 'auto' | 'ask' | 'full' | undefined,
           isolation: args.isolation as 'auto' | 'worktree' | 'none' | undefined,
+          callId,
         })
-        if (result.error) return { success: false, output: '', error: result.error }
+        if (result.error) return {
+          success: false, output: '',
+          // agentId в error-строке: (1) делает fingerprint уникальным даже
+          // при одинаковых task — параллельные саб-агенты не триггерят error-
+          // loop-guard; (2) показывает пользователю/модели какой именно агент
+          // упал. Консистентно с success-путем, который уже добавляет [AGENT:id].
+          error: `[AGENT:${agentId}] ${result.error}`,
+        }
         return {
           success: true,
           output: `[AGENT:${agentId}] Subagent finished: ${result.summary}`,
@@ -1236,7 +1275,7 @@ export class Agent {
           })
           if (!result.success) return { success: false, output: '', error: result.error ?? 'recall failed' }
           if (result.results.length === 0) {
-            return { success: true, output: 'Ничего не найдено в памяти. Попробуй другой запрос или уточни ключевые слова.' }
+            return { success: true, output: 'Nothing found in memory. Try a different query or refine the keywords.' }
           }
           // Форматируем результаты для агента — группируем по источнику
           const sourceLabels: Record<string, string> = {
@@ -1257,7 +1296,7 @@ export class Agent {
           for (const r of sorted) {
             const scoreStr = r.score.toFixed(2)
             const meta: string[] = []
-            if (r.chatTitle) meta.push(`чат: ${r.chatTitle}`)
+            if (r.chatTitle) meta.push(`chat: ${r.chatTitle}`)
             if (r.role) meta.push(r.role)
             if (r.date) {
               const dateStr = new Date(r.date).toISOString().slice(0, 10)
@@ -1272,7 +1311,7 @@ export class Agent {
             lines.push(`   ${titleStr}${r.content}`)
             idx++
           }
-          return { success: true, output: `Найдено ${result.results.length} результатов:\n\n${lines.join('\n')}` }
+          return { success: true, output: `Found ${result.results.length} results:\n\n${lines.join('\n')}` }
         } catch (e) {
           return { success: false, output: '', error: (e as Error).message }
         }
@@ -1296,7 +1335,7 @@ export class Agent {
         // происходит в main/ipc/chat.ipc.ts (sendDone) после извлечения
         // <plan>-блока из ответа. Если модель всё же вызвала тул — вернём
         // подсказку, чтобы она перестала его вызывать.
-        return { success: false, output: '', error: 'save_plan удалён. Пиши план прямо в ответе, обёрнутый в <plan title="..." summary="...">markdown плана</plan>. Не вызывай этот тул.' }
+        return { success: false, output: '', error: 'save_plan is removed. Write the plan directly in the answer, wrapped in <plan title="..." summary="...">plan markdown</plan>. Do not call this tool.' }
       }
       case 'ask_user': {
         const questions = (args.questions as import('../../shared/types').QuestionSpec[]) ?? []
@@ -1321,14 +1360,14 @@ export class Agent {
           // Форматируем ответы как читаемый текст для модели + JSON для парсинга.
           const lines = answers.map(a => {
             const parts: string[] = []
-            if (a.value !== undefined) parts.push(`ответ: ${a.value ? 'Да' : 'Нет'}`)
-            if (a.values && a.values.length > 0) parts.push(`выбрано: ${a.values.join(', ')}`)
-            if (a.text) parts.push(`текст: ${a.text}`)
+            if (a.value !== undefined) parts.push(`answer: ${a.value ? 'Yes' : 'No'}`)
+            if (a.values && a.values.length > 0) parts.push(`selected: ${a.values.join(', ')}`)
+            if (a.text) parts.push(`text: ${a.text}`)
             return `- [${a.id}] ${parts.join(' | ') || '(пропущено)'}`
           })
           return {
             success: true,
-            output: `Пользователь ответил:\n${lines.join('\n')}\n\nJSON: ${JSON.stringify(answers)}`,
+            output: `The user answered:\n${lines.join('\n')}\n\nJSON: ${JSON.stringify(answers)}`,
           }
         } catch (e: unknown) {
           return { success: false, output: '', error: `ask_user: ${String(e)}` }
@@ -1401,14 +1440,14 @@ export class Agent {
   private _summarizeProgress(modifiedFiles: Set<string>): string {
     const parts: string[] = []
     if (modifiedFiles.size > 0) {
-      parts.push(`изменено файлов: ${modifiedFiles.size} (${Array.from(modifiedFiles).slice(0, 5).join(', ')}${modifiedFiles.size > 5 ? '...' : ''})`)
+      parts.push(`files modified: ${modifiedFiles.size} (${Array.from(modifiedFiles).slice(0, 5).join(', ')}${modifiedFiles.size > 5 ? '...' : ''})`)
     }
     if (this.commandsRun.length > 0) {
-      parts.push(`выполнено команд: ${this.commandsRun.length}`)
+      parts.push(`commands run: ${this.commandsRun.length}`)
     }
     const filesRead = this.fileMap.size
     if (filesRead > 0) {
-      parts.push(`прочитано файлов: ${filesRead}`)
+      parts.push(`files read: ${filesRead}`)
     }
     return parts.length > 0 ? parts.join('; ') : 'выполнена часть работы (см. лог тулов выше)'
   }

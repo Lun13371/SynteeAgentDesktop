@@ -98,7 +98,7 @@ export default function SettingsPage() {
     setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
     setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
     setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
-    setSoundVolume, setSoundAssignments } = useUIStore(useShallow(s => ({
+    setSoundVolume, setSoundAssignments, setMouseNavEnabled } = useUIStore(useShallow(s => ({
     setTheme: s.setTheme, setAccentColor: s.setAccentColor, setBgStyle: s.setBgStyle,
     setMsgAnim: s.setMsgAnim, setAvatarStyle: s.setAvatarStyle, setShowTime: s.setShowTime,
     setUserMarkdown: s.setUserMarkdown, setUiSounds: s.setUiSounds, setSendEffect: s.setSendEffect,
@@ -109,6 +109,7 @@ export default function SettingsPage() {
     setCustomThemes: s.setCustomThemes, setActiveCustomThemeId: s.setActiveCustomThemeId,
     setThemeSchedule: s.setThemeSchedule, setRecentAccents: s.setRecentAccents,
     setSoundVolume: s.setSoundVolume, setSoundAssignments: s.setSoundAssignments,
+    setMouseNavEnabled: s.setMouseNavEnabled,
   })))
   const { add: toast } = useToast()
 
@@ -177,6 +178,7 @@ export default function SettingsPage() {
     if (key === 'animatedBgSpeed') setAnimatedBgSpeed(value as number)
     if (key === 'soundVolume') { setSoundVolume(value as number); setSoundVolumeModule(value as number) }
     if (key === 'soundAssignments') { setSoundAssignments(value as any); setSoundAssignmentsFlag(value as any) }
+    if (key === 'mouseNavEnabled') setMouseNavEnabled(value as boolean)
     if (key === 'customThemes') {
       setCustomThemes(value as CustomTheme[])
       const activeId = useUIStore.getState().activeCustomThemeId
@@ -199,7 +201,7 @@ export default function SettingsPage() {
     setUserMarkdown, setUiSounds, setSendEffect, setGlassBlur, setDensity, setAccentGradient,
     setRainbowAccent, setBgImage, setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
     setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
-    setSoundVolume, setSoundAssignments])
+    setSoundVolume, setSoundAssignments, setMouseNavEnabled])
 
   return (
     <div className="settings-root">
@@ -348,6 +350,9 @@ const GeneralSection = memo(function GeneralSection({ settings, onSet }: { setti
       </Field>
       <Field label="Миникарта сообщений" description="Точки навигации по сообщениям справа в чате">
         <Toggle value={(settings['chatMinimap'] as boolean) ?? true} onChange={v => onSet('chatMinimap', v)} />
+      </Field>
+      <Field label="Боковые кнопки мыши" description="X1 — назад, X2 — вперёд между разделами (как в браузере)">
+        <Toggle value={(settings['mouseNavEnabled'] as boolean) ?? true} onChange={v => onSet('mouseNavEnabled', v)} />
       </Field>
     </>
   )

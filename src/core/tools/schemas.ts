@@ -5,17 +5,17 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'edit_file',
-      description: 'Редактировать файл. replace — заменить фрагмент (с fuzzy по отступам), insert — вставить после строки, overwrite — перезаписать, apply_patch — надёжная замена по search/replace блокам (Codex-style, для множественных правок). create_if_not_exists=true создаёт файл и директории. Возвращает diff.',
+      description: 'Edit a file. replace — replace a fragment (with indent-fuzzy), insert — insert after a line, overwrite — overwrite the whole file, apply_patch — reliable replacement via search/replace blocks (Codex-style, for multiple edits). create_if_not_exists=true creates the file and directories. Returns a diff.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Путь к файлу' },
-          mode: { type: 'string', enum: ['replace', 'insert', 'overwrite', 'apply_patch'], description: 'Режим редактирования' },
-          old_str: { type: 'string', description: '[replace] Уникальный фрагмент для замены. Включай 2-3 строки контекста.' },
-          new_str: { type: 'string', description: '[replace] Новый фрагмент (пустая строка = удалить)' },
-          after_line: { type: 'number', description: '[insert] Вставить после этой строки (1-indexed)' },
-          content: { type: 'string', description: '[insert/overwrite] Контент для вставки или перезаписи' },
-          patch: { type: 'string', description: '[apply_patch] Search/replace патч. Формат: блоки <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Каждый блок заменяет одно точное вхождение. Надёжнее чем replace для множественных правок.' },
+          path: { type: 'string', description: 'Path to the file' },
+          mode: { type: 'string', enum: ['replace', 'insert', 'overwrite', 'apply_patch'], description: 'Edit mode' },
+          old_str: { type: 'string', description: '[replace] Unique fragment to replace. Include 2-3 lines of context.' },
+          new_str: { type: 'string', description: '[replace] New fragment (empty string = delete, must be passed explicitly)' },
+          after_line: { type: 'number', description: '[insert] Insert after this line (1-indexed)' },
+          content: { type: 'string', description: '[insert/overwrite] Content to insert or overwrite' },
+          patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one exact occurrence. More reliable than replace for multiple edits.' },
           create_if_not_exists: { type: 'boolean', description: 'Создать файл (и директории) если не существует' },
         },
         required: ['path', 'mode'],
@@ -26,14 +26,14 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'run_command',
-      description: 'Выполнить команду в терминале. Windows: PowerShell по умолчанию (ls/cat/rm/Get-Process/$env:PATH и т.д.), cmd — через shell:"cmd". Linux/Mac: bash. Указывай cwd для проектов, timeout для долгих операций.',
+      description: 'Run a command in the terminal. Windows: PowerShell by default (ls/cat/rm/Get-Process/$env:PATH etc.), cmd — via shell:"cmd". Linux/Mac: bash. Specify cwd for projects, timeout for long operations.',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'Команда' },
-          cwd: { type: 'string', description: 'Рабочая директория' },
-          shell: { type: 'string', enum: ['powershell', 'cmd'], description: 'Шелл (только Windows, по умолч. powershell)' },
-          timeout: { type: 'number', description: 'Таймаут в секундах (по умолч. 60)' },
+          command: { type: 'string', description: 'The command' },
+          cwd: { type: 'string', description: 'Working directory' },
+          shell: { type: 'string', enum: ['powershell', 'cmd'], description: 'Shell (Windows only, default powershell)' },
+          timeout: { type: 'number', description: 'Timeout in seconds (default 60)' },
         },
         required: ['command'],
       },
@@ -43,11 +43,11 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'get_diagnostics',
-      description: 'Проверить проект на ошибки TypeScript-компиляции и линтинга (tsc --noEmit + eslint). Вызывай после серии правок кода, чтобы убедиться, что изменения не поломали типы или стиль. Возвращает список ошибок с file:line.',
+      description: 'Check the project for TypeScript compilation and linting errors (tsc --noEmit + eslint). Call after a series of code edits to make sure the changes did not break types or style. Returns a list of errors with file:line.',
       parameters: {
         type: 'object',
         properties: {
-          cwd: { type: 'string', description: 'Директория проекта (по умолч. рабочая директория чата)' },
+          path: { type: 'string', description: 'Project directory (defaults to the chat working directory)' },
         },
       },
     },
@@ -56,13 +56,13 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: 'Читает файл. Без offset — первые 200 строк + авто-outline структуры (через tree-sitter, 20+ языков) если файл больше. С offset/limit — точный диапазон строк. outline_only=true — только структура (функции, методы классов, классы, интерфейсы, imports с номерами строк) без содержимого — быстро сориентироваться в большом файле и прыгать к нужной строке через offset. Всегда показывает [total_lines] и подсказку если файл обрезан.',
+      description: 'Читает файл. Без offset — первые 400 строк + авто-outline структуры (через tree-sitter, 20+ языков) если файл больше. С offset/limit — точный диапазон строк. outline_only=true — только структура (функции, методы классов, классы, интерфейсы, imports с номерами строк) без содержимого — быстро сориентироваться в большом файле и прыгать к нужной строке через offset. Всегда показывает [total_lines] и подсказку с готовым offset если файл обрезан.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Абсолютный путь к файлу' },
+          path: { type: 'string', description: 'Путь к файлу (абсолютный или относительный от workdir)' },
           offset: { type: 'number', description: 'Начальная строка (1-indexed). Для чтения по частям.' },
-          limit: { type: 'number', description: 'Кол-во строк (по умолч. 200). Увеличь до 500 если нужно больше.' },
+          limit: { type: 'number', description: 'Кол-во строк (по умолч. 400). Увеличь до 500-800 если нужно больше за один вызов.' },
           outline_only: { type: 'boolean', description: 'true — вернуть только структуру файла (функции, классы, экспорты) без содержимого. Удобно чтобы сориентироваться в большом файле.' },
         },
         required: ['path'],
@@ -73,12 +73,12 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: 'СОЗДАНИЕ нового файла с нуля. Если файл уже существует — используй edit_file (mode=replace/insert/overwrite/apply_patch) для правок. write_file запрещён для перезаписи существующего файла (вернёт ошибку). Возвращает diff.',
+      description: 'CREATE a new file from scratch. If the file already exists — use edit_file (mode=replace/insert/overwrite/apply_patch) for edits. write_file is forbidden for overwriting an existing file (returns an error). Returns a diff.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Путь к файлу' },
-          content: { type: 'string', description: 'Содержимое файла' },
+          path: { type: 'string', description: 'Path to the file' },
+          content: { type: 'string', description: 'File content' },
         },
         required: ['path', 'content'],
       },
@@ -88,13 +88,13 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'list_directory',
-      description: 'Показать содержимое папки в виде дерева. recursive=true обходит вложенные папки (depth по умолч. 3). Игнорирует node_modules/dist/.git.',
+      description: 'Show a folder contents as a tree. recursive=true traverses nested folders (depth default 3). Ignores node_modules/dist/.git.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Путь к папке' },
-          recursive: { type: 'boolean', description: 'Рекурсивный обход (по умолч. false)' },
-          depth: { type: 'number', description: 'Глубина рекурсии (по умолч. 3)' },
+          path: { type: 'string', description: 'Path to the folder' },
+          recursive: { type: 'boolean', description: 'Recursive traversal (default false)' },
+          depth: { type: 'number', description: 'Recursion depth (default 3)' },
         },
         required: ['path'],
       },
@@ -160,14 +160,14 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_files',
-      description: 'Прочитать несколько файлов за один раз. Используй вместо read_file когда нужно посмотреть сразу несколько файлов проекта.',
+      description: 'Read multiple files at once (up to 10). Each file is truncated to 250 lines; to read a large file fully use read_file with offset/limit. Use this instead of read_file when you need to look at several files of the project at once.',
       parameters: {
         type: 'object',
         properties: {
           paths: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Список абсолютных путей к файлам (до 10 штук)',
+            description: 'List of absolute paths to files (up to 10)',
           },
         },
         required: ['paths'],
@@ -178,17 +178,18 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'search_code',
-      description: 'Поиск по коду: regex или текст в файлах. Использует ripgrep (быстро) или PowerShell. Уважает .gitignore, ищет в скрытых dot-директориях (.vscode/.planning/...), исключая .git и секреты (.env/.pem/.key). Возвращает шапку с числом совпадений/файлов + файлы с номерами строк и контекстом. По умолчанию лимит 100 совпадений — если видишь «показано N из M» сузь file_glob или path к подпапке, не перебирай другие паттерны. path — абсолютный (C:\\Projects\\... или /c/Projects/...) или относительный от workdir.',
+      description: 'Search code: regex or text in files. Uses ripgrep (fast) or PowerShell. Respects .gitignore, searches hidden dot-directories (.vscode/.planning/...), excluding .git and secrets (.env/.pem/.key). Returns a header with the number of matches/files + files with line numbers and context. Default limit 100 matches — if you see "shown N of M" narrow file_glob or path to a subfolder, do not try other pattern variants. path — absolute (C:\\Projects\\...) or relative to workdir. For regex special chars (arr[i], a.b.c) use literal=true.',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: 'Regex или строка. Пример: "useState", "import.*axios", "class\\s+User"' },
-          path: { type: 'string', description: 'Директория или файл для поиска (абсолютный или относительный от workdir)' },
-          file_glob: { type: 'string', description: 'Фильтр файлов: "*.ts", "*.py", "*.{ts,tsx}"' },
-          ignore_case: { type: 'boolean', description: 'Без учёта регистра (по умолч. false)' },
-          literal: { type: 'boolean', description: 'Искать паттерн дословно (без regex). Удобно для текста со спецсимволами: "arr[i]", "a.b.c", "$env". По умолч. false.' },
-          max_results: { type: 'number', description: 'Макс. совпадений всего (по умолч. 50)' },
-          context: { type: 'number', description: 'Строк контекста вокруг совпадения (по умолч. 2)' },
+          pattern: { type: 'string', description: 'Regex or string. Example: "useState", "import.*axios", "class\\s+User"' },
+          path: { type: 'string', description: 'Directory or file to search (absolute path or relative to workdir)' },
+          file_glob: { type: 'string', description: 'File filter: "*.ts", "*.py", "*.{ts,tsx}"' },
+          ignore_case: { type: 'boolean', description: 'Case-insensitive (default false)' },
+          literal: { type: 'boolean', description: 'Search the pattern literally (no regex). Useful for text with special chars: "arr[i]", "a.b.c", "$env". Default false.' },
+          max_results: { type: 'number', description: 'Max total matches (default 100)' },
+          max_chars: { type: 'number', description: 'Max chars in output (default 20000). Increase if truncated.' },
+          context: { type: 'number', description: 'Context lines around a match (default 3)' },
         },
         required: ['pattern', 'path'],
       },
@@ -198,11 +199,11 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'analyze_project',
-      description: 'Полный анализ проекта — структура файлов, зависимости, git статус, статистика. Вызывай в начале работы с незнакомым проектом.',
+      description: 'Full project analysis — file structure, dependencies, git status, statistics. Call at the start of working with an unfamiliar project.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Абсолютный путь к корню проекта' },
+          path: { type: 'string', description: 'Absolute path to the project root' },
         },
         required: ['path'],
       },
@@ -212,13 +213,13 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'get_fast_context',
-      description: 'Быстрый контекст проекта: находит релевантные файлы и line ranges по запросу через tree-sitter индекс символов + fast LLM. Используй ПЕРВЫМ шагом для любой задачи чтобы мгновенно понять какие файлы/функции/классы относятся к запросу — экономит токены основной модели на поиск. Покрывает 80% случаев "где реализован X" за ~1-3с. Результат: список файлов с line ranges и краткое summary. Не заменяет read_file для деталей — используй его после чтобы прочитать найденные файлы.',
+      description: 'Fast project context: finds relevant files and line ranges by query via tree-sitter symbol index + fast LLM. Use as the FIRST step for any code task to instantly understand which files/functions/classes relate to the query — saves the main model tokens on search. Covers 80% of "where is X implemented" cases in ~1-3s. Result: a list of files with line ranges and a brief summary. Does not replace read_file for details — use it after to read the found files.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Что найти: функционал, имя функции/класса, файл, концепция. Пример: "где реализован OAuth flow", "модель данных User", "обработка платежей"' },
-          maxFiles: { type: 'number', description: 'Макс. файлов вернуть (по умолч. 50)' },
-          maxTokens: { type: 'number', description: 'Бюджет repo-map slice в токенах (по умолч. 8000)' },
+          query: { type: 'string', description: 'What to find: a feature, function/class name, file, concept. Example: "where is the OAuth flow implemented", "User data model", "payment processing"' },
+          maxFiles: { type: 'number', description: 'Max files to return (default 50)' },
+          maxTokens: { type: 'number', description: 'Repo-map slice token budget (default 8000)' },
         },
         required: ['query'],
       },
@@ -228,13 +229,13 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'find_files',
-      description: 'Найти файлы по имени или regex-паттерну. Используй когда нужно найти файл по имени: "где ChatPage.tsx?", "найди все *.config.ts". Игнорирует node_modules/dist/.git.',
+      description: 'Find files by name or regex pattern. Use when you need to find a file by name: "where is ChatPage.tsx?", "find all *.config.ts". Ignores node_modules/dist/.git.',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: 'Имя файла, glob (*.tsx) или regex. Пример: "ChatPage.tsx", "*.config.ts", "index\\.(ts|tsx)"' },
-          path: { type: 'string', description: 'Директория для поиска' },
-          max_results: { type: 'number', description: 'Макс. результатов (по умолч. 50)' },
+          pattern: { type: 'string', description: 'File name, glob (*.tsx) or regex. Example: "ChatPage.tsx", "*.config.ts", "index\\.(ts|tsx)"' },
+          path: { type: 'string', description: 'Directory to search in' },
+          max_results: { type: 'number', description: 'Max results (default 50)' },
         },
         required: ['pattern', 'path'],
       },
@@ -244,13 +245,13 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'spawn_agent',
-      description: 'Запустить суб-агента для подзадачи с чистым контекстом. Блокирует ход до завершения, возвращает summary (что сделано, изменённые файлы, diffs, выполненные команды — до 4000 симв.). Суб-агент УЖЕ получает контекст родителя (summary чата + рабочая память + последние 12 сообщений истории) — НЕ дублируй его в task. Используй для: независимых подзадач (параллельные исследования A и B), длинных задач засоряющих контекст, делегирования крупных пунктов Todo-плана. НЕ используй для последовательных шагов или тривиальных задач в 1-2 тула (оверхед). task должна быть самодостаточной: что сделать, пути к файлам, ограничения, что вернуть. Параллельно до 3 агентов, дальше — очередь. Не вызывай get_agent_status в цикле — spawn_agent сам вернёт результат. По умолчанию (isolation=auto) суб-агент пишет в workdir родителя, если параллельных суб-агентов на этом проекте нет; при их наличии автоматически создаётся отдельный git worktree (изолированная копия от HEAD) и дельта сливается обратно после завершения.',
+      description: 'Launch a sub-agent for a subtask with a clean context. Blocks the turn until completion, returns a summary (what was done, changed files, diffs, executed commands — up to 4000 chars). The sub-agent ALREADY gets your context (chat summary + working memory + last 12 history messages) — do NOT duplicate it in the task. Use for: independent subtasks (parallel research A and B), long tasks polluting your context, delegating large Todo-plan items. Do NOT use for sequential steps or trivial 1-2 tool tasks (overhead). The task must be self-contained: what to do, file paths, constraints, what to return. Up to 3 agents in parallel, then a queue. Do not call get_agent_status in a loop — spawn_agent returns the result itself. By default (isolation=auto) the sub-agent writes to the parent workdir if there are no parallel sub-agents on this project; if there are, it automatically creates a separate git worktree (isolated copy from HEAD) and the delta is merged back after completion.',
       parameters: {
         type: 'object',
         properties: {
-          task: { type: 'string', description: 'Подробное описание задачи для суб-агента' },
-          approval_mode: { type: 'string', enum: ['auto', 'ask', 'full'], description: 'Режим подтверждения суб-агента (по умолч. наследуется от родителя). full — без подтверждений, ask — на каждый тул, auto — умная детекция' },
-          isolation: { type: 'string', enum: ['auto', 'worktree', 'none'], description: 'Изоляция файлов суб-агента. auto (по умолч.) — worktree только при наличии параллельного суб-агента на этом workdir, иначе shared (видит WIP родителя); worktree — всегда отдельный git worktree от HEAD (для независимых задач: суб-агент не видит незафиксированные правки родителя, дельта сливается через git apply --3way); none — явно писать в workdir родителя (только для зависимых/только-чтение задач). Не-git workdir всегда fallback на shared.' },
+          task: { type: 'string', description: 'A detailed description of the task for the sub-agent' },
+          approval_mode: { type: 'string', enum: ['auto', 'ask', 'full'], description: 'Sub-agent approval mode (default: inherited from parent). full — no confirmations, ask — per tool, auto — smart detection' },
+          isolation: { type: 'string', enum: ['auto', 'worktree', 'none'], description: 'Sub-agent file isolation. auto (default) — worktree only if there is a parallel sub-agent on this workdir, otherwise shared (sees parent WIP); worktree — always a separate git worktree from HEAD (for independent tasks: the sub-agent does not see the parent uncommitted edits, the delta is merged via git apply --3way); none — explicitly write to the parent workdir (only for dependent/read-only tasks). Non-git workdir always falls back to shared.' },
         },
         required: ['task'],
       },
@@ -260,11 +261,11 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'get_agent_status',
-      description: 'Проверить статус суб-агента — активен ли, что сейчас делает, сколько шагов выполнил. Используй редко — spawn_agent сам ждёт завершения. Полезен только для UI или если нужно узнать прогресс уже завершённого агента.',
+      description: 'Check the status of a sub-agent — whether it is active, what it is doing now, how many steps it has done. Use rarely — spawn_agent waits for completion itself. Useful only for UI or to check the progress of an already-finished agent.',
       parameters: {
         type: 'object',
         properties: {
-          agent_id: { type: 'string', description: 'ID суб-агента из [AGENT:id] маркера' },
+          agent_id: { type: 'string', description: 'Sub-agent ID from the [AGENT:id] marker' },
         },
         required: ['agent_id'],
       },
@@ -274,13 +275,13 @@ export const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'think',
-      description: 'Внутренний монолог — используй ПЕРЕД сложными действиями. Напиши план: что нужно сделать, в каком порядке, какие файлы прочитать, какие риски. Результат не виден пользователю — только тебе. Не тратит его токены.',
+      description: 'Internal monologue — use BEFORE complex actions. Write a plan: what needs to be done, in what order, which files to read, what risks. The result is not visible to the user — only to you. Does not spend their tokens.',
       parameters: {
         type: 'object',
         properties: {
           thought: {
             type: 'string',
-            description: 'Твои рассуждения, план действий, анализ ситуации.',
+            description: 'Your reasoning, action plan, situation analysis.',
           },
         },
         required: ['thought'],
@@ -291,18 +292,18 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'update_todo',
-      description: 'Обновить чек-лист задачи (todo list). Используй для многошаговых задач — пользователь видит прогресс в чате. Вызывай в начале (с планом) и после каждого завершённого шага.',
+      description: 'Update the task checklist (todo list). Use for multi-step tasks — the user sees progress in the chat. Call at the start (with the plan) and after each completed step.',
       parameters: {
         type: 'object',
         properties: {
           items: {
             type: 'array',
-            description: 'Список шагов. Каждый шаг: { text, status }.',
+            description: 'List of steps. Each step: { text, status }.',
             items: {
               type: 'object',
               properties: {
-                text: { type: 'string', description: 'Описание шага' },
-                status: { type: 'string', enum: ['pending', 'in_progress', 'done', 'skipped'], description: 'Статус шага' },
+                text: { type: 'string', description: 'Step description' },
+                status: { type: 'string', enum: ['pending', 'in_progress', 'done', 'skipped'], description: 'Step status' },
               },
               required: ['text', 'status'],
             },
@@ -316,96 +317,96 @@ export const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'update_working_memory',
-      description: 'Обновляет рабочую память чата — заметки о проекте, сделанных изменениях, текущем состоянии. Вызывай в конце сессии чтобы запомнить важное для следующих сообщений. Максимум ~2000 токенов.',
+      description: 'Update the chat working memory — notes about the project, edits made, current state. Call at the end of a session to remember what matters for the next messages. Max ~2000 tokens.',
       parameters: {
         type: 'object',
         properties: {
           content: {
             type: 'string',
-            description: 'Новое содержимое рабочей памяти. Полностью заменяет старое. Пиши компактно: что сделано, текущее состояние, важные факты о проекте.',
+            description: 'New working memory content. Fully replaces the old one. Write compactly: what was done, current state, important facts about the project.',
           },
           mode: {
             type: 'string',
             enum: ['replace', 'append'],
-            description: 'replace — полная замена (по умолчанию), append — добавить к существующему.',
+            description: 'replace — full replacement (default), append — add to existing.',
           },
         },
         required: ['content'],
       },
     },
   },
-  // ── save_memory: сохранить факт в долгосрочную память ──
-  // Персистентная память через все сессии (в отличие от update_working_memory,
-  // которая живёт только в пределах одного чата). Scope auto: 'project' если
-  // есть project_id, иначе 'global'. Dedup по key → update; cosine>0.92 → merge.
+  // ── save_memory: save a fact to long-term memory ──
+  // Persistent memory across all sessions (unlike update_working_memory,
+  // which lives only within one chat). Scope auto: 'project' if project_id
+  // exists, otherwise 'global'. Dedup by key → update; cosine>0.92 → merge.
   {
     type: 'function',
     function: {
       name: 'save_memory',
-      description: 'Сохранить факт в долгосрочную память (переживает сессию). Используй когда узнал важное: предпочтения пользователя, архитектурное решение проекта, выученный урок. В отличие от update_working_memory (только этот чат), save_memory доступен через сессии. Scope auto: проект если есть projectId, иначе глобально. Dedup по key или semantic similarity.',
+      description: 'Save a fact to long-term memory (survives sessions). Use when you learned something important: user preferences, a project architectural decision, a learned lesson. Unlike update_working_memory (this chat only), save_memory is available across sessions. Scope auto: project if projectId exists, otherwise global. Dedup by key or semantic similarity.',
       parameters: {
         type: 'object',
         properties: {
           title: {
             type: 'string',
-            description: 'Краткое название записи (1-5 слов, обязательно). Будет отображаться как заголовок. Напр. "Архитектура авторизации", "Предпочтения по языкам", "Итог: миграция на FTS5".',
+            description: 'Short entry name (1-5 words, required). Will be shown as a heading. E.g. "Auth architecture", "Language preferences", "Outcome: FTS5 migration".',
           },
           content: {
             type: 'string',
-            description: 'Подробное описание. Может быть длинным, с деталями, списками, файлами. Markdown поддерживается. Напр. "Решили использовать JWT + refresh tokens.\\n- Access token: 15мин\\n- Refresh token: 7дней\\n- Хранение в httpOnly cookies".',
+            description: 'Detailed description. Can be long, with details, lists, files. Markdown is supported. E.g. "Decided to use JWT + refresh tokens.\\n- Access token: 15min\\n- Refresh token: 7days\\n- Stored in httpOnly cookies".',
           },
           kind: {
             type: 'string',
             enum: ['user_fact', 'project_decision', 'convention', 'conversation', 'agent_outcome'],
-            description: 'user_fact — о пользователе (личное, предпочтения); project_decision — архитектурное решение проекта; convention — gotchas/ловушки/некоординатные правила проекта; conversation — итог диалога; agent_outcome — урок из исхода действия.',
+            description: 'user_fact — about the user (personal, preferences); project_decision — project architectural decision; convention — gotchas/traps/non-obvious project rules; conversation — dialog outcome; agent_outcome — lesson from an action outcome.',
           },
           key: {
             type: 'string',
-            description: 'Dedup-ключ (опционально). Если запись с тем же key существует — обновится. Напр. "name", "preferred_stack", "auth_approach".',
+            description: 'Dedup key (optional). If an entry with the same key exists — it will be updated. E.g. "name", "preferred_stack", "auth_approach".',
           },
           category: {
             type: 'string',
-            description: '[user_fact] Подкатегория: personal/work/preferences/projects/facts.',
+            description: '[user_fact] Subcategory: personal/work/preferences/projects/facts.',
           },
           scope: {
             type: 'string',
             enum: ['global', 'project'],
-            description: 'global — сквозная память через все проекты; project — привязана к текущему проекту. Default: project если есть projectId, иначе global.',
+            description: 'global — memory across all projects; project — bound to the current project. Default: project if projectId exists, otherwise global.',
           },
           importance: {
             type: 'number',
-            description: 'Важность 0..1 (default 0.5). Выше = выше в ранжировании, дольше живёт. 1.0 для критичных фактов.',
+            description: 'Importance 0..1 (default 0.5). Higher = ranks higher, lives longer. 1.0 for critical facts.',
           },
         },
         required: ['title', 'content', 'kind'],
       },
     },
   },
-  // ── recall_memory: найти релевантные воспоминания ──
-  // Multi-source поиск: 5 источников параллельно (memory + messages + summaries + agent_logs + pinned).
-  // FTS5 trigram для messages/pinned, TF-IDF для memory_items, LIKE для summaries/agent_logs.
-  // Возвращает top-15 (по 3 с каждого источника), отсортированных по normalized score.
+  // ── recall_memory: find relevant memories ──
+  // Multi-source search: 5 sources in parallel (memory + messages + summaries + agent_logs + pinned).
+  // FTS5 trigram for messages/pinned, TF-IDF for memory_items, LIKE for summaries/agent_logs.
+  // Returns top-15 (3 per source), sorted by normalized score.
   {
     type: 'function',
     function: {
       name: 'recall_memory',
-      description: 'Найти релевантные воспоминания и прошлый контекст. Ищет ПАРАЛЛЕЛЬНО по 5 источникам: (1) долгосрочная память — факты/решения/конвенции/итоги диалогов, (2) сообщения всех чатов в scope (FTS5 trigram), (3) резюме чатов (компактные итоги длинных диалогов), (4) логи действий агента — какие тулы вызывались, ошибки, (5) закреплённые сообщения. Scope: если в проекте — ищет по чатам этого проекта; если нет — по чатам без проекта. Глобальная память ВСЕГДА в поиске. Возвращает top-20 результатов с score и source, группированных по источнику.\n\nКОГДА ИСПОЛЬЗОВАТЬ: начало новой задачи (особенно в проекте), «помнишь?», «как мы делали», «что решили по X», незнакомый проект/файл, упоминание прошлого решения/ошибки, перед архитектурным решением.\n\nКАК ПИСАТЬ QUERY: используй ключевые слова, а не полные предложения. Хорошо: «авторизация JWT», «предпочтения TypeScript», «ошибка ESLint», «почему Postgres». Плохо: «расскажи мне всё что ты знаешь про проект».',
+      description: 'Find relevant memories and past context. Searches 5 sources IN PARALLEL: (1) long-term memory — facts/decisions/conventions/dialog outcomes, (2) messages of all chats in scope (FTS5 trigram), (3) chat summaries (compact outcomes of long dialogs), (4) agent action logs — which tools were called, errors, (5) pinned messages. Scope: if in a project — searches this project chats; if not — chats without a project. Global memory is ALWAYS in the search. Returns top-20 results with score and source, grouped by source.\n\nWHEN TO USE: start of a new task (especially in a project), "do you remember?", "how we did", "what we decided on X", unfamiliar project/file, a past decision/error mentioned, before an architectural decision.\n\nHOW TO WRITE THE QUERY: use keywords, not full sentences. Good: "JWT authorization", "TypeScript preferences", "ESLint error", "why Postgres". Bad: "tell me everything you know about the project".',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Поисковый запрос — ключевые слова или фраза. Напр. "авторизация JWT", "предпочтения по языкам", "почему выбрали Postgres", "ошибка ESLint таймаут". Для длинных запросов автоматически разбивается на ключевые слова.',
+            description: 'Search query — keywords or a phrase. E.g. "JWT authorization", "language preferences", "why we chose Postgres", "ESLint timeout error". Long queries are auto-split into keywords.',
           },
           kind: {
             type: 'string',
             enum: ['user_fact', 'project_decision', 'convention', 'conversation', 'agent_outcome'],
-            description: 'Фильтр по типу памяти (опционально). Без фильтра — ищет по всем типам. Применяется только к источнику "memory".',
+            description: 'Filter by memory type (optional). Without a filter — searches all types. Applies only to the "memory" source.',
           },
           scope: {
             type: 'string',
             enum: ['global', 'project', 'all'],
-            description: 'Где искать в memory_items: global — только глобальная; project — только текущий проект; all — и то и то (default). На chat-источники не влияет.',
+            description: 'Where to search in memory_items: global — only global; project — only current project; all — both (default). Does not affect chat sources.',
           },
           sources: {
             type: 'array',
@@ -413,11 +414,11 @@ export const TOOL_SCHEMAS = [
               type: 'string',
               enum: ['memory', 'messages', 'summaries', 'agent_logs', 'pinned'],
             },
-            description: 'Какие источники искать (default: все 5). Напр. ["memory","messages"] — только память и сообщения. Сузь если точно знаешь что нужно.',
+            description: 'Which sources to search (default: all 5). E.g. ["memory","messages"] — only memory and messages. Narrow if you know exactly what you need.',
           },
           limit: {
             type: 'number',
-            description: 'Сколько записей вернуть (default 20, max 30). По 5 на источник если все 5 включены.',
+            description: 'How many entries to return (default 20, max 30). 5 per source if all 5 are enabled.',
           },
         },
         required: ['query'],
@@ -428,88 +429,88 @@ export const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'list_extensions',
-      description: 'Показать установленные расширения: MCP-серверы (статус подключения, список тулов) и все скиллы (имя, описание, активность). Используй когда нужно узнать свои возможности.',
+      description: 'Show installed extensions: MCP servers (connection status, tool list) and all skills (name, description, active). Use when you need to know your capabilities.',
       parameters: {
         type: 'object',
         properties: {},
       },
     },
   },
-  // ── get_skill: получить инструкции скила по имени ──
+  // ── get_skill: get a skill instructions by name ──
   {
     type: 'function',
     function: {
       name: 'get_skill',
-      description: 'Получить полные инструкции скила по его имени (из списка list_extensions). Возвращает текст инструкций, который нужно соблюдать в работе. Используй когда видишь нужный скилл в списке и хочешь применить его инструкции.',
+      description: 'Get the full instructions of a skill by its name (from the list_extensions list). Returns the instruction text that must be followed in the work. Use when you see a needed skill in the list and want to apply its instructions.',
       parameters: {
         type: 'object',
         properties: {
           name: {
             type: 'string',
-            description: 'Имя скилла (точное совпадение с именем из list_extensions)',
+            description: 'Skill name (exact match with the name from list_extensions)',
           },
         },
         required: ['name'],
       },
     },
   },
-  // ── ask_user: задать уточняющие вопросы пользователю ──
-  // Доступен ВСЕГДА (не только в planning-режиме). AI вызывает когда вводных
-  // мало для качественного ответа — scope задачи, ограничения, приоритеты,
-  // выбор из альтернатив. Round-trip через UI-панель над инпутом.
+  // ── ask_user: ask the user clarifying questions ──
+  // Available ALWAYS (not only in planning mode). The AI calls it when inputs
+  // are insufficient for a quality answer — task scope, constraints, priorities,
+  // choosing between alternatives. Round-trip via the UI panel above the input.
   {
     type: 'function' as const,
     function: {
       name: 'ask_user',
-      description: 'Задать уточняющие вопросы пользователю и получить ответы. Используй когда вводных недостаточно для качественного ответа: неясен scope задачи, нужны ограничения/приоритеты, выбор из альтернатив. Поддерживает разные типы вопросов (text/choice/yesno), условную логику (showIf), предзаполнение. Можно задать до 5 вопросов — пользователь отвечает по одному (wizard). НЕ злоупотребляй: если можешь предположить — делай, не спрашивай. После ответов продолжай работу с учётом полученной информации.',
+      description: 'Ask the user clarifying questions and get answers. Use when inputs are insufficient for a quality answer: unclear task scope, need constraints/priorities, choosing between alternatives. Supports different question types (text/choice/yesno), conditional logic (showIf), pre-fill. You can ask up to 5 questions — the user answers one by one (wizard). Do NOT overuse: if you can assume — do it, do not ask. After answers, continue work with the received info in mind.',
       parameters: {
         type: 'object',
         properties: {
           questions: {
             type: 'array',
-            description: 'Список вопросов (1-5 штук). Пользователь отвечает по одному (wizard).',
+            description: 'List of questions (1-5). The user answers one by one (wizard).',
             minItems: 1,
             maxItems: 5,
             items: {
               type: 'object',
               properties: {
-                id: { type: 'string', description: 'ID вопроса. Используется для маппинга ответа и для showIf (условий других вопросов).' },
-                question: { type: 'string', description: 'Текст вопроса пользователю.' },
-                header: { type: 'string', description: 'Короткий заголовок (необязательно).' },
+                id: { type: 'string', description: 'Question ID. Used for answer mapping and for showIf (conditions of other questions).' },
+                question: { type: 'string', description: 'Question text for the user.' },
+                header: { type: 'string', description: 'Short heading (optional).' },
                 type: {
                   type: 'string',
                   enum: ['text', 'choice', 'yesno'],
-                  description: 'Тип вопроса. text (default) — свободный ответ. choice — выбор из options (radio/checkbox). yesno — Да/Нет кнопки. Если не указан, авто-detect: есть options → choice, иначе text.',
+                  description: 'Question type. text (default) — free answer. choice — choose from options (radio/checkbox). yesno — Yes/No buttons. If not specified, auto-detect: has options → choice, otherwise text.',
                 },
                 options: {
                   type: 'array',
-                  description: 'Готовые варианты ответа (для type=choice).',
+                  description: 'Ready answer options (for type=choice).',
                   items: {
                     type: 'object',
                     properties: {
-                      value: { type: 'string', description: 'Значение опции (для маппинга).' },
-                      label: { type: 'string', description: 'Отображаемый текст опции.' },
-                      description: { type: 'string', description: 'Пояснение опции (необязательно).' },
+                      value: { type: 'string', description: 'Option value (for mapping).' },
+                      label: { type: 'string', description: 'Option display text.' },
+                      description: { type: 'string', description: 'Option explanation (optional).' },
                     },
                     required: ['value', 'label'],
                   },
                 },
-                multiple: { type: 'boolean', description: 'Разрешить множественный выбор (только для type=choice).' },
-                allowCustom: { type: 'boolean', description: 'Разрешить свой ответ (default true). Для yesno — игнорируется.' },
-                required: { type: 'boolean', description: 'Вопрос обязательный (нельзя пропустить).' },
-                defaultValue: { type: 'string', description: 'Предзаполненный ответ — модель предлагает предположение, юзер правит. Ускоряет ответ.' },
-                placeholder: { type: 'string', description: 'Кастомный placeholder для текстового поля (напр. "порт 3000").' },
-                helpText: { type: 'string', description: 'Пояснение под вопросом (раскрывающийся блок). Для доп. контекста.' },
-                multiline: { type: 'boolean', description: 'Многострочное поле 5+ строк (для описательных ответов).' },
-                skipLabel: { type: 'string', description: 'Кастомный текст кнопки пропуска (default "Пропустить"). Напр. "Не знаю", "Решай сам".' },
+                multiple: { type: 'boolean', description: 'Allow multi-select (only for type=choice).' },
+                allowCustom: { type: 'boolean', description: 'Allow a custom answer (default true). Ignored for yesno.' },
+                required: { type: 'boolean', description: 'Mandatory question (cannot skip).' },
+                defaultValue: { type: 'string', description: 'Pre-filled answer — the model suggests an assumption, the user edits. Speeds up the answer.' },
+                placeholder: { type: 'string', description: 'Custom placeholder for the text field (e.g. "port 3000").' },
+                helpText: { type: 'string', description: 'Explanation under the question (collapsible block). For extra context.' },
+                multiline: { type: 'boolean', description: 'Multi-line field 5+ lines (for descriptive answers).' },
+                skipLabel: { type: 'string', description: 'Custom skip button text (default "Skip"). E.g. "I don\'t know", "You decide".' },
                 showIf: {
                   type: 'object',
-                  description: 'Условие показа — вопрос скрыт пока ответ на questionId не равен equals. Для ветвления: не спрашивать про CI если ответ на "нужны тесты" = "no".',
+                  description: 'Show condition — the question is hidden until the answer to questionId equals equals. For branching: do not ask about CI if the answer to "need tests" = "no".',
                   properties: {
-                    questionId: { type: 'string', description: 'ID вопроса, ответ которого проверяется.' },
+                    questionId: { type: 'string', description: 'ID of the question whose answer is checked.' },
                     equals: {
                       type: 'string',
-                      description: 'Значение, при котором этот вопрос показывается. Для yesno — "true"/"false".',
+                      description: 'Value at which this question is shown. For yesno — "true"/"false".',
                     },
                   },
                   required: ['questionId', 'equals'],
@@ -525,7 +526,7 @@ export const TOOL_SCHEMAS = [
   },
 ]
 
-// Динамический набор тулов — добавляем по режиму
+// Dynamic tool set — added by mode
 const TOOL_BY_NAME = new Map(
   TOOL_SCHEMAS.map(schema => [schema.function.name, schema]),
 )
@@ -542,8 +543,8 @@ export function getToolSchemas(options: {
   webMode?: boolean
   imageMode?: boolean
   multiAgentMode?: boolean
-  mode?: 'code' | 'work'  // deprecated — игнорируется; work-режим удалён
-  /** MCP-тулы — динамически добавляются в набор (только enabled). */
+  mode?: 'code' | 'work'  // deprecated — ignored; work mode removed
+  /** MCP tools — dynamically added to the set (only enabled ones). */
   mcpTools?: McpToolRuntime[]
 } = {}) {
   const {
@@ -555,18 +556,19 @@ export function getToolSchemas(options: {
     mcpTools,
   } = options
 
-  // Work-режим удалён — всегда полный Code-набор инструментов.
-  // В planning-режиме — read-only + research: доступны все тулы исследования
-  // (get_fast_context, analyze_project, search_code, read_file, …), тул
-  // уточняющих вопросов ask_user, но ЗАПРЕЩЕНЫ правки (edit/write/run_command/
-  // revert). Планировщик исследует код → уточняет у пользователя → пишет план
-  // прямо в ответе, обёрнутый в <plan title="..." summary="...">…</plan>.
+  // Work mode removed — always a full Code tool set.
+  // In planning mode — read-only + research: all research tools are available
+  // (get_fast_context, analyze_project, search_code, read_file, ...), the
+  // ask_user clarifying-question tool, but edits are FORBIDDEN (edit/write/
+  // run_command/revert). The planner researches code → clarifies with the
+  // user → writes the plan directly in the answer, wrapped in
+  // <plan title="..." summary="...">…</plan>.
   //
-  // askMode (read-only) — тот же набор read-only тулов что и planning, но без
-  // требования оформлять <plan>. Используется для вопросов «не трогая код»
-  // (включается тогглом в плюс-меню или одноразово через /ask <текст>).
-  // planning имеет приоритет (он строже), но набор тулов идентичен — различие
-  // только в system-injection.
+  // askMode (read-only) — the same read-only tool set as planning, but
+  // without requiring a <plan>. Used for "do not touch code" questions
+  // (toggled in the plus-menu or one-shot via /ask <text>).
+  // planning takes priority (stricter), but the tool set is identical —
+  // the difference is only in the system injection.
   const names: string[] = [
     'read_file',
     'read_files',
@@ -577,12 +579,12 @@ export function getToolSchemas(options: {
     'update_working_memory',
     'update_todo',
     'ask_user',
-    // Долгосрочная память: save_memory (записать факт) + recall_memory (найти).
-    // Доступны всегда — модель сама решает когда сохранить/вспомнить.
+    // Long-term memory: save_memory (write a fact) + recall_memory (find).
+    // Always available — the model decides when to save/recall.
     'save_memory',
     'recall_memory',
-    // Веб-поиск, HTTP и суб-агенты — всегда доступны агенту, модель сама решает
-    // когда их использовать.
+    // Web search, HTTP and sub-agents — always available to the agent, the
+    // model decides when to use them.
     'search_web',
     'http_request',
     'spawn_agent',
@@ -592,12 +594,12 @@ export function getToolSchemas(options: {
   ]
 
   if (planningMode || askMode) {
-    // Planning / Ask: исследовательские тулы, read-only проверки, без правок.
+    // Planning / Ask: research tools, read-only checks, no edits.
     names.push('get_diagnostics')
     names.push('analyze_project')
     names.push('get_fast_context')
   } else {
-    // Обычный режим: правки файлов + команды + верификация.
+    // Normal mode: file edits + commands + verification.
     names.push('edit_file')
     names.push('write_file')
     names.push('run_command')
@@ -607,22 +609,22 @@ export function getToolSchemas(options: {
   }
 
   if (imageMode) names.push('generate_image')
-  // multiAgentMode/webMode больше не нужны для включения — оставлены как
-  // параметры функции для совместимости с вызывающим кодом.
+  // multiAgentMode/webMode are no longer needed for enabling — kept as
+  // function parameters for compatibility with the calling code.
   void webMode
   void multiAgentMode
 
   const schemas = pickTools(names)
 
-  // MCP-тулы — конвертируем в OpenAI-function-схему и аппендим.
-  // Имя: mcp__{serverName}__{toolName}, описание из MCP-сервера.
+  // MCP tools — convert to OpenAI function schema and append.
+  // Name: mcp__{serverName}__{toolName}, description from the MCP server.
   if (mcpTools && mcpTools.length > 0) {
     for (const tool of mcpTools) {
       schemas.push({
         type: 'function',
         function: {
           name: tool.name,
-          description: tool.description || `MCP-тул ${tool.shortName} с сервера ${tool.serverName}`,
+          description: tool.description || `MCP tool ${tool.shortName} from server ${tool.serverName}`,
           parameters: tool.inputSchema && Object.keys(tool.inputSchema).length > 0
             ? tool.inputSchema
             : { type: 'object', properties: {} },
@@ -635,25 +637,25 @@ export function getToolSchemas(options: {
 }
 
 // ── Side-chat-only tool ────────────────────────────────────────────────
-// Этот тул доступен ТОЛЬКО в параллельном доп-чате (side chat). Он не
-// включён в TOOL_SCHEMAS и не выдаётся обычным чатам через getToolSchemas.
-// Позволяет side-агенту запросить сообщения основного чата по мере нужды
-// (вместо передачи всей истории в контекст — экономия токенов).
+// This tool is available ONLY in the parallel side chat. It is not
+// included in TOOL_SCHEMAS and is not given to regular chats via getToolSchemas.
+// Lets the side agent request the main chat messages on demand
+// (instead of passing the whole history in context — saves tokens).
 export const GET_MAIN_CHAT_MESSAGES_SCHEMA = {
   type: 'function',
   function: {
     name: 'get_main_chat_messages',
-    description: 'Получить сообщения из основного чата (параллельного этому доп-чату). Возвращает текст сообщений с указанием роли. Используй для поиска информации в истории основного чата.',
+    description: 'Get messages from the main chat (parallel to this side chat). Returns message text with role indicated. Use to find information in the main chat history.',
     parameters: {
       type: 'object',
       properties: {
         limit: {
           type: 'number',
-          description: 'Количество недавних сообщений (по умолчанию 15, максимум 50).',
+          description: 'Number of recent messages (default 15, max 50).',
         },
         search: {
           type: 'string',
-          description: 'Подстрока для фильтрации сообщений (case-insensitive). Если задано, возвращаются только сообщения, содержащие эту подстроку.',
+          description: 'Substring to filter messages (case-insensitive). If given, returns only messages containing this substring.',
         },
       },
     },

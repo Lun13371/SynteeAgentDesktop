@@ -53,6 +53,8 @@ export default function SideChatPanel({ currentChatId }: SideChatPanelProps) {
       liveTextAfter: live.text,
       liveTodo: live.todo,
       agentStatus: live.agentStatus,
+      toolProgress: live.toolProgress,
+      spawnedAgents: live.spawnedAgents,
       rateLimitSec: live.rateLimitSec > 0 ? live.rateLimitSec : undefined,
     } as Message & Record<string, unknown>]
   }, [messages, showLiveBubble, live, currentChatId])

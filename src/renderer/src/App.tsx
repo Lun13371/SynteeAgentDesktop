@@ -411,7 +411,7 @@ export default function App() {
           glassBlur, density, accentGradient, rainbowAccent, bgImage, bgImageEnabled,
           animatedBgOpacity, animatedBgSpeed,
           customThemes, activeCustomThemeId, themeSchedule, recentAccents,
-          soundVolume, soundAssignments] = await Promise.all([
+          soundVolume, soundAssignments, mouseNavEnabled] = await Promise.all([
           window.syntee.settings.get('theme'),
           window.syntee.settings.get('bgStyle'),
           window.syntee.settings.get('msgAnim'),
@@ -439,6 +439,7 @@ export default function App() {
           window.syntee.settings.get('recentAccents'),
           window.syntee.settings.get('soundVolume'),
           window.syntee.settings.get('soundAssignments'),
+          window.syntee.settings.get('mouseNavEnabled'),
         ])
         const st = useUIStore.getState()
         if (theme) st.setTheme(theme as any)
@@ -470,6 +471,9 @@ export default function App() {
         if (Array.isArray(recentAccents)) st.setRecentAccents(recentAccents as string[])
         if (typeof soundVolume === 'number') { st.setSoundVolume(soundVolume); setSoundVolume(soundVolume) }
         if (soundAssignments && typeof soundAssignments === 'object') { st.setSoundAssignments(soundAssignments as any); setSoundAssignmentsFlag(soundAssignments as any) }
+        // mouseNavEnabled: дефолт true (как в браузере) если ключа в store нет.
+        // Запись в electron-store идёт через SettingsPage при toggle.
+        st.setMouseNavEnabled(typeof mouseNavEnabled === 'boolean' ? mouseNavEnabled : true)
 
         if (fontFamily) applyFontToDOM(fontFamily as string)
 
@@ -626,6 +630,37 @@ export default function App() {
   const uiSounds = useUIStore(s => s.uiSounds)
   useEffect(() => { setUiSoundsFlag(uiSounds) }, [uiSounds])
 
+  // ── Навигация боковыми кнопками мыши (X1/X2) ────────────────────────────
+  // X1 (button 3) — назад по истории nav.store, X2 (button 4) — вперёд.
+  // suppressEvent обязателен: без него Electron на Windows может триггерить
+  // системные navigation-события. Слушатель навешивается на window чтобы
+  // ловить клики по любому элементу (сайдбар, контент). main-процесс
+  // дополнительно гасит app-command (см. MainWindow.ts).
+  // mouseNavEnabled читается через getState() при каждом клике — не нужно
+  // перевешивать слушатель при toggle, и App не ре-рендерится на смену флага.
+  useEffect(() => {
+    const onMouseUp = (e: MouseEvent) => {
+      // button 3 → X1 (back), button 4 → X2 (forward).
+      if (e.button !== 3 && e.button !== 4) return
+      // Всегда гасим дефолт, даже если feature выключена — чтобы X1/X2
+      // не триггерили системные navigation-события.
+      e.preventDefault()
+      e.stopPropagation()
+      if (!useUIStore.getState().mouseNavEnabled) return
+      if (e.button === 3) useNavStore.getState().goBack()
+      else useNavStore.getState().goForward()
+    }
+    // auxclick надёжнее для X1/X2 в Chrome/Electron — не конфликтует с
+    // double-click. Но mouseup ловится раньше, поэтому вешаем оба и
+    // гасим каждый: один сработает раньше, второй no-op из-за changed state.
+    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('auxclick', onMouseUp)
+    return () => {
+      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('auxclick', onMouseUp)
+    }
+  }, [])
+
   // Громкость и назначения звуков синхронизируем с sounds.ts.
   const soundVolume = useUIStore(s => s.soundVolume)
   const soundAssignments = useUIStore(s => s.soundAssignments)
@@ -754,9 +789,10 @@ export default function App() {
             if (splitAlive) store.setSplitChat(savedSplit)
           }
           // Параллельно: последняя страница сообщений + queue для первого чата.
-          // Пагинация: грузим только хвост (20), остальное — по скроллу вверх.
+          // Пагинация: грузим хвост (50), остальное догружается тихим фоном
+          // (useBackgroundLoadFullChat) или по скроллу для больших чатов.
           const [page, queue] = await Promise.all([
-            window.syntee.chat.getMessagesPage(firstId, 20),
+            window.syntee.chat.getMessagesPage(firstId, 50),
             window.syntee.chat.getQueue(firstId).catch(() => []),
           ])
           if (cancelled) return

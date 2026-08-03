@@ -88,6 +88,14 @@ export class MainWindow {
       return { action: 'deny' }
     })
 
+    // Гасим системные app-command для боковых кнопок мыши (X1/X2). На Windows
+    // OS может слать 'back'/'forward'; без preventDefault они способны
+    // триггерить навигацию или контекстные действия. Полная обработка X1/X2 —
+    // в рендерере (см. App.tsx), здесь только подавление.
+    this.win.on('app-command', (e, cmd) => {
+      if (cmd === 'back' || cmd === 'forward') e.preventDefault()
+    })
+
     // Форвард смены maximize-состояния в renderer — кнопка в кастомной
     // шапке (frame: false) меняет иконку «развернуть» ↔ «восстановить».
     // События срабатывают на любой путь: кнопка, даблклик по drag-зоне,
