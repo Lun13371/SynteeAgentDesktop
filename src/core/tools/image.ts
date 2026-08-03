@@ -43,12 +43,12 @@ export async function generateImage(
   if (!provider) {
     return {
       success: false, output: '',
-      error: 'Не настроена модель генерации изображений. Зайдите в Настройки → AI → Модели → Генерация изображений и выберите модель.'
+      error: 'No image generation model is configured. Go to Settings → AI → Models → Image generation and select a model.'
     }
   }
 
   const apiKey = provider.apiKeys?.find(k => k.trim()) || provider.apiKey || ''
-  if (!apiKey) return { success: false, output: '', error: 'API ключ провайдера не задан' }
+  if (!apiKey) return { success: false, output: '', error: 'Provider API key is not set' }
 
   // Стандартный OpenAI-совместимый путь для всех провайдеров
   try {
@@ -64,10 +64,11 @@ export async function generateImage(
     })
 
     const img = response.data?.[0]
-    if (!img) return { success: false, output: '', error: 'Провайдер не вернул изображение' }
+    if (!img) return { success: false, output: '', error: 'The provider did not return an image' }
     const url = img.url || ''
+    if (!url) return { success: false, output: '', error: 'The provider returned an empty image URL. The image may not have been generated.' }
     const revised = img.revised_prompt ? `\nRevised prompt: ${img.revised_prompt}` : ''
-    return { success: true, output: `![Generated Image](${url})${revised}\n\nURL: ${url}` }
+    return { success: true, output: `![Generated Image](${url})${revised}\n\nURL: ${url}\n\nNote: the URL is temporary and may expire within an hour. If you need to save the image, download it before it expires.` }
   } catch (e: unknown) {
     return { success: false, output: '', error: e instanceof Error ? e.message : String(e) }
   }

@@ -134,6 +134,12 @@ export default defineConfig({
   renderer: {
     plugins: [react(), ...(protect ? [rendererObfuscatorPlugin()] : [])],
     resolve: {
+      // По умолчанию Vite резолвит ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'] —
+      // .js/.jsx приоритетнее .ts/.tsx. В репо лежат gitignored .js/.jsx-мироры
+      // (артефакты компиляции .ts/.tsx→.js/.jsx), которые перехватывали импорты и
+      // Vite грузил устаревший mirror вместо актуального .ts/.tsx. Ставим
+      // .ts/.tsx выше .js/.jsx, чтобы источником правды всегда был source-of-truth.
+      extensions: ['.mjs', '.ts', '.tsx', '.js', '.jsx', '.json'],
       alias: {
         '@renderer': resolve('src/renderer/src'),
         '@shared': resolve('src/shared')

@@ -47,7 +47,7 @@ export interface AgentCallbacks {
   onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
-  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none' }) => Promise<{ summary: string; error?: string }>
+  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none'; callId?: string }) => Promise<{ summary: string; error?: string }>
   /**
    * Персистентный shell (§1 GAP_ANALYSIS.md) — если задан, run_command
    * выполняется через живую shell-сессию в main-процессе вместо
@@ -165,6 +165,22 @@ export type AgentMessage = {
   tool_calls?: unknown[]
   tool_call_id?: string
   name?: string
+  // Anthropic extended thinking blocks. When the model returns thinking
+  // followed by tool_use, the thinking blocks MUST be echoed back in the
+  // next round alongside the assistant's tool_use — otherwise Anthropic
+  // returns 400 "thinking blocks must be followed by a tool_use or text
+  // block". Each block needs both `thinking` (text) and `signature`
+  // (verification token from the API). Without these, multi-round agentic
+  // loops break on Claude with extended thinking enabled.
+  thinking_blocks?: Array<{ thinking: string; signature: string }>
+  // OpenAI-compatible reasoning_content (GLM/DeepSeek/Qwen thinking mode).
+  // Some providers (LiteLLM proxy for glm-* / deepseek-r1) return 400 if the
+  // assistant message that produced reasoning_content is echoed back in the
+  // next round WITHOUT the reasoning_content field — the proxy validates
+  // that thinking-mode output is round-tripped. Populated from response.reasoning
+  // in Agent.ts and from message.thinking in chatContextHelpers. Anthropic
+  // native path ignores this field (convertMessagesToAnthropic doesn't read it).
+  reasoning_content?: string
 }
 
 export type NormalizedToolCall = {

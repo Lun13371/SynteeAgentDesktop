@@ -45,6 +45,10 @@ export interface ChatAutoscroll {
   /** Закрепить и доехать до низа. instant=true — мгновенный прыжок
    *  (отправка запроса, смена чата, первая загрузка). */
   pin: (instant?: boolean) => void
+  /** Отлепить от низа (pinned=false). Гасит rAF-loop догона — нужно при
+   *  среднем клике колесика (браузерный autoscroll-жест) и при прыжке по
+   *  минимапе, иначе loop мгновенно тащит обратно к низу. */
+  unpin: () => void
   /** Мгновенный скролл к низу без смены pinned (для initial-scroll). */
   scrollToBottomInstant: () => void
   /** Перечитать scrollTop/scrollHeight в refs после ВНЕШНЕЙ записи scrollTop
@@ -53,6 +57,11 @@ export interface ChatAutoscroll {
   syncScrollState: () => void
   handleScroll: () => void
   handleWheel: (e: React.WheelEvent<HTMLDivElement>) => void
+  /** Средний клик колесика (button===1) → отлеп. Браузерный autoscroll-жест
+   *  (кружок-курсор) сам по себе работает, но пока pinned=true rAF-loop
+   *  каждый кадр тащит обратно к низу — жест «багается». preventDefault НЕ
+   *  зовём: нам нужен сам жест, только гасим loop. */
+  handleMouseDown: (e: React.MouseEvent<HTMLDivElement>) => void
   handleTouchStart: (e: React.TouchEvent<HTMLDivElement>) => void
   handleTouchMove: (e: React.TouchEvent<HTMLDivElement>) => void
 }
@@ -134,6 +143,17 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChat
     ensureLoop()
   }, [ensureLoop, scrollToBottomInstant])
 
+  const unpin = useCallback(() => {
+    pinnedRef.current = false
+    setShowScrollDownBtn(true)
+  }, [])
+
+  // Средний клик колесика → отлеп (браузерный autoscroll-жест не должен
+  // конкурировать с rAF-loop'ом догона). preventDefault НЕ зовём — жест нужен.
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button === 1) unpin()
+  }, [unpin])
+
   const handleScroll = useCallback(() => {
     if (scrollPendingRef.current) return
     scrollPendingRef.current = true
@@ -203,10 +223,12 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChat
     showScrollDownBtn,
     setShowScrollDownBtn,
     pin,
+    unpin,
     scrollToBottomInstant,
     syncScrollState,
     handleScroll,
     handleWheel,
+    handleMouseDown,
     handleTouchStart,
     handleTouchMove,
   }

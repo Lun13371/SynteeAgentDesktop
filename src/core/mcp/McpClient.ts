@@ -175,7 +175,7 @@ export class McpClient {
       await Promise.race([
         this.doConnect(),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Таймаут подключения (${McpClient.CONNECT_TIMEOUT_MS / 1000}с)`)), McpClient.CONNECT_TIMEOUT_MS),
+          setTimeout(() => reject(new Error(`Connection timeout (${McpClient.CONNECT_TIMEOUT_MS / 1000}s)`)), McpClient.CONNECT_TIMEOUT_MS),
         ),
       ])
       this.setStatus('connected')
@@ -363,7 +363,7 @@ export class McpClient {
         requestInit: this.config.headers ? { headers: this.config.headers } : undefined,
       })
     }
-    throw new Error(`Неизвестный транспорт: ${this.config.transport}`)
+    throw new Error(`Unknown transport: ${this.config.transport}`)
   }
 
   /** Преобразует имя сервера в безопасный идентификатор для имени тула. */

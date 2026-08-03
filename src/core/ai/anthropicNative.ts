@@ -3,7 +3,7 @@ import {
   convertToolsToAnthropic,
   convertMessagesToAnthropic,
 } from './anthropicConverters'
-import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, extractReasoningText } from './shared'
+import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS } from './shared'
 
 /**
  * Нативный Anthropic Messages API путь с prompt caching.
@@ -20,7 +20,7 @@ import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, extractReasoningText } fr
  */
 export async function chatWithToolsAnthropic(
   client: Anthropic,
-  messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
+  messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string; thinking_blocks?: Array<{ thinking: string; signature: string }> }>,
   tools: unknown[],
   signal: AbortSignal | undefined,
   model: string,
@@ -36,7 +36,7 @@ export async function chatWithToolsAnthropic(
     onThinkingDone?: (ms: number) => void
     onToolCallStarted?: (index: number, toolName: string) => void
   },
-): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
+): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean; thinking_blocks?: Array<{ thinking: string; signature: string }> }> {
   const { onToken, onRateLimit, onRetry, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted } = callbacks
 
   // Конвертируем messages и tools в Anthropic формат (с cache_control)
@@ -77,6 +77,13 @@ export async function chatWithToolsAnthropic(
 
       let content = ''
       let reasoning = ''
+      // Accumulate thinking blocks with signatures — required to echo
+      // back in next round when the assistant message contains tool_use.
+      // Each thinking content_block has its own signature sent via
+      // signature_delta events. We track per-block index.
+      const thinkingBlocks: Array<{ thinking: string; signature: string }> = []
+      const blockThinking: Record<number, string> = {}
+      const blockSignature: Record<number, string> = {}
       let thinkingStartMs = 0
       let thinkingDoneSent = false
       const tokenBuffer: string[] = []
@@ -130,6 +137,10 @@ export async function chatWithToolsAnthropic(
               }
             } else if (block?.type === 'thinking') {
               if (!thinkingStartMs) thinkingStartMs = Date.now()
+              // Initialize per-block thinking accumulator (signature comes
+              // via signature_delta events after the block's thinking text).
+              blockThinking[idx] = ''
+              blockSignature[idx] = ''
             }
             break
           }
@@ -158,16 +169,35 @@ export async function chatWithToolsAnthropic(
               if (think) {
                 if (!thinkingStartMs) thinkingStartMs = Date.now()
                 reasoning += think
+                if (blockThinking[idx] !== undefined) blockThinking[idx] += think
                 onThinkingToken?.(think)
               }
+            } else if (delta.type === 'signature_delta') {
+              // signature_delta — verification token for the thinking block.
+              // MUST be preserved to echo the thinking block back in the
+              // next round; Anthropic validates it on resubmission.
+              const sig: string = delta.signature ?? ''
+              if (sig && blockSignature[idx] !== undefined) blockSignature[idx] += sig
             }
-            // signature_delta — игнорируем (служебные данные для верификации thinking)
+            // (other delta types ignored)
             break
           }
 
-          case 'content_block_stop':
+          case 'content_block_stop': {
             // tool_use блок завершён — JSON аргументов накоплен в jsonBuffer
+            // thinking блок завершён — финализируем и добавляем в thinkingBlocks
+            const idx: number = event.index ?? 0
+            if (blockThinking[idx] !== undefined) {
+              const text = blockThinking[idx]
+              const sig = blockSignature[idx] || ''
+              if (text) {
+                thinkingBlocks.push({ thinking: text, signature: sig })
+              }
+              delete blockThinking[idx]
+              delete blockSignature[idx]
+            }
             break
+          }
 
           case 'message_delta': {
             const usage = event.usage
@@ -216,6 +246,7 @@ export async function chatWithToolsAnthropic(
         tool_calls,
         reasoning: reasoning || undefined,
         hadStreamedTokens: tokenBuffer.length > 0 && !tool_calls,
+        thinking_blocks: thinkingBlocks.length > 0 ? thinkingBlocks : undefined,
       }
 
     } catch (err: unknown) {
@@ -230,7 +261,7 @@ export async function chatWithToolsAnthropic(
         onRateLimit?.(waitSec)
         onRetry?.(attempt + 1, 'rate_limit', waitSec, maxAttempts)
         if (Date.now() >= deadlineMs) {
-          throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+          throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
         }
         await sleep(delay)
         attempt++
@@ -248,7 +279,7 @@ export async function chatWithToolsAnthropic(
           attempt + 1, maxAttempts, model, error?.status ?? '—', error?.message ?? String(err))
         onRetry?.(attempt + 1, 'network', undefined, maxAttempts)
         if (Date.now() >= deadlineMs) {
-          throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+          throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
         }
         await sleep(delay)
         attempt++

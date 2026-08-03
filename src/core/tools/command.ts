@@ -71,12 +71,29 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     const { stdout, stderr } = await execAsync(execCmd, execOpts)
     const stdoutClean = (stdout as string)?.trim() || ''
     const stderrClean = (stderr as string)?.trim() || ''
-    let out = smartTrimOutput(stdoutClean) || '(нет вывода)'
+    let out = smartTrimOutput(stdoutClean) || '(no output)'
     if (stderrClean) out += `\n[stderr]:\n${smartTrimOutput(stderrClean)}`
     return { success: true, output: `[exit: 0]\n${out}` }
   } catch (e: any) {
     const stdoutPart = smartTrimOutput(e.stdout?.trim() || '')
     const stderrPart = smartTrimOutput(e.stderr?.trim() || '')
+    // Node child_process marks a process killed by timeout: e.killed=true,
+    // e.signal='SIGTERM' (sometimes null, but killed=true). execAsync throws
+    // with e.code = null/string (not a number) in this case. Without an
+    // explicit check, the timeout was masked as "Command failed" exit:1 —
+    // the AI did not understand the command timed out and retried the same
+    // call in a loop.
+    const timedOut = e.killed === true || e.signal === 'SIGTERM'
+    if (timedOut) {
+      let out = `[timeout: ${timeout || 60}s — process killed]`
+      if (stdoutPart) out += `\n[stdout before kill]:\n${stdoutPart}`
+      if (stderrPart) out += `\n[stderr before kill]:\n${stderrPart}`
+      return {
+        success: false,
+        output: out,
+        error: `Command exceeded the timeout (${timeout || 60}s). Pass a larger timeout (e.g. 120 or 300), run the command in the background, or break it into shorter steps.`,
+      }
+    }
     const exitCode = typeof e.code === 'number' ? e.code : 1
     let out = `[exit: ${exitCode}]`
     if (stdoutPart) out += `\n[stdout]:\n${stdoutPart}`
@@ -84,7 +101,7 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     return {
       success: false,
       output: out,
-      error: stderrPart || e.message?.replace(/Command failed:.+\n?/, '').trim() || 'Команда завершилась с ошибкой',
+      error: stderrPart || e.message?.replace(/Command failed:.+\n?/, '').trim() || 'Command failed',
     }
   }
 }

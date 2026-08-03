@@ -50,28 +50,50 @@ export function findMissingRequiredArgs(
 
 export function getToolErrorHint(toolName: string, error: string): string {
   const e = error.toLowerCase()
-  if (toolName === 'edit_file' && (e.includes('not found') || e.includes('old_str'))) {
-    return '\n\n[Hint: refresh the file with read_file before retrying edit_file.]'
+  // Русско-английская нормализация: тулы возвращают русские сообщения
+  // («не найден», «таймаут», «отказано в доступе»), а hint'ы раньше
+  // матчили только английские подстроки → 5 из 7 hint'ов никогда не
+  // срабатывали. Теперь матчим оба языка.
+  const ruE = error.toLowerCase()
+  const matchAny = (...subs: string[]) => subs.some(s => e.includes(s) || ruE.includes(s.toLowerCase()))
+
+  // edit_file: old_str/SEARCH не найден — подсказка перечитать файл.
+  // Покрывает: replace ("old_str не найден"), apply_patch ("SEARCH не найден"),
+  // fuzzy-fail, и английский "not found".
+  if (toolName === 'edit_file' && matchAny('not found', 'old_str', 'search', 'не найден')) {
+    return '\n\n[Hint: файл мог измениться. Перечитай его read_file и используй актуальный фрагмент как old_str / SEARCH.]'
   }
-  if ((toolName === 'read_file' || toolName === 'write_file') && (e.includes('no such file') || e.includes('enoent') || e.includes('not found'))) {
-    return '\n\n[Hint: locate the exact path with find_files first.]'
+  if ((toolName === 'read_file' || toolName === 'write_file') && matchAny('no such file', 'enoent', 'not found', 'не найден')) {
+    return '\n\n[Hint: путь не существует. Используй find_files чтобы найти правильный путь.]'
   }
   if (toolName === 'run_command') {
-    if (e.includes('not recognized') || e.includes('command not found')) {
-      return '\n\n[Hint: verify the command exists or use an installed alternative.]'
+    if (matchAny('not recognized', 'command not found', 'не распознан', 'не является внутренней или внешней')) {
+      return '\n\n[Hint: команда не найдена. Проверь что она установлена, или используй известную альтернативу.]'
     }
-    if (e.includes('permission') || e.includes('access denied')) {
-      return '\n\n[Hint: the command likely needs different permissions or a safer target path.]'
+    if (matchAny('permission', 'access denied', 'отказано в доступе', 'нет доступа', 'eperm', 'eacces')) {
+      return '\n\n[Hint: нет прав. Возможно нужен другой путь, запуск от администратора, или файл занят другим процессом.]'
+    }
+    if (matchAny('timed out', 'timeout', 'превысил таймаут', 'превысила таймаут', 'timeout:', 'процесс убит')) {
+      return '\n\n[Hint: команда превысила таймаут. Передай большее значение timeout (120/300) или разбей на более короткие шаги.]'
+    }
+    if (matchAny('ebusy', 'resource busy', 'занят другим процессом')) {
+      return '\n\n[Hint: файл/ресурс занят другим процессом. Закрой редактор/приложение которое держит файл, и повтори.]'
     }
   }
-  if (toolName === 'search_code' && (e.includes('rg') || e.includes('ripgrep') || e.includes('not found'))) {
-    return '\n\n[Hint: ripgrep unavailable — автоматически задействован PowerShell-фолбэк. Если поиск пуст, проверь path и pattern, либо используй literal=true для дословного поиска.]'
+  if (toolName === 'search_code' && matchAny('rg', 'ripgrep', 'not found', 'не найден', 'совпадений не найдено')) {
+    return '\n\n[Hint: ripgrep недоступен — задействован PowerShell-фолбэк. Если поиск пуст, проверь path и pattern, либо используй literal=true для дословного поиска. Убедись что path существует.]'
   }
-  if (toolName === 'http_request' && e.includes('timed out')) {
-    return '\n\n[Hint: increase the timeout parameter or try a different endpoint.]'
+  if (toolName === 'http_request' && matchAny('timed out', 'timeout', 'превысил таймаут')) {
+    return '\n\n[Hint: увеличь параметр timeout или попробуй другой endpoint.]'
   }
-  if (toolName === 'find_files' && e.includes('not found') && e.includes('pattern')) {
-    return '\n\n[Hint: use a simpler glob pattern like *.ts or a partial filename.]'
+  if (toolName === 'find_files' && matchAny('not found', 'не найдено', 'файлов не найдено')) {
+    return '\n\n[Hint: упрости pattern (например *.ts) или проверь path. Используй search_code если нужно найти по содержимому.]'
+  }
+  if (toolName === 'list_directory' && matchAny('not found', 'не найден', 'eacces', 'отказано')) {
+    return '\n\n[Hint: папка недоступна или не существует. Проверь путь или права доступа.]'
+  }
+  if (toolName === 'get_diagnostics' && matchAny('не запустился', 'не смог запуститься', 'tsc не', 'eslint не')) {
+    return '\n\n[Hint: диагностическая команда упала — проверка не отработала. Запусти run_command "npx tsc --noEmit" вручную чтобы увидеть причину.]'
   }
   return ''
 }

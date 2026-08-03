@@ -3,7 +3,6 @@ import type { Virtualizer } from '@tanstack/react-virtual'
 import type { Message } from '../../../../../shared/types'
 import { useSettingsStore } from '../../../store/settings.store'
 import './ChatMinimap.css'
-
 // ── ChatMinimap — миникарта сообщений (точки справа по центру) ─────────────
 // Вертикальная полоса точек: одна точка = одно сообщение. Клик — прыжок к
 // сообщению (virtualizer.scrollToIndex, center). Ховер — превью (роль,
@@ -51,9 +50,12 @@ interface ChatMinimapProps {
   /** displayMessages страницы (включая псевдо — они отфильтровываются). */
   messages: Message[]
   scrollContainerRef: React.RefObject<HTMLDivElement | null>
+  /** Дёрнуть ПЕРЕД прыжком к сообщению — сбросить pinned автоскролла.
+   *  Иначе rAF-loop мгновенно вернёт ленту к низу, и прыжок не виден. */
+  onJump?: () => void
 }
 
-function ChatMinimap({ virtualizer, messages, scrollContainerRef }: ChatMinimapProps) {
+function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: ChatMinimapProps) {
   const enabled = useSettingsStore(s => (s.settings['chatMinimap'] as boolean | undefined) ?? true)
   // Точки по реальным сообщениям с их исходными индексами в displayMessages
   // (scrollToIndex работает по индексу ПОЛНОГО массива, включая псевдо).
@@ -72,12 +74,35 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef }: ChatMinimapP
   const [hover, setHover] = useState<{ origIndex: number; clientY: number } | null>(null)
   const scrollRafRef = useRef(false)
 
+  // Свежая ссылка на onJump без пересоздания handleClick (как onScrollExtraRef
+  // в useChatAutoscroll). React Compiler не любит самоссылку useCallback —
+  // ref-обёртка снимает проблему.
+  const onJumpRef = useRef(onJump)
+  useEffect(() => { onJumpRef.current = onJump })
+
   // Активное сообщение — по центру вьюпорта. Свой scroll-listener (passive,
   // rAF-throttled) — независим от onScroll страницы.
+  // ВАЖНО: scrollContainerRef.current может быть null на первом рендере —
+  // .chat-messages монтируется только в ветке !showSkeleton && messages>0.
+  // Ref-object не триггерит эффект при заполнении .current, поэтому эффект
+  // перевыполняется на messages.length/dots.length (меняются когда контейнер
+  // появляется). Дополнительно — retry-цикл на rAF пока el не появится.
   useEffect(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
+    let raf = 0
+    let cancelled = false
+    let cleanup: (() => void) | undefined
+    let ro: ResizeObserver | undefined
+    const onScroll = () => {
+      if (scrollRafRef.current) return
+      scrollRafRef.current = true
+      requestAnimationFrame(() => {
+        scrollRafRef.current = false
+        update()
+      })
+    }
     const update = () => {
+      const el = scrollContainerRef.current
+      if (!el) return
       setHasOverflow(el.scrollHeight - el.clientHeight > 24)
       const center = el.scrollTop + el.clientHeight / 2
       const items = virtualizer.getVirtualItems()
@@ -89,42 +114,64 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef }: ChatMinimapP
       }
       setActiveOrigIndex(idx)
     }
-    const onScroll = () => {
-      if (scrollRafRef.current) return
-      scrollRafRef.current = true
-      requestAnimationFrame(() => {
-        scrollRafRef.current = false
-        update()
-      })
+    const attach = () => {
+      if (cancelled) return
+      const el = scrollContainerRef.current
+      if (!el) {
+        // Контейнер ещё не смонтирован (showSkeleton/empty) — retry в след. кадре.
+        raf = requestAnimationFrame(attach)
+        return
+      }
+      update()
+      el.addEventListener('scroll', onScroll, { passive: true })
+      ro = new ResizeObserver(update)
+      ro.observe(el)
+      cleanup = () => {
+        el.removeEventListener('scroll', onScroll)
+        ro?.disconnect()
+      }
     }
-    update()
-    el.addEventListener('scroll', onScroll, { passive: true })
-    // Переполнение меняется и при росте контента без скролла (стрим).
-    const ro = new ResizeObserver(update)
-    ro.observe(el)
+    attach()
     return () => {
-      el.removeEventListener('scroll', onScroll)
-      ro.disconnect()
+      cancelled = true
+      if (raf) cancelAnimationFrame(raf)
+      cleanup?.()
     }
   }, [virtualizer, scrollContainerRef, messages.length])
 
   // Размер точки: при переполнении полосы точки ужимаются до DOT_MIN.
   const [dotSize, setDotSize] = useState(DOT_MAX)
   useEffect(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
+    let raf = 0
+    let cancelled = false
+    let ro: ResizeObserver | undefined
     const apply = () => {
+      const el = scrollContainerRef.current
+      if (!el) return
       const maxH = el.clientHeight * STRIP_MAX_RATIO
       const fit = Math.floor((maxH + DOT_GAP) / (dots.length + DOT_GAP / Math.max(DOT_MAX, 1)))
       setDotSize(Math.max(DOT_MIN, Math.min(DOT_MAX, fit)))
     }
-    apply()
-    const ro = new ResizeObserver(apply)
-    ro.observe(el)
-    return () => ro.disconnect()
+    const attach = () => {
+      if (cancelled) return
+      const el = scrollContainerRef.current
+      if (!el) { raf = requestAnimationFrame(attach); return }
+      apply()
+      ro = new ResizeObserver(apply)
+      ro.observe(el)
+    }
+    attach()
+    return () => {
+      cancelled = true
+      if (raf) cancelAnimationFrame(raf)
+      ro?.disconnect()
+    }
   }, [scrollContainerRef, dots.length])
 
   const handleClick = useCallback((origIndex: number) => {
+    // Сброс pinned ДО scrollToIndex — иначе rAF-loop автоскролла мгновенно
+    // вернёт ленту к низу, и прыжок к выбранному сообщению не виден.
+    onJumpRef.current?.()
     virtualizer.scrollToIndex(origIndex, { align: 'center', behavior: 'auto' })
   }, [virtualizer])
 

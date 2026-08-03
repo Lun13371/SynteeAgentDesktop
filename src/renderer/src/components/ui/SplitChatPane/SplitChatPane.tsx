@@ -6,6 +6,7 @@ import type { Message, Attachment, ToolOutputMode } from '../../../../../shared/
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../../hooks/useChatRunSubscription'
 import { useChatAutoscroll } from '../../../hooks/useChatAutoscroll'
+import { useBackgroundLoadFullChat } from '../../../hooks/useBackgroundLoadFullChat'
 import { useContextCounter } from '../../../hooks/useContextCounter'
 import MessageBubble from '../MessageBubble/MessageBubble'
 import { ChatRemeasureContext } from '../MessageBubble/remeasure'
@@ -14,7 +15,7 @@ import ChatMinimap from '../ChatMinimap/ChatMinimap'
 import LiveTodoBar from '../LiveTodoBar/LiveTodoBar'
 import AppIcon from '../AppIcon/AppIcon'
 import Logo from '../Logo/Logo'
-import { useChatStore, EMPTY_LIVE } from '../../../store/chat.store'
+import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../../store/chat.store'
 import { playDoneSound } from '../../../utils/sounds'
 import { parseSlashCommandWithCustom } from '../../../../../shared/slashCommands'
 // Общие классы чата (chat-main/chat-messages/chat-skeleton/chat-empty-state/
@@ -120,7 +121,19 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const streamingText = live.text
 
   const [toolOutputMode] = useState<ToolOutputMode>('normal')
-  const [isLoadingOlder, setIsLoadingOlder] = useState(false)
+  // isLoadingOlder — ЛОКАЛЬНЫЙ (не стор!), чтобы в split-режиме не контамини-
+  // ровать спиннер ChatPage (две панели грузятся независимо). Связка ref+state:
+  // ref — свежий read для bg-хука/скролл-триггера (без stale-closure), state —
+  // для ререндера спиннера. Раньше state не сбрасывался на успехе → повторные
+  // скролл-загрузки блокировались; теперь setIsLoadingOlder единообразно
+  // сбрасывает через finally в loadOlderMessages и в bg-хуковом finally.
+  const [isLoadingOlder, setIsLoadingOlderState] = useState(false)
+  const isLoadingOlderRef = useRef(false)
+  const setIsLoadingOlder = useCallback((v: boolean) => {
+    isLoadingOlderRef.current = v
+    setIsLoadingOlderState(v)
+  }, [])
+  const isLargeChat = useChatStore(s => selectIsLargeChat(s.chats, chatId))
   const [showSkeleton, setShowSkeleton] = useState(false)
   const isInitialScrollRef = useRef(true)
   const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -220,7 +233,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       skeletonTimerRef.current = setTimeout(() => { if (!cancelled) setShowSkeleton(true) }, 120)
       await hydrateFromMain(chatId)
       try {
-        const res = await window.syntee.chat.getMessagesPage(chatId, 20)
+        const res = await window.syntee.chat.getMessagesPage(chatId, 50)
         if (cancelled) return
         setMessagesWindow(chatId, res.messages, res.hasMore)
         if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
@@ -244,7 +257,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const prependingRef = useRef<{ oldScrollHeight: number; oldScrollTop: number } | null>(null)
   const loadOlderMessages = useCallback(async () => {
     const st = useChatStore.getState()
-    if (st.messagesByChat[chatId]?.hasOlder === false || isLoadingOlder) return
+    if (st.messagesByChat[chatId]?.hasOlder === false || isLoadingOlderRef.current) return
     const entry = st.messagesByChat[chatId]
     const oldest = entry?.messages[0]
     if (!oldest) return
@@ -252,21 +265,28 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     if (el) prependingRef.current = { oldScrollHeight: el.scrollHeight, oldScrollTop: el.scrollTop }
     setIsLoadingOlder(true)
     try {
-      const res = await window.syntee.chat.getMessagesPage(chatId, 20, oldest.createdAt, oldest.id)
+      const res = await window.syntee.chat.getMessagesPage(chatId, 50, oldest.createdAt, oldest.id)
       prependOlderMessages(chatId, res.messages, res.hasMore)
     } catch {
+      // Ошибка — молча. Слот освободит finally.
+    } finally {
+      // Явный сброс: раньше на успехе state НЕ сбрасывался (prependOlderMessages
+      // правит только стор-флаг, не локальный) → повторные скролл-загрузки
+      // блокировались навсегда. Теперь единообразно через finally.
       setIsLoadingOlder(false)
     }
-  }, [chatId, isLoadingOlder, prependOlderMessages])
+  }, [chatId, prependOlderMessages, setIsLoadingOlder])
   const loadOlderRef = useRef(loadOlderMessages)
   loadOlderRef.current = loadOlderMessages
 
   const {
     showScrollDownBtn,
     pin: pinAutoscroll,
+    unpin: unpinAutoscroll,
     syncScrollState,
     handleScroll,
     handleWheel,
+    handleMouseDown,
     handleTouchStart,
     handleTouchMove,
   } = useChatAutoscroll({
@@ -274,7 +294,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     onScrollExtra: () => {
       const el = scrollContainerRef.current
       if (!el) return
-      if (el.scrollTop < 200 && hasOlderMessages && !isLoadingOlder) loadOlderRef.current()
+      if (el.scrollTop < 200 && hasOlderMessages && !isLoadingOlderRef.current) loadOlderRef.current()
     },
   })
 
@@ -291,6 +311,19 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       syncScrollState()
     }
   }, [messages.length, syncScrollState])
+
+  // ── Тихая фоновая догрузка всей истории (для чатов ≤ LARGE_CHAT_THRESHOLD)
+  // Переиспользует prependingRef для скролл-компенсации. Большие чаты —
+  // reverse-infinite scroll со спиннером. Дедуп со скролл-триггером через
+  // ЛОКАЛЬНЫЙ флаг (независимость от ChatPage в split-режиме).
+  useBackgroundLoadFullChat({
+    chatId,
+    isLargeChat,
+    prependingRef,
+    scrollContainerRef,
+    isBusy: () => isLoadingOlderRef.current,
+    setBusy: setIsLoadingOlder,
+  })
 
   // Плавный скролл вниз по клику на floating-кнопку + закрепление.
   const handleScrollDownClick = () => pinAutoscroll()
@@ -437,6 +470,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
         liveTodo: live.todo,
         agentStatus: live.agentStatus,
         toolProgress: live.toolProgress,
+        spawnedAgents: live.spawnedAgents,
         livePlanningMode: planningMode,
         rateLimitSec: live.rateLimitSec > 0 ? live.rateLimitSec : undefined,
         retry: live.retry,
@@ -445,7 +479,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     }
     return result
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.toolProgress, live.rateLimitSec, planningMode])
+  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.toolProgress, live.spawnedAgents, live.rateLimitSec, planningMode])
 
   const getItemKey = useCallback(
     (index: number) => displayMessages[index]?.id ?? index,
@@ -589,8 +623,8 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
           <p>Сплит-чат. Напишите сообщение…</p>
         </div>
       ) : (
-        <div className="chat-messages" ref={scrollContainerRef} onScroll={handleScroll} onWheel={handleWheel} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove}>
-          {isLoadingOlder && (
+        <div className="chat-messages" ref={scrollContainerRef} onScroll={handleScroll} onWheel={handleWheel} onMouseDown={handleMouseDown} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove}>
+          {isLoadingOlder && isLargeChat && (
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, display: 'flex', justifyContent: 'center', padding: '6px 0', zIndex: 2, pointerEvents: 'none' }}>
               <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px solid rgba(127,127,127,0.25)', borderTopColor: 'rgba(127,127,127,0.7)', animation: 'chat-older-spin 0.7s linear infinite' }} />
             </div>
@@ -635,6 +669,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
         virtualizer={virtualizer}
         messages={displayMessages}
         scrollContainerRef={scrollContainerRef}
+        onJump={unpinAutoscroll}
       />
 
       <AnimatePresence>

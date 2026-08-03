@@ -110,7 +110,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     chatId: string
     msgId: string
     content: string
-    history: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>
+    history: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string; thinking_blocks?: Array<{ thinking: string; signature: string }>; reasoning_content?: string }>
     systemPrompt: string
     enableTools: boolean
     incognito: boolean
@@ -510,7 +510,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 resolve({ summary: reply.summary as string, error: reply.error as string | undefined })
               })
               const { approvalMode, ...rest } = opts
-              send({ type: 'spawn_agent', chatId, msgId, replyId, ...rest, approval_mode: approvalMode })
+              send({ type: 'spawn_agent', chatId, msgId, replyId, ...rest, approval_mode: approvalMode, callId: opts.callId })
             })
           },
           onShellExec: (command, cwd, timeoutSec) => {

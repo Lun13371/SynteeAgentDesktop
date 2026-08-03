@@ -62,6 +62,9 @@ interface UIStore {
   recentAccents: string[]
   soundVolume: number
   soundAssignments: Record<string, string | null>
+  // Навигация боковыми кнопками мыши (X1 — назад, X2 — вперёд). По умолчанию
+  // включено, как в браузере.
+  mouseNavEnabled: boolean
   setTheme: (theme: Theme) => void
   setAccentColor: (color: string) => void
   setAgentPanelWidth: (width: number) => void
@@ -90,6 +93,7 @@ interface UIStore {
   setRecentAccents: (v: string[]) => void
   setSoundVolume: (v: number) => void
   setSoundAssignments: (v: Record<string, string | null>) => void
+  setMouseNavEnabled: (v: boolean) => void
 }
 
 function clampAgentPanelWidth(w: number): number {
@@ -134,6 +138,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   recentAccents: [],
   soundVolume: 70,
   soundAssignments: {},
+  mouseNavEnabled: true,
 
   setTheme: (theme) => set({ theme }),
   setAccentColor: (accentColor) => set({ accentColor }),
@@ -169,4 +174,5 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setRecentAccents: (recentAccents) => set({ recentAccents }),
   setSoundVolume: (soundVolume) => set({ soundVolume }),
   setSoundAssignments: (soundAssignments) => set({ soundAssignments }),
+  setMouseNavEnabled: (mouseNavEnabled) => set({ mouseNavEnabled }),
 }))

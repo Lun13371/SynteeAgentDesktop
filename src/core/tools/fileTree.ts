@@ -6,7 +6,7 @@ import { DEFAULT_IGNORE_DIRS, resolveToolPath, formatSize, type ToolResult } fro
 export async function listDirectory(path: string, opts?: { recursive?: boolean; depth?: number; ignore?: string[]; workdir?: string }): Promise<ToolResult> {
   try {
     path = resolveToolPath(path, opts?.workdir)
-    if (!existsSync(path)) return { success: false, output: '', error: 'Папка не найдена: ' + path }
+    if (!existsSync(path)) return { success: false, output: '', error: 'Directory not found: ' + path }
     const maxDepth = opts?.depth ?? (opts?.recursive ? 3 : 0)
     const ignore = [...DEFAULT_IGNORE_DIRS, ...(opts?.ignore ?? [])]
     const lines: string[] = []
@@ -42,7 +42,7 @@ export async function listDirectory(path: string, opts?: { recursive?: boolean; 
     lines.push(path + '/')
     await walk(path, 0, '')
     if (lines.length > 300) {
-      return { success: true, output: lines.slice(0, 300).join('\n') + `\n...[обрезано, показано 300 из ${lines.length} записей]` }
+      return { success: true, output: lines.slice(0, 300).join('\n') + `\n...[truncated, shown 300 of ${lines.length} entries]` }
     }
     return { success: true, output: lines.join('\n') }
   } catch (e: any) {
@@ -73,8 +73,8 @@ export async function findFiles(pattern: string, searchPath: string, opts?: { ma
       else if (rx.test(name)) { results.push(full); if (results.length >= maxResults) return }
     }
   }
-  if (!existsSync(searchPath)) return { success: false, output: '', error: 'Путь не найден: ' + searchPath }
+  if (!existsSync(searchPath)) return { success: false, output: '', error: 'Path not found: ' + searchPath }
   await walk(searchPath)
-  if (results.length === 0) return { success: true, output: 'Файлов не найдено' }
-  return { success: true, output: results.join('\n') + (results.length >= maxResults ? `\n...[показано ${maxResults}, есть ещё]` : `\n[Найдено: ${results.length}]`) }
+  if (results.length === 0) return { success: true, output: 'No files found. Try a simpler pattern (e.g. *.ts) or check the path.' }
+  return { success: true, output: results.join('\n') + (results.length >= maxResults ? `\n...[shown ${maxResults}, there are more]` : `\n[Found: ${results.length}]`) }
 }

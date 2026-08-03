@@ -27,6 +27,8 @@ interface ChatBuffers {
   flushTimer: ReturnType<typeof setTimeout> | null  // id setTimeout для батч-флеша
   streamMsgId: string | null // msgId текущего стрима (для матчинга step→итерация)
   toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  /** Live-маппинг саб-агентов текущего стрима (для мгновенной карточки). */
+  spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
   retry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
   lastError: string | null
 }
@@ -64,7 +66,7 @@ function getBuf(chatId: string): ChatBuffers {
       text: '', thinking: '', thinkingMs: undefined, isThinkingLive: false,
       iters: [], steps: [], todo: [], agentStatus: null, rateLimitSec: 0,
       tokenBuf: '', thinkingBuf: '', flushTimer: null, streamMsgId: null,
-      toolProgress: {}, retry: null, lastError: null,
+      toolProgress: {}, retry: null, lastError: null, spawnedAgents: [],
     }
     buffers.set(chatId, buf)
   }
@@ -96,6 +98,7 @@ export function initChatSend(chatId: string) {
   buf.thinkingBuf = ''
   buf.retry = null
   buf.lastError = null
+  buf.spawnedAgents = []
   useChatStore.getState().hydrateLiveState(chatId, {
     msgId: 'streaming-pending',
     text: '',
@@ -321,11 +324,17 @@ export function useChatRunSubscription() {
       if (data.thinkingToken) {
         const tok = typeof data.thinkingToken === 'string' ? data.thinkingToken : String(data.thinkingToken ?? '')
         buf.thinkingBuf += tok
+        const wasLive = buf.isThinkingLive
         buf.isThinkingLive = true
         // Промоут msgId один раз (thinking приходит раньше text).
-        // isThinkingLive обновляем через throttle-флеш (ниже) вместе с text.
         if (buf.streamMsgId === 'streaming-pending') {
           promoteMsgId(data.chatId, data.msgId)
+        }
+        // Пушим isThinkingLive=true в store на каждом переходе false → true,
+        // а не только при первом промоуте msgId. Иначе в agent-режиме (тулы,
+        // итерации) после первого thinkingDone флаг остаётся false в store,
+        // и блок размышлений не раскрывается для последующих раундов.
+        if (!wasLive) {
           liveSet(data.chatId, { isThinkingLive: true })
         }
         scheduleFlush(data.chatId)
@@ -593,6 +602,36 @@ export function useChatRunSubscription() {
       liveSet(data.chatId, { toolProgress: { ...buf.toolProgress } })
     })
 
+    // agent:spawn — main эмитит это СРАЗУ при получении spawn_agent от
+    // worker'а, до запуска суб-агента. Renderer фиксирует маппинг
+    // {agentId, callId, task} в live.spawnedAgents — MessageBubble матчит
+    // его с live-шагом tool_call spawn_agent (по callId, fallback — по task)
+    // и мгновенно рисует карточку саб-агента, не дожидаясь tool_result.
+    const offSpawn = window.syntee.on('agent:spawn', (data: {
+      agentId: string; task: string; callId?: string
+      msgId: string; chatId: string; model?: string; ts: number
+    }) => {
+      if (!data.chatId) return
+      const buf = getBuf(data.chatId)
+      // Усваиваем реальный msgId из первого события (как в offStep).
+      if ((!buf.streamMsgId || buf.streamMsgId === 'streaming-pending') && data.msgId) {
+        buf.streamMsgId = data.msgId
+        liveSet(data.chatId, { msgId: data.msgId, isTyping: true })
+      }
+      if (data.msgId && buf.streamMsgId && data.msgId !== buf.streamMsgId) return
+      // Не дублируем запись (agent:spawn может теоретически прийти дважды).
+      if (buf.spawnedAgents.some(a => a.agentId === data.agentId)) return
+      buf.spawnedAgents = [...buf.spawnedAgents, {
+        agentId: data.agentId,
+        callId: data.callId,
+        task: data.task,
+        msgId: data.msgId,
+        model: data.model,
+        ts: data.ts,
+      }]
+      liveSet(data.chatId, { spawnedAgents: [...buf.spawnedAgents] })
+    })
+
     // agent:step — шаги тулов (tool_call_pending/tool_call/tool_result).
     // Самая нетривиальная часть: матчинг pending→call по pendingCallId,
     // группировка в итерации по textBefore/thinking.
@@ -845,7 +884,7 @@ export function useChatRunSubscription() {
     })
 
     return () => {
-      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offRetry(); offStep(); offToolProgress()
+      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offRetry(); offStep(); offToolProgress(); offSpawn()
     }
   }, [])
 }

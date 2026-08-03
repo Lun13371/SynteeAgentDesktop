@@ -6,8 +6,14 @@ import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 export function registerAgentIPC(store: Store, getWindow: () => BrowserWindow | null) {
   // Инициализируем AgentManager
   agentManager.init(store)
-  const win = getWindow()
-  if (win) agentManager.registerWindow(win)
+  // Регистрируем getter окна для broadcast. Раньше тут был capture-паттерн
+  // `const win = getWindow(); if (win) agentManager.registerWindow(win)`,
+  // но getWindow() на момент регистрации возвращает null — mainWindow.create()
+  // вызывается ПОЗЖЕ (index.ts:168 vs registerAgentIPC в index.ts:128).
+  // В результате agent:update broadcast уходил в пустой Set, и live-карточки
+  // суб-агентов в чате не обновлялись во время стриминга. Getter resolution
+  // в момент broadcast закрывает этот race.
+  agentManager.registerWindowGetter(getWindow)
 
   // Получить список всех агентов
   ipcMain.handle('agent:list', () => agentManager.getAll())

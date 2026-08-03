@@ -51,10 +51,9 @@ export default function PlanCard({ title, summary, content, filePath, partial }:
   // Во время стрима план развёрнут (видно как пишется). После — тоже развёрнут.
   // Сворачивает только пользователь. partial не в зависимостях — начальное
   // состояние берётся из пропса при первом монтировании.
-  // NOTE: partial сейчас не передаётся из parseContent — пока план стримится,
-  // он рендерится как обычный markdown в самом сообщении. PlanCard монтируется
-  // только когда </plan> пришёл (готовый план). partial оставлен в props для
-  // обратной совместимости / будущих случаев.
+  // partial=true пока </plan> ещё не пришёл: карточка стримится, контент
+  // льётся токен-за-токеном, рамка пульсирует (plan-card--streaming), кнопки
+  // действий скрыты. partial=false когда </plan> пришёл — план цельный.
   const [expanded, setExpanded] = useState(true)
   const [copied, setCopied] = useState(false)
 
@@ -92,8 +91,7 @@ export default function PlanCard({ title, summary, content, filePath, partial }:
         // → layout thrash каждый кадр. С plain div (grid 1fr, без transition-
         // триггера) высота растёт естественно. --open ставится всегда (ветка
         // gated by `expanded`, если пользователь свернул — div не монтируется).
-        // NOTE: этот branch сейчас мёртвый — parseContent не передаёт partial.
-        // Оставлен для обратной совместимости / будущих случаев.
+        // Индикатор «пишу план…» и пульсирующая рамка (CSS) показывают статус.
         expanded && (
           <div className="plan-card-body plan-card-body--open">
             <div className="plan-card-body-inner">

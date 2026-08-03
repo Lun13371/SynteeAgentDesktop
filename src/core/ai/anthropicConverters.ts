@@ -63,6 +63,12 @@ interface OpenAIMessage {
   tool_calls?: unknown[]
   tool_call_id?: string
   name?: string
+  // Anthropic extended thinking blocks — must be echoed back in next round.
+  thinking_blocks?: Array<{ thinking: string; signature: string }>
+  // OpenAI-compatible reasoning_content (GLM/DeepSeek). Ignored by this
+  // converter — kept here for documentation so the input type matches what
+  // chatContextHelpers/Agent actually produce. Anthropic uses thinking_blocks.
+  reasoning_content?: string
 }
 
 // ─── Конвертер tools: OpenAI → Anthropic ─────────────────────────────────────
@@ -154,6 +160,19 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
     // assistant с tool_calls → content-блоки с tool_use
     if (m.role === 'assistant' && m.tool_calls && (m.tool_calls as unknown[]).length > 0) {
       const blocks: Array<Record<string, unknown>> = []
+      // Anthropic extended thinking: blocks must come BEFORE tool_use and
+      // must be echoed back with the original signature, otherwise the API
+      // rejects the next request with 400 "thinking blocks must be followed
+      // by a tool_use or text block". Insert them at the very start.
+      if (m.thinking_blocks && m.thinking_blocks.length > 0) {
+        for (const tb of m.thinking_blocks) {
+          blocks.push({
+            type: 'thinking',
+            thinking: tb.thinking,
+            signature: tb.signature || '',
+          })
+        }
+      }
       // Текст перед tool_calls (если есть)
       if (m.content && typeof m.content === 'string' && m.content.trim()) {
         blocks.push({ type: 'text', text: m.content })
@@ -181,6 +200,24 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
     }
 
     // обычное user/assistant сообщение — строковый content
+    // Если у assistant есть thinking_blocks (без tool_calls — rare but
+    // possible when extended thinking ends in text), render them too.
+    if (m.role === 'assistant' && m.thinking_blocks && m.thinking_blocks.length > 0) {
+      const blocks: Array<Record<string, unknown>> = []
+      for (const tb of m.thinking_blocks) {
+        blocks.push({
+          type: 'thinking',
+          thinking: tb.thinking,
+          signature: tb.signature || '',
+        })
+      }
+      if (m.content && typeof m.content === 'string' && m.content.trim()) {
+        blocks.push({ type: 'text', text: m.content })
+      }
+      result.push({ role: 'assistant', content: blocks })
+      i++
+      continue
+    }
     result.push({
       role: m.role as 'user' | 'assistant',
       content: m.content || '',

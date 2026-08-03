@@ -7,15 +7,15 @@ import { execAsync, DEFAULT_IGNORE_DIRS, resolveToolPath, type ToolResult } from
 export async function analyzeProject(projectPath: string, workdir?: string): Promise<ToolResult> {
   projectPath = resolveToolPath(projectPath, workdir)
   if (!existsSync(projectPath)) {
-    return { success: false, output: '', error: 'Папка не найдена: ' + projectPath }
+    return { success: false, output: '', error: 'Directory not found: ' + projectPath }
   }
 
   const sections: string[] = []
 
-  // 1. Базовая информация
-  sections.push(`# Проект: ${projectPath}`)
+  // 1. Basic info
+  sections.push(`# Project: ${projectPath}`)
 
-  // 2. Дерево файлов (2 уровня, без node_modules/dist/etc)
+  // 2. File tree (2 levels, without node_modules/dist/etc)
   try {
     const ignoreRegex = DEFAULT_IGNORE_DIRS.map(d => d.replace(/\./g, '\\.')).join('|')
     const treeCmd = process.platform === 'win32'
@@ -23,9 +23,9 @@ export async function analyzeProject(projectPath: string, workdir?: string): Pro
       : `find "${projectPath}" -maxdepth 3 ${DEFAULT_IGNORE_DIRS.map(d => `-not -path "*/${d}/*"`).join(' ')}`
     const { stdout: tree } = await execAsync(treeCmd, { timeout: 10000 })
     const lines = tree.trim().split('\n').slice(0, 80)
-    sections.push(`## Структура файлов\n${lines.join('\n')}${lines.length >= 80 ? '\n...[обрезано]' : ''}`)
+    sections.push(`## File structure\n${lines.join('\n')}${lines.length >= 80 ? '\n...[truncated]' : ''}`)
   } catch (e: any) {
-    sections.push(`## Структура файлов\n[Ошибка: ${e.message}]`)
+    sections.push(`## File structure\n[Error: ${e.message}]`)
   }
 
   // 3. package.json если есть
@@ -82,10 +82,10 @@ export async function analyzeProject(projectPath: string, workdir?: string): Pro
       `git -C "${projectPath}" branch --show-current 2>&1`,
       { timeout: 5000 }
     )
-    sections.push(`## Git\nВетка: ${gitBranch.trim()}\n\nПоследние коммиты:\n${gitLog.trim()}\n\nИзменения:\n${gitStatus.trim() || 'Нет изменений'}`)
-  } catch { /* ignore — не git репо */ }
+    sections.push(`## Git\nBranch: ${gitBranch.trim()}\n\nRecent commits:\n${gitLog.trim()}\n\nChanges:\n${gitStatus.trim() || 'No changes'}`)
+  } catch { /* ignore — not a git repo */ }
 
-  // 7. Статистика кода
+  // 7. Code statistics
   try {
     const extCount: Record<string, number> = {}
     const countFiles = async (dir: string, depth = 0): Promise<void> => {
@@ -107,7 +107,7 @@ export async function analyzeProject(projectPath: string, workdir?: string): Pro
     }
     await countFiles(projectPath)
     const sorted = Object.entries(extCount).sort((a, b) => b[1] - a[1]).slice(0, 12)
-    sections.push(`## Статистика файлов\n${sorted.map(([ext, n]) => `${ext}: ${n} файл(ов)`).join('\n')}`)
+    sections.push(`## File statistics\n${sorted.map(([ext, n]) => `${ext}: ${n} file(s)`).join('\n')}`)
   } catch { /* ignore */ }
 
   return { success: true, output: sections.join('\n\n') }

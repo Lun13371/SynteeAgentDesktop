@@ -33,12 +33,12 @@ export async function searchWeb(query: string, opts: WebSearchOptions = {}): Pro
     if (gwResult !== 'FALLBACK') return gwResult
   }
 
-  // 3) Nothing configured.
+    // 3) Nothing configured.
   return {
     success: false,
     output: '',
     error:
-      'Веб-поиск недоступен. Добавьте Tavily API ключ в Настройки → Интеграции или войдите в аккаунт Syntee (gateway предоставит ключи автоматически).',
+      'Web search is not available. Add a Tavily API key in Settings → Integrations, or log in to a Syntee account (the gateway will provide keys automatically).',
   }
 }
 
@@ -69,7 +69,7 @@ async function searchViaGateway(
       return {
         success: false,
         output: '',
-        error: `Все сервисы веб-поиска недоступны: ${body.detail ?? 'upstream exhausted'}`,
+        error: `All web search services are unavailable: ${body.detail ?? 'upstream exhausted'}`,
       }
     }
     if (res.status === 404) {
@@ -78,7 +78,7 @@ async function searchViaGateway(
       return {
         success: false,
         output: '',
-        error: 'Веб-поиск не развернут на этом gateway. Обновите backend.',
+        error: 'Web search is not deployed on this gateway. Update the backend.',
       }
     }
     if (!res.ok) {
@@ -104,7 +104,7 @@ async function searchViaGateway(
     return { success: true, output: parts.join('\n\n') }
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      return { success: false, output: '', error: 'Веб-поиск превысил таймаут (30с). Попробуйте позже.' }
+      return { success: false, output: '', error: 'Web search exceeded the timeout (30s). Try again later.' }
     }
     // Network error (gateway unreachable) — fall back to local key if available.
     return 'FALLBACK'
@@ -122,14 +122,38 @@ async function searchViaTavily(query: string, apiKey: string): Promise<ToolResul
       signal: controller.signal,
     })
     clearTimeout(timer)
+    // Проверка res.ok ДО парсинга тела. Раньше 401 (невалидный ключ) или
+    // 429 (rate limit) шли в res.json() → data.results = undefined →
+    // data.results.map бросал TypeError «Cannot read properties of
+    // undefined» — AI получал мусор вместо понятной ошибки про ключ.
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { detail?: string; message?: string }
+      const detail = body.detail ?? body.message ?? res.statusText
+      const hint = res.status === 401
+        ? ' Check the Tavily API key in Settings → Integrations.'
+        : res.status === 429
+          ? ' Tavily request limit exceeded — wait or use a gateway account.'
+          : ''
+      return {
+        success: false,
+        output: '',
+        error: `Tavily error ${res.status}: ${detail}.${hint}`,
+      }
+    }
     const data = (await res.json()) as { results: Array<{ title: string; url: string; content: string }> }
+    if (!data.results || !Array.isArray(data.results)) {
+      return { success: false, output: '', error: 'Tavily returned an unexpected response format (no results array).' }
+    }
+    if (data.results.length === 0) {
+      return { success: true, output: 'Web search found no results for the query. Refine the query or try http_request to a specific URL.' }
+    }
     const formatted = data.results
-      .map((r, i) => `[${i + 1}] ${r.title}\nURL: ${r.url}\n${r.content.slice(0, 300)}...`)
+      .map((r, i) => `[${i + 1}] ${r.title}\nURL: ${r.url}\n${(r.content ?? '').slice(0, 300)}...`)
       .join('\n\n')
     return { success: true, output: formatted }
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      return { success: false, output: '', error: 'Веб-поиск превысил таймаут (15с). Попробуйте позже или уточните запрос.' }
+      return { success: false, output: '', error: 'Web search exceeded the timeout (15s). Try again later or refine the query.' }
     }
     return { success: false, output: '', error: e.message }
   }
@@ -184,7 +208,7 @@ export async function httpRequest(params: {
     // Обрезаем очень длинные ответы
     const maxChars = 8000
     if (rawText.length > maxChars) {
-      resBody = rawText.slice(0, maxChars) + `\n\n...[обрезано ${rawText.length - maxChars} символов]`
+      resBody = rawText.slice(0, maxChars) + `\n\n...[truncated ${rawText.length - maxChars} chars]`
     } else {
       resBody = rawText
     }

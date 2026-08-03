@@ -14,6 +14,7 @@ import {
   cleanupWorktree,
   type WorktreeInfo,
 } from './WorktreeIsolation'
+import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../core/db/subagents'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -64,7 +65,21 @@ export interface AgentRecord {
 
 export interface SubagentContext {
   systemPrompt?: string
-  history?: Array<{ role: string; content: string }>
+  // История родителя, передаваемая суб-агенту как контекст. Должна включать
+  // reasoning_content и thinking_blocks — иначе строгие провайдеры thinking-mode
+  // (LiteLLM proxy для GLM/DeepSeek) роняют 400 "reasoning_content in thinking
+  // mode must be passed back to the API" на 2-м раунде суб-агента. См.
+  // chatContextHelpers.messageToContextMessages — именно оттуда приходят
+  // сообщения с этими полями (processedHistory.slice(-12) в chat.ipc.ts:1790).
+  history?: Array<{
+    role: string
+    content: string
+    tool_calls?: unknown[]
+    tool_call_id?: string
+    name?: string
+    thinking_blocks?: Array<{ thinking: string; signature: string }>
+    reasoning_content?: string
+  }>
   workingMemory?: string
   mode?: ChatMode
   workdir?: string
@@ -78,7 +93,17 @@ export interface SubagentContext {
 class AgentManager {
   private agents = new Map<string, AgentRecord>()
   private workers = new Map<string, Worker>()
-  private windows = new Set<BrowserWindow>()
+  /**
+   * Динамический getter окна для broadcast. Раньше был статический Set
+   * `windows`, заполняемый один раз в registerWindow(). Но registerAgentIPC
+   * вызывается ДО mainWindow.create() (index.ts:128 vs :168), и в Set попадал
+   * null → broadcast('agent:update') уходил в пустой Set → live-карточки
+   * суб-агентов не обновлялись во время стриминга (шаги/статус/summary не
+   * доходили до renderer). Getter resolution в момент broadcast закрывает
+   * этот race и заодно покрывает пересоздание окна (MainWindow обнуляет this.win
+   * на closed).
+   */
+  private windowGetter: (() => BrowserWindow | BrowserWindow[] | null) | null = null
   private store: Store | null = null
   private resolvers = new Map<string, (result: { summary: string; error?: string }) => void>()
   /**
@@ -87,20 +112,148 @@ class AgentManager {
    * чтобы не соревноваться за index/objects.
    */
   private mergeChain = new Map<string, Promise<unknown>>()
+  /**
+   * Троттлинг записи в БД по record.id. Шаги летят часто (каждый tool_call/
+   * tool_result), и без debounce мы бы писали JSON-сериализованные steps в БД
+   * на каждое событие. Финальные переходы (done/error/cancelled) пишут сразу
+   * через persistNow — таймер при этом сбрасывается.
+   */
+  private persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   init(store: Store) {
     this.store = store
+    this.loadPersisted()
   }
 
+  /**
+   * Загружает все записи суб-агентов из БД в in-memory мапу. Вызывается один
+   * раз при init(). running/pending на момент рестарта логически мертвы —
+   * воркеры в worker_threads убиты рестартом процесса, продолжить их нельзя.
+   * Помечаем 'cancelled' с понятной причиной, чтобы UI не показывал вечный
+   * spinner, и персистим это состояние обратно в БД.
+   */
+  private loadPersisted() {
+    let loaded = 0
+    let repaired = 0
+    for (const row of loadAllSubagents()) {
+      const record = this.rowToRecord(row)
+      if (record.status === 'running' || record.status === 'pending') {
+        record.status = 'cancelled'
+        record.error = 'Прервано рестартом приложения'
+        if (!record.finishedAt) record.finishedAt = record.createdAt
+        saveSubagent(this.recordToRow(record))
+        repaired++
+      }
+      this.agents.set(record.id, record)
+      loaded++
+    }
+    if (loaded > 0) {
+      console.log(`[AgentManager] loaded ${loaded} persisted subagents (${repaired} repaired to cancelled)`)
+    }
+  }
+
+  private recordToRow(record: AgentRecord): SubagentRow {
+    return {
+      id: record.id,
+      parentId: record.parentId,
+      chatId: record.chatId,
+      task: record.task,
+      status: record.status,
+      model: record.model,
+      mode: record.mode,
+      steps: record.steps,
+      result: record.result,
+      summary: record.summary,
+      createdAt: record.createdAt,
+      finishedAt: record.finishedAt ?? null,
+      error: record.error ?? null,
+      workdir: record.workdir ?? null,
+      isolationMode: record.isolationMode ?? null,
+    }
+  }
+
+  private rowToRecord(row: SubagentRow): AgentRecord {
+    return {
+      id: row.id,
+      parentId: row.parentId,
+      chatId: row.chatId,
+      task: row.task,
+      status: row.status as AgentStatus,
+      model: row.model ?? '',
+      mode: (row.mode as ChatMode) ?? 'code',
+      steps: row.steps as AgentStep[],
+      result: row.result,
+      summary: row.summary,
+      createdAt: row.createdAt,
+      finishedAt: row.finishedAt ?? undefined,
+      error: row.error ?? undefined,
+      workdir: row.workdir ?? undefined,
+      isolationMode: (row.isolationMode as 'worktree' | 'none') ?? 'none',
+    }
+  }
+
+  /**
+   * Троттлированная запись (debounce ~400мс). Для шагов — её и используем,
+   * чтобы не долбить БД на каждый tool_call. Финальные переходы вызывают
+   * persistNow напрямую.
+   */
+  private persist(record: AgentRecord) {
+    const existing = this.persistTimers.get(record.id)
+    if (existing) clearTimeout(existing)
+    const t = setTimeout(() => {
+      this.persistTimers.delete(record.id)
+      try {
+        saveSubagent(this.recordToRow(record))
+      } catch (e: any) {
+        console.warn(`[AgentManager] persist failed for ${record.id}: ${e.message}`)
+      }
+    }, 400)
+    this.persistTimers.set(record.id, t)
+  }
+
+  /**
+   * Мгновенная запись в БД (финальные переходы done/error/cancelled). Таймер
+   * троттлинга при этом сбрасывается, чтобы «догоняющая» запись не перетёрла
+   * финальный статус более ранним snapshot'ом.
+   */
+  private persistNow(record: AgentRecord) {
+    const existing = this.persistTimers.get(record.id)
+    if (existing) {
+      clearTimeout(existing)
+      this.persistTimers.delete(record.id)
+    }
+    try {
+      saveSubagent(this.recordToRow(record))
+    } catch (e: any) {
+      console.warn(`[AgentManager] persistNow failed for ${record.id}: ${e.message}`)
+    }
+  }
+
+  /**
+   * Регистрирует getter окна для broadcast. Принимает getter (а не само окно),
+   * потому что registerAgentIPC вызывается ДО mainWindow.create() — на момент
+   * регистрации окно ещё null. Resolution происходит в момент broadcast.
+   * Также покрывает пересоздание окна: getter всегда возвращает актуальное.
+   */
+  registerWindowGetter(getter: () => BrowserWindow | BrowserWindow[] | null) {
+    this.windowGetter = getter
+  }
+
+  /**
+   * @deprecated использовать registerWindowGetter. Оставлен для обратной
+   * совместимости — сразу регистрирует окно как константный getter.
+   */
   registerWindow(win: BrowserWindow) {
-    this.windows.add(win)
-    win.on('closed', () => this.windows.delete(win))
+    this.windowGetter = () => win
   }
 
   private broadcast(channel: string, payload: unknown) {
-    Array.from(this.windows).forEach(win => {
+    const target = this.windowGetter?.()
+    if (!target) return
+    const wins = Array.isArray(target) ? target : [target]
+    for (const win of wins) {
       if (!win.isDestroyed()) win.webContents.send(channel, payload)
-    })
+    }
   }
 
   getAll(): AgentRecord[] {
@@ -207,6 +360,7 @@ class AgentManager {
     }
 
     this.agents.set(opts.id, record)
+    this.persist(record)
     this.broadcast('agent:update', record)
 
     return this._runWorker(record, opts.storeData, opts.context, opts.approvalMode)
@@ -227,6 +381,7 @@ class AgentManager {
         const info = await createSubagentWorktree(record.workdir, record.id)
         if (info) {
           record.worktreeInfo = info
+          this.persist(record)
           this.broadcast('agent:update', record)
         } else {
           // не-git → shared, как и без изоляции
@@ -236,6 +391,7 @@ class AgentManager {
         // Не удалось создать worktree (git error, нет прав и т.п.) — fallback на
         // shared, чтобы суб-агент хотя бы запустился. Логируем для диагностики.
         record.isolationMode = 'none'
+        this.persist(record)
         console.warn(`[AgentManager] worktree creation failed for ${record.id} (fallback to shared): ${e.message}`)
       }
       // Cancel мог прийти во время await — не стартуем worker, чистим worktree.
@@ -276,6 +432,7 @@ class AgentManager {
         record.status = 'error'
         record.error = e.message
         record.finishedAt = Date.now()
+        this.persistNow(record)
         this.broadcast('agent:update', record)
         resolve({ summary: '', error: e.message })
         return
@@ -283,6 +440,7 @@ class AgentManager {
 
       record.status = 'running'
       this.workers.set(record.id, worker)
+      this.persist(record)
       this.broadcast('agent:update', record)
 
       const agentSettings = (storeData.agentSettings as Record<string, unknown> | undefined) ?? {
@@ -344,6 +502,7 @@ ${subModeOutro}`,
                 imageUrl: step.imageUrl,
               }
               record.steps.push(ts)
+              this.persist(record)
               this.broadcast('agent:update', record)
             }
             break
@@ -382,48 +541,52 @@ ${subModeOutro}`,
                   if (!mergeResult.worktreeKept) {
                     try { await cleanupWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
                   }
-                } catch (e: any) {
-                  record.summary += `\n\n[Необработанная ошибка merge worktree: ${e.message}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
-                }
-                this.broadcast('agent:update', record)
-                resolve({ summary: record.summary })
-              })()
-            } else {
-              this.broadcast('agent:update', record)
-              resolve({ summary: record.summary })
-            }
-            break
-          }
-          case 'error': {
-            // Персистим round-robin если суб-агент успел его обновить перед ошибкой
-            if (msg.updatedProviders && this.store) {
-              this.store.set('providers', msg.updatedProviders)
-            }
-            if (msg.fileCacheUpdates) {
-              mergeFileCache(record.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
-            }
-            record.status = 'error'
-            record.error = msg.error as string
-            record.finishedAt = Date.now()
-            // Если суб-агент успел накопить текст/шаги до ошибки — отдаём это
-            // родителю как частичный summary вместо пустой строки, иначе
-            // родительский агент теряет весь прогресс суб-агента.
-            record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
-            this.workers.delete(record.id)
-            this.resolvers.delete(record.id)
-            // §изоляция — при ошибке discard worktree (правки суб-агента не нужны).
-            if (record.worktreeInfo && record.workdir) {
-              ;(async () => {
-                try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
-                this.broadcast('agent:update', record)
-                resolve({ summary: record.summary, error: record.error })
-              })()
-            } else {
-              this.broadcast('agent:update', record)
-              resolve({ summary: record.summary, error: record.error })
-            }
-            break
-          }
+                 } catch (e: any) {
+                   record.summary += `\n\n[Необработанная ошибка merge worktree: ${e.message}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
+                 }
+                 this.persistNow(record)
+                 this.broadcast('agent:update', record)
+                 resolve({ summary: record.summary })
+               })()
+             } else {
+               this.persistNow(record)
+               this.broadcast('agent:update', record)
+               resolve({ summary: record.summary })
+             }
+             break
+           }
+            case 'error': {
+             // Персистим round-robin если суб-агент успел его обновить перед ошибкой
+             if (msg.updatedProviders && this.store) {
+               this.store.set('providers', msg.updatedProviders)
+             }
+             if (msg.fileCacheUpdates) {
+               mergeFileCache(record.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
+             }
+             record.status = 'error'
+             record.error = msg.error as string
+             record.finishedAt = Date.now()
+             // Если суб-агент успел накопить текст/шаги до ошибки — отдаём это
+             // родителю как частичный summary вместо пустой строки, иначе
+             // родительский агент теряет весь прогресс суб-агента.
+             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
+             this.workers.delete(record.id)
+             this.resolvers.delete(record.id)
+             // §изоляция — при ошибке discard worktree (правки суб-агента не нужны).
+             if (record.worktreeInfo && record.workdir) {
+               ;(async () => {
+                 try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+                 this.persistNow(record)
+                 this.broadcast('agent:update', record)
+                 resolve({ summary: record.summary, error: record.error })
+               })()
+             } else {
+               this.persistNow(record)
+               this.broadcast('agent:update', record)
+               resolve({ summary: record.summary, error: record.error })
+             }
+             break
+           }
         }
       })
 
@@ -436,10 +599,12 @@ ${subModeOutro}`,
         if (record.worktreeInfo && record.workdir) {
           ;(async () => {
             try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+            this.persistNow(record)
             this.broadcast('agent:update', record)
             resolve({ summary: '', error: e.message })
           })()
         } else {
+          this.persistNow(record)
           this.broadcast('agent:update', record)
           resolve({ summary: '', error: e.message })
         }
@@ -455,10 +620,12 @@ ${subModeOutro}`,
           if (record.worktreeInfo && record.workdir) {
             ;(async () => {
               try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+              this.persistNow(record)
               this.broadcast('agent:update', record)
               resolve({ summary: record.summary || '', error: record.error })
             })()
           } else {
+            this.persistNow(record)
             this.broadcast('agent:update', record)
             resolve({ summary: record.summary || '', error: record.error })
           }
@@ -477,6 +644,7 @@ ${subModeOutro}`,
     if (record) {
       record.status = 'cancelled'
       record.finishedAt = Date.now()
+      this.persistNow(record)
       this.broadcast('agent:update', record)
       // §изоляция — discard worktree при cancel. Если worktree ещё создаётся
       // (record.worktreeInfo не установлен), discard сделает _runWorker по
@@ -504,6 +672,9 @@ ${subModeOutro}`,
         this.agents.delete(id)
       }
     })
+    // FK ON DELETE CASCADE обычно срабатывает при удалении чата, но clearChat
+    // может вызываться без удаления чата — подчищаем явно.
+    try { deleteSubagentsByChat(chatId) } catch { /* noop */ }
   }
 }
 

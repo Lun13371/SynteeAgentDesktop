@@ -33,9 +33,25 @@ const TABS: Array<{ id: RightPanelTab; label: string; icon: 'git-branch' | 'fold
 
 export default function RightPanel({ open, onClose, onExitComplete, focusAgentId, currentChatId }: RightPanelProps) {
   const [tab, setTab] = useState<RightPanelTab>('sidechat')
+  // prevFocusAgentId инициализируется в null (а НЕ в focusAgentId), чтобы
+  // ПЕРВЫЙ рендер с focusAgentId сработал: prev(null) !== focusAgentId( non-null)
+  // → setTab('agents'). Без этого (когда prev = focusAgentId с самого начала)
+  // условие `!==` ложно на первом рендере, и таб остаётся дефолтным 'sidechat'.
+  const [prevFocusAgentId, setPrevFocusAgentId] = useState<string | null>(null)
   const [workdir, setWorkdir] = useState<string | null>(null)
   const [contentReady, setContentReady] = useState(false)
   const setAgentPanelWidth = useUIStore(s => s.setAgentPanelWidth)
+
+  // Клик по карточке саб-агента в чате → open-agent-panel → RightPanelHost
+  // ставит focusAgentId. Переключаем таб на 'agents', чтобы пользователь
+  // сразу видел AgentPanel с выбранным агентом, а не тот таб, на котором
+  // панель стояла до этого (sidechat по дефолту).
+  // Паттерн «adjust state during render» (см. React docs) — без лишнего
+  // ре-рендера и без нарушения react-hooks/set-state-in-effect.
+  if (prevFocusAgentId !== focusAgentId) {
+    setPrevFocusAgentId(focusAgentId)
+    if (focusAgentId) setTab('agents')
+  }
 
   // ── useMotionValue: ширина и прозрачность обходят React полностью ────
   // Во время dragging widthMV.set() пишет напрямую в DOM — 0 ре-рендеров.

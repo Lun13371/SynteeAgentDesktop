@@ -198,7 +198,7 @@ export class AIClient {
       }
       console.log(`[AIClient] gateway token: ${token ? 'OK (' + token.slice(0, 20) + '...)' : 'NULL'}`)
       if (!token) {
-        throw new Error('Не авторизован в Syntee-Gateway. Войдите через Профиль → Войти.')
+        throw new Error('Not authenticated with Syntee-Gateway. Sign in via Profile → Sign In.')
       }
       return new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl })
     }
@@ -389,7 +389,7 @@ export class AIClient {
           callbacks.onRateLimit?.(waitSec)
           callbacks.onRetry?.(attempt + 1, 'rate_limit', waitSec, this.maxRetries + 1)
           if (Date.now() >= deadlineMs) {
-            callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
+            callbacks.onError(new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`))
             return
           }
           await sleep(delay)
@@ -407,7 +407,7 @@ export class AIClient {
             client = await this.getClientForRoleAsync(modelType)
             continue
           }
-          callbacks.onError(new Error('Сессия Syntee истекла — войдите заново (Профиль → Войти).'))
+          callbacks.onError(new Error('Syntee session expired — sign in again (Profile → Sign In).'))
           return
         }
         const msg = (error?.message ?? '').toLowerCase()
@@ -419,7 +419,7 @@ export class AIClient {
           const delay = backoffDelay(attempt)
           callbacks.onRetry?.(attempt + 1, 'network', undefined, this.maxRetries + 1)
           if (Date.now() >= deadlineMs) {
-            callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
+            callbacks.onError(new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`))
             return
           }
           await sleep(delay)
@@ -459,7 +459,7 @@ export class AIClient {
         const error = err as { status?: number }
         if (error?.status === 429) {
           if (Date.now() >= deadlineMs) {
-            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+            throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
           }
           await sleep(backoffDelay(attempt)); attempt++; continue
         }
@@ -468,7 +468,7 @@ export class AIClient {
           retried401 = true
           const fresh = await refreshGatewayTokenAfter401()
           if (fresh) { client = await this.getClientForRoleAsync(modelType); continue }
-          throw new Error('Сессия Syntee истекла — войдите заново (Профиль → Войти).')
+          throw new Error('Syntee session expired — sign in again (Profile → Sign In).')
         }
         throw err
       }
@@ -510,7 +510,7 @@ export class AIClient {
     // index стабилен в рамках раунда (см. tc.index у провайдера) — по нему
     // Agent.ts матчит этот ранний сигнал с финальным tool_call.
     onToolCallStarted?: (index: number, toolName: string) => void,
-  ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean }> {
+  ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean; thinking_blocks?: Array<{ thinking: string; signature: string }> }> {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
@@ -534,7 +534,7 @@ export class AIClient {
         gatewayToken = await getGatewayAuthToken()
       }
       if (!gatewayToken) {
-        throw new Error('Не авторизован в Syntee-Gateway. Войдите через Профиль → Войти.')
+        throw new Error('Not authenticated with Syntee-Gateway. Sign in via Profile → Sign In.')
       }
     }
     const temperature = DEFAULT_TEMPERATURE
@@ -743,7 +743,7 @@ export class AIClient {
           onRateLimit?.(waitSec)
           onRetry?.(attempt + 1, 'rate_limit', waitSec, maxAttempts)
           if (Date.now() >= deadlineMs) {
-            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+            throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
           }
           await sleep(delay)
           attempt++
@@ -764,7 +764,7 @@ export class AIClient {
             client = new OpenAI({ apiKey: fresh, baseURL: providerInfo!.provider.baseUrl })
             continue
           }
-          throw new Error('Сессия Syntee истекла — войдите заново (Профиль → Войти).')
+          throw new Error('Syntee session expired — sign in again (Profile → Sign In).')
         }
         // Сетевые ошибки (ECONNRESET, ETIMEDOUT, ENOTFOUND, fetch failed) — ретраим.
         // ВАЖНО: `!error?.status` раньше ловил ВСЕ ошибки без status (включая
@@ -787,7 +787,7 @@ export class AIClient {
             attempt + 1, maxAttempts, model, error?.status ?? '—', error?.message ?? String(err))
           onRetry?.(attempt + 1, 'network', undefined, maxAttempts)
           if (Date.now() >= deadlineMs) {
-            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+            throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
           }
           await sleep(delay)
           attempt++
@@ -846,7 +846,7 @@ export class AIClient {
           const delay = backoffDelay(attempt)
           callbacks.onRateLimit?.(Math.round(delay / 1000))
           if (Date.now() >= deadlineMs) {
-            callbacks.onError(new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`))
+            callbacks.onError(new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`))
             return
           }
           await sleep(delay); attempt++; continue
@@ -856,7 +856,7 @@ export class AIClient {
           retried401 = true
           const fresh = await refreshGatewayTokenAfter401()
           if (fresh) { client = await this.getClientForRoleAsync('vision'); continue }
-          callbacks.onError(new Error('Сессия Syntee истекла — войдите заново (Профиль → Войти).'))
+          callbacks.onError(new Error('Syntee session expired — sign in again (Profile → Sign In).'))
           return
         }
         callbacks.onError(err as Error)
@@ -877,7 +877,7 @@ export class AIClient {
         const error = err as { status?: number }
         if (error?.status === 429) {
           if (Date.now() >= deadlineMs) {
-            throw new Error(`Превышено общее время ожидания ответа от AI (${Math.round(OVERALL_TIMEOUT_MS / 1000)}с). Попробуйте позже или смените провайдера.`)
+            throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
           }
           await sleep(backoffDelay(attempt)); attempt++; continue
         }

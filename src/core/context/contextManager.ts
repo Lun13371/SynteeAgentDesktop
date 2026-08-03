@@ -131,6 +131,18 @@ export interface ChatMessage {
    *  без удаления из БД: по tail-messageIds находим createdAt граничного
    *  Message и ставим divider.createdAt = boundary - 1. */
   messageId?: string
+  /** Anthropic extended thinking blocks (with signatures). Echoed back in
+   *  subsequent rounds alongside tool_use — Anthropic API rejects the next
+   *  request with 400 if thinking blocks are stripped from the assistant
+   *  message that also contained tool_use. */
+  thinking_blocks?: Array<{ thinking: string; signature: string }>
+  /** OpenAI-compatible reasoning_content (GLM/DeepSeek/Qwen thinking mode).
+   *  Some providers (LiteLLM proxy for glm and deepseek-r1) return 400 if the
+   *  assistant message that produced reasoning_content is echoed back in the
+   *  next round WITHOUT the field — the proxy validates thinking-mode output
+   *  is round-tripped. Filled from message.thinking in chatContextHelpers.
+   *  Anthropic native path ignores it (convertMessagesToAnthropic drops it). */
+  reasoning_content?: string
 }
 
 export interface CompressResult {

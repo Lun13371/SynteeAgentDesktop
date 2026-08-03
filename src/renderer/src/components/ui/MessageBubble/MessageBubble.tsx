@@ -79,7 +79,7 @@ import IconButton from '../IconButton/IconButton'
 import ToolChain from '../ToolChain/ToolChain'
 import TodoChecklist from '../TodoChecklist/TodoChecklist'
 import FastContextBlock, { type FastContextResultData } from '../FastContextBlock/FastContextBlock'
-import AgentCard from '../AgentCard/AgentCard'
+import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
@@ -303,24 +303,17 @@ function parseContent(raw: string, allowPlanCard = false): Array<{ type: 'md' | 
   }
 
   // 2. PlanCard разрешён — парсим <plan>-теги через shared-парсер.
-  // Пока план стримится (partial=true, нет </plan>) — рендерим его контент
-  // как обычный markdown, чтобы текст лился плавно токен-за-токеном (как
-  // обычное сообщение), а не «кусками» через PlanCard с debounce. PlanCard
-  // появляется только когда </plan> пришёл — план стал цельным артефактом.
+  // PlanCard монтируется сразу когда открылся <plan ...> (partial=true),
+  // и растёт вместе со стримом. Когда </plan> пришёл — partial=false,
+  // появляются кнопки действий (копировать/открыть файл). Раньше partial
+  // даунгрейдился в обычный markdown, но карточка уже умеет стримиться
+  // (CSS pulse-рамка, индикатор «пишу план…»), так что даунгрейд не нужен.
   const { segments: planSegs } = extractPlanSegments(raw)
 
   // 2. Каждый text-сегмент дополнительно разбиваем на md + admonition.
   const result: Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> = []
   for (const seg of planSegs) {
     if (seg.type === 'plan') {
-      if (seg.partial) {
-        // Стрим идёт — план как обычный markdown. Title/summary показываем
-        // заголовком/цитатой, чтобы было понятно что это план.
-        const header = seg.title ? `# 📋 ${seg.title}\n` : '# 📋 План\n'
-        const summ = seg.summary ? `> ${seg.summary}\n\n` : ''
-        result.push({ type: 'md', content: header + summ + seg.content })
-        continue
-      }
       result.push({
         type: 'plan',
         content: seg.content,
@@ -487,14 +480,34 @@ const ParsedContent = memo(function ParsedContent({
 )
 
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
-type AgentCardData = {
-  id: string; status: string; model: string; steps: unknown[]
-  summary: string; error?: string; createdAt: number; finishedAt?: number
-}
 // Module-level кэш: виртуализатор монтирует/демонтирует сообщения при
 // скролле — без кэша каждый remount карточки дёргал IPC agent.get.
 // Обновления приходят через agent:update (кэш актуализируется событием).
 const agentCardCache = new Map<string, AgentCardData>()
+
+/**
+ * Нормализует сырой AgentRecord из IPC (у него нет stepsCount/currentStep —
+ * это computed-поля для UI) в AgentCardData, ожидаемую карточкой. Без этого
+ * кэш хранил бы «частичные» объекты, и TS-касты в обработчиках были бы лживы.
+ */
+function normalizeAgent(raw: Record<string, unknown> & { id: string }): AgentCardData {
+  const steps = (raw.steps as AgentCardData['steps']) ?? []
+  const lastToolCall = steps?.filter(s => s.type === 'tool_call').slice(-1)[0]
+  const status = (raw.status as AgentCardData['status']) ?? 'pending'
+  return {
+    id: raw.id,
+    task: (raw.task as string) ?? '',
+    status,
+    model: (raw.model as string) ?? '…',
+    stepsCount: steps?.length ?? 0,
+    currentStep: status === 'running' ? lastToolCall?.toolName : undefined,
+    summary: raw.summary as string | undefined,
+    error: raw.error as string | undefined,
+    createdAt: (raw.createdAt as number) ?? Date.now(),
+    finishedAt: raw.finishedAt as number | undefined,
+    steps,
+  }
+}
 
 function AgentCardLive({ agentId, task }: {
   agentId: string
@@ -508,18 +521,35 @@ function AgentCardLive({ agentId, task }: {
       window.syntee.agent.get(agentId).then((a: unknown) => {
         if (a) {
           if (agentCardCache.size > 200) evictOldest(agentCardCache, 150)
-          agentCardCache.set(agentId, a as AgentCardData)
-          setAgent(a as never)
+          const normalized = normalizeAgent(a as Record<string, unknown> & { id: string })
+          agentCardCache.set(agentId, normalized)
+          setAgent(normalized)
         }
       })
     }
     const off = window.syntee.on('agent:update', (updated: { id: string } & Record<string, unknown>) => {
       if (updated.id === agentId) {
-        agentCardCache.set(agentId, updated as AgentCardData)
-        setAgent(updated as never)
+        const normalized = normalizeAgent(updated)
+        agentCardCache.set(agentId, normalized)
+        setAgent(normalized)
       }
     })
-    return () => off()
+    // agent:spawn — main эмитит сразу при регистрации записи (status='pending'),
+    // ДО первого step. Без этого карточка рисует 'pending' + '…' пока не придёт
+    // первый agent:update с реальной моделью.
+    const offSpawn = window.syntee.on('agent:spawn', (e: { agentId: string; model?: string; task: string; ts: number }) => {
+      if (e.agentId !== agentId) return
+      if (!agentCardCache.has(agentId) || !agentCardCache.get(agentId)?.model) {
+        const initial: AgentCardData = {
+          id: agentId, task: e.task, status: 'pending',
+          model: e.model ?? '…', stepsCount: 0,
+          createdAt: e.ts, steps: [],
+        }
+        agentCardCache.set(agentId, initial)
+        setAgent(initial)
+      }
+    })
+    return () => { off(); offSpawn() }
   }, [agentId])
 
   const status = (agent?.status ?? 'pending') as 'pending' | 'running' | 'done' | 'error' | 'cancelled'
@@ -539,9 +569,13 @@ function AgentCardLive({ agentId, task }: {
         error: agent?.error,
         createdAt: agent?.createdAt ?? Date.now(),
         finishedAt: agent?.finishedAt,
+        steps: agent?.steps as Array<{ type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; timestamp: number }> | undefined,
       }}
+      live={status === 'pending' || status === 'running'}
       onClick={() => {
-        window.syntee.on('agent:focus', agentId as never)
+        // Открываем правую панель и фокусируем конкретного агента.
+        // RightPanelHost слушает CustomEvent 'open-agent-panel' и прокидывает
+        // agentId в AgentPanel.focusAgentId → setSelected(agent.id).
         window.dispatchEvent(new CustomEvent('open-agent-panel', { detail: { agentId } }))
       }}
     />
@@ -655,6 +689,7 @@ const MessageContent = memo(function MessageContent({
   onPin, onCopy, onReadAloud, onReply, onRewind, message, isPinned, createdAt,
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
   userMarkdown = true, timeEl, agentStatus, toolProgress, retry, lastError,
+  spawnedAgents,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -674,6 +709,7 @@ const MessageContent = memo(function MessageContent({
   retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
   lastError?: string | null
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
 }) {
   const [showActions, setShowActions] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
@@ -899,14 +935,36 @@ const MessageContent = memo(function MessageContent({
                     if (fcSaved) return <FastContextBlock result={fcSaved} />
                     return null
                   })()}
+                  {/* Карточки саб-агентов для persisted-итерации — по одной на
+                      каждый spawn_agent-вызов. agentId извлекается regex'ом из
+                      парного tool_result (матчинг по callId, fallback —
+                      ближайший результат после вызова). */}
+                  {iter.steps
+                    .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
+                    .map(callStep => {
+                      const resultStep = iter.steps.find(r =>
+                        r.type === 'tool_result' && r.toolName === 'spawn_agent' &&
+                        (callStep.callId ? r.callId === callStep.callId : r.timestamp >= callStep.timestamp)
+                      )
+                      const agentIdMatch = resultStep?.content?.match(/\[AGENT:([^\]]+)\]/)
+                      const agentId = agentIdMatch?.[1]
+                      if (!agentId) return null
+                      return (
+                        <AgentCardLive
+                          key={agentId}
+                          agentId={agentId}
+                          task={(callStep.toolArgs?.task as string) ?? ''}
+                        />
+                      )
+                    })}
                 </div>
               ))}
             </div>
           )
         })()}
 
-        {/* Карточки суб-агентов */}
-        {!isUser && toolSteps && !liveIters?.length && toolSteps
+        {/* Карточки суб-агентов — fallback для старых сообщений без iterations */}
+        {!isUser && toolSteps && !liveIters?.length && !(message as Message & { iterations?: unknown[] }).iterations?.length && toolSteps
           .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
           .map(s => {
             // Ищем соответствующий tool_result чтобы получить agentId
@@ -1050,6 +1108,29 @@ const MessageContent = memo(function MessageContent({
                     if (fcSaved) return <FastContextBlock result={fcSaved} />
                     return null
                   })()}
+                  {/* Live-карточки саб-агентов — после toolchain, внутри итерации
+                      (на той же позиции, что и FastContextBlock). Появляются
+                      СРАЗУ при вызове spawn_agent: main эмитит agent:spawn ДО
+                      запуска worker'а, renderer матчит по callId (или task как
+                      fallback) с live-шагом tool_call spawn_agent. По одной
+                      карточке на каждый spawn_agent-вызов (параллельные агенты).
+                      При done карточка обновляется через agent:update. */}
+                  {iter.steps
+                    .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
+                    .map(callStep => {
+                      const taskArg = callStep.toolArgs?.task as string | undefined
+                      // Матчинг по callId (точный), fallback — по task
+                      const spawned = spawnedAgents?.find(a => a.callId && a.callId === callStep.callId)
+                        ?? spawnedAgents?.find(a => taskArg && a.task === taskArg)
+                      if (!spawned) return null
+                      return (
+                        <AgentCardLive
+                          key={spawned.agentId}
+                          agentId={spawned.agentId}
+                          task={taskArg ?? spawned.task}
+                        />
+                      )
+                    })}
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
                   {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && !liveThinking && (
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
@@ -1362,6 +1443,7 @@ const MessageBubble = memo(function MessageBubble({
             retry={(message as Message & { retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null }).retry}
             lastError={(message as Message & { lastError?: string | null }).lastError}
             toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
+            spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
           />
         </div>
       ) : (
@@ -1391,6 +1473,7 @@ const MessageBubble = memo(function MessageBubble({
         retry={(message as Message & { retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null }).retry}
         lastError={(message as Message & { lastError?: string | null }).lastError}
         toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
+        spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
       />
       )}
     </motion.div>

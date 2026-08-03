@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import './ThinkingBlock.css'
 
 interface ThinkingBlockProps {
@@ -19,7 +20,9 @@ function formatMs(ms: number): string {
 }
 
 export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: ThinkingBlockProps) {
-  const [open, setOpen] = useState(false)
+  // Live-блок (стримится сейчас) — открыт сразу при монтировании.
+  // Persisted-блок (из БД) — свёрнут по умолчанию, раскрывается по клику.
+  const [open, setOpen] = useState(!!isLive)
   const [elapsed, setElapsed] = useState(0)
   const [wordIdx, setWordIdx] = useState(0)
   const [wordVisible, setWordVisible] = useState(true)
@@ -27,6 +30,7 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const wordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const prevLiveRef = useRef<boolean>(!!isLive)
   // Запоминаем, что пользователь сам закрыл/открыл — не перебиваем его выбор
   const userToggledRef = useRef(false)
 
@@ -58,6 +62,15 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
       setOpen(true)
     }
   }, [isLive, liveText])
+
+  // Авто-сворачивание при завершении стриминга (переход true → false)
+  useEffect(() => {
+    if (prevLiveRef.current && !isLive) {
+      setOpen(false)
+      userToggledRef.current = false
+    }
+    prevLiveRef.current = !!isLive
+  }, [isLive])
 
   // Автоскролл текста при стриминге
   useEffect(() => {
@@ -114,17 +127,30 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
         </span>
       </button>
 
-      {/* Раскрытый текст */}
-      {open && (
-        <div className="tb-body" ref={bodyRef}>
-          {displayText.split('\n').map((line, i) => (
-            <p key={i} className={line.trim() === '' ? 'tb-line--empty' : 'tb-line'}>
-              {line || '\u00A0'}
-            </p>
-          ))}
-          {isLive && <span className="tb-cursor" />}
-        </div>
-      )}
+      {/* Раскрытый текст — плавная height-анимация через framer-motion */}
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="tb-body"
+            className={`tb-body ${isLive ? 'tb-body--live' : ''}`}
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
+          >
+            <div className="tb-body-inner" ref={bodyRef}>
+              <div className={`tb-text ${isLive ? 'tb-text--shimmer' : ''}`}>
+                {displayText.split('\n').map((line, i) => (
+                  <p key={i} className={line.trim() === '' ? 'tb-line--empty' : 'tb-line'}>
+                    {line || '\u00A0'}
+                  </p>
+                ))}
+              </div>
+              {isLive && <span className="tb-cursor" />}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
