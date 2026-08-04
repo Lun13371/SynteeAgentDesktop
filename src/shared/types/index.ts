@@ -44,9 +44,38 @@ export interface IPCChannels {
   'voice:toggle': () => void
   'voice:start': () => void
   'voice:stop': () => void
+  // Голосовой ввод в инпут-баре: локальный Whisper в worker_thread.
+  // Принимает 16kHz mono Float32Array PCM, возвращает распознанный текст.
+  // Также поддерживается Groq (через voice:transcribeGroq — webm ArrayBuffer).
+  'voice:transcribe': (audio: Float32Array, opts?: { modelSize?: 'tiny' | 'base' }) => string
+  // Прогресс загрузки/инференса модели (main → renderer event).
+  'voice:progress': (info: { stage: 'loading-model' | 'transcribing' | 'done' | 'error'; progress?: number; message?: string }) => void
   // Spotlight
   'spotlight:show': () => void
   'spotlight:hide': () => void
+  // Spotlight relay → main шлёт nav:* в mainWindow.webContents
+  'spotlight:quickAsk': (query: string, chatId?: string) => void
+  'spotlight:newChat': () => void
+  'spotlight:openChat': (chatId: string) => void
+  'spotlight:openSettings': (section?: string) => void
+  // История запросов Spotlight (персист в electron-store 'spotlightHistory')
+  'spotlight:getHistory': () => string[]
+  'spotlight:addHistory': (query: string) => void
+  'spotlight:clearHistory': () => void
+  // Активный чат (зеркало currentChatId) для "спросить в текущем"
+  'chat:setActive': (chatId: string | null) => void
+  'chat:getActive': () => string | null
+  // Multi-source поиск по истории чатов (FTS5 + LIKE + TF-IDF) для Spotlight
+  'chat:searchHistory': (params: { query: string; limit?: number }) => Array<{
+    source: 'memory' | 'messages' | 'summaries' | 'agent_logs' | 'pinned'
+    content: string
+    score: number
+    chatId?: string
+    chatTitle?: string
+    messageId?: string
+    role?: string
+    date?: number
+  }>
 }
 
 export interface Chat {

@@ -117,6 +117,9 @@ interface ActiveRun {
 }
 
 const activeRuns = new Map<string, ActiveRun>()
+// Последний активный chatId (renderer шлёт chat:setActive). Spotlight-окно
+// спрашивает chat:getActive чтобы предложить "спросить в текущем чате".
+let lastActiveChatId: string | null = null
 // AbortController-ы для отмены /compact. Один на chatId — компакция и
 // chat:send взаимоисключающи (chat:compact отклоняет если activeRuns.has).
 // Используется chat:compact:cancel чтобы прервать LLM-стрим резюме БЕЗ
@@ -2503,6 +2506,14 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   })
 
   ipcMain.handle('chat:getAll', () => getAllChats())
+  // ── Активный чат (для Spotlight "спросить в текущем") ───────────────────
+  // Renderer шлёт chat:setActive при каждой смене currentChatId в zustand.
+  // Spotlight (отдельное BrowserWindow) спрашивает chat:getActive чтобы
+  // знать, в какой чат отправить быстрый запрос вместо создания нового.
+  ipcMain.handle('chat:setActive', (_, chatId: string | null) => {
+    lastActiveChatId = chatId ?? null
+  })
+  ipcMain.handle('chat:getActive', () => lastActiveChatId)
   // ВНИМАНИЕ: в renderer сообщения уходят ТОЛЬКО через slimMessagesForUI —
   // полные tool-пейлоады (тела файлов, diff'ы, выводы) остаются в БД для
   // AI-контекста (messageToContextMessages), UI показывает урезанную копию.
@@ -3622,6 +3633,21 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       return getNamedSnapshots(chatId)
     } catch (e) {
       log('[chat:snapshot:list] error chatId=%s: %s', chatId, (e as Error).message)
+      return []
+    }
+  })
+
+  // ── Multi-source history search for Spotlight ─────────────────────────
+  // Объединяет messages / chat_summaries / agent_logs / pinned / memory_items
+  // через searchAllSources (FTS5 + LIKE + TF-IDF). Используется Spotlight-окном
+  // для поиска по истории чатов. projectId не передаётся — поиск глобальный.
+  ipcMain.handle('chat:searchHistory', async (_, params: { query: string; limit?: number }) => {
+    const q = (params.query ?? '').trim()
+    if (!q) return []
+    try {
+      return await searchAllSources({ query: q, limit: params.limit ?? 12 })
+    } catch (e) {
+      log('[chat:searchHistory] error: %s', (e as Error).message)
       return []
     }
   })

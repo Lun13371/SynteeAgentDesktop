@@ -23,7 +23,7 @@ import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
 import { registerChatIPC } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
-import { registerVoiceIPC } from './ipc/voice.ipc'
+import { registerVoiceIPC, prewarmWhisper } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
@@ -81,6 +81,20 @@ let hotkeyManager: HotkeyManager
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.synteehelper.app')
 
+  // ── Permission для getUserMedia (микрофон голосового ввода в инпут-баре) ──
+  // Без явного handler Electron по умолчанию НЕ выдаёт 'media' permission →
+  // navigator.mediaDevices.getUserMedia висит/отклоняется молча. Разрешаем
+  // 'audioCapture' (микрофон) для основного окна. 'videoCapture' оставляем
+  // по умолчанию (запрет) — камеры у нас нет. Проверка через setPermissionCheckHandler
+  // нужна для повторных запросов того же permission без диалога.
+  const { session } = require('electron')
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'audioCapture') callback(true)
+    else if (permission === 'media') callback(true)
+    else callback(false)
+  })
+  session.defaultSession.setPermissionCheckHandler(() => true)
+
   // Оптимизация dev tools
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -125,6 +139,9 @@ app.whenReady().then(async () => {
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerVoiceIPC(store, () => mainWindow.getWindow())
+  // Прогрев локального Whisper в фоне: модель (~40MB для tiny) скачивается
+  // сразу при старте, чтобы первый клик микрофона не висел на скачивании.
+  prewarmWhisper(store)
   registerAgentIPC(store, () => mainWindow.getWindow())
   registerMemoryIPC(store)
   registerProviderIPC(store)

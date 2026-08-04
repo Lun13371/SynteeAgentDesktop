@@ -116,6 +116,7 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           'ai-worker': resolve('src/main/ai-worker.ts'),
+          'whisper-worker': resolve('src/main/whisper-worker.ts'),
         },
         external: ['web-tree-sitter', 'better-sqlite3', '@huggingface/transformers', 'onnxruntime-node'],
       },
@@ -129,7 +130,13 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin(), ...(protect ? [bytecodePlugin({ removeBundleJS: true })] : [])]
+    plugins: [externalizeDepsPlugin(), ...(protect ? [bytecodePlugin({ removeBundleJS: true })] : [])],
+    resolve: {
+      // То же что и renderer: .ts/.tsx приоритетнее .js/.jsx, чтобы Vite не
+      // грузил устаревшие gitignored-мироры (артефакты компиляции) вместо
+      // актуального source-of-truth .ts.
+      extensions: ['.mjs', '.ts', '.tsx', '.js', '.jsx', '.json'],
+    }
   },
   renderer: {
     plugins: [react(), ...(protect ? [rendererObfuscatorPlugin()] : [])],

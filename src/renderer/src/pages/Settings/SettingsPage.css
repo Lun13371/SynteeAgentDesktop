@@ -6,6 +6,86 @@
   overflow: hidden;
 }
 
+/* ── Блок статуса модели Whisper (Настройки → Голос) ── */
+.voice-model-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 4px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, rgba(255,255,255,0.03));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.voice-model-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.voice-model-status--ready {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+}
+.voice-model-status--downloading {
+  color: var(--accent, #3b82f6);
+  background: rgba(59, 130, 246, 0.12);
+}
+.voice-model-status--error {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+.voice-model-status--idle {
+  color: var(--text-secondary, #888);
+  background: rgba(255, 255, 255, 0.05);
+}
+.voice-model-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: voice-model-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes voice-model-spin {
+  to { transform: rotate(360deg); }
+}
+.voice-model-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent, #3b82f6);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.voice-model-download-btn:hover { opacity: 0.9; }
+.voice-model-download-btn:active { transform: scale(0.97); }
+.voice-model-progress {
+  flex: 1;
+  min-width: 120px;
+  height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.voice-model-progress-bar {
+  height: 100%;
+  background: var(--accent, #3b82f6);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
 .settings-nav {
   width: 220px;
   flex-shrink: 0;
