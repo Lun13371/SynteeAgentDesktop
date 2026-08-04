@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, memo, KeyboardEvent, DragEvent, ClipboardEvent } from 'react'
+import { useState, useRef, useEffect, useCallback, memo, KeyboardEvent, DragEvent, ClipboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
@@ -18,6 +18,8 @@ import { findMentionTokenAtCaret, mentionToAttachment, mimeFromExt, isImageMime 
 import type { Attachment, MentionItem, ApprovalMode } from '../../../../../shared/types'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import { useUIStore } from '../../../store/ui.store'
+import { useSettingsStore } from '../../../store/settings.store'
+import { useVoiceInput } from '../../../hooks/useVoiceInput'
 import { playSendSound } from '../../../utils/sounds'
 import './ChatInput.css'
 
@@ -214,6 +216,113 @@ function ChatInput({
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
   const uiSounds = useUIStore(s => s.uiSounds)
   const sendEffect = useUIStore(s => s.sendEffect)
+
+  // ── Голосовой ввод (STT) в инпут-баре ────────────────────────────────
+  // Провайдер и размер модели читаются из персистентных настроек (electron-store).
+  // 'local' — локальный Whisper (оффлайн), 'groq' — Groq API fallback.
+  // 'webspeech' обрабатывается отдельно (live, прямо в textarea) — пока не MVP.
+  const sttProvider = useSettingsStore(s => (s.settings['sttProvider'] as 'local' | 'groq') ?? 'local')
+  const sttModelSize = useSettingsStore(s => (s.settings['sttModelSize'] as 'tiny' | 'base') ?? 'tiny')
+
+  // Value до начала записи — для восстановления при cancel/error.
+  const preVoiceValueRef = useRef('')
+
+  const voice = useVoiceInput({
+    provider: sttProvider,
+    modelSize: sttModelSize,
+  })
+
+  // При начале записи — сохраняем текущий value как базу.
+  useEffect(() => {
+    if (voice.state === 'requesting') {
+      preVoiceValueRef.current = value
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.state])
+
+  // При cancel/error — восстанавливаем исходный value.
+  useEffect(() => {
+    if (voice.state === 'error') {
+      onChangeValue(preVoiceValueRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.state])
+
+  // Анимированная «печать» распознанного текста по словам. Таймер хранится в
+  // ref чтобы survive re-render'ы; ref на callback для доступа к свежему value.
+  const voiceTypingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const voiceWordsQueueRef = useRef<string[]>([])
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const [isVoiceTyping, setIsVoiceTyping] = useState(false)
+
+  // Стоп анимации печати (и финальный flush текста).
+  const stopVoiceTyping = useCallback(() => {
+    if (voiceTypingRef.current) {
+      clearInterval(voiceTypingRef.current)
+      voiceTypingRef.current = null
+    }
+    voiceWordsQueueRef.current = []
+    setIsVoiceTyping(false)
+  }, [])
+
+  // Запуск анимированной печати: дробим text на слова, печатаем по ~55ms/слово.
+  const startVoiceTyping = useCallback((text: string) => {
+    stopVoiceTyping()
+    const words = text.split(/\s+/).filter(Boolean)
+    if (words.length === 0) return
+    voiceWordsQueueRef.current = words
+    setIsVoiceTyping(true)
+    // Если в поле уже есть текст — добавляем пробел перед голосовым фрагментом.
+    const sep = valueRef.current && !valueRef.current.endsWith(' ') && !valueRef.current.endsWith('\n') ? ' ' : ''
+    let acc = valueRef.current + sep
+    voiceTypingRef.current = setInterval(() => {
+      const w = voiceWordsQueueRef.current.shift()
+      if (!w) { stopVoiceTyping(); return }
+      acc = (acc && !acc.endsWith(' ') ? acc + ' ' : acc) + w
+      onChangeValue(acc)
+      // Прокрутка в конец после каждого слова.
+      requestAnimationFrame(() => {
+        const el = textareaRef.current
+        if (el) { el.scrollTop = el.scrollHeight }
+      })
+    }, 55)
+  }, [stopVoiceTyping, onChangeValue])
+
+  // При ошибке/прерывании — останавливаем анимацию.
+  useEffect(() => {
+    if (voice.state === 'error' || voice.state === 'idle') {
+      // если таймер ещё активен и очередь не пуста — продолжаем печатать (idle
+      // после успешного stop() — анимация должна докрутиться). Прерываем только
+      // при явной ошибке.
+      if (voice.state === 'error') stopVoiceTyping()
+    }
+  }, [voice.state, stopVoiceTyping])
+
+  // Cleanup при unmount.
+  useEffect(() => {
+    return () => stopVoiceTyping()
+  }, [stopVoiceTyping])
+
+  // ── Клик по кнопке mic: toggle запись ──
+  // idle/error → start(); recording → stop() → восстановить базу + анимация
+  //   печати финального текста по словам.
+  const handleMicClick = useCallback(() => {
+    if (voice.state === 'idle' || voice.state === 'error') {
+      void voice.start()
+    } else if (voice.state === 'recording') {
+      void voice.stop().then(text => {
+        if (!text) return
+        // Восстанавливаем базу (pre-voice value) и анимированно печатаем финал.
+        const base = preVoiceValueRef.current
+        onChangeValue(base)
+        valueRef.current = base
+        startVoiceTyping(text)
+      })
+    }
+    // transcribing — игнорируем (идёт распознавание, дождитесь)
+  }, [voice, startVoiceTyping, onChangeValue])
+
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   // ── История навигации по стрелкам вверх/вниз ──
@@ -734,9 +843,15 @@ function ChatInput({
 
   // Логика кнопки: текст в поле → Send (даже при генерации — уйдёт в очередь).
   // Пустое поле + генерация → Stop. Пустое поле + idle → Mic.
-  // Раньше Stop замещал Send при isGenerating, что блокировало постановку
-  // запросов в очередь во время выполнения.
-  const btnMode = value.trim() ? 'send' : isGenerating ? 'stop' : 'mic'
+  // Во время записи/распознавания голоса — показываем recording-состояние
+  // кнопки (независимо от наличия текста) — юзер жмёт снова чтобы остановить.
+  const voiceActive = voice.state === 'recording' || voice.state === 'transcribing' || voice.state === 'requesting'
+  // Пока модель качается в фоне (преварм при старте) — на кнопке mic крутится
+  // спиннер, но запись можно начать (инференс подождёт готовности модели).
+  const micBusy = voice.modelLoading && !voiceActive && !value.trim() && !isGenerating
+  const btnMode = voiceActive
+    ? 'voice'
+    : value.trim() ? 'send' : isGenerating ? 'stop' : 'mic'
   // Send во время генерации — подсветим кольцом, поменяем tooltip.
   const sendToQueue = btnMode === 'send' && !!isGenerating
 
@@ -808,6 +923,54 @@ function ChatInput({
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
               <span>{workdirBreadcrumb}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Бейдж голосового ввода — показывается во время записи/распознавания
+            и во время анимированной печати распознанного текста. Пульсирует.
+            Также показывается при фоновой загрузке модели (micBusy). */}
+        <AnimatePresence>
+          {(voice.state === 'recording' || voice.state === 'transcribing' || voice.state === 'requesting' || voice.state === 'error' || isVoiceTyping || micBusy) && (
+            <motion.div
+              className={`chat-input-voice-badge${voice.state === 'error' ? ' chat-input-voice-badge--error' : ''}`}
+              initial={{ opacity: 0, y: 6, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.9 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+              title={voice.error ? voice.error : undefined}
+            >
+              {voice.state === 'error' ? (
+                <>
+                  <AppIcon name="alertCircle" size="xs" />
+                  <span>{voice.error || 'Ошибка голосового ввода'}</span>
+                </>
+              ) : voice.state === 'recording' ? (
+                <>
+                  <span className="chat-input-voice-badge-dot" />
+                  <span>Запись {voice.recordingSec}с</span>
+                </>
+              ) : isVoiceTyping ? (
+                <>
+                  <AppIcon name="mic" size="xs" />
+                  <span>Голосовой ввод...</span>
+                </>
+              ) : micBusy ? (
+                <>
+                  <AppIcon name="loader" size="xs" animation="spin" />
+                  <span>{voice.progress?.message || 'Загрузка модели...'}{typeof voice.progress?.progress === 'number' && voice.progress.progress > 0 && voice.progress.progress < 100 ? ` ${voice.progress.progress}%` : ''}</span>
+                </>
+              ) : voice.progress?.message ? (
+                <>
+                  <AppIcon name="loader" size="xs" animation="spin" />
+                  <span>{voice.progress.message}</span>
+                </>
+              ) : voice.state === 'transcribing' || voice.state === 'requesting' ? (
+                <>
+                  <AppIcon name="loader" size="xs" animation="spin" />
+                  <span>{voice.state === 'requesting' ? 'Микрофон...' : 'Распознавание...'}</span>
+                </>
+              ) : null}
             </motion.div>
           )}
         </AnimatePresence>
@@ -1098,12 +1261,12 @@ function ChatInput({
         )}
 
         <motion.button
-          className={`chat-input-action-btn chat-input-action-btn--${btnMode}${sendBurst ? ' chat-input-action-btn--burst' : ''}${sendToQueue ? ' chat-input-action-btn--queue' : ''}`}
-          onClick={btnMode === 'stop' ? onStop : btnMode === 'send' ? handleSend : undefined}
+          className={`chat-input-action-btn chat-input-action-btn--${btnMode}${sendBurst ? ' chat-input-action-btn--burst' : ''}${sendToQueue ? ' chat-input-action-btn--queue' : ''}${voice.state === 'recording' ? ' chat-input-action-btn--recording' : ''}${voice.state === 'transcribing' || voice.state === 'requesting' ? ' chat-input-action-btn--busy' : ''}${micBusy ? ' chat-input-action-btn--busy' : ''}`}
+          onClick={btnMode === 'stop' ? onStop : btnMode === 'send' ? handleSend : btnMode === 'voice' ? handleMicClick : handleMicClick}
           whileTap={{ scale: 0.88 }}
           whileHover={{ scale: 1.08 }}
           transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-          title={btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? (sendToQueue ? 'Отправить в очередь (Enter)' : 'Отправить (Enter)') : 'Голосовой ввод'}
+          title={btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? (sendToQueue ? 'Отправить в очередь (Enter)' : 'Отправить (Enter)') : voice.state === 'recording' ? `Запись... ${voice.recordingSec}с — нажмите чтобы остановить` : voice.state === 'transcribing' ? 'Распознавание речи...' : micBusy ? (voice.progress?.message || 'Загрузка модели Whisper...') : 'Голосовой ввод'}
         >
           <AnimatePresence mode="wait" initial={false}>
             {btnMode === 'stop' ? (
@@ -1111,6 +1274,20 @@ function ChatInput({
             ) : btnMode === 'send' ? (
               <motion.span key="send" initial={{ rotate: -90, opacity: 0, scale: 0.5 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} exit={{ rotate: 90, opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
                 <AppIcon name="send" size="md" />
+              </motion.span>
+            ) : btnMode === 'voice' ? (
+              voice.state === 'transcribing' || voice.state === 'requesting' ? (
+                <motion.span key="voice-busy" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
+                  <AppIcon name="loader" size="md" animation="spin" />
+                </motion.span>
+              ) : (
+                <motion.span key="voice-rec" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
+                  <AppIcon name="mic" size="md" />
+                </motion.span>
+              )
+            ) : micBusy ? (
+              <motion.span key="mic-loading" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
+                <AppIcon name="loader" size="md" animation="spin" />
               </motion.span>
             ) : (
               <motion.span key="mic" initial={{ rotate: 90, opacity: 0, scale: 0.5 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} exit={{ rotate: -90, opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>

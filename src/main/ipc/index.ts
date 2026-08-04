@@ -260,11 +260,68 @@ function registerOverlayIPC({ overlayWindow }: IPCContext): void {
   ipcMain.handle('overlay:getDisplays', () => overlayWindow.getDisplaysInfo())
 }
 
-function registerSpotlightIPC({ spotlightWindow }: IPCContext): void {
+function registerSpotlightIPC({ spotlightWindow, mainWindow, voiceWindow, store }: IPCContext): void {
   ipcMain.handle('spotlight:show', () => spotlightWindow.show())
   ipcMain.handle('spotlight:hide', () => spotlightWindow.hide())
   ipcMain.handle('spotlight:expand', () => spotlightWindow.expand())
   ipcMain.handle('spotlight:collapse', () => spotlightWindow.collapse())
+
+  // voice:show не зарегистрирован в voice.ipc.ts (там только STT/TTS/статус).
+  // Добавляем минимальный show/hide здесь, т.к. voiceWindow уже в контексте —
+  // это закрывает потребность Spotlight/tray запустить голосовой ввод.
+  ipcMain.handle('voice:show', () => voiceWindow.show())
+  ipcMain.handle('voice:hide', () => voiceWindow.hide())
+
+  // ── Relay-действия из Spotlight в главное окно ────────────────────────
+  // Spotlight — отдельное BrowserWindow, не имеет доступа к AI-стриму/чату
+  // напрямую (chat:send стримит в mainWindow.webContents). Поэтому применяем
+  // паттерн tray openSettings: показываем главное окно + шлём nav-событие,
+  // которое App.tsx слушает и обрабатывает (создать чат / открыть чат /
+  // отправить быстрый запрос).
+  // quickAsk: query + опциональный chatId. Если chatId передан — отправить
+  // в существующий чат (App.tsx). Иначе — создать новый.
+  ipcMain.handle('spotlight:quickAsk', (_, query: string, chatId?: string) => {
+    spotlightWindow.hide()
+    mainWindow.show()
+    mainWindow.getWindow()?.webContents.send('nav:quick-ask', {
+      query: String(query ?? ''),
+      chatId: chatId ? String(chatId) : null,
+    })
+  })
+  ipcMain.handle('spotlight:newChat', () => {
+    spotlightWindow.hide()
+    mainWindow.show()
+    mainWindow.getWindow()?.webContents.send('nav:new-chat')
+  })
+  ipcMain.handle('spotlight:openChat', (_, chatId: string) => {
+    spotlightWindow.hide()
+    mainWindow.show()
+    mainWindow.getWindow()?.webContents.send('nav:open-chat', String(chatId ?? ''))
+  })
+  // openSettings с опциональной секцией (App.tsx вызывает useNavStore.openSettings(section)).
+  ipcMain.handle('spotlight:openSettings', (_, section?: string) => {
+    spotlightWindow.hide()
+    mainWindow.show()
+    mainWindow.getWindow()?.webContents.send('nav:open-settings', String(section ?? ''))
+  })
+
+  // ── История запросов Spotlight (персистится в electron-store) ──────────
+  // getHistory возвращает последние запросы (новые первыми). addHistory
+  // добавляет наверх с дедупликацией, лимит 12.
+  ipcMain.handle('spotlight:getHistory', () => {
+    const arr = store.get('spotlightHistory')
+    return Array.isArray(arr) ? arr as string[] : []
+  })
+  ipcMain.handle('spotlight:addHistory', (_, q: string) => {
+    const text = String(q ?? '').trim()
+    if (!text) return
+    const arr = (store.get('spotlightHistory') as string[] | undefined) ?? []
+    const next = [text, ...arr.filter(x => x !== text)].slice(0, 12)
+    store.set('spotlightHistory', next)
+  })
+  ipcMain.handle('spotlight:clearHistory', () => {
+    store.set('spotlightHistory', [])
+  })
 }
 
 // ── Кастомное трей-меню ──────────────────────────────────────────────

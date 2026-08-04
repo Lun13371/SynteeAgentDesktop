@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useUIStore } from './store/ui.store'
+import { useSettingsStore } from './store/settings.store'
 import { initExtensionsPushEvents, useExtensionsStore } from './store/extensions.store'
 import { setUiSoundsFlag, setSoundVolume, setSoundAssignmentsFlag } from './utils/sounds'
-import { useChatRunSubscription } from './hooks/useChatRunSubscription'
+import { useChatRunSubscription, initChatSend, enqueuePendingUserMsg } from './hooks/useChatRunSubscription'
 import { useAuthStore } from './store/auth.store'
 import { useNavStore } from './store/nav.store'
 import {
@@ -17,7 +18,7 @@ import { useMessengerStore } from './store/messenger.store'
 import { autoAssignGatewayModels, markAutoAssignDone, isAutoAssignDone } from './store/autoAssign'
 import { contrastText, withAlpha, hexToRgb, hslToHex } from './utils/colorUtils'
 import { startThemeScheduler } from './utils/themeScheduler'
-import type { CustomTheme } from '../../shared/types'
+import type { CustomTheme, Chat as ChatType, Message } from '../../shared/types'
 import ChatPage from './pages/Chat/ChatPage'
 import OverlayPage from './pages/Overlay/OverlayPage'
 import './pages/Overlay/OverlayPage.css'
@@ -403,6 +404,11 @@ export default function App() {
 
   // Загружаем визуальные настройки из electron-store при старте
   useEffect(() => {
+    // Сначала грузим весь settings-store (одним IPC-вызовом getAll) —
+    // нужно для ChatInput и других компонентов, которые читают настройки
+    // через useSettingsStore (sttProvider, sttModelSize, groqApiKey и т.д.).
+    // Без этого settings = {} → все селекторы возвращают undefined → fallback.
+    useSettingsStore.getState().load().catch(() => { /* ok — дефолты */ })
     const applyVisualSettings = async () => {
       try {
         const [theme, bgStyle, msgAnim, accentColor, animatedBg,
@@ -547,14 +553,107 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  // Запрос на открытие раздела настроек из трей-меню (main-процесс шлёт
+  // Запрос на открытие раздела настроек из трей-меню / Spotlight (main шлёт
   // nav:open-settings в webContents главного окна после его show()).
+  // Payload — опциональная секция ('voice' | 'memory' | 'general' | ...).
   useEffect(() => {
-    const off = window.syntee.on('nav:open-settings', () => {
+    const off = window.syntee.on('nav:open-settings', (section: unknown) => {
+      const sec = String(section ?? '')
       useNavStore.getState().toggleMainPage('settings')
+      if (sec) useNavStore.getState().openSettings(sec)
     })
     return () => { off() }
   }, [])
+
+  // ── Spotlight relay-actions ──────────────────────────────────────────
+  // Main-процесс получает spotlight:quickAsk / newChat / openChat от
+  // Spotlight-окна, прячет его, показывает главное окно и шлёт nav:* событие
+  // сюда. App.tsx — единое место, где слушаем (useChatRunSubscription уже
+  // активен, так что live-стрим AI-ответа подхватится автоматически).
+
+  // Быстрый запрос: payload { query, chatId }. Если chatId передан —
+  // отправляем в существующий чат (без chat:create). Иначе — создаём новый.
+  useEffect(() => {
+    const off = window.syntee.on('nav:quick-ask', async (payload: unknown) => {
+      // Совместимость со старым форматом (строка) и новым (объект).
+      const p = (typeof payload === 'string' ? { query: payload, chatId: null } : (payload ?? {})) as { query?: string; chatId?: string | null }
+      const text = String(p.query ?? '').trim()
+      const targetId = p.chatId ? String(p.chatId) : null
+      if (!text) return
+      useNavStore.getState().toggleMainPage('chat')
+      try {
+        const st = useChatStore.getState()
+        let chatId: string
+
+        if (targetId) {
+          // Отправить в существующий (текущий) чат.
+          chatId = targetId
+          // Убедимся что он активен и вкладка открыта.
+          st.setCurrentChat(chatId)
+          useTabsStore.getState().openTab(chatId)
+        } else {
+          // Новый чат.
+          const chat = await window.syntee.chat.create(false, 'code', undefined) as ChatType
+          const all = await window.syntee.chat.getAll() as ChatType[]
+          st.setChats(all)
+          st.setCurrentChat(chat.id)
+          st.setMessages([])
+          useTabsStore.getState().openTab(chat.id)
+          chatId = chat.id
+        }
+
+        const userMsgId = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const userMsg: Message = {
+          id: userMsgId, chatId, role: 'user',
+          content: text, createdAt: Date.now(), isPinned: 0,
+        }
+        const result = await window.syntee.chat.send({
+          chatId, content: text, userMsgId,
+        }) as { queued?: boolean; assistantMsgId?: string }
+
+        if (result.queued && result.assistantMsgId) {
+          enqueuePendingUserMsg(result.assistantMsgId, userMsg)
+        } else {
+          st.addMessage(userMsg)
+          initChatSend(chatId)
+        }
+      } catch (e) {
+        console.error('[nav:quick-ask] failed', e)
+      }
+    })
+    return () => { off() }
+  }, [])
+
+  // Новый пустой чат — просто переключаемся на страницу чата, ChatPage
+  // автоматически покажет LRU-кеш или скелетон, а пользователь сам введёт текст.
+  useEffect(() => {
+    const off = window.syntee.on('nav:new-chat', () => {
+      useNavStore.getState().toggleMainPage('chat')
+    })
+    return () => { off() }
+  }, [])
+
+  // Открыть существующий чат по id (из результатов поиска Spotlight).
+  useEffect(() => {
+    const off = window.syntee.on('nav:open-chat', (chatId: unknown) => {
+      const id = String(chatId ?? '')
+      if (!id) return
+      useNavStore.getState().toggleMainPage('chat')
+      const st = useChatStore.getState()
+      st.setCurrentChat(id)
+      useTabsStore.getState().openTab(id)
+    })
+    return () => { off() }
+  }, [])
+
+  // ── Зеркало currentChatId в main-процесс ──────────────────────────────
+  // Spotlight (отдельное BrowserWindow) спрашивает chat:getActive чтобы
+  // предложить "спросить в текущем чате". Подписываемся на currentChatId
+  // в zustand и синхронизируем его в main через chat:setActive.
+  const currentChatIdForMain = useChatStore(s => s.currentChatId)
+  useEffect(() => {
+    window.syntee.chat.setActive(currentChatIdForMain ?? null).catch(() => {})
+  }, [currentChatIdForMain])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)

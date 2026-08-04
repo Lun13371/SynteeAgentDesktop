@@ -55,6 +55,16 @@ export const DEFAULT_SETTINGS = {
   emotionModel: 'gpt-5-mini',
   voiceId: 'alloy',
   wakeWord: 'синти',
+  // ─── Голосовой ввод (STT) в инпут-баре ──
+  // sttProvider: 'local' — локальный Whisper через @huggingface/transformers
+  //   (оффлайн, без лимитов/ключей), 'groq' — Groq Whisper API (нужен groqApiKey).
+  sttProvider: 'local' as 'local' | 'groq',
+  // Размер модели локального Whisper: 'tiny' (~40MB, DEFAULT — быстро,
+  // экономно, достаточно для коротких запросов) или 'base' (~140MB, точнее
+  // на русском но тяжелее). small убрана — слишком тяжёлая для desktop.
+  sttModelSize: 'tiny' as 'tiny' | 'base',
+  // API key для Groq fallback (https://console.groq.com/keys).
+  groqApiKey: '',
   themeSchedule: { enabled: false, lightFrom: '08:00', darkFrom: '20:00' },
   agentPermissions: {
     confirmDangerous: true,
@@ -97,7 +107,7 @@ export const DEFAULT_SETTINGS = {
 export const WINDOW_SIZES = {
   main: { width: 1200, height: 800 },
   spotlight: { width: 600, height: 80 },
-  spotlightExpanded: { width: 600, height: 420 },
+  spotlightExpanded: { width: 600, height: 500 },
   voice: { width: 300, height: 300 },
   overlayChat: { width: 400, height: 600 },
   // Кастомное трей-меню (frameless glass-окно у иконки трея).

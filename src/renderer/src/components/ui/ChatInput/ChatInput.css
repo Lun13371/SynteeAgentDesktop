@@ -559,3 +559,77 @@
    специфичности ниже, поэтому mention-highlight выше по дереву — но т.к.
    оба transparent color, эффект только фоновый). */
 
+
+/* ── Голосовой ввод (STT) ────────────────────────────────────────── */
+
+/* Кнопка в состоянии записи — красный фон + пульсирующее кольцо. */
+.chat-input-action-btn--recording {
+  background: #ef4444 !important;
+  color: #ffffff !important;
+  position: relative;
+  animation: voice-rec-pulse 1.4s ease-in-out infinite;
+}
+.chat-input-action-btn--recording svg {
+  color: #ffffff !important;
+  stroke: #ffffff !important;
+}
+/* Состояние busy (transcribing/requesting) — приглушённый акцент, без pulse. */
+.chat-input-action-btn--busy {
+  background: var(--bg-hover) !important;
+  color: var(--accent) !important;
+  opacity: 0.85;
+}
+.chat-input-action-btn--busy svg {
+  color: var(--accent) !important;
+  stroke: var(--accent) !important;
+}
+
+@keyframes voice-rec-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  50%      { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+/* Бейдж голосового ввода в status-row (рядом с workdir/planning бейджами). */
+.chat-input-voice-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: #ffffff;
+  background: linear-gradient(135deg, #ef4444, #ec4899);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
+  white-space: nowrap;
+  user-select: none;
+}
+.chat-input-voice-badge .app-icon {
+  color: #ffffff !important;
+}
+.chat-input-voice-badge .app-icon svg {
+  stroke: #ffffff !important;
+}
+/* Ошибка голосового ввода — красно-оранжевый фон вместо градиента. */
+.chat-input-voice-badge--error {
+  background: rgba(239, 68, 68, 0.95) !important;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.35) !important;
+  max-width: 320px;
+}
+/* Пульсирующая красная точка для индикации активной записи. */
+.chat-input-voice-badge-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffffff;
+  animation: voice-dot-blink 1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes voice-dot-blink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.7); }
+}
+
+

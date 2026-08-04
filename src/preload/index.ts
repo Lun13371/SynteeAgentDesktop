@@ -238,6 +238,18 @@ const synteeAPI = {
     hide: () => ipcRenderer.invoke('spotlight:hide'),
     expand: () => ipcRenderer.invoke('spotlight:expand'),
     collapse: () => ipcRenderer.invoke('spotlight:collapse'),
+    // Relay-действия: прячем spotlight, показываем главное окно и шлём
+    // nav:* событие в его webContents. App.tsx слушает и обрабатывает.
+    // quickAsk: query + опциональный chatId (если есть — отправить в текущий).
+    quickAsk: (query: string, chatId?: string) => ipcRenderer.invoke('spotlight:quickAsk', query, chatId),
+    newChat: () => ipcRenderer.invoke('spotlight:newChat'),
+    openChat: (chatId: string) => ipcRenderer.invoke('spotlight:openChat', chatId),
+    // openSettings с опциональной секцией ('voice' | 'memory' | 'general' | ...).
+    openSettings: (section?: string) => ipcRenderer.invoke('spotlight:openSettings', section),
+    // История запросов Spotlight (персистится в electron-store).
+    getHistory: () => ipcRenderer.invoke('spotlight:getHistory') as Promise<string[]>,
+    addHistory: (query: string) => ipcRenderer.invoke('spotlight:addHistory', query),
+    clearHistory: () => ipcRenderer.invoke('spotlight:clearHistory'),
   },
 
   // Кастомное трей-меню (frameless glass-окно). action — id действия
@@ -253,6 +265,11 @@ const synteeAPI = {
   chat: {
     create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string) => ipcRenderer.invoke('chat:create', incognito, mode, projectId),
     getAll: () => ipcRenderer.invoke('chat:getAll'),
+    // Активный чат (зеркало currentChatId из zustand renderer'а) — для
+    // Spotlight "спросить в текущем чате". setActive вызывается App.tsx
+    // при смене currentChatId, getActive — Spotlight-окном.
+    setActive: (chatId: string | null) => ipcRenderer.invoke('chat:setActive', chatId),
+    getActive: () => ipcRenderer.invoke('chat:getActive') as Promise<string | null>,
     getMessages: (chatId: string) => ipcRenderer.invoke('chat:getMessages', chatId),
     // Окно сообщений для пагинации. Возвращает { messages, hasMore }.
     // limit — размер страницы (по умолчанию 20). beforeCreatedAt/beforeId —
@@ -331,6 +348,21 @@ const synteeAPI = {
     // родителя + тул get_main_chat_messages. chatId = 'sidechat:'+parentChatId.
     sideSend: (params: { parentChatId: string; content: string; sideMessages: unknown[] }) =>
       ipcRenderer.invoke('chat:sideSend', params),
+
+    // ── Multi-source поиск по истории для Spotlight ──
+    // Возвращает SearchSourceResult[]: messages / summaries / agent_logs /
+    // pinned / memory. Запускается в main против better-sqlite3 singleton.
+    searchHistory: (query: string, limit?: number) =>
+      ipcRenderer.invoke('chat:searchHistory', { query, limit }) as Promise<Array<{
+        source: 'memory' | 'messages' | 'summaries' | 'agent_logs' | 'pinned'
+        content: string
+        score: number
+        chatId?: string
+        chatTitle?: string
+        messageId?: string
+        role?: string
+        date?: number
+      }>>,
 
     // ── Per-chat UI state: режимы инпут-бара + черновик + история ввода ──
     // Сохраняются в chats/messages, переживают перезапуск. Рендерер не
@@ -671,6 +703,41 @@ const synteeAPI = {
       ipcRenderer.invoke('draft:setAttachments', chatId, attachments),
     clearAttachments: (chatId: string) =>
       ipcRenderer.invoke('draft:clearAttachments', chatId),
+  },
+
+  // ── Голосовой ввод (STT) в инпут-баре ──────────────────────────────────
+  //   - transcribe(audio, opts): локальный Whisper в worker_thread. Принимает
+  //     16kHz mono Float32Array PCM, возвращает распознанный текст.
+  //   - transcribeGroq(audioData): Groq Whisper API fallback. Принимает webm
+  //     ArrayBuffer (как есть из MediaRecorder), нужен groqApiKey в настройках.
+  //   - onProgress(cb): live-прогресс загрузки модели и инференса (main → renderer).
+  //   - tts(text): text-to-speech через OpenAI TTS endpoint (используется VoicePage).
+  //   - sendQuery(text): форвард голосового запроса в main window (VoicePage).
+  voice: {
+    show: () => ipcRenderer.invoke('voice:show'),
+    hide: () => ipcRenderer.invoke('voice:hide'),
+    transcribe: (audio: Float32Array, opts?: { modelSize?: 'tiny' | 'base' }) =>
+      ipcRenderer.invoke('voice:transcribe', audio, opts) as Promise<string>,
+    transcribeGroq: (audioData: ArrayBuffer) =>
+      ipcRenderer.invoke('voice:transcribeGroq', audioData) as Promise<string>,
+    // Статус модели: { status, cached, modelSize, modelId, displaySize }.
+    status: (modelSize?: string) =>
+      ipcRenderer.invoke('voice:status', modelSize) as Promise<{ status: string; cached: boolean; modelSize: string; modelId: string; displaySize: string }>,
+    // Явное скачивание модели. Прогресс приходит через onProgress/onStatus.
+    download: (modelSize?: string) =>
+      ipcRenderer.invoke('voice:download', modelSize) as Promise<{ ok: boolean; error?: string }>,
+    onProgress: (cb: (info: { stage: string; progress?: number; message?: string }) => void) => {
+      const handler = (_e: unknown, info: { stage: string; progress?: number; message?: string }) => cb(info)
+      ipcRenderer.on('voice:progress', handler)
+      return () => ipcRenderer.removeListener('voice:progress', handler)
+    },
+    onStatus: (cb: (info: { status: string; cached: boolean; modelSize: string; modelId: string; displaySize: string }) => void) => {
+      const handler = (_e: unknown, info: { status: string; cached: boolean; modelSize: string; modelId: string; displaySize: string }) => cb(info)
+      ipcRenderer.on('voice:status', handler)
+      return () => ipcRenderer.removeListener('voice:status', handler)
+    },
+    tts: (text: string) => ipcRenderer.invoke('voice:tts', text) as Promise<string>,
+    sendQuery: (text: string) => ipcRenderer.invoke('voice:sendQuery', text) as Promise<void>,
   },
 
   // ── Автообновление клиента ──────────────────────────────────────────────

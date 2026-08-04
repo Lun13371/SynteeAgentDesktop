@@ -9,10 +9,12 @@ export class SpotlightWindow {
 
   create(): BrowserWindow {
     const primary = screen.getPrimaryDisplay()
-    const { width: sw } = primary.workAreaSize
+    const { width: sw, height: sh, y: waY } = primary.workArea
     const { width: ww, height: wh } = WINDOW_SIZES.spotlight
+    // Центрируем окно по горизонтали и вертикали рабочей области.
+    // Y считаем от верха workArea (y может быть >0 если таскбар сверху).
     const x = Math.round((sw - ww) / 2)
-    const y = Math.round(primary.workAreaSize.height * 0.28)
+    const y = waY + Math.round((sh - wh) / 2)
 
     this.win = new BrowserWindow({
       x, y,
@@ -21,6 +23,9 @@ export class SpotlightWindow {
       minHeight: wh,
       frame: false,
       transparent: true,
+      // На Windows transparent:true без явного прозрачного backgroundColor
+      // может оставлять чёрный/белый фон окна. Явно задаём RGBA(0,0,0,0).
+      backgroundColor: '#00000000',
       alwaysOnTop: true,
       skipTaskbar: true,
       resizable: false,
@@ -50,7 +55,12 @@ export class SpotlightWindow {
   show(quickMode = false): void {
     if (!this.win) return
     this.win.webContents.send('spotlight:mode', quickMode ? 'quick' : 'normal')
+    // Сначала показываем окно, потом центрируем. На Windows setPosition/
+    // setSize на СКРЫТОМ transparent-окне могут не примениться — поэтому
+    // при первом открытии окно появлялось не по центру, а в позиции create().
+    // После show() setBounds срабатывает надёжно.
     this.win.show()
+    this.recenter(WINDOW_SIZES.spotlight.height)
     this.win.focus()
     this.isVisible = true
   }
@@ -68,13 +78,28 @@ export class SpotlightWindow {
     this.isVisible ? this.hide() : this.show()
   }
 
+  // Пересчитать позицию окна так, чтобы оно оставалось по центру рабочей
+  // области при изменении высоты (expand/collapse). setSize сам по себе
+  // сохраняет верхнюю-левую точку → окно «уезжает» вверх при росте высоты.
+  // Используем setBounds (атомарно позиция+размер) вместо раздельных
+  // setPosition + setSize — надёжнее на Windows для transparent-окон.
+  private recenter(h: number): void {
+    if (!this.win) return
+    const primary = screen.getPrimaryDisplay()
+    const { width: sw, height: sh, y: waY } = primary.workArea
+    const ww = WINDOW_SIZES.spotlight.width
+    const x = Math.round((sw - ww) / 2)
+    const y = waY + Math.round((sh - h) / 2)
+    this.win.setBounds({ x, y, width: ww, height: h }, false)
+  }
+
   // Расширить высоту при появлении результатов
   expand(): void {
-    this.win?.setSize(WINDOW_SIZES.spotlight.width, WINDOW_SIZES.spotlightExpanded.height, true)
+    this.recenter(WINDOW_SIZES.spotlightExpanded.height)
   }
 
   collapse(): void {
-    this.win?.setSize(WINDOW_SIZES.spotlight.width, WINDOW_SIZES.spotlight.height, true)
+    this.recenter(WINDOW_SIZES.spotlight.height)
   }
 
   getWindow(): BrowserWindow | null {

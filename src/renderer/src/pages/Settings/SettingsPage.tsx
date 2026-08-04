@@ -842,6 +842,97 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
 })
 
 const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+  const sttProvider = (settings['sttProvider'] as 'local' | 'groq') || 'local'
+  const sttModelSize = (settings['sttModelSize'] as 'tiny' | 'base') || 'tiny'
+
+  // ── Статус модели Whisper (скачана/скачивается/не скачана) ──
+  const [modelStatus, setModelStatus] = useState<{ status: string; cached: boolean; displaySize: string } | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState(0)
+
+  // Запрос статуса при монтировании / смене размера модели.
+  const refreshStatus = useCallback(() => {
+    if (sttProvider !== 'local') return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = (window as any).syntee
+    api?.voice?.status?.(sttModelSize).then((s: { status: string; cached: boolean; displaySize: string }) => {
+      setModelStatus(s)
+    }).catch(() => {})
+  }, [sttProvider, sttModelSize])
+
+  useEffect(() => { refreshStatus() }, [refreshStatus])
+
+  // Подписка на live-обновления статуса (при фоновом скачивании/преварме).
+  useEffect(() => {
+    if (sttProvider !== 'local') return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = (window as any).syntee
+    if (!api?.voice) return
+    const unsubProgress = api.voice.onProgress?.((info: { stage: string; progress?: number; message?: string }) => {
+      if (info.stage === 'loading-model') {
+        setDownloading(true)
+        if (typeof info.progress === 'number') setDownloadProgress(info.progress)
+        if (info.progress === 100) setDownloading(false)
+      }
+    })
+    const unsubStatus = api.voice.onStatus?.((info: { status: string; cached: boolean; displaySize: string }) => {
+      setModelStatus(info)
+      if (info.status === 'ready' || info.status === 'idle') setDownloading(false)
+    })
+    return () => { unsubProgress?.(); unsubStatus?.() }
+  }, [sttProvider])
+
+  const handleDownload = useCallback(async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = (window as any).syntee
+    if (!api?.voice?.download) return
+    setDownloading(true)
+    setDownloadProgress(0)
+    try {
+      const res = await api.voice.download(sttModelSize)
+      if (res?.ok) {
+        setDownloadProgress(100)
+        refreshStatus()
+      }
+    } catch { /* ошибка пришла через progress */ }
+    finally { setDownloading(false) }
+  }, [sttModelSize, refreshStatus])
+
+  const statusBadge = (() => {
+    if (!modelStatus) return null
+    const isReady = modelStatus.cached || modelStatus.status === 'ready'
+    if (downloading) {
+      return (
+        <div className="voice-model-status voice-model-status--downloading">
+          <span className="voice-model-spinner" />
+          <span>Скачивание... {downloadProgress > 0 ? `${downloadProgress}%` : ''}</span>
+        </div>
+      )
+    }
+    if (isReady) {
+      return (
+        <div className="voice-model-status voice-model-status--ready">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Скачана ({modelStatus.displaySize})</span>
+        </div>
+      )
+    }
+    if (modelStatus.status === 'error') {
+      return (
+        <div className="voice-model-status voice-model-status--error">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>Ошибка загрузки</span>
+        </div>
+      )
+    }
+    return (
+      <div className="voice-model-status voice-model-status--idle">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span>Не скачана{modelStatus.displaySize ? ` (${modelStatus.displaySize})` : ''}</span>
+      </div>
+    )
+  })()
+
   return (
     <>
       <SectionTitle>Голос</SectionTitle>
@@ -853,8 +944,51 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
           {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].map(v => <option key={v} value={v}>{v}</option>)}
         </select>
       </Field>
+
+      <SectionTitle>Голосовой ввод в чате</SectionTitle>
+      <Field label="Распознавание речи (STT)" description="Движок для кнопки микрофона в строке ввода">
+        <select className="settings-select" value={sttProvider} onChange={e => onSet('sttProvider', e.target.value)}>
+          <option value="local">Локальный Whisper (оффлайн, без лимитов)</option>
+          <option value="groq">Groq Whisper API (нужен ключ)</option>
+        </select>
+      </Field>
+      {sttProvider === 'local' && (
+        <>
+          <Field label="Размер модели Whisper" description="Меньше — быстрее и экономнее. tiny по умолчанию, base точнее на русском.">
+            <select className="settings-select" value={sttModelSize} onChange={e => onSet('sttModelSize', e.target.value)}>
+              <option value="tiny">tiny (~40MB, быстро — рекомендуется)</option>
+              <option value="base">base (~140MB, точнее на русском)</option>
+            </select>
+          </Field>
+          {/* Блок статуса модели + кнопка скачать */}
+          <div className="voice-model-block">
+            {statusBadge}
+            {!downloading && !(modelStatus?.cached || modelStatus?.status === 'ready') && (
+              <button className="voice-model-download-btn" onClick={handleDownload}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Скачать модель
+              </button>
+            )}
+            {downloading && (
+              <div className="voice-model-progress">
+                <div className="voice-model-progress-bar" style={{ width: `${downloadProgress}%` }} />
+              </div>
+            )}
+          </div>
+          <div className="settings-info-note">
+            Модель кэшируется локально и скачивается один раз. После этого распознавание
+            работает полностью оффлайн. Фоновая загрузка начинается автоматически при старте
+            приложения — здесь можно скачать вручную или проверить статус.
+          </div>
+        </>
+      )}
+      {sttProvider === 'groq' && (
+        <Field label="Groq API key" description="Ключ с console.groq.com/keys. Хранится локально, отправляется только на api.groq.com.">
+          <input className="settings-input" type="password" value={(settings['groqApiKey'] as string) || ''} onChange={e => onSet('groqApiKey', e.target.value)} placeholder="gsk_..." />
+        </Field>
+      )}
       <div className="settings-info-note">
-        Модели STT и TTS задаются в разделе <strong>ИИ и Модели</strong> → Назначения ролей.
+        Модели TTS (озвучивание ответов) задаются в разделе <strong>ИИ и Модели</strong> → Назначения ролей.
       </div>
     </>
   )

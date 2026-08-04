@@ -179,8 +179,20 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
 // приходят с этим chatId — нужно маршрутизировать их в sideChatByChat
 // вместо обычных messages/liveByChat.
 const SIDE_PREFIX = 'sidechat:'
-function isSideChat(chatId: string): boolean { return chatId.startsWith(SIDE_PREFIX) }
+function isSideChat(chatId: string | undefined | null): boolean {
+  return typeof chatId === 'string' && chatId.startsWith(SIDE_PREFIX)
+}
 function sideParent(chatId: string): string { return chatId.slice(SIDE_PREFIX.length) }
+
+// Aux-окна (spotlight/overlay/voice) грузят тот же renderer bundle и
+// выполняют полный App.tsx со всеми эффектами. Но стрим-события чатов
+// (chat:stream-token и др.) адресованы только главному окну — получать
+// их здесь бессмысленно и вызывает спам в консоль (isSideChat на каждом
+// токене) + лишнюю нагрузку. Гейт по hash маршрута.
+function isAuxWindow(): boolean {
+  const hash = window.location.hash.replace('#/', '')
+  return hash === 'spotlight' || hash === 'overlay' || hash === 'voice'
+}
 
 /**
  * Инициализация live-буфера для side-чата. Вызывается из SideChatPanel
@@ -230,6 +242,9 @@ export function initSideChatSend(parentChatId: string) {
 // 3. Sidebar мог показывать статус чата (spinner/✓/✗)
 export function useChatRunSubscription() {
   useEffect(() => {
+    // Aux-окна не обрабатывают стрим чатов — см. isAuxWindow().
+    if (isAuxWindow()) return
+
     // ── Time-based throttle (50мс / ~20fps) ────────────────────────────
     // Раньше использовался requestAnimationFrame (~16мс / 60fps): каждый
     // кадр ре-парсил ВЕСЬ накопленный markdown (ReactMarkdown + SyntaxHighlighter),
@@ -318,6 +333,7 @@ export function useChatRunSubscription() {
       chatId: string; msgId: string; token?: string
       thinkingToken?: string; thinkingDone?: boolean; thinkingMs?: number
     }) => {
+      if (!data || !data.chatId) return
       const buf = getBuf(data.chatId)
       buf.streamMsgId = data.msgId
 
