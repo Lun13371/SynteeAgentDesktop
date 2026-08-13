@@ -295,7 +295,13 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
           </div>
         )}
 
-        {renderResult(toolName, content, args, initialLines)}
+        {result.success === false
+          ? (
+            <div className="trr-error-block">
+              <pre className="trr-error-pre">{content || '(нет деталей ошибки)'}</pre>
+            </div>
+          )
+          : renderResult(toolName, content, args, initialLines)}
       </div>
     </div>
   )

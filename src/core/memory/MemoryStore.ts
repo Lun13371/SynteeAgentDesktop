@@ -111,6 +111,8 @@ export interface SearchMemoryParams {
    * - 'pinned'       → pinned_messages (FTS5 + boost)
    */
   sources?: SearchSourceName[] | 'all'
+  /** If true, search across ALL projects (not just current). Default: false. */
+  crossProject?: boolean
 }
 
 export interface SearchResult {
@@ -371,11 +373,20 @@ export async function searchMemory(params: SearchMemoryParams): Promise<SearchRe
     kindArgs.push(params.kind)
   }
 
-  // Берём top-200 по importance (чтобы не гонять cosine по всей базе)
+  // LIKE pre-filter for queries > 3 chars — finds low-importance relevant items
+  let likeWhere = ''
+  const likeArgs: unknown[] = []
+  if (params.query.trim().length > 3) {
+    const pattern = `%${params.query.trim().toLowerCase()}%`
+    likeWhere = `AND (LOWER(content) LIKE ? OR LOWER(title) LIKE ?)`
+    likeArgs.push(pattern, pattern)
+  }
+
+  // Берём top-500 по importance (чтобы не гонять cosine по всей базе)
   const rows = db.prepare(
-    `SELECT * FROM memory_items WHERE ${scopeWhere} ${kindWhere}
-     ORDER BY importance DESC, updated_at DESC LIMIT 200`
-  ).all(...scopeArgs, ...kindArgs) as Record<string, unknown>[]
+    `SELECT * FROM memory_items WHERE ${scopeWhere} ${kindWhere} ${likeWhere}
+     ORDER BY importance DESC, updated_at DESC LIMIT 500`
+  ).all(...scopeArgs, ...kindArgs, ...likeArgs) as Record<string, unknown>[]
 
   if (rows.length === 0) return []
 
@@ -414,7 +425,9 @@ export async function searchMemory(params: SearchMemoryParams): Promise<SearchRe
       : 0
     const pinnedBoost = (row.pinned as number) ? 0.5 : 0
 
-    const combo = tfidfCos * 10 + importance * 2 + recencyBoost * 1 + pinnedBoost
+    // Tuned: TF-IDF is the primary signal (×12), importance slightly reduced (×1.5)
+    // so low-importance but relevant items surface. Recency boosted (×1.5).
+    const combo = tfidfCos * 12 + importance * 1.5 + recencyBoost * 1.5 + pinnedBoost * 0.8
     if (combo < minScore) continue
 
     scored.push({ item: rowToItem(row), score: combo })
@@ -464,6 +477,10 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
   const perSourceLimit = 5
   const totalLimit = params.limit ?? 20
 
+  const crossProject = params.crossProject ?? false
+  // When crossProject, chat sources search ALL projects (pass undefined projectId)
+  const chatProjectId = crossProject ? undefined : params.projectId
+
   // Запускаем все источники параллельно. memory_items — async (TF-IDF embedding),
   // остальные — sync (FTS5/LIKE). Оборачиваем в Promise.all для единообразия.
   const tasks: Promise<MultiSourceResult[]>[] = []
@@ -474,8 +491,8 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
         const results = await searchMemory({
           query: params.query,
           kind: params.kind,
-          scope: params.scope,
-          projectId: params.projectId,
+          scope: crossProject ? 'all' : params.scope,
+          projectId: crossProject ? undefined : params.projectId,
           limit: perSourceLimit,
           minScore: params.minScore,
         })
@@ -495,7 +512,7 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
   if (allSources.includes('messages')) {
     tasks.push(
       Promise.resolve(
-        searchMessagesFTS(params.query, params.projectId, perSourceLimit)
+        searchMessagesFTS(params.query, chatProjectId, perSourceLimit, crossProject)
           .map(r => ({ ...r, source: r.source as 'messages' }))
       )
     )
@@ -504,7 +521,7 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
   if (allSources.includes('summaries')) {
     tasks.push(
       Promise.resolve(
-        searchChatSummaries(params.query, params.projectId, perSourceLimit)
+        searchChatSummaries(params.query, chatProjectId, perSourceLimit, crossProject)
           .map(r => ({ ...r, source: r.source as 'summaries' }))
       )
     )
@@ -513,7 +530,7 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
   if (allSources.includes('agent_logs')) {
     tasks.push(
       Promise.resolve(
-        searchAgentLogs(params.query, params.projectId, perSourceLimit)
+        searchAgentLogs(params.query, chatProjectId, perSourceLimit, crossProject)
           .map(r => ({ ...r, source: r.source as 'agent_logs' }))
       )
     )
@@ -522,7 +539,7 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
   if (allSources.includes('pinned')) {
     tasks.push(
       Promise.resolve(
-        searchPinnedMessages(params.query, params.projectId, perSourceLimit)
+        searchPinnedMessages(params.query, chatProjectId, perSourceLimit, crossProject)
           .map(r => ({ ...r, source: r.source as 'pinned' }))
       )
     )
@@ -596,6 +613,57 @@ export function buildCuratedSummary(projectId?: string): string {
       for (const d of decisions) {
         const title = (d.title as string) || (d.content as string)
         lines.push(`- ${title}`)
+      }
+    }
+  }
+
+  // ── Project conventions ──
+  if (projectId) {
+    const conventions = db.prepare(
+      `SELECT title, content FROM memory_items
+       WHERE scope = 'project' AND project_id = ? AND kind = 'convention'
+       ORDER BY importance DESC, updated_at DESC LIMIT 5`
+    ).all(projectId) as Array<{ title: string; content: string }>
+
+    if (conventions.length > 0) {
+      if (lines.length > 0) lines.push('')
+      lines.push('[Конвенции проекта]')
+      for (const c of conventions) {
+        lines.push(`- ${(c.title || c.content).slice(0, 120)}`)
+      }
+    }
+  }
+
+  // ── Recent conversations (task outcomes) ──
+  if (projectId) {
+    const conversations = db.prepare(
+      `SELECT title, content FROM memory_items
+       WHERE scope = 'project' AND project_id = ? AND kind = 'conversation'
+       ORDER BY updated_at DESC LIMIT 3`
+    ).all(projectId) as Array<{ title: string; content: string }>
+
+    if (conversations.length > 0) {
+      if (lines.length > 0) lines.push('')
+      lines.push('[Итоги диалогов]')
+      for (const c of conversations) {
+        lines.push(`- ${(c.title || c.content).slice(0, 120)}`)
+      }
+    }
+  }
+
+  // ── Agent outcomes (lessons) ──
+  if (projectId) {
+    const outcomes = db.prepare(
+      `SELECT title, content FROM memory_items
+       WHERE scope = 'project' AND project_id = ? AND kind = 'agent_outcome'
+       ORDER BY importance DESC, updated_at DESC LIMIT 3`
+    ).all(projectId) as Array<{ title: string; content: string }>
+
+    if (outcomes.length > 0) {
+      if (lines.length > 0) lines.push('')
+      lines.push('[Уроки]')
+      for (const o of outcomes) {
+        lines.push(`- ${(o.title || o.content).slice(0, 120)}`)
       }
     }
   }

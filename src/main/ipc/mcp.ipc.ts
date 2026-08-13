@@ -32,13 +32,25 @@ export function registerMcpIPC(store: Store, getWindow: () => BrowserWindow | nu
     return m
   }
 
-  ipcMain.handle('mcp:getAll', (_e, params?: { projectId?: string }) => {
+  ipcMain.handle('mcp:getAll', (_e, params?: { projectId?: string; chatId?: string }) => {
     let projectWorkdir: string | undefined
-    if (params?.projectId) {
-      const proj = getProjectById(params.projectId)
+    let projectId = params?.projectId
+    // Если projectId не передан, но есть chatId — резолвим проект из чата.
+    // Это надёжнее чем зависеть от activeProjectId в renderer-сторе.
+    if (!projectId && params?.chatId) {
+      try {
+        const ctx = getChatWorkdirContext(params.chatId)
+        if (ctx.workdir) {
+          const found = getAllProjects().find(p => p.workdir === ctx.workdir)
+          projectId = found?.id
+        }
+      } catch { /* ignore */ }
+    }
+    if (projectId) {
+      const proj = getProjectById(projectId)
       projectWorkdir = proj?.workdir
     }
-    return mgr().getAllServers({ projectWorkdir, projectId: params?.projectId })
+    return mgr().getAllServers({ projectWorkdir, projectId })
   })
 
   // Активные MCP-серверы для конкретного чата (для бейджа над инпутом).

@@ -22,19 +22,62 @@ function writeWithOptionalBom(filePath: string, content: string): Promise<void> 
   return fsWriteFile(filePath, content, 'utf-8')
 }
 
+// Fuzzy find-and-replace: игнорирует leading whitespace (tabs vs spaces,
+// лишние/недостающие отступы). Используется и apply_patch, и legacy replace.
+// Возвращает { found, result }. При replaceAll=true заменяет все вхождения.
+function fuzzyFindAndReplace(
+  haystack: string,
+  needle: string,
+  replacement: string,
+  replaceAll: boolean,
+): { found: boolean; result: string } {
+  const stripIndent = (s: string) => s.split('\n').map(l => l.trimStart()).join('\n')
+  const strippedHaystack = stripIndent(haystack)
+  const strippedNeedle = stripIndent(needle)
+
+  if (!strippedHaystack.includes(strippedNeedle)) {
+    return { found: false, result: haystack }
+  }
+
+  const needleLines = strippedNeedle.split('\n')
+  const origLines = haystack.split('\n')
+
+  // Находим все стартовые позиции совпадений по trimStart-сравнению строк
+  const matchStarts: number[] = []
+  for (let i = 0; i <= origLines.length - needleLines.length; i++) {
+    if (needleLines.every((nl, j) => (origLines[i + j] ?? '').trimStart() === nl)) {
+      matchStarts.push(i)
+    }
+  }
+
+  if (matchStarts.length === 0) {
+    return { found: false, result: haystack }
+  }
+
+  const startsToReplace = replaceAll ? matchStarts : [matchStarts[0]]
+  // Заменяем с последней позиции к первой, чтобы не сбить индексы
+  for (let k = startsToReplace.length - 1; k >= 0; k--) {
+    const start = startsToReplace[k]
+    origLines.splice(start, needleLines.length, ...replacement.split('\n'))
+  }
+
+  return { found: true, result: origLines.join('\n') }
+}
+
+
 export async function writeFile(path: string, content: string, opts?: { dryRun?: boolean; workdir?: string }): Promise<ToolResult> {
   try {
     path = resolveToolPath(path, opts?.workdir)
     // write_file — СОЗДАНИЕ нового файла с нуля. Перезапись существующего
-    // запрещена: для правок используй edit_file (mode=replace/insert/
-    // overwrite/apply_patch) — он возвращает diff и сохраняет оригинал для
+    // запрещена: для правок используй edit_file (mode=apply_patch/insert/
+    // overwrite) — он возвращает diff и сохраняет оригинал для
     // undo/rewind. Без этой проверки модель часто звала write_file для
     // точечных правок, теряя весь контент файла.
     if (existsSync(path)) {
       return {
         success: false,
         output: '',
-        error: 'File already exists. write_file is only for creating a new file. To edit an existing file use edit_file (mode=replace/insert/overwrite/apply_patch).',
+        error: 'File already exists. write_file is only for creating a new file. To edit an existing file use edit_file (mode=apply_patch/insert/overwrite).',
       }
     }
     // dryRun — do not write, only return a diff preview
@@ -59,8 +102,9 @@ export async function writeFile(path: string, content: string, opts?: { dryRun?:
 //   =======
 //   <новый текст>
 //   >>>>>>> REPLACE
-// Каждый блок заменяет ровно одно вхождение. Если SEARCH не найден — ошибка.
-function applySearchReplacePatch(original: string, patch: string): string {
+// Каждый блок заменяет ровно одно вхождение (или все при replaceAll=true).
+// Если SEARCH не найден ни точно, ни fuzzy (по отступам) — ошибка.
+function applySearchReplacePatch(original: string, patch: string, replaceAll = false): string {
   const SEARCH_START = '<<<<<<< SEARCH'
   const SEPARATOR = '======='
   const REPLACE_END = '>>>>>>> REPLACE'
@@ -100,14 +144,23 @@ function applySearchReplacePatch(original: string, patch: string): string {
     const normResult = normalizeLineEndings(result)
     const normSearch = normalizeLineEndings(searchText)
 
-    if (!normResult.includes(normSearch)) {
-      errors.push(`SEARCH not found (lines ${searchStartIdx + 2}-${sepIdx}): "${searchText.slice(0, 80)}..."`)
-      i = replaceEndIdx + 1
-      continue
+    if (normResult.includes(normSearch)) {
+      // Exact match found
+      if (replaceAll) {
+        result = normResult.split(normSearch).join(replaceText)
+      } else {
+        result = normResult.replace(normSearch, replaceText)
+      }
+    } else {
+      // Fuzzy attempt: ignore leading whitespace of each line (tabs vs spaces,
+      // extra/missing indent). Same logic as replace-mode fuzzy, now shared.
+      const fuzzy = fuzzyFindAndReplace(normResult, normSearch, replaceText, replaceAll)
+      if (fuzzy.found) {
+        result = fuzzy.result
+      } else {
+        errors.push(buildNotFoundSnippetError(normResult, normSearch, `apply_patch SEARCH (lines ${searchStartIdx + 2}-${sepIdx})`))
+      }
     }
-
-    // Replace only the first occurrence
-    result = normResult.replace(normSearch, replaceText)
     i = replaceEndIdx + 1
   }
 
@@ -128,15 +181,36 @@ export async function editFile(params: {
   create_if_not_exists?: boolean
   dryRun?: boolean
   patch?: string
+  replace_all?: boolean
   workdir?: string
 }): Promise<EditResult> {
   try {
+    // Legacy fallback: если модель передаёт mode='replace' (старый контекст
+    // из истории чата или устаревший системный промпт) — конвертируем в
+    // single-block apply_patch. Это сохраняет обратную совместимость: старые
+    // чаты не ломаются, модель не получает "invalid mode" error.
+    if (params.mode === 'replace') {
+      if (!params.old_str) return { success: false, output: '', error: 'edit_file replace: old_str is required' }
+      if (params.new_str === undefined) {
+        return {
+          success: false,
+          output: '',
+          error: 'edit_file replace: new_str is required. If you want to delete old_str — pass new_str: "" explicitly.',
+        }
+      }
+      params = {
+        ...params,
+        mode: 'apply_patch',
+        patch: `<<<<<<< SEARCH\n${params.old_str}\n=======\n${params.new_str}\n>>>>>>> REPLACE`,
+      }
+    }
+
     // Validate mode BEFORE any actions. Previously an invalid mode (typo,
     // hallucination: "delete", "append") silently fell through all if/else
     // branches → updated = original → file rewritten with same content →
     // success=true "0 lines changed". The AI thought the edit applied. Now —
     // an explicit error with the list of allowed modes.
-    const VALID_MODES = ['replace', 'insert', 'overwrite', 'apply_patch']
+    const VALID_MODES = ['apply_patch', 'insert', 'overwrite']
     if (!VALID_MODES.includes(params.mode)) {
       return {
         success: false,
@@ -182,44 +256,7 @@ export async function editFile(params: {
 
     if (params.mode === 'apply_patch') {
       if (!params.patch) return { success: false, output: '', error: 'edit_file apply_patch: patch is required' }
-      updated = applySearchReplacePatch(original, params.patch)
-    } else if (params.mode === 'replace') {
-      if (!params.old_str) return { success: false, output: '', error: 'edit_file replace: old_str is required' }
-      // Protection against silent delete: new_str is MANDATORY for replace. Previously
-      // `new_str ?? ''` silently replaced the found fragment with an empty string =
-      // deleted code if the model forgot to pass new_str. Now an explicit error.
-      // Deletion via replace is still available: pass new_str: "" explicitly to delete.
-      if (params.new_str === undefined) {
-        return {
-          success: false,
-          output: '',
-          error: 'edit_file replace: new_str is required. If you want to delete old_str — pass new_str: "" explicitly. Deletion without explicit new_str is forbidden (protection against accidental code loss).',
-        }
-      }
-      const normOrig = normalizeLineEndings(original)
-      const normOld = normalizeLineEndings(params.old_str)
-      if (!normOrig.includes(normOld)) {
-        // Fuzzy attempt: ignore leading whitespace of lines
-        const stripIndent = (s: string) => s.split('\n').map(l => l.trimStart()).join('\n')
-        if (stripIndent(normOrig).includes(stripIndent(normOld))) {
-          const oldLines = normOld.split('\n').map(l => l.trimStart())
-          const origLines = normOrig.split('\n')
-          const matchIdx = origLines.findIndex((_, i) =>
-            oldLines.every((ol, j) => (origLines[i + j] ?? '').trimStart() === ol)
-          )
-          if (matchIdx >= 0) {
-            const realOld = origLines.slice(matchIdx, matchIdx + oldLines.length).join('\n')
-            updated = normOrig.replace(realOld, params.new_str)
-          } else {
-            return { success: false, output: '', error: 'edit_file replace: old_str not found (fuzzy did not help either). Check indentation and fragment accuracy. The file may have changed — reread it with read_file.' }
-          }
-        } else {
-          return { success: false, output: '', error: 'edit_file replace: old_str not found in the file. Reread the file with read_file to confirm the actual content.' }
-        }
-      } else {
-        updated = normOrig.replace(normOld, params.new_str)
-      }
-
+      updated = applySearchReplacePatch(original, params.patch, params.replace_all ?? false)
     } else if (params.mode === 'insert') {
       // Protection against silent empty insert: content is MANDATORY for insert. Previously
       // `content ?? ''` silently inserted one empty line if the model forgot content
@@ -261,4 +298,30 @@ export async function editFile(params: {
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
+}
+
+
+// ── Snippet-хелпер для ошибок "not found" ──────────────────────────────────
+// Когда old_str / SEARCH не найден в файле, включаем в сообщение об ошибке
+// фрагмент актуального содержимого файла (15 строк) с номерами строк. Это
+// позволяет AI скорректировать old_str без отдельного вызова read_file —
+// экономит round-trip и снижает количество ошибок редактирования.
+function buildNotFoundSnippetError(normOrig: string, normOld: string, context: string): string {
+  const lines = normOrig.split('\n')
+  const oldFirstLine = normOld.split('\n')[0]?.trimStart() ?? ''
+  // Пытаемся найти строку с частичным совпадением по первым 30 символам old_str
+  const partialIdx = oldFirstLine
+    ? lines.findIndex(l => l.includes(oldFirstLine.slice(0, 30)))
+    : -1
+  const snippetStart = Math.max(0, (partialIdx >= 0 ? partialIdx : 0) - 3)
+  const SNIPPET_LINES = 15
+  const snippetLines = lines.slice(snippetStart, snippetStart + SNIPPET_LINES)
+  const snippet = snippetLines
+    .map((l, i) => {
+      const lineNum = snippetStart + i + 1
+      const truncated = l.length > 200 ? l.slice(0, 200) + '…' : l
+      return `${lineNum}: ${truncated}`
+    })
+    .join('\n')
+  return `edit_file ${context}: old_str not found in the file. Here is the actual content (lines ${snippetStart + 1}-${snippetStart + snippetLines.length}):\n\n${snippet}\n\nUse this actual content to correct old_str, or reread the file with read_file.`
 }

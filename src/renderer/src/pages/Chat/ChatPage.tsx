@@ -20,16 +20,20 @@ import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import HelpModal from '../../components/ui/HelpModal/HelpModal'
+import { PersonaSuggestionModal } from '../../components/ui/PersonaSuggestionModal/PersonaSuggestionModal'
+import { detectPersona, isPersonaSuggestionsDisabled, disablePersonaSuggestions } from '../../utils/personaDetect'
 import Logo from '../../components/ui/Logo/Logo'
 import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
 import ChatMinimap from '../../components/ui/ChatMinimap/ChatMinimap'
 import { useSettingsStore } from '../../store/settings.store'
 import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.store'
+import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
+import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../../../shared/modes'
 import './ChatPage.css'
 
 const itemStyle: React.CSSProperties = {
@@ -134,6 +138,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // ref текущего не меняется → без ре-рендера.
   const live = (useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId] : undefined) ?? EMPTY_LIVE)
   const runStatus = useChatStore(s => s.currentChatId ? s.runStatusByChat[s.currentChatId] : undefined)
+  const lastTurnChanges = useChatStore(s => s.currentChatId ? s.lastTurnChangesByChat[s.currentChatId] : null)
   const { setChats, setCurrentChat, setMessages, setMessagesWindow, prependOlderMessages,
     setIsLoadingOlder, setHasOlderMessages, addMessage, pinMessage,
     setProjects, setActiveProject, markChatRead } = useChatStore(useShallow(s => ({
@@ -186,6 +191,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
   const [askMode, setAskMode] = useState(false)
+  // Persona — single-select run mode (classic/architect/debugger/...).
+  // Orthogonal to the three toggles above. Persisted per-chat in chats.persona.
+  const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA)
   // ── Вложения черновика (attachments) — переживают рестарт как и draft. ──
   // Хранятся в chat_draft_attachments + файлы в userData/draft-attachments/.
   // При отправке передаются в chat.send, draft очищается.
@@ -209,6 +217,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const planningModeRef = useRef(false)
   const imageModeRef = useRef(false)
   const askModeRef = useRef(false)
+  const personaRef = useRef<PersonaId>(DEFAULT_PERSONA)
   const prevChatIdRef = useRef<string | null>(null)
   const prevIsIncognitoRef = useRef(false)
   // In-memory история для инкогнито-чатов (chatId → DESC массив), чтобы
@@ -224,6 +233,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
   useEffect(() => { askModeRef.current = askMode }, [askMode])
+  useEffect(() => { personaRef.current = persona }, [persona])
 
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
@@ -240,6 +250,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [customCommands, setCustomCommands] = useState<SlashCommand[]>([])
   // ── /help модалка ──
   const [showHelp, setShowHelp] = useState(false)
+  // Persona auto-suggest modal: показываем когда detect находит персону по
+  // первой реплике нового чата. Блокирующий — пользователь выбирает до send.
+  const [personaSuggest, setPersonaSuggest] = useState<{ id: PersonaId; preview: string; pendingText: string } | null>(null)
+  // Флаг для повторного handleSend после ответа в modal — пропускаем детект,
+  // иначе уйдём в рекурсию (модал → accept → handleSend → детект → модал).
+  const skipPersonaSuggestRef = useRef(false)
   // ── /restore пикер именованных снапшотов ──
   const [snapshotPicker, setSnapshotPicker] = useState<CheckpointMeta[] | null>(null)
 
@@ -279,6 +295,17 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // активный проект индексируется быстрее (priority, progress events).
   useEffect(() => {
     window.syntee.fastContext.setActive(activeProjectId).catch(() => {})
+    // Перезагружаем списки MCP/skills для этого проекта — иначе бейдж и
+    // ExtensionsPopover показывают только глобальные серверы, без проектных
+    // из .mcp.json. Без этого проектные MCP появляются только после ручного
+    // открытия popover.
+    if (activeProjectId) {
+      useExtensionsStore.getState().loadMcpServers(activeProjectId)
+      useExtensionsStore.getState().loadSkills(activeProjectId)
+    } else {
+      useExtensionsStore.getState().loadMcpServers()
+      useExtensionsStore.getState().loadSkills()
+    }
   }, [activeProjectId])
 
   // rateLimitSec читаем напрямую из live (live.rateLimitSec) — раньше был
@@ -303,8 +330,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     if (prevIsTypingRef.current && !isTyping) {
       playDoneSound()
+      // При завершении стрима принудительно скроллим к низу — финальное
+      // сообщение может быть за вьюпортом если пользователь отскроллил вверх
+      // во время стриминга. Без этого сообщение рендерится но не видно.
+      requestAnimationFrame(() => pinAutoscroll(true))
     }
     prevIsTypingRef.current = isTyping
+    // pinAutoscroll объявлен ниже по коду (const), включать в deps нельзя —
+    // упадёт с TDZ. Ссылка внутри тела эффекта безопасна (выполняется после рендера).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTyping])
 
   // CHAT_COMPACTED — реакция на сжатие контекста в main (как авто-компакция
@@ -390,26 +424,65 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   })
 
   // ── Wrapper'ы режимов инпут-бара ──
-  // Каждый тумблер сохраняет своё состояние в БД (chats.planning_mode /
-  // image_mode / ask_mode) для переживания перезапуска. Инкогнито не
-  // пишется — только in-memory state. Пишем все 3 режима разом: один
-  // UPDATE в SQLite дешевле, чем три IPC-вызова.
-  const persistModes = useCallback((chatId: string, p: boolean, i: boolean, a: boolean) => {
-    if (!chatId || isIncognito) return
-    window.syntee.chat.setModes(chatId, { planningMode: p, imageMode: i, askMode: a }).catch(() => {})
-  }, [isIncognito])
+  // Каждый тумблер сохраняет ТОЛЬКО свой режим в БД (chats.planning_mode /
+  // image_mode / ask_mode) — индивидуальный IPC-сеттер, не затрагивая
+  // остальные два. Раньше писали все 3 разом через setModes, что вызывало
+  // кросс-контаминацию: stale ref'ы других режимов затирали значения
+  // чужого чата при race condition. Инкогнито не пишется — только in-memory.
   const handlePlanningModeChange = useCallback((v: boolean) => {
     setPlanningMode(v)
-    persistModes(currentChatId ?? '', v, imageModeRef.current, askModeRef.current)
-  }, [currentChatId, persistModes])
+    if (!currentChatId || isIncognito) return
+    window.syntee.chat.setPlanningMode(currentChatId, v).catch(e => console.error('[planningMode] IPC fail:', e))
+  }, [currentChatId, isIncognito])
   const handleImageModeChange = useCallback((v: boolean) => {
     setImageMode(v)
-    persistModes(currentChatId ?? '', planningModeRef.current, v, askModeRef.current)
-  }, [currentChatId, persistModes])
+    if (!currentChatId || isIncognito) return
+    window.syntee.chat.setImageMode(currentChatId, v).catch(e => console.error('[imageMode] IPC fail:', e))
+  }, [currentChatId, isIncognito])
   const handleAskModeChange = useCallback((v: boolean) => {
     setAskMode(v)
-    persistModes(currentChatId ?? '', planningModeRef.current, imageModeRef.current, v)
-  }, [currentChatId, persistModes])
+    if (!currentChatId || isIncognito) return
+    window.syntee.chat.setAskMode(currentChatId, v).catch(e => console.error('[askMode] IPC fail:', e))
+  }, [currentChatId, isIncognito])
+  // ── Persona — single-select run mode. Persisted in chats.persona (one
+  //  UPDATE per change). 'classic' is the neutral default (no badge, no
+  //  injection). Invalid stored values fall back to 'classic' on load.
+  const handlePersonaChange = useCallback((v: PersonaId) => {
+    setPersonaState(v)
+    personaRef.current = v
+    if (!currentChatId || isIncognito) return
+    window.syntee.chat.setPersona(currentChatId, v).catch(() => {})
+  }, [currentChatId, isIncognito])
+
+  // ── Persona auto-suggest modal handlers ──
+  // accept: переключаем персону + повторный handleSend (skip-detect ref,
+  // чтобы не уйти в рекурсию). dismiss: повторный handleSend с classic.
+  // never: opt-out + повторный handleSend с classic.
+  const handlePersonaSuggestAccept = useCallback(() => {
+    if (!personaSuggest) return
+    const { id, pendingText } = personaSuggest
+    setPersonaSuggest(null)
+    handlePersonaChange(id)
+    skipPersonaSuggestRef.current = true
+    void handleSend(pendingText)
+  }, [personaSuggest, handlePersonaChange])
+
+  const handlePersonaSuggestDismiss = useCallback(() => {
+    if (!personaSuggest) return
+    const { pendingText } = personaSuggest
+    setPersonaSuggest(null)
+    skipPersonaSuggestRef.current = true
+    void handleSend(pendingText)
+  }, [personaSuggest])
+
+  const handlePersonaSuggestNever = useCallback(() => {
+    if (!personaSuggest) return
+    const { pendingText } = personaSuggest
+    setPersonaSuggest(null)
+    disablePersonaSuggestions()
+    skipPersonaSuggestRef.current = true
+    void handleSend(pendingText)
+  }, [personaSuggest])
 
   // ── Черновик: debounced-сохранение в БД ──
   // 300мс задержка — чтобы не дёргать IPC на каждое нажатие. При смене
@@ -456,11 +529,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       if (attachmentsSaveTimerRef.current) { clearTimeout(attachmentsSaveTimerRef.current); attachmentsSaveTimerRef.current = null }
       window.syntee.chat.setDraft(prevId, draftRef.current).catch(() => {})
       window.syntee.draft.setAttachments(prevId, draftAttachmentsRef.current).catch(() => {})
-      window.syntee.chat.setModes(prevId, {
-        planningMode: planningModeRef.current,
-        imageMode: imageModeRef.current,
-        askMode: askModeRef.current,
-      }).catch(() => {})
+      // Режимы (planning/image/ask) НЕ сохраняем при свитче — они пишутся
+      // немедленно при тумблинге через индивидуальные IPC-сеттеры. Save-on-switch
+      // здесь вызывал race condition: stale ref'ы затирали режимы чужого чата.
+      if (personaRef.current !== DEFAULT_PERSONA) {
+        window.syntee.chat.setPersona(prevId, personaRef.current).catch(() => {})
+      }
     }
     prevChatIdRef.current = currentChatId
     prevIsIncognitoRef.current = isIncognito
@@ -469,6 +543,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setDraft('')
       setInputHistory([])
       setPlanningMode(false); setImageMode(false); setAskMode(false)
+      setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setDraftAttachments([])
       draftRef.current = ''
       draftAttachmentsRef.current = []
@@ -482,27 +557,38 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Инкогнито: дефолт-значения, история из in-memory Map
       setDraft('')
       setPlanningMode(false); setImageMode(false); setAskMode(false)
+      setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setDraftAttachments([])
       draftRef.current = ''
       draftAttachmentsRef.current = []
       setInputHistory(incognitoHistoryRef.current.get(currentChatId) ?? [])
       return
     }
-    // Обычный чат: грузим modes/draft/history/attachments из БД параллельно
+    // Обычный чат: грузим modes/draft/history/attachments из БД параллельно.
+    // Сначала сбрасываем режимы в false синхронно — чтобы UI не показывал
+    // вспышку режимов предыдущего чата пока async-load не завершится.
+    setPlanningMode(false); setImageMode(false); setAskMode(false)
+    planningModeRef.current = false; imageModeRef.current = false; askModeRef.current = false
     let cancelled = false
     Promise.all([
       window.syntee.chat.getModes(currentChatId),
       window.syntee.chat.getDraft(currentChatId),
       window.syntee.chat.getInputHistory(currentChatId),
       window.syntee.draft.getAttachments(currentChatId),
-    ]).then(([modes, draftText, history, attachments]) => {
+      window.syntee.chat.getPersona(currentChatId),
+      window.syntee.chat.getLastTurnChanges?.(currentChatId).catch(() => null),
+    ]).then(([modes, draftText, history, attachments, loadedPersona, lastChanges]) => {
       if (cancelled || currentChatId !== prevChatIdRef.current) return
+      useChatStore.getState().setLastTurnChanges(currentChatId, lastChanges ?? null)
       setPlanningMode(!!modes.planningMode)
       setImageMode(!!modes.imageMode)
       setAskMode(!!modes.askMode)
       planningModeRef.current = !!modes.planningMode
       imageModeRef.current = !!modes.imageMode
       askModeRef.current = !!modes.askMode
+      const safePersona = isValidPersona(loadedPersona) ? loadedPersona : DEFAULT_PERSONA
+      setPersonaState(safePersona)
+      personaRef.current = safePersona
       const d = typeof draftText === 'string' ? draftText : ''
       setDraft(d)
       draftRef.current = d
@@ -520,7 +606,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setInputHistory(dedup)
     }).catch(() => {
       if (cancelled) return
-      setDraft(''); setPlanningMode(false); setImageMode(false); setAskMode(false); setInputHistory([])
+      setDraft(''); setPlanningMode(false); setImageMode(false); setAskMode(false)
+      setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
+      setInputHistory([])
       setDraftAttachments([]); draftAttachmentsRef.current = []
     })
     return () => { cancelled = true }
@@ -537,11 +625,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         try {
           window.syntee.chat.setDraft(id, draftRef.current).catch(() => {})
           window.syntee.draft.setAttachments(id, draftAttachmentsRef.current).catch(() => {})
-          window.syntee.chat.setModes(id, {
-            planningMode: planningModeRef.current,
-            imageMode: imageModeRef.current,
-            askMode: askModeRef.current,
-          }).catch(() => {})
+          // Режимы НЕ сохраняем — они уже сохранены при тумблинге.
+          if (personaRef.current !== DEFAULT_PERSONA) {
+            window.syntee.chat.setPersona(id, personaRef.current).catch(() => {})
+          }
         } catch { /* окно уже закрывается — ок */ }
       }
     }
@@ -636,18 +723,19 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // hasOlder=true (пользователь догрузил старые страницы) — НЕ трогаем
       // messages, чтобы не сбросить позицию прокрутки; лишь правим флаг hasMore.
       window.syntee.chat.getMessagesPage(curId, 50).then((res: { messages: Message[]; hasMore: boolean }) => {
-        if (useChatStore.getState().currentChatId !== curId) return
         const st = useChatStore.getState()
-        if (st.hasOlderMessages) {
+        const isCurrent = st.currentChatId === curId
+        // НЕ отменяем сверку при свитче — обновляем кеш silently.
+        if (isCurrent && st.hasOlderMessages) {
           if (st.hasOlderMessages !== res.hasMore) setHasOlderMessages(res.hasMore)
           return
         }
-        const cur = st.messages
-        const curLastId = cur.length ? cur[cur.length - 1].id : null
+        const cached = st.messagesByChat[curId]
+        const curLastId = cached?.messages.length ? cached.messages[cached.messages.length - 1].id : null
         const freshLastId = res.messages.length ? res.messages[res.messages.length - 1].id : null
         if (curLastId !== freshLastId) {
           setMessagesWindow(curId, res.messages, res.hasMore)
-        } else if (st.hasOlderMessages !== res.hasMore) {
+        } else if (isCurrent && st.hasOlderMessages !== res.hasMore) {
           setHasOlderMessages(res.hasMore)
         }
       }).catch(() => { /* ok — оставляем stale, не критично */ })
@@ -825,17 +913,21 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       void (async () => {
         try {
           const res = await window.syntee.chat.getMessagesPage(id, 50) as { messages: Message[]; hasMore: boolean }
-          if (useChatStore.getState().currentChatId !== id) return
           const st = useChatStore.getState()
-          const cachedLastId = st.messages.length ? st.messages[st.messages.length - 1].id : null
+          const isCurrent = st.currentChatId === id
+          // НЕ отменяем сверку при свитче — обновляем кеш silently.
+          // setMessagesWindow для non-current chatId НЕ трогает s.messages.
+          const cached = st.messagesByChat[id]
+          const cachedLastId = cached?.messages.length ? cached.messages[cached.messages.length - 1].id : null
           const freshLastId = res.messages.length ? res.messages[res.messages.length - 1].id : null
           if (cachedLastId !== freshLastId) {
-            // Пока пользователя не было — пришли новые сообщения. Сбрасываем
-            // окно к свежей последней странице и прыгаем вниз.
+            // Пока пользователя не было — пришли новые сообщения. Обновляем окно.
             setMessagesWindow(id, res.messages, res.hasMore)
-            isInitialScrollRef.current = true
-            requestAnimationFrame(() => pinAutoscroll(true))
-          } else if (st.hasOlderMessages !== res.hasMore) {
+            if (isCurrent) {
+              isInitialScrollRef.current = true
+              requestAnimationFrame(() => pinAutoscroll(true))
+            }
+          } else if (isCurrent && st.hasOlderMessages !== res.hasMore) {
             setHasOlderMessages(res.hasMore)
           }
         } catch { /* ok — оставляем кеш, не критично */ }
@@ -1067,6 +1159,30 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       return
     }
 
+    // ── /persona [name] — sticky switch чата ──
+    // Short-circuit: НЕ отправляет сообщение агенту, только переключает персону.
+    // /persona без арг → ошибка (choices-picker обрабатывается в SlashMenu на
+    //   этапе выбора, но если пользователь ввёл вручную — подсказываем).
+    // /persona architect → setPersona + chat:setPersona + toast.
+    // Аргументы — короткие имена (classic/architect/debug/review/refactor/test/mentor);
+    // маппим в полный PersonaId.
+    if (slash?.command.name === 'persona') {
+      const SHORT_TO_ID: Record<string, PersonaId> = {
+        classic: 'classic', architect: 'architect', debug: 'debugger',
+        review: 'reviewer', refactor: 'refactorer', test: 'test-writer', mentor: 'mentor',
+      }
+      const arg = slash.args?.trim().toLowerCase()
+      if (!arg || !(arg in SHORT_TO_ID)) {
+        toast('Укажи персону: /persona classic | architect | debug | review | refactor | test | mentor', 'info')
+        return
+      }
+      const id = SHORT_TO_ID[arg]
+      handlePersonaChange(id)
+      const label = id === 'classic' ? 'Classic (без персоны)' : id.charAt(0).toUpperCase() + id.slice(1)
+      toast(`Персона чата: ${label}`, 'success')
+      return
+    }
+
     // /compact — ручное сжатие контекста чата. Не создаёт user-сообщения
     // (по поведению ближе к rewind): main гоняет applyRollingWindowAsync с
     // forceCompress=true, вставляет в БД system-разделитель «Контекст сжат»
@@ -1143,41 +1259,51 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const displayContent = raw
     let aiContent: string = raw
 
-    // ── One-shot параметры для кастомных команд ──
-    // Если команда custom (из .md) и имеет skill/mode/allowedTools —
-    // прокидываем их в chat:send как oneShot*. Это активирует скилл на этот
-    // прогон без записи в skillsState, фильтрует тулы и/или включает read-only.
+    // ── One-shot параметры для команд ──
+    // Поддерживаются и custom (.md) и builtin (personaOverride/skill).
+    //   - personaOverride: /debug /review /architect ... — одно сообщение
+    //     в указанной персоне, без персистенции (sticky persona не меняется).
+    //   - skill: инструкции скилла инъектируются на этот прогон.
+    //   - mode/allowedTools: только для custom .md-команд.
     let oneShotSkill: { name: string; instructions: string } | undefined
     let oneShotAllowedTools: string[] | undefined
     let oneShotMode: 'ask' | 'plan' | 'code' | undefined
+    let oneShotPersona: PersonaId | undefined
 
     if (slash) {
       const sysPrompt = slash.command.systemPrompt(slash.args)
       if (sysPrompt) aiContent = sysPrompt
 
-      // Кастомная команда с one-shot параметрами
+      // Per-message persona override — работает для builtin (/debug, /review,
+      // /architect, ...) и для custom .md-команд с `personaOverride` в frontmatter.
+      if (slash.command.personaOverride) {
+        oneShotPersona = slash.command.personaOverride
+      }
+
+      // Custom-команды: mode + allowedTools (builtin управляют режимом сами).
       if (slash.command.custom) {
         if (slash.command.mode) oneShotMode = slash.command.mode
         if (slash.command.allowedTools && slash.command.allowedTools.length > 0) {
           oneShotAllowedTools = slash.command.allowedTools
         }
-        // Если указан skill — резолвим его инструкции через skills:getAll.
-        // Скилл может быть builtin (в resources/skills) или user/project.
-        if (slash.command.skill) {
-          try {
-            const skills = await window.syntee.skills.getAll({
-              projectId: activeProjectId || undefined,
-            }) as Array<{ name: string; instructions: string; source: string; state?: { enabled: boolean } }>
-            // Ищем по имени — preferring builtin (они в дистрибутиве).
-            const found = skills.find(s => s.name === slash.command.skill)
-            if (found) {
-              oneShotSkill = { name: found.name, instructions: found.instructions }
-            } else {
-              toast(`Скилл "${slash.command.skill}" не найден. Команда выполнится без скилла.`, 'info')
-            }
-          } catch (e) {
-            console.error('[ChatPage] skills.getAll failed for oneShotSkill', e)
+      }
+
+      // Skill — резолвится для builtin и custom (новые builtin /debug /review
+      // /refactor /test имеют skill, ссылающийся на resources/skills/*.md).
+      if (slash.command.skill) {
+        try {
+          const skills = await window.syntee.skills.getAll({
+            projectId: activeProjectId || undefined,
+          }) as Array<{ name: string; instructions: string; source: string; state?: { enabled: boolean } }>
+          // Ищем по имени — preferring builtin (они в дистрибутиве).
+          const found = skills.find(s => s.name === slash.command.skill)
+          if (found) {
+            oneShotSkill = { name: found.name, instructions: found.instructions }
+          } else {
+            toast(`Скилл "${slash.command.skill}" не найден. Команда выполнится без скилла.`, 'info')
           }
+        } catch (e) {
+          console.error('[ChatPage] skills.getAll failed for oneShotSkill', e)
         }
       }
     }
@@ -1189,6 +1315,31 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       }).join('\n')
       aiContent = `${quotes}\n\n${aiContent}`
     }
+
+    // ── Persona auto-suggest (блокирующий modal) ──
+    // Только для первой реплики нового чата, когда sticky persona = classic
+    // и пользователь не отключил предложения. Detect ищет совпадение по
+    // ключевым словам (ru/en). Если найдено — показываем modal: пользователь
+    // выбирает Switch (persona меняется + send продолжается), Not now
+    // (send с classic), или Never (opt-out + send с classic).
+    // Блокирует ДО создания userMsg и очистки draft — иначе потеряли бы текст.
+    if (
+      !skipPersonaSuggestRef.current &&
+      persona === 'classic' &&
+      messages.filter(m => m.role === 'user').length === 0 &&
+      !oneShotPersona &&
+      !isPersonaSuggestionsDisabled() &&
+      !slash // slash-команда — не детектим (/debug сам задаст персону)
+    ) {
+      const detected = detectPersona(raw)
+      if (detected) {
+        // Сохраняем весь контекст для продолжения send после ответа.
+        setPersonaSuggest({ id: detected, preview: raw, pendingText: raw })
+        return
+      }
+    }
+    // Если пришли из modal-обработчика — сбрасываем флаг.
+    skipPersonaSuggestRef.current = false
 
     const userMsg: Message = {
       id: uuid(), chatId,
@@ -1228,11 +1379,18 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // /ask без тоггла — askMode true только для этого сообщения.
       askMode: askMode || slash?.command.name === 'ask',
       imageMode,
+      // persona из ref — мгновенно отражает актуальное значение (state
+      // асинхронно). Важно для persona auto-suggest modal: после accept
+      // повторный handleSend должен увидеть новую персону, а не старую.
+      persona: personaRef.current,
       mode: activeMode,
       // One-shot параметры кастомной команды (skill/mode/allowedTools).
       oneShotSkill,
       oneShotAllowedTools,
       oneShotMode,
+      // Per-message persona override (/debug, /review, ...). Не персистится —
+      // sticky persona чата не меняется, только этот прогон.
+      oneShotPersona,
       // Прикреплённые файлы/изображения. main-процесс инлайнит текстовые
       // файлы в content, картинки передаёт как путь (vision — Phase 2).
       attachments: attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
@@ -1277,7 +1435,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // Deps: refs и store-actions стабильны; меняются только редкие
     // data-значения (режимы, replyTo, customCommands) — во время стриминга
     // ссылка handleSend стабильна, memo ChatInput не пробивается.
-  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll])
+  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, persona, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll])
 
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
@@ -1725,11 +1883,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onImageModeChange={handleImageModeChange}
               askMode={askMode}
               onAskModeChange={handleAskModeChange}
+              persona={persona}
+              onPersonaChange={handlePersonaChange}
               workdir={currentWorkdir}
               compactSessionStats={compactSessionStats}
               customCommands={customCommands}
               attachments={draftAttachments}
               onAttachmentsChange={handleAttachmentsChange}
+              lastTurnChanges={lastTurnChanges}
             />
           </div>
 
@@ -1765,6 +1926,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
           {/* /help модалка — список команд + горячих клавиш */}
           <HelpModal open={showHelp} onClose={() => setShowHelp(false)} customCommands={customCommands} />
+          {personaSuggest && (
+            <PersonaSuggestionModal
+              personaId={personaSuggest.id}
+              messagePreview={personaSuggest.preview}
+              onAccept={handlePersonaSuggestAccept}
+              onDismiss={handlePersonaSuggestDismiss}
+              onNeverAsk={handlePersonaSuggestNever}
+            />
+          )}
 
           {/* /restore пикер именованных снапшотов */}
           {snapshotPicker && createPortal(

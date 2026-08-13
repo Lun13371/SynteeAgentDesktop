@@ -50,8 +50,8 @@
 }
 
 .file-explorer__tree {
-  width: 220px;
-  min-width: 220px;
+  width: 240px;
+  min-width: 240px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -64,9 +64,14 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary, var(--text-secondary));
 }
 
 .file-explorer__root-name {
@@ -102,6 +107,58 @@
   padding: 4px 0;
 }
 
+/* ── Search / Filter ────────────────────────────────────────────── */
+.file-explorer__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.file-explorer__search-input {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--overlay-3);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-family);
+  padding: 3px 8px;
+  outline: none;
+  transition: border-color var(--transition, 0.15s ease);
+  min-width: 0;
+}
+
+.file-explorer__search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.file-explorer__search-input:focus {
+  border-color: var(--accent);
+}
+
+.file-explorer__search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--transition, 0.15s ease), color var(--transition, 0.15s ease);
+}
+
+.file-explorer__search-clear:hover {
+  background: var(--overlay-3);
+  color: var(--text-primary);
+}
+
 .file-tree-node {
   display: flex;
   flex-direction: column;
@@ -117,37 +174,63 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 2px 8px 2px 4px;
   background: transparent;
   border: none;
+  border-left: 2px solid transparent;
   color: var(--text-primary);
   font-size: 12px;
   font-family: var(--font-family);
   cursor: pointer;
   text-align: left;
   width: 100%;
-  min-height: 24px;
+  min-height: 22px;
   transition: background var(--transition, 0.1s ease);
   user-select: none;
+  position: relative;
 }
 
 .file-tree-item:hover {
-  background: var(--bg-tertiary);
+  background: var(--overlay-3);
 }
 
 .file-tree-item--selected {
-  background: var(--accent-bg);
-  color: white;
+  background: var(--overlay-4);
+  border-left-color: var(--accent);
+  color: var(--text-primary);
 }
 
 .file-tree-item--selected:hover {
-  background: var(--accent-bg);
+  background: var(--overlay-5);
 }
 
 .file-tree-item__spacer {
   width: 14px;
   display: inline-block;
   flex-shrink: 0;
+}
+
+.file-tree-item__type-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+/* VS Code-style indentation guide lines */
+.file-tree-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--overlay-2);
+  pointer-events: none;
+}
+.file-tree-item:hover::before {
+  background: var(--overlay-3);
 }
 
 .file-tree-item__name {
@@ -188,6 +271,7 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
   flex-shrink: 0;
+  min-height: 34px;
 }
 
 .file-explorer__preview-path {

@@ -3,8 +3,11 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  padding: 20px;
-  gap: 12px;
+  padding: 16px;
+  gap: 8px;
+  max-width: 1000px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .memory-page > .memory-graph-container {
@@ -13,41 +16,6 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.memory-graph-project-selector {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  padding: 8px 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.memory-graph-project-selector label {
-  font-size: 13px;
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.memory-graph-project-selector select {
-  flex: 1;
-  padding: 6px 10px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  cursor: pointer;
-  outline: none;
-  transition: border-color var(--transition);
-}
-
-.memory-graph-project-selector select:hover,
-.memory-graph-project-selector select:focus {
-  border-color: var(--accent);
 }
 
 .memory-header {
@@ -154,7 +122,9 @@
   flex-shrink: 0;
 }
 
-.memory-search-wrap { flex-shrink: 0; }
+/* memory-graph-project-selector стили удалены — selector перенесён в MemoryGraphTab */
+
+.memory-search-wrap { flex-shrink: 0; display: flex; align-items: center; gap: 4px; }
 
 .memory-search {
   width: 100%;
@@ -164,7 +134,7 @@
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-size: 12px;
-  padding: 7px 12px;
+  padding: 5px 10px;
   outline: none;
   font-family: var(--font-family);
   transition: border-color var(--transition);
@@ -174,9 +144,6 @@
 .memory-list {
   flex: 1;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
 .memory-empty {
@@ -191,7 +158,18 @@
 }
 .memory-empty span { font-size: 32px; }
 
-.memory-item-cat { font-size: 16px; flex-shrink: 0; }
+.memory-item-cat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
 
 .memory-item-content {
   flex: 1;
@@ -201,45 +179,12 @@
   min-width: 0;
 }
 
-.memory-item-key {
-  font-size: 11px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-/* .memory-item-value — см. ниже в секции Фазы 5 (multi-line variant) */
-
 .memory-item-meta {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
 }
-
-.memory-item-conf {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-tertiary);
-  padding: 2px 5px;
-  border-radius: 4px;
-}
-
-.memory-delete-btn {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 10px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all var(--transition);
-}
-.memory-delete-btn:hover { background: rgba(255,80,80,0.12); color: #ff5555; }
 
 /* === Фаза 5: новые элементы === */
 
@@ -289,16 +234,58 @@
   accent-color: var(--accent);
 }
 
-.memory-toolbar {
+/* === Compact toolbar — 2 ряда вместо 4 === */
+
+.memory-toolbar-primary {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
   flex-wrap: wrap;
 }
 
-.memory-scope-filters {
+.memory-toolbar-primary .memory-filter-chips {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.memory-toolbar-primary .memory-search-wrap {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.memory-toolbar-primary .memory-search {
+  flex: 1;
+}
+
+.memory-toolbar-secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.memory-toolbar-secondary .memory-filter-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.memory-toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.memory-filter-chips {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
@@ -341,17 +328,6 @@
 .memory-tag--key {
   font-family: var(--font-mono, monospace);
   font-size: 9px;
-}
-
-.memory-item-value {
-  font-size: 13px;
-  color: var(--text-primary);
-  line-height: 1.4;
-  /* multi-line: показываем до 3 строк */
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 .memory-item-title {
@@ -619,28 +595,30 @@
   font-weight: 600;
 }
 
-/* Карточка записи — мягкая тень + hover lift (дополнение к whileHover
-   в motion.div). transition на border-color для случая когда layout
-   анимация отключена (reduced-motion). */
+/* Карточка записи — мягкая тень + hover lift через CSS (framer-motion
+   whileHover убран ради виртуализации: inline transform конфликтует с
+   translateY позиционированием virtualizer). */
 .memory-item {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  transition: border-color var(--transition), box-shadow 0.18s ease;
+  transition: border-color var(--transition), box-shadow 0.18s ease, transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .memory-item:hover {
-  border-color: var(--border-strong);
-  box-shadow: 0 4px 12px rgba(var(--shadow-rgb), 0.1);
+  border-color: var(--accent);
+  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.14);
+  transform: translateY(-1px);
 }
 
-/* Pinned-карточка — тёплый акцент вместо простого bg-tint */
+/* Pinned-карточка — левый accent-бордер + тёплый tint */
 .memory-item--pinned {
   border-color: var(--border-strong);
   background: var(--accent-subtle);
+  border-left: 3px solid var(--accent);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -18,6 +18,8 @@ import { initFastContextDb, initFastContextWasmDir } from '../core/context/fastC
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
 const askMode: boolean = !!(workerData as Record<string, unknown>).askMode
+const workerPersona = (workerData as Record<string, unknown>).persona as import('../../shared/modes').PersonaId | undefined
+const workerPersonaInjection = ((workerData as Record<string, unknown>).personaInjection as string | undefined) ?? ''
 const workerMode: 'code' | 'work' = ((workerData as Record<string, unknown>).mode as 'code' | 'work') ?? 'code'
 
 // Инициализируем каталог моделей из кэш-файла (записанного main-процессом)
@@ -653,13 +655,17 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         // новым user-сообщением) — максимальный вес у LLM. Раньше инъекция
         // стояла в начале history и при длинной истории «забывалась» моделью.
         // planning имеет приоритет над ask (он строже — требует <plan>).
-        // Дублируется в самом system prompt (buildSystemPrompt → buildPlanningInjection)
+        // Persona — ортогональна: её injection добавляется после planning/ask
+        // (если есть), чтобы роль сохранялась в длинном чате после компакции.
+        // Дублируется в самом system prompt (buildSystemPrompt → buildPersonaInjection)
         // для надёжности при компакции истории.
-        (planningMode
-          ? [...history, { role: 'system', content: buildPlanningInjection() }]
-          : askMode
-            ? [...history, { role: 'system', content: buildAskInjection() }]
-            : history),
+        (() => {
+          let h = history
+          if (planningMode) h = [...h, { role: 'system', content: buildPlanningInjection() }]
+          else if (askMode) h = [...h, { role: 'system', content: buildAskInjection() }]
+          if (workerPersonaInjection) h = [...h, { role: 'system', content: workerPersonaInjection }]
+          return h
+        })(),
         (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
           planningMode,
           askMode,
@@ -672,6 +678,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,
           fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, import('../core/context/fileCacheTypes').FileCacheEntry> | undefined,
           planningMode,
+          persona: workerPersona,
         }
       )
     } else {

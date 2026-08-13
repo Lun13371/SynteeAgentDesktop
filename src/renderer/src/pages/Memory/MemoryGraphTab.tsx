@@ -5,7 +5,8 @@
  * Клик по узлу → боковая панель с метаданными + pin/delete.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Network, type Node as VisNode, type Edge as VisEdge, type Options } from 'vis-network/standalone'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import './MemoryGraphTab.css'
@@ -65,10 +66,12 @@ const EDGE_TYPE_LABELS: Record<string, string> = {
 // ─── Компонент ───────────────────────────────────────────────────────────────
 
 interface MemoryGraphTabProps {
-  projectId?: string
+  selectedProjectId: string
+  onSelectProject: (id: string) => void
+  projects: Array<{ id: string; name: string; workdir: string }>
 }
 
-export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
+export default function MemoryGraphTab({ selectedProjectId, onSelectProject, projects }: MemoryGraphTabProps) {
   const [graph, setGraph] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] } | null>(null)
   const [stats, setStats] = useState<GraphStats | null>(null)
   const [loading, setLoading] = useState(false)
@@ -79,7 +82,7 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   const load = useCallback(async () => {
-    if (!projectId) {
+    if (!selectedProjectId) {
       setGraph({ nodes: [], edges: [] })
       setStats(null)
       return
@@ -88,8 +91,8 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
     setError(null)
     try {
       const [graphData, statsData] = await Promise.all([
-        (window.syntee as any).graph.get(projectId, { limit: 300 }) as Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }>,
-        (window.syntee as any).graph.stats(projectId) as Promise<GraphStats>,
+        (window.syntee as any).graph.get(selectedProjectId, { limit: 300 }) as Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }>,
+        (window.syntee as any).graph.stats(selectedProjectId) as Promise<GraphStats>,
       ])
       setGraph(graphData)
       setStats(statsData)
@@ -98,7 +101,7 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
     } finally {
       setLoading(false)
     }
-  }, [projectId])
+  }, [selectedProjectId])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -129,8 +132,8 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
     const visNodes: VisNode[] = filteredNodes.map(n => {
       const meta = NODE_TYPE_META[n.type] ?? { color: '#6b7280', label: n.type, icon: 'circle' as IconName }
       const degree = degreeMap[n.id] ?? 0
-      // Размер: base 10 + weight*4 + degree*1.5, max 40
-      const size = Math.min(40, 10 + n.weight * 4 + degree * 1.5)
+      // Размер: base 14 + weight*5 + degree*2, max 45
+      const size = Math.min(45, 14 + n.weight * 5 + degree * 2)
       return {
         id: n.id,
         label: n.label.length > 25 ? n.label.slice(0, 22) + '…' : n.label,
@@ -145,14 +148,14 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
         shape: 'dot',
         font: {
           color: '#d1d5db',
-          size: 13,
+          size: 14,
           face: 'system-ui, sans-serif',
-          strokeWidth: 3,
-          strokeColor: '#0f172a',
+          strokeWidth: 4,
+          strokeColor: 'rgba(0,0,0,0.65)',
           vadjust: 0,
         },
-        borderWidth: n.pinned ? 3 : 1.5,
-        shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 8, x: 0, y: 2 },
+        borderWidth: n.pinned ? 4 : 2,
+        shadow: { enabled: true, color: meta.color + '50', size: 14, x: 0, y: 0 },
       }
     })
 
@@ -162,13 +165,13 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
       to: e.toNode,
       title: EDGE_TYPE_LABELS[e.type] ?? e.type,
       color: {
-        color: 'rgba(107, 114, 128, 0.4)',
+        color: 'rgba(140, 140, 160, 0.22)',
         highlight: '#9ca3af',
         hover: '#9ca3af',
       },
-      width: Math.max(0.5, Math.min(3, e.weight)),
-      arrows: { to: { enabled: true, scaleFactor: 0.6 } },
-      smooth: { enabled: true, type: 'continuous', roundness: 0.5 },
+      width: Math.max(1, Math.min(4, e.weight * 1.5)),
+      arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+      smooth: { enabled: true, type: 'cubicBezier', roundness: 0.4 },
     }))
 
     const options: Options = {
@@ -176,38 +179,38 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
         enabled: true,
         solver: 'barnesHut',
         barnesHut: {
-          gravitationalConstant: -8000,
-          centralGravity: 0.3,
-          springLength: 120,
-          springConstant: 0.04,
-          damping: 0.09,
-          avoidOverlap: 0.8,
+          gravitationalConstant: -6000,
+          centralGravity: 0.5,
+          springLength: 100,
+          springConstant: 0.08,
+          damping: 0.12,
+          avoidOverlap: 1.0,
         },
         stabilization: {
           enabled: true,
-          iterations: 200,
-          updateInterval: 50,
+          iterations: 300,
+          updateInterval: 25,
           fit: true,
         },
         maxVelocity: 50,
       },
       interaction: {
         hover: true,
-        tooltipDelay: 200,
+        tooltipDelay: 150,
         navigationButtons: false,
-        keyboard: false,
+        keyboard: true,
         zoomView: true,
         dragView: true,
         dragNodes: true,
       },
       layout: { improvedLayout: true, randomSeed: 42 },
       nodes: {
-        borderWidth: 1.5,
-        scaling: { min: 10, max: 40 },
+        borderWidth: 2,
+        scaling: { min: 14, max: 45 },
       },
       edges: {
-        scaling: { min: 0.5, max: 3 },
-        smooth: { type: 'continuous' },
+        scaling: { min: 1, max: 4 },
+        smooth: { type: 'cubicBezier', roundness: 0.4 },
       },
     }
 
@@ -238,10 +241,10 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
   // ─── Actions ─────────────────────────────────────────────────────────────
 
   const handleRebuild = async () => {
-    if (!projectId) return
+    if (!selectedProjectId) return
     setLoading(true)
     try {
-      await (window.syntee as any).graph.rebuild(projectId)
+      await (window.syntee as any).graph.rebuild(selectedProjectId)
       await load()
     } catch (e) {
       setError((e as Error).message)
@@ -263,9 +266,29 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
   }
 
   const handlePruneIsolated = async () => {
-    if (!projectId) return
-    await (window.syntee as any).graph.pruneIsolated(projectId)
+    if (!selectedProjectId) return
+    await (window.syntee as any).graph.pruneIsolated(selectedProjectId)
     await load()
+  }
+
+  const handleZoomIn = () => {
+    const net = networkRef.current
+    if (!net) return
+    const scale = net.getScale()
+    net.moveTo({ scale: scale * 1.3, animation: { duration: 200, easingFunction: 'easeInOutQuad' } })
+  }
+
+  const handleZoomOut = () => {
+    const net = networkRef.current
+    if (!net) return
+    const scale = net.getScale()
+    net.moveTo({ scale: Math.max(0.1, scale / 1.3), animation: { duration: 200, easingFunction: 'easeInOutQuad' } })
+  }
+
+  const handleZoomFit = () => {
+    const net = networkRef.current
+    if (!net) return
+    net.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } })
   }
 
   const toggleFilter = (type: string) => {
@@ -277,13 +300,42 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
     })
   }
 
+  // Connected nodes для выбранного узла — вычисляем из graph.edges
+  const connectedNodes = useMemo(() => {
+    if (!selectedNode || !graph) return []
+    const result: Array<{ id: string; label: string; type: string; edgeType: string; direction: 'out' | 'in' }> = []
+    for (const e of graph.edges) {
+      if (e.fromNode === selectedNode.id) {
+        const target = graph.nodes.find(n => n.id === e.toNode)
+        if (target) result.push({ id: target.id, label: target.label, type: target.type, edgeType: e.type, direction: 'out' })
+      } else if (e.toNode === selectedNode.id) {
+        const target = graph.nodes.find(n => n.id === e.fromNode)
+        if (target) result.push({ id: target.id, label: target.label, type: target.type, edgeType: e.type, direction: 'in' })
+      }
+    }
+    return result
+  }, [selectedNode, graph])
+
   // ─── Render ──────────────────────────────────────────────────────────────
 
-  if (!projectId) {
+  if (!selectedProjectId) {
     return (
       <div className="memory-graph-empty">
-        <AppIcon name="gitBranch" size="lg" tone="muted" />
-        <p>Выберите проект для просмотра графа</p>
+        <div className="memory-graph-empty-icon-wrap">
+          <AppIcon name="gitBranch" size="lg" tone="muted" />
+        </div>
+        <p>Выберите проект для просмотра графа знаний</p>
+        <select
+          className="memory-graph-project-select"
+          value={selectedProjectId}
+          onChange={(e) => onSelectProject(e.target.value)}
+        >
+          <option value="">— выберите проект —</option>
+          {projects.map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+        <span className="memory-graph-empty-hint">Граф строится автоматически из диалогов и решений проекта</span>
       </div>
     )
   }
@@ -292,15 +344,37 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
     <div className="memory-graph-tab">
       {/* Toolbar */}
       <div className="memory-graph-toolbar">
+        <select
+          className="memory-graph-project-select"
+          value={selectedProjectId}
+          onChange={(e) => onSelectProject(e.target.value)}
+        >
+          {projects.map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
         <div className="memory-graph-stats">
           {stats && (
             <>
-              <span className="graph-stat">Узлов: <strong>{stats.nodeCount}</strong></span>
-              <span className="graph-stat">Рёбер: <strong>{stats.edgeCount}</strong></span>
+              <div className="graph-stat-card">
+                <span className="graph-stat-card-icon"><AppIcon name="layers" size="sm" tone="muted" /></span>
+                <span className="graph-stat-card-value">{stats.nodeCount}</span>
+                <span className="graph-stat-card-label">узлов</span>
+              </div>
+              <div className="graph-stat-card">
+                <span className="graph-stat-card-icon"><AppIcon name="gitBranch" size="sm" tone="muted" /></span>
+                <span className="graph-stat-card-value">{stats.edgeCount}</span>
+                <span className="graph-stat-card-label">рёбер</span>
+              </div>
               {stats.hubs.length > 0 && (
-                <span className="graph-stat">
-                  Хабы: {stats.hubs.slice(0, 3).map(h => `${h.label}(${h.degree})`).join(', ')}
-                </span>
+                <div className="graph-stat-hubs">
+                  {stats.hubs.slice(0, 3).map(h => (
+                    <span key={h.id} className="graph-hub-chip">
+                      {h.label.length > 14 ? h.label.slice(0, 12) + '…' : h.label}
+                      <span className="graph-hub-chip-degree">·{h.degree}</span>
+                    </span>
+                  ))}
+                </div>
               )}
             </>
           )}
@@ -310,7 +384,7 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
             <AppIcon name="trash" size="sm" /> Чистка
           </button>
           <button className="graph-action-btn graph-action-btn--primary" onClick={handleRebuild} disabled={loading} title="Полная перестройка">
-            <AppIcon name="refreshCw" size="sm" /> {loading ? '...' : 'Перестроить'}
+            <AppIcon name="refreshCw" size="sm" className={loading ? 'graph-action-btn-spinner' : ''} /> {loading ? '…' : 'Перестроить'}
           </button>
         </div>
       </div>
@@ -339,42 +413,155 @@ export default function MemoryGraphTab({ projectId }: MemoryGraphTabProps) {
       {error && <div className="memory-graph-error">{error}</div>}
 
       <div className="memory-graph-content">
-        {/* Graph canvas */}
-        <div className="memory-graph-canvas" ref={containerRef} />
+        {/* Graph canvas with overlays */}
+        <div className="memory-graph-canvas-wrap">
+          <div className="memory-graph-canvas" ref={containerRef} />
+
+          {/* Legend overlay */}
+          {graph && graph.nodes.length > 0 && (
+            <div className="memory-graph-legend">
+              <div className="memory-graph-legend-title">Типы узлов</div>
+              {Object.entries(NODE_TYPE_META).map(([type, meta]) => {
+                const count = graph.nodes.filter(n => n.type === type).length
+                if (count === 0) return null
+                return (
+                  <div
+                    key={type}
+                    className={`memory-graph-legend-item ${filterTypes.size > 0 && !filterTypes.has(type) ? 'memory-graph-legend-item--off' : ''}`}
+                    onClick={() => toggleFilter(type)}
+                  >
+                    <span className="memory-graph-legend-dot" style={{ background: meta.color, color: meta.color }} />
+                    {meta.label}
+                    <span className="memory-graph-legend-count">{count}</span>
+                  </div>
+                )
+              })}
+              {filterTypes.size > 0 && (
+                <div
+                  className="memory-graph-legend-item"
+                  onClick={() => setFilterTypes(new Set())}
+                  style={{ marginTop: 2, color: 'var(--accent)', fontWeight: 600 }}
+                >
+                  ↺ Показать все
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Zoom controls */}
+          <div className="memory-graph-zoom">
+            <button className="memory-graph-zoom-btn" onClick={handleZoomIn} title="Приблизить">
+              <AppIcon name="plus" size="sm" />
+            </button>
+            <button className="memory-graph-zoom-btn" onClick={handleZoomOut} title="Отдалить">
+              <AppIcon name="minus" size="sm" />
+            </button>
+            <button className="memory-graph-zoom-btn" onClick={handleZoomFit} title="Вписать в экран">
+              <AppIcon name="maximize" size="sm" />
+            </button>
+          </div>
+        </div>
 
         {/* Side panel: selected node */}
-        {selectedNode && (
-          <div className="memory-graph-sidepanel">
-            <div className="sidepanel-header">
-              <span
-                className="sidepanel-type-badge"
-                style={{ background: NODE_TYPE_META[selectedNode.type]?.color ?? '#6b7280' }}
-              >
-                {NODE_TYPE_META[selectedNode.type]?.label ?? selectedNode.type}
-              </span>
-              <button className="sidepanel-close" onClick={() => setSelectedNode(null)}>×</button>
-            </div>
-            <div className="sidepanel-body">
-              <div className="sidepanel-label">{selectedNode.label}</div>
-              <div className="sidepanel-meta">
-                <div>Weight: <strong>{selectedNode.weight.toFixed(1)}</strong></div>
-                <div>Pinned: <strong>{selectedNode.pinned ? 'да ★' : 'нет'}</strong></div>
-                {selectedNode.sourceKind && <div>Source: <strong>{selectedNode.sourceKind}</strong></div>}
-                {selectedNode.sourceId && (
-                  <div className="sidepanel-source-id">ID: <code>{selectedNode.sourceId.slice(0, 40)}</code></div>
+        <AnimatePresence>
+          {selectedNode && (
+            <motion.div
+              className="memory-graph-sidepanel"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              transition={{ type: 'spring', stiffness: 360, damping: 30 }}
+            >
+              <div className="sidepanel-header">
+                <span
+                  className="sidepanel-type-badge"
+                  style={{ background: NODE_TYPE_META[selectedNode.type]?.color ?? '#6b7280' }}
+                >
+                  {NODE_TYPE_META[selectedNode.type]?.label ?? selectedNode.type}
+                </span>
+                <button className="sidepanel-close" onClick={() => setSelectedNode(null)}>×</button>
+              </div>
+              <div className="sidepanel-body">
+                <div className="sidepanel-label">{selectedNode.label}</div>
+
+                {/* Metadata grid */}
+                <div>
+                  <div className="sidepanel-section-title">Метаданные</div>
+                  <div className="sidepanel-meta">
+                    <div className="sidepanel-meta-item">
+                      <span className="sidepanel-meta-key">Weight</span>
+                      <span className="sidepanel-meta-value">{selectedNode.weight.toFixed(1)}</span>
+                    </div>
+                    <div className="sidepanel-meta-item">
+                      <span className="sidepanel-meta-key">Pinned</span>
+                      <span className="sidepanel-meta-value">{selectedNode.pinned ? '★ да' : 'нет'}</span>
+                    </div>
+                    {selectedNode.sourceKind && (
+                      <div className="sidepanel-meta-item">
+                        <span className="sidepanel-meta-key">Источник</span>
+                        <span className="sidepanel-meta-value">{selectedNode.sourceKind}</span>
+                      </div>
+                    )}
+                    {connectedNodes.length > 0 && (
+                      <div className="sidepanel-meta-item">
+                        <span className="sidepanel-meta-key">Связей</span>
+                        <span className="sidepanel-meta-value">{connectedNodes.length}</span>
+                      </div>
+                    )}
+                  </div>
+                  {selectedNode.sourceId && (
+                    <div className="sidepanel-source-id" style={{ marginTop: 8 }}>
+                      <code>{selectedNode.sourceId.slice(0, 40)}</code>
+                    </div>
+                  )}
+                </div>
+
+                {/* Connected nodes */}
+                {connectedNodes.length > 0 && (
+                  <div>
+                    <div className="sidepanel-section-title">Связанные узлы ({connectedNodes.length})</div>
+                    <div className="sidepanel-connections">
+                      {connectedNodes.slice(0, 8).map(cn => {
+                        const meta = NODE_TYPE_META[cn.type] ?? { color: '#6b7280', label: cn.type }
+                        return (
+                          <div
+                            key={cn.id + cn.edgeType + cn.direction}
+                            className="sidepanel-connection-chip"
+                            onClick={() => {
+                              const node = graph?.nodes.find(n => n.id === cn.id)
+                              if (node) setSelectedNode(node)
+                            }}
+                          >
+                            <span className="sidepanel-connection-dot" style={{ background: meta.color }} />
+                            <span className="sidepanel-connection-label">{cn.label}</span>
+                            <span className="sidepanel-connection-type">
+                              {cn.direction === 'out' ? '→' : '←'} {EDGE_TYPE_LABELS[cn.edgeType] ?? cn.edgeType}
+                            </span>
+                          </div>
+                        )
+                      })}
+                      {connectedNodes.length > 8 && (
+                        <div className="sidepanel-connections-more">
+                          и ещё {connectedNodes.length - 8}…
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
+
+                {/* Actions */}
+                <div className="sidepanel-actions">
+                  <button className="sidepanel-btn" onClick={() => handlePin(selectedNode.id, !selectedNode.pinned)}>
+                    <AppIcon name="pin" size="sm" /> {selectedNode.pinned ? 'Открепить' : 'Закрепить'}
+                  </button>
+                  <button className="sidepanel-btn sidepanel-btn--danger" onClick={() => handleDelete(selectedNode.id)}>
+                    <AppIcon name="trash" size="sm" /> Удалить
+                  </button>
+                </div>
               </div>
-              <div className="sidepanel-actions">
-                <button className="sidepanel-btn" onClick={() => handlePin(selectedNode.id, !selectedNode.pinned)}>
-                  <AppIcon name="pin" size="sm" /> {selectedNode.pinned ? 'Открепить' : 'Закрепить'}
-                </button>
-                <button className="sidepanel-btn sidepanel-btn--danger" onClick={() => handleDelete(selectedNode.id)}>
-                  <AppIcon name="trash" size="sm" /> Удалить
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   )

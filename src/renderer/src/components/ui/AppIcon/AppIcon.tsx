@@ -81,7 +81,9 @@ export default function AppIcon({
   className,
   ...props
 }: AppIconProps) {
-  const Icon = ICONS[name]
+  // Fallback на 'command' если имя иконки неизвестно — предотвращает
+  // React error #130 (краш всего app) при плохом icon в кастомной команде.
+  const Icon = ICONS[name] ?? ICONS.command
 
   return (
     <motion.span

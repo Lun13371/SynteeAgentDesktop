@@ -9,16 +9,18 @@ import type { ChatMessage } from '../../core/context/contextManager'
  * из-за чего агент терял результаты предыдущих tool-вызовов (содержимое
  * файлов, результаты команд) и был вынужден перечитывать всё заново.
  * Теперь полная история tool-вызовов передаётся в нативном формате API.
+ *
+ * ВАЖНО: planData больше НЕ является особым случаем. Раньше при наличии
+ * planData функция делала ранний return, отдавая только компактный текст
+ * плана — при этом все toolSteps (результаты исследований: чтения файлов,
+ * поисков) терялись. При переходе из planning mode в execution mode агент
+ * не видел результатов своих исследований и перечитывал всё заново.
+ * Теперь planData обрабатывается наравне с обычными сообщениями:
+ *   - planData без toolSteps → message.content (содержит <plan> теги)
+ *   - planData с toolSteps → полный разворот tool_calls + tool_results
+ * UI PlanCard читает planData из БД напрямую, эта функция его не затрагивает.
  */
 export function messageToContextMessages(message: Message): ChatMessage[] {
-  // План — как раньше, просто текст
-  if (message.planData) {
-    return [{
-      role: message.role as ChatMessage['role'],
-      content: `[PLAN: "${message.planData.title}"]\n${message.planData.content}\n[File: ${message.planData.filePath}]`,
-    }]
-  }
-
   const steps = message.toolSteps ?? []
 
   // Нет toolSteps — обычное текстовое сообщение

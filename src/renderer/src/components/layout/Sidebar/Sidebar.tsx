@@ -30,11 +30,10 @@ interface SidebarProps {
   onExtensionInstalled?: (chatId: string, projectId: string | undefined, userMsg: Message) => void
 }
 
-type ChatFilter = 'all' | 'projects' | 'favorites' | 'archive'
+type ChatFilter = 'all' | 'favorites' | 'archive'
 
 const CHAT_FILTERS: { value: ChatFilter; label: string }[] = [
-  { value: 'all', label: 'Все' },
-  { value: 'projects', label: 'Проекты' },
+  { value: 'all', label: 'Все чаты' },
   { value: 'favorites', label: 'Избранные' },
   { value: 'archive', label: 'Архив' },
 ]
@@ -87,6 +86,13 @@ function Sidebar({
 }: SidebarProps) {
   const [search, setSearch] = useState('')
   const [chatFilter, setChatFilter] = useState<ChatFilter>('all')
+  // Скрытые проекты (по id) — чаты этих проектов не показываются в списке.
+  // '__noproject__' — чаты без project_id. Пустой set = показать все.
+  const [hiddenProjects, setHiddenProjects] = useState<Set<string>>(new Set())
+  const [filterPopoverOpen, setFilterPopoverOpen] = useState(false)
+  const filterPopoverRef = useRef<HTMLDivElement>(null)
+  const filterToggleRef = useRef<HTMLButtonElement>(null)
+  const [filterPopoverPos, setFilterPopoverPos] = useState<{ top: number; left: number; right: number } | null>(null)
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set())
   const [ctxMenu, setCtxMenu] = useState<{ chat: Chat; pos: ContextMenuPos } | null>(null)
   const [projectCtxMenu, setProjectCtxMenu] = useState<{ project: Project; pos: ContextMenuPos } | null>(null)
@@ -105,6 +111,10 @@ function Sidebar({
   const [extPopoverOpen, setExtPopoverOpen] = useState(false)
   const [indexModalProject, setIndexModalProject] = useState<{ id: string; name: string } | null>(null)
   const [shareTarget, setShareTarget] = useState<{ id: string; title: string } | null>(null)
+  // Мультивыбор чатов через Shift+клик. Эфемерный UI-state — только сайдбар.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkExportOpen, setBulkExportOpen] = useState(false)
+  const bulkExportRef = useRef<HTMLDivElement>(null)
 
   // Статусы запусков чатов для индикаторов (spinner/✓/✗). Подписываемся на
   // весь объект — Sidebar не большой, ре-рендер недорогой. Альтернатива
@@ -160,6 +170,42 @@ function Sidebar({
     return () => document.removeEventListener('mousedown', handler)
   }, [newProjectMenu])
 
+  // Escape сбрасывает мультивыбор чатов
+  useEffect(() => {
+    if (selectedIds.size === 0) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelectedIds(new Set())
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [selectedIds.size])
+
+  // Закрытие export-дропдауна в bulk-панели по клику вне
+  useEffect(() => {
+    if (!bulkExportOpen) return
+    const handler = (e: MouseEvent) => {
+      if (bulkExportRef.current && !bulkExportRef.current.contains(e.target as Node)) {
+        setBulkExportOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [bulkExportOpen])
+
+  // Закрытие фильтр-поповера по клику вне его и вне кнопки-фильтра
+  useEffect(() => {
+    if (!filterPopoverOpen) return
+    const handler = (e: MouseEvent) => {
+      const t = e.target as HTMLElement
+      if (t.closest('.sidebar-filter-toggle')) return
+      if (filterPopoverRef.current && !filterPopoverRef.current.contains(t)) {
+        setFilterPopoverOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [filterPopoverOpen])
+
   // Авто-скролл списка чатов к активному чату: при смене currentChatId
   // (и при первом входе) подскролливаем активный чат в зону видимости.
   // Скроллим вручную через scrollTop (без scrollIntoView — он скроллит
@@ -209,23 +255,28 @@ function Sidebar({
     return () => cancelAnimationFrame(raf)
   }, [currentChatId])
 
-  // Фильтрация по поиску + активному селектору (Все/Проекты/Избранные/Архив).
+  // Фильтрация по поиску + виду (Все/Избранные/Архив) + скрытым проектам.
   // archive-чаты по умолчанию скрыты (filter = 'all' показывает только не-архивные);
-  // для просмотра архива пользователь явно выбирает «Архив».
+  // для просмотра архива пользователь явно выбирает «Архив» в фильтр-поповере.
   const searchLower = search.toLowerCase()
   const matchesSearch = (c: Chat) => !search || c.title.toLowerCase().includes(searchLower)
   const matchesFilter = (c: Chat) => {
     switch (chatFilter) {
       case 'all':       return !c.isArchived
-      case 'projects':  return !c.isArchived && !!c.projectId
       case 'favorites': return !!c.isPinned && !c.isArchived
       case 'archive':   return !!c.isArchived
     }
   }
+  // Скрытые проекты: чаты с projectId из hiddenProjects не показываются.
+  // '__noproject__' — чаты без project_id.
+  const matchesProjectFilter = (c: Chat) => {
+    const key = c.projectId ?? '__noproject__'
+    return !hiddenProjects.has(key)
+  }
 
   // Чаты по проектам
   const chatsByProject = (projectId: string | null) =>
-    chats.filter(c => (c.projectId ?? null) === projectId && matchesFilter(c) && matchesSearch(c))
+    chats.filter(c => (c.projectId ?? null) === projectId && matchesFilter(c) && matchesProjectFilter(c) && matchesSearch(c))
 
   const projectChats = (p: Project) => chatsByProject(p.id)
   const noProjectChats = chatsByProject(null)
@@ -233,7 +284,7 @@ function Sidebar({
   // Для режимов «Избранные» и «Архив» группировка по проектам избыточна —
   // показываем плоский список.
   const flatChats = chatFilter === 'favorites' || chatFilter === 'archive'
-    ? chats.filter(c => matchesFilter(c) && matchesSearch(c))
+    ? chats.filter(c => matchesFilter(c) && matchesProjectFilter(c) && matchesSearch(c))
     : []
 
   const toggleCollapse = (id: string) => {
@@ -311,6 +362,103 @@ function Sidebar({
     onChatsUpdate?.(chats.map(c => c.id === chat.id ? { ...c, color: color ?? undefined } : c))
   }
 
+  // ── Bulk actions (мультивыбор через Shift+клик) ──
+  // Переиспользуем существующие single-chat IPC в цикле — chat:delete в main
+  // делает критичную очистку (worker/queue/PTY/cost), не дублируем её.
+  const clearSelection = () => setSelectedIds(new Set())
+
+  const bulkDelete = async () => {
+    const ids = Array.from(selectedIds)
+    if (!confirm(`Удалить ${ids.length} ${ids.length === 1 ? 'чат' : 'чатов'}? Это необратимо.`)) return
+    for (const id of ids) {
+      await window.syntee.chat.delete(id)
+      dropChatState(id)
+    }
+    const updated = await window.syntee.chat.getAll() as Chat[]
+    onChatsUpdate?.(updated)
+    if (ids.includes(currentChatId ?? '')) {
+      onSelectChat?.(updated.find(c => !c.isArchived)?.id ?? '')
+    }
+    clearSelection()
+  }
+
+  const bulkArchive = async (archive: boolean) => {
+    const ids = Array.from(selectedIds)
+    for (const id of ids) {
+      await window.syntee.chat.archive(id, archive)
+    }
+    const updated = await window.syntee.chat.getAll() as Chat[]
+    onChatsUpdate?.(updated)
+    if (archive && ids.includes(currentChatId ?? '')) {
+      onSelectChat?.(updated.find(c => !c.isArchived)?.id ?? '')
+    }
+    clearSelection()
+  }
+
+  const bulkPin = async (pin: boolean) => {
+    const ids = Array.from(selectedIds)
+    for (const id of ids) {
+      await window.syntee.chat.pinChat(id, pin)
+    }
+    const updated = await window.syntee.chat.getAll() as Chat[]
+    onChatsUpdate?.(updated)
+    clearSelection()
+  }
+
+  const bulkExport = async (fmt: 'txt' | 'md') => {
+    const ids = Array.from(selectedIds)
+    for (const id of ids) {
+      const chat = chats.find(c => c.id === id)
+      if (!chat) continue
+      const content = await window.syntee.chat.export(id, fmt) as string
+      const blob = new Blob([content], { type: 'text/plain' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `${chat.title}.${fmt}`; a.click()
+      URL.revokeObjectURL(url)
+    }
+    setBulkExportOpen(false)
+    clearSelection()
+  }
+
+  // Лейблы кнопок зависят от состояния выбранных чатов
+  const selectedChats = chats.filter(c => selectedIds.has(c.id))
+  const anyNonArchived = selectedChats.some(c => !c.isArchived)
+  const anyUnpinned = selectedChats.some(c => !c.isPinned)
+
+  // Индикатор активного фильтра для кнопки-фильтра
+  const hasActiveFilters = chatFilter !== 'all' || hiddenProjects.size > 0
+
+  const openFilterPopover = () => {
+    if (filterPopoverOpen) {
+      setFilterPopoverOpen(false)
+      return
+    }
+    // Позиция от строки поиска (вся ширина сайдбара), не от маленькой кнопки
+    const searchEl = filterToggleRef.current?.closest('.sidebar-search') as HTMLElement | null
+    const rect = searchEl?.getBoundingClientRect() ?? filterToggleRef.current?.getBoundingClientRect()
+    if (rect) {
+      setFilterPopoverPos({ top: rect.bottom + 4, left: rect.left, right: window.innerWidth - rect.right })
+    }
+    setFilterPopoverOpen(true)
+  }
+
+  const resetAllFilters = () => {
+    setChatFilter('all')
+    setHiddenProjects(new Set())
+    clearSelection()
+  }
+
+  const toggleProjectHidden = (id: string) => {
+    setHiddenProjects(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    clearSelection()
+  }
+
   // ── Project actions ──
   const handleProjectRename = (project: Project) => {
     setRenamingProjectId(project.id); setRenameProjectVal(project.name)
@@ -378,9 +526,22 @@ function Sidebar({
         </div>
       ) : (
         <button
-          className={`sidebar-chat-item ${currentChatId === chat.id ? 'sidebar-chat-item--active' : ''}`}
+          className={`sidebar-chat-item ${currentChatId === chat.id ? 'sidebar-chat-item--active' : ''} ${selectedIds.has(chat.id) ? 'sidebar-chat-item--selected' : ''}`}
           data-chat-id={chat.id}
-          onClick={() => onSelectChat?.(chat.id)}
+          onClick={(e) => {
+            if (e.shiftKey) {
+              e.preventDefault()
+              setSelectedIds(prev => {
+                const next = new Set(prev)
+                if (next.has(chat.id)) next.delete(chat.id)
+                else next.add(chat.id)
+                return next
+              })
+            } else {
+              if (selectedIds.size > 0) setSelectedIds(new Set())
+              onSelectChat?.(chat.id)
+            }
+          }}
           onContextMenu={e => handleCtx(e, chat)}
         >
           {chat.color && (
@@ -512,7 +673,7 @@ function Sidebar({
     )
   }
 
-  const hasAnyChats = chats.filter(c => !c.isArchived).length > 0
+  const hasAnyChats = chats.filter(c => !c.isArchived && matchesProjectFilter(c)).length > 0
 
   return (
     <aside className="sidebar">
@@ -554,7 +715,7 @@ function Sidebar({
         <AppIcon name="chevronRight" size="xs" className="sidebar-extensions-btn-chevron" />
       </button>
 
-      {/* Поиск */}
+      {/* Поиск + кнопка-фильтр */}
       <div className="sidebar-search">
         <AppIcon name="search" size="xs" />
         <input
@@ -563,24 +724,20 @@ function Sidebar({
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
+        <button
+          ref={filterToggleRef}
+          className={`sidebar-filter-toggle ${hasActiveFilters ? 'sidebar-filter-toggle--active' : ''} ${filterPopoverOpen ? 'sidebar-filter-toggle--open' : ''}`}
+          title="Фильтры"
+          onClick={openFilterPopover}
+        >
+          <AppIcon name="filter" size="xs" />
+          {hasActiveFilters && <span className="sidebar-filter-toggle-dot" />}
+        </button>
         {search && (
           <button className="sidebar-search-clear" onClick={() => setSearch('')}>
             <AppIcon name="x" size="xs" />
           </button>
         )}
-      </div>
-
-      {/* Селектор: какие чаты показывать */}
-      <div className="sidebar-filter">
-        {CHAT_FILTERS.map(f => (
-          <button
-            key={f.value}
-            className={`sidebar-filter-btn ${chatFilter === f.value ? 'sidebar-filter-btn--active' : ''}`}
-            onClick={() => setChatFilter(f.value)}
-          >
-            {f.label}
-          </button>
-        ))}
       </div>
 
       {/* Список */}
@@ -601,11 +758,11 @@ function Sidebar({
               </div>
             )}
 
-            {projects.map(renderProject)}
+            {projects.filter(p => !hiddenProjects.has(p.id)).map(renderProject)}
 
             {/* Без проекта — чаты без project_id (старые, инкогнито).
-                Скрываем в режиме «Проекты», чтобы не было пустой группы. */}
-            {chatFilter !== 'projects' && noProjectChats.length > 0 && (
+                Скрываем, если пользователь скрыл «Без проекта» в фильтрах. */}
+            {!hiddenProjects.has('__noproject__') && noProjectChats.length > 0 && (
               <div className="sidebar-project sidebar-project--noproject">
                 <div
                   className="sidebar-project-header"
@@ -708,6 +865,82 @@ function Sidebar({
         projectId={indexModalProject?.id ?? null}
         projectName={indexModalProject?.name}
         onClose={() => setIndexModalProject(null)}
+      />
+
+      {/* Панель массовых действий — появляется при мультивыборе (Shift+клик) */}
+      <AnimatePresence>
+        {selectedIds.size > 0 && (
+          <motion.div
+            className="sidebar-bulk-bar"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+          >
+            <span className="sidebar-bulk-count">{selectedIds.size} выбрано</span>
+            <div className="sidebar-bulk-actions">
+              <button
+                className="sidebar-bulk-btn"
+                title={anyUnpinned ? 'Закрепить' : 'Открепить'}
+                onClick={() => bulkPin(anyUnpinned)}
+              >
+                <AppIcon name="pin" size="sm" />
+              </button>
+              <button
+                className="sidebar-bulk-btn"
+                title={anyNonArchived ? 'Архивировать' : 'Разархивировать'}
+                onClick={() => bulkArchive(anyNonArchived)}
+              >
+                <AppIcon name="archive" size="sm" />
+              </button>
+              <div className="sidebar-bulk-export-wrap" ref={bulkExportRef}>
+                <button
+                  className="sidebar-bulk-btn"
+                  title="Экспорт"
+                  onClick={() => setBulkExportOpen(v => !v)}
+                >
+                  <AppIcon name="fileText" size="sm" />
+                </button>
+                {bulkExportOpen && (
+                  <div className="sidebar-bulk-export-menu">
+                    <button onClick={() => bulkExport('md')}>Markdown (.md)</button>
+                    <button onClick={() => bulkExport('txt')}>Текст (.txt)</button>
+                  </div>
+                )}
+              </div>
+              <button
+                className="sidebar-bulk-btn sidebar-bulk-btn--danger"
+                title="Удалить"
+                onClick={bulkDelete}
+              >
+                <AppIcon name="trash" size="sm" />
+              </button>
+            </div>
+            <button
+              className="sidebar-bulk-clear"
+              title="Снять выделение (Esc)"
+              onClick={clearSelection}
+            >
+              <AppIcon name="x" size="xs" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Поповер фильтров сайдбара */}
+      <ChatFilterPopover
+        open={filterPopoverOpen}
+        pos={filterPopoverPos}
+        popoverRef={filterPopoverRef}
+        chatFilter={chatFilter}
+        hiddenProjects={hiddenProjects}
+        projects={projects}
+        hasNoProjectChats={chats.some(c => !c.projectId)}
+        hasActiveFilters={hasActiveFilters}
+        onSetFilter={(f) => { setChatFilter(f); clearSelection() }}
+        onToggleProject={toggleProjectHidden}
+        onShowAllProjects={() => { setHiddenProjects(new Set()); clearSelection() }}
+        onResetAll={resetAllFilters}
       />
 
       <UserCard />
@@ -830,6 +1063,122 @@ function NewProjectMenu({ pos, menuRef, handlers }: {
             <AppIcon name="folder" size="sm" />
             <span>Выбрать существующую папку</span>
           </button>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body
+  )
+}
+
+// Поповер фильтров сайдбара: выбор вида (Все/Избранные/Архив) и
+// видимости отдельных проектов (чекбоксы). Portal в document.body,
+// позиция — от кнопки-фильтра (fixed). Анимация — выпадает сверху-вниз.
+function ChatFilterPopover({
+  open, pos, popoverRef,
+  chatFilter, hiddenProjects, projects, hasNoProjectChats, hasActiveFilters,
+  onSetFilter, onToggleProject, onShowAllProjects, onResetAll,
+}: {
+  open: boolean
+  pos: { top: number; left: number; right: number } | null
+  popoverRef: React.RefObject<HTMLDivElement>
+  chatFilter: ChatFilter
+  hiddenProjects: Set<string>
+  projects: Project[]
+  hasNoProjectChats: boolean
+  hasActiveFilters: boolean
+  onSetFilter: (f: ChatFilter) => void
+  onToggleProject: (id: string) => void
+  onShowAllProjects: () => void
+  onResetAll: () => void
+}) {
+  if (!pos) return null
+  const menuStyle: React.CSSProperties = {
+    position: 'fixed',
+    top: pos.top,
+    left: pos.left,
+    right: pos.right,
+    zIndex: 9999,
+  }
+  return createPortal(
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          ref={popoverRef}
+          className="chat-filter-popover"
+          style={menuStyle}
+          initial={{ opacity: 0, y: -6, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -6, scale: 0.97 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 32 }}
+        >
+          {/* Заголовок */}
+          <div className="cfp-header">
+            <span className="cfp-title">Фильтры</span>
+          </div>
+
+          {/* Секция: Вид */}
+          <div className="cfp-section">
+            <div className="cfp-section-label">Вид</div>
+            {CHAT_FILTERS.map(f => (
+              <button
+                key={f.value}
+                className={`cfp-radio ${chatFilter === f.value ? 'cfp-radio--active' : ''}`}
+                onClick={() => onSetFilter(f.value)}
+              >
+                <span className={`cfp-radio-dot ${chatFilter === f.value ? 'cfp-radio-dot--filled' : ''}`} />
+                <span className="cfp-radio-label">{f.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Секция: Проекты — только если есть хотя бы один проект или чаты без проекта */}
+          {(projects.length > 0 || hasNoProjectChats) && (
+            <div className="cfp-section">
+              <div className="cfp-section-header">
+                <span className="cfp-section-label">Проекты</span>
+                {hiddenProjects.size > 0 && (
+                  <button className="cfp-link" onClick={onShowAllProjects}>Показать все</button>
+                )}
+              </div>
+              <div className="cfp-project-list">
+                {projects.map(p => {
+                  const visible = !hiddenProjects.has(p.id)
+                  return (
+                    <button
+                      key={p.id}
+                      className={`cfp-check ${visible ? 'cfp-check--checked' : ''}`}
+                      onClick={() => onToggleProject(p.id)}
+                    >
+                      <span className={`cfp-checkbox ${visible ? 'cfp-checkbox--checked' : ''}`}>
+                        {visible && <AppIcon name="check" size="xs" />}
+                      </span>
+                      <AppIcon name="folder" size="xs" tone={visible ? 'default' : 'muted'} />
+                      <span className="cfp-check-label" title={p.workdir}>{p.name}</span>
+                    </button>
+                  )
+                })}
+                {hasNoProjectChats && (
+                  <button
+                    className={`cfp-check ${!hiddenProjects.has('__noproject__') ? 'cfp-check--checked' : ''}`}
+                    onClick={() => onToggleProject('__noproject__')}
+                  >
+                    <span className={`cfp-checkbox ${!hiddenProjects.has('__noproject__') ? 'cfp-checkbox--checked' : ''}`}>
+                      {!hiddenProjects.has('__noproject__') && <AppIcon name="check" size="xs" />}
+                    </span>
+                    <AppIcon name="layers" size="xs" tone={!hiddenProjects.has('__noproject__') ? 'default' : 'muted'} />
+                    <span className="cfp-check-label">Без проекта</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Сбросить всё */}
+          {hasActiveFilters && (
+            <button className="cfp-reset" onClick={onResetAll}>
+              Сбросить фильтры
+            </button>
+          )}
         </motion.div>
       )}
     </AnimatePresence>,

@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { v4 as uuid } from 'uuid'
 import type { Message, Attachment, ToolOutputMode } from '../../../../../shared/types'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
+import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../../../../shared/modes'
 import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../../hooks/useChatRunSubscription'
 import { useChatAutoscroll } from '../../../hooks/useChatAutoscroll'
 import { useBackgroundLoadFullChat } from '../../../hooks/useBackgroundLoadFullChat'
@@ -107,6 +108,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const messages = useMemo(() => cacheEntry?.messages ?? [], [cacheEntry])
   const hasOlderMessages = cacheEntry?.hasOlder ?? false
   const live = useChatStore(s => s.liveByChat[chatId]) ?? EMPTY_LIVE
+  const lastTurnChanges = useChatStore(s => s.lastTurnChangesByChat[chatId]) ?? null
   const chats = useChatStore(s => s.chats)
   const setMessagesWindow = useChatStore(s => s.setMessagesWindow)
   const prependOlderMessages = useChatStore(s => s.prependOlderMessages)
@@ -144,15 +146,18 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
   const [askMode, setAskMode] = useState(false)
+  const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA)
   const [draftAttachments, setDraftAttachments] = useState<Attachment[]>([])
   const draftAttachmentsRef = useRef<Attachment[]>([])
   const planningModeRef = useRef(false)
   const imageModeRef = useRef(false)
   const askModeRef = useRef(false)
+  const personaRef = useRef<PersonaId>(DEFAULT_PERSONA)
   useEffect(() => { draftAttachmentsRef.current = draftAttachments }, [draftAttachments])
   useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
   useEffect(() => { askModeRef.current = askMode }, [askMode])
+  useEffect(() => { personaRef.current = persona }, [persona])
 
   const [replyTo, setReplyTo] = useState<Message[]>([])
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
@@ -196,20 +201,27 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
         setPlanningMode(false)
         setImageMode(false)
         setAskMode(false)
+        setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
         setDraftAttachments([])
         return
       }
       try {
-        const [modes, draftText, history, attachments] = await Promise.all([
+        // Сбрасываем режимы синхронно — чтобы UI не показывал вспышку
+        // режимов предыдущего чата пока async-load не завершится.
+        setPlanningMode(false); setImageMode(false); setAskMode(false)
+        const [modes, draftText, history, attachments, loadedPersona] = await Promise.all([
           window.syntee.chat.getModes(chatId),
           window.syntee.chat.getDraft(chatId),
           window.syntee.chat.getInputHistory(chatId),
           window.syntee.draft.getAttachments(chatId),
+          window.syntee.chat.getPersona(chatId),
         ])
         if (cancelled) return
         setPlanningMode(!!modes.planningMode)
         setImageMode(!!modes.imageMode)
         setAskMode(!!modes.askMode)
+        const safePersona = isValidPersona(loadedPersona) ? loadedPersona : DEFAULT_PERSONA
+        setPersonaState(safePersona); personaRef.current = safePersona
         setDraft(typeof draftText === 'string' ? draftText : '')
         setDraftAttachments(Array.isArray(attachments) ? attachments as Attachment[] : [])
         setInputHistory(Array.isArray(history) ? history.reverse() : [])
@@ -368,9 +380,24 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     isRunning: isTyping,
   })
 
-  const persistModes = useCallback((p: boolean, i: boolean, a: boolean) => {
+  // Индивидуальные персисты — каждый пишет только свой режим, не затрагивая
+  // остальные. Устраняет кросс-контаминацию через stale ref'ы.
+  const persistPlanningMode = useCallback((v: boolean) => {
     if (!chatId || isIncognito) return
-    window.syntee.chat.setModes(chatId, { planningMode: p, imageMode: i, askMode: a }).catch(() => {})
+    window.syntee.chat.setPlanningMode(chatId, v).catch(() => {})
+  }, [chatId, isIncognito])
+  const persistImageMode = useCallback((v: boolean) => {
+    if (!chatId || isIncognito) return
+    window.syntee.chat.setImageMode(chatId, v).catch(() => {})
+  }, [chatId, isIncognito])
+  const persistAskMode = useCallback((v: boolean) => {
+    if (!chatId || isIncognito) return
+    window.syntee.chat.setAskMode(chatId, v).catch(() => {})
+  }, [chatId, isIncognito])
+
+  const persistPersona = useCallback((v: PersonaId) => {
+    if (!chatId || isIncognito) return
+    window.syntee.chat.setPersona(chatId, v).catch(() => {})
   }, [chatId, isIncognito])
 
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -530,20 +557,22 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     let oneShotSkill: { name: string; instructions: string } | undefined
     let oneShotAllowedTools: string[] | undefined
     let oneShotMode: 'ask' | 'plan' | 'code' | undefined
+    let oneShotPersona: PersonaId | undefined
 
     if (slash) {
       const sysPrompt = slash.command.systemPrompt(slash.args)
       if (sysPrompt) aiContent = sysPrompt
+      if (slash.command.personaOverride) oneShotPersona = slash.command.personaOverride
       if (slash.command.custom) {
         if (slash.command.mode) oneShotMode = slash.command.mode
         if (slash.command.allowedTools?.length) oneShotAllowedTools = slash.command.allowedTools
-        if (slash.command.skill) {
-          try {
-            const skills = await window.syntee.skills.getAll({ projectId: chat?.projectId }) as Array<{ name: string; instructions: string }>
-            const found = skills.find(s => s.name === slash.command.skill)
-            if (found) oneShotSkill = { name: found.name, instructions: found.instructions }
-          } catch { /* ok */ }
-        }
+      }
+      if (slash.command.skill) {
+        try {
+          const skills = await window.syntee.skills.getAll({ projectId: chat?.projectId }) as Array<{ name: string; instructions: string }>
+          const found = skills.find(s => s.name === slash.command.skill)
+          if (found) oneShotSkill = { name: found.name, instructions: found.instructions }
+        } catch { /* ok */ }
       }
     }
 
@@ -579,8 +608,9 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       planningMode,
       askMode: askMode || slash?.command.name === 'ask',
       imageMode,
+      persona,
       mode: activeMode,
-      oneShotSkill, oneShotAllowedTools, oneShotMode,
+      oneShotSkill, oneShotAllowedTools, oneShotMode, oneShotPersona,
       attachments: attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
     }) as { queued?: boolean; assistantMsgId?: string }
 
@@ -591,7 +621,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       initChatSend(chatId)
       requestAnimationFrame(() => pinAutoscroll(true))
     }
-  }, [chatId, customCommands, replyTo, isIncognito, planningMode, askMode, imageMode, activeMode, addMessage, setMessagesWindow, pinAutoscroll, chat])
+  }, [chatId, customCommands, replyTo, isIncognito, planningMode, askMode, imageMode, persona, activeMode, addMessage, setMessagesWindow, pinAutoscroll, chat])
 
   const chatTitle = chat?.title ?? 'Чат'
 
@@ -710,16 +740,19 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
           reasoningValue={reasoningValue}
           onReasoningChange={handleReasoningChange}
           planningMode={planningMode}
-          onPlanningModeChange={(v) => { setPlanningMode(v); persistModes(v, imageModeRef.current, askModeRef.current) }}
+          onPlanningModeChange={(v) => { setPlanningMode(v); persistPlanningMode(v) }}
           imageMode={imageMode}
-          onImageModeChange={(v) => { setImageMode(v); persistModes(planningModeRef.current, v, askModeRef.current) }}
+          onImageModeChange={(v) => { setImageMode(v); persistImageMode(v) }}
           askMode={askMode}
-          onAskModeChange={(v) => { setAskMode(v); persistModes(planningModeRef.current, imageModeRef.current, v) }}
+          onAskModeChange={(v) => { setAskMode(v); persistAskMode(v) }}
+          persona={persona}
+          onPersonaChange={(v) => { setPersonaState(v); personaRef.current = v; persistPersona(v) }}
           workdir={currentWorkdir}
           compactSessionStats={compactSessionStats}
           customCommands={customCommands}
           attachments={draftAttachments}
           onAttachmentsChange={handleAttachmentsChange}
+          lastTurnChanges={lastTurnChanges}
         />
       </div>
     </main>

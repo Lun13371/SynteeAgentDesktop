@@ -35,6 +35,8 @@ import type { MemoryItem } from './MemoryStore'
 
 // ─── FULL REBUILD ────────────────────────────────────────────────────────────
 
+let _buildingProjects = new Set<string>()
+
 /**
  * Полная перестройка графа проекта.
  * Удаляет ВСЕ узлы/рёбра проекта и строит заново из всех источников.
@@ -48,6 +50,11 @@ export function buildProjectGraph(projectId: string): {
   decisions: number
   conversations: number
 } {
+  if (_buildingProjects.has(projectId)) {
+    return { nodes: 0, edges: 0, decisions: 0, conversations: 0 }
+  }
+  _buildingProjects.add(projectId)
+  try {
   // 1. Полная очистка графа проекта
   deleteProjectGraph(projectId)
 
@@ -79,6 +86,24 @@ export function buildProjectGraph(projectId: string): {
     totalNodes += result.nodes
     totalEdges += result.edges
     decisions++
+  }
+
+  // 3b. Извлечение из memory_items kind='convention' (heuristic)
+  const conventionRows = db.prepare(
+    `SELECT id, title, content FROM memory_items
+     WHERE scope = 'project' AND project_id = ? AND kind = 'convention'`
+  ).all(projectId) as Array<{ id: string; title: string | null; content: string }>
+
+  for (const row of conventionRows) {
+    const label = (row.title || row.content).slice(0, 80)
+    const result = extractFromDecisionHeuristic({
+      projectId,
+      decisionLabel: label,
+      content: row.content,
+      memoryItemId: row.id,
+    })
+    totalNodes += result.nodes
+    totalEdges += result.edges
   }
 
   // 4. Sync conversations из chat_summaries (без LLM — просто conversation nodes)
@@ -113,6 +138,9 @@ export function buildProjectGraph(projectId: string): {
     decisions,
     conversations,
   }
+  } finally {
+    _buildingProjects.delete(projectId)
+  }
 }
 
 // ─── INCREMENTAL: decision ───────────────────────────────────────────────────
@@ -124,7 +152,7 @@ export function buildProjectGraph(projectId: string): {
  */
 export function incrementalUpdateDecision(item: MemoryItem): { nodes: number; edges: number } {
   if (!item.projectId) return { nodes: 0, edges: 0 }
-  if (item.kind !== 'project_decision') return { nodes: 0, edges: 0 }
+  if (item.kind !== 'project_decision' && item.kind !== 'convention') return { nodes: 0, edges: 0 }
 
   return extractFromDecisionHeuristic({
     projectId: item.projectId,

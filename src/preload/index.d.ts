@@ -240,6 +240,9 @@ declare const synteeAPI: {
             askMode?: boolean;
             imageMode?: boolean;
             mode?: "code" | "work";
+            /** Single-select persona run mode (classic/architect/debugger/...).
+             *  Orthogonal to planning/ask/image toggles. */
+            persona?: import("../../shared/modes").PersonaId;
             oneShotSkill?: {
                 name: string;
                 instructions: string;
@@ -298,6 +301,12 @@ declare const synteeAPI: {
             imageMode: boolean;
             askMode: boolean;
         }) => Promise<any>;
+        setPlanningMode: (chatId: string, val: boolean) => Promise<any>;
+        setImageMode: (chatId: string, val: boolean) => Promise<any>;
+        setAskMode: (chatId: string, val: boolean) => Promise<any>;
+        /** Single-select persona run mode (classic/architect/debugger/...). */
+        getPersona: (chatId: string) => Promise<import("../../shared/modes").PersonaId>;
+        setPersona: (chatId: string, persona: import("../../shared/modes").PersonaId) => Promise<any>;
         getDraft: (chatId: string) => Promise<string>;
         setDraft: (chatId: string, draft: string) => Promise<any>;
         getInputHistory: (chatId: string) => Promise<string[]>;
@@ -471,6 +480,10 @@ declare const synteeAPI: {
         }) => Promise<any>;
         branch: (workdir: string) => Promise<any>;
         isRepo: (workdir: string) => Promise<any>;
+        add: (params: { workdir: string; files: string[] }) => Promise<any>;
+        reset: (params: { workdir: string; files: string[] }) => Promise<any>;
+        discard: (params: { workdir: string; files: string[]; untracked: boolean }) => Promise<any>;
+        diffStat: (params: { workdir: string; file?: string; staged?: boolean }) => Promise<any>;
     };
     skills: {
         getAll: (params?: {

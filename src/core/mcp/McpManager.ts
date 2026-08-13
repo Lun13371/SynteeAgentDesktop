@@ -92,6 +92,36 @@ export class McpManager {
   }
 
   /**
+   * Перечитывает .mcp.json для проекта и fire-and-forget подключает НОВЫЕ
+   * проектные серверы (которых ещё нет в clients или они упали). Сбрасывает
+   * cooldown чтобы только что установленный сервер подключился немедленно,
+   * а не ждал следующего chat:send. Вызывается extensionsWatcher'ом при
+   * изменении {workdir}/.mcp.json (например после /setup).
+   */
+  reloadProjectServers(workdir: string, projectId?: string): void {
+    const configs = this.loadConfigs(workdir, projectId)
+    for (const config of configs) {
+      if (config.source !== 'project') continue
+      const existing = this.clients.get(config.id)
+      if (existing && (existing.status === 'connected' || existing.status === 'connecting')) continue
+      this.lastConnectAttempt.delete(config.id)
+      this.ensureConnected(config).catch(e => {
+        log('[MCP] reloadProjectServers connect failed:', config.name, (e as Error).message)
+      })
+    }
+    this.emitServersChanged(projectId)
+    for (const config of configs) {
+      const client = this.clients.get(config.id)
+      this.emitStatus(config.id, client?.status ?? 'disconnected', client?.error)
+    }
+  }
+
+  /** Push: список серверов изменился (новые/удалённые из .mcp.json). */
+  private emitServersChanged(projectId?: string): void {
+    this.win?.webContents.send(IPC_EVENTS.MCP_SERVERS_CHANGED, { projectId })
+  }
+
+  /**
    * Возвращает все серверы с runtime-состоянием (для UI popover).
    * Перечитывает .mcp.json с диска каждый выз (дешево).
    */

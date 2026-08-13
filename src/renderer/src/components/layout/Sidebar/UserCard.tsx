@@ -19,16 +19,16 @@ export default function UserCard() {
 
   const planUsage = useBillingStore(s => s.planUsage)
 
-  const dailyLimit = planUsage?.plan?.daily_token_limit ?? 0
-  const dailyUsed = planUsage?.usage?.today_tokens ?? 0
-  const dailyLimitPct = planUsage && dailyLimit > 0
-    ? Math.min(100, (dailyUsed / dailyLimit) * 100)
+  const fiveHourLimit = planUsage?.usage?.five_hour?.limit ?? 0
+  const fiveHourUsed = planUsage?.usage?.five_hour?.used ?? 0
+  const fiveHourPct = planUsage && fiveHourLimit > 0
+    ? Math.min(100, (fiveHourUsed / fiveHourLimit) * 100)
     : null
-  const dailyCritical = dailyLimitPct !== null && dailyLimitPct >= 90
-  const dailyWarning = dailyLimitPct !== null && dailyLimitPct >= 70 && dailyLimitPct < 90
+  const fiveHourCritical = fiveHourPct !== null && fiveHourPct >= 90
+  const fiveHourWarning = fiveHourPct !== null && fiveHourPct >= 70 && fiveHourPct < 90
 
-  const weeklyLimit = planUsage?.plan?.weekly_token_limit ?? 0
-  const weeklyUsed = planUsage?.usage?.week_tokens ?? 0
+  const weeklyLimit = planUsage?.usage?.weekly?.limit ?? 0
+  const weeklyUsed = planUsage?.usage?.weekly?.used ?? 0
   const weeklyLimitPct = planUsage && weeklyLimit > 0
     ? Math.min(100, (weeklyUsed / weeklyLimit) * 100)
     : null
@@ -185,33 +185,33 @@ export default function UserCard() {
                 </div>
               </div>
 
-              {dailyLimitPct !== null && (
+              {fiveHourPct !== null && (
                 <div className="usercard-panel-limit">
                   <div className="usercard-panel-limit-header">
-                    <span className="usercard-panel-limit-label">Дневной лимит</span>
+                    <span className="usercard-panel-limit-label">5 часов</span>
                     <span
                       className={`usercard-panel-limit-pct ${
-                        dailyCritical ? 'usercard-panel-limit-pct--critical' :
-                        dailyWarning ? 'usercard-panel-limit-pct--warning' : ''
+                        fiveHourCritical ? 'usercard-panel-limit-pct--critical' :
+                        fiveHourWarning ? 'usercard-panel-limit-pct--warning' : ''
                       }`}
                     >
-                      {Math.round(dailyLimitPct)}%
+                      {Math.round(fiveHourPct)}%
                     </span>
                   </div>
                   <div className="usercard-panel-limit-bar">
                     <div
                       className={`usercard-panel-limit-fill ${
-                        dailyCritical ? 'usercard-panel-limit-fill--critical' :
-                        dailyWarning ? 'usercard-panel-limit-fill--warning' : ''
+                        fiveHourCritical ? 'usercard-panel-limit-fill--critical' :
+                        fiveHourWarning ? 'usercard-panel-limit-fill--warning' : ''
                       }`}
-                      style={{ width: `${dailyLimitPct}%` }}
+                      style={{ width: `${fiveHourPct}%` }}
                     />
                   </div>
                   <div className="usercard-panel-limit-foot">
-                    <span>{fmtTokens(dailyUsed)} / {fmtTokens(dailyLimit)}</span>
-                    {planUsage?.usage?.today_reset_at && (
+                    <span>{fmtCost(fiveHourUsed)} / {fmtCost(fiveHourLimit)}</span>
+                    {planUsage?.usage?.five_hour?.reset_at && (
                       <span className="usercard-panel-limit-reset">
-                        сброс {fmtReset(planUsage.usage.today_reset_at)}
+                        сброс {fmtReset(planUsage.usage.five_hour.reset_at)}
                       </span>
                     )}
                   </div>
@@ -221,7 +221,7 @@ export default function UserCard() {
               {weeklyLimitPct !== null && (
                 <div className="usercard-panel-limit usercard-panel-limit--last">
                   <div className="usercard-panel-limit-header">
-                    <span className="usercard-panel-limit-label">Недельный лимит</span>
+                    <span className="usercard-panel-limit-label">Неделя</span>
                     <span
                       className={`usercard-panel-limit-pct ${
                         weeklyCritical ? 'usercard-panel-limit-pct--critical' :
@@ -241,10 +241,10 @@ export default function UserCard() {
                     />
                   </div>
                   <div className="usercard-panel-limit-foot">
-                    <span>{fmtTokens(weeklyUsed)} / {fmtTokens(weeklyLimit)}</span>
-                    {planUsage?.usage?.week_reset_at && (
+                    <span>{fmtCost(weeklyUsed)} / {fmtCost(weeklyLimit)}</span>
+                    {planUsage?.usage?.weekly?.reset_at && (
                       <span className="usercard-panel-limit-reset">
-                        сброс {fmtReset(planUsage.usage.week_reset_at)}
+                        сброс {fmtReset(planUsage.usage.weekly.reset_at)}
                       </span>
                     )}
                   </div>
@@ -278,10 +278,9 @@ export default function UserCard() {
   )
 }
 
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
+function fmtCost(n: number): string {
+  if (n < 0.01) return `${n.toFixed(4)}`
+  return `${n.toFixed(2)}`
 }
 
 function fmtReset(iso: string): string {

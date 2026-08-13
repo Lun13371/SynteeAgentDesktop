@@ -234,6 +234,36 @@ export function setChatModes(chatId: string, modes: ChatModes): void {
   ).run(modes.planningMode ? 1 : 0, modes.imageMode ? 1 : 0, modes.askMode ? 1 : 0, chatId)
 }
 
+// Индивидуальные сеттеры — обновляют ОДНУ колонку, не затрагивая остальные.
+// Устраняют кросс-контаминацию режимов при race condition (save-on-switch
+// пишет stale ref'ы чужого режима в чужой чат). Режим пишется сразу при
+// тумблинге — bulk-save-on-switch больше не нужен (удалён в ChatPage).
+export function setChatPlanningMode(chatId: string, val: boolean): void {
+  getDB().prepare('UPDATE chats SET planning_mode = ? WHERE id = ?').run(val ? 1 : 0, chatId)
+}
+export function setChatImageMode(chatId: string, val: boolean): void {
+  getDB().prepare('UPDATE chats SET image_mode = ? WHERE id = ?').run(val ? 1 : 0, chatId)
+}
+export function setChatAskMode(chatId: string, val: boolean): void {
+  getDB().prepare('UPDATE chats SET ask_mode = ? WHERE id = ?').run(val ? 1 : 0, chatId)
+}
+
+// === Persona — single-select run mode (classic/architect/debugger/...) ===
+// Orthogonal to ChatModes (planning/image/ask toggles). Stored as TEXT in the
+// persona column, 'classic' by default. Back-compat: missing column is added
+// by a migration (DEFAULT 'classic'), so old rows read as 'classic'.
+import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../shared/modes'
+
+export function getChatPersona(chatId: string): PersonaId {
+  const row = getDB().prepare('SELECT persona FROM chats WHERE id = ?').get(chatId) as { persona: string | null } | undefined
+  if (!row) return DEFAULT_PERSONA
+  return isValidPersona(row.persona) ? row.persona : DEFAULT_PERSONA
+}
+
+export function setChatPersona(chatId: string, persona: PersonaId): void {
+  getDB().prepare('UPDATE chats SET persona = ? WHERE id = ?').run(persona, chatId)
+}
+
 export function getChatDraft(chatId: string): string {
   const row = getDB().prepare('SELECT draft FROM chats WHERE id = ?').get(chatId) as { draft: string | null } | undefined
   return row?.draft ?? ''

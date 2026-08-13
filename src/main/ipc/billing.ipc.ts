@@ -74,21 +74,30 @@ export interface PlanInfo {
   code: string
   name: string
   price_rub: number
-  daily_token_limit: number
-  weekly_token_limit: number
+  price_usd: number
+  five_hour_cost_limit: number
+  weekly_cost_limit: number
+  monthly_cost_limit: number
+  rpm_limit: number
   is_recommended: boolean
   features: string[]
+}
+
+export interface UsageWindow {
+  used: number
+  limit: number
+  reset_at: string
 }
 
 export interface PlanUsage {
   plan: PlanInfo
   usage: {
-    today_tokens: number
-    week_tokens: number
-    today_total_tokens: number
-    week_total_tokens: number
-    today_reset_at: string
-    week_reset_at: string
+    five_hour: UsageWindow
+    weekly: UsageWindow
+    monthly: UsageWindow
+    five_hour_total: number
+    weekly_total: number
+    monthly_total: number
   }
   balance: Balance
 }

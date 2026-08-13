@@ -400,16 +400,25 @@ export function useChatRunSubscription() {
       if (buf?.rateLimitCountdown) {
         clearInterval(buf.rateLimitCountdown)
       }
-      liveClear(data.chatId)
       buffers.delete(data.chatId)
 
       if (isSideChat(data.chatId)) {
         const parentId = sideParent(data.chatId)
+        liveClear(data.chatId)
         useChatStore.getState().addSideMessage(parentId, data.message)
         useChatStore.getState().setSideRunStatus(parentId, 'done')
       } else {
-        useChatStore.getState().addMessage(data.message)
+        // finalizeStreamMessage объединяет clearLiveState + addMessage в один
+        // set() — устраняет race (live-пузырь исчезает, а сообщение ещё не
+        // добавлено → кратковременная пустота в конце чата).
+        useChatStore.getState().finalizeStreamMessage(data.chatId, data.message)
         window.syntee.chat.getAll().then((all) => useChatStore.getState().setChats(all))
+        // ── ChangesBadge: загружаем изменения последнего turn'а ──
+        // Fire-and-forget: если в этом turn'е были правки файлов — бейдж
+        // появится над инпутом. При ошибке IPC — просто не появится.
+        window.syntee.chat.getLastTurnChanges?.(data.chatId).then((changes) => {
+          if (changes) useChatStore.getState().setLastTurnChanges(data.chatId, changes)
+        }).catch(() => {})
       }
     })
 
@@ -460,6 +469,8 @@ export function useChatRunSubscription() {
       // На 'running' — асинхронно подтягиваем meta из main (там она уже установлена).
       // На терминальных — сбрасываем activeRun.
       if (data.status === 'running') {
+        // ── ChangesBadge: сбрасываем бейдж при старте нового запроса ──
+        useChatStore.getState().setLastTurnChanges(data.chatId, null)
         // Если это старт queued-запроса — достаём отложенное user-сообщение
         // и добавляем его в чат + инициализируем live-буфер. Это сохраняет
         // порядок диалога: предыдущий ответ уже добавлен (CHAT_STREAM_DONE),
@@ -496,6 +507,12 @@ export function useChatRunSubscription() {
       chatId: string; queue: QueueItemMeta[]; ts: number
     }) => {
       useChatStore.getState().setQueue(data.chatId, data.queue)
+    })
+
+    // CHAT_FILES_RESTORED — undo правок файлов (из ChangesBadge).
+    // Сбрасываем lastTurnChanges — бейдж исчезает после undo.
+    const offFilesRestored = window.syntee.on(IPC_EVENTS.CHAT_FILES_RESTORED, (data: { chatId: string }) => {
+      useChatStore.getState().setLastTurnChanges(data.chatId, null)
     })
 
     // CHAT_REWOUND — откат сессии (из правой панели или кнопки на сообщении).
@@ -900,7 +917,7 @@ export function useChatRunSubscription() {
     })
 
     return () => {
-      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offRewound(); offRateLimit(); offTodo(); offStatus(); offRetry(); offStep(); offToolProgress(); offSpawn()
+      offToken(); offDone(); offError(); offRunStatus(); offQueue(); offFilesRestored(); offRewound(); offRateLimit(); offTodo(); offStatus(); offRetry(); offStep(); offToolProgress(); offSpawn()
     }
   }, [])
 }

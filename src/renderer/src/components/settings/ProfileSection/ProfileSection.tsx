@@ -676,21 +676,29 @@ function BillingSection() {
           </div>
         </div>
 
-        {/* Лимиты токенов */}
-        {planUsage && (
+        {/* Лимиты стоимости */}
+        {planUsage && planUsage.usage.five_hour.limit > 0 && (
           <LimitBar
-            label="Дневной лимит"
-            used={planUsage.usage.today_tokens}
-            total={planUsage.plan.daily_token_limit}
-            resetAt={planUsage.usage.today_reset_at}
+            label="5 часов"
+            used={planUsage.usage.five_hour.used}
+            total={planUsage.usage.five_hour.limit}
+            resetAt={planUsage.usage.five_hour.reset_at}
           />
         )}
-        {planUsage && (
+        {planUsage && planUsage.usage.weekly.limit > 0 && (
           <LimitBar
-            label="Недельный лимит"
-            used={planUsage.usage.week_tokens}
-            total={planUsage.plan.weekly_token_limit}
-            resetAt={planUsage.usage.week_reset_at}
+            label="Неделя"
+            used={planUsage.usage.weekly.used}
+            total={planUsage.usage.weekly.limit}
+            resetAt={planUsage.usage.weekly.reset_at}
+          />
+        )}
+        {planUsage && planUsage.usage.monthly.limit > 0 && (
+          <LimitBar
+            label="Месяц"
+            used={planUsage.usage.monthly.used}
+            total={planUsage.usage.monthly.limit}
+            resetAt={planUsage.usage.monthly.reset_at}
           />
         )}
       </div>
@@ -818,7 +826,7 @@ function LimitBar({
       <div className="billing-limit__head">
         <span className="billing-limit__label">{label}</span>
         <span className="billing-limit__nums">
-          {formatTokens(used)} / {formatTokens(total)}
+          {formatCost(used)} / {formatCost(total)}
         </span>
       </div>
       <div className="billing-limit__bar">
@@ -831,7 +839,7 @@ function LimitBar({
         />
       </div>
       <div className="billing-limit__foot">
-        <span>осталось {formatTokens(remaining)}</span>
+        <span>осталось {formatCost(remaining)}</span>
         {resetLabel && <span className="billing-limit__reset">{resetLabel}</span>}
       </div>
     </div>
@@ -842,4 +850,9 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+function formatCost(n: number): string {
+  if (n < 0.01) return `${n.toFixed(4)}`
+  return `${n.toFixed(2)}`
 }

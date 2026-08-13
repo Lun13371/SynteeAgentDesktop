@@ -1,0 +1,280 @@
+/**
+ * ChangesBadge — компактный бейдж над инпутом, показывает +N -M строк
+ * изменённых в последнем запросе. Hover/click → popup со списком файлов
+ * и undo (одного файла или всех). Паттерн как ExtensionsBadge.
+ *
+ * Сбрасывается при новом send (CHAT_RUN_STATUS='running') или undo
+ * (CHAT_FILES_RESTORED) — через store.
+ */
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
+import { motion, AnimatePresence } from 'framer-motion'
+import type { LastTurnChanges } from '../../../../../shared/types'
+import './ChangesBadge.css'
+
+interface ChangesBadgeProps {
+  chatId: string
+  changes: LastTurnChanges
+}
+
+const POPUP_W = 360
+const HOVER_OPEN_DELAY = 120
+const HOVER_CLOSE_DELAY = 220
+
+/** Извлекает basename из пути (работает с / и \). */
+function basename(p: string): string {
+  const parts = p.split(/[\\/]/)
+  return parts[parts.length - 1] || p
+}
+
+export default function ChangesBadge({ chatId, changes }: ChangesBadgeProps) {
+  const [open, setOpen] = useState(false)
+  const [pinned, setPinned] = useState(false)
+  const [dropPos, setDropPos] = useState<{ bottom: number; left: number; width: number } | null>(null)
+  const [undoing, setUndoing] = useState<string | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const dropRef = useRef<HTMLDivElement>(null)
+  const openTimer = useRef<number | null>(null)
+  const closeTimer = useRef<number | null>(null)
+
+  const { files, totalAdded, totalDeleted } = changes
+
+  const computeDropPos = useCallback(() => {
+    if (!btnRef.current) return null
+    const r = btnRef.current.getBoundingClientRect()
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - POPUP_W - 8))
+    return { bottom: window.innerHeight - r.top + 6, left, width: POPUP_W }
+  }, [])
+
+  const clearTimers = useCallback(() => {
+    if (openTimer.current) { clearTimeout(openTimer.current); openTimer.current = null }
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null }
+  }, [])
+
+  const close = useCallback(() => {
+    clearTimers()
+    setOpen(false)
+    setPinned(false)
+  }, [clearTimers])
+
+  const handleMouseEnter = useCallback(() => {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null }
+    if (open || pinned) return
+    if (openTimer.current) clearTimeout(openTimer.current)
+    openTimer.current = window.setTimeout(() => {
+      const pos = computeDropPos()
+      if (pos) { setDropPos(pos); setOpen(true) }
+    }, HOVER_OPEN_DELAY)
+  }, [open, pinned, computeDropPos])
+
+  const handleMouseLeave = useCallback(() => {
+    if (openTimer.current) { clearTimeout(openTimer.current); openTimer.current = null }
+    if (pinned) return
+    if (closeTimer.current) clearTimeout(closeTimer.current)
+    closeTimer.current = window.setTimeout(() => {
+      setOpen(false)
+    }, HOVER_CLOSE_DELAY)
+  }, [pinned])
+
+  const handleClick = useCallback(() => {
+    if (pinned) {
+      close()
+    } else {
+      clearTimers()
+      const pos = computeDropPos()
+      if (pos) setDropPos(pos)
+      setOpen(true)
+      setPinned(true)
+    }
+  }, [pinned, close, clearTimers, computeDropPos])
+
+  // Закрытие по клику снаружи и ESC (только в зафиксированном режиме)
+  useEffect(() => {
+    if (!open || !pinned) return
+    const onDown = (e: MouseEvent) => {
+      if (btnRef.current?.contains(e.target as Node)) return
+      if (dropRef.current?.contains(e.target as Node)) return
+      close()
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    const t = setTimeout(() => {
+      document.addEventListener('mousedown', onDown)
+      document.addEventListener('keydown', onKey)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, pinned, close])
+
+  useEffect(() => {
+    return () => {
+      if (openTimer.current) clearTimeout(openTimer.current)
+      if (closeTimer.current) clearTimeout(closeTimer.current)
+    }
+  }, [])
+
+  // ── Undo handlers ──
+  const handleUndoFile = useCallback(async (filePath: string) => {
+    if (undoing) return
+    const name = basename(filePath)
+    const confirmed = window.confirm(
+      `Отменить изменения в файле «${name}»?\n\n` +
+      `Файл будет восстановлен к состоянию до этого запроса.`
+    )
+    if (!confirmed) return
+    setUndoing(filePath)
+    try {
+      const result = await window.syntee.chat.undoFile(chatId, filePath)
+      if (result?.error) {
+        window.alert(`Ошибка: ${result.error}`)
+      }
+      // CHAT_FILES_RESTORED сбросит бейдж через store
+    } catch (e) {
+      window.alert(`Ошибка: ${(e as Error).message}`)
+    } finally {
+      setUndoing(null)
+    }
+  }, [chatId, undoing])
+
+  const handleUndoAll = useCallback(async () => {
+    if (undoing) return
+    const confirmed = window.confirm(
+      `Отменить все изменения последнего запроса?\n\n` +
+      `${files.length} файл(ов) будет восстановлено к состоянию до запроса.\n` +
+      `Сообщения диалога останутся без изменений.`
+    )
+    if (!confirmed) return
+    setUndoing('__all__')
+    try {
+      const result = await window.syntee.chat.undoLastTurnFiles(chatId)
+      if (result?.error) {
+        window.alert(`Ошибка: ${result.error}`)
+      }
+    } catch (e) {
+      window.alert(`Ошибка: ${(e as Error).message}`)
+    } finally {
+      setUndoing(null)
+    }
+  }, [chatId, files.length, undoing])
+
+  return (
+    <div className="changes-badge-wrap">
+      <motion.button
+        ref={btnRef}
+        className="changes-badge-pill"
+        onClick={handleClick}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        whileTap={{ scale: 0.96 }}
+        whileHover={{ scale: 1.04 }}
+        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+        title={`Изменения: +${totalAdded} -${totalDeleted} строк в ${files.length} файл(ах)`}
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 3v12"/>
+          <path d="M8 9l4-4 4 4"/>
+          <path d="M3 17l3 3 3-3"/>
+          <path d="M3 20h6"/>
+          <path d="M15 14l3-3 3 3"/>
+          <path d="M15 17h6"/>
+        </svg>
+        <span className="changes-badge-added">+{totalAdded}</span>
+        <span className="changes-badge-deleted">-{totalDeleted}</span>
+        {files.length > 1 && (
+          <span className="changes-badge-files">{files.length} файлах</span>
+        )}
+      </motion.button>
+
+      {createPortal(
+        <AnimatePresence>
+          {open && dropPos && (
+            <motion.div
+              ref={dropRef}
+              className="changes-popup"
+              style={{ position: 'fixed', left: dropPos.left, bottom: dropPos.bottom, width: dropPos.width, zIndex: 9999 }}
+              initial={{ opacity: 0, y: 8, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.97 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+              onMouseEnter={handleMouseEnter}
+              onMouseLeave={handleMouseLeave}
+            >
+              <div className="changes-popup-header">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3v12"/>
+                  <path d="M8 9l4-4 4 4"/>
+                  <path d="M3 17l3 3 3-3"/>
+                  <path d="M3 20h6"/>
+                  <path d="M15 14l3-3 3 3"/>
+                  <path d="M15 17h6"/>
+                </svg>
+                <span className="changes-popup-title">Изменения в запросе</span>
+                <span className="changes-popup-count">+{totalAdded} -{totalDeleted}</span>
+              </div>
+              <div className="changes-popup-body">
+                <div className="changes-popup-group-label">Файлы ({files.length})</div>
+                <div className="changes-popup-files">
+                  {files.map(f => (
+                    <div key={f.path} className="changes-popup-file">
+                      <span className="changes-popup-file-name" title={f.path}>
+                        {basename(f.path)}
+                      </span>
+                      <span className="changes-popup-file-stats">
+                        <span className="changes-popup-stat-added">+{f.added}</span>
+                        <span className="changes-popup-stat-deleted">-{f.deleted}</span>
+                      </span>
+                      <button
+                        className="changes-popup-undo-btn"
+                        onClick={() => handleUndoFile(f.path)}
+                        disabled={!!undoing}
+                        title="Отменить изменения в этом файле"
+                      >
+                        {undoing === f.path ? (
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
+                            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                          </svg>
+                        ) : (
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M3 7v6h6"/>
+                            <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="changes-popup-footer">
+                <button
+                  className="changes-popup-undo-all"
+                  onClick={handleUndoAll}
+                  disabled={!!undoing}
+                >
+                  {undoing === '__all__' ? (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
+                        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                      </svg>
+                      Отмена...
+                    </>
+                  ) : (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 7v6h6"/>
+                        <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+                      </svg>
+                      Отменить все
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
+    </div>
+  )
+}

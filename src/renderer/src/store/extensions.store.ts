@@ -14,6 +14,18 @@
  */
 import { create } from 'zustand'
 import type { Skill, SkillState, McpServerRuntime, MarketplaceMcpServer, MarketplaceSkill } from '../../../../../shared/types'
+import { useChatStore } from './chat.store'
+
+/**
+ * Текущий chatId для push-обработчиков (mcp:servers-changed / skills:updated).
+ * Обновляется из ChatStore подпиской — extensions.store не знает chatId сам.
+ */
+let _currentChatId: string | null = null
+useChatStore.subscribe((s) => {
+  if (s.currentChatId !== _currentChatId) {
+    _currentChatId = s.currentChatId
+  }
+})
 
 interface SkillWithState extends Skill {
   state: SkillState
@@ -113,7 +125,8 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
   loadSkills: async (projectId?: string) => {
     set({ skillsLoading: true })
     try {
-      const list = await window.syntee.skills.getAll({ projectId }) as SkillWithState[]
+      const chatId = useChatStore.getState().currentChatId ?? undefined
+      const list = await window.syntee.skills.getAll({ projectId, chatId }) as SkillWithState[]
       set({ skills: list ?? [], skillsLoading: false })
     } catch {
       set({ skillsLoading: false })
@@ -123,7 +136,10 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
   loadMcpServers: async (projectId?: string) => {
     set({ mcpLoading: true })
     try {
-      const list = await window.syntee.mcp.getAll({ projectId })
+      // Если projectId не передан, пробуем currentChatId — mcp:getAll
+      // сам резолвит проект из чата (надёжнее чем activeProjectId в сторе).
+      const chatId = useChatStore.getState().currentChatId ?? undefined
+      const list = await window.syntee.mcp.getAll({ projectId, chatId }) as McpServerRuntime[]
       set({ mcpServers: list ?? [], mcpLoading: false })
     } catch {
       set({ mcpLoading: false })
@@ -322,10 +338,32 @@ export function initExtensionsPushEvents(): () => void {
     }))
   })
 
+  // skills:updated — extensions-watcher обнаружил новые/удалённые .md в
+  // .syntee/skills/ активного проекта (например после /setup). Перезагружаем
+  // список скиллов чтобы popover отразил авто-включённые новые скиллы.
+  const offSkillsUpdated = window.syntee.on('skills:updated', () => {
+    const pid = useChatStore.getState().activeProjectId ?? undefined
+    useExtensionsStore.getState().loadSkills(pid)
+  })
+
+  // mcp:servers-changed — extensions-watcher перечитал .mcp.json и обнаружил
+  // новые/удалённые серверы (после /setup или ручного редактирования файла).
+  // Перезагружаем список серверов (новые появятся в popover со статусом
+  // connecting) И активные для текущего чата (бейдж обновится сразу).
+  const offServersChanged = window.syntee.on('mcp:servers-changed', (data: unknown) => {
+    const d = data as { projectId?: string }
+    const pid = d.projectId ?? useChatStore.getState().activeProjectId ?? undefined
+    useExtensionsStore.getState().loadMcpServers(pid)
+    if (_currentChatId) {
+      useExtensionsStore.getState().loadActiveForChat(_currentChatId)
+    }
+  })
   return () => {
     offStatus?.()
     offTools?.()
     offLogs?.()
+    offSkillsUpdated?.()
+    offServersChanged?.()
     pushInitialized = false
   }
 }

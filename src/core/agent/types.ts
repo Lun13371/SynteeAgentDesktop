@@ -126,6 +126,7 @@ export interface AgentCallbacks {
     projectId?: string
     limit?: number
     sources?: string[] // 'memory' | 'messages' | 'summaries' | 'agent_logs' | 'pinned'
+    crossProject?: boolean
   }) => Promise<{
     success: boolean
     results: Array<{
@@ -190,6 +191,11 @@ export type NormalizedToolCall = {
   args: Record<string, unknown>
   isHiddenTool: boolean
   pendingCallId: string
+  /** Когда JSON.parse аргументов тула упал — несёт сообщение об ошибке и
+   *  короткий фрагмент сырого JSON, чтобы executeCall выдал модели точное
+   *  сообщение «invalid JSON» вместо вводящего в заблуждение «missing
+   *  required arguments». undefined = парсинг прошёл успешно. */
+  parseError?: { message: string; snippet: string }
 }
 
 export type AgentRuntimeOptions = {
@@ -199,8 +205,11 @@ export type AgentRuntimeOptions = {
   maxRepeatedErrors?: number
   fileCacheSnapshot?: Record<string, FileCacheEntry>
   /** Режим планирования активен — defense-in-depth в executeTool выдаёт
-   *  явное напоминание вместо generic-блока (см. Agent.ts ~line 469). */
+    *  явное напоминание вместо generic-блока (см. Agent.ts ~line 469). */
   planningMode?: boolean
+  /** Persona — single-select run mode. Read-only personas get an explicit
+    *  reminder in defense-in-depth (same mechanism as planningMode). */
+  persona?: import('../../shared/modes').PersonaId
 }
 
 export type AgentToolCallFingerprint = {

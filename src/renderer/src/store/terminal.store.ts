@@ -172,6 +172,12 @@ if (typeof window !== 'undefined' && window.syntee) {
     }
   })
   window.syntee.on('pty:exit', (sessionId: unknown) => {
-    if (typeof sessionId === 'string') useTerminalStore.getState().markAiBusy(sessionId, false)
+    if (typeof sessionId === 'string') {
+      useTerminalStore.getState().markAiBusy(sessionId, false)
+      // Немедленно убираем dead-сессию из UI — иначе она висит до следующего
+      // loadSessions (переключение чата/таба). pty:session-list-changed тоже
+      // триггерит loadSessions, но pty:exit приходит раньше и обновляет UI мгновенно.
+      useTerminalStore.getState().removeSessionLocally(sessionId)
+    }
   })
 }

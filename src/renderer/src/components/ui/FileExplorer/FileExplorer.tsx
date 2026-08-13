@@ -5,6 +5,36 @@ import AppIcon from '../AppIcon/AppIcon'
 import CodePreview from '../CodePreview/CodePreview'
 import './FileExplorer.css'
 
+// ── File type → color mapping (VS Code-style) ─────────────────────
+const FILE_TYPE_COLORS: Record<string, string> = {
+  ts: '#3178c6', tsx: '#3178c6',
+  js: '#f7df1e', jsx: '#f7df1e', mjs: '#f7df1e',
+  json: '#f0a000',
+  css: '#264de4', scss: '#cc6699', sass: '#cc6699',
+  html: '#e34c26', htm: '#e34c26',
+  md: '#519aba',
+  py: '#3572a5',
+  go: '#00add8',
+  rs: '#dea584',
+  java: '#b07219',
+  c: '#555555', cpp: '#f34b7d', h: '#555555',
+  sh: '#89e051', bash: '#89e051',
+  yml: '#cb171e', yaml: '#cb171e',
+  toml: '#9c4221',
+  sql: '#e38c00',
+  vue: '#41b883',
+  svelte: '#ff3e00',
+  png: '#a371f7', jpg: '#a371f7', jpeg: '#a371f7', gif: '#a371f7', svg: '#ffb13b',
+  lock: '#6b7280',
+  env: '#e0b400',
+  gitignore: '#f1502f',
+}
+
+function getFileColor(name: string): string | undefined {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  return FILE_TYPE_COLORS[ext]
+}
+
 interface FsEntry {
   name: string
   path: string
@@ -83,6 +113,7 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [preview, setPreview] = useState<FilePreview | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
   const previewAbortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -201,10 +232,17 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
   const rootName = workdir ? (workdir.split(/[\\/]/).pop() || workdir) : ''
 
   // Flat tree для виртуализации — пересчитывается только при смене
-  // tree/expanded/loadingDir/selectedFile.
+  // tree/expanded/loadingDir/selectedFile/search.
+  // При активном поиске фильтруем ноды по имени (case-insensitive).
   const flatNodes = useMemo(
-    () => workdir ? buildFlatTree(tree, expanded, loadingDir, selectedFile, rootName) : [],
-    [tree, expanded, loadingDir, selectedFile, rootName, workdir],
+    () => {
+      if (!workdir) return []
+      const all = buildFlatTree(tree, expanded, loadingDir, selectedFile, rootName)
+      if (!search.trim()) return all
+      const q = search.toLowerCase()
+      return all.filter(n => n.name.toLowerCase().includes(q) || n.relPath.toLowerCase().includes(q))
+    },
+    [tree, expanded, loadingDir, selectedFile, rootName, workdir, search],
   )
 
   const virtualizer = useVirtualizer({
@@ -253,6 +291,21 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
           >
             <AppIcon name="refreshCw" size="xs" />
           </button>
+        </div>
+        <div className="file-explorer__search">
+          <AppIcon name="search" size="xs" tone="muted" />
+          <input
+            className="file-explorer__search-input"
+            type="text"
+            placeholder="Фильтр файлов…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          {search && (
+            <button className="file-explorer__search-clear" onClick={() => setSearch('')} title="Очистить">
+              <AppIcon name="x" size="xs" />
+            </button>
+          )}
         </div>
         <div className="file-explorer__tree-body" ref={scrollRef}>
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
@@ -363,6 +416,7 @@ interface FileTreeRowProps {
 
 const FileTreeRow = memo(function FileTreeRow({ node, onToggleDir, onOpenFile }: FileTreeRowProps) {
   const { relPath, name, isDir, depth, isOpen, isLoading, isSelected } = node
+  const fileColor = !isDir ? getFileColor(name) : undefined
 
   return (
     <button
@@ -389,7 +443,7 @@ const FileTreeRow = memo(function FileTreeRow({ node, onToggleDir, onOpenFile }:
       ) : (
         <>
           <span className="file-tree-item__spacer" />
-          <AppIcon name="fileText" size="xs" tone="muted" />
+          <span className="file-tree-item__type-dot" style={{ background: fileColor ?? 'var(--text-muted)' }} />
         </>
       )}
       <span className="file-tree-item__name" title={name}>{name}</span>

@@ -126,6 +126,7 @@ export const IPC_EVENTS = {
   CHAT_QUEUE_UPDATED: 'chat:queue:updated',
   CHAT_CHECKPOINT_CREATED: 'chat:checkpoint:created',
   CHAT_REWOUND: 'chat:rewound',
+  CHAT_FILES_RESTORED: 'chat:files:restored',
   CHAT_COMPACTED: 'chat:compacted',
   CHAT_COMPACT_STREAM: 'chat:compact-stream',
   CONTEXT_USAGE: 'context:usage',
@@ -143,7 +144,12 @@ export const IPC_EVENTS = {
   MCP_STATUS: 'mcp:status',
   MCP_TOOLS_UPDATED: 'mcp:tools:updated',
   MCP_LOGS: 'mcp:logs',
+  // Список серверов изменился (новые/удалённые в .mcp.json) — renderer
+  // должен перезагрузить mcpServers и activeMcpServerIds для бейджа.
+  MCP_SERVERS_CHANGED: 'mcp:servers-changed',
   // Fast Context: live progress при реиндексе + уведомление об обновлении индекса
   FASTCONTEXT_PROGRESS: 'fastcontext:progress',
   FASTCONTEXT_UPDATED: 'fastcontext:updated',
+  // Skills: пуш при изменении .syntee/skills/ (watcher обнаружил новые/удалённые .md)
+  SKILLS_UPDATED: 'skills:updated',
 }

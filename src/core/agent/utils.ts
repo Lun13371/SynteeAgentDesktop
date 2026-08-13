@@ -48,6 +48,85 @@ export function findMissingRequiredArgs(
   return required.filter(key => args[key] === undefined || args[key] === null || args[key] === '')
 }
 
+/**
+ * Попытка починить частые ошибки JSON в аргументах tool_call, которые
+ * модели (особенно не-OpenAI) регулярно генерируют:
+ *
+ * 1. Незакавыченные значения enum: `"mode": apply_patch"` — модель забыла
+ *    открывающую кавычку. Это самый частый кейс (см. logs/debug.log —
+ *    14 раундов зацикливания именно на этом).
+ *    Legacy: `"mode": replace"` тоже ловится generic-паттерном и
+ *    конвертируется internal-fallback'ом в apply_patch (fileEdit.ts).
+ * 2. Опечатки в enum-значениях: `applyy_patch` → `apply_patch`.
+ * 3. Trailing comma перед `}` или `]`.
+ * 4. Незакрытая кавычка последнего строкового значения перед `}`.
+ *
+ * Важно: функция применяется ТОЛЬКО когда JSON.parse уже упал —
+ * валидный JSON она не трогает. Все исправления логируются через
+ * возвращаемый `fixes` массив для трассировки.
+ *
+ * Границы: не пытаемся быть универсальным jsonrepair-парсером. Ловим
+ * только наблюдаемые паттерны; если модель придумает новый — функция
+ * расширяема.
+ */
+export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; fixes: string[] } {
+  let result = raw
+  const fixes: string[] = []
+
+  // Проход 1: исправляем незакавыченные значения после известных ключей.
+  // Матчит: `"mode": apply_patch"` → `"mode": "apply_patch"`
+  // Также ловит опечатку applyy_patch → apply_patch.
+  //
+  // КРИТИЧНО: capture group для prefix (ключ + двоеточие + пробелы),
+  // чтобы replacement восстанавливал ключ. Раньше replacement был
+  // `": "${corrected}"` — это теряло ключ "mode", и второй JSON.parse
+  // тоже падал на `Unexpected token 'a'` (applyy_patch без ключа).
+  // Теперь prefix захватывается отдельно и подставляется обратно.
+  const enumValues = [
+    'apply_patch', 'insert', 'overwrite',
+    'powershell', 'cmd',
+  ]
+  const unquotedEnum = new RegExp(
+    `("(?:mode|shell)":\\s*)(?!")(${enumValues.join('|')})"`,
+    'gi',
+  )
+  result = result.replace(unquotedEnum, (_m, prefix: string, val: string) => {
+    const corrected = val === 'applyy_patch' ? 'apply_patch' : val
+    if (corrected !== val) fixes.push(`typo: ${val} → ${corrected}`)
+    fixes.push(`unquoted enum: ${val}`)
+    return `${prefix}"${corrected}"`
+  })
+
+  // Если первый паттерн не сработал (из-за опечатки applyy_patch или
+  // незнакомого значения), пробуем более толерантный: любое слово-значение
+  // после "mode":. Тот же capture-group подход для prefix.
+  const unquotedGeneric = /("(?:mode|shell)":\s*)(?!")([a-zA-Z_]+)"/g
+  result = result.replace(unquotedGeneric, (_fullMatch, prefix: string, val: string) => {
+    const corrected = val === 'applyy_patch' ? 'apply_patch' : val
+    if (corrected !== val) fixes.push(`typo: ${val} → ${corrected}`)
+    fixes.push(`unquoted value: ${val}`)
+    return `${prefix}"${corrected}"`
+  })
+
+  // Проход 2: trailing comma перед } или ]
+  if (/,\s*[}\]]/.test(result)) {
+    result = result.replace(/,(\s*[}\]])/g, '$1')
+    fixes.push('trailing comma')
+  }
+
+  // Проход 3: незакрытая кавычка последнего строкового значения перед }
+  // Паттерн: `"key": "value` без закрывающей `"` перед `}`
+  // Ищем `: "....` в конце без `"` перед `}`
+  const unclosedString = /:\s*"([^"]*[^"\\])\s*(\})\s*$/
+  if (unclosedString.test(result) && !result.endsWith('"')) {
+    result = result.replace(unclosedString, ': "$1"$2')
+    fixes.push('unclosed string quote')
+  }
+
+  return { repaired: result, fixed: fixes.length > 0, fixes }
+}
+
+
 export function getToolErrorHint(toolName: string, error: string): string {
   const e = error.toLowerCase()
   // Русско-английская нормализация: тулы возвращают русские сообщения
@@ -118,7 +197,7 @@ export function stableStringify(value: unknown): string {
 
 export function buildToolFingerprint(toolName: string, args: Record<string, unknown>): AgentToolCallFingerprint {
   const normalizedArgs: Record<string, unknown> = { ...args }
-  for (const key of ['content', 'old_str', 'new_str']) {
+  for (const key of ['content', 'old_str', 'new_str', 'patch']) {
     if (typeof normalizedArgs[key] === 'string' && normalizedArgs[key].length > 160) {
       normalizedArgs[key] = `${normalizedArgs[key].slice(0, 160)}...`
     }
@@ -127,7 +206,7 @@ export function buildToolFingerprint(toolName: string, args: Record<string, unkn
   // (foo / Foo / foo( / " foo " / foo$) давали ОДИНАКОВЫЙ fingerprint — иначе
   // loop-guard на N повторов не срабатывает и модель десятками шагов перебирает
   // паттерны в надежде найти то же самое. Семантически они идентичны.
-  // ignore_case / literal флаги не учитываем — они не меняют対象 поиска.
+  // ignore_case / literal флаги не учитываем — они не меняют суть поиска.
   if (toolName === 'search_code' && typeof normalizedArgs.pattern === 'string') {
     normalizedArgs.pattern = (normalizedArgs.pattern as string)
       .toLowerCase()

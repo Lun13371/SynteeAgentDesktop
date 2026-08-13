@@ -1,0 +1,114 @@
+.chat-input-persona-suggest-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: chat-input-persona-suggest-fade 0.15s ease-out;
+}
+
+@keyframes chat-input-persona-suggest-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.chat-input-persona-suggest {
+  width: min(420px, 92vw);
+  background: var(--bg-elevated, #1e1e24);
+  border: 1px solid var(--border, #33334a);
+  border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  padding: 22px 24px 18px;
+  color: var(--text-primary, #e4e4e7);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chat-input-persona-suggest-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.chat-input-persona-suggest-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--persona-color, var(--accent)) 18%, transparent);
+  color: var(--persona-color, var(--accent));
+  flex-shrink: 0;
+}
+
+.chat-input-persona-suggest-icon svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chat-input-persona-suggest-body {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-secondary, #a0a0b0);
+}
+
+.chat-input-persona-suggest-body strong {
+  color: var(--persona-color, var(--accent));
+  font-weight: 600;
+}
+
+.chat-input-persona-suggest-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.chat-input-persona-suggest-btn {
+  border: none;
+  border-radius: 9px;
+  padding: 9px 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, opacity 0.12s;
+}
+
+.chat-input-persona-suggest-btn--primary {
+  background: color-mix(in srgb, var(--persona-color, var(--accent)) 88%, white 12%);
+  color: white;
+}
+.chat-input-persona-suggest-btn--primary:hover {
+  background: color-mix(in srgb, var(--persona-color, var(--accent)) 100%, white 0%);
+}
+
+.chat-input-persona-suggest-btn--ghost {
+  background: color-mix(in srgb, var(--text-secondary, #888) 14%, transparent);
+  color: var(--text-primary, #e4e4e7);
+}
+.chat-input-persona-suggest-btn--ghost:hover {
+  background: color-mix(in srgb, var(--text-secondary, #888) 22%, transparent);
+}
+
+.chat-input-persona-suggest-btn--never {
+  background: transparent;
+  color: var(--text-secondary, #888);
+  font-size: 12px;
+  padding: 6px 10px;
+  margin-left: auto;
+}
+.chat-input-persona-suggest-btn--never:hover {
+  color: var(--text-primary, #e4e4e7);
+}

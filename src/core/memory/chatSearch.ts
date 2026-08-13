@@ -76,7 +76,10 @@ function sanitizeFtsQuery(query: string): string | null {
 }
 
 /** Scope filter для JOIN с chats. Возвращает [whereClause, args[]]. */
-function scopeFilter(projectId?: string): { where: string; args: unknown[] } {
+function scopeFilter(projectId?: string, crossProject?: boolean): { where: string; args: unknown[] } {
+  if (crossProject) {
+    return { where: `1=1`, args: [] }
+  }
   if (projectId) {
     return { where: `c.project_id = ?`, args: [projectId] }
   }
@@ -91,10 +94,10 @@ function scopeFilter(projectId?: string): { where: string; args: unknown[] } {
  *
  * Fallback на LIKE если запрос < 3 символов (trigram требует ≥3).
  */
-export function searchMessagesFTS(query: string, projectId?: string, limit = DEFAULT_LIMIT): SearchSourceResult[] {
+export function searchMessagesFTS(query: string, projectId?: string, limit = DEFAULT_LIMIT, crossProject = false): SearchSourceResult[] {
   const db = getDB()
   const ftsQuery = sanitizeFtsQuery(query)
-  const scope = scopeFilter(projectId)
+  const scope = scopeFilter(projectId, crossProject)
 
   let rows: Array<{
     message_id: string
@@ -195,10 +198,10 @@ export function searchMessagesFTS(query: string, projectId?: string, limit = DEF
  *
  * LIKE-поиск с recency-boost (свежие резюме чуть выше).
  */
-export function searchChatSummaries(query: string, projectId?: string, limit = DEFAULT_LIMIT): SearchSourceResult[] {
+export function searchChatSummaries(query: string, projectId?: string, limit = DEFAULT_LIMIT, crossProject = false): SearchSourceResult[] {
   const db = getDB()
   const likePattern = `%${query.trim().toLowerCase()}%`
-  const scope = scopeFilter(projectId)
+  const scope = scopeFilter(projectId, crossProject)
 
   const rows = db.prepare(
     `SELECT cs.content, cs.updated_at, c.id as chat_id, c.title
@@ -242,10 +245,10 @@ export function searchChatSummaries(query: string, projectId?: string, limit = D
  *
  * Ограничение: последние 14 дней (pruneOldAgentLogs удаляет старые).
  */
-export function searchAgentLogs(query: string, projectId?: string, limit = DEFAULT_LIMIT): SearchSourceResult[] {
+export function searchAgentLogs(query: string, projectId?: string, limit = DEFAULT_LIMIT, crossProject = false): SearchSourceResult[] {
   const db = getDB()
   const likePattern = `%${query.trim().toLowerCase()}%`
-  const scope = scopeFilter(projectId)
+  const scope = scopeFilter(projectId, crossProject)
   const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000
 
   const rows = db.prepare(
@@ -304,10 +307,10 @@ export function searchAgentLogs(query: string, projectId?: string, limit = DEFAU
  * Поиск по закреплённым сообщениям (pinned_messages + messages + FTS5).
  * Закреплённые = пользователь отметил как важные. Score boost +0.2.
  */
-export function searchPinnedMessages(query: string, projectId?: string, limit = DEFAULT_LIMIT): SearchSourceResult[] {
+export function searchPinnedMessages(query: string, projectId?: string, limit = DEFAULT_LIMIT, crossProject = false): SearchSourceResult[] {
   const db = getDB()
   const ftsQuery = sanitizeFtsQuery(query)
-  const scope = scopeFilter(projectId)
+  const scope = scopeFilter(projectId, crossProject)
 
   let rows: Array<{
     message_id: string

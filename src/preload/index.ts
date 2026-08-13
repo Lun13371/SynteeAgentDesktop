@@ -287,6 +287,9 @@ const synteeAPI = {
       askMode?: boolean
       imageMode?: boolean
       mode?: 'code' | 'work'
+      /** Single-select persona run mode (classic/architect/debugger/...).
+       *  Orthogonal to planning/ask/image toggles. */
+      persona?: import('../../shared/modes').PersonaId
       oneShotSkill?: { name: string; instructions: string }
       oneShotAllowedTools?: string[]
       oneShotMode?: 'ask' | 'plan' | 'code'
@@ -320,6 +323,13 @@ const synteeAPI = {
     rewindTo: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:rewindTo', chatId, userMessageId),
     redo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:redo', chatId, rewindMessageId),
     canRedo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:canRedo', chatId, rewindMessageId),
+    // ── ChangesBadge: изменения последнего запроса + undo файлов ──
+    // getLastTurnChanges — per-file added/deleted для последнего turn'а с правками.
+    // undoLastTurnFiles — откатить все файлы последнего turn'а (без удаления сообщений).
+    // undoFile — откатить один файл последнего turn'а.
+    getLastTurnChanges: (chatId: string) => ipcRenderer.invoke('chat:getLastTurnChanges', chatId) as Promise<import('../../shared/types').LastTurnChanges | null>,
+    undoLastTurnFiles: (chatId: string) => ipcRenderer.invoke('chat:undoLastTurnFiles', chatId) as Promise<{ restored?: number; failed?: string[]; error?: string }>,
+    undoFile: (chatId: string, path: string) => ipcRenderer.invoke('chat:undoFile', chatId, path) as Promise<{ success?: boolean; error?: string }>,
     // ── Сжатие контекста (/compact) ──
     // Ручной запуск applyRollingWindowAsync с forceCompress=true. Возвращает
     // обновлённую ленту сообщений (включая новый system-разделитель компакции)
@@ -369,6 +379,13 @@ const synteeAPI = {
     // вызывает их для инкогнито-чатов (guard в ChatPage).
     getModes: (chatId: string) => ipcRenderer.invoke('chat:getModes', chatId) as Promise<{ planningMode: boolean; imageMode: boolean; askMode: boolean }>,
     setModes: (chatId: string, modes: { planningMode: boolean; imageMode: boolean; askMode: boolean }) => ipcRenderer.invoke('chat:setModes', chatId, modes),
+    // Индивидуальные сеттеры — пишут один режим, не затрагивая остальные.
+    setPlanningMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setPlanningMode', chatId, val),
+    setImageMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setImageMode', chatId, val),
+    setAskMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setAskMode', chatId, val),
+    /** Single-select persona run mode (classic/architect/debugger/...). */
+    getPersona: (chatId: string) => ipcRenderer.invoke('chat:getPersona', chatId) as Promise<import('../../shared/modes').PersonaId>,
+    setPersona: (chatId: string, persona: import('../../shared/modes').PersonaId) => ipcRenderer.invoke('chat:setPersona', chatId, persona),
     getDraft: (chatId: string) => ipcRenderer.invoke('chat:getDraft', chatId) as Promise<string>,
     setDraft: (chatId: string, draft: string) => ipcRenderer.invoke('chat:setDraft', chatId, draft),
     getInputHistory: (chatId: string) => ipcRenderer.invoke('chat:getInputHistory', chatId) as Promise<string[]>,
@@ -574,6 +591,14 @@ const synteeAPI = {
       ipcRenderer.invoke('git:log', params),
     branch: (workdir: string) => ipcRenderer.invoke('git:branch', workdir),
     isRepo: (workdir: string) => ipcRenderer.invoke('git:isRepo', workdir),
+    add: (params: { workdir: string; files: string[] }) =>
+      ipcRenderer.invoke('git:add', params),
+    reset: (params: { workdir: string; files: string[] }) =>
+      ipcRenderer.invoke('git:reset', params),
+    discard: (params: { workdir: string; files: string[]; untracked: boolean }) =>
+      ipcRenderer.invoke('git:discard', params),
+    diffStat: (params: { workdir: string; file?: string; staged?: boolean }) =>
+      ipcRenderer.invoke('git:diffStat', params),
   },
 
   // Skills — markdown-инструкции в system prompt.

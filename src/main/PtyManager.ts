@@ -50,6 +50,8 @@ interface PendingExec {
   buf: string
   resolve: (r: { output: string; exitCode: number; timedOut?: boolean }) => void
   timer: NodeJS.Timeout
+  /** Буфер для фильтрации маркеров из display-потока (pty:data → xterm). */
+  displayBuf: string
 }
 
 interface PtySession {
@@ -64,6 +66,9 @@ interface PtySession {
   pending: PendingExec | null
   /** Буфер вывода до первого mount xterm — чтобы не потерять приглашение. */
   preMountBuf: string
+  /** Прерывание в процессе (interruptByChat): ждём возврата промпта или kill. */
+  interrupting: boolean
+  interruptTimer: NodeJS.Timeout | undefined
 }
 
 // 200 колонок по умолчанию — больше не wrap-ит длинные команды и вывод при
@@ -227,6 +232,8 @@ class PtyManager {
       dead: false,
       pending: null,
       preMountBuf: '',
+      interrupting: false,
+      interruptTimer: undefined,
     }
 
     proc.onData(data => {
@@ -244,10 +251,23 @@ class PtyManager {
           }
         }
       }
-      // 2. Стримим в renderer
-      this.sender?.webContents.send('pty:data', id, data)
-      // 3. Копим для pending exec (AI)
-      if (session.pending) this.feedExec(session, data)
+      // 2. Стримим в renderer — НО фильтруем маркеры если есть pending exec.
+      //    Маркеры __SDE <hex> (echo суффикса) и __SYNTEE_DONE_<hex>__:N
+      //    (вывод функции) не должны попадать в xterm-дисплей.
+      if (session.pending) {
+        const filtered = this.filterDisplayData(session, data)
+        if (filtered) this.sender?.webContents.send('pty:data', id, filtered)
+        // 3. Копим для pending exec (AI) — сырые данные, без фильтрации
+        this.feedExec(session, data)
+      } else {
+        // Если interrupting — новые data означают что шелл вернулся после Ctrl+C
+        if (session.interrupting) {
+          clearTimeout(session.interruptTimer)
+          session.interrupting = false
+          session.interruptTimer = undefined
+        }
+        this.sender?.webContents.send('pty:data', id, data)
+      }
     })
 
     proc.onExit(({ exitCode }) => {
@@ -273,6 +293,44 @@ class PtyManager {
     return id
   }
 
+  /**
+   * Фильтрует маркеры __SDE <hex> и __SYNTEE_DONE_<hex>__:N из display-потока
+   * (pty:data → xterm). Маркеры накапливаются в pending.displayBuf, вырезаются
+   * regex'ом, очищенный текст отправляется в xterm. Хвост буфера (до 64 bytes)
+   * задерживается если маркер может быть разрезан между чанками.
+   */
+  private filterDisplayData(session: PtySession, data: string): string {
+    const p = session.pending
+    if (!p) return data
+    p.displayBuf += data
+    // Кап displayBuf — не должен расти безгранично (аналог preMountBuf).
+    if (p.displayBuf.length > 256 * 1024) {
+      p.displayBuf = p.displayBuf.slice(-128 * 1024)
+    }
+    // Regex для вырезания маркеров. __SDE <8hex> — echo суффикса (PowerShell),
+    // __SYNTEE_DONE_<8hex>__:<digits> — вывод функции/echo (все шеллы).
+    // Учитываем возможные \r\n вокруг маркера.
+    let cleaned = p.displayBuf
+      .replace(/__SDE [a-f0-9]{8}[\r\n]*/g, '')
+      .replace(/__SYNTEE_DONE_[a-f0-9]{8}__:\d+[\r\n]*/g, '')
+    // Проверяем: может хвост cleaned содержит начало незавершённого маркера?
+    // Если да — задерживаем этот кусок до следующего чанка.
+    const tailLen = Math.min(64, cleaned.length)
+    const tail = cleaned.slice(-tailLen)
+    // Ищем потенциальное начало маркера в хвосте
+    const partialMatch = tail.search(/__S(?:DE |YNTEE_DONE_)[a-f0-9]{0,8}$/)
+    if (partialMatch >= 0) {
+      // Задерживаем от partialMatch до конца
+      const holdStart = cleaned.length - tailLen + partialMatch
+      const hold = cleaned.slice(holdStart)
+      p.displayBuf = hold
+      cleaned = cleaned.slice(0, holdStart)
+    } else {
+      p.displayBuf = ''
+    }
+    return cleaned
+  }
+
   private feedExec(session: PtySession, data: string): void {
     const p = session.pending
     if (!p) return
@@ -289,17 +347,9 @@ class PtyManager {
     const exitCode = Number(m[1])
     // Обрезаем вывод до маркера (маркер не должен попасть в результат AI)
     const output = p.buf.slice(0, actualIndex)
-    // Стираем маркер и его эхо из PTY-экрана. После выполнения суффикса
-    // (echo / __SDE ...) курсор стоит на строке промпта (строка N+2):
-    //   N:   эхо суффикса (echo "__SD_12345678__:$?" или __SDE 12345678)
-    //   N+1: вывод маркера (__SYNTEE_DONE_12345678__:0)
-    //   N+2: промпт PS C:\...>  ← курсор здесь
-    // \r\x1b[A → поднимаемся на N+1 (вывод маркера)
-    // \x1b[J   → очищаем от N+1 до конца экрана (маркер + промпт)
-    // Эхо суффикса (N) оставляем — с коротким суффиксом это одна короткая
-    // строка, не мешает. Раньше \r\x1b[2K чистило только промпт (N+2),
-    // маркер оставался видимым.
-    session.proc.write('\r\x1b[A\x1b[J')
+    // Маркеры уже отфильтрованы из display-потока (filterDisplayData),
+    // старый cleanup через \r\x1b[A\x1b[J больше не нужен — он ломал вывод
+    // при разной ширине терминала и wrap-е строк.
     // Резолв через wrapper — он же чистит timer/pending (см. execInSession).
     p.resolve({ output, exitCode, timedOut: false })
   }
@@ -313,7 +363,36 @@ class PtyManager {
     const session = this.sessions.get(sessionId)
     if (!session) return { output: '', exitCode: 1 }
     if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
-    if (session.pending) return { output: '[shell busy]', exitCode: 1 }
+
+    // Shell busy recovery: вместо немедленного return '[shell busy]' пытаемся
+    // освободить шелл. Это происходит когда предыдущая команда зависла или
+    // interruptByChat не успел очистить pending.
+    if (session.pending) {
+      // 1. Ждём 500мс — может pending вот-вот очистится (feedExec/interrupt)
+      await new Promise<void>(r => setTimeout(r, 500))
+      if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
+      if (session.pending) {
+        // 2. Шлём Ctrl+C и ждём 2с
+        try { session.proc.write('\x03') } catch { /* dead */ }
+        await new Promise<void>(r => setTimeout(r, 2000))
+        if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
+        if (session.pending) {
+          // 3. Всё ещё занят — kill
+          const partial = session.pending.buf ?? ''
+          try { session.proc.kill() } catch { /* already dead */ }
+          session.dead = true
+          session.pending = null
+          return { output: partial || '[shell recovered — previous command killed]', exitCode: 1 }
+        }
+      }
+    }
+
+    // Сбрасываем interrupting-флаг если он остался от предыдущего interrupt
+    if (session.interrupting) {
+      clearTimeout(session.interruptTimer)
+      session.interrupting = false
+      session.interruptTimer = undefined
+    }
 
     // 8 hex chars = 32 bits = ~4 млрд комбинаций. Маркер живёт ~1 секунду
     // (время выполнения команды до прихода echo), коллизия невозможна.
@@ -371,13 +450,13 @@ class PtyManager {
         // node / git и т.п.). Shell вернётся к промпту, env/cwd/история
         // сессии сохранятся — следующий run_command продолжится в той же
         // сессии, без "shell busy".
-        session.proc.write('\x03')
+        try { session.proc.write('\x03') } catch { /* dead */ }
         // Даём shell 2с на возврат промпта. Если за это время в поток успел
         // вывалиться маркер (часто так — echo уже стояло в очереди PTY
         // после C-c) — feedExec его сматчит и вызовет settle() с обычным
         // exitCode; fallback не сработает. Если за 2с промпт не вернулся
         // (висим в интерактивной проге типа vim/top, где Ctrl+C не помог) —
-        // kill PTY и помечаем dead; chat.ipc.ts:870-877 на следующем
+        // kill PTY и помечаем dead; chat.ipc.ts на следующем
         // run_command увидит `!s.dead` и создаст новую сессию.
         killTimer = setTimeout(() => {
           if (settled) return
@@ -390,13 +469,21 @@ class PtyManager {
         }, 2000)
       }, Math.max(1, timeoutSec) * 1000)
 
-      session.pending = { markerId, markerRe: new RegExp(`${markerId}:(\\d+)`), buf: '', resolve: settle, timer }
+      session.pending = {
+        markerId, markerRe: new RegExp(`${markerId}:(\\d+)`), buf: '',
+        resolve: settle, timer, displayBuf: '',
+      }
       // PTY интерпретирует '\r' как Enter (submit строки), не '\n' — обычный
       // pipe-подход (\n) здесь не работает, команда просто вставляется в
       // буфер строки и никогда не выполняется, из-за чего маркер не приходит
       // и exec виснет до таймаута ("shell busy" на следующих вызовах).
-      session.proc.write(command + '\r')
-      session.proc.write(suffix + '\r')
+      // try/catch: процесс мог умереть между dead-check и write.
+      try {
+        session.proc.write(command + '\r')
+        session.proc.write(suffix + '\r')
+      } catch {
+        settle({ output: '[shell process exited]', exitCode: 1 })
+      }
     })
   }
 
@@ -426,6 +513,12 @@ class PtyManager {
       s.pending = null
       p.resolve({ output: p.buf, exitCode: 1, timedOut: false })
     }
+    // Чистим interrupting-таймер если был
+    if (s.interruptTimer) {
+      clearTimeout(s.interruptTimer)
+      s.interruptTimer = undefined
+    }
+    s.interrupting = false
     try { s.proc.kill() } catch { /* already dead */ }
     this.sessions.delete(sessionId)
     const set = this.byChat.get(s.chatId)
@@ -444,8 +537,11 @@ class PtyManager {
    *  Worker уже терминирован — Promise resolve бесполезен, но нужно:
    *  1) Send Ctrl+C чтобы прервать текущую команду (shell вернётся к промпту).
    *  2) Очистить session.pending — иначе следующий execInSession получит
-   *     '[shell busy]' и зависнет (chat.ipc.ts:870 не создаст новую сессию
-   *     т.к. !s.dead, но pending занят). */
+   *     '[shell busy]' и зависнет (chat.ipc.ts не создаст новую сессию
+   *     т.к. !s.dead, но pending занят).
+   *  3) Установить interrupting-флаг: если за 3с шелл не вернётся (команда
+   *     игнорит Ctrl+C) — kill PTY, помечаем dead. Следующий run_command
+   *     создаст новую сессию (self-healing). */
   interruptByChat(chatId: string): void {
     const set = this.byChat.get(chatId)
     if (!set) return
@@ -461,6 +557,22 @@ class PtyManager {
       const resolve = s.pending.resolve
       s.pending = null
       resolve({ output: partial, exitCode: 1, timedOut: true })
+      // Устанавливаем interrupting-флаг с 3с kill-fallback.
+      // Если за 3с в onData придут новые данные — interrupting снимется
+      // (шелл вернулся к промпту). Если нет — kill.
+      if (!s.dead) {
+        s.interrupting = true
+        s.interruptTimer = setTimeout(() => {
+          if (s.interrupting && !s.dead) {
+            try { s.proc.kill() } catch { /* already dead */ }
+            s.dead = true
+            s.interrupting = false
+            s.interruptTimer = undefined
+            this.sender?.webContents.send('pty:exit', id, 1)
+            this.sender?.webContents.send('pty:session-list-changed', s.chatId)
+          }
+        }, 3000)
+      }
     }
   }
 
