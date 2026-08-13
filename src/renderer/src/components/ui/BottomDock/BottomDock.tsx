@@ -54,7 +54,8 @@ export default function BottomDock() {
   const startYRef = useRef(0)
   const startHeightRef = useRef(DOCK_HEIGHT_DEFAULT)
 
-  const visibleSessions = sessions.filter(s => !s.dead)
+  // Показываем и dead-сессии (с пометкой) — юзер видит финальный вывод.
+  const visibleSessions = sessions
 
   useEffect(() => {
     window.syntee.pty.detectShells().then((list: ShellInfo[]) => setShells(list))
@@ -142,7 +143,7 @@ export default function BottomDock() {
                 {visibleSessions.map((s: TerminalSessionMeta) => (
                   <button
                     key={s.id}
-                    className={`bottom-dock__tab ${s.id === activeSessionId ? 'bottom-dock__tab--active' : ''} ${aiBusySessionIds.has(s.id) ? 'bottom-dock__tab--ai-busy' : ''}`}
+                    className={`bottom-dock__tab ${s.id === activeSessionId ? 'bottom-dock__tab--active' : ''} ${aiBusySessionIds.has(s.id) ? 'bottom-dock__tab--ai-busy' : ''} ${s.dead ? 'bottom-dock__tab--dead' : ''}`}
                     onClick={() => switchSession(s.id)}
                   >
                     {s.source === 'agent' && <AppIcon name="bot" size="xs" tone="accent" />}

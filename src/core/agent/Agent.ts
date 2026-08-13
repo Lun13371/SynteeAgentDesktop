@@ -1083,8 +1083,17 @@ export class Agent {
               .replace(/\r\n\r\n/g, '\r\n')                  // пустые строки от вырезанных маркеров
               .trim()
           }
-          if (shellRes.timedOut) {
-            // Сессия прервана Ctrl+C (см. PtyManager.execInSession) —
+          if (shellRes.interrupted) {
+            // Пользователь нажал Stop (chat:stop → interruptByChat) —
+            // команда прервана вручную, не по таймауту.
+            const partial = smartTrimOutput(cleanShellOutput(shellRes.output || ''))
+            cmdResult = {
+              success: false,
+              output: `[interrupted by user — command stopped]\n${partial || '(no output)'}`,
+              error: 'Command interrupted by user',
+            }
+          } else if (shellRes.timedOut) {
+            // Сессия прервана Ctrl+C по таймауту (см. PtyManager.execInSession) —
             // env/cwd сохранены, следующий run_command продолжится в ней.
             // shellRes.output содержит частичный вывод команды до прерывания.
             const partial = smartTrimOutput(cleanShellOutput(shellRes.output || ''))

@@ -94,6 +94,18 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         error: `Command exceeded the timeout (${timeout || 60}s). Pass a larger timeout (e.g. 120 or 300), run the command in the background, or break it into shorter steps.`,
       }
     }
+    // maxBuffer exceeded — Node кидает ERR_CHILD_PROCESS_STDOUT_MAXBUFFER
+    // с e.code = 'ERR_CHILD_PROCESS_STDOUT_MAXBUFFER'. Без явной проверки
+    // это маскировалось как "Command failed" exit:1.
+    if (e.code === 'ERR_CHILD_PROCESS_STDOUT_MAXBUFFER') {
+      let out = `[output exceeded 10MB limit — truncated]\n[stdout (partial)]:\n${stdoutPart}`
+      if (stderrPart) out += `\n[stderr]:\n${stderrPart}`
+      return {
+        success: false,
+        output: out,
+        error: 'Command output exceeded the 10MB maxBuffer limit. Pipe to a file or break into smaller steps.',
+      }
+    }
     const exitCode = typeof e.code === 'number' ? e.code : 1
     let out = `[exit: ${exitCode}]`
     if (stdoutPart) out += `\n[stdout]:\n${stdoutPart}`

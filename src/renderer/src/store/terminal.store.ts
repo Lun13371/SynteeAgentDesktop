@@ -46,6 +46,7 @@ interface TerminalStore {
   toggleDock: () => void
   setDockHeight: (h: number) => void
   removeSessionLocally: (sessionId: string) => void
+  markSessionDead: (sessionId: string) => void
   markAiBusy: (sessionId: string, busy: boolean) => void
 }
 
@@ -124,6 +125,25 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
   switchSession: (sessionId) => set({ activeSessionId: sessionId }),
 
+  markSessionDead: (sessionId) => set((st) => {
+    const chatId = st.activeChatId
+    if (!chatId) return {}
+    const prev = st.sessionsByChat[chatId] ?? []
+    const next = prev.map(s => s.id === sessionId ? { ...s, dead: true } : s)
+    // Если активная сессия умерла — переключаемся на живую (предпочитаем user-сессию)
+    let newActive = st.activeSessionId
+    if (st.activeSessionId === sessionId) {
+      const alive = next.filter(s => !s.dead)
+      const userSession = alive.find(s => s.source === 'user')
+      newActive = userSession?.id ?? alive[alive.length - 1]?.id ?? null
+    }
+    return {
+      sessionsByChat: { ...st.sessionsByChat, [chatId]: next },
+      activeSessionId: newActive,
+    }
+  }),
+
+
   setDockOpen: (open) => {
     set({ dockOpen: open })
     import('../utils/sounds').then((m) => open ? m.playPanelOpenSound() : m.playPanelCloseSound())
@@ -174,10 +194,19 @@ if (typeof window !== 'undefined' && window.syntee) {
   window.syntee.on('pty:exit', (sessionId: unknown) => {
     if (typeof sessionId === 'string') {
       useTerminalStore.getState().markAiBusy(sessionId, false)
-      // Немедленно убираем dead-сессию из UI — иначе она висит до следующего
-      // loadSessions (переключение чата/таба). pty:session-list-changed тоже
-      // триггерит loadSessions, но pty:exit приходит раньше и обновляет UI мгновенно.
-      useTerminalStore.getState().removeSessionLocally(sessionId)
+      // Помечаем сессию как dead (НЕ удаляем!) — юзер видит финальный вывод.
+      // pty:session-list-changed (30с позже из main) триггерит loadSessions
+      // который уберёт её из стора. xterm диспозится через 60с если не активна.
+      useTerminalStore.getState().markSessionDead(sessionId)
+      // Отложенный dispose xterm: если сессия не активна — диспозим через 60с
+      // чтобы освободить память (скроллбэк xterm). Если активна — оставляем.
+      setTimeout(() => {
+        const st = useTerminalStore.getState()
+        if (st.activeSessionId !== sessionId) {
+          // Сессия не активна — диспозим xterm
+          import('../utils/terminalRegistry').then(m => m.disposeTerminal(sessionId))
+        }
+      }, 60_000)
     }
   })
 }

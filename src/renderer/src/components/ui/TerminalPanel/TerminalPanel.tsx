@@ -52,7 +52,8 @@ export default function TerminalPanel({ currentChatId }: TerminalPanelProps) {
   const newBtnRef = useRef<HTMLButtonElement>(null)
 
   const sessions = (currentChatId ? sessionsByChat[currentChatId] : undefined) ?? []
-  const visibleSessions = sessions.filter(s => !s.dead)
+  // Показываем и dead-сессии (с пометкой) — юзер видит финальный вывод.
+  const visibleSessions = sessions
 
   useEffect(() => {
     window.syntee.pty.detectShells().then((list: ShellInfo[]) => setShells(list))
@@ -97,7 +98,7 @@ export default function TerminalPanel({ currentChatId }: TerminalPanelProps) {
           {visibleSessions.map((s: TerminalSessionMeta) => (
             <button
               key={s.id}
-              className={`terminal-panel__tab ${s.id === activeSessionId ? 'terminal-panel__tab--active' : ''} ${aiBusySessionIds.has(s.id) ? 'terminal-panel__tab--ai-busy' : ''}`}
+              className={`terminal-panel__tab ${s.id === activeSessionId ? 'terminal-panel__tab--active' : ''} ${aiBusySessionIds.has(s.id) ? 'terminal-panel__tab--ai-busy' : ''} ${s.dead ? 'terminal-panel__tab--dead' : ''}`}
               onClick={() => switchSession(s.id)}
             >
               {s.source === 'agent' && <AppIcon name="bot" size="xs" tone="accent" />}
