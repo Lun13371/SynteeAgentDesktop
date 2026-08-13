@@ -20,6 +20,7 @@ import { homedir } from 'os'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
+import { stripAnsi } from '../core/tools/_shared'
 
 export type ShellType = 'powershell' | 'cmd' | 'bash' | 'wsl' | 'nushell' | 'fish'
 
@@ -48,10 +49,14 @@ interface PendingExec {
   /** Скомпилированный регекс — создаётся один раз, не на каждый чанк. */
   markerRe: RegExp
   buf: string
-  resolve: (r: { output: string; exitCode: number; timedOut?: boolean }) => void
+  resolve: (r: { output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }) => void
   timer: NodeJS.Timeout
   /** Буфер для фильтрации маркеров из display-потока (pty:data → xterm). */
   displayBuf: string
+  /** Первая строка команды (нормализованная) — для среза эха PTY из AI-вывода. */
+  cmdFirstLine: string
+  /** Эхо уже срезано — не пытаться повторно (флаг). */
+  echoStripped: boolean
 }
 
 interface PtySession {
@@ -69,6 +74,10 @@ interface PtySession {
   /** Прерывание в процессе (interruptByChat): ждём возврата промпта или kill. */
   interrupting: boolean
   interruptTimer: NodeJS.Timeout | undefined
+  /** Последняя известная cwd сессии — чтобы не делать лишний cd перед командой. */
+  lastCwd: string | undefined
+  /** Таймер отложенного cleanup dead-сессии из Map (30с после onExit). */
+  cleanupTimer: NodeJS.Timeout | undefined
 }
 
 // 200 колонок по умолчанию — больше не wrap-ит длинные команды и вывод при
@@ -234,6 +243,8 @@ class PtyManager {
       preMountBuf: '',
       interrupting: false,
       interruptTimer: undefined,
+      lastCwd: effectiveCwd,
+      cleanupTimer: undefined,
     }
 
     proc.onData(data => {
@@ -281,8 +292,14 @@ class PtyManager {
         session.pending = null
         p.resolve({ output: p.buf, exitCode: exitCode ?? 1, timedOut: false })
       }
-      // Не удаляем сразу из Map — UI может хотеть показать финальный вывод.
-      // Удаляем по kill/cleanup.
+      // Отложенный cleanup: через 30с убираем dead-сессию из Map.
+      // Даёт UI время показать финальный вывод, но не утекает бесконечно.
+      session.cleanupTimer = setTimeout(() => {
+        this.sessions.delete(id)
+        const set = this.byChat.get(chatId)
+        set?.delete(id)
+        if (set && set.size === 0) this.byChat.delete(chatId)
+      }, 30_000)
     })
 
     this.sessions.set(id, session)
@@ -335,6 +352,32 @@ class PtyManager {
     const p = session.pending
     if (!p) return
     p.buf += data
+
+    // ── Срез эха команды из AI-вывода ──────────────────────────────
+    // PTY эхоит введённую команду в поток данных. Для xterm (display) это
+    // нужно — юзер видит что выполняется. Но AI не должен видеть свою
+    // команду в начале вывода. Срезаем эхо один раз, по первой строке.
+    if (!p.echoStripped && p.cmdFirstLine && p.buf.length >= p.cmdFirstLine.length) {
+      // \r → \n (не удалять!) — иначе строки эха склеиваются.
+      // PTY echo использует bare \r как терминатор строки.
+      const norm = stripAnsi(p.buf).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      const searchZone = norm.slice(0, Math.min(500, norm.length))
+      const echoIdx = searchZone.indexOf(p.cmdFirstLine)
+      if (echoIdx >= 0) {
+        const afterEcho = norm.slice(echoIdx + p.cmdFirstLine.length)
+        const nlIdx = afterEcho.indexOf('\n')
+        if (nlIdx >= 0) {
+          // Эхо найдено И \n пришёл — срезаем
+          p.buf = norm.slice(echoIdx + p.cmdFirstLine.length + nlIdx + 1)
+          p.echoStripped = true
+        }
+        // Если nlIdx < 0 — \n ещё не пришёл, попробуем на следующем чанке
+      } else if (p.buf.length > 2000) {
+        // Эхо не найдено в первых 500 символах и буфер большой — сдаёмся
+        p.echoStripped = true
+      }
+    }
+
     // Ищем маркер только в хвосте буфера — новый data + backfill на случай
     // если маркер разрезан между чанками. Маркер ~30 chars, backfill 128.
     // Раньше было p.buf.match(new RegExp(...)) на КАЖДОМ чанке по ВЕСЬ буфер
@@ -354,12 +397,26 @@ class PtyManager {
     p.resolve({ output, exitCode, timedOut: false })
   }
 
+  /** Экранирует путь для cd-команды в зависимости от шелла. */
+  private buildCdCommand(shell: ShellType, cwd: string): string | null {
+    const escaped = cwd.replace(/'/g, "'\\''")
+    switch (shell) {
+      case 'powershell':
+        return `Set-Location -LiteralPath '${escaped}'`
+      case 'cmd':
+        return `cd /d "${cwd.replace(/"/g, '""')}"`
+      default: // bash, wsl, fish, nushell
+        return `cd '${escaped}'`
+    }
+  }
+
   /** AI-exec: пишет команду в PTY, ждёт маркер с exit code. */
   async execInSession(
     sessionId: string,
     command: string,
     timeoutSec: number,
-  ): Promise<{ output: string; exitCode: number; timedOut?: boolean }> {
+    cwd?: string,
+  ): Promise<{ output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }> {
     const session = this.sessions.get(sessionId)
     if (!session) return { output: '', exitCode: 1 }
     if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
@@ -368,22 +425,16 @@ class PtyManager {
     // освободить шелл. Это происходит когда предыдущая команда зависла или
     // interruptByChat не успел очистить pending.
     if (session.pending) {
-      // 1. Ждём 500мс — может pending вот-вот очистится (feedExec/interrupt)
-      await new Promise<void>(r => setTimeout(r, 500))
+      // Shell busy recovery: немедленный Ctrl+C + 1с (вместо 500мс+2с=2.5с)
+      try { session.proc.write('\x03') } catch { /* dead */ }
+      await new Promise<void>(r => setTimeout(r, 1000))
       if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
       if (session.pending) {
-        // 2. Шлём Ctrl+C и ждём 2с
-        try { session.proc.write('\x03') } catch { /* dead */ }
-        await new Promise<void>(r => setTimeout(r, 2000))
-        if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
-        if (session.pending) {
-          // 3. Всё ещё занят — kill
-          const partial = session.pending.buf ?? ''
-          try { session.proc.kill() } catch { /* already dead */ }
-          session.dead = true
-          session.pending = null
-          return { output: partial || '[shell recovered — previous command killed]', exitCode: 1 }
-        }
+        const partial = session.pending.buf ?? ''
+        try { session.proc.kill() } catch { /* already dead */ }
+        session.dead = true
+        session.pending = null
+        return { output: partial || '[shell recovered — previous command killed]', exitCode: 1 }
       }
     }
 
@@ -433,7 +484,7 @@ class PtyManager {
       // Единый выход — гарантирует что resolve позвется ровно один раз
       // (dbl-resolve возможен: feedExec по маркеру + timeout-fallback),
       // и чистит ВСЕ таймеры + session.pending.
-      const settle = (r: { output: string; exitCode: number; timedOut?: boolean }) => {
+      const settle = (r: { output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }) => {
         if (settled) return
         settled = true
         if (killTimer) { clearTimeout(killTimer); killTimer = undefined }
@@ -463,24 +514,28 @@ class PtyManager {
           // Сохраняем partial output — то, что команда успела напечатать
           // до таймаута (раньше это терялось — AI видел пустую строку).
           const partial = session.pending?.buf ?? ''
-          try { session.proc.kill() } catch { /* already dead */ }
-          session.dead = true
+          // НЕ kill — сессия остаётся живой. Shell-busy recovery на следующей
+          // команде сделает kill если Ctrl+C не поможет.
           settle({ output: partial, exitCode: 1, timedOut: true })
         }, 2000)
       }, Math.max(1, timeoutSec) * 1000)
 
+      // Phase 1: cwd — синхронизация рабочей директории
+      let fullCommand = command
+      if (cwd && cwd !== session.lastCwd) {
+        const cdCmd = this.buildCdCommand(session.shell, cwd)
+        if (cdCmd) fullCommand = `${cdCmd}\r${command}`
+      }
+      const cmdFirstLine = command.split(/\r?\n/)[0].trim()
       session.pending = {
         markerId, markerRe: new RegExp(`${markerId}:(\\d+)`), buf: '',
         resolve: settle, timer, displayBuf: '',
+        cmdFirstLine, echoStripped: false,
       }
-      // PTY интерпретирует '\r' как Enter (submit строки), не '\n' — обычный
-      // pipe-подход (\n) здесь не работает, команда просто вставляется в
-      // буфер строки и никогда не выполняется, из-за чего маркер не приходит
-      // и exec виснет до таймаута ("shell busy" на следующих вызовах).
-      // try/catch: процесс мог умереть между dead-check и write.
       try {
-        session.proc.write(command + '\r')
+        session.proc.write(fullCommand + '\r')
         session.proc.write(suffix + '\r')
+        if (cwd) session.lastCwd = cwd
       } catch {
         settle({ output: '[shell process exited]', exitCode: 1 })
       }
@@ -519,6 +574,7 @@ class PtyManager {
       s.interruptTimer = undefined
     }
     s.interrupting = false
+    if (s.cleanupTimer) { clearTimeout(s.cleanupTimer); s.cleanupTimer = undefined }
     try { s.proc.kill() } catch { /* already dead */ }
     this.sessions.delete(sessionId)
     const set = this.byChat.get(s.chatId)
@@ -556,7 +612,7 @@ class PtyManager {
       const partial = s.pending.buf ?? ''
       const resolve = s.pending.resolve
       s.pending = null
-      resolve({ output: partial, exitCode: 1, timedOut: true })
+      resolve({ output: partial, exitCode: 1, timedOut: false, interrupted: true })
       // Устанавливаем interrupting-флаг с 3с kill-fallback.
       // Если за 3с в onData придут новые данные — interrupting снимется
       // (шелл вернулся к промпту). Если нет — kill.

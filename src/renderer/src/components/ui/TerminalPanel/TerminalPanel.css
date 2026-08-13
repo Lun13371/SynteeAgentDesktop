@@ -90,6 +90,12 @@
   color: #f59e0b;
 }
 
+.terminal-panel__tab--dead {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+
 .terminal-panel__tab-busy-dot {
   width: 6px;
   height: 6px;

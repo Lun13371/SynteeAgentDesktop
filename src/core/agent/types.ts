@@ -54,7 +54,7 @@ export interface AgentCallbacks {
    * одноразового exec(). cd/env переживают между вызовами. Не используется
    * суб-агентами (короткоживущие — общий shell создал бы гонки).
    */
-  onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean }>
+  onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   /** Начало раунда: tiktoken-оценка того, что уйдёт в запрос (system+history
    *  с tool_calls+current user+tools schemas). breakdown консистентен. */

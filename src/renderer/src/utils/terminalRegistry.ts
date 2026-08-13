@@ -32,6 +32,8 @@ let rafScheduled = false
 function flushWriteQueues(): void {
   rafScheduled = false
   for (const [sid, chunks] of writeQueues) {
+    // Очищаем очередь ДО проверки entries — если term уже диспознут,
+    // очередь не должна утекать (раньше delete только если entries.get truthy)
     const e = entries.get(sid)
     if (e) {
       e.term.write(chunks.join(''))
@@ -191,4 +193,6 @@ export function disposeTerminal(sessionId: string): void {
   e.unsub?.()
   e.term.dispose()
   entries.delete(sessionId)
+  // Очищаем очередь write — иначе утекает (rAF может держать chunks)
+  writeQueues.delete(sessionId)
 }

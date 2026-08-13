@@ -1885,7 +1885,7 @@ ${subModeOutro}`,
                 toolName: 'run_command', stage: 'start',
                 detail: command, sessionId: agentSession.id, ts: Date.now(),
               })
-              const result = await ptyManager.execInSession(agentSession.id, command, timeoutSec)
+              const result = await ptyManager.execInSession(agentSession.id, command, timeoutSec, cwd)
               win?.webContents.send('agent:tool_progress', {
                 msgId: shellMsgId, chatId,
                 toolName: 'run_command', stage: 'done', ts: Date.now(),
@@ -1896,6 +1896,7 @@ ${subModeOutro}`,
                 output: result.output,
                 exitCode: result.exitCode,
                 timedOut: result.timedOut,
+                interrupted: result.interrupted,
               })
             } catch (err) {
               // spawn-failure / unexpected error — раньше IIFE reject'ился

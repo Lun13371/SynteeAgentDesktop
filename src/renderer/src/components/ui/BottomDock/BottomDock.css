@@ -121,6 +121,12 @@ body.dock-resize-active * {
   color: #f59e0b;
 }
 
+.bottom-dock__tab--dead {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+
 .bottom-dock__tab-busy-dot {
   width: 6px;
   height: 6px;

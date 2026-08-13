@@ -523,6 +523,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                   output: (reply.output as string) ?? '',
                   exitCode: (reply.exitCode as number) ?? 1,
                   timedOut: reply.timedOut as boolean | undefined,
+                  interrupted: reply.interrupted as boolean | undefined,
                 })
               })
               send({ type: 'shell_exec', chatId, msgId, replyId, command, cwd, timeoutSec })
