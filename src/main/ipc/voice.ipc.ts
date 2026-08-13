@@ -19,6 +19,11 @@ function getWhisperWorkerPath(): string {
 }
 
 function ensureWhisperWorker(modelSize: string): Worker {
+  // Redirect HF cache to userData — в packaged-приложении node_modules
+  // read-only (asar), модели должны качаться в writable-директорию.
+  if (!process.env.TRANSFORMERS_CACHE) {
+    process.env.TRANSFORMERS_CACHE = join(app.getPath('userData'), 'transformers-cache')
+  }
   if (whisperWorker) return whisperWorker
   whisperWorker = new Worker(getWhisperWorkerPath(), {
     workerData: { modelSize },

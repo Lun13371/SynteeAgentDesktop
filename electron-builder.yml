@@ -9,14 +9,26 @@ directories:
 files:
   - out/**/*
   - package.json
+  # ── Исключаем кэш моделей Whisper (~508 МБ) — модели докачиваются
+  #    сами при первом использовании через @huggingface/transformers.
+  - "!**/node_modules/@huggingface/transformers/.cache/**"
+  # ── Исключаем нативные бинари onnxruntime-node для чужих платформ
+  #    (~120 МБ): darwin, linux, win32-arm64. Оставляем только win32-x64.
+  - "!**/node_modules/onnxruntime-node/bin/napi-v6/darwin/**"
+  - "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/**"
+  - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
 
 # Бандленный ripgrep (@vscode/ripgrep-*) — бинарь rg.exe должен быть
 # распакован из asar, иначе не исполняется. findRg() заменяет app.asar →
 # app.asar.unpacked в пути.
+# onnxruntime-node — нативный .node-бинарь, требует распаковки из asar.
+# @huggingface/transformers — динамические require, требует распаковки.
 asar: true
 asarUnpack:
   - node_modules/@vscode/ripgrep/**
   - node_modules/@vscode/ripgrep-*/**
+  - node_modules/onnxruntime-node/**
+  - node_modules/@huggingface/transformers/**
 
 # Resources copied to the install root (next to the client exe).
 # The launcher binary is NOT included here — it's a separate 7 MB download
