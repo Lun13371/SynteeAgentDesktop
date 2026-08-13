@@ -1,4 +1,14 @@
 node_modules
+tmp_out.txt
+# Temp diagnostic/build scratch files
+eslint_diag.txt
+tmp_tsc.txt
+tsc_err.txt
+tsc_err2.txt
+tsc_full.txt
+tsc_out.txt
+logs/
+
 dist
 out
 .DS_Store

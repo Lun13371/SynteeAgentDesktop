@@ -5,7 +5,7 @@ import { extractSymbolsFromSource, type SymbolDef } from '../context/fastContext
 
 const MAX_READ_FILE_SIZE = 20 * 1024 * 1024  // 20MB — больше не читаем целиком в память
 
-export async function readFile(path: string, offset?: number, limit?: number, outlineOnly?: boolean, workdir?: string): Promise<ToolResult> {
+export async function readFile(path: string, offset?: number, limit?: number, workdir?: string): Promise<ToolResult> {
   try {
     path = resolveToolPath(path, workdir)
     if (!existsSync(path)) return { success: false, output: '', error: 'File not found: ' + path }
@@ -18,11 +18,6 @@ export async function readFile(path: string, offset?: number, limit?: number, ou
     const content = await fsReadFile(path, 'utf-8')
     const lines = content.split('\n')
     const totalLines = lines.length
-
-    // outline_only — возвращаем только структуру файла
-    if (outlineOnly) {
-      return await getFileOutline(path, content)
-    }
 
     if (offset !== undefined || limit !== undefined) {
       const from = Math.max(0, (offset ?? 1) - 1)  // offset 1-indexed
@@ -52,12 +47,7 @@ export async function readFile(path: string, offset?: number, limit?: number, ou
 
     let suffix = ''
     if (truncated) {
-      suffix = `\n...[shown ${DEFAULT_LINES} of ${totalLines} lines | use offset/limit to read in parts or outline_only=true for the structure]`
-      // Авто-outline для больших файлов — агент сразу видит структуру и может
-      // прыгать к нужной строке через offset. tree-sitter покрывает 20+ языков;
-      // для неподдерживаемых — regex-fallback (см. getFileOutline).
-      const outlineResult = await getFileOutline(path, content)
-      if (outlineResult.success) suffix += `\n\n${outlineResult.output}`
+      suffix = `\n...[shown ${DEFAULT_LINES} of ${totalLines} lines | use offset=${DEFAULT_LINES + 1} to continue or offset/limit to read in parts]`
     }
     return {
       success: true,

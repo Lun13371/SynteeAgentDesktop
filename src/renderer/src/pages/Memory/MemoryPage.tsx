@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import remarkGfm from 'remark-gfm'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import IconButton from '../../components/ui/IconButton/IconButton'
@@ -120,6 +121,15 @@ export default function MemoryPage() {
   const [projects, setProjects] = useState<Array<{ id: string; name: string; workdir: string }>>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set())
+
+  // Виртуализация списка — рендерим только видимые элементы
+  const listRef = useRef<HTMLDivElement>(null)
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 86,
+    overscan: 5,
+  })
 
   const load = useCallback(async () => {
     if (searchMode === 'semantic' && search.trim()) {
@@ -283,20 +293,7 @@ export default function MemoryPage() {
         ))}
       </div>
 
-      {activeTab === 'graph' && (
-        <div className="memory-graph-project-selector">
-          <label>Проект: </label>
-          <select
-            value={selectedProjectId}
-            onChange={(e) => setSelectedProjectId(e.target.value)}
-          >
-            <option value="">— выберите проект —</option>
-            {projects.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
+
 
       {/* Форма добавления */}
       {activeTab === 'list' && (
@@ -359,47 +356,36 @@ export default function MemoryPage() {
         )}
       </AnimatePresence>
 
-      {/* Фильтры по типу */}
-      <div className="memory-categories">
-        <button
-          className={`memory-cat-btn ${filterKind === '' ? 'memory-cat-btn--active' : ''}`}
-          onClick={() => setFilterKind('')}
-        >
-          <AppIcon name="brain" size="sm" tone={filterKind === '' ? 'accent' : 'muted'} />
-          Все {stats ? `(${stats.total})` : ''}
-        </button>
-        {KIND_OPTIONS.map(k => (
+      {/* Row 1: kind-фильтры + поиск + режим */}
+      <div className="memory-toolbar-primary">
+        <div className="memory-filter-chips">
           <button
-            key={k.id}
-            className={`memory-cat-btn ${filterKind === k.id ? 'memory-cat-btn--active' : ''}`}
-            onClick={() => setFilterKind(filterKind === k.id ? '' : k.id)}
+            className={`memory-cat-btn ${filterKind === '' ? 'memory-cat-btn--active' : ''}`}
+            onClick={() => setFilterKind('')}
           >
-            <AppIcon name={k.icon} size="sm" tone={filterKind === k.id ? 'accent' : 'muted'} />
-            {k.label} {stats?.byKind?.[k.id] ? `(${stats.byKind[k.id]})` : ''}
+            <AppIcon name="brain" size="sm" tone={filterKind === '' ? 'accent' : 'muted'} />
+            Все {stats ? `(${stats.total})` : ''}
           </button>
-        ))}
-      </div>
-
-      {/* Фильтр по scope + режим поиска */}
-      <div className="memory-toolbar">
-        <div className="memory-scope-filters">
-          <button
-            className={`memory-cat-btn ${filterScope === '' ? 'memory-cat-btn--active' : ''}`}
-            onClick={() => setFilterScope('')}
-          >
-            <AppIcon name="layers" size="sm" tone={filterScope === '' ? 'accent' : 'muted'} />
-            Все scope
-          </button>
-          {SCOPE_OPTIONS.map(s => (
+          {KIND_OPTIONS.map(k => (
             <button
-              key={s.id}
-              className={`memory-cat-btn ${filterScope === s.id ? 'memory-cat-btn--active' : ''}`}
-              onClick={() => setFilterScope(filterScope === s.id ? '' : s.id)}
+              key={k.id}
+              className={`memory-cat-btn ${filterKind === k.id ? 'memory-cat-btn--active' : ''}`}
+              onClick={() => setFilterKind(filterKind === k.id ? '' : k.id)}
             >
-              <AppIcon name={s.icon} size="sm" tone={filterScope === s.id ? 'accent' : 'muted'} />
-              {s.label}
+              <AppIcon name={k.icon} size="sm" tone={filterKind === k.id ? 'accent' : 'muted'} />
+              {k.label} {stats?.byKind?.[k.id] ? `(${stats.byKind[k.id]})` : ''}
             </button>
           ))}
+        </div>
+        <div className="memory-search-wrap">
+          <AppIcon name="search" size="sm" tone="muted" />
+          <input
+            className="memory-search"
+            placeholder={searchMode === 'semantic' ? 'Поиск по смыслу...' : 'Поиск...'}
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSearch()}
+          />
         </div>
         <div className="memory-mode-toggle" role="tablist" aria-label="Режим поиска">
           {(['list', 'semantic'] as const).map(m => (
@@ -423,39 +409,61 @@ export default function MemoryPage() {
         </div>
       </div>
 
-      {/* Фильтр по категориям (builtin + кастомные) */}
-      <div className="memory-categories">
-        <button
-          className={`memory-cat-btn ${filterCategory === '' ? 'memory-cat-btn--active' : ''}`}
-          onClick={() => setFilterCategory('')}
-        >
-          <AppIcon name="filter" size="sm" tone={filterCategory === '' ? 'accent' : 'muted'} />
-          Все категории
-        </button>
-        {categories.map(c => (
+      {/* Row 2: scope + category-фильтры */}
+      <div className="memory-toolbar-secondary">
+        <div className="memory-filter-chips">
           <button
-            key={c.id}
-            className={`memory-cat-btn ${filterCategory === c.name ? 'memory-cat-btn--active' : ''}`}
-            onClick={() => setFilterCategory(filterCategory === c.name ? '' : c.name)}
+            className={`memory-cat-btn ${filterScope === '' ? 'memory-cat-btn--active' : ''}`}
+            onClick={() => setFilterScope('')}
           >
-            <AppIcon name={(c.icon as IconName) || 'pin'} size="sm" tone={filterCategory === c.name ? 'accent' : 'muted'} />
-            {c.label}
-            {!c.id.startsWith('builtin-') && (
-              <span
-                className="memory-cat-delete"
-                onClick={(e) => { e.stopPropagation(); handleDeleteCategory(c.id) }}
-                title="Удалить категорию"
-              >×</span>
-            )}
+            <AppIcon name="layers" size="sm" tone={filterScope === '' ? 'accent' : 'muted'} />
+            Все scope
           </button>
-        ))}
-        <button
-          className="memory-cat-btn memory-cat-btn--add"
-          onClick={() => setAddingCategory(p => !p)}
-          title="Создать категорию"
-        >
-          <AppIcon name="plus" size="sm" tone="muted" />
-        </button>
+          {SCOPE_OPTIONS.map(s => (
+            <button
+              key={s.id}
+              className={`memory-cat-btn ${filterScope === s.id ? 'memory-cat-btn--active' : ''}`}
+              onClick={() => setFilterScope(filterScope === s.id ? '' : s.id)}
+            >
+              <AppIcon name={s.icon} size="sm" tone={filterScope === s.id ? 'accent' : 'muted'} />
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div className="memory-toolbar-divider" />
+        <div className="memory-filter-chips">
+          <button
+            className={`memory-cat-btn ${filterCategory === '' ? 'memory-cat-btn--active' : ''}`}
+            onClick={() => setFilterCategory('')}
+          >
+            <AppIcon name="filter" size="sm" tone={filterCategory === '' ? 'accent' : 'muted'} />
+            Все кат.
+          </button>
+          {categories.map(c => (
+            <button
+              key={c.id}
+              className={`memory-cat-btn ${filterCategory === c.name ? 'memory-cat-btn--active' : ''}`}
+              onClick={() => setFilterCategory(filterCategory === c.name ? '' : c.name)}
+            >
+              <AppIcon name={(c.icon as IconName) || 'pin'} size="sm" tone={filterCategory === c.name ? 'accent' : 'muted'} />
+              {c.label}
+              {!c.id.startsWith('builtin-') && (
+                <span
+                  className="memory-cat-delete"
+                  onClick={(e) => { e.stopPropagation(); handleDeleteCategory(c.id) }}
+                  title="Удалить категорию"
+                >×</span>
+              )}
+            </button>
+          ))}
+          <button
+            className="memory-cat-btn memory-cat-btn--add"
+            onClick={() => setAddingCategory(p => !p)}
+            title="Создать категорию"
+          >
+            <AppIcon name="plus" size="sm" tone="muted" />
+          </button>
+        </div>
       </div>
 
       {/* Форма создания категории */}
@@ -504,115 +512,114 @@ export default function MemoryPage() {
         )}
       </AnimatePresence>
 
-      {/* Поиск */}
-      <div className="memory-search-wrap">
-        <AppIcon name="search" size="sm" tone="muted" />
-        <input
-          className="memory-search"
-          placeholder={searchMode === 'semantic' ? 'Семантический поиск по смыслу...' : 'Поиск по содержимому...'}
-          value={searchInput}
-          onChange={e => setSearchInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSearch()}
-        />
-      </div>
-
-      {/* Список */}
-      <div className="memory-list">
-        <AnimatePresence initial={false}>
-          {items.length === 0 ? (
-            <div className="memory-empty">
-              <AppIcon name="brain" size="xl" tone="muted" />
-              <p>
-                {searchMode === 'semantic' && search
-                  ? 'Ничего не найдено по смыслу. Попробуйте переформулировать.'
-                  : 'Память пуста. Syntee запоминает факты автоматически, или добавьте вручную.'}
-              </p>
-            </div>
-          ) : (
-            items.map((m, i) => {
+      {/* Список — виртуализированный */}
+      <div className="memory-list" ref={listRef}>
+        {items.length === 0 ? (
+          <div className="memory-empty">
+            <AppIcon name="brain" size="xl" tone="muted" />
+            <p>
+              {searchMode === 'semantic' && search
+                ? 'Ничего не найдено по смыслу. Попробуйте переформулировать.'
+                : 'Память пуста. Syntee запоминает факты автоматически, или добавьте вручную.'}
+            </p>
+          </div>
+        ) : (
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualizer.getVirtualItems().map(virtualItem => {
+              const m = items[virtualItem.index]
               const kindMeta = KIND_META[m.kind] ?? { label: m.kind, icon: 'pin' as IconName }
               const scopeMeta = SCOPE_META[m.scope] ?? { label: m.scope, icon: 'database' as IconName }
+              const isExpanded = expandedItems.has(m.id)
               return (
-                <motion.div
+                <div
                   key={m.id}
-                  className={`memory-item ${m.pinned ? 'memory-item--pinned' : ''}`}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0, transition: { type: 'spring', stiffness: 320, damping: 26, delay: Math.min(i * 0.035, 0.4) } }}
-                  exit={{ opacity: 0, x: -20 }}
-                  whileHover={{ y: -2, transition: { type: 'spring', stiffness: 400, damping: 25 } }}
-                  layout
+                  data-index={virtualItem.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualItem.start}px)`,
+                    paddingBottom: '6px',
+                  }}
                 >
-                  <div className="memory-item-cat">
-                    <AppIcon name={kindMeta.icon} size="md" tone="muted" />
-                  </div>
-                  <div className="memory-item-content">
-                    <div className="memory-item-tags">
-                      <span className="memory-tag memory-tag--kind">{kindMeta.label}</span>
-                      <span className="memory-tag memory-tag--scope">
-                        <AppIcon name={scopeMeta.icon} size="xs" tone="muted" />
-                        {scopeMeta.label}
-                      </span>
-                      {m.category && (
-                        <span className="memory-tag memory-tag--category">{m.category}</span>
-                      )}
-                      {m.key && (
-                        <span className="memory-tag memory-tag--key">key: {m.key}</span>
-                      )}
+                  <div className={`memory-item ${m.pinned ? 'memory-item--pinned' : ''}`}>
+                    <div className="memory-item-cat">
+                      <AppIcon name={kindMeta.icon} size="md" tone="muted" />
                     </div>
-                    <div className="memory-item-title">{m.title || m.content.slice(0, 80)}</div>
-                    {m.content && m.content !== m.title && (
-                      <>
-                        <div className={`memory-item-content-body ${expandedItems.has(m.id) ? 'memory-item-content-body--expanded' : ''}`}>
-                          <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{m.content}</ReactMarkdown>
-                        </div>
-                        {m.content.length > 120 && (
-                          <button
-                            className="memory-item-expand"
-                            onClick={() => setExpandedItems(prev => {
-                              const next = new Set(prev)
-                              if (next.has(m.id)) next.delete(m.id)
-                              else next.add(m.id)
-                              return next
-                            })}
-                          >
-                            {expandedItems.has(m.id) ? 'Свернуть ▲' : 'Развернуть ▼'}
-                          </button>
-                        )}
-                      </>
-                    )}
-                    <div className="memory-item-footer">
-                      <span className="memory-meta-text">
-                        <AppIcon name="clock" size="xs" tone="muted" />
-                        {fmtTime(m.updatedAt)}
-                      </span>
-                      {m.accessCount > 0 && (
-                        <span className="memory-meta-text">
-                          <AppIcon name="eye" size="xs" tone="muted" />
-                          {m.accessCount}
+                    <div className="memory-item-content">
+                      <div className="memory-item-tags">
+                        <span className="memory-tag memory-tag--kind">{kindMeta.label}</span>
+                        <span className="memory-tag memory-tag--scope">
+                          <AppIcon name={scopeMeta.icon} size="xs" tone="muted" />
+                          {scopeMeta.label}
                         </span>
+                        {m.category && (
+                          <span className="memory-tag memory-tag--category">{m.category}</span>
+                        )}
+                        {m.key && (
+                          <span className="memory-tag memory-tag--key">key: {m.key}</span>
+                        )}
+                      </div>
+                      <div className="memory-item-title">{m.title || m.content.slice(0, 80)}</div>
+                      {m.content && m.content !== m.title && (
+                        <>
+                          <div className={`memory-item-content-body ${isExpanded ? 'memory-item-content-body--expanded' : ''}`}>
+                            {isExpanded
+                              ? <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{m.content}</ReactMarkdown>
+                              : <span>{m.content.slice(0, 120)}{m.content.length > 120 ? '…' : ''}</span>
+                            }
+                          </div>
+                          {m.content.length > 120 && (
+                            <button
+                              className="memory-item-expand"
+                              onClick={() => setExpandedItems(prev => {
+                                const next = new Set(prev)
+                                if (next.has(m.id)) next.delete(m.id)
+                                else next.add(m.id)
+                                return next
+                              })}
+                            >
+                              {isExpanded ? 'Свернуть ▲' : 'Развернуть ▼'}
+                            </button>
+                          )}
+                        </>
                       )}
-                      <span className="memory-meta-text">источник: {m.source}</span>
+                      <div className="memory-item-footer">
+                        <span className="memory-meta-text">
+                          <AppIcon name="clock" size="xs" tone="muted" />
+                          {fmtTime(m.updatedAt)}
+                        </span>
+                        {m.accessCount > 0 && (
+                          <span className="memory-meta-text">
+                            <AppIcon name="eye" size="xs" tone="muted" />
+                            {m.accessCount}
+                          </span>
+                        )}
+                        <span className="memory-meta-text">источник: {m.source}</span>
+                      </div>
+                    </div>
+                    <div className="memory-item-meta">
+                      <div className="memory-importance-badge" title={`Важность: ${m.importance.toFixed(2)}`}>
+                        <AppIcon name="star" size="xs" tone={importanceTone(m.importance)} />
+                        <span>{Math.round(m.importance * 100)}%</span>
+                      </div>
+                      <button
+                        className={`memory-pin-btn ${m.pinned ? 'memory-pin-btn--active' : ''}`}
+                        onClick={() => handlePin(m.id, !m.pinned)}
+                        title={m.pinned ? 'Открепить' : 'Закрепить (защита от авто-удаления)'}
+                      >
+                        <AppIcon name="pin" size="sm" tone={m.pinned ? 'warning' : 'muted'} />
+                      </button>
+                      <IconButton icon="trash" label="Удалить" danger onClick={() => handleDelete(m.id)} />
                     </div>
                   </div>
-                  <div className="memory-item-meta">
-                    <div className="memory-importance-badge" title={`Важность: ${m.importance.toFixed(2)}`}>
-                      <AppIcon name="star" size="xs" tone={importanceTone(m.importance)} />
-                      <span>{Math.round(m.importance * 100)}%</span>
-                    </div>
-                    <button
-                      className={`memory-pin-btn ${m.pinned ? 'memory-pin-btn--active' : ''}`}
-                      onClick={() => handlePin(m.id, !m.pinned)}
-                      title={m.pinned ? 'Открепить' : 'Закрепить (защита от авто-удаления)'}
-                    >
-                      <AppIcon name="pin" size="sm" tone={m.pinned ? 'warning' : 'muted'} />
-                    </button>
-                    <IconButton icon="trash" label="Удалить" danger onClick={() => handleDelete(m.id)} />
-                  </div>
-                </motion.div>
+                </div>
               )
-            })
-          )}
-        </AnimatePresence>
+            })}
+          </div>
+        )}
       </div>
       </>
       )}
@@ -620,7 +627,11 @@ export default function MemoryPage() {
       {/* Граф знаний */}
       {activeTab === 'graph' && (
         <div className="memory-graph-container">
-          <MemoryGraphTab projectId={selectedProjectId} />
+          <MemoryGraphTab
+            selectedProjectId={selectedProjectId}
+            onSelectProject={setSelectedProjectId}
+            projects={projects}
+          />
         </div>
       )}
     </div>

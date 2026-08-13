@@ -409,6 +409,39 @@ function McpTab({
 function McpInstalledList({ servers, projects, projectId, onBrowseCatalog }: { servers: McpServerRuntime[]; projects: Project[]; projectId?: string; onBrowseCatalog: () => void }) {
   const [showForm, setShowForm] = useState(false)
 
+  // Группировка: глобальные / проектные. Проектные дополнительно
+  // подгруппируем по projectId (если у сервера он есть) чтобы видеть
+  // какие MCP в каком проекте — даже если popover открыт для другого.
+  const globalServers = servers.filter(s => s.source === 'global')
+  const projectServers = servers.filter(s => s.source === 'project')
+
+  // Подгруппы проектных по projectId. Серверы без projectId (например,
+  // активный workdir без записи в БД) попадают в "Текущий проект".
+  const byProject = new Map<string, McpServerRuntime[]>()
+  for (const s of projectServers) {
+    const key = s.projectId ?? '_current'
+    const arr = byProject.get(key) ?? []
+    arr.push(s)
+    byProject.set(key, arr)
+  }
+  // Имя проекта по id из списка projects (fallback на "Текущий проект").
+  const projectName = (pid: string): string => {
+    if (pid === '_current') return 'Текущий проект'
+    return projects.find(p => p.id === pid)?.name ?? pid
+  }
+
+  const renderGroup = (title: string, group: McpServerRuntime[]): JSX.Element | null => {
+    if (group.length === 0) return null
+    return (
+      <>
+        <div className="ext-popup-group-label">{title} · {group.length}</div>
+        {group.map(srv => (
+          <McpServerCard key={srv.id} server={srv} projects={projects} projectId={projectId} />
+        ))}
+      </>
+    )
+  }
+
   return (
     <>
       <div className="ext-catalog-cta">
@@ -425,9 +458,10 @@ function McpInstalledList({ servers, projects, projectId, onBrowseCatalog }: { s
           вручную кнопкой ниже, либо найдите в каталоге выше.
         </div>
       )}
-      {servers.map(srv => (
-        <McpServerCard key={srv.id} server={srv} projects={projects} projectId={projectId} />
-      ))}
+      {renderGroup('Глобальные', globalServers)}
+      {Array.from(byProject.entries()).map(([pid, group]) =>
+        renderGroup(`Проект: ${projectName(pid)}`, group),
+      )}
       {showForm ? (
         <McpServerForm onCancel={() => setShowForm(false)} onSaved={() => setShowForm(false)} />
       ) : (

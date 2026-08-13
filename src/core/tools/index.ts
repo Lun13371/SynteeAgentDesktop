@@ -4,7 +4,7 @@
 
 export * from './_shared'
 export * from './command'
-export * from './diagnostics'
+export * from './diagnostics/index'
 export * from './fileRead'
 export * from './fileEdit'
 export * from './fileTree'

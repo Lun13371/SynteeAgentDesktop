@@ -122,6 +122,11 @@ export default defineConfig({
       },
     },
     resolve: {
+      // То же что и renderer: .ts/.tsx приоритетнее .js/.jsx, чтобы Vite не
+      // грузил устаревшие gitignored .js-мироры (артефакты компиляции) вместо
+      // актуального source-of-truth .ts. Без этого правки в .ts-файлах shared/
+      // не попадают в main-бандл — импорт перехватывается constants.js и т.п.
+      extensions: ['.mjs', '.ts', '.tsx', '.js', '.jsx', '.json'],
       alias: {
         '@main': resolve('src/main'),
         '@core': resolve('src/core'),

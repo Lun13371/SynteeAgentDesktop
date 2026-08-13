@@ -1,0 +1,232 @@
+/* ── ChangesBadge — pill над инпутом + popup с undo ──────────────────── */
+/* Стили синхронизированы с ExtensionsBadge (ext-badge-pill / ext-popup).   */
+
+.changes-badge-wrap {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.changes-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.changes-badge-pill:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.changes-badge-added {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #4ade80;
+}
+
+.changes-badge-deleted {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #f87171;
+}
+
+.changes-badge-files {
+  opacity: 0.6;
+  font-weight: 400;
+}
+
+/* ── Popup (portal) — glass-эстетика как ext-popup ────────────────────── */
+
+.changes-popup {
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg, 16px);
+  overflow: hidden;
+  background: var(--glass-bg, rgba(18, 18, 28, 0.97));
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  transform-origin: bottom left;
+  color: var(--text-primary, rgba(255,255,255,0.9));
+}
+
+.changes-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  color: var(--text-secondary, rgba(255,255,255,0.7));
+}
+
+.changes-popup-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, rgba(255,255,255,0.9));
+  flex: 1;
+}
+
+.changes-popup-count {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.changes-popup-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.changes-popup-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, rgba(255,255,255,0.35));
+  padding: 8px 8px 4px;
+}
+
+.changes-popup-files {
+  display: flex;
+  flex-direction: column;
+}
+
+.changes-popup-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.changes-popup-file:hover {
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+}
+
+.changes-popup-file-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary, rgba(255,255,255,0.9));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.changes-popup-file-stats {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.changes-popup-stat-added {
+  color: #4ade80;
+}
+
+.changes-popup-stat-deleted {
+  color: #f87171;
+}
+
+.changes-popup-undo-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md, 8px);
+  border: none;
+  background: none;
+  color: var(--text-muted, rgba(255,255,255,0.4));
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.changes-popup-undo-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-primary, rgba(255,255,255,0.9));
+}
+
+.changes-popup-undo-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.changes-popup-footer {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.changes-popup-undo-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid color-mix(in srgb, #f87171 30%, transparent);
+  background: color-mix(in srgb, #f87171 10%, transparent);
+  color: #f87171;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.changes-popup-undo-all:hover:not(:disabled) {
+  background: color-mix(in srgb, #f87171 18%, transparent);
+  border-color: color-mix(in srgb, #f87171 50%, transparent);
+}
+
+.changes-popup-undo-all:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Скроллбар popup ─────────────────────────────────────────────────── */
+
+.changes-popup-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.changes-popup-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.changes-popup-body::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
+}
+
+.changes-popup-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.2);
+}

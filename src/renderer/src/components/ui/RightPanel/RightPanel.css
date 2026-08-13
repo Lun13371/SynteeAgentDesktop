@@ -11,7 +11,12 @@
   height: 100%;
   overflow: hidden;
   display: flex;
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+
+  /* Многослойная тень для глубины */
+  box-shadow:
+    -4px 0 12px rgba(0, 0, 0, 0.15),
+    -8px 0 28px rgba(0, 0, 0, 0.25),
+    -16px 0 48px rgba(0, 0, 0, 0.12);
 }
 
 .right-panel-inner {
@@ -27,30 +32,39 @@
   height: 100%;
   flex: 1;
   min-width: 0;
-  background: var(--bg-primary);
-  border-left: 1px solid var(--border);
+  /* Glass morphism: полупрозрачный фон + blur */
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur, 20px)) saturate(var(--glass-saturate, 180%));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 20px)) saturate(var(--glass-saturate, 180%));
+  border-left: 1px solid var(--glass-border);
   overflow: hidden;
 }
 
+/* ── Header ─────────────────────────────────────────────────────── */
 .right-panel__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 8px 0 0;
+  padding: 0 6px 0 0;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  height: 40px;
+  height: 44px;
   background: var(--bg-secondary);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
+/* ── Tabs: segmented control ───────────────────────────────────── */
 .right-panel__tabs {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   height: 100%;
   flex: 1;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  padding: 0 6px;
+  gap: 2px;
 }
 
 .right-panel__tabs::-webkit-scrollbar {
@@ -61,40 +75,44 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 14px;
-  height: 100%;
+  padding: 0 12px;
+  height: 30px;
+  border-radius: var(--radius-sm);
   background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
   color: var(--text-secondary);
   font-size: 12px;
+  font-weight: 500;
   font-family: var(--font-family);
   cursor: pointer;
-  transition: color var(--transition, 0.15s ease), border-color var(--transition, 0.15s ease), background var(--transition, 0.15s ease);
   white-space: nowrap;
   position: relative;
+  flex-shrink: 0;
+  transition:
+    color var(--transition, 0.15s ease),
+    background var(--transition, 0.15s ease);
 }
 
 .right-panel__tab:hover {
   color: var(--text-primary);
-  background: var(--bg-tertiary);
+  background: var(--overlay-3);
 }
 
 .right-panel__tab--active {
   color: var(--accent);
-  border-bottom-color: var(--accent);
+  background: var(--accent-subtle, var(--overlay-4));
 }
 
+.right-panel__tab--active:hover {
+  background: var(--accent-subtle, var(--overlay-5));
+}
+
+/* Скрываем подчёркивание (убрали в пользу pill-стиля) */
 .right-panel__tab--active::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: var(--accent-bg);
+  display: none;
 }
 
+/* ── Content area ───────────────────────────────────────────────── */
 .right-panel__content {
   flex: 1;
   min-height: 0;
@@ -109,4 +127,16 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* ── Sliding active-tab indicator ────────────────────────────────── */
+/* Анимированный индикатор, скользит между табами через layoutId. */
+.right-panel__tab-indicator {
+  position: absolute;
+  bottom: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 1;
 }

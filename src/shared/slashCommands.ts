@@ -61,6 +61,15 @@ export interface SlashCommand {
   /** id скилла для one-shot активации (для команд типа /review → skill:code-review).
    *  Скилл инъектируется в system prompt только на этот прогон, без записи в skillsState. */
   skill?: string
+  /**
+   * Persona override for this single message (per-message mode, Aider-style).
+   * If set — this one `chat:send` runs in the named persona, WITHOUT
+   * persisting the change to the chat's sticky persona (the UI badge does
+   * not switch). Used by builtin `/debug`, `/review`, `/architect`, ... so
+   * the user can say "answer this one as a debugger" without leaving their
+   * current persona. The sticky switch is `/persona <name>` instead.
+   */
+  personaOverride?: import('./modes').PersonaId
   /** Маркер что это команда из .md-файла (а не из захардкоженного SLASH_COMMANDS). */
   custom?: boolean
 }
@@ -93,6 +102,93 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     source: 'builtin',
     systemPrompt: (args) =>
       `Пользователь хочет найти информацию в интернете. Запрос: "${args}". Используй инструмент search_web, чтобы найти актуальную информацию и дать ответ по результатам поиска.`,
+  },
+  {
+    name: 'setup',
+    label: '/setup',
+    description: 'Analyze project and recommend MCP/skills',
+    icon: 'sparkles',
+    placeholder: '(optional) focus, e.g. "only mcp" or "frontend"',
+    argumentHint: 'optional focus',
+    source: 'builtin',
+    systemPrompt: (args) =>
+      `You are the onboarding agent. Your task: analyze the current project, recommend relevant MCP servers and skills, present them to the user, ask for confirmation, then install the confirmed ones into the project (".mcp.json" and ".syntee/skills/").
+
+User focus (optional): ${args || '(none — cover everything)'}
+
+## Steps (STRICT order)
+
+1. **Analyze.** Call the \`analyze_project\` tool with path "." (current workdir). You will get a markdown report: file structure, package.json (deps/scripts), requirements.txt/pyproject.toml/Cargo.toml/go.mod, README, git status, file statistics.
+
+2. **Recommend.** Based on the analysis, pick relevant MCP servers and skills from your knowledge of the popular MCP ecosystem. Match by detected tech stack:
+   - React/Next/Vue/Svelte/Vite frontend → context7 (docs), shadcn-ui (UI components)
+   - Playwright / playwright.config.* → playwright
+   - Python (pyproject/requirements/.py) → context7
+   - Rust (Cargo.toml/.rs) → context7
+   - Go (go.mod/.go) → context7
+   - Docker (Dockerfile/docker-compose) → docker
+   - Kubernetes (k8s/Chart.yaml/kubeconfig) → kubernetes
+   - .github/workflows → github
+   - @supabase/ → supabase
+   - pg/prisma/drizzle/kysely → postgres
+   - mysql/mysql2 → mysql
+   - mongodb/mongoose → mongodb
+   - redis/ioredis → redis
+   - @sentry/ → sentry
+   - figma/@figma/ → figma
+   - Notion/Slack/Linear/Jira/Trello/ClickUp mentions in README → corresponding MCP
+   - .git present → git + sequential-thinking (universal utilities)
+   - Nothing matches → default to context7 + sequential-thinking
+   Add 1-2 more MCP from your expertise if the project clearly needs them (e.g. sentry for monitoring, figma for design handoff, chrome-devtools for web debugging).
+   Skills: only add if the project is a clear coding/workflow fit. For most projects MCP is enough — skip skills unless obviously useful.
+
+3. **Dedup & check installed.** Remove duplicates by id. Read ".mcp.json" (if exists) via read_file — do not recommend MCP already listed in mcpServers. List ".syntee/skills" via list_directory — do not recommend already installed skills.
+
+4. **Present.** Output a markdown table:
+   | Type | Id | Category | Why | Required env/args |
+   |-----|----|----------|-----|-------------------|
+   | MCP | context7 | docs | React frontend | CONTEXT7_API_KEY (opt) |
+   | Skill | claude-code-skills | coding | JS with tests | — |
+   Below the table: 1-2 sentences on what this setup enables.
+
+5. **Confirm (MANDATORY).** Explicitly ask:
+   > Confirm install? Reply with a comma-separated list of ids, or "all", or "cancel".
+   Do NOT proceed to install without an explicit answer. If the user names a subset — install only those. If "cancel" — acknowledge and stop.
+
+6. **Install (only after confirmation).**
+   **6.1 MCP servers** — write to ".mcp.json" (STRICTLY project scope, never global ~/.syntee/). Format (Claude Code compatible):
+   \`\`\`json
+   {
+     "mcpServers": {
+       "<id-kebab-case>": {
+         "command": "<command>",
+         "args": ["arg1", "arg2"],
+         "env": { "KEY": "<KEY>" }
+       }
+     }
+   }
+   \`\`\`
+   For each MCP, use the standard launch command for the package (e.g. on Windows: "cmd /c npx -y <package>"; on Linux/Mac: "npx -y <package>"). If the file already exists — use edit_file to add the key without removing existing servers. If a server has required env vars or positional args — do NOT invent values, use placeholders like "<API_KEY>" and tell the user to fill them in.
+   **6.2 Skills** — install from GitHub repo:
+   1. run_command: \`git clone --depth 1 <repo-url> .tmp-skill-install\`
+   2. Find .md files with YAML frontmatter (\`---\\nname: ...\\ndescription: ...\\n---\`) via find_files
+   3. Copy each via read_file + write_file to ".syntee/skills/" (create dir if missing). On name conflict — prefix with repo name.
+   4. run_command: remove .tmp-skill-install ("Remove-Item -Recurse -Force .tmp-skill-install" on Windows; "rm -rf .tmp-skill-install" on Linux/Mac)
+   **6.3 Skills activation**: skills dropped into .syntee/skills/ are auto-enabled for this project by the app — the user does NOT need to toggle them manually. They will be active on the next message.
+
+7. **Report.** After install, output:
+   - What was installed (id → type) and where
+   - Which env vars need values (if any) and where: "Settings → Extensions → MCP → [server] → Edit env"
+   - That MCP servers auto-connect in the background right after .mcp.json is saved (the app watches the file) — they will be available within a few seconds
+   - That skills are auto-enabled for this project
+
+## RULES
+- NEVER install anything without explicit user confirmation (step 5).
+- Scope is PROJECT ONLY (".mcp.json" and ".syntee/skills/" in current workdir). Never write to ~/.syntee/.
+- If the project is NOT a git repo — skip git-dependent recommendations.
+- If the analysis shows an empty/minimal project (no deps, 1-2 files) — recommend only context7 + sequential-thinking and say you'll add more once the project grows.
+- If a required env var has no value — use a placeholder, do not skip the server.
+- The server name (key in mcpServers) must be the standard id in kebab-case, do not invent your own.`,
   },
   {
     name: 'clear',
@@ -220,6 +316,114 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     placeholder: 'имя снапшота...',
     source: 'builtin',
     // restore обрабатывается в ChatPage.tsx — открывает пикер снапшотов.
+    systemPrompt: () => '',
+  },
+  // ── Per-message persona commands (Aider-style /ask /code) ───────────────
+  // Each runs ONE message in the named persona, WITHOUT switching the chat's
+  // sticky persona. The user's next message goes back to the sticky persona.
+  // The sticky switch is /persona <name> below.
+  {
+    name: 'classic',
+    label: '/classic',
+    description: 'Одно сообщение в классическом режиме (без персоны)',
+    icon: 'circle',
+    placeholder: 'сообщение...',
+    argumentHint: 'текст сообщения',
+    source: 'builtin',
+    personaOverride: 'classic',
+    systemPrompt: (a: string) => a,
+  },
+  {
+    name: 'architect',
+    label: '/architect',
+    description: 'Одно сообщение в режиме Архитектора',
+    icon: 'building',
+    placeholder: 'сообщение...',
+    argumentHint: 'текст сообщения',
+    source: 'builtin',
+    personaOverride: 'architect',
+    systemPrompt: (a: string) => a,
+  },
+  {
+    name: 'debug',
+    label: '/debug',
+    description: 'Одно сообщение в режиме Дебаггера',
+    icon: 'bug',
+    placeholder: 'опиши баг или ошибку...',
+    argumentHint: 'текст сообщения',
+    source: 'builtin',
+    personaOverride: 'debugger',
+    skill: 'debug-helper',
+    systemPrompt: (a: string) => a,
+  },
+  {
+    name: 'review',
+    label: '/review',
+    description: 'Одно сообщение в режиме Ревьюера',
+    icon: 'check-square',
+    placeholder: 'что ревьюить (файл/модуль/diff)...',
+    argumentHint: 'текст сообщения',
+    source: 'builtin',
+    personaOverride: 'reviewer',
+    skill: 'code-review',
+    systemPrompt: (a: string) => a,
+  },
+  {
+    name: 'refactor',
+    label: '/refactor',
+    description: 'Одно сообщение в режиме Рефакторщика',
+    icon: 'shuffle',
+    placeholder: 'что рефакторить...',
+    argumentHint: 'текст сообщения',
+    source: 'builtin',
+    personaOverride: 'refactorer',
+    skill: 'refactor',
+    systemPrompt: (a: string) => a,
+  },
+  {
+    name: 'test',
+    label: '/test',
+    description: 'Одно сообщение в режиме Тестописателя',
+    icon: 'flask',
+    placeholder: 'для чего написать тесты...',
+    argumentHint: 'текст сообщения',
+    source: 'builtin',
+    personaOverride: 'test-writer',
+    skill: 'test-generation',
+    systemPrompt: (a: string) => a,
+  },
+  {
+    name: 'mentor',
+    label: '/mentor',
+    description: 'Одно сообщение в режиме Ментора',
+    icon: 'graduation',
+    placeholder: 'что объяснить...',
+    argumentHint: 'текст сообщения',
+    source: 'builtin',
+    personaOverride: 'mentor',
+    systemPrompt: (a: string) => a,
+  },
+  // ── Sticky persona switch — persists until changed ──────────────────────
+  // /persona (no arg) → opens picker (arguments[0].choices).
+  // /persona architect → switches the chat's sticky persona.
+  // Handled as a short-circuit in ChatPage.handleSend (like /clear) — does
+  // NOT send a message to the agent; calls chat:setPersona + setPersona.
+  {
+    name: 'persona',
+    label: '/persona',
+    description: 'Переключить персону чата (sticky)',
+    icon: 'users',
+    argumentHint: 'classic | architect | debug | review | refactor | test | mentor',
+    placeholder: 'выбери персону...',
+    source: 'builtin',
+    arguments: [
+      {
+        name: 'persona',
+        description: 'Имя персоны',
+        choices: ['classic', 'architect', 'debug', 'review', 'refactor', 'test', 'mentor'],
+        required: true,
+      },
+    ],
     systemPrompt: () => '',
   },
 ]

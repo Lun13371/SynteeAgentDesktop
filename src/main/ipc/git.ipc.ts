@@ -151,4 +151,65 @@ export function registerGitIPC(): void {
       return false
     }
   })
+
+  // git add — staged файл(ы)
+  ipcMain.handle('git:add', async (_e, params: { workdir: string; files: string[] }) => {
+    if (!params.workdir || !params.files.length) return { success: false, error: 'workdir and files are required' }
+    try {
+      await runGit(params.workdir, ['add', '--', ...params.files])
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String((e as Error)?.message ?? e) }
+    }
+  })
+
+  // git reset HEAD — unstage файл(ы)
+  ipcMain.handle('git:reset', async (_e, params: { workdir: string; files: string[] }) => {
+    if (!params.workdir || !params.files.length) return { success: false, error: 'workdir and files are required' }
+    try {
+      await runGit(params.workdir, ['reset', 'HEAD', '--', ...params.files])
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String((e as Error)?.message ?? e) }
+    }
+  })
+
+  // git checkout -- (discard changes) или git rm (untracked)
+  ipcMain.handle('git:discard', async (_e, params: { workdir: string; files: string[]; untracked: boolean }) => {
+    if (!params.workdir || !params.files.length) return { success: false, error: 'workdir and files are required' }
+    try {
+      if (params.untracked) {
+        await runGit(params.workdir, ['clean', '-f', '--', ...params.files])
+      } else {
+        await runGit(params.workdir, ['checkout', '--', ...params.files])
+      }
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String((e as Error)?.message ?? e) }
+    }
+  })
+
+  // git diff --stat — статистика добавленных/удалённых строк по файлу
+  ipcMain.handle('git:diffStat', async (_e, params: { workdir: string; file?: string; staged?: boolean }) => {
+    if (!params.workdir) return { success: false, error: 'workdir is required' }
+    try {
+      const args = ['diff', '--numstat']
+      if (params.staged) args.push('--staged')
+      args.push('--')
+      if (params.file) args.push(params.file)
+      const out = await runGit(params.workdir, args)
+      // Формат: "added\tdeleted\tpath"
+      const lines = out.split('\n').filter(l => l.length > 0)
+      const stats: Array<{ path: string; added: number; deleted: number }> = []
+      for (const line of lines) {
+        const parts = line.split('\t')
+        if (parts.length >= 3) {
+          stats.push({ path: parts[2], added: parseInt(parts[0], 10) || 0, deleted: parseInt(parts[1], 10) || 0 })
+        }
+      }
+      return { success: true, stats }
+    } catch (e) {
+      return { success: false, error: String((e as Error)?.message ?? e), stats: [] }
+    }
+  })
 }

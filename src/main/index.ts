@@ -21,7 +21,7 @@ import { TrayMenuWindow } from './windows/TrayMenuWindow'
 import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
-import { registerChatIPC } from './ipc/chat.ipc'
+import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC, prewarmWhisper } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
@@ -267,6 +267,9 @@ app.on('window-all-closed', () => {})
 // Реальный выход (а не скрытие в трей) — сохраняем размер/позицию главного окна.
 // 'close' на окне перехватывается для hide(), поэтому persistim здесь.
 app.on('before-quit', () => {
+  // Флешим все активные стримящиеся ответы в БД — ПЕРВЫМ, до любых cleanup,
+  // чтобы частичный ответ ассистента не потерялся при резком выходе.
+  try { flushAllActiveRuns() } catch { /* ok — best-effort */ }
   mainWindow?.flushBounds()
   ptyManager.killAll()
   // Останавливаем опрос обновлений.
@@ -278,6 +281,9 @@ app.on('before-quit', () => {
 })
 
 app.on('will-quit', () => {
+  // Подстраховка: если before-quit не отработал — повторный флеш.
+  // saveMessage UPSERT (INSERT OR REPLACE) — идемпотентен, безопасен.
+  try { flushAllActiveRuns() } catch { /* ok — best-effort */ }
   hotkeyManager?.unregisterAll()
 })
 

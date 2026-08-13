@@ -173,6 +173,10 @@ export function runMigrations(db: Database.Database): void {
   if (!chatCols.find(c => c.name === 'image_mode'))    db.prepare(`ALTER TABLE chats ADD COLUMN image_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'ask_mode'))      db.prepare(`ALTER TABLE chats ADD COLUMN ask_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'draft'))         db.prepare(`ALTER TABLE chats ADD COLUMN draft TEXT`).run()
+  // persona — single-select run mode (classic/architect/debugger/...).
+  // Orthogonal to planning_mode/image_mode/ask_mode toggles. TEXT, default
+  // 'classic' (no injection, full toolset) for back-compat with old rows.
+  if (!chatCols.find(c => c.name === 'persona')) db.prepare(`ALTER TABLE chats ADD COLUMN persona TEXT NOT NULL DEFAULT 'classic'`).run()
   // last_usage — JSON последнего реального usage от провайдера
   // {promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, ts}.
   // Переживает перезапуск: context:calculate читает его, чтобы показывать

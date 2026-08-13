@@ -23,6 +23,15 @@ export interface IPCChannels {
     oneShotSkill?: { name: string; instructions: string }
     oneShotAllowedTools?: string[]
     oneShotMode?: 'ask' | 'plan' | 'code'
+    /** Per-message persona override (Aider-style). If set — this single run
+     *  uses the named persona, WITHOUT persisting to the chat's sticky
+     *  persona. Used by /debug, /review, /architect, ... builtin commands.
+     *  The sticky switch is /persona <name>. */
+    oneShotPersona?: import('../modes').PersonaId
+    /** Single-select persona run mode (classic/architect/debugger/...).
+     *  Orthogonal to planning/ask/image toggles — injects a mode-specific
+     *  block into the system prompt and may restrict the tool set. */
+    persona?: import('../modes').PersonaId
     /** РџСЂРёРєСЂРµРїР»С‘РЅРЅС‹Рµ С„Р°Р№Р»С‹/РёР·РѕР±СЂР°Р¶РµРЅРёСЏ, РґРѕР±Р°РІР»РµРЅРЅС‹Рµ С‡РµСЂРµР· @mention, drag&drop,
      *  paste РёР»Рё РєРЅРѕРїРєСѓ В«РџСЂРёРєСЂРµРїРёС‚СЊВ». Main-РїСЂРѕС†РµСЃСЃ РёРЅР»Р°Р№РЅРёС‚ С‚РµРєСЃС‚РѕРІС‹Рµ С„Р°Р№Р»С‹
      *  РІ content, РєР°СЂС‚РёРЅРєРё РїРµСЂРµРґР°С‘С‚ РєР°Рє РїСѓС‚СЊ (vision вЂ” Phase 2). */
@@ -380,6 +389,22 @@ export interface CheckpointMeta {
 export interface RewindResult {
   messages?: Message[]
   error?: string
+}
+
+// ── Изменения последнего запроса (для ChangesBadge над инпутом) ──────────
+// Per-file добавлено/удалено строк, суммарные счётчики и ID сообщений turn'а.
+// Бейдж появляется после запроса с правками файлов, сбрасывается при новом send.
+export interface LastTurnFileChange {
+  path: string
+  added: number
+  deleted: number
+}
+export interface LastTurnChanges {
+  files: LastTurnFileChange[]
+  totalAdded: number
+  totalDeleted: number
+  userMessageId: string
+  assistantMessageId: string
 }
 
 // РњРµС‚Р°РґР°РЅРЅС‹Рµ РѕРґРЅРѕРіРѕ Р·Р°РїСЂРѕСЃР° РІ РѕС‡РµСЂРµРґРё РёР»Рё Р°РєС‚РёРІРЅРѕРіРѕ Р·Р°РїСѓСЃРєР° С‡Р°С‚Р°.

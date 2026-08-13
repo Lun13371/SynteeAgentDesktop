@@ -1,21 +1,21 @@
 import type { McpToolRuntime } from '../../shared/types'
+import { isReadonlyPersona, getPersonaAllowedTools } from '../../shared/modes'
 
 export const TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
       name: 'edit_file',
-      description: 'Edit a file. replace — replace a fragment (with indent-fuzzy), insert — insert after a line, overwrite — overwrite the whole file, apply_patch — reliable replacement via search/replace blocks (Codex-style, for multiple edits). create_if_not_exists=true creates the file and directories. Returns a diff.',
+      description: 'Edit a file. apply_patch — search/replace blocks (Codex-style, supports multiple edits, fuzzy matching and replace_all). insert — insert after a line. overwrite — replace the whole file. create_if_not_exists=true creates the file and directories. Returns a diff.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Path to the file' },
-          mode: { type: 'string', enum: ['replace', 'insert', 'overwrite', 'apply_patch'], description: 'Edit mode' },
-          old_str: { type: 'string', description: '[replace] Unique fragment to replace. Include 2-3 lines of context.' },
-          new_str: { type: 'string', description: '[replace] New fragment (empty string = delete, must be passed explicitly)' },
+          mode: { type: 'string', enum: ['apply_patch', 'insert', 'overwrite'], description: 'Edit mode' },
           after_line: { type: 'number', description: '[insert] Insert after this line (1-indexed)' },
           content: { type: 'string', description: '[insert/overwrite] Content to insert or overwrite' },
-          patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one exact occurrence. More reliable than replace for multiple edits.' },
+          patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one occurrence (or all if replace_all=true). Fuzzy-matches by ignoring leading whitespace.' },
+          replace_all: { type: 'boolean', description: '[apply_patch] Replace ALL occurrences of each SEARCH block (default: false = first occurrence only)' },
           create_if_not_exists: { type: 'boolean', description: 'Создать файл (и директории) если не существует' },
         },
         required: ['path', 'mode'],
@@ -43,11 +43,12 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'get_diagnostics',
-      description: 'Check the project for TypeScript compilation and linting errors (tsc --noEmit + eslint). Call after a series of code edits to make sure the changes did not break types or style. Returns a list of errors with file:line.',
+      description: 'Check the project for compilation and linting errors. Auto-detects the project language/stack (TypeScript, JavaScript, Python, Go, Rust, C#, Kotlin, Java, C/C++, Ruby, PHP, Lua, Swift, Dart, Elixir, Haskell, Scala, R, Nim, Zig, OCaml, Crystal, V, Clojure, Groovy, Perl, Objective-C, Erlang, Fortran, Julia, GraphQL, Protobuf, TOML, CMake, Bazel, JSON, YAML, Docker, Terraform, SQL, Markdown — 42 stacks total) and runs the appropriate type-checker and linter for each detected stack. Pass "files" to check specific files only. Call after code edits to verify nothing broke. Returns a list of errors with file:line.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Project directory (defaults to the chat working directory)' },
+          files: { type: 'array', items: { type: 'string' }, description: 'Specific files to check. If omitted, checks the whole project.' },
         },
       },
     },
@@ -56,14 +57,13 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: 'Читает файл. Без offset — первые 400 строк + авто-outline структуры (через tree-sitter, 20+ языков) если файл больше. С offset/limit — точный диапазон строк. outline_only=true — только структура (функции, методы классов, классы, интерфейсы, imports с номерами строк) без содержимого — быстро сориентироваться в большом файле и прыгать к нужной строке через offset. Всегда показывает [total_lines] и подсказку с готовым offset если файл обрезан.',
+      description: 'Читает файл. Без offset — первые 400 строк. С offset/limit — точный диапазон строк. Всегда показывает [total_lines] и подсказку с готовым offset если файл обрезан.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Путь к файлу (абсолютный или относительный от workdir)' },
           offset: { type: 'number', description: 'Начальная строка (1-indexed). Для чтения по частям.' },
           limit: { type: 'number', description: 'Кол-во строк (по умолч. 400). Увеличь до 500-800 если нужно больше за один вызов.' },
-          outline_only: { type: 'boolean', description: 'true — вернуть только структуру файла (функции, классы, экспорты) без содержимого. Удобно чтобы сориентироваться в большом файле.' },
         },
         required: ['path'],
       },
@@ -178,20 +178,21 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'search_code',
-      description: 'Search code: regex or text in files. Uses ripgrep (fast) or PowerShell. Respects .gitignore, searches hidden dot-directories (.vscode/.planning/...), excluding .git and secrets (.env/.pem/.key). Returns a header with the number of matches/files + files with line numbers and context. Default limit 100 matches — if you see "shown N of M" narrow file_glob or path to a subfolder, do not try other pattern variants. path — absolute (C:\\Projects\\...) or relative to workdir. For regex special chars (arr[i], a.b.c) use literal=true.',
+      description: 'Search code: regex or text in files via ripgrep. Smart-case by default (a lowercase pattern matches CamelCase; pass ignore_case=true to force insensitive, or use uppercase in the pattern for case-sensitive). path is OPTIONAL — defaults to the project root; pass a subfolder/file to narrow. Invalid regex is auto-retried as literal text (with a note). Respects .gitignore, searches hidden dot-directories (.vscode/.planning/...), excludes .git and secrets (.env/.pem/.key). Output legend: ">" marks a match line, "-" a context line, "..." a gap between separate matches; "(N matches, showing K)" means K of N matches in that file are displayed. If the header says "showing X of Y" — narrow file_glob/path or raise max_results; do NOT loop over pattern variants. For file NAMES use find_files; for "where is X / concepts" use get_fast_context.',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: 'Regex or string. Example: "useState", "import.*axios", "class\\s+User"' },
-          path: { type: 'string', description: 'Directory or file to search (absolute path or relative to workdir)' },
+          pattern: { type: 'string', description: 'Regex or string. Example: "useState", "import.*axios", "class\\s+User". Special chars ( ) [ ] . $ are regex metachars — if you mean them literally, pass literal=true (or just pass them; an invalid regex is auto-searched literally).' },
+          path: { type: 'string', description: 'Directory or file to search (absolute or relative to workdir). OPTIONAL — omit to search the whole project.' },
           file_glob: { type: 'string', description: 'File filter: "*.ts", "*.py", "*.{ts,tsx}"' },
-          ignore_case: { type: 'boolean', description: 'Case-insensitive (default false)' },
-          literal: { type: 'boolean', description: 'Search the pattern literally (no regex). Useful for text with special chars: "arr[i]", "a.b.c", "$env". Default false.' },
-          max_results: { type: 'number', description: 'Max total matches (default 100)' },
+          ignore_case: { type: 'boolean', description: 'Force case-insensitive. Default is smart-case (lowercase pattern = insensitive).' },
+          literal: { type: 'boolean', description: 'Search pattern literally (no regex). Default false; auto-enabled if pattern is invalid regex.' },
+          files_only: { type: 'boolean', description: 'Return only a list of matching files with per-file counts (no line content). Cheap broad overview before narrowing.' },
+          max_results: { type: 'number', description: 'Max matches displayed (default 100). Per-file cap is ~10.' },
           max_chars: { type: 'number', description: 'Max chars in output (default 20000). Increase if truncated.' },
-          context: { type: 'number', description: 'Context lines around a match (default 3)' },
+          context: { type: 'number', description: 'Context lines around a match (default 3).' },
         },
-        required: ['pattern', 'path'],
+        required: ['pattern'],
       },
     },
   },
@@ -420,6 +421,10 @@ export const TOOL_SCHEMAS = [
             type: 'number',
             description: 'How many entries to return (default 20, max 30). 5 per source if all 5 are enabled.',
           },
+          crossProject: {
+            type: 'boolean',
+            description: 'If true, search across ALL projects (not just the current one). Default: false. Useful when the topic may span multiple projects.',
+          },
         },
         required: ['query'],
       },
@@ -544,6 +549,10 @@ export function getToolSchemas(options: {
   imageMode?: boolean
   multiAgentMode?: boolean
   mode?: 'code' | 'work'  // deprecated — ignored; work mode removed
+  /** Persona — single-select run mode. Read-only personas get the same
+   *  restricted tool set as planning/ask (no edit/write/run). Full personas
+   *  keep the full toolset. Orthogonal to planning/ask. */
+  persona?: import('../../shared/modes').PersonaId
   /** MCP tools — dynamically added to the set (only enabled ones). */
   mcpTools?: McpToolRuntime[]
 } = {}) {
@@ -553,6 +562,7 @@ export function getToolSchemas(options: {
     webMode = false,
     imageMode = false,
     multiAgentMode = false,
+    persona,
     mcpTools,
   } = options
 
@@ -569,6 +579,15 @@ export function getToolSchemas(options: {
   // (toggled in the plus-menu or one-shot via /ask <text>).
   // planning takes priority (stricter), but the tool set is identical —
   // the difference is only in the system injection.
+  //
+  // Persona allowlist: when a persona defines `allowedTools`, that list
+  // OVERRIDES the binary readonly/full branching below. Only the listed
+  // builtin tools are provided (plus all MCP tools, always allowed).
+  // This lets architect (edits, no run_command), debugger (full + run),
+  // reviewer (strict read-only research), mentor (read-only + ask_user) get
+  // a non-standard mix tailored to their workflow.
+  const personaAllowed = persona ? getPersonaAllowedTools(persona) : undefined
+
   const names: string[] = [
     'read_file',
     'read_files',
@@ -593,13 +612,27 @@ export function getToolSchemas(options: {
     'get_skill',
   ]
 
-  if (planningMode || askMode) {
-    // Planning / Ask: research tools, read-only checks, no edits.
+  if (personaAllowed) {
+    // Fine-grained persona allowlist: use ONLY the persona's list (intersected
+    // with builtin TOOL_SCHEMAS). MCP tools are appended later regardless.
+    // generate_image is gated by imageMode even if the persona lists it.
+    names.length = 0
+    for (const t of personaAllowed) {
+      if (t === 'generate_image') continue
+      names.push(t)
+    }
+    // Ensure research tools are available if the persona is read-only-ish
+    // (allowlists already include them explicitly — this is a safety net).
+    if (!names.includes('get_diagnostics') && isReadonlyPersona(persona!)) {
+      names.push('get_diagnostics', 'analyze_project', 'get_fast_context')
+    }
+  } else if (planningMode || askMode || (persona && isReadonlyPersona(persona))) {
+    // Planning / Ask / read-only persona (legacy path): research tools, read-only checks, no edits.
     names.push('get_diagnostics')
     names.push('analyze_project')
     names.push('get_fast_context')
   } else {
-    // Normal mode: file edits + commands + verification.
+    // Normal mode (or full persona without explicit allowlist): file edits + commands + verification.
     names.push('edit_file')
     names.push('write_file')
     names.push('run_command')
@@ -608,7 +641,14 @@ export function getToolSchemas(options: {
     names.push('get_fast_context')
   }
 
-  if (imageMode) names.push('generate_image')
+  if (imageMode) {
+    // generate_image only when imageMode is on AND the persona allows it
+    // (allowlist personas that don't list it are denied; undefined/legacy
+    // personas inherit the previous behavior — allowed in imageMode).
+    if (!personaAllowed || personaAllowed.includes('generate_image')) {
+      names.push('generate_image')
+    }
+  }
   // multiAgentMode/webMode are no longer needed for enabling — kept as
   // function parameters for compatibility with the calling code.
   void webMode

@@ -251,6 +251,25 @@
   font-family: var(--font-mono);
 }
 
+/* Error block — показывается при success=false вместо tool-специфичного рендера */
+.trr-error-block {
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.trr-error-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #f87171;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
 /* Default pre */
 .trr-pre {
   margin: 0;

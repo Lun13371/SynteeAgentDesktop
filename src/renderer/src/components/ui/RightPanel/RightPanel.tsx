@@ -9,15 +9,14 @@ import GitPanel from '../GitPanel/GitPanel'
 import SessionChangesPanel from '../SessionChangesPanel/SessionChangesPanel'
 import SideChatPanel from '../SideChatPanel/SideChatPanel'
 import TerminalPanel from '../TerminalPanel/TerminalPanel'
-import { useUIStore } from '../../../store/ui.store'
+import { useUIStore, type RightPanelTab } from '../../../store/ui.store'
 import './RightPanel.css'
 
-export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal'
+export type { RightPanelTab }
 
 interface RightPanelProps {
   open: boolean
   onClose: () => void
-  onExitComplete: () => void
   focusAgentId?: string | null
   currentChatId?: string | null
 }
@@ -31,8 +30,11 @@ const TABS: Array<{ id: RightPanelTab; label: string; icon: 'git-branch' | 'fold
   { id: 'terminal', label: 'Терминал', icon: 'terminal' },
 ]
 
-export default function RightPanel({ open, onClose, onExitComplete, focusAgentId, currentChatId }: RightPanelProps) {
-  const [tab, setTab] = useState<RightPanelTab>('sidechat')
+export default function RightPanel({ open, onClose, focusAgentId, currentChatId }: RightPanelProps) {
+  // tab — store-backed (персистит между перезапусками через electron-store).
+  // Импортируем из ui.store, а не локальный useState.
+  const tab = useUIStore(s => s.agentPanelTab)
+  const setTab = useUIStore(s => s.setAgentPanelTab)
   // prevFocusAgentId инициализируется в null (а НЕ в focusAgentId), чтобы
   // ПЕРВЫЙ рендер с focusAgentId сработал: prev(null) !== focusAgentId( non-null)
   // → setTab('agents'). Без этого (когда prev = focusAgentId с самого начала)
@@ -40,6 +42,11 @@ export default function RightPanel({ open, onClose, onExitComplete, focusAgentId
   const [prevFocusAgentId, setPrevFocusAgentId] = useState<string | null>(null)
   const [workdir, setWorkdir] = useState<string | null>(null)
   const [contentReady, setContentReady] = useState(false)
+  // Keep-alive: множество табов, которые хотя бы раз были открыты.
+  // Каждый таб монтируется лени (при первом выборе) и остаётся
+  // смонтированным (display:none когда не активен) — состояние
+  // (скролл, ввод, раскрытые папки, терминал) не сбрасывается.
+  const [mountedTabs, setMountedTabs] = useState<Set<RightPanelTab>>(new Set())
   const setAgentPanelWidth = useUIStore(s => s.setAgentPanelWidth)
 
   // Клик по карточке саб-агента в чате → open-agent-panel → RightPanelHost
@@ -53,28 +60,36 @@ export default function RightPanel({ open, onClose, onExitComplete, focusAgentId
     if (focusAgentId) setTab('agents')
   }
 
+  // Keep-alive: при смене таба добавляем его в mountedTabs (lazy-mount).
+  // Таб остаётся смонтированным до конца сессии панели.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMountedTabs(prev => prev.has(tab) ? prev : new Set(prev).add(tab))
+  }, [tab])
+
   // ── useMotionValue: ширина и прозрачность обходят React полностью ────
   // Во время dragging widthMV.set() пишет напрямую в DOM — 0 ре-рендеров.
   const widthMV = useMotionValue(0)
   const opacityMV = useMotionValue(0)
 
-  // Анимацией открыт/закрыт управляет проп open. Стор падает мгновенно
-  // (toggle в топ-баре всегда читает актуальное состояние), а RightPanelHost
-  // держит панель смонтированной пока open=false для exit-анимации.
+  // Анимацией открыт/закрыт управляет проп open. Панель ВСЕГДА
+  // смонтирована (keep-alive) — при закрытии анимируется к width=0/opacity=0,
+  // но не размонтируется. pointer-events:none предотвращает перехват кликов.
+  // contentReady — one-way flag: становится true при первом открытии и
+  // НИКОГДА не сбрасывается (контент табов остаётся живым при закрытии).
   useEffect(() => {
     if (open) {
       const w = useUIStore.getState().agentPanelWidth + 6
       const ctrlW = animate(widthMV, w, { type: 'spring', stiffness: 380, damping: 32 })
       const ctrlO = animate(opacityMV, 1, { duration: 0.15 })
-      const timer = setTimeout(() => setContentReady(true), 250)
-      return () => { ctrlW.stop(); ctrlO.stop(); clearTimeout(timer) }
+      if (!contentReady) {
+        const timer = setTimeout(() => setContentReady(true), 250)
+        return () => { ctrlW.stop(); ctrlO.stop(); clearTimeout(timer) }
+      }
+      return () => { ctrlW.stop(); ctrlO.stop() }
     }
-    // open === false → exit-анимация
-    setContentReady(false)
-    const ctrlW = animate(widthMV, 0, {
-      type: 'spring', stiffness: 380, damping: 32,
-      onComplete: () => onExitComplete(),
-    })
+    // open === false → анимация закрытия (без размонтирования)
+    const ctrlW = animate(widthMV, 0, { type: 'spring', stiffness: 380, damping: 32 })
     const ctrlO = animate(opacityMV, 0, { duration: 0.15 })
     return () => { ctrlW.stop(); ctrlO.stop() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -106,7 +121,7 @@ export default function RightPanel({ open, onClose, onExitComplete, focusAgentId
   return (
     <motion.div
       className="right-panel-wrapper"
-      style={{ width: widthMV, opacity: opacityMV }}
+      style={{ width: widthMV, opacity: opacityMV, pointerEvents: open ? 'auto' : 'none' }}
     >
       <div className="right-panel-inner">
         <ResizeHandle side="right" onResize={handleResize} onResizeEnd={handleResizeEnd} />
@@ -117,11 +132,21 @@ export default function RightPanel({ open, onClose, onExitComplete, focusAgentId
                 <button
                   key={t.id}
                   className={`right-panel__tab ${tab === t.id ? 'right-panel__tab--active' : ''}`}
-                  onClick={() => setTab(t.id)}
+                  onClick={() => {
+                    setTab(t.id)
+                    window.syntee.settings.set('agentPanelTab', t.id)
+                  }}
                   title={t.label}
                 >
                   <AppIcon name={t.icon} size="xs" />
                   <span>{t.label}</span>
+                  {tab === t.id && (
+                    <motion.div
+                      layoutId="right-panel-tab-indicator"
+                      className="right-panel__tab-indicator"
+                      transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    />
+                  )}
                 </button>
               ))}
             </div>
@@ -129,34 +154,32 @@ export default function RightPanel({ open, onClose, onExitComplete, focusAgentId
           </div>
 
           <div className="right-panel__content">
-            {contentReady && (
-              <motion.div
-                key={tab}
+            {contentReady && Array.from(mountedTabs).map(tabId => (
+              <div
+                key={tabId}
                 className="right-panel__tab-content"
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.15 }}
+                style={{ display: tab === tabId ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}
               >
-                {tab === 'agents' && (
+                {tabId === 'agents' && (
                   <AgentPanel focusAgentId={focusAgentId} currentChatId={currentChatId} />
                 )}
-                {tab === 'sidechat' && (
+                {tabId === 'sidechat' && (
                   <SideChatPanel currentChatId={currentChatId} />
                 )}
-                {tab === 'files' && (
+                {tabId === 'files' && (
                   <FileExplorer key={workdir ?? 'no-workdir'} workdir={workdir} />
                 )}
-                {tab === 'git' && (
+                {tabId === 'git' && (
                   <GitPanel key={workdir ?? 'no-workdir'} workdir={workdir} />
                 )}
-                {tab === 'session' && (
+                {tabId === 'session' && (
                   <SessionChangesPanel key={currentChatId ?? 'no-chat'} chatId={currentChatId} />
                 )}
-                {tab === 'terminal' && (
+                {tabId === 'terminal' && (
                   <TerminalPanel currentChatId={currentChatId} />
                 )}
-              </motion.div>
-            )}
+              </div>
+            ))}
           </div>
         </div>
       </div>

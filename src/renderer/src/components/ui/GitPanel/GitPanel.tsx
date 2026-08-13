@@ -152,6 +152,9 @@ export default function GitPanel({ workdir }: GitPanelProps) {
   const [fileLoading, setFileLoading] = useState(false)
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const [listMode, setListMode] = useState<'tree' | 'status'>('tree')
+  const [diffStats, setDiffStats] = useState<Record<string, { added: number; deleted: number }>>({})
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
 
   const refresh = useCallback(async () => {
     if (!workdir) return
@@ -183,6 +186,24 @@ export default function GitPanel({ workdir }: GitPanelProps) {
       })
       if (logResult.success) {
         setLog(logResult.entries)
+      }
+
+      // Загружаем diff stats (+X -Y) для каждого изменённого файла
+      if (statusResult.success && statusResult.files.length > 0) {
+        try {
+          const statResult = await window.syntee.git.diffStat({ workdir }) as
+            { success: boolean; stats: Array<{ path: string; added: number; deleted: number }> }
+          if (statResult.success && statResult.stats) {
+            const map: Record<string, { added: number; deleted: number }> = {}
+            for (const s of statResult.stats) {
+              map[s.path] = { added: s.added, deleted: s.deleted }
+            }
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setDiffStats(map)
+          }
+        } catch { /* ok — stats optional */ }
+      } else {
+        setDiffStats({})
       }
     } catch (e) {
       setError(String((e as Error)?.message ?? e))
@@ -292,6 +313,38 @@ export default function GitPanel({ workdir }: GitPanelProps) {
     window.syntee.shell.openPath(fullpath)
   }
 
+  // ── Git actions: stage / unstage / discard ──────────────────────
+  const handleStage = useCallback(async (file: string) => {
+    if (!workdir) return
+    setActionLoading(file)
+    try {
+      await window.syntee.git.add({ workdir, files: [file] })
+      await refresh()
+    } catch { /* ok */ } finally { setActionLoading(null) }
+  }, [workdir, refresh])
+
+  const handleUnstage = useCallback(async (file: string) => {
+    if (!workdir) return
+    setActionLoading(file)
+    try {
+      await window.syntee.git.reset({ workdir, files: [file] })
+      await refresh()
+    } catch { /* ok */ } finally { setActionLoading(null) }
+  }, [workdir, refresh])
+
+  const handleDiscard = useCallback(async (file: string, untracked: boolean) => {
+    if (!workdir) return
+    const confirmMsg = untracked
+      ? `Удалить файл "${file}"? (untracked файл будет удалён)`
+      : `Отменить изменения в "${file}"? (изменения будут потеряны)`
+    if (!window.confirm(confirmMsg)) return
+    setActionLoading(file)
+    try {
+      await window.syntee.git.discard({ workdir, files: [file], untracked })
+      await refresh()
+    } catch { /* ok */ } finally { setActionLoading(null) }
+  }, [workdir, refresh])
+
   const fileTree = useMemo(() => status?.files ? buildFileTree(status.files) : [], [status])
 
   // Auto-expand всех директорий по умолчанию при загрузке/обновлении статуса.
@@ -348,17 +401,71 @@ export default function GitPanel({ workdir }: GitPanelProps) {
 
   const renderStatusFile = (file: GitFileStatus) => {
     const badge = getFileBadge(file)
+    const stats = diffStats[file.path]
+    const isUntracked = file.indexStatus === '?' && file.worktreeStatus === '?'
+    const isStaged = file.indexStatus !== ' ' && file.indexStatus !== '?'
+    const isUnstaged = file.worktreeStatus !== ' ' && file.worktreeStatus !== '?'
     return (
-      <button
+      <div
         key={file.path}
-        className={`git-file-item ${selectedFile === file.path ? 'git-file-item--selected' : ''}`}
-        style={{ paddingLeft: 26 }}
-        onClick={() => loadDiff(file)}
-        title={file.path}
+        className={`git-file-item-row ${selectedFile === file.path ? 'git-file-item-row--selected' : ''}`}
       >
-        {badge && <span className={`git-file-item__badge ${badge.cls}`}>{badge.label}</span>}
-        <span className="git-file-item__name">{file.path}</span>
-      </button>
+        <button
+          className={`git-file-item ${selectedFile === file.path ? 'git-file-item--selected' : ''}`}
+          style={{ paddingLeft: 26 }}
+          onClick={() => loadDiff(file)}
+          title={file.path}
+        >
+          {badge && <span className={`git-file-item__badge ${badge.cls}`}>{badge.label}</span>}
+          <span className="git-file-item__name">{file.path}</span>
+          {stats && (
+            <span className="git-file-item__stats">
+              <span className="git-file-item__stats-added">+{stats.added}</span>
+              <span className="git-file-item__stats-deleted">-{stats.deleted}</span>
+            </span>
+          )}
+        </button>
+        <div className="git-file-item__actions">
+          {isUntracked && (
+            <button
+              className="git-file-action"
+              title="Добавить (git add)"
+              onClick={(e) => { e.stopPropagation(); handleStage(file.path) }}
+              disabled={actionLoading === file.path}
+            >
+              <AppIcon name="plus" size="xs" />
+            </button>
+          )}
+          {isStaged && !isUntracked && (
+            <button
+              className="git-file-action"
+              title="Убрать из staged (git reset)"
+              onClick={(e) => { e.stopPropagation(); handleUnstage(file.path) }}
+              disabled={actionLoading === file.path}
+            >
+              <AppIcon name="minus" size="xs" />
+            </button>
+          )}
+          {!isStaged && !isUntracked && isUnstaged && (
+            <button
+              className="git-file-action"
+              title="Добавить (git add)"
+              onClick={(e) => { e.stopPropagation(); handleStage(file.path) }}
+              disabled={actionLoading === file.path}
+            >
+              <AppIcon name="plus" size="xs" />
+            </button>
+          )}
+          <button
+            className="git-file-action git-file-action--danger"
+            title={isUntracked ? 'Удалить файл' : 'Отменить изменения'}
+            onClick={(e) => { e.stopPropagation(); handleDiscard(file.path, isUntracked) }}
+            disabled={actionLoading === file.path}
+          >
+            <AppIcon name="undo" size="xs" />
+          </button>
+        </div>
+      </div>
     )
   }
 
@@ -473,16 +580,41 @@ export default function GitPanel({ workdir }: GitPanelProps) {
                   <span>Статусы</span>
                 </button>
               </div>
+              <div className="git-panel__search">
+                <AppIcon name="search" size="xs" tone="muted" />
+                <input
+                  className="git-panel__search-input"
+                  type="text"
+                  placeholder="Фильтр файлов…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
+                {search && (
+                  <button className="git-panel__search-clear" onClick={() => setSearch('')} title="Очистить">
+                    <AppIcon name="x" size="xs" />
+                  </button>
+                )}
+              </div>
               <div className="git-panel__file-list">
                 {listMode === 'tree'
                   ? renderTreeNodes(fileTree, 0)
-                  : statusGroups && (
-                      <div className="git-panel__status-groups">
-                        {renderStatusGroup('Staged', statusGroups.staged, 'git-status-group__dot--staged')}
-                        {renderStatusGroup('Unstaged', statusGroups.unstaged, 'git-status-group__dot--unstaged')}
-                        {renderStatusGroup('Untracked', statusGroups.untracked, 'git-status-group__dot--untracked')}
-                      </div>
-                    )
+                  : statusGroups && (() => {
+                      const q = search.toLowerCase().trim()
+                      const filterFn = (f: GitFileStatus) => !q || f.path.toLowerCase().includes(q)
+                      const staged = statusGroups.staged.filter(filterFn)
+                      const unstaged = statusGroups.unstaged.filter(filterFn)
+                      const untracked = statusGroups.untracked.filter(filterFn)
+                      if (!staged.length && !unstaged.length && !untracked.length && q) {
+                        return <div className="git-panel__search-empty">Ничего не найдено</div>
+                      }
+                      return (
+                        <div className="git-panel__status-groups">
+                          {renderStatusGroup('Staged', staged, 'git-status-group__dot--staged')}
+                          {renderStatusGroup('Unstaged', unstaged, 'git-status-group__dot--unstaged')}
+                          {renderStatusGroup('Untracked', untracked, 'git-status-group__dot--untracked')}
+                        </div>
+                      )
+                    })()
                 }
               </div>
             </>

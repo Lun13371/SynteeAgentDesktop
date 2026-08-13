@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Chat, Message, ChatMode, Project, ToolStep, QueueItemMeta } from '../../../shared/types'
+import type { Chat, Message, ChatMode, Project, ToolStep, QueueItemMeta, LastTurnChanges } from '../../../shared/types'
 
 // ── Per-chat live state ────────────────────────────────────────────────
 // Раньше всё live-состояние (стриминг-текст, шаги тулов, thinking, todo)
@@ -133,6 +133,11 @@ interface ChatStore {
   // отображения в панели; сбрасывается в null на терминальном статусе.
   activeRunByChat: Record<string, QueueItemMeta | null>
 
+  // ── ChangesBadge: изменения последнего turn'а (per-chat) ──
+  // Заполняется после CHAT_STREAM_DONE (если были правки файлов),
+  // сбрасывается при новом send (CHAT_RUN_STATUS='running') или undo.
+  lastTurnChangesByChat: Record<string, LastTurnChanges | null>
+
   // Actions
   setChats: (chats: Chat[]) => void
   setProjects: (projects: Project[]) => void
@@ -149,6 +154,11 @@ interface ChatStore {
   setIsLoadingOlder: (v: boolean) => void
   setHasOlderMessages: (v: boolean) => void
   addMessage: (message: Message) => void
+  // Атомарный (один set()) коммит: очистка live-состояния + добавление финального
+  // сообщения. Устраняет race между liveClear и addMessage — два раздельных set()
+  // могли дать кратковременную пустоту в конце чата (live-пузырь исчез, сообщение
+  // ещё не добавлено). Также не пишет в s.messages для чужого chatId.
+  finalizeStreamMessage: (chatId: string, message: Message) => void
   appendStreamToken: (token: string) => void
   clearStream: () => void
   setTyping: (typing: boolean) => void
@@ -169,6 +179,7 @@ interface ChatStore {
   // ── Очередь запросов ──
   setQueue: (chatId: string, queue: QueueItemMeta[]) => void
   setActiveRun: (chatId: string, meta: QueueItemMeta | null) => void
+  setLastTurnChanges: (chatId: string, changes: LastTurnChanges | null) => void
 
   // ── Side chat (параллельный доп-чат) ──
   sideChatByChat: Record<string, SideChatState>
@@ -238,6 +249,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   queueByChat: {},
   activeRunByChat: {},
 
+  lastTurnChangesByChat: {},
+
   sideChatByChat: {},
 
   messagesByChat: {},
@@ -300,10 +313,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   addMessage: (message) =>
     set((s) => {
       if (s.messages.some(m => m.id === message.id)) return s
-      const messages = [...s.messages, message]
       // Держим кеш тёплым для chatId этого сообщения (чтобы при возврате в чат
-      // финальное сообщение уже было в окне). messages (текущий чат) обновляем
-      // как и раньше — сохраняем прежнее поведение для текущего отображения.
+      // финальное сообщение уже было в окне).
       const cached = s.messagesByChat[message.chatId]
       let byChat = s.messagesByChat
       if (cached) {
@@ -312,7 +323,41 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           [message.chatId]: { messages: [...cached.messages, message], hasOlder: cached.hasOlder },
         }
       }
-      return { messages, messagesByChat: byChat }
+      // s.messages обновляем ТОЛЬКО если сообщение принадлежит текущему чату.
+      // Иначе чужое сообщение (стрим завершился в фоне) попадёт в массив
+      // текущего чата → коррупция UI: сообщение A видно в чате B, а кеш B
+      // при этом не обновлён → при следующем selectChat(B) оно затрётся.
+      if (message.chatId === s.currentChatId) {
+        return { messages: [...s.messages, message], messagesByChat: byChat }
+      }
+      return { messagesByChat: byChat }
+    }),
+  // finalizeStreamMessage — объединяет clearLiveState + addMessage в один set().
+  // Вызывается из обработчика CHAT_STREAM_DONE. Устраняет race: два раздельных
+  // set() (liveClear → addMessage) давали кратковременную пустоту — live-пузырь
+  // уже схлопнулся, финальное сообщение ещё не в массиве. Также не пишет в
+  // s.messages для чужого chatId (см. addMessage выше).
+  finalizeStreamMessage: (chatId, message) =>
+    set((s) => {
+      // 1. Очистка live-состояния (live-пузырь схлопывается)
+      const nextLive = { ...s.liveByChat }
+      delete nextLive[chatId]
+      // 2. Добавление финального сообщения
+      if (s.messages.some(m => m.id === message.id)) {
+        return { liveByChat: nextLive }
+      }
+      const cached = s.messagesByChat[message.chatId]
+      let byChat = s.messagesByChat
+      if (cached) {
+        byChat = {
+          ...s.messagesByChat,
+          [message.chatId]: { messages: [...cached.messages, message], hasOlder: cached.hasOlder },
+        }
+      }
+      if (message.chatId === s.currentChatId) {
+        return { liveByChat: nextLive, messages: [...s.messages, message], messagesByChat: byChat }
+      }
+      return { liveByChat: nextLive, messagesByChat: byChat }
     }),
   appendStreamToken: (token) =>
     set((s) => ({ streamingText: s.streamingText + token })),
@@ -399,6 +444,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const nextActive = { ...s.activeRunByChat }
       const nextSide = { ...s.sideChatByChat }
       const nextByChat = { ...s.messagesByChat }
+      const nextChanges = { ...s.lastTurnChangesByChat }
       const nextOrder = s.cacheOrder.filter(c => c !== chatId)
       delete nextLive[chatId]
       delete nextRun[chatId]
@@ -407,6 +453,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       delete nextActive[chatId]
       delete nextSide[chatId]
       delete nextByChat[chatId]
+      delete nextChanges[chatId]
       return {
         liveByChat: nextLive,
         runStatusByChat: nextRun,
@@ -415,6 +462,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         activeRunByChat: nextActive,
         sideChatByChat: nextSide,
         messagesByChat: nextByChat,
+        lastTurnChangesByChat: nextChanges,
         cacheOrder: nextOrder,
       }
     })
@@ -431,6 +479,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (meta === null) delete next[chatId]
       else next[chatId] = meta
       return { activeRunByChat: next }
+    }),
+
+  setLastTurnChanges: (chatId, changes) =>
+    set((s) => {
+      const next = { ...s.lastTurnChangesByChat }
+      if (changes === null) delete next[chatId]
+      else next[chatId] = changes
+      return { lastTurnChangesByChat: next }
     }),
 
   // ── Side chat actions ──

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useUIStore } from './store/ui.store'
+import { useUIStore, isValidTab, VALID_TABS } from './store/ui.store'
 import { useSettingsStore } from './store/settings.store'
 import { initExtensionsPushEvents, useExtensionsStore } from './store/extensions.store'
 import { setUiSoundsFlag, setSoundVolume, setSoundAssignmentsFlag } from './utils/sounds'
@@ -413,7 +413,7 @@ export default function App() {
       try {
         const [theme, bgStyle, msgAnim, accentColor, animatedBg,
           avatarStyle, showTime, userMarkdown, uiSounds, sendEffect,
-          fontFamily, savedPanelWidth, savedPanelOpen,
+          fontFamily, savedPanelWidth, savedPanelOpen, savedPanelTab,
           glassBlur, density, accentGradient, rainbowAccent, bgImage, bgImageEnabled,
           animatedBgOpacity, animatedBgSpeed,
           customThemes, activeCustomThemeId, themeSchedule, recentAccents,
@@ -431,6 +431,7 @@ export default function App() {
           window.syntee.settings.get('fontFamily'),
           window.syntee.settings.get('agentPanelWidth'),
           window.syntee.settings.get('agentPanelOpen'),
+          window.syntee.settings.get('agentPanelTab'),
           window.syntee.settings.get('glassBlur'),
           window.syntee.settings.get('density'),
           window.syntee.settings.get('accentGradient'),
@@ -463,6 +464,7 @@ export default function App() {
         if (sendEffect !== undefined && sendEffect !== null) st.setSendEffect(sendEffect as boolean)
         if (typeof savedPanelWidth === 'number' && savedPanelWidth > 0) st.setAgentPanelWidth(savedPanelWidth)
         if (typeof savedPanelOpen === 'boolean') st.setAgentPanelOpen(savedPanelOpen)
+        if (isValidTab(savedPanelTab)) st.setAgentPanelTab(savedPanelTab)
         if (typeof glassBlur === 'number') st.setGlassBlur(glassBlur)
         if (density) st.setDensity(density as any)
         if (accentGradient) st.setAccentGradient(accentGradient as any)
@@ -545,6 +547,42 @@ export default function App() {
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
+  }, [])
+// ── Keyboard shortcuts для правой панели ──────────────────────────────
+  // Ctrl+B — toggle правой панели (только на странице чата, не в input/textarea)
+  // Ctrl+1..6 — переключение вкладок панели (только если панель открыта)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.shiftKey || e.altKey) return
+      // Не перехватываем когда фокус в поле ввода
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      // Только на странице чата
+      if (useNavStore.getState().mainPage !== 'chat') return
+
+      // Ctrl+B — toggle панели
+      if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault()
+        const next = !useUIStore.getState().agentPanelOpen
+        useUIStore.getState().setAgentPanelOpen(next)
+        window.syntee.settings.set('agentPanelOpen', next)
+        return
+      }
+
+      // Ctrl+1..6 — переключение табов (только если панель открыта)
+      if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
+        if (!useUIStore.getState().agentPanelOpen) return
+        e.preventDefault()
+        const idx = parseInt(e.key, 10) - 1
+        if (idx >= 0 && idx < VALID_TABS.length) {
+          const tabId = VALID_TABS[idx]
+          useUIStore.getState().setAgentPanelTab(tabId)
+          window.syntee.settings.set('agentPanelTab', tabId)
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
   }, [])
 
   useEffect(() => {
@@ -650,9 +688,20 @@ export default function App() {
   // Spotlight (отдельное BrowserWindow) спрашивает chat:getActive чтобы
   // предложить "спросить в текущем чате". Подписываемся на currentChatId
   // в zustand и синхронизируем его в main через chat:setActive.
+  // Заодно перезагружаем MCP/skills — mcp:getAll/skills:getAll сами
+  // резолвят проект из chatId, поэтому не зависим от activeProjectId.
   const currentChatIdForMain = useChatStore(s => s.currentChatId)
   useEffect(() => {
     window.syntee.chat.setActive(currentChatIdForMain ?? null).catch(() => {})
+    if (currentChatIdForMain) {
+      // Даём main-процессу 300ms на обработку chat:setActive (детектор
+      // стартует и подхватит .mcp.json), затем перезагружаем списки.
+      const t = setTimeout(() => {
+        useExtensionsStore.getState().loadMcpServers()
+        useExtensionsStore.getState().loadSkills()
+      }, 300)
+      return () => clearTimeout(t)
+    }
   }, [currentChatIdForMain])
 
   useEffect(() => {

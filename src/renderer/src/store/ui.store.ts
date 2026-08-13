@@ -28,6 +28,15 @@ export interface ThemeSchedule {
 export const AGENT_PANEL_WIDTH_MIN = 280
 export const AGENT_PANEL_WIDTH_DEFAULT = 420
 
+// RightPanelTab определён здесь (а не импортируется из RightPanel.tsx),
+// чтобы избежать circular import: ui.store → RightPanel → ui.store.
+export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal'
+const VALID_TABS: RightPanelTab[] = ['sidechat', 'agents', 'files', 'git', 'session', 'terminal']
+export { VALID_TABS }
+export function isValidTab(v: unknown): v is RightPanelTab {
+  return typeof v === 'string' && (VALID_TABS as string[]).includes(v)
+}
+
 export function getAgentPanelWidthMax(): number {
   if (typeof window === 'undefined') return 720
   return Math.min(Math.floor(window.innerWidth * 0.7), 1600)
@@ -38,6 +47,7 @@ interface UIStore {
   accentColor: string
   agentPanelWidth: number
   agentPanelOpen: boolean
+  agentPanelTab: RightPanelTab
   animatedBackground: boolean
   bgStyle: string
   msgAnim: string
@@ -69,6 +79,7 @@ interface UIStore {
   setAccentColor: (color: string) => void
   setAgentPanelWidth: (width: number) => void
   setAgentPanelOpen: (open: boolean) => void
+  setAgentPanelTab: (tab: RightPanelTab) => void
   setCurrentPage: (page: Page) => void
   setLoading: (loading: boolean) => void
   setBgStyle: (style: string) => void
@@ -114,6 +125,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   accentColor: '#ffffff',
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
   agentPanelOpen: false,
+  agentPanelTab: 'sidechat',
   animatedBackground: true,
   bgStyle: 'particles',
   msgAnim: 'slide',
@@ -150,6 +162,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
       import('../utils/sounds').then((m) => open ? m.playPanelOpenSound() : m.playPanelCloseSound())
     }
   },
+  setAgentPanelTab: (agentPanelTab) => set({ agentPanelTab }),
   setCurrentPage: (currentPage) => set({ currentPage }),
   setLoading: (isLoading) => set({ isLoading }),
   setBgStyle: (bgStyle) => set({ bgStyle }),

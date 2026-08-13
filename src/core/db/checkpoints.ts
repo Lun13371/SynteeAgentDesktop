@@ -191,6 +191,29 @@ export function getLastCheckpoint(chatId: string): CheckpointMeta | null {
  * "Rewind to turn N" = сохранить изменения turn'а N, откатить только
  * последующие turn'ы.
  */
+/**
+ * Возвращает file_snapshots конкретного checkpoint'а (turn'а) — для undo
+ * правок последнего запроса БЕЗ удаления сообщений диалога.
+ * Берём последний checkpoint с этим userMessageId (на случай дубликатов).
+ */
+export function getSnapshotsForCheckpoint(chatId: string, userMessageId: string): FileSnapshotEntry[] {
+  const db = getDB()
+  const cp = db.prepare(`
+    SELECT created_at as createdAt FROM chat_checkpoints
+    WHERE chat_id = ? AND user_message_id = ?
+    ORDER BY created_at DESC LIMIT 1
+  `).get(chatId, userMessageId) as { createdAt: number } | undefined
+  if (!cp) return []
+
+  const rows = db.prepare(`
+    SELECT path, content_before as contentBefore
+    FROM file_snapshots
+    WHERE chat_id = ? AND user_message_id = ?
+    ORDER BY id DESC
+  `).all(chatId, userMessageId) as FileSnapshotEntry[]
+  return rows
+}
+
 export function getSnapshotsAfter(chatId: string, userMessageId: string): FileSnapshotEntry[] {
   const db = getDB()
   const cp = db.prepare(`

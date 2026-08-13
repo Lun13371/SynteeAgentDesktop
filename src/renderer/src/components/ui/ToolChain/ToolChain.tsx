@@ -464,9 +464,12 @@ const IterationBlock = memo(function IterationBlock({
                 }
                 // diff — DiffBlock
                 if (iter.result.diff) {
+                  const isFail = iter.result.success === false
                   return (
                     <div className="tc2-section">
-                      <div className="tc2-section-title" style={{ color: '#4ade80' }}>Результат</div>
+                      <div className="tc2-section-title" style={{ color: isFail ? '#f87171' : '#4ade80' }}>
+                        {isFail ? 'Ошибка' : 'Результат'}
+                      </div>
                       <DiffBlock diff={iter.result.diff} />
                     </div>
                   )

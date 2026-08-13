@@ -8,7 +8,7 @@ import {
   findFiles,
   searchWeb, getSystemInfo, generateImage,
   readFiles, searchCode, analyzeProject,
-  httpRequest, getDiagnostics, smartTrimOutput,
+  httpRequest, getDiagnostics, smartTrimOutput, stripAnsi,
   TOOL_SCHEMAS, type ToolResult, editFile,
 } from '../tools'
 import {
@@ -18,6 +18,7 @@ import {
 import { computeContextSnapshot } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
+import { isReadonlyPersona, getPersonaAllowedTools } from '../../shared/modes'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { statSync } from 'fs'
 import { createHash } from 'crypto'
@@ -31,6 +32,7 @@ import {
   FALLBACK_SYSTEM_PROMPT, VERIFICATION_INTERVAL,
   normalizeToolName, findMissingRequiredArgs, getToolErrorHint, isSequentialTool,
   buildToolFingerprint, dropOldestRoundsIfOverflow, extractMcpServerName,
+  tryRepairJson,
 } from './utils'
 
 export class Agent {
@@ -72,6 +74,9 @@ export class Agent {
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
   private recentToolFingerprints: AgentToolCallFingerprint[] = []
   private recentErrorFingerprints: string[] = []
+  // Fingerprint'ы JSON parse failures — для быстрого loop-guard:
+  // 2 одинаковых подряд → стоп (не ждём 17 раундов обычного guard).
+  private recentParseFailures: string[] = []
   // Счётчик срабатываний loop-guard на конкретный тул+args. Ключ
   // `${toolName}|${argsKey}`. 1-2 — мягкое предупреждение, 3 — hard block
   // (тул не выполняется). Не сбрасывается между turn'ами в run() — ловим
@@ -133,6 +138,7 @@ export class Agent {
     // разных сообщениях). recentErrorFingerprints сбрасываем — ошибки
     // привязаны к конкретному контексту/файлу, между turn'ами они unrelated.
     this.recentErrorFingerprints = []
+    this.recentParseFailures = []
     this.commandsRun = []
     // Инициализируем персистентный кэш из снимка (передаётся из main через worker)
     this.fileCache = new Map(Object.entries(options?.fileCacheSnapshot ?? {}))
@@ -145,6 +151,9 @@ export class Agent {
     // planningMode — для явного напоминания в defense-in-depth (executeTool),
     // когда модель галлюцинирует вызовы тулов, отсутствующих в activeSchemas.
     const planningMode = !!options?.planningMode
+    const persona = options?.persona
+    const personaReadonly = persona ? isReadonlyPersona(persona) : false
+    const personaAllowed = persona ? getPersonaAllowedTools(persona) : undefined
     // Реальный лимит контекста активной модели — для аварийного клапана.
     // Раньше здесь был Math.max(32_000, realContextWindow) — искусственный пол,
     // который мог занижать эффективный лимит для моделей с честным большим
@@ -437,6 +446,7 @@ export class Agent {
           fn.name = normalizedName
 
           let args: Record<string, unknown> = {}
+          let parseError: { message: string; snippet: string } | undefined
           try {
             args = fn.arguments ? JSON.parse(fn.arguments) : {}
           } catch (parseErr) {
@@ -449,6 +459,33 @@ export class Agent {
             // "JSON пришёл обрезанным/невалидным".
             log('[Agent] JSON.parse tool arguments упал для %s: %s | raw=%s',
               normalizedName, (parseErr as Error).message, (fn.arguments ?? '').slice(0, 500))
+
+            // Phase 2: попытка починить частые ошибки JSON (незакавыченные
+            // enum-значения, trailing comma, опечатки). Если ремонт успешен —
+            // тул выполняется нормально, модель даже не знает что был проблема.
+            if (fn.arguments) {
+              const repair = tryRepairJson(fn.arguments)
+              if (repair.fixed) {
+                try {
+                  args = JSON.parse(repair.repaired)
+                  log('[Agent] JSON repair OK для %s: fixes=[%s]',
+                    normalizedName, repair.fixes.join(', '))
+                  // Ремонт успешен — parseError не ставим, тул выполнится.
+                } catch (repairErr) {
+                  log('[Agent] JSON repair не удался для %s: %s',
+                    normalizedName, (repairErr as Error).message)
+                  parseError = {
+                    message: (parseErr as Error).message,
+                    snippet: (fn.arguments ?? '').slice(0, 200),
+                  }
+                }
+              } else {
+                parseError = {
+                  message: (parseErr as Error).message,
+                  snippet: (fn.arguments ?? '').slice(0, 200),
+                }
+              }
+            }
           }
 
           // КРИТИЧНО: fn — та же ссылка, что уже лежит внутри объекта,
@@ -472,6 +509,7 @@ export class Agent {
             callId,
             fn,
             args,
+            parseError,
             // update_todo тоже всегда возвращает hidden:true результат (см. case
             // 'update_todo' ниже) — если сам tool_call не помечен hidden, его
             // блок навсегда остаётся в UI без результата (ai-worker.ts не шлёт
@@ -483,7 +521,7 @@ export class Agent {
         })
 
         const executeCall = async (item: NormalizedToolCall) => {
-          const { callId, fn, args, isHiddenTool, pendingCallId } = item
+          const { callId, fn, args, isHiddenTool, pendingCallId, parseError } = item
           if (!isHiddenTool) {
             const fingerprint = buildToolFingerprint(fn.name, args)
             this.recentToolFingerprints.push(fingerprint)
@@ -555,6 +593,53 @@ export class Agent {
           }
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool, pendingCallId, serverName: extractMcpServerName(fn.name) })
 
+          // Phase 1 + Phase 3: JSON parse failure — точное сообщение вместо
+          // вводящего в заблуждение "missing required arguments". Без этого
+          // модель видит args={} в истории, думает что забыла передать path/mode,
+          // и повторяет тот же битый JSON → бесконечный цикл (14+ раундов в логах).
+          if (parseError) {
+            const parseFp = `${fn.name}:${parseError.message.slice(0, 80)}`
+            this.recentParseFailures.push(parseFp)
+            if (this.recentParseFailures.length > 4) this.recentParseFailures.shift()
+
+            // Phase 3: 2 одинаковых parse failure подряд → жёсткий стоп.
+            // Не ждём 17 раундов обычного loop-guard — parse failure означает
+            // что модель системно не может сгенерировать валидный JSON для
+            // этого тула, ретраи бесполезны.
+            const parseRepeated = this.recentParseFailures.length >= 2 &&
+              this.recentParseFailures.every(e => e === parseFp)
+            if (parseRepeated) {
+              const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${this.recentParseFailures.length} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
+              messages.push({ role: 'user', content: hardStopMsg })
+              resultMap.set(callId, {
+                contentForAI: `${hardStopMsg}\n\nLast parse error: ${parseError.message}\nYou sent (first 200 chars): ${parseError.snippet}`,
+                callId,
+                name: fn.name,
+              })
+              callbacks.onStep({
+                type: 'tool_result',
+                toolName: '_loop_guard',
+                content: `${fn.name} produced invalid JSON ${this.recentParseFailures.length} times — blocked. Parse error: ${parseError.message}`,
+                success: false,
+              })
+              callbacks.onStep({
+                type: 'tool_result',
+                toolName: fn.name,
+                content: `[Blocked: invalid JSON ${this.recentParseFailures.length}× — ${parseError.message}]`,
+                success: false,
+                callId,
+                hidden: isHiddenTool,
+              })
+              return
+            }
+
+            // Phase 1: точное сообщение об ошибке парсинга
+            const parseMsg = `${fn.name}: your tool call arguments were not valid JSON. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure all string values are properly quoted (e.g. "mode": "apply_patch", not "mode": apply_patch").`
+            resultMap.set(callId, { contentForAI: parseMsg, callId, name: fn.name })
+            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: parseMsg, success: false, callId, hidden: isHiddenTool })
+            return
+          }
+
           const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
           if (missingArgs.length > 0) {
             const missingMsg = `${fn.name}: missing required arguments: ${missingArgs.join(', ')}. Repeat the call with the full set of arguments.`
@@ -578,7 +663,11 @@ export class Agent {
             // модель могла скопировать edit/run тулы из старой истории чата.
             const blockedMsg = planningMode
               ? `You are in PLANNING MODE (read-only). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Return to the protocol: Step 2 — read-only research (get_fast_context, read_file, search_code, analyze_project, spawn_agent) + ask_user about hard parts. Step 3 — plan inside <plan title="..." summary="...">…</plan> with per-phase Ownership/Verification/Edge cases. Step 4 — review against the original request. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
-              : `Tool "${fn.name}" is unavailable in the current mode (read-only/planning/side-chat). Allowed only: ${allowed}. Do not call it again — use the allowed tools for research.`
+              : personaAllowed
+                ? `You are in the ${persona} persona. "${fn.name}" is not in this persona's toolset. Stay in role: use only the allowed tools for this persona. Allowed: ${allowed}. If the task genuinely needs "${fn.name}", tell the user — they can switch persona (e.g. /classic or the + menu). Do not call "${fn.name}" again.`
+                : personaReadonly
+                  ? `You are in a READ-ONLY persona (${persona}). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Use read-tools (read_file, search_code, get_fast_context, analyze_project, ask_user) to research and answer in words. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
+                  : `Tool "${fn.name}" is unavailable in the current mode (read-only/planning/side-chat). Allowed only: ${allowed}. Do not call it again — use the allowed tools for research.`
             resultMap.set(callId, { contentForAI: blockedMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockedMsg, success: false, callId, hidden: isHiddenTool })
             return
@@ -714,9 +803,9 @@ export class Agent {
             : (result.success ? result.output : `Error: ${result.error}`)
           const errorHint = !result.success ? getToolErrorHint(fn.name, result.error ?? '') : ''
           // Per-tool потолок обрезки: search_code уже сам режет до 20 000 симв.
-          // по границам файлов (sliceOnFileBoundary), read_file с outline_only
-          // возвращает компактную структуру — дефолтный toolMaxChars (6000)
-          // безжалостно выкидывал средние файлы / половину outline, из-за чего
+          // по границам файлов (sliceOnFileBoundary), read_file возвращает
+          // первые 400 строк — дефолтный toolMaxChars (6000)
+          // безжалостно выкидывал средние файлы, из-за чего
           // модель теряла контекст и перебирала search-паттерны в лупе.
           // read_file / read_files — тоже ИСКЛЮЧАЕМ из символьной обрезки:
           // у них своя обрезка по строкам (DEFAULT_LINES=400) с правильной
@@ -983,13 +1072,16 @@ export class Agent {
         if (callbacks?.onShellExec && this.role === 'main' && !args.shell) {
           const shellRes = await callbacks.onShellExec(cmd, effectiveCwd, timeoutSec)
           // PTY-вывод содержит raw ANSI-коды и возможные остатки маркера
-          // завершения (__SYNTEE_DONE_...__:N). feedExec срезает маркер, но при
-          // дроблении чанков могут остаться огрызки — вырезаем надёжно.
-          // Regex учитывает формат __SYNTEE_DONE_<hex>__:<digits> — два __
-          // между hex и двоеточием (часть markerId, не separator).
+          // завершения (__SYNTEE_DONE_...__:N, __SDE <hex>). feedExec срезает
+          // маркер из AI-вывода, но при дроблении чанков могут остаться огрызки
+          // — вырезаем надёжно. Сначала stripAnsi (ANSI-коды могут разрывать
+          // маркер), потом regex по всем вхождениям (не только trailing).
           const cleanShellOutput = (raw: string) => {
-            const noMarker = raw.replace(/__SYNTEE_DONE_[a-f0-9]+__:\d+\s*$/m, '')
-            return noMarker
+            return stripAnsi(raw)
+              .replace(/__SDE [a-f0-9]{8}/g, '')            // echo суффикса (PowerShell)
+              .replace(/__SYNTEE_DONE_[a-f0-9]{8}__:\d+/g, '')  // вывод маркера (все шеллы)
+              .replace(/\r\n\r\n/g, '\r\n')                  // пустые строки от вырезанных маркеров
+              .trim()
           }
           if (shellRes.timedOut) {
             // Сессия прервана Ctrl+C (см. PtyManager.execInSession) —
@@ -1021,7 +1113,7 @@ export class Agent {
       }
       case 'read_file': {
         const filePath = args.path as string
-        const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}:${args.outline_only ? 'outline' : 'full'}`
+        const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}`
 
         // 1. Быстрый in-session кэш (в рамках одного run())
         if (this.readFileCacheEnabled && this.readFileCache.has(cacheKey)) {
@@ -1047,7 +1139,7 @@ export class Agent {
           }
         }
 
-        const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, args.outline_only as boolean | undefined, this.workdir)
+        const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, this.workdir)
         if (result.success) {
           // Relevance feedback: AI читает файл → boost для fast context ranking.
           // UPDATE ... WHERE — no-op если файла нет в индексе, безопасно.
@@ -1084,7 +1176,10 @@ export class Agent {
       case 'find_files':
         return findFiles(args.pattern as string, args.path as string, { maxResults: args.max_results as number | undefined, workdir: this.workdir })
       case 'get_diagnostics':
-        return getDiagnostics((args.cwd as string | undefined) ?? this.workdir)
+        return getDiagnostics(
+          (args.cwd as string | undefined) ?? this.workdir,
+          args.files as string[] | undefined,
+        )
       case 'http_request':
         return httpRequest({
           url: args.url as string,
@@ -1118,11 +1213,12 @@ export class Agent {
       case 'search_code':
         return searchCode(
           args.pattern as string,
-          args.path as string,
+          args.path as string | undefined,
           {
             fileGlob: args.file_glob as string | undefined,
             ignoreCase: args.ignore_case as boolean | undefined,
             literal: args.literal as boolean | undefined,
+            filesOnly: args.files_only as boolean | undefined,
             maxResults: args.max_results as number | undefined,
             context: args.context as number | undefined,
             maxChars: args.max_chars as number | undefined,
@@ -1272,6 +1368,7 @@ export class Agent {
             projectId: this.projectId,
             limit: args.limit as number | undefined,
             sources: args.sources as string[] | undefined,
+            crossProject: args.crossProject as boolean | undefined,
           })
           if (!result.success) return { success: false, output: '', error: result.error ?? 'recall failed' }
           if (result.results.length === 0) {

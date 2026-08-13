@@ -15,7 +15,7 @@ import Store from 'electron-store'
 import { join } from 'path'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from 'fs'
 import { getSkillManager } from '../../core/skills/skillManager'
-import { getProjectById, getChatWorkdirContext } from '../../core/db'
+import { getProjectById, getChatWorkdirContext, getAllProjects } from '../../core/db'
 import type { SkillState } from '../../shared/types'
 
 /**
@@ -51,14 +51,24 @@ function listProjectIdsByWorkdir(workdir: string): string[] {
 export function registerSkillsIPC(store: Store): void {
   void store
 
-  ipcMain.handle('skills:getAll', (_e, params?: { projectId?: string }) => {
+  ipcMain.handle('skills:getAll', (_e, params?: { projectId?: string; chatId?: string }) => {
     const mgr = getSkillManager()
     let projectWorkdir: string | undefined
-    if (params?.projectId) {
-      const proj = getProjectById(params.projectId)
+    let projectId = params?.projectId
+    if (!projectId && params?.chatId) {
+      try {
+        const ctx = getChatWorkdirContext(params.chatId)
+        if (ctx.workdir) {
+          const found = getAllProjects().find(p => p.workdir === ctx.workdir)
+          projectId = found?.id
+        }
+      } catch { /* ignore */ }
+    }
+    if (projectId) {
+      const proj = getProjectById(projectId)
       projectWorkdir = proj?.workdir
     }
-    return mgr.getAllWithState({ projectWorkdir, projectId: params?.projectId })
+    return mgr.getAllWithState({ projectWorkdir, projectId })
   })
 
   ipcMain.handle('skills:setState', (_e, params: { skillId: string; state: SkillState; source: 'builtin' | 'user' | 'project' }) => {

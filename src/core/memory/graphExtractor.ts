@@ -18,6 +18,7 @@ import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import { extractJsonFromLlmResponse } from '../context/fastContext/annotator'
 import { getFastContextEntries } from '../db/fastContextStore'
+import { getDB } from '../db/handle'
 import type { FileSymbols } from '../context/fastContext/symbols'
 import {
   upsertNode,
@@ -83,10 +84,11 @@ export function extractFromDecisionHeuristic(params: {
   const { projectId, decisionLabel, content, memoryItemId } = params
   let nodes = 0
   let edges = 0
+  const db = getDB()
 
   // 1. Decision node
   const decisionLabelShort = decisionLabel.length > 100 ? decisionLabel.slice(0, 97) + '…' : decisionLabel
-  upsertNode({
+  const decisionId = upsertNode({
     projectId,
     type: 'decision',
     label: decisionLabelShort,
@@ -178,10 +180,118 @@ export function extractFromDecisionHeuristic(params: {
     }
   }
 
+  // 4. Concept extraction (relaxed — no fast_context needed)
+  const conceptResult = extractConceptsHeuristic(projectId, decisionLabelShort, content)
+  nodes += conceptResult.nodes
+  edges += conceptResult.edges
+
+  // 5. Cross-link: find other decisions that mention the same concepts
+  for (const concept of conceptResult.concepts) {
+    // Find existing concept node
+    const conceptNode = db.prepare(
+      `SELECT id FROM memory_graph_nodes WHERE project_id = ? AND type = 'concept' AND label = ?`
+    ).get(projectId, concept) as { id: string } | undefined
+
+    if (conceptNode) {
+      // Find other decisions linked to this concept
+      const linkedDecisions = db.prepare(
+        `SELECT DISTINCT n.id, n.label FROM memory_graph_nodes n
+         JOIN memory_graph_edges e ON (e.from_node = n.id AND e.to_node = ?)
+                                   OR (e.to_node = n.id AND e.from_node = ?)
+         WHERE n.project_id = ? AND n.type = 'decision' AND n.id != ?
+         LIMIT 3`
+      ).all(conceptNode.id, conceptNode.id, projectId, decisionId) as Array<{ id: string; label: string }>
+
+      for (const ld of linkedDecisions) {
+        upsertEdge({
+          projectId,
+          fromType: 'decision',
+          fromLabel: decisionLabelShort,
+          toType: 'decision',
+          toLabel: ld.label,
+          type: 'depends_on',
+          metadata: { evidence: 'shared_concept', concept },
+        })
+        edges++
+      }
+    }
+  }
+
   return { nodes, edges }
 }
 
-// ─── HEURISTIC: sync fast_context → graph ────────────────────────────────────
+// ─── HEURISTIC: concept extraction (relaxed, no fast_context needed) ──────────
+
+/**
+ * Known technology/concept terms for heuristic extraction.
+ * If any of these appear in text, a concept node is created.
+ */
+const TECH_TERMS = new Set([
+  'TypeScript', 'JavaScript', 'React', 'Vue', 'Angular', 'Electron', 'Node',
+  'Postgres', 'MySQL', 'SQLite', 'MongoDB', 'Redis',
+  'JWT', 'OAuth', 'SAML', 'WebSocket', 'REST', 'GraphQL', 'gRPC',
+  'Docker', 'Kubernetes', 'Nginx', 'Apache',
+  'Webpack', 'Vite', 'Rollup', 'Babel', 'ESLint', 'Prettier',
+  'Jest', 'Vitest', 'Cypress', 'Playwright',
+  'Zustand', 'Redux', 'MobX', 'Pinia',
+  'TF-IDF', 'FTS5', 'BM25', 'embedding', 'cosine',
+  'OpenAI', 'Anthropic', 'LLM', 'GPT', 'Claude',
+  'WAL', 'FTS', 'CRUD', 'ORM', 'DAO',
+  'CSS', 'HTML', 'SCSS', 'Tailwind',
+  'Python', 'Rust', 'Go', 'Java', 'Kotlin', 'Swift',
+])
+
+/**
+ * Extract concepts from text heuristically.
+ * - Finds known tech terms (case-sensitive match from TECH_TERMS)
+ * - Finds CamelCase words > 5 chars (potential concepts)
+ * Creates concept nodes + mentions edges from the source decision.
+ * Does NOT require fast_context — relaxed matching.
+ */
+function extractConceptsHeuristic(
+  projectId: string,
+  decisionLabel: string,
+  content: string,
+): { nodes: number; edges: number; concepts: string[] } {
+  const nodes = 0
+  let edges = 0
+  const concepts = new Set<string>()
+
+  // 1. Known tech terms (case-sensitive)
+  for (const term of TECH_TERMS) {
+    if (content.includes(term)) {
+      concepts.add(term)
+    }
+  }
+
+  // 2. CamelCase words > 5 chars (potential concept names)
+  const camelMatches = content.match(/\b[A-Z][a-zA-Z]{4,}\b/g) ?? []
+  for (const m of camelMatches) {
+    // Skip common English words that aren't concepts
+    if (m.length > 5 && !['The', 'This', 'That', 'These', 'Those', 'Which', 'There', 'Their', 'Where', 'When', 'What', 'Would', 'Could', 'Should', 'Always', 'Never'].includes(m)) {
+      concepts.add(m)
+    }
+  }
+
+  // Limit to avoid noise
+  const conceptList = [...concepts].slice(0, 10)
+
+  for (const concept of conceptList) {
+    upsertEdge({
+      projectId,
+      fromType: 'decision',
+      fromLabel: decisionLabel,
+      toType: 'concept',
+      toLabel: concept,
+      type: 'mentions',
+      toSourceKind: 'llm_extract',
+      metadata: { evidence: 'heuristic_concept_match' },
+    })
+    edges++
+  }
+
+  return { nodes, edges, concepts: conceptList }
+}
 
 /**
  * Синхронизировать узлы/рёбра из fast_context_index в graph.

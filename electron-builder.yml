@@ -10,6 +10,14 @@ files:
   - out/**/*
   - package.json
 
+# Бандленный ripgrep (@vscode/ripgrep-*) — бинарь rg.exe должен быть
+# распакован из asar, иначе не исполняется. findRg() заменяет app.asar →
+# app.asar.unpacked в пути.
+asar: true
+asarUnpack:
+  - node_modules/@vscode/ripgrep/**
+  - node_modules/@vscode/ripgrep-*/**
+
 # Resources copied to the install root (next to the client exe).
 # The launcher binary is NOT included here — it's a separate 7 MB download
 # from the website. The zip target (used for updates) contains only the

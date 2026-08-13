@@ -266,8 +266,10 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                     {cp.filesChanged > 0 && (
                       <>
                         <div className="session-checkpoint__files-summary">
-                          <AppIcon name="fileText" size="xs" />
-                          <span>{cp.filesChanged} файл(ов) изменено</span>
+                          <span className="session-checkpoint__files-badge">
+                            {cp.filesChanged}
+                          </span>
+                          <span>{cp.filesChanged === 1 ? 'файл изменён' : cp.filesChanged < 5 ? 'файла изменено' : 'файлов изменено'}</span>
                         </div>
                         <div className="session-checkpoint__paths">
                           {cp.filePaths.map((p, i) => {

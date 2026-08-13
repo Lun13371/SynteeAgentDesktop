@@ -9,12 +9,14 @@ import {
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
-  getChatModes, setChatModes, getChatDraft, setChatDraft, getUserMessageContents,
+  getChatModes, setChatModes, setChatPlanningMode, setChatImageMode, setChatAskMode,
+  getChatPersona, setChatPersona,
+  getChatDraft, setChatDraft, getUserMessageContents,
   setChatLastUsage, getChatLastUsage, clearChatLastUsage,
   createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
   setProjectVerificationCommand,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
-  getCheckpoints, getLastCheckpoint, getSnapshotsAfter, getContextSnapshot,
+  getCheckpoints, getLastCheckpoint, getSnapshotsAfter, getSnapshotsForCheckpoint, getContextSnapshot,
   deleteCheckpointsAfter, pruneOldCheckpoints, deleteMessagesAfter,
   saveRewindHistory, getRewindHistory, deleteRewindHistory, deleteMessageById,
   saveNamedSnapshot, getNamedSnapshots,
@@ -23,7 +25,7 @@ import {
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { saveMemoryItem, searchAllSources, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit } from '../../core/memory/MemoryStore'
 import { onCompactionTrigger, extractAndSaveFacts } from '../../core/memory/extractor'
-import { incrementalUpdateDecision, incrementalUpdateConversation } from '../../core/memory/graphBuilder'
+import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats } from '../../core/memory/graphStore'
 import { extractAndSaveOutcomes } from '../../core/memory/outcomeExtractor'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
@@ -354,6 +356,35 @@ function buildFinalIters(run: ActiveRun): unknown[] | undefined {
 }
 
 /**
+ * Флешит все активные стримящиеся запуски в БД — вызывается при before-quit/will-quit.
+ * Каждый ActiveRun, у которого есть накопленный текст/шаги, сохраняется через
+ * sendDone (saveMessage UPSERT — идемпотентен). Воркеры terminate'ятся отдельно.
+ * Без этого при резком выходе частичный ответ ассистента терялся бы.
+ */
+export function flushAllActiveRuns(): void {
+  for (const [chatId, run] of activeRuns) {
+    if (run.doneSent) continue
+    const hasContent = run.bufferedText.trim() || run.bufferedSteps.length > 0 || run.bufferedThinking.trim()
+    if (!hasContent) continue
+    try {
+      const iters = buildFinalIters(run)
+      run.sendDone(
+        run.bufferedText,
+        run.bufferedThinking || undefined,
+        run.bufferedThinkingMs,
+        run.bufferedSteps.length > 0 ? run.bufferedSteps : undefined,
+        iters,
+        run.bufferedTodo.length > 0 ? run.bufferedTodo : undefined,
+      )
+      log('[flushAllActiveRuns] flushed chatId=%s msgId=%s text=%d chars', chatId, run.msgId, run.bufferedText.length)
+    } catch (e) {
+      log('[flushAllActiveRuns] failed chatId=%s: %s', chatId, (e as Error).message)
+    }
+  }
+}
+
+
+/**
  * Запускает следующий chat:send из очереди chatId, если он есть.
  * Вызывается после терминального статуса предыдущего запуска (done/error/cancelled).
  */
@@ -672,6 +703,18 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Knowledge graph stats — the agent sees the project structure.
     let graphStats: ReturnType<typeof getGraphStats> | undefined
     graphStats = withRetrySync('graphStats', () => promptProjectId ? getGraphStats(promptProjectId) : undefined, undefined)
+
+    // Auto-build graph if empty (first project open)
+    if (graphStats && graphStats.nodeCount === 0 && promptProjectId) {
+      try {
+        const buildResult = buildProjectGraph(promptProjectId)
+        log('[getSystemPrompt] auto-built graph: nodes=%d edges=%d', buildResult.nodes, buildResult.edges)
+        // Re-fetch stats after build
+        graphStats = withRetrySync('graphStats', () => getGraphStats(promptProjectId), undefined)
+      } catch (e) {
+        log('[getSystemPrompt] auto-build graph failed: %s', (e as Error).message)
+      }
+    }
 
     // Absolute path to the global skills folder — for the install reference in the prompt.
     let globalSkillsDir = ''
@@ -2103,13 +2146,35 @@ ${subModeOutro}`,
                 projectId: msg.projectId as string | undefined,
                 chatId: msg.chatId as string | undefined,
               })
-              // Knowledge graph: heuristic extract из project_decision
-              if (item.kind === 'project_decision' && item.projectId) {
+              // Knowledge graph: heuristic extract из project_decision/convention
+              if ((item.kind === 'project_decision' || item.kind === 'convention') && item.projectId) {
                 try {
                   const r = incrementalUpdateDecision(item)
                   log('[chat:send] graph decision update: nodes=%d edges=%d', r.nodes, r.edges)
                 } catch (e) {
                   log('[chat:send] graph decision update failed: %s', (e as Error).message)
+                }
+
+                // Async LLM extraction for richer connections (debounced, non-blocking)
+                if (item.content.length > 100) {
+                  ;(async () => {
+                    try {
+                      // Debounce: wait 3 sec before LLM extraction
+                      await new Promise(r => setTimeout(r, 3000))
+                      const { extractFromConversationLLM, saveExtractionToGraph } = await import('../../core/memory/graphExtractor')
+                      const { extraction } = await extractFromConversationLLM(store, {
+                        projectId: item.projectId!,
+                        chatId: item.chatId ?? item.id,
+                        summary: `${item.title}: ${item.content}`.slice(0, 4000),
+                      })
+                      if (extraction.nodes.length > 0 || extraction.edges.length > 0) {
+                        const result = saveExtractionToGraph(item.projectId!, extraction)
+                        log('[chat:send] graph LLM extraction: nodes=%d edges=%d', result.nodes, result.edges)
+                      }
+                    } catch (e) {
+                      log('[chat:send] graph LLM extraction failed: %s', (e as Error).message)
+                    }
+                  })()
                 }
               }
               worker.postMessage({
@@ -2140,6 +2205,7 @@ ${subModeOutro}`,
                 projectId: msg.projectId as string | undefined,
                 limit: msg.limit as number | undefined,
                 sources: msg.sources as 'all' | ('memory' | 'messages' | 'summaries' | 'agent_logs' | 'pinned')[] | undefined,
+                crossProject: msg.crossProject as boolean | undefined,
               })
               // Feedback loop: bump access_count + importance для memory_items,
               // которые попали в результаты. Часто вспоминаемые факты получают
@@ -2400,6 +2466,40 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       )
     }
 
+    // ── Auto-recall: inject relevant past context for the first message in a chat ──
+    // When this is the first user message (no history), search memory + chat history
+    // for relevant past context and append it to the system prompt. This gives the
+    // agent continuity without the model needing to explicitly call recall_memory.
+    let systemPrompt = sideSystemPrompt
+    if (!systemPrompt) {
+      systemPrompt = await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)
+      if (!params.incognito && processedHistory.length === 0 && effectiveContent.trim().length > 10) {
+        try {
+          let autoRecallProjectId: string | undefined
+          const wctx = (() => { try { return getChatWorkdirContext(dbChatId) } catch { return null } })()
+          if (wctx?.workdir) {
+            const found = getAllProjects().find(p => p.workdir === wctx.workdir)
+            autoRecallProjectId = found?.id
+          }
+          const results = await searchAllSources({
+            query: effectiveContent.slice(0, 500),
+            projectId: autoRecallProjectId,
+            limit: 10,
+          })
+          if (results.length > 0) {
+            const recallLines = results.slice(0, 8).map(r => {
+              const tag = r.source === 'memory' ? `[${r.item?.kind ?? 'memory'}]` : `[${r.source}]`
+              return `- ${tag} ${r.content.slice(0, 300)}`
+            })
+            systemPrompt += `\n## Relevant past context (auto-recall)\n${recallLines.join('\n')}\n`
+            log('[chat:send] auto-recall: %d results for first message (chatId=%s)', results.length, params.chatId)
+          }
+        } catch (e) {
+          log('[chat:send] auto-recall failed: %s', (e as Error).message)
+        }
+      }
+    }
+
     worker.postMessage({
       chatId: params.chatId,
       msgId: assistantMsgId,
@@ -2407,7 +2507,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // (текстовые файлы + описания картинок от vision-модели).
       content: effectiveContent,
       history: processedHistory,
-      systemPrompt: sideSystemPrompt ?? await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode),
+      systemPrompt,
       enableTools: true,
       incognito: !!params.incognito,
       agentSettings,
@@ -2556,6 +2656,14 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     setChatModes(chatId, modes)
     return true
   })
+  // Индивидуальные сеттеры — пишут ОДНУ колонку, не затрагивая остальные.
+  // Устраняют кросс-контаминацию режимов при race condition save-on-switch.
+  ipcMain.handle('chat:setPlanningMode', (_, chatId: string, val: boolean) => { setChatPlanningMode(chatId, val); return true })
+  ipcMain.handle('chat:setImageMode', (_, chatId: string, val: boolean) => { setChatImageMode(chatId, val); return true })
+  ipcMain.handle('chat:setAskMode', (_, chatId: string, val: boolean) => { setChatAskMode(chatId, val); return true })
+  // Persona — single-select run mode (classic/architect/debugger/...).
+  ipcMain.handle('chat:getPersona', (_, chatId: string) => getChatPersona(chatId))
+  ipcMain.handle('chat:setPersona', (_, chatId: string, persona: import('../../shared/modes').PersonaId) => { setChatPersona(chatId, persona); return true })
   ipcMain.handle('chat:getDraft', (_, chatId: string) => getChatDraft(chatId))
   ipcMain.handle('chat:setDraft', (_, chatId: string, draft: string) => {
     setChatDraft(chatId, draft)
@@ -3024,6 +3132,127 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // правой панели в TitleBar.
   ipcMain.handle('chat:getLastTurnFilesChanged', (_, chatId: string) => {
     try { return getLastCheckpoint(chatId)?.filesChanged ?? 0 } catch { return 0 }
+  })
+
+  // ── Изменения последнего запроса (ChangesBadge над инпутом) ──────────────
+  // Возвращает per-file added/deleted для последнего turn'а с правками.
+  // Парсит toolSteps assistant-сообщения (diff-строки), агрегирует по path.
+  ipcMain.handle('chat:getLastTurnChanges', (_, chatId: string) => {
+    try {
+      const cp = getLastCheckpoint(chatId)
+      if (!cp || cp.filesChanged === 0 || !cp.assistantMessageId) return null
+      const messages = getMessages(chatId) as Array<{
+        id: string; toolSteps?: Array<{ type: string; diff?: string; toolName?: string; toolArgs?: Record<string, unknown> }>
+      }>
+      const assistantMsg = messages.find(m => m.id === cp.assistantMessageId)
+      if (!assistantMsg?.toolSteps) return null
+
+      const fileMap = new Map<string, { added: number; deleted: number }>()
+      for (const step of assistantMsg.toolSteps) {
+        if (step.type !== 'tool_result' || !step.diff) continue
+        // Извлекаем path из +++ строки, fallback — toolArgs.path
+        const pathMatch = step.diff.match(/^\+\+\+\s+(.+)$/m)
+        let filePath = pathMatch?.[1]?.trim() ?? (step.toolArgs?.path as string | undefined)
+        if (!filePath) continue
+        // Считаем + и - строки (пропуская +++/--- заголовки)
+        let added = 0, deleted = 0
+        for (const line of step.diff.split('\n')) {
+          if (line.startsWith('+++') || line.startsWith('---')) continue
+          if (line.startsWith('+')) added++
+          else if (line.startsWith('-')) deleted++
+        }
+        const existing = fileMap.get(filePath)
+        if (existing) { existing.added += added; existing.deleted += deleted }
+        else fileMap.set(filePath, { added, deleted })
+      }
+      if (fileMap.size === 0) return null
+      const files = Array.from(fileMap.entries()).map(([path, v]) => ({ path, added: v.added, deleted: v.deleted }))
+      const totalAdded = files.reduce((s, f) => s + f.added, 0)
+      const totalDeleted = files.reduce((s, f) => s + f.deleted, 0)
+      return {
+        files, totalAdded, totalDeleted,
+        userMessageId: cp.userMessageId,
+        assistantMessageId: cp.assistantMessageId,
+      }
+    } catch { return null }
+  })
+
+  // ── Undo правок файлов последнего turn'а (БЕЗ удаления сообщений) ────────
+  // Восстанавливает файлы из file_snapshots последнего checkpoint'а.
+  // contentBefore = null → файл был создан → удаляем. Иначе → перезаписываем.
+  ipcMain.handle('chat:undoLastTurnFiles', (_, chatId: string) => {
+    if (activeRuns.has(chatId)) {
+      return { error: 'Чат активен — дождитесь завершения ответа.' }
+    }
+    try {
+      const cp = getLastCheckpoint(chatId)
+      if (!cp || !cp.assistantMessageId) {
+        return { error: 'Нет изменений для отмены.' }
+      }
+      const snapshots = getSnapshotsForCheckpoint(chatId, cp.userMessageId)
+      if (snapshots.length === 0) {
+        return { error: 'Снапшоты файлов не найдены.' }
+      }
+      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
+      const { dirname } = require('path')
+      const restored: string[] = []
+      const failed: string[] = []
+      for (const snap of snapshots) {
+        try {
+          if (snap.contentBefore === null) {
+            if (existsSync(snap.path)) {
+              unlinkSync(snap.path)
+              restored.push(snap.path)
+            }
+          } else {
+            try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
+            writeFileSync(snap.path, snap.contentBefore, 'utf-8')
+            restored.push(snap.path)
+          }
+        } catch (e) {
+          failed.push(`${snap.path}: ${(e as Error).message}`)
+        }
+      }
+      const win = BrowserWindow.getAllWindows()[0] ?? null
+      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
+      log('[chat:undoLastTurnFiles] chatId=%s restored=%d failed=%d', chatId, restored.length, failed.length)
+      return { restored: restored.length, failed }
+    } catch (e) {
+      return { error: (e as Error).message }
+    }
+  })
+
+  // ── Undo одного файла из последнего turn'а ──────────────────────────────
+  // Восстанавливает один файл из file_snapshots последнего checkpoint'а.
+  ipcMain.handle('chat:undoFile', (_, chatId: string, filePath: string) => {
+    if (activeRuns.has(chatId)) {
+      return { error: 'Чат активен — дождитесь завершения ответа.' }
+    }
+    try {
+      const cp = getLastCheckpoint(chatId)
+      if (!cp || !cp.assistantMessageId) {
+        return { error: 'Нет изменений для отмены.' }
+      }
+      const snapshots = getSnapshotsForCheckpoint(chatId, cp.userMessageId)
+      const snap = snapshots.find(s => s.path === filePath)
+      if (!snap) {
+        return { error: 'Файл не найден в снапшотах этого turn\'а.' }
+      }
+      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
+      const { dirname } = require('path')
+      if (snap.contentBefore === null) {
+        if (existsSync(snap.path)) unlinkSync(snap.path)
+      } else {
+        try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
+        writeFileSync(snap.path, snap.contentBefore, 'utf-8')
+      }
+      const win = BrowserWindow.getAllWindows()[0] ?? null
+      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
+      log('[chat:undoFile] chatId=%s path=%s', chatId, filePath)
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: (e as Error).message }
+    }
   })
 
   /**

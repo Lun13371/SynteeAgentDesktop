@@ -12,10 +12,12 @@ import CommandArgMenu from '../CommandArgMenu/CommandArgMenu'
 import AttachmentChips from '../AttachmentChips/AttachmentChips'
 import QueuePanel from '../QueuePanel/QueuePanel'
 import ExtensionsBadge from '../ExtensionsBadge/ExtensionsBadge'
+import ChangesBadge from '../ChangesBadge/ChangesBadge'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { findMentionTokenAtCaret, mentionToAttachment, mimeFromExt, isImageMime } from '../../../../../shared/mentions'
-import type { Attachment, MentionItem, ApprovalMode } from '../../../../../shared/types'
+import type { Attachment, MentionItem, ApprovalMode, LastTurnChanges } from '../../../../../shared/types'
+import { PERSONAS, getPersona, DEFAULT_PERSONA, type PersonaId } from '../../../../../shared/modes'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import { useUIStore } from '../../../store/ui.store'
 import { useSettingsStore } from '../../../store/settings.store'
@@ -57,6 +59,10 @@ interface ChatInputProps {
     *  planningMode имеет приоритет (он строже — требует <plan>). */
   askMode?: boolean
   onAskModeChange?: (v: boolean) => void
+  /** Single-select persona run mode (classic/architect/debugger/...).
+   *  Orthogonal to the three toggles above — a radio choice, not a boolean. */
+  persona?: PersonaId
+  onPersonaChange?: (v: PersonaId) => void
   rateLimitSec?: number
   /** Рабочая директория текущего чата (режим "Код"). Показывается как
     *  бейдж над инпутом — как cwd-indicator в Codex CLI. */
@@ -74,6 +80,9 @@ interface ChatInputProps {
   onAttachmentsChange?: (attachments: Attachment[]) => void
   /** Лимит вложений (default 10). При достижении показываем warning-чип. */
   maxAttachments?: number
+  /** Изменения последнего turn'а — для ChangesBadge над инпутом.
+   *  null = нет правок / инкогнито / новый запрос сбросил. */
+  lastTurnChanges?: LastTurnChanges | null
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -179,6 +188,8 @@ function ChatInput({
   onImageModeChange,
   askMode = false,
   onAskModeChange,
+  persona = DEFAULT_PERSONA,
+  onPersonaChange,
   rateLimitSec = 0,
   workdir,
   compactSessionStats,
@@ -186,6 +197,7 @@ function ChatInput({
   attachments = [],
   onAttachmentsChange,
   maxAttachments = 10,
+  lastTurnChanges = null,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
@@ -223,6 +235,8 @@ function ChatInput({
   // 'webspeech' обрабатывается отдельно (live, прямо в textarea) — пока не MVP.
   const sttProvider = useSettingsStore(s => (s.settings['sttProvider'] as 'local' | 'groq') ?? 'local')
   const sttModelSize = useSettingsStore(s => (s.settings['sttModelSize'] as 'tiny' | 'base') ?? 'tiny')
+  // language — 'ru' (default) | 'en'. Selects persona name/description variant.
+  const lang = useSettingsStore(s => (s.settings['language'] as 'ru' | 'en') ?? 'ru')
 
   // Value до начала записи — для восстановления при cancel/error.
   const preVoiceValueRef = useRef('')
@@ -345,6 +359,22 @@ function ChatInput({
     const t = setTimeout(() => document.addEventListener('mousedown', close), 0)
     return () => { clearTimeout(t); document.removeEventListener('mousedown', close) }
   }, [plusMenuOpen])
+
+  // Корректировка позиции меню после mount: начальная оценка menuH может
+  // отличаться от реальной высоты (меню содержит скролл-секцию персонов).
+  // После первого paint измеряем menuRef и сдвигаем top, чтобы меню
+  // поместилось на экране и не обрезалось.
+  useEffect(() => {
+    if (!plusMenuOpen || !menuPos || !menuRef.current || !plusBtnRef.current) return
+    const menuRect = menuRef.current.getBoundingClientRect()
+    const btnRect = plusBtnRef.current.getBoundingClientRect()
+    const realH = menuRect.height + 8
+    let top = btnRect.top - realH
+    if (top < 8) top = btnRect.bottom + 8
+    const maxTop = window.innerHeight - menuRect.height - 8
+    if (top > maxTop) top = Math.max(8, maxTop)
+    setMenuPos({ top, left: menuPos.left, openUp: top < btnRect.top })
+  }, [plusMenuOpen, menuPos?.left])
 
   useEffect(() => {
     window.syntee.agent.getSettings().then((s: { approvalMode: ApprovalMode }) => {
@@ -983,6 +1013,9 @@ function ChatInput({
             Скрыт когда ничего не включено или инкогнито. */}
         {chatId && <ExtensionsBadge chatId={chatId} isIncognito={isIncognito} />}
 
+        {/* Бейдж изменений последнего запроса — +N -M строк, popup с undo. */}
+        {chatId && lastTurnChanges && <ChangesBadge chatId={chatId} changes={lastTurnChanges} />}
+
         {/* Бейдж режима планирования — над инпут полем */}
         <AnimatePresence>
           {planningMode && (
@@ -1041,6 +1074,28 @@ function ChatInput({
               <span className="chat-input-planning-badge-close">✕</span>
             </motion.div>
           )}
+          {persona !== 'classic' && (() => {
+            const p = getPersona(persona)
+            return (
+              <motion.div
+                key={`persona-${persona}`}
+                className="chat-input-persona-badge"
+                style={{ '--persona-color': p.color } as React.CSSProperties}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                onClick={() => onPersonaChange?.(DEFAULT_PERSONA)}
+                title={lang === 'en' ? `Reset to Classic` : `Сбросить до Classic`}
+              >
+                {p.iconSvg && (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: p.iconSvg }} />
+                )}
+                <span>{lang === 'en' ? p.nameEn : p.nameRu}</span>
+                <span className="chat-input-planning-badge-close">✕</span>
+              </motion.div>
+            )
+          })()}
         </AnimatePresence>
 
         {/* Селектор модели — справа в status-row. Минималистичный бейдж
@@ -1119,7 +1174,10 @@ function ChatInput({
             onClick={() => {
               if (!plusBtnRef.current) return
               const r = plusBtnRef.current.getBoundingClientRect()
-              const menuH = 130 // примерная высота меню (attach + divider + 3 toggle)
+              // Начальная оценка высоты: attach + divider + 3 toggle + divider
+              // + persona-section (7 компактных пунктов + заголовок). Реальная
+              // высота измеряется после mount через useEffect-корректировку выше.
+              const menuH = 380
               setMenuPos({
                 top: r.top - menuH - 8,
                 left: r.left,
@@ -1209,6 +1267,46 @@ function ChatInput({
                         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                       />
                     </motion.button>
+                  </div>
+
+                  <div className="chat-input-plus-divider" />
+                  <div className="chat-input-plus-section-label">
+                    {lang === 'en' ? 'Mode' : 'Режим'}
+                  </div>
+                  <div className="chat-input-plus-personas">
+                    {PERSONAS.map(p => {
+                      const selected = p.id === persona
+                      return (
+                        <div
+                          key={p.id}
+                          className={`chat-input-persona-item${selected ? ' chat-input-persona-item--selected' : ''}${p.id === 'classic' ? ' chat-input-persona-item--classic' : ''}`}
+                          style={p.color ? ({ '--persona-color': p.color } as React.CSSProperties) : undefined}
+                          onClick={() => { onPersonaChange?.(p.id); setPlusMenuOpen(false) }}
+                        >
+                          <span className="chat-input-persona-icon">
+                            {p.iconSvg
+                              ? <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: p.iconSvg }} />
+                              : <span className="chat-input-persona-dot" />}
+                          </span>
+                          <span className="chat-input-persona-text">
+                            <span className="chat-input-persona-name">{lang === 'en' ? p.nameEn : p.nameRu}</span>
+                            <span className="chat-input-persona-desc">{lang === 'en' ? p.descEn : p.descRu}</span>
+                          </span>
+                          {selected && (
+                            <motion.span
+                              className="chat-input-persona-check"
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12"/>
+                              </svg>
+                            </motion.span>
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 </motion.div>
               )}

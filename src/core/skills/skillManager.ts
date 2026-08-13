@@ -35,6 +35,30 @@ export class SkillManager {
     this.projectCache.clear()
   }
 
+  /**
+   * Авто-включение проектных скиллов без явного состояния в skillsState.
+   * Срабатывает при появлении новых .md в {workdir}/.syntee/skills/ (например
+   * после установки через /setup): каждый новый скилл получает
+   * { enabled: true, scope: { type:'projects', projectIds:[projectId] } } —
+   * включён только для своего проекта. Скиллы с уже записанным состоянием
+   * (включённым или выключенным пользователем) не трогаются.
+   *
+   * Возвращает true если хотя бы один скилл был авто-включён (для пуш-ивента).
+   */
+  autoEnableProjectSkills(projectId: string, workdir: string): boolean {
+    this.invalidate()
+    const skills = this.loadSkills(workdir, projectId).filter(s => s.source === 'project')
+    const stateMap = (this.store.get('skillsState') as Record<string, SkillState> | undefined) ?? {}
+    let changed = false
+    for (const skill of skills) {
+      if (stateMap[skill.id]) continue
+      stateMap[skill.id] = { enabled: true, scope: { type: 'projects', projectIds: [projectId] } }
+      changed = true
+    }
+    if (changed) this.store.set('skillsState', stateMap)
+    return changed
+  }
+
   /** Загружает все скиллы: глобальные + проектные для указанного workdir. */
   loadSkills(projectWorkdir?: string, projectId?: string): Skill[] {
     if (this.globalSkills === null) {

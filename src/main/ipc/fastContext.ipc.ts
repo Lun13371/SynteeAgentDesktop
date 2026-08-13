@@ -20,6 +20,8 @@ import {
   setProgressCallback, setUpdatedCallback, setActiveProject,
   isWatching, isIndexing, forceReindex, setWatcherStore,
 } from '../../core/context/fastContextWatcher'
+import { setActiveExtensionsProject, initExtensionsDetector } from '../../core/extensionsDetector'
+import { getProjectById } from '../../core/db'
 
 let _initialized = false
 
@@ -30,6 +32,10 @@ export function registerFastContextIPC(store: Store, getWindow: () => BrowserWin
 
   // Передаём store в watcher — он читает indexingSettings (enabled/debounce/ignoreDirs/prewarm).
   setWatcherStore(store)
+
+  // Инициализируем extensions-детектор (для авто-подключения MCP и авто-включения
+  // skills при появлении/изменении .mcp.json / .syntee/skills/ активного проекта).
+  initExtensionsDetector(getWindow)
 
   // Push callbacks из watcher'а → renderer
   setProgressCallback((projectId, progress) => {
@@ -46,10 +52,17 @@ export function registerFastContextIPC(store: Store, getWindow: () => BrowserWin
     }
   })
 
-  // Отслеживаем активный проект для priority indexing.
+  // Отслеживаем активный проект для priority indexing + extensions watcher.
   // Renderer шлёт 'fastcontext:setActive' когда пользователь переключает проект.
   ipcMain.handle('fastcontext:setActive', (_e, projectId: string | null) => {
     setActiveProject(projectId)
+    // Параллельно переключаем extensions-watcher на тот же проект.
+    let workdir: string | undefined
+    if (projectId) {
+      const proj = getProjectById(projectId)
+      workdir = proj?.workdir
+    }
+    setActiveExtensionsProject(projectId ?? null, workdir)
   })
 
   // Полный статус индекса для модалки
