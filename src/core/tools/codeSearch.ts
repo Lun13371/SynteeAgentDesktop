@@ -221,7 +221,10 @@ function formatFilesOnly(counts: Map<string, number>, workdir: string, grandTota
  *  ретраев (которые раньше загоняли модель в loop-guard). */
 function buildEmptyHint(pattern: string, opts: SearchOpts | undefined, literalMode: boolean): string {
   const hints = ['No matches found.']
-  if (!literalMode && /[.[\]()*+?{}\\$^|]/.test(pattern)) {
+  // #8: Специфичный hint для | (alternation) — самый частый кейс путаницы
+  if (!literalMode && pattern.includes('|')) {
+    hints.push('Pattern contains | (alternation). If you meant literal |, use literal=true. If you meant alternation, check each alternative separately — one may have a typo.')
+  } else if (!literalMode && /[.[\]()*+?{}\\$^|]/.test(pattern)) {
     hints.push('Pattern has regex metachars — retry with literal=true if you meant them as text.')
   }
   if (!opts?.fileGlob) hints.push('Narrow file_glob (e.g. "*.ts") or path to a subfolder.')
@@ -302,6 +305,22 @@ async function searchWithRg(
   const { counts, grandTotal } = parseCounts(countRes.stdout)
 
   if (grandTotal === 0) {
+    // #8: Если паттерн содержит | (alternation) и не literal — пробуем literal
+    // (| может быть валидным regex, но не находить совпадений, а как literal — находить)
+    if (!literalMode && pattern.includes('|')) {
+      const litCountRes = await runRgOnce(rg, ['--count-matches', '--with-filename', '--hidden', caseFlag, '--fixed-strings', ...globArgs, pattern, absPath])
+      const { grandTotal: litTotal } = parseCounts(litCountRes.stdout)
+      if (litTotal > 0) {
+        // Literal нашёл — перезапускаем pass 2 в literal mode
+        literalMode = true
+        const litContentRes = await runRgOnce(rg, ['--json', '--hidden', caseFlag, '--fixed-strings', ...globArgs, '-C', String(lim.contextLines), '-m', String(lim.perFileDisplayCap), pattern, absPath])
+        const files = parseJsonContent(litContentRes.stdout)
+        const formatted = formatOutput(files, parseCounts(litCountRes.stdout).counts, litTotal, opts, workdir, true, lim)
+        if (formatted.length <= lim.maxChars) return { success: true, output: formatted }
+        const sliced = sliceOnFileBoundary(formatted, lim.maxChars)
+        return { success: true, output: sliced + `\n...[truncated, ${sliced.length} of ${formatted.length} chars — narrow file_glob/path or raise max_chars]` }
+      }
+    }
     return { success: true, output: buildEmptyHint(pattern, opts, literalMode) }
   }
 

@@ -71,8 +71,11 @@ export function buildSystemPrompt(params: {
   persona?: { id: string; nameEn: string; toolsProfile: 'full' | 'readonly'; skillId?: string }
   /** Resolved instructions for a persona that wraps a builtin skill. */
   personaSkill?: { name: string; instructions: string }
+  /** Project notes — titles shown in the system prompt so the agent is aware
+    * of existing notes. Full content is available via manage_notes tool. */
+  notesInfo?: { notes: Array<{ id: string; title: string }>; count: number }
 }): string {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, persona, personaSkill } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, persona, personaSkill, notesInfo } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -82,6 +85,7 @@ export function buildSystemPrompt(params: {
   const installPathsBlock = buildInstallPathsBlock(workdir, globalSkillsDir)
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)
+  const notesBlock = buildNotesBlock(notesInfo)
   const modeInjection = planningMode
     ? buildPlanningInjection()
     : askMode
@@ -95,6 +99,7 @@ ${userName ? `The user's name is ${userName}. Address them by name.` : ''}
 Date and time: ${dateStr}.
 ${memoryStatsBlock}
 ${graphStatsBlock}
+${notesBlock}
 ${memoryContext ? '\n' + memoryContext : ''}
 ${workingMemory ? `\n## Working memory (what was done in this chat)\n${workingMemory}\n` : ''}
 ${customSystemPrompt ? `\n## Custom instruction\n${customSystemPrompt}\n` : ''}
@@ -894,3 +899,16 @@ function buildGraphStatsBlock(stats?: {
 
   return block
 }
+
+/**
+ * Project notes block — the agent sees which notes exist in the project.
+ * Only titles are shown (not content) to save tokens. The agent can use
+ * manage_notes tool with action='list' to read full content.
+ * If no notes or no info — empty string.
+ */
+function buildNotesBlock(notesInfo?: { notes: Array<{ id: string; title: string }>; count: number }): string {
+  if (!notesInfo || notesInfo.count === 0) return ''
+  const titles = notesInfo.notes.map((n, i) => `${i + 1}. ${n.title}`).join('\n')
+  return `\n## Project notes (${notesInfo.count})\n${titles}\nUse manage_notes tool to read, create, update, or delete notes.\n`
+}
+

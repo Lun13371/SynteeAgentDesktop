@@ -1,6 +1,7 @@
 // ── Универсальный форматтер вывода диагностики ──
 // Перенесён из diagnostics.ts:202-226, обобщён для любого набора провайдеров.
 
+import { resolve } from 'path'
 import { smartTrimOutput } from '../_shared'
 import type { DiagnosticEntry } from './types'
 
@@ -9,6 +10,8 @@ export interface FormatInput {
   failures: string[]
   notes: string[]
   detectedProviders: string[]
+  /** #7: изменённые файлы (git diff) — ошибки в них идут первыми */
+  changedFiles?: Set<string> | null
 }
 
 export function formatDiagnosticsOutput({
@@ -16,7 +19,14 @@ export function formatDiagnosticsOutput({
   failures,
   notes,
   detectedProviders,
+  changedFiles,
 }: FormatInput): { success: boolean; output: string } {
+  // #7: Если changedFiles есть — разделяем на "changed" и "pre-existing"
+  const hasChangedFiles = changedFiles && changedFiles.size > 0
+
+  // Нормализуем пути из changedFiles для сравнения с entry.file
+  const changedSet = hasChangedFiles ? changedFiles! : null
+
   entries.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)
 
   const errorCount = entries.filter((e) => e.severity === 'error').length
@@ -63,10 +73,42 @@ export function formatDiagnosticsOutput({
     return { success: true, output: okMsg }
   }
 
-  const lines = entries.map(
-    (e) =>
-      `[${e.source}] ${e.severity === 'error' ? 'ERROR' : 'WARN'} ${e.file}:${e.line}${e.col ? ':' + e.col : ''} — ${e.message}`,
-  )
+  const formatEntry = (e: DiagnosticEntry) =>
+    `[${e.source}] ${e.severity === 'error' ? 'ERROR' : 'WARN'} ${e.file}:${e.line}${e.col ? ':' + e.col : ''} — ${e.message}`
+
+  // #7: Разделяем на changed files и pre-existing
+  if (hasChangedFiles && changedSet) {
+    const changedEntries: DiagnosticEntry[] = []
+    const preExistingEntries: DiagnosticEntry[] = []
+    for (const e of entries) {
+      try {
+        if (changedSet.has(resolve(e.file))) {
+          changedEntries.push(e)
+        } else {
+          preExistingEntries.push(e)
+        }
+      } catch {
+        preExistingEntries.push(e)
+      }
+    }
+
+    const sections: string[] = []
+    if (changedEntries.length > 0) {
+      sections.push(`Errors in changed files (${changedEntries.length}):`)
+      sections.push(...changedEntries.map(formatEntry))
+    }
+    if (preExistingEntries.length > 0) {
+      if (changedEntries.length > 0) sections.push('')
+      sections.push(`Pre-existing errors in other files (${preExistingEntries.length}):`)
+      sections.push(...preExistingEntries.map(formatEntry))
+    }
+
+    const header = `Found ${errorCount} errors, ${warningCount} warnings:`
+    const body = smartTrimOutput([header, ...notes, ...sections].join('\n'), 8000)
+    return { success: errorCount === 0, output: body }
+  }
+
+  const lines = entries.map(formatEntry)
   const header = `Found ${errorCount} errors, ${warningCount} warnings:`
   const body = smartTrimOutput([header, ...notes, ...lines].join('\n'), 8000)
   return { success: errorCount === 0, output: body }

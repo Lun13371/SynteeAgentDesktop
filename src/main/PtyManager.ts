@@ -190,6 +190,8 @@ class PtyManager {
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
+      // #4,#12: убираем git pager (less), который виснет в non-interactive PTY
+      GIT_PAGER: 'cat',
       ...(isUnixLikeShell ? { LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' } : {}),
     } as Record<string, string>
     const effectiveCwd = cwd || homedir()

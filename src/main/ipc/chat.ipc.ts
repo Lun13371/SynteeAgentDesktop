@@ -24,6 +24,8 @@ import {
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { saveMemoryItem, searchAllSources, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit } from '../../core/memory/MemoryStore'
+import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } from '../../core/db/notes'
+
 import { onCompactionTrigger, extractAndSaveFacts } from '../../core/memory/extractor'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats } from '../../core/memory/graphStore'
@@ -720,7 +722,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let globalSkillsDir = ''
     try { globalSkillsDir = path.join(app.getPath('userData'), 'skills') } catch { /* app may be unavailable */ }
 
-    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode })
+    // Project notes — agent sees note titles in the system prompt.
+    // In incognito — skip (privacy). Only project notes, not chat notes.
+    let notesInfo: { notes: Array<{ id: string; title: string }>; count: number } | undefined
+    if (!isIncognito && promptProjectId) {
+      notesInfo = withRetrySync('notesInfo', () => getProjectNotesInfo(promptProjectId!), undefined)
+    }
+
+    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, notesInfo })
+
   }
 
   /**
@@ -2255,6 +2265,135 @@ ${subModeOutro}`,
           })()
           break
         }
+        case 'manage_notes': {
+          ;(async () => {
+            try {
+              const action = msg.action as 'create' | 'update' | 'delete' | 'list'
+              const scope = msg.scope as 'project' | 'chat'
+              const projectId = msg.projectId as string | undefined
+              const chatId = msg.chatId as string | undefined
+
+              if (action === 'list') {
+                const notes = listNotes({ scope, projectId, chatId })
+                worker.postMessage({
+                  type: 'manage_notes_reply',
+                  replyId: msg.replyId,
+                  success: true,
+                  notes: notes.map(n => ({ id: n.id, title: n.title, content: n.content, updatedAt: n.updatedAt })),
+                })
+              } else if (action === 'create') {
+                const result = createNote({
+                  scope,
+                  projectId,
+                  chatId,
+                  title: msg.title as string,
+                  content: msg.content as string | undefined,
+                })
+                if (result.success && result.note) {
+                  try {
+                    const win = mainWindow.getWindow()
+                    if (win && !win.isDestroyed()) {
+                      win.webContents.send('notes:changed', { scope, projectId: projectId ?? null, chatId: chatId ?? null })
+                    }
+                  } catch { /* ok */ }
+                  worker.postMessage({
+                    type: 'manage_notes_reply',
+                    replyId: msg.replyId,
+                    success: true,
+                    note: { id: result.note.id, title: result.note.title },
+                  })
+                } else {
+                  worker.postMessage({
+                    type: 'manage_notes_reply',
+                    replyId: msg.replyId,
+                    success: false,
+                    error: result.error ?? 'create failed',
+                  })
+                }
+              } else if (action === 'update') {
+                const result = updateNote({
+                  id: msg.noteId as string,
+                  title: msg.title as string | undefined,
+                  content: msg.content as string | undefined,
+                })
+                if (result.success && result.note) {
+                  try {
+                    const win = mainWindow.getWindow()
+                    if (win && !win.isDestroyed()) {
+                      win.webContents.send('notes:changed', { scope, projectId: result.note.projectId, chatId: result.note.chatId })
+                    }
+                  } catch { /* ok */ }
+                  worker.postMessage({
+                    type: 'manage_notes_reply',
+                    replyId: msg.replyId,
+                    success: true,
+                    note: { id: result.note.id, title: result.note.title },
+                  })
+                } else {
+                  worker.postMessage({
+                    type: 'manage_notes_reply',
+                    replyId: msg.replyId,
+                    success: false,
+                    error: result.error ?? 'update failed',
+                  })
+                }
+              } else if (action === 'delete') {
+                let noteScope: 'project' | 'chat' = 'chat'
+                let noteProjectId: string | null = null
+                let noteChatId: string | null = null
+                try {
+                  const row = getDB().prepare(`SELECT scope, project_id, chat_id FROM notes WHERE id=?`).get(msg.noteId) as
+                    | { scope: 'project' | 'chat'; project_id: string | null; chat_id: string | null }
+                    | undefined
+                  if (row) {
+                    noteScope = row.scope
+                    noteProjectId = row.project_id
+                    noteChatId = row.chat_id
+                  }
+                } catch { /* ok */ }
+
+                const result = deleteNote(msg.noteId as string)
+                if (result.success) {
+                  try {
+                    const win = mainWindow.getWindow()
+                    if (win && !win.isDestroyed()) {
+                      win.webContents.send('notes:changed', { scope: noteScope, projectId: noteProjectId, chatId: noteChatId })
+                    }
+                  } catch { /* ok */ }
+                  worker.postMessage({
+                    type: 'manage_notes_reply',
+                    replyId: msg.replyId,
+                    success: true,
+                  })
+                } else {
+                  worker.postMessage({
+                    type: 'manage_notes_reply',
+                    replyId: msg.replyId,
+                    success: false,
+                    error: result.error ?? 'delete failed',
+                  })
+                }
+              } else {
+                worker.postMessage({
+                  type: 'manage_notes_reply',
+                  replyId: msg.replyId,
+                  success: false,
+                  error: `Unknown action: ${action}`,
+                })
+              }
+            } catch (e) {
+              worker.postMessage({
+                type: 'manage_notes_reply',
+                replyId: msg.replyId,
+                success: false,
+                error: (e as Error).message,
+              })
+            }
+          })()
+          break
+        }
+
+
 
         case 'context_usage':
           // Сохраняем последний real usage в БД — переживает перезапуск.

@@ -26,6 +26,7 @@ import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC, prewarmWhisper } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
+import { registerNotesIPC } from './ipc/notes.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
@@ -144,6 +145,7 @@ app.whenReady().then(async () => {
   prewarmWhisper(store)
   registerAgentIPC(store, () => mainWindow.getWindow())
   registerMemoryIPC(store)
+  registerNotesIPC(() => mainWindow.getWindow())
   registerProviderIPC(store)
   registerDebugIPC(store)
   registerImageIPC(store, mainWindow)

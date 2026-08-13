@@ -17,6 +17,7 @@ export const TOOL_SCHEMAS = [
           patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one occurrence (or all if replace_all=true). Fuzzy-matches by ignoring leading whitespace.' },
           replace_all: { type: 'boolean', description: '[apply_patch] Replace ALL occurrences of each SEARCH block (default: false = first occurrence only)' },
           create_if_not_exists: { type: 'boolean', description: 'Создать файл (и директории) если не существует' },
+          confirm_overwrite: { type: 'boolean', description: '[overwrite] Set to true to confirm a destructive overwrite (when >90% of lines are removed). Required when overwrite would drastically shrink the file.' },
         },
         required: ['path', 'mode'],
       },
@@ -43,7 +44,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'get_diagnostics',
-      description: 'Check the project for compilation and linting errors. Auto-detects the project language/stack (TypeScript, JavaScript, Python, Go, Rust, C#, Kotlin, Java, C/C++, Ruby, PHP, Lua, Swift, Dart, Elixir, Haskell, Scala, R, Nim, Zig, OCaml, Crystal, V, Clojure, Groovy, Perl, Objective-C, Erlang, Fortran, Julia, GraphQL, Protobuf, TOML, CMake, Bazel, JSON, YAML, Docker, Terraform, SQL, Markdown — 42 stacks total) and runs the appropriate type-checker and linter for each detected stack. Pass "files" to check specific files only. Call after code edits to verify nothing broke. Returns a list of errors with file:line.',
+      description: 'Check the project for compilation and linting errors. Auto-detects the project language/stack (TypeScript, JavaScript, Python, Go, Rust, C#, Kotlin, Java, C/C++, Ruby, PHP, Lua, Swift, Dart, Elixir, Haskell, Scala, R, Nim, Zig, OCaml, Crystal, V, Clojure, Groovy, Perl, Objective-C, Erlang, Fortran, Julia, GraphQL, Protobuf, TOML, CMake, Bazel, JSON, YAML, Docker, Terraform, SQL, Markdown — 42 stacks total) and runs the appropriate type-checker and linter for each detected stack. Pass "files" to check ONLY specific files. Without "files", errors are sorted: changed files (git diff) first, then pre-existing. Call after code edits to verify nothing broke. Returns a list of errors with file:line.',
       parameters: {
         type: 'object',
         properties: {
@@ -73,12 +74,13 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: 'CREATE a new file from scratch. If the file already exists — use edit_file (mode=replace/insert/overwrite/apply_patch) for edits. write_file is forbidden for overwriting an existing file (returns an error). Returns a diff.',
+      description: 'CREATE a new file from scratch. If the file already exists — use edit_file (mode=apply_patch/insert/overwrite) for edits, or pass force=true to overwrite (useful for restoring a corrupted file). Returns a diff.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Path to the file' },
           content: { type: 'string', description: 'File content' },
+          force: { type: 'boolean', description: 'Overwrite existing file (default false). Use edit_file mode=overwrite as alternative.' },
         },
         required: ['path', 'content'],
       },
@@ -383,6 +385,45 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  // ── manage_notes: project and chat notes ──
+  // Notes are short persistent records: project notes are visible across
+  // all chats of the project (and in the system prompt), chat notes are
+  // scoped to the current chat only. Use sparingly — max 15 project notes.
+  {
+    type: 'function',
+    function: {
+      name: 'manage_notes',
+      description: 'Manage notes for the project or chat. Actions: create, update, delete, list. Project notes are visible in all chats of the project (shown in system prompt). Chat notes are specific to the current chat. Use for remembering important project facts, decisions, or context that should persist across sessions. Max 15 project notes — use sparingly, only for important information.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['create', 'update', 'delete', 'list'],
+            description: 'What to do: create a new note, update an existing one, delete one, or list all notes.',
+          },
+          scope: {
+            type: 'string',
+            enum: ['project', 'chat'],
+            description: 'project — note visible in all chats of this project; chat — note only for the current chat.',
+          },
+          title: {
+            type: 'string',
+            description: '[create/update] Note title (1-100 chars). Required for create, optional for update.',
+          },
+          content: {
+            type: 'string',
+            description: '[create/update] Note body text. Markdown supported. Optional for update (omit to keep existing).',
+          },
+          note_id: {
+            type: 'string',
+            description: '[update/delete] ID of the note to update or delete.',
+          },
+        },
+        required: ['action', 'scope'],
+      },
+    },
+  },
   // ── recall_memory: find relevant memories ──
   // Multi-source search: 5 sources in parallel (memory + messages + summaries + agent_logs + pinned).
   // FTS5 trigram for messages/pinned, TF-IDF for memory_items, LIKE for summaries/agent_logs.
@@ -602,6 +643,8 @@ export function getToolSchemas(options: {
     // Always available — the model decides when to save/recall.
     'save_memory',
     'recall_memory',
+    // Notes: manage project/chat notes (create/update/delete/list).
+    'manage_notes',
     // Web search, HTTP and sub-agents — always available to the agent, the
     // model decides when to use them.
     'search_web',
