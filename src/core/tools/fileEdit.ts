@@ -13,7 +13,7 @@ export interface EditResult extends ToolResult {
 // добавляем BOM для .ps1: файл остаётся читаемым и в PS 5.1, и в pwsh 7+,
 // и в VS Code. Node при `readFile(path,'utf-8')` BOM автоматически стрипает,
 // так что все diff/patch-сравнения работают с чистым контентом без BOM.
-function writeWithOptionalBom(filePath: string, content: string): Promise<void> {
+export function writeWithOptionalBom(filePath: string, content: string): Promise<void> {
   if (/\.ps1$/i.test(filePath)) {
     // EF BB BF — UTF-8 BOM
     const buf = Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(content, 'utf-8')])
@@ -31,7 +31,8 @@ function fuzzyFindAndReplace(
   replacement: string,
   replaceAll: boolean,
 ): { found: boolean; result: string } {
-  const stripIndent = (s: string) => s.split('\n').map(l => l.trimStart()).join('\n')
+  // trimStart + trimEnd (trailing whitespace) для сравнения — но не для замены
+  const stripIndent = (s: string) => s.split('\n').map(l => l.trimStart().replace(/\s+$/, '')).join('\n')
   const strippedHaystack = stripIndent(haystack)
   const strippedNeedle = stripIndent(needle)
 
@@ -42,10 +43,10 @@ function fuzzyFindAndReplace(
   const needleLines = strippedNeedle.split('\n')
   const origLines = haystack.split('\n')
 
-  // Находим все стартовые позиции совпадений по trimStart-сравнению строк
+  // Находим все стартовые позиции совпадений по trimStart+trimEnd сравнению строк
   const matchStarts: number[] = []
   for (let i = 0; i <= origLines.length - needleLines.length; i++) {
-    if (needleLines.every((nl, j) => (origLines[i + j] ?? '').trimStart() === nl)) {
+    if (needleLines.every((nl, j) => (origLines[i + j] ?? '').trimStart().replace(/\s+$/, '') === nl)) {
       matchStarts.push(i)
     }
   }
@@ -65,20 +66,24 @@ function fuzzyFindAndReplace(
 }
 
 
-export async function writeFile(path: string, content: string, opts?: { dryRun?: boolean; workdir?: string }): Promise<ToolResult> {
+export async function writeFile(path: string, content: string, opts?: { dryRun?: boolean; workdir?: string; force?: boolean }): Promise<ToolResult> {
   try {
     path = resolveToolPath(path, opts?.workdir)
     // write_file — СОЗДАНИЕ нового файла с нуля. Перезапись существующего
-    // запрещена: для правок используй edit_file (mode=apply_patch/insert/
-    // overwrite) — он возвращает diff и сохраняет оригинал для
-    // undo/rewind. Без этой проверки модель часто звала write_file для
-    // точечных правок, теряя весь контент файла.
-    if (existsSync(path)) {
+    // запрещена (если force !== true): для правок используй edit_file
+    // (mode=apply_patch/insert/overwrite) — он возвращает diff и сохраняет
+    // оригинал для undo/rewind. force=true позволяет перезаписать существующий
+    // файл (например, для восстановления после неудачной правки).
+    if (existsSync(path) && !opts?.force) {
       return {
         success: false,
         output: '',
-        error: 'File already exists. write_file is only for creating a new file. To edit an existing file use edit_file (mode=apply_patch/insert/overwrite).',
+        error: 'File already exists. write_file is only for creating a new file. To edit an existing file use edit_file (mode=apply_patch/insert/overwrite), or pass force=true to overwrite.',
       }
+    }
+    let originalContent: string | null = null
+    if (existsSync(path) && opts?.force) {
+      originalContent = await fsReadFile(path, 'utf-8')
     }
     // dryRun — do not write, only return a diff preview
     if (opts?.dryRun) {
@@ -89,7 +94,7 @@ export async function writeFile(path: string, content: string, opts?: { dryRun?:
     await writeWithOptionalBom(path, content)
     const lines = content.split('\n').length
     const diff = `+++ ${path}\n${content.split('\n').map(l => '+' + l).join('\n')}`
-    return { success: true, output: `File created: ${path} (${lines} lines)`, diff, originalContent: null }
+    return { success: true, output: `File created: ${path} (${lines} lines)`, diff, originalContent }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
@@ -134,7 +139,11 @@ function applySearchReplacePatch(original: string, patch: string, replaceAll = f
     const searchText = lines.slice(searchStartIdx + 1, sepIdx).join('\n')
     const replaceText = lines.slice(sepIdx + 1, replaceEndIdx).join('\n')
 
-    if (!searchText) {
+    // Обрезаем пустые строки в начале/конце SEARCH — модель часто добавляет
+    // случайные пустые строки вокруг паттерна, что ломает точный поиск.
+    const trimmedSearch = searchText.replace(/^\n+/, '').replace(/\n+$/, '')
+
+    if (!trimmedSearch) {
       errors.push(`Empty SEARCH in block ${searchStartIdx + 1}`)
       i = replaceEndIdx + 1
       continue
@@ -142,7 +151,7 @@ function applySearchReplacePatch(original: string, patch: string, replaceAll = f
 
     // Normalize CRLF → LF for comparison
     const normResult = normalizeLineEndings(result)
-    const normSearch = normalizeLineEndings(searchText)
+    const normSearch = normalizeLineEndings(trimmedSearch)
 
     if (normResult.includes(normSearch)) {
       // Exact match found
@@ -152,13 +161,15 @@ function applySearchReplacePatch(original: string, patch: string, replaceAll = f
         result = normResult.replace(normSearch, replaceText)
       }
     } else {
-      // Fuzzy attempt: ignore leading whitespace of each line (tabs vs spaces,
-      // extra/missing indent). Same logic as replace-mode fuzzy, now shared.
+      // Fuzzy attempt: ignore leading/trailing whitespace of each line (tabs vs
+      // spaces, extra/missing indent, trailing whitespace). Same logic as
+      // replace-mode fuzzy, now shared.
       const fuzzy = fuzzyFindAndReplace(normResult, normSearch, replaceText, replaceAll)
       if (fuzzy.found) {
         result = fuzzy.result
       } else {
-        errors.push(buildNotFoundSnippetError(normResult, normSearch, `apply_patch SEARCH (lines ${searchStartIdx + 2}-${sepIdx})`))
+        const hint = 'Tip: the SEARCH block may have trailing whitespace or empty lines that differ from the file. Reread the exact content with read_file.'
+        errors.push(buildNotFoundSnippetError(normResult, normSearch, `apply_patch SEARCH (lines ${searchStartIdx + 2}-${sepIdx})`) + ' ' + hint)
       }
     }
     i = replaceEndIdx + 1
@@ -182,6 +193,7 @@ export async function editFile(params: {
   dryRun?: boolean
   patch?: string
   replace_all?: boolean
+  confirm_overwrite?: boolean
   workdir?: string
 }): Promise<EditResult> {
   try {
@@ -253,6 +265,7 @@ export async function editFile(params: {
 
     const original = await fsReadFile(params.path, 'utf-8')
     let updated = original
+    let insertWarning = ''
 
     if (params.mode === 'apply_patch') {
       if (!params.patch) return { success: false, output: '', error: 'edit_file apply_patch: patch is required' }
@@ -270,11 +283,31 @@ export async function editFile(params: {
       }
       const lines = original.split('\n')
       const at = Math.min(params.after_line ?? lines.length, lines.length)
+      // Context check: предупредить если after_line внутри незакрытой многострочной
+      // конструкции (открытый {, (, [). Вставка туда может сломать синтаксис.
+      const braceWarn = checkBraceBalance(lines, at)
       lines.splice(at, 0, ...params.content.split('\n'))
       updated = lines.join('\n')
+      if (braceWarn) {
+        insertWarning = braceWarn
+      }
 
     } else if (params.mode === 'overwrite') {
       if (params.content === undefined) return { success: false, output: '', error: 'edit_file overwrite: content is required' }
+      // Safety guard: предотвратить случайное уничтожение файла (4128 строк → 1).
+      // Если новый контент составляет <10% строк от оригинала и модель НЕ передала
+      // confirm_overwrite=true — отказ. Модель повторит с confirm_overwrite=true
+      // если это действительно intended.
+      const origLines = original.split('\n').length
+      const newLines = params.content.split('\n').length
+      if (origLines > 10 && newLines < origLines * 0.1 && !params.confirm_overwrite) {
+        const pct = Math.round((1 - newLines / origLines) * 100)
+        return {
+          success: false,
+          output: '',
+          error: `overwrite will replace ${origLines} lines with ${newLines} lines (${pct}% reduction). This looks like accidental data loss. If this is intentional, pass confirm_overwrite=true.`,
+        }
+      }
       updated = params.content
     }
 
@@ -294,10 +327,40 @@ export async function editFile(params: {
     }
     await writeWithOptionalBom(params.path, updated)
     const changedLines2 = countChangedLines(diff)
-    return { success: true, output: `File updated: ${params.path} (${changedLines2} lines changed)`, diff, originalContent: original }
+    const outMsg = `File updated: ${params.path} (${changedLines2} lines changed)`
+    return { success: true, output: insertWarning ? `${outMsg}\n⚠ ${insertWarning}` : outMsg, diff, originalContent: original }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
+}
+// ── Проверка баланса скобок для insert context warning ──────────────────────
+// Считает баланс { } ( ) [ ] от строки 1 до upToLine. Если баланс ненулевой —
+// after_line находится внутри незакрытой конструкции. Упрощённо: не парсит
+// строковые литералы и комментарии (false positives возможны, но warning
+// не блокирует — лучше ложный warning, чем сломанный import).
+function checkBraceBalance(lines: string[], upToLine: number): string | null {
+  let depth = 0
+  let openChar = ''
+  const pairs: Record<string, string> = { '}': '{', ')': '(', ']': '[' }
+  const opens = new Set(['{', '(', '['])
+  for (let i = 0; i < Math.min(upToLine, lines.length); i++) {
+    // Упрощённо: убираем содержимое строковых литералов в той же строке
+    // (одинарные/двойные кавычки, backtick template literals)
+    const stripped = lines[i].replace(/'(?:[^'\\]|\\.)*'/g, '').replace(/"(?:[^"\\]|\\.)*"/g, '').replace(/`(?:[^`\\]|\\.)*`/g, '')
+    for (const ch of stripped) {
+      if (opens.has(ch)) {
+        if (depth === 0) openChar = ch
+        depth++
+      } else if (pairs[ch]) {
+        depth = Math.max(0, depth - 1)
+      }
+    }
+  }
+  if (depth > 0) {
+    const typeName = openChar === '{' ? 'brace' : openChar === '(' ? 'paren' : 'bracket'
+    return `Line ${upToLine} is inside an unclosed ${typeName} block (depth=${depth}). Insert here may break syntax.`
+  }
+  return null
 }
 
 

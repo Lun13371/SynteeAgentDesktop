@@ -4,7 +4,32 @@ import { execAsync, smartTrimOutput, type ToolResult } from './_shared'
 export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
   try {
     const isWin = process.platform === 'win32'
-    const timeoutMs = (timeout || 60) * 1000
+
+    // ── Pre-processing команды ──
+    let processedCmd = cmd
+
+    // #5: PowerShell 5.1 не поддерживает && — заменяем на ; (с note)
+    let ampersandNote = ''
+    if (isWin && (shell !== 'cmd') && processedCmd.includes('&&')) {
+      processedCmd = processedCmd.replace(/&&/g, '; ')
+      ampersandNote = '[note: && replaced with ; for PowerShell 5.1 compatibility]\n'
+    }
+
+    // #4,#12: git --no-pager + GIT_PAGER=cat — убираем pager (less), который
+    // виснет в non-interactive PTY, ожидая нажатия q.
+    if (/^\s*git\s+/.test(processedCmd)) {
+      processedCmd = processedCmd.replace(/^(\s*)git\s+/, '$1git --no-pager ')
+    }
+
+    // #6: tsc/eslint — --pretty false убирает ANSI escape-последовательности,
+    // которые забивают PTY-буфер и замедляют вывод. Для tsc увеличиваем timeout.
+    const isTsc = /\btsc\b/.test(processedCmd) && !/--pretty\s+false/.test(processedCmd) && !/--pretty\s+true/.test(processedCmd)
+    if (isTsc) {
+      processedCmd = processedCmd.replace(/\btsc\b/, 'tsc --pretty false')
+    }
+
+    const effectiveTimeout = timeout ?? (isTsc ? 120 : 60)
+    const timeoutMs = effectiveTimeout * 1000
     const maxBuffer = 10 * 1024 * 1024  // 10MB — иначе Node падает с ERR_CHILD_PROCESS_STDOUT_MAXBUFFER до smartTrimOutput
 
     let execCmd: string
@@ -20,14 +45,14 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         // Node декодирует stdout как utf8 и получает `attr/??` вместо
         // реальных кириллических имён. `>nul` глушит вывод "65001" из
         // chcp, чтобы он не засорял результат команды.
-        execCmd = `chcp 65001 >nul && ${cmd}`
+        execCmd = `chcp 65001 >nul && ${processedCmd}`
         execOpts = {
           cwd: cwd || homedir(),
           timeout: timeoutMs,
           shell: 'cmd.exe',
           encoding: 'utf8',
           maxBuffer,
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', GIT_PAGER: 'cat' },
         }
       } else {
         // PowerShell: используем -EncodedCommand (base64 UTF-16LE) вместо
@@ -38,7 +63,7 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         // InputEncoding — как PS кодирует строки при записи в консоль и
         // pipe; без него кириллица в аргументах/pipe ломается в PS 5.1.
         // pwsh 7+ UTF-8 по умолчанию — обе строки безвредны (idempotent).
-        const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Console]::InputEncoding=[System.Text.Encoding]::UTF8; ${cmd}`
+        const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Console]::InputEncoding=[System.Text.Encoding]::UTF8; ${processedCmd}`
         const encoded = Buffer.from(psScript, 'utf16le').toString('base64')
         execCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
         execOpts = {
@@ -46,12 +71,12 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
           timeout: timeoutMs,
           encoding: 'utf8',
           maxBuffer,
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', GIT_PAGER: 'cat' },
         }
       }
     } else {
       // Linux/Mac — bash напрямую. LANG/LC_ALL — на случай не-UTF локали.
-      execCmd = cmd
+      execCmd = processedCmd
       execOpts = {
         cwd: cwd || homedir(),
         timeout: timeoutMs,
@@ -64,16 +89,19 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
           PYTHONUTF8: '1',
           LANG: 'en_US.UTF-8',
           LC_ALL: 'en_US.UTF-8',
+          GIT_PAGER: 'cat',
         },
       }
     }
 
     const { stdout, stderr } = await execAsync(execCmd, execOpts)
-    const stdoutClean = (stdout as string)?.trim() || ''
-    const stderrClean = (stderr as string)?.trim() || ''
+    // #4: Фильтр git LF/CRLF warnings — забивают вывод и вызывают таймауты
+    const gitWarnRe = /^warning:.*LF will be replaced by CRLF.*$/gm
+    const stdoutClean = ((stdout as string) || '').replace(gitWarnRe, '').replace(/\n{3}/g, '\n\n').trim() || ''
+    const stderrClean = ((stderr as string) || '').replace(gitWarnRe, '').replace(/\n{3}/g, '\n\n').trim() || ''
     let out = smartTrimOutput(stdoutClean) || '(no output)'
     if (stderrClean) out += `\n[stderr]:\n${smartTrimOutput(stderrClean)}`
-    return { success: true, output: `[exit: 0]\n${out}` }
+    return { success: true, output: `${ampersandNote}[exit: 0]\n${out}` }
   } catch (e: any) {
     const stdoutPart = smartTrimOutput(e.stdout?.trim() || '')
     const stderrPart = smartTrimOutput(e.stderr?.trim() || '')
@@ -85,13 +113,13 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     // call in a loop.
     const timedOut = e.killed === true || e.signal === 'SIGTERM'
     if (timedOut) {
-      let out = `[timeout: ${timeout || 60}s — process killed]`
+      let out = `[timeout: ${effectiveTimeout}s — process killed]`
       if (stdoutPart) out += `\n[stdout before kill]:\n${stdoutPart}`
       if (stderrPart) out += `\n[stderr before kill]:\n${stderrPart}`
       return {
         success: false,
         output: out,
-        error: `Command exceeded the timeout (${timeout || 60}s). Pass a larger timeout (e.g. 120 or 300), run the command in the background, or break it into shorter steps.`,
+        error: `Command exceeded the timeout (${effectiveTimeout}s). Pass a larger timeout (e.g. 120 or 300), run the command in the background, or break it into shorter steps.`,
       }
     }
     // maxBuffer exceeded — Node кидает ERR_CHILD_PROCESS_STDOUT_MAXBUFFER

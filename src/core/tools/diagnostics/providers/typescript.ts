@@ -48,15 +48,15 @@ export const typescriptProvider: DiagnosticProvider = {
 
     if (existsSync(nodeTsconfig) && existsSync(webTsconfig)) {
       const [nodeRes, webRes] = await Promise.all([
-        runDiagnosticCommand('npx tsc -p tsconfig.node.json --noEmit', dir),
-        runDiagnosticCommand('npx tsc -p tsconfig.web.json --noEmit', dir),
+        runDiagnosticCommand('npx tsc -p tsconfig.node.json --noEmit --pretty false', dir),
+        runDiagnosticCommand('npx tsc -p tsconfig.web.json --noEmit --pretty false', dir),
       ])
       if (nodeRes.failed) failures.push(`tsc (node): ${nodeRes.failureReason}`)
       else entries.push(...parseTscOutput(nodeRes.stdout + '\n' + nodeRes.stderr))
       if (webRes.failed) failures.push(`tsc (web): ${webRes.failureReason}`)
       else entries.push(...parseTscOutput(webRes.stdout + '\n' + webRes.stderr))
     } else if (existsSync(rootTsconfig)) {
-      const res = await runDiagnosticCommand('npx tsc -p tsconfig.json --noEmit', dir)
+      const res = await runDiagnosticCommand('npx tsc -p tsconfig.json --noEmit --pretty false', dir)
       if (res.failed) failures.push(`tsc: ${res.failureReason}`)
       else entries.push(...parseTscOutput(res.stdout + '\n' + res.stderr))
     }

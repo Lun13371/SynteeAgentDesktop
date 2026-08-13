@@ -71,6 +71,56 @@
   background: var(--bg-secondary);
 }
 
+/* ── Redo-баннер: отмена отката ── */
+
+.session-panel__redo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.25);
+  overflow: hidden;
+}
+
+.session-panel__redo-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f59e0b;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.session-panel__redo-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-sm);
+  color: #ef4444;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition, 0.12s ease);
+}
+
+.session-panel__redo-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.session-panel__redo-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Переключатель режимов (Последний запрос / Все изменения) ── */
 
 .session-panel__mode-switch {
@@ -364,19 +414,6 @@
   padding-right: 20px;
 }
 
-.session-checkpoint__files-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 6px;
-  background: var(--accent-bg, rgba(99, 102, 241, 0.12));
-  color: var(--accent, #6366f1);
-  border-radius: 10px;
-  font-size: 10px;
-  font-weight: 600;
-  margin-top: 2px;
-}
-
 .session-checkpoint__paths {
   display: flex;
   flex-wrap: wrap;
@@ -428,6 +465,27 @@
   font-family: var(--font-mono, 'Cascadia Code', monospace);
 }
 
+/* +N -M stats в file chips таймлайна */
+.session-checkpoint__path-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-checkpoint__path-added {
+  color: #22c55e;
+}
+
+.session-checkpoint__path-deleted {
+  color: #ef4444;
+}
+
+/* ── Кнопка «Откатить сюда» ── */
+/* Всегда видна для выбранного и последнего чекпоинта, полупрозрачная для остальных */
+
 .session-checkpoint__rewind {
   display: flex;
   align-items: center;
@@ -442,11 +500,12 @@
   font-size: 11px;
   cursor: pointer;
   transition: all var(--transition, 0.12s ease);
-  opacity: 0;
+  opacity: 0.35;
 }
 
 .session-checkpoint:hover .session-checkpoint__rewind,
-.session-checkpoint--selected .session-checkpoint__rewind {
+.session-checkpoint--selected .session-checkpoint__rewind,
+.session-checkpoint--latest .session-checkpoint__rewind {
   opacity: 1;
 }
 
@@ -481,11 +540,20 @@
 .session-panel__diff-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
   min-height: 34px;
+}
+
+.session-panel__diff-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .session-panel__diff-title {
@@ -494,6 +562,134 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* «Отменить все» в diff-header */
+.session-panel__diff-undo-all {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition, 0.12s ease);
+  flex-shrink: 0;
+}
+
+.session-panel__diff-undo-all:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+}
+
+.session-panel__diff-undo-all:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── File chips с undo-кнопками ── */
+
+.session-panel__file-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.session-file-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--overlay-3);
+  border-radius: var(--radius-sm, 4px);
+  transition: border-color var(--transition, 0.12s ease);
+}
+
+.session-file-chip:hover {
+  border-color: var(--overlay-5);
+}
+
+.session-file-chip__info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.session-file-chip__name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  font-family: var(--font-mono, 'Cascadia Code', monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-file-chip__dir {
+  font-size: 9px;
+  color: var(--text-tertiary, #666);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+  font-family: var(--font-mono, 'Cascadia Code', monospace);
+}
+
+.session-file-chip__stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.session-file-chip__added {
+  color: #22c55e;
+}
+
+.session-file-chip__deleted {
+  color: #ef4444;
+}
+
+.session-file-chip__undo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: 1px solid var(--overlay-3);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--transition, 0.12s ease);
+}
+
+.session-file-chip__undo:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+}
+
+.session-file-chip__undo:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .session-panel__diff-body {

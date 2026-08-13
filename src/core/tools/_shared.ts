@@ -22,9 +22,12 @@ export async function ensureDirFor(filePath: string): Promise<void> {
   if (!existsSync(dir)) await fsMkdir(dir, { recursive: true })
 }
 
-// Подсчёт изменённых строк в unified diff
+// Подсчёт изменённых строк в unified diff (пропускает +++/--- заголовки)
 export function countChangedLines(diff: string): number {
-  return diff.split('\n').filter((l: string) => l.startsWith('+') || l.startsWith('-')).length
+  return diff.split('\n').filter((l: string) =>
+    (l.startsWith('+') || l.startsWith('-')) &&
+    !l.startsWith('+++') && !l.startsWith('---')
+  ).length
 }
 
 // Детекция бинарного файла: проверяем первые 8KB на наличие null-байтов.
@@ -92,9 +95,13 @@ export function formatSize(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1) + 'MB'
 }
 
-// Генерирует unified diff через npm diff (LCS-based, как git)
+// Генерирует unified diff через npm diff (LCS-based, как git).
+// Нормализуем CRLF→LF перед сравнением — иначе на Windows файлы с CRLF
+// показывают каждую строку как изменённую (trailing \r делает строки неравными).
 export function makeDiff(oldContent: string, newContent: string, filePath: string): string {
-  const patch = Diff.createPatch(filePath, oldContent, newContent, '', '', { context: 3 })
+  const oldNorm = normalizeLineEndings(oldContent)
+  const newNorm = normalizeLineEndings(newContent)
+  const patch = Diff.createPatch(filePath, oldNorm, newNorm, '', '', { context: 3 })
   // Убираем заголовок "Index: ...\n======\n" — оставляем только с --- строки
   const lines = patch.split('\n')
   const start = lines.findIndex(l => l.startsWith('---'))

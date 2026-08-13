@@ -638,6 +638,20 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'recall_memory', chatId, msgId, replyId, ...params })
             })
           },
+          onManageNotes: (params) => {
+            return new Promise((resolve) => {
+              const replyId = `manage-notes-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve({
+                  success: (reply.success as boolean) ?? false,
+                  notes: reply.notes as Array<{ id: string; title: string; content: string; updatedAt: number }> | undefined,
+                  note: reply.note as { id: string; title: string } | undefined,
+                  error: reply.error as string | undefined,
+                })
+              })
+              send({ type: 'manage_notes', chatId, msgId, replyId, ...params })
+            })
+          },
           onToolProgress: (p) => {
             // Progress для долгих тулов (get_fast_context) — транслируем в main
             // для live-индикации этапов в UI ToolChain

@@ -9,6 +9,7 @@ import GitPanel from '../GitPanel/GitPanel'
 import SessionChangesPanel from '../SessionChangesPanel/SessionChangesPanel'
 import SideChatPanel from '../SideChatPanel/SideChatPanel'
 import TerminalPanel from '../TerminalPanel/TerminalPanel'
+import NotesPanel from '../NotesPanel/NotesPanel'
 import { useUIStore, type RightPanelTab } from '../../../store/ui.store'
 import './RightPanel.css'
 
@@ -21,12 +22,13 @@ interface RightPanelProps {
   currentChatId?: string | null
 }
 
-const TABS: Array<{ id: RightPanelTab; label: string; icon: 'git-branch' | 'folder' | 'git' | 'history' | 'messageSquare' | 'terminal' }> = [
+const TABS: Array<{ id: RightPanelTab; label: string; icon: 'git-branch' | 'folder' | 'git' | 'history' | 'messageSquare' | 'terminal' | 'fileText' }> = [
   { id: 'sidechat', label: 'Чат', icon: 'messageSquare' },
   { id: 'agents', label: 'Агенты', icon: 'git-branch' },
   { id: 'files', label: 'Файлы', icon: 'folder' },
   { id: 'git', label: 'Git', icon: 'git' },
   { id: 'session', label: 'Сессия', icon: 'history' },
+  { id: 'notes', label: 'Заметки', icon: 'fileText' },
   { id: 'terminal', label: 'Терминал', icon: 'terminal' },
 ]
 
@@ -177,6 +179,9 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
                 )}
                 {tabId === 'terminal' && (
                   <TerminalPanel currentChatId={currentChatId} />
+                )}
+                {tabId === 'notes' && (
+                  <NotesPanel currentChatId={currentChatId} />
                 )}
               </div>
             ))}

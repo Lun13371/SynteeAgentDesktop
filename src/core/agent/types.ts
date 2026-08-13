@@ -147,6 +147,19 @@ export interface AgentCallbacks {
     }>
     error?: string
   }>
+  /**
+   * manage_notes-тул: CRUD для проектных и чат-заметок.
+   * Round-trip в main-процесс, где есть доступ к БД.
+   */
+  onManageNotes?: (params: {
+    action: 'create' | 'update' | 'delete' | 'list'
+    scope: 'project' | 'chat'
+    title?: string
+    content?: string
+    noteId?: string
+    projectId?: string
+    chatId?: string
+  }) => Promise<{ success: boolean; notes?: Array<{ id: string; title: string; content: string; updatedAt: number }>; note?: { id: string; title: string }; error?: string }>
 }
 
 export interface AgentSummaryDetails {

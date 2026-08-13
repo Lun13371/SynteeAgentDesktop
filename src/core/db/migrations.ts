@@ -548,6 +548,26 @@ export function runMigrations(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_cda_chat ON chat_draft_attachments(chat_id);
   `)
+
+  // ── Notes: заметки двух типов ──────────────────────────────────────────────
+  // project — видны во всех чатах проекта, AI видит их в системном промпте.
+  // chat — привязаны к конкретному чату, видны только в нём.
+  // FK CASCADE: удаление проекта → удаляются проектные заметки,
+  //             удаление чата → удаляются чат-заметки.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS notes (
+      id          TEXT PRIMARY KEY,
+      scope       TEXT NOT NULL CHECK(scope IN ('project','chat')),
+      project_id  TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      chat_id     TEXT REFERENCES chats(id) ON DELETE CASCADE,
+      title       TEXT NOT NULL,
+      content     TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id) WHERE scope='project';
+    CREATE INDEX IF NOT EXISTS idx_notes_chat ON notes(chat_id) WHERE scope='chat';
+  `)
 }
 
 /**

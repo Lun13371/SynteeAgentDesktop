@@ -164,3 +164,19 @@ export function getUserMessageContents(chatId: string): string[] {
   ).all(chatId) as { content: string }[]
   return rows.map(r => r.content)
 }
+
+/**
+ * Последнее rewind system-сообщение чата (для redo-баннера в правой панели).
+ * Возвращает { id, createdAt } последнего сообщения с slashCommand.name='rewind'
+ * или null если отката не было. Используется панелью «Сессия» чтобы показать
+ * кнопку «Отменить откат» без загрузки всех сообщений.
+ */
+export function getLastRewindMessage(chatId: string): { id: string; createdAt: number } | null {
+  const row = getDB().prepare(`
+    SELECT id, created_at as createdAt FROM messages
+    WHERE chat_id = ? AND slash_command LIKE '%"name":"rewind"%'
+    ORDER BY created_at DESC LIMIT 1
+  `).get(chatId) as { id: string; createdAt: number } | undefined
+  return row ?? null
+}
+

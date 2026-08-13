@@ -3,10 +3,32 @@
 
 import { existsSync } from 'fs'
 import { resolve } from 'path'
-import { smartTrimOutput, type ToolResult } from '../_shared'
+import { execAsync, smartTrimOutput, type ToolResult } from '../_shared'
 import { DIAGNOSTIC_PROVIDERS } from './providers'
 import { formatDiagnosticsOutput } from './formatter'
 import type { DiagnosticEntry } from './types'
+
+/**
+ * Получает список изменённых файлов через git diff --name-only.
+ * #7: используется для сортировки ошибок — изменённые файлы первыми.
+ * Возвращает null если не git-репо или git недоступен.
+ */
+async function getChangedFiles(dir: string): Promise<Set<string> | null> {
+  try {
+    const { stdout } = await execAsync('git --no-pager diff --name-only HEAD', {
+      cwd: dir,
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+      shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
+      encoding: 'utf8',
+      env: { ...process.env, GIT_PAGER: 'cat' },
+    })
+    const files = stdout.trim().split('\n').filter(Boolean).map(f => resolve(dir, f))
+    return new Set(files)
+  } catch {
+    return null
+  }
+}
 
 /**
  * Универсальная диагностика проекта. Автоопределяет стек по файлам-маркерам,
@@ -28,6 +50,13 @@ export async function getDiagnostics(
   const normalizedFiles = files && files.length > 0
     ? files.map((f) => resolve(dir, f))
     : undefined
+
+  // #7: Если files не передан — получаем изменённые файлы через git diff
+  // для сортировки "changed files first" (ошибки в изменённых файлах первыми).
+  let changedFiles: Set<string> | null = null
+  if (!normalizedFiles) {
+    changedFiles = await getChangedFiles(dir)
+  }
 
   // Автоопределение: какие провайдеры применимы к проекту
   const applicableProviders = DIAGNOSTIC_PROVIDERS.filter((p) => p.detect(dir))
@@ -75,6 +104,7 @@ export async function getDiagnostics(
     failures,
     notes,
     detectedProviders: detectedNames,
+    changedFiles,
   })
 
   return { success, output: smartTrimOutput(output, 8000) }

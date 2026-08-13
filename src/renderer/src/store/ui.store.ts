@@ -30,8 +30,8 @@ export const AGENT_PANEL_WIDTH_DEFAULT = 420
 
 // RightPanelTab определён здесь (а не импортируется из RightPanel.tsx),
 // чтобы избежать circular import: ui.store → RightPanel → ui.store.
-export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal'
-const VALID_TABS: RightPanelTab[] = ['sidechat', 'agents', 'files', 'git', 'session', 'terminal']
+export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal' | 'notes'
+const VALID_TABS: RightPanelTab[] = ['sidechat', 'agents', 'files', 'git', 'session', 'terminal', 'notes']
 export { VALID_TABS }
 export function isValidTab(v: unknown): v is RightPanelTab {
   return typeof v === 'string' && (VALID_TABS as string[]).includes(v)

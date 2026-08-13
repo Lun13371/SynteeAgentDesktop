@@ -330,6 +330,13 @@ const synteeAPI = {
     getLastTurnChanges: (chatId: string) => ipcRenderer.invoke('chat:getLastTurnChanges', chatId) as Promise<import('../../shared/types').LastTurnChanges | null>,
     undoLastTurnFiles: (chatId: string) => ipcRenderer.invoke('chat:undoLastTurnFiles', chatId) as Promise<{ restored?: number; failed?: string[]; error?: string }>,
     undoFile: (chatId: string, path: string) => ipcRenderer.invoke('chat:undoFile', chatId, path) as Promise<{ success?: boolean; error?: string }>,
+    // ── Undo файлов любого чекпоинта (правая панель «Сессия») ──
+    // undoCheckpointFiles — откатить все файлы указанного turn'а (по userMessageId).
+    // undoCheckpointFile — откатить один файл указанного turn'а.
+    // getLastRewind — последнее rewind-сообщение (для redo-баннера).
+    undoCheckpointFiles: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:undoCheckpointFiles', chatId, userMessageId) as Promise<{ restored?: number; failed?: string[]; error?: string }>,
+    undoCheckpointFile: (chatId: string, userMessageId: string, path: string) => ipcRenderer.invoke('chat:undoCheckpointFile', chatId, userMessageId, path) as Promise<{ success?: boolean; error?: string }>,
+    getLastRewind: (chatId: string) => ipcRenderer.invoke('chat:getLastRewind', chatId) as Promise<{ rewindMessageId: string; createdAt: number } | null>,
     // ── Сжатие контекста (/compact) ──
     // Ручной запуск applyRollingWindowAsync с forceCompress=true. Возвращает
     // обновлённую ленту сообщений (включая новый system-разделитель компакции)
@@ -789,6 +796,24 @@ const synteeAPI = {
       ipcRenderer.on('updates:state-changed', handler)
       return () => ipcRenderer.removeListener('updates:state-changed', handler)
     },
+  },
+
+  // Заметки — проектные (видны во всех чатах проекта) и чат-заметки (только в чате).
+  // CRUD через IPC, live-обновление через событие 'notes:changed'.
+  notes: {
+    list: (params: { scope: 'project' | 'chat'; projectId?: string; chatId?: string }) =>
+      ipcRenderer.invoke('notes:list', params) as Promise<Array<{
+        id: string; scope: string; projectId: string | null; chatId: string | null
+        title: string; content: string; createdAt: number; updatedAt: number
+      }>>,
+    getProjectId: (chatId: string) => ipcRenderer.invoke('notes:getProjectId', chatId) as Promise<string | null>,
+
+    create: (params: { scope: 'project' | 'chat'; projectId?: string; chatId?: string; title: string; content?: string }) =>
+      ipcRenderer.invoke('notes:create', params) as Promise<{ success: boolean; note?: unknown; error?: string }>,
+    update: (params: { id: string; title?: string; content?: string }) =>
+      ipcRenderer.invoke('notes:update', params) as Promise<{ success: boolean; note?: unknown; error?: string }>,
+    delete: (id: string) =>
+      ipcRenderer.invoke('notes:delete', id) as Promise<{ success: boolean; error?: string }>,
   },
 }
 

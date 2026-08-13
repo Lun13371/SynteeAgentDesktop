@@ -1080,6 +1080,7 @@ export class Agent {
             return stripAnsi(raw)
               .replace(/__SDE [a-f0-9]{8}/g, '')            // echo суффикса (PowerShell)
               .replace(/__SYNTEE_DONE_[a-f0-9]{8}__:\d+/g, '')  // вывод маркера (все шеллы)
+              .replace(/^warning:.*LF will be replaced by CRLF.*$/gm, '')  // #4: git LF/CRLF warnings
               .replace(/\r\n\r\n/g, '\r\n')                  // пустые строки от вырезанных маркеров
               .trim()
           }
@@ -1149,6 +1150,19 @@ export class Agent {
         }
 
         const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, this.workdir)
+        // #3: Anti-loop hint — если файл уже читался без offset в этой сессии
+        // и снова читается без offset — добавляем подсказку про offset.
+        const readNoOffset = args.offset === undefined && args.limit === undefined
+        const alreadyReadNoOffset = this.readFileCache.has(`${filePath}:0:all`) ||
+          (this.fileMap.get(filePath)?.reads ?? 0) > 0
+        if (readNoOffset && alreadyReadNoOffset && result.success) {
+          // Извлекаем total lines из output для точной подсказки
+          const linesMatch = result.output.match(/(\d+)\s+lines\]/)
+          const totalLines = linesMatch ? parseInt(linesMatch[1], 10) : 400
+          const hint = `[HINT] You already read this file without offset (lines 1-${Math.min(totalLines, 400)} shown previously). Use offset=${Math.min(totalLines, 400) + 1} to continue reading, or pass offset/limit for a specific range.\n`
+          result.output = hint + result.output
+        }
+
         if (result.success) {
           // Relevance feedback: AI читает файл → boost для fast context ranking.
           // UPDATE ... WHERE — no-op если файла нет в индексе, безопасно.
@@ -1198,7 +1212,7 @@ export class Agent {
           timeout: args.timeout as number | undefined,
         })
       case 'write_file':
-        return writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir })
+        return writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir, force: args.force as boolean | undefined })
       case 'edit_file':
         return editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun, workdir: this.workdir })
       case 'list_directory':
@@ -1422,6 +1436,54 @@ export class Agent {
           return { success: false, output: '', error: (e as Error).message }
         }
       }
+      case 'manage_notes': {
+        const action = args.action as string
+        const scope = args.scope as string
+        if (!action || !['create', 'update', 'delete', 'list'].includes(action)) {
+          return { success: false, output: '', error: 'action must be one of: create, update, delete, list' }
+        }
+        if (!scope || !['project', 'chat'].includes(scope)) {
+          return { success: false, output: '', error: 'scope must be "project" or "chat"' }
+        }
+        if (!callbacks?.onManageNotes) {
+          return { success: false, output: '', error: 'manage_notes unavailable (no notes backend)' }
+        }
+        try {
+          const result = await callbacks.onManageNotes({
+            action: action as 'create' | 'update' | 'delete' | 'list',
+            scope: scope as 'project' | 'chat',
+            title: args.title as string | undefined,
+            content: args.content as string | undefined,
+            noteId: args.note_id as string | undefined,
+            projectId: this.projectId,
+            chatId: this.chatId,
+          })
+          if (!result.success) return { success: false, output: '', error: result.error ?? 'manage_notes failed' }
+          if (action === 'list') {
+            const notes = result.notes ?? []
+            if (notes.length === 0) {
+              return { success: true, output: `No ${scope} notes found.` }
+            }
+            const lines = notes.map((n, i) =>
+              `${i + 1}. **${n.title}** (id: ${n.id}, updated: ${new Date(n.updatedAt).toISOString().slice(0, 10)})\n   ${n.content.slice(0, 200)}${n.content.length > 200 ? '...' : ''}`
+            )
+            return { success: true, output: `${scope} notes (${notes.length}):\n\n${lines.join('\n\n')}` }
+          }
+          if (action === 'create') {
+            return { success: true, output: `Created ${scope} note "${result.note?.title ?? '?'}" (id: ${result.note?.id ?? '?'}).` }
+          }
+          if (action === 'update') {
+            return { success: true, output: `Updated ${scope} note "${result.note?.title ?? '?'}" (id: ${result.note?.id ?? '?'}).` }
+          }
+          if (action === 'delete') {
+            return { success: true, output: `Deleted ${scope} note.` }
+          }
+          return { success: true, output: 'OK' }
+        } catch (e) {
+          return { success: false, output: '', error: (e as Error).message }
+        }
+      }
+
       case 'think': {
         const thought = args.thought as string
         if (!thought) return { success: false, output: '', error: 'thought is required' }
@@ -1571,4 +1633,4 @@ export class Agent {
       fileSnapshots: this.undoStack.map(e => ({ path: e.path, contentBefore: e.originalContent })),
     }
   }
-}
+}
