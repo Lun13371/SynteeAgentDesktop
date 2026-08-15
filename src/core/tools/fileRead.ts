@@ -5,7 +5,7 @@ import { extractSymbolsFromSource, type SymbolDef } from '../context/fastContext
 
 const MAX_READ_FILE_SIZE = 20 * 1024 * 1024  // 20MB — больше не читаем целиком в память
 
-export async function readFile(path: string, offset?: number, limit?: number, workdir?: string): Promise<ToolResult> {
+export async function readFile(path: string, offset?: number, limit?: number, workdir?: string, full?: boolean): Promise<ToolResult> {
   try {
     path = resolveToolPath(path, workdir)
     if (!existsSync(path)) return { success: false, output: '', error: 'File not found: ' + path }
@@ -18,6 +18,33 @@ export async function readFile(path: string, offset?: number, limit?: number, wo
     const content = await fsReadFile(path, 'utf-8')
     const lines = content.split('\n')
     const totalLines = lines.length
+
+    // full=true — чанками по ~5000 символов. Сигментация по символам, не по
+    // строкам: одна длинная строка (minified JS) не съест весь чанк. Каждый
+    // чанк начинается с начала строки, нумерация строк сохраняется.
+    // При offset — продолжаем с указанной строки (используется auto-advance).
+    if (full === true) {
+      const MAX_CHARS = 5000
+      const startLine = Math.max(0, (offset ?? 1) - 1)
+      let charCount = 0
+      let endLine = startLine
+      for (let i = startLine; i < totalLines; i++) {
+        const lineLen = lines[i].length + 1
+        if (charCount + lineLen > MAX_CHARS && i > startLine) { endLine = i; break }
+        charCount += lineLen
+        endLine = i + 1
+      }
+      const slice = lines.slice(startLine, endLine)
+      const numbered = slice.map((l, i) => `${startLine + i + 1}|${l}`).join('\n')
+      const hasMore = endLine < totalLines
+      const suffix = hasMore
+        ? `\n...[full mode: shown lines ${startLine + 1}-${endLine} (~${charCount} chars of ${content.length}) | call read_file again with full=true to continue from line ${endLine + 1}]`
+        : ''
+      return {
+        success: true,
+        output: `[File: ${path} | Lines ${startLine + 1}-${endLine} of ${totalLines} | full mode]${suffix}\n${numbered}`,
+      }
+    }
 
     if (offset !== undefined || limit !== undefined) {
       const from = Math.max(0, (offset ?? 1) - 1)  // offset 1-indexed

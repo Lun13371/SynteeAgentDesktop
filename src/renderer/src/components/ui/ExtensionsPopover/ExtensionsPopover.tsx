@@ -18,6 +18,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { v4 as uuid } from 'uuid'
+import { copyToClipboard } from '@renderer/utils/clipboard'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import AppIcon from '../AppIcon/AppIcon'
@@ -705,9 +706,10 @@ function McpServerCard({ server, projects, projectId }: { server: McpServerRunti
     reloadMcp()
   }
 
-  const copyError = () => {
+  const copyError = async () => {
     if (server.error) {
-      navigator.clipboard.writeText(server.error)
+      const ok = await copyToClipboard(server.error)
+      if (!ok) return
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }

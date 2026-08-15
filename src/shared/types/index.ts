@@ -760,11 +760,20 @@ export interface CustomTheme {
     textMuted: string
     accent: string
     sidebarBg: string
+    /** Опциональные поля — для большего контроля. Старые темы без них работают (fallback на вычисление из accent). */
+    border?: string
+    borderStrong?: string
+    accentGradient?: string
+    shadowColor?: string
   }
   glass: {
     blur: number
     saturate: number
     opacity: number
+  }
+  effects?: {
+    /** Множитель интенсивности overlay-слоёв (0.5–2.0, default 1). */
+    overlayIntensity?: number
   }
 }
 

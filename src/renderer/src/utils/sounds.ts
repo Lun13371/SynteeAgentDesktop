@@ -123,6 +123,8 @@ export function setSoundAssignmentsFlag(v: Record<string, string | null>) { _sou
 
 // ── Кеш dataURL для кастомных звуков (чтобы не грузить повторно) ──
 const customCache = new Map<string, string>()
+// ── Кеш AudioBuffer (декодирование дорого, кешируем результат) ──
+const customBufferCache = new Map<string, AudioBuffer>()
 
 async function loadCustomDataUrl(id: string): Promise<string | null> {
   const cached = customCache.get(id)
@@ -137,9 +139,54 @@ async function loadCustomDataUrl(id: string): Promise<string | null> {
   return null
 }
 
+// Конвертирует data: URL в ArrayBuffer без fetch (CSP-safe — не использует
+// connect-src, работает полностью в памяти через atob).
+function dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
+  const base64 = dataUrl.split(',')[1] || ''
+  const binaryStr = atob(base64)
+  const len = binaryStr.length
+  const bytes = new Uint8Array(len)
+  for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i)
+  return bytes.buffer
+}
+
+// Конвертирует data: URL в blob: URL (CSP-safe — blob: считается same-origin).
+function dataUrlToBlobUrl(dataUrl: string): string {
+  const base64 = dataUrl.split(',')[1] || ''
+  const binaryStr = atob(base64)
+  const len = binaryStr.length
+  const bytes = new Uint8Array(len)
+  for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i)
+  const mimeMatch = dataUrl.match(/^data:([^;]+)/)
+  const mime = mimeMatch ? mimeMatch[1] : 'audio/mpeg'
+  const blob = new Blob([bytes], { type: mime })
+  return URL.createObjectURL(blob)
+}
+
+// Загружает и декодирует кастомный звук в AudioBuffer через Web Audio API.
+// Результат кешируется в customBufferCache.
+// CSP-safe: декодирует base64 напрямую без fetch(data:) (который блокируется
+// connect-src 'self').
+async function loadCustomBuffer(id: string): Promise<AudioBuffer | null> {
+  const cached = customBufferCache.get(id)
+  if (cached) return cached
+  const dataUrl = await loadCustomDataUrl(id)
+  if (!dataUrl) return null
+  try {
+    const c = getCtx()
+    if (c.state === 'suspended') c.resume()
+    const buf = dataUrlToArrayBuffer(dataUrl)
+    const audioBuf = await c.decodeAudioData(buf)
+    customBufferCache.set(id, audioBuf)
+    return audioBuf
+  } catch { /* decode failed — fallback to HTMLAudioElement */ }
+  return null
+}
+
 // Очистка кеша при удалении кастомного звука
 export function clearCustomSoundCache(id: string) {
   customCache.delete(id)
+  customBufferCache.delete(id)
 }
 
 // ── Проигрывание по soundId ───────────────────────────────────
@@ -153,12 +200,28 @@ export async function playSoundById(id: string | null): Promise<void> {
   }
 
   if (id.startsWith('custom://')) {
-    const dataUrl = await loadCustomDataUrl(id)
-    if (!dataUrl) return
     try {
-      const audio = new Audio(dataUrl)
-      audio.volume = _soundVolume / 100
-      audio.play().catch(() => { /* autoplay policy — ignore */ })
+      const audioBuf = await loadCustomBuffer(id)
+      if (audioBuf) {
+        const c = getCtx()
+        if (c.state === 'suspended') c.resume()
+        const src = c.createBufferSource()
+        src.buffer = audioBuf
+        src.connect(getMaster())
+        src.start()
+        return
+      }
+      // Fallback: HTMLAudioElement если decodeAudioData не справился.
+      // Используем blob: URL вместо data: URL — CSP-safe (blob: same-origin).
+      const dataUrl = await loadCustomDataUrl(id)
+      if (dataUrl) {
+        const blobUrl = dataUrlToBlobUrl(dataUrl)
+        const audio = new Audio(blobUrl)
+        audio.volume = _soundVolume / 100
+        audio.play().catch(() => { /* autoplay policy — ignore */ })
+        // Освобождаем blob URL после воспроизведения
+        audio.addEventListener('ended', () => URL.revokeObjectURL(blobUrl))
+      }
     } catch { /* ok */ }
     return
   }
@@ -193,6 +256,10 @@ export function playAppExitSound() { playActionSound('appExit') }
 export async function previewSound(id: string): Promise<void> {
   const wasEnabled = _uiSoundsEnabled
   _uiSoundsEnabled = true
+  // Возобновляем AudioContext — preview вызывается по клику (user gesture),
+  // так что resume разрешён политикой autoplay.
+  const c = getCtx()
+  if (c.state === 'suspended') c.resume()
   await playSoundById(id)
   _uiSoundsEnabled = wasEnabled
 }

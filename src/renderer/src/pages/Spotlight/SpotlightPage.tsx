@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { readClipboard } from '@renderer/utils/clipboard'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import Logo from '../../components/ui/Logo/Logo'
 import './SpotlightPage.css'
@@ -114,11 +115,9 @@ export default function SpotlightPage() {
       setHistory(Array.isArray(hist) ? hist : [])
     } catch { /* ок — вне electron */ }
 
-    // Буфер обмена (может выбросить без разрешения — try/catch).
-    try {
-      const text = (await navigator.clipboard.readText()) ?? ''
-      setClipboardText(text.length > 20 ? text : '')
-    } catch { setClipboardText('') }
+    // Буфер обмена — через нативный IPC (работает на file://).
+    const text = (await readClipboard()) ?? ''
+    setClipboardText(text.length > 20 ? text : '')
   }, [])
 
   // ── Слушатель spotlight:mode (main шлёт 'normal' / 'quick' при show) ──

@@ -31,12 +31,12 @@ const FRAME_MS = 1000 / 12
 
 export default function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { animatedBackground, bgStyle, theme, accentColor, animatedBgOpacity } = useUIStore(useShallow(s => ({
+  const { animatedBackground, bgStyle, theme, animatedBgOpacity, bgStyleParams } = useUIStore(useShallow(s => ({
     animatedBackground: s.animatedBackground,
     bgStyle: s.bgStyle,
     theme: s.theme,
-    accentColor: s.accentColor,
     animatedBgOpacity: s.animatedBgOpacity,
+    bgStyleParams: s.bgStyleParams,
   })))
   const style: BgStyle = (bgStyle as BgStyle) || 'particles'
 
@@ -51,12 +51,12 @@ export default function AnimatedBackground() {
     let running = false
     let w = canvas.width = canvas.offsetWidth
     let h = canvas.height = canvas.offsetHeight
-    const color = getAccentRgb()
+    const initColor = getAccentRgb()
     let t = 0
     let lastTime = 0
 
     // --- PARTICLES ---
-    const particles = Array.from({ length: 45 }, () => ({
+    const particles = Array.from({ length: bgStyleParams['particles.density'] ?? 45 }, () => ({
       x: Math.random() * w, y: Math.random() * h,
       r: Math.random() * 1.5 + 0.5,
       vx: (Math.random() - 0.5) * 0.3,
@@ -65,7 +65,8 @@ export default function AnimatedBackground() {
     }))
 
     // --- MATRIX ---
-    const cols = Math.floor(w / 16)
+    const matrixColW = bgStyleParams['matrix.colWidth'] ?? 16
+    const cols = Math.floor(w / matrixColW)
     const drops = Array.from({ length: cols }, () => Math.random() * -50)
     const matrixChars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノ01'
 
@@ -79,13 +80,13 @@ export default function AnimatedBackground() {
       const yBase = h * layer.y
       const g = ctx.createLinearGradient(0, yBase - h * layer.amp * 2, 0, yBase + h * layer.amp * 2)
       g.addColorStop(0, 'transparent')
-      g.addColorStop(0.5, `rgba(${color}, ${layer.alpha})`)
+      g.addColorStop(0.5, `rgba(${initColor}, ${layer.alpha})`)
       g.addColorStop(1, 'transparent')
       return g
     })
 
     // --- FIREFLIES ---
-    const flies = Array.from({ length: 30 }, () => ({
+    const flies = Array.from({ length: bgStyleParams['fireflies.count'] ?? 30 }, () => ({
       x: Math.random() * w, y: Math.random() * h,
       vx: (Math.random() - 0.5) * 0.4,
       vy: (Math.random() - 0.5) * 0.4,
@@ -95,7 +96,7 @@ export default function AnimatedBackground() {
     }))
 
     // --- STARFIELD ---
-    const stars = Array.from({ length: 140 }, () => ({
+    const stars = Array.from({ length: bgStyleParams['starfield.count'] ?? 140 }, () => ({
       x: Math.random() * w, y: Math.random() * h,
       r: Math.random() * 1.2 + 0.3,
       twinkle: Math.random() * Math.PI * 2,
@@ -141,14 +142,14 @@ export default function AnimatedBackground() {
       return c
     }
     const fireflyGlow = style === 'fireflies'
-      ? makeRadialSprite([[0, `rgba(${color}, 1)`], [1, 'transparent']])
+      ? makeRadialSprite([[0, `rgba(${initColor}, 1)`], [1, 'transparent']])
       : null
     const nebulaSprites: HTMLCanvasElement[] | null = style === 'nebula'
       ? nebulaBlobs.map(b => {
-          const hslHue = (parseInt(color.split(',')[0]) + b.hueShift) % 360
+          const hslHue = (parseInt(initColor.split(',')[0]) + b.hueShift) % 360
           return makeRadialSprite([
             [0, `hsla(${hslHue}, 70%, 60%, 0.10)`],
-            [0.5, `rgba(${color}, 0.04)`],
+            [0.5, `rgba(${initColor}, 0.04)`],
             [1, 'transparent'],
           ])
         })
@@ -187,6 +188,11 @@ export default function AnimatedBackground() {
       lastTime = now
       t += scale
 
+      // Динамический accent-цвет: читаем CSS-переменную на каждом кадре.
+      // Не триггерит реинициализацию canvas при смене accentColor —
+      // getAccentRgb() читает --accent-rgb (обновляется мгновенно applyAccentToDOM).
+      const color = getAccentRgb()
+
       if (style === 'particles') {
         ctx.clearRect(0, 0, w, h)
         for (const p of particles) {
@@ -215,7 +221,7 @@ export default function AnimatedBackground() {
           arr.push(i)
         }
         ctx.lineWidth = 0.5
-        ctx.strokeStyle = `rgba(${color}, 0.05)`
+        ctx.strokeStyle = `rgba(${color}, ${useUIStore.getState().bgStyleParams['particles.lineOpacity'] ?? 0.05})`
         // ── Батчинг: один Path2D для всех линий, один stroke ──
         // Усредняем alpha (0.05 вместо 0.07*(1-d/120)) — визуально
         // идентично, фон за полупрозрачным контентом. Было 300 stroke()
@@ -247,12 +253,13 @@ export default function AnimatedBackground() {
         ctx.fillStyle = `rgba(0,0,0,${Math.min(0.04 * scale, 1)})`
         ctx.fillRect(0, 0, w, h)
         ctx.fillStyle = `rgba(${color}, 0.55)`
-        ctx.font = '14px monospace'
+        ctx.font = `${Math.round(matrixColW * 0.875)}px monospace`
+        const fallSpeedMult = (useUIStore.getState().bgStyleParams['matrix.fallSpeed'] ?? 8) / 8
         for (let i = 0; i < drops.length; i++) {
           const ch = matrixChars[Math.floor(Math.random() * matrixChars.length)]
-          ctx.fillText(ch, i * 16, drops[i] * 16)
-          if (drops[i] * 16 > h && Math.random() > 0.975) drops[i] = 0
-          drops[i] += 0.35 * scale
+          ctx.fillText(ch, i * matrixColW, drops[i] * matrixColW)
+          if (drops[i] * matrixColW > h && Math.random() > 0.975) drops[i] = 0
+          drops[i] += 0.35 * fallSpeedMult * scale
         }
 
       } else if (style === 'waves') {
@@ -302,7 +309,8 @@ export default function AnimatedBackground() {
           const pulse = (Math.sin(f.phase) + 1) / 2
           const alpha = pulse * 0.5 + 0.05
           const radius = f.r * (0.7 + pulse * 0.6)
-          const glowD = radius * 8
+          const glowRadius = useUIStore.getState().bgStyleParams['fireflies.glowRadius'] ?? 2.5
+          const glowD = radius * glowRadius * 3.2
           ctx.globalAlpha = alpha
           ctx.drawImage(glow, f.x - glowD / 2, f.y - glowD / 2, glowD, glowD)
           ctx.globalAlpha = 1
@@ -315,8 +323,9 @@ export default function AnimatedBackground() {
       } else if (style === 'starfield') {
         ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.18 * scale, 1)})`
         ctx.fillRect(0, 0, w, h)
-        const mx = (Math.sin(t * 0.002) * 0.5) * 30
-        const my = (Math.cos(t * 0.0015) * 0.5) * 20
+        const starParallax = useUIStore.getState().bgStyleParams['starfield.parallax'] ?? 0.6
+        const mx = (Math.sin(t * 0.002) * 0.5) * 30 * starParallax
+        const my = (Math.cos(t * 0.0015) * 0.5) * 20 * starParallax
         for (const s of stars) {
           s.twinkle += s.speed * scale
           const tw = (Math.sin(s.twinkle) + 1) / 2
@@ -439,7 +448,7 @@ export default function AnimatedBackground() {
       window.removeEventListener('scroll', markScroll, { capture: true } as EventListenerOptions)
       window.removeEventListener('touchmove', markScroll, { capture: true } as EventListenerOptions)
     }
-  }, [animatedBackground, bgStyle, theme, accentColor, style])
+  }, [animatedBackground, bgStyle, theme, style, bgStyleParams])
 
   if (!animatedBackground || style === 'none') return null
   return <canvas ref={canvasRef} className="animated-bg" style={{ opacity: (animatedBgOpacity ?? 60) / 100 }} />

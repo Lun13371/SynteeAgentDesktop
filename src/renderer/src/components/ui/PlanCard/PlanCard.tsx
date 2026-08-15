@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { copyToClipboard } from '@renderer/utils/clipboard'
 import remarkGfm from 'remark-gfm'
 import './PlanCard.css'
 
@@ -61,8 +62,9 @@ export default function PlanCard({ title, summary, content, filePath, partial }:
     if (filePath) window.syntee.shell?.openPath(filePath)
   }
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(`# ${title}\n\n> ${summary}\n\n${content}`)
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(`# ${title}\n\n> ${summary}\n\n${content}`)
+    if (!ok) return
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }

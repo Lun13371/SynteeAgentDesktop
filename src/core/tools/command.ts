@@ -1,5 +1,53 @@
-import { homedir } from 'os'
+﻿import { homedir } from 'os'
 import { execAsync, smartTrimOutput, type ToolResult } from './_shared'
+
+/**
+ * Claude Code approach: persistent cwd через pwd marker.
+ *
+ * Каждая команда выполняется в fresh subprocess (child_process.exec),
+ * но после команды мы добавляем уникальный маркер `__SYNTEE_CWD__:<path>`,
+ * который выводит текущую рабочую директорию. Маркер парсится из вывода,
+ * путь сохраняется и передаётся как cwd в следующий runCommand — так cd
+ * переживает между вызовами без PTY-сессии.
+ *
+ * Преимущества над PTY-путём:
+ * - Нет ConPTY багов (reprint, clear screen, resize crash, write truncation)
+ * - && работает нативно (через cmd.exe или bash)
+ * - Ctrl+C / timeout через child_process работает надёжно
+ * - Нет echo stripping проблем (pipes не эхоят ввод)
+ * - Маркеры не нужны для exit code — он приходит напрямую
+ * - Параллельность: несколько runCommand через Promise.all
+ * - Стабильно на любой версии Windows
+ */
+
+/** Маркер для извлечения cwd из вывода команды. */
+const CWD_MARKER = '__SYNTEE_CWD__'
+
+/** Строит суффикс-команду для маркера cwd в зависимости от шелла. */
+function buildCwdMarkerSuffix(shell: string | undefined, isWin: boolean): string {
+  if (isWin && shell === 'cmd') {
+    return `& echo ${CWD_MARKER}:%CD%`
+  } else if (isWin) {
+    // PowerShell — $PWD.Path возвращает абсолютный путь текущей директории
+    return `; Write-Output "${CWD_MARKER}:$($PWD.Path)"`
+  } else {
+    // bash/zsh — pwd -P возвращает физический путь (без symlink'ов)
+    return `; echo "${CWD_MARKER}:$(pwd -P)"`
+  }
+}
+
+/**
+ * Извлекает cwd-маркер из stdout, удаляет его из вывода.
+ * Возвращает { stdout, cwd } — очищенный stdout и путь (или undefined).
+ */
+function extractCwdMarker(stdout: string): { stdout: string; cwd?: string } {
+  const re = new RegExp(`${CWD_MARKER}:(.+?)[\\r\\n]*$`, 'm')
+  const m = stdout.match(re)
+  if (!m) return { stdout }
+  const cwd = m[1].trim()
+  const cleaned = stdout.replace(new RegExp(re.source, re.flags + 'g'), '').replace(/\n{3}/g, '\n\n').trim()
+  return { stdout: cleaned, cwd }
+}
 
 export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
   try {
@@ -27,6 +75,11 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     if (isTsc) {
       processedCmd = processedCmd.replace(/\btsc\b/, 'tsc --pretty false')
     }
+
+    // ── Claude Code approach: append cwd marker ──
+    // После команды добавляем echo-маркер с текущей директорией.
+    // Маркер парсится из stdout после выполнения — cwd переживает между вызовами.
+    processedCmd += buildCwdMarkerSuffix(shell, isWin)
 
     const effectiveTimeout = timeout ?? (isTsc ? 120 : 60)
     const timeoutMs = effectiveTimeout * 1000
@@ -95,16 +148,29 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     }
 
     const { stdout, stderr } = await execAsync(execCmd, execOpts)
+
+    // ── Извлекаем cwd-маркер из stdout ──
+    const { stdout: stdoutNoMarker, cwd: detectedCwd } = extractCwdMarker((stdout as string) || '')
+
     // #4: Фильтр git LF/CRLF warnings — забивают вывод и вызывают таймауты
     const gitWarnRe = /^warning:.*LF will be replaced by CRLF.*$/gm
-    const stdoutClean = ((stdout as string) || '').replace(gitWarnRe, '').replace(/\n{3}/g, '\n\n').trim() || ''
+    const stdoutClean = stdoutNoMarker.replace(gitWarnRe, '').replace(/\n{3}/g, '\n\n').trim() || ''
     const stderrClean = ((stderr as string) || '').replace(gitWarnRe, '').replace(/\n{3}/g, '\n\n').trim() || ''
     let out = smartTrimOutput(stdoutClean) || '(no output)'
     if (stderrClean) out += `\n[stderr]:\n${smartTrimOutput(stderrClean)}`
-    return { success: true, output: `${ampersandNote}[exit: 0]\n${out}` }
+    return {
+      success: true,
+      output: `${ampersandNote}[exit: 0]\n${out}`,
+      ...(detectedCwd ? { cwd: detectedCwd } : {}),
+    }
   } catch (e: any) {
     const stdoutPart = smartTrimOutput(e.stdout?.trim() || '')
     const stderrPart = smartTrimOutput(e.stderr?.trim() || '')
+
+    // Пытаемся извлечь cwd-маркер даже из ошибочного вывода — cd мог успеть
+    // сработать до того, как команда упала.
+    const { cwd: detectedCwd } = extractCwdMarker(e.stdout?.trim() || '')
+
     // Node child_process marks a process killed by timeout: e.killed=true,
     // e.signal='SIGTERM' (sometimes null, but killed=true). execAsync throws
     // with e.code = null/string (not a number) in this case. Without an
@@ -120,6 +186,7 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         success: false,
         output: out,
         error: `Command exceeded the timeout (${effectiveTimeout}s). Pass a larger timeout (e.g. 120 or 300), run the command in the background, or break it into shorter steps.`,
+        ...(detectedCwd ? { cwd: detectedCwd } : {}),
       }
     }
     // maxBuffer exceeded — Node кидает ERR_CHILD_PROCESS_STDOUT_MAXBUFFER
@@ -132,6 +199,7 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         success: false,
         output: out,
         error: 'Command output exceeded the 10MB maxBuffer limit. Pipe to a file or break into smaller steps.',
+        ...(detectedCwd ? { cwd: detectedCwd } : {}),
       }
     }
     const exitCode = typeof e.code === 'number' ? e.code : 1
@@ -142,6 +210,7 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
       success: false,
       output: out,
       error: stderrPart || e.message?.replace(/Command failed:.+\n?/, '').trim() || 'Command failed',
+      ...(detectedCwd ? { cwd: detectedCwd } : {}),
     }
   }
 }

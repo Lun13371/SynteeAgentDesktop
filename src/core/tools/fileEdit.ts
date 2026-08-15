@@ -168,7 +168,7 @@ function applySearchReplacePatch(original: string, patch: string, replaceAll = f
       if (fuzzy.found) {
         result = fuzzy.result
       } else {
-        const hint = 'Tip: the SEARCH block may have trailing whitespace or empty lines that differ from the file. Reread the exact content with read_file.'
+        const hint = 'Tip: the SEARCH block does not match the file. Reread the file with read_file and copy the exact content into the SEARCH block. The snippet below shows the actual file content around the expected location.'
         errors.push(buildNotFoundSnippetError(normResult, normSearch, `apply_patch SEARCH (lines ${searchStartIdx + 2}-${sepIdx})`) + ' ' + hint)
       }
     }
@@ -177,6 +177,14 @@ function applySearchReplacePatch(original: string, patch: string, replaceAll = f
 
   if (errors.length > 0) {
     throw new Error(`apply_patch errors (${errors.length}):\n${errors.join('\n')}`)
+  }
+
+  // Preserve original line endings: normalizeLineEndings above converted
+  // result to LF for comparison. If original had CRLF, restore it so the
+  // file doesn't silently switch from CRLF to LF (which would make git diff
+  // show every line as changed on Windows).
+  if (original.includes('\r\n')) {
+    result = result.replace(/\r?\n/g, '\r\n')
   }
 
   return result
@@ -371,13 +379,19 @@ function checkBraceBalance(lines: string[], upToLine: number): string | null {
 // экономит round-trip и снижает количество ошибок редактирования.
 function buildNotFoundSnippetError(normOrig: string, normOld: string, context: string): string {
   const lines = normOrig.split('\n')
-  const oldFirstLine = normOld.split('\n')[0]?.trimStart() ?? ''
-  // Пытаемся найти строку с частичным совпадением по первым 30 символам old_str
-  const partialIdx = oldFirstLine
-    ? lines.findIndex(l => l.includes(oldFirstLine.slice(0, 30)))
-    : -1
-  const snippetStart = Math.max(0, (partialIdx >= 0 ? partialIdx : 0) - 3)
-  const SNIPPET_LINES = 15
+  // Пытаемся найти ЛЮБУЮ строку из old_str в файле (не только первую).
+  // Перебираем строки old_str — больше шансов попасть в нужную область.
+  const oldLines = normOld.split('\n').map(l => l.trimStart()).filter(l => l.length > 0)
+  let partialIdx = -1
+  for (const oldLine of oldLines) {
+    const probe = oldLine.slice(0, 40)
+    if (probe) {
+      partialIdx = lines.findIndex(l => l.includes(probe))
+      if (partialIdx >= 0) break
+    }
+  }
+  const snippetStart = Math.max(0, (partialIdx >= 0 ? partialIdx : 0) - 5)
+  const SNIPPET_LINES = 30
   const snippetLines = lines.slice(snippetStart, snippetStart + SNIPPET_LINES)
   const snippet = snippetLines
     .map((l, i) => {

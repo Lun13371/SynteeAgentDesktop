@@ -115,4 +115,7 @@ export interface ToolResult {
   diff?: string
   hidden?: boolean  // скрытые тулы (think, update_working_memory) — не показываются в UI
   originalContent?: string | null  // §1.8 — для undo/rollback: содержимое до записи; null = файл был создан
+  /** Persistent cwd после выполнения команды (Claude Code approach: pwd -P marker).
+   *  Передаётся в следующий runCommand как cwd — cd переживает между вызовами. */
+  cwd?: string
 }

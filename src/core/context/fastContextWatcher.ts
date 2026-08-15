@@ -17,6 +17,8 @@ import { buildOrUpdateIndex, getIndexSettingsFromRecord, DEFAULT_INDEXING_SETTIN
 import {
   addIndexHistoryEvent, pruneIndexHistory, getFastContextIndexCount,
 } from '../db'
+import { incrementalUpdateFastContext } from '../memory/graphBuilder'
+import { log } from '../logger'
 import type Store from 'electron-store'
 
 // Module-level store reference — устанавливается через setWatcherStore(store)
@@ -272,6 +274,18 @@ async function runIndexDirect(
     const durationMs = Date.now() - startedAt
     const eventType = isFull ? 'full' : 'incremental'
     recordHistory(projectId, eventType, filesChanged, durationMs)
+
+    // Sync knowledge graph file/symbol nodes after reindex — keeps
+    // file relationships (imports, calls) fresh. Only if files changed.
+    if (filesChanged > 0) {
+      try {
+        const r = incrementalUpdateFastContext(projectId)
+        log('[watcher] graph sync: nodes=%d edges=%d removed=%d', r.nodes, r.edges, r.removed)
+      } catch (e) {
+        log('[watcher] graph sync failed: %s', (e as Error).message)
+      }
+    }
+
     _onUpdated?.(projectId)
     if (isActive) {
       _onProgress?.(projectId, { stage: 'done', detail: `${filesChanged} файлов, ${durationMs}ms` })

@@ -62,6 +62,8 @@ export interface GraphStats {
   byEdgeType: Record<string, number>
   hubs: Array<{ id: string; label: string; type: NodeType; degree: number }>
   recentDecisions: Array<{ id: string; label: string; targets: Array<{ label: string; type: NodeType; edgeType: EdgeType }> }>
+  /** Top file nodes by degree with their import targets — for system prompt. */
+  fileHubs: Array<{ label: string; degree: number; topImports: string[] }>
 }
 
 export interface GetGraphOptions {
@@ -346,6 +348,31 @@ export function getGraphStats(projectId: string): GraphStats {
     })
   }
 
+  // File hubs: top 5 file nodes by degree, each with their top 3 import targets
+  const fileHubRows = db.prepare(
+    `SELECT n.id, n.label,
+       (SELECT COUNT(*) FROM memory_graph_edges e WHERE e.from_node = n.id OR e.to_node = n.id) as degree
+     FROM memory_graph_nodes n
+     WHERE n.project_id = ? AND n.type = 'file'
+     ORDER BY degree DESC LIMIT 5`
+  ).all(projectId) as Array<{ id: string; label: string; degree: number }>
+
+  const fileHubs: GraphStats['fileHubs'] = []
+  for (const fh of fileHubRows) {
+    if (fh.degree === 0) continue
+    const imports = db.prepare(
+      `SELECT n2.label FROM memory_graph_edges e
+       JOIN memory_graph_nodes n2 ON n2.id = e.to_node
+       WHERE e.from_node = ? AND e.type = 'imports'
+       ORDER BY e.weight DESC LIMIT 3`
+    ).all(fh.id) as Array<{ label: string }>
+    fileHubs.push({
+      label: fh.label,
+      degree: fh.degree,
+      topImports: imports.map(i => i.label),
+    })
+  }
+
   return {
     nodeCount,
     edgeCount,
@@ -353,6 +380,7 @@ export function getGraphStats(projectId: string): GraphStats {
     byEdgeType: Object.fromEntries(byEdgeTypeRows.map(r => [r.type, r.c])),
     hubs: hubsRows.map(h => ({ id: h.id, label: h.label, type: h.type, degree: h.degree })),
     recentDecisions,
+    fileHubs,
   }
 }
 
@@ -423,4 +451,152 @@ export function decayPruneGraph(maxAgeDays = 30, minWeight = 0.5): number {
        AND created_at < ?`
   ).run(minWeight, cutoff, cutoff)
   return result.changes
+}
+
+// ─── FORMAT GRAPH FOR AI ─────────────────────────────────────────────────────
+
+/**
+ * Форматирует GraphData в текст или mermaid для AI-тула get_graph.
+ *
+ * text: узлы сгруппированы по типу, рёбра как "A →type→ B".
+ *   Files показываются с их import/call связями prominently.
+ *   Truncate до ~4000 символов.
+ * mermaid: flowchart `graph TD; A-->|type|B`.
+ */
+export function formatGraphForAI(graph: GraphData, format: string = 'text'): string {
+  if (graph.nodes.length === 0) {
+    return 'Graph is empty. The project may not be indexed yet, or no decisions have been saved.'
+  }
+
+  if (format === 'mermaid') {
+    return formatGraphMermaid(graph)
+  }
+  return formatGraphText(graph)
+}
+
+function formatGraphText(graph: GraphData): string {
+  const lines: string[] = []
+  const nodeMap = new Map(graph.nodes.map(n => [n.id, n]))
+
+  // Group nodes by type
+  const byType: Record<string, GraphNode[]> = {}
+  for (const n of graph.nodes) {
+    if (!byType[n.type]) byType[n.type] = []
+    byType[n.type].push(n)
+  }
+
+  const typeLabels: Record<string, string> = {
+    decision: 'Decisions',
+    concept: 'Concepts',
+    file: 'Files',
+    symbol: 'Symbols',
+    conversation: 'Conversations',
+    task: 'Tasks',
+  }
+
+  // Nodes section
+  for (const [type, label] of Object.entries(typeLabels)) {
+    const nodes = byType[type]
+    if (!nodes?.length) continue
+    lines.push(`${label} (${nodes.length}):`)
+    for (const n of nodes.slice(0, 30)) {
+      const degree = graph.edges.filter(e => e.fromNode === n.id || e.toNode === n.id).length
+      lines.push(`  - ${n.label}${degree > 0 ? ` (${degree} links)` : ''}`)
+    }
+    if (nodes.length > 30) lines.push(`  ... and ${nodes.length - 30} more`)
+    lines.push('')
+  }
+
+  // Edges section — group by type for readability
+  const edgeLabels: Record<string, string> = {
+    affects: 'Affects (decision → file)',
+    mentions: 'Mentions (→ symbol)',
+    implemented_in: 'Implemented in (symbol → file)',
+    depends_on: 'Depends on (→)',
+    supersedes: 'Supersedes (→)',
+    references: 'References (→)',
+    imports: 'Imports (file → file)',
+    calls: 'Calls (file → symbol)',
+    implements: 'Implements (→)',
+  }
+
+  const edgesByType: Record<string, GraphEdge[]> = {}
+  for (const e of graph.edges) {
+    if (!edgesByType[e.type]) edgesByType[e.type] = []
+    edgesByType[e.type].push(e)
+  }
+
+  for (const [type, label] of Object.entries(edgeLabels)) {
+    const edges = edgesByType[type]
+    if (!edges?.length) continue
+    lines.push(`${label} (${edges.length}):`)
+    for (const e of edges.slice(0, 20)) {
+      const from = nodeMap.get(e.fromNode)
+      const to = nodeMap.get(e.toNode)
+      if (!from || !to) continue
+      lines.push(`  ${from.label} → ${to.label}`)
+    }
+    if (edges.length > 20) lines.push(`  ... and ${edges.length - 20} more`)
+    lines.push('')
+  }
+
+  let result = lines.join('\n').trim()
+  if (result.length > 4000) {
+    result = result.slice(0, 3990) + '\n... (truncated)'
+  }
+  return result
+}
+
+function formatGraphMermaid(graph: GraphData): string {
+  const lines: string[] = ['```mermaid', 'graph TD']
+  const nodeMap = new Map(graph.nodes.map(n => [n.id, n]))
+
+  // Sanitize labels for mermaid (no special chars in node IDs)
+  const sanitizeId = (id: string) => id.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 20)
+
+  // Nodes
+  for (const n of graph.nodes.slice(0, 100)) {
+    const sid = sanitizeId(n.id)
+    const shortLabel = n.label.length > 20 ? n.label.slice(0, 17) + '…' : n.label
+    const typeIcons: Record<string, string> = {
+      decision: '📋',
+      concept: '💡',
+      file: '📄',
+      symbol: '🔧',
+      conversation: '💬',
+      task: '✅',
+    }
+    lines.push(`  ${sid}["${typeIcons[n.type] ?? ''} ${shortLabel}"]`)
+  }
+
+  // Edges
+  const edgeLabels: Record<string, string> = {
+    affects: 'affects',
+    mentions: 'mentions',
+    implemented_in: 'impl',
+    depends_on: 'depends',
+    supersedes: 'replaces',
+    references: 'refs',
+    imports: 'imports',
+    calls: 'calls',
+    implements: 'impl',
+  }
+
+  for (const e of graph.edges.slice(0, 150)) {
+    const from = nodeMap.get(e.fromNode)
+    const to = nodeMap.get(e.toNode)
+    if (!from || !to) continue
+    const fromSid = sanitizeId(e.fromNode)
+    const toSid = sanitizeId(e.toNode)
+    const label = edgeLabels[e.type] ?? e.type
+    lines.push(`  ${fromSid} -->|${label}| ${toSid}`)
+  }
+
+  lines.push('```')
+
+  let result = lines.join('\n')
+  if (result.length > 4000) {
+    result = result.slice(0, 3990) + '\n... (truncated)\n```'
+  }
+  return result
 }

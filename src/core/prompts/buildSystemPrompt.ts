@@ -31,6 +31,7 @@ export function buildSystemPrompt(params: {
     byEdgeType: Record<string, number>
     hubs: Array<{ id: string; label: string; type: string; degree: number }>
     recentDecisions: Array<{ id: string; label: string; targets: Array<{ label: string; type: string; edgeType: string }> }>
+    fileHubs?: Array<{ label: string; degree: number; topImports: string[] }>
   }
   date?: string
   customSystemPrompt?: string
@@ -359,6 +360,7 @@ questions: [
 
 ## Working with files
 
+- BEFORE editing a file, read it with read_file first. The SEARCH block in apply_patch must match the ACTUAL file content — copy it from what you read, not from memory. Editing a file you haven't read leads to "SEARCH not found" errors.
 - to change an existing file use edit_file (mode=apply_patch for one or multiple edits, mode=insert to insert at a line, mode=overwrite to replace the whole file)
 - use write_file only to create a new file from scratch — to overwrite an existing one it returns an error, use edit_file
 - after a change rely on the diff and do not reread the file without reason
@@ -851,6 +853,7 @@ function buildGraphStatsBlock(stats?: {
   byEdgeType: Record<string, number>
   hubs: Array<{ id: string; label: string; type: string; degree: number }>
   recentDecisions: Array<{ id: string; label: string; targets: Array<{ label: string; type: string; edgeType: string }> }>
+  fileHubs?: Array<{ label: string; degree: number; topImports: string[] }>
 }): string {
   if (!stats || stats.nodeCount === 0) return ''
 
@@ -884,6 +887,20 @@ function buildGraphStatsBlock(stats?: {
   let block = `\n## Project knowledge graph\nNodes: ${stats.nodeCount} (${nodeBreakdown})\nEdges: ${stats.edgeCount}\n`
   if (hubsStr) block += `Hubs: ${hubsStr}\n`
   if (decisionsStr) block += `Recent decisions:\n${decisionsStr}\n`
+
+  // File relationships — top connected files with their imports
+  if (stats.fileHubs && stats.fileHubs.length > 0) {
+    const fileLines = stats.fileHubs
+      .filter(fh => fh.degree > 0)
+      .slice(0, 5)
+      .map(fh => {
+        const imports = fh.topImports.length > 0 ? ` →imports→ ${fh.topImports.join(', ')}` : ''
+        return `  - ${fh.label}(${fh.degree} links)${imports}`
+      })
+      .join('\n')
+    if (fileLines) block += `File relationships:\n${fileLines}\n`
+  }
+
   block += `Use get_graph for details and mermaid visualization.\n`
 
   // Dynamic hints based on graph stats — guide the agent toward graph usage.

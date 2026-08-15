@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { CustomTheme } from '../../../shared/types'
 
-type Theme = 'dark' | 'light' | 'midnight' | 'forest' | 'amber' | 'rose' | 'paper' | 'slate' | 'crimson' | 'custom'
+type Theme = 'dark' | 'light' | 'midnight' | 'forest' | 'amber' | 'rose' | 'paper' | 'slate' | 'crimson' | 'pitch' | 'ocean' | 'carbon' | 'custom'
 type Page = 'chat' | 'settings' | 'tasks' | 'notes' | 'stats'
 type Density = 'compact' | 'comfortable' | 'spacious'
 
@@ -66,6 +66,7 @@ interface UIStore {
   bgImageEnabled: boolean
   animatedBgOpacity: number
   animatedBgSpeed: number
+  bgStyleParams: Record<string, number>
   customThemes: CustomTheme[]
   activeCustomThemeId: string | null
   themeSchedule: ThemeSchedule
@@ -98,6 +99,7 @@ interface UIStore {
   setBgImageEnabled: (v: boolean) => void
   setAnimatedBgOpacity: (v: number) => void
   setAnimatedBgSpeed: (v: number) => void
+  setBgStyleParams: (v: Record<string, number>) => void
   setCustomThemes: (v: CustomTheme[]) => void
   setActiveCustomThemeId: (v: string | null) => void
   setThemeSchedule: (v: ThemeSchedule) => void
@@ -144,6 +146,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   bgImageEnabled: true,
   animatedBgOpacity: 60,
   animatedBgSpeed: 1,
+  bgStyleParams: {},
   customThemes: [],
   activeCustomThemeId: null,
   themeSchedule: DEFAULT_THEME_SCHEDULE,
@@ -181,6 +184,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setBgImageEnabled: (bgImageEnabled) => set({ bgImageEnabled }),
   setAnimatedBgOpacity: (animatedBgOpacity) => set({ animatedBgOpacity }),
   setAnimatedBgSpeed: (animatedBgSpeed) => set({ animatedBgSpeed }),
+  setBgStyleParams: (bgStyleParams) => set({ bgStyleParams }),
   setCustomThemes: (customThemes) => set({ customThemes }),
   setActiveCustomThemeId: (activeCustomThemeId) => set({ activeCustomThemeId }),
   setThemeSchedule: (themeSchedule) => set({ themeSchedule }),

@@ -1,5 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
+import { copyToClipboard } from '@renderer/utils/clipboard'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useShallow } from 'zustand/react/shallow'
@@ -1913,8 +1914,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               </button>
               <button
                 className="selection-reply-copy"
-                onClick={() => {
-                  navigator.clipboard.writeText(selectionPopup.text)
+                onClick={async () => {
+                  await copyToClipboard(selectionPopup.text)
                   setSelectionPopup(null)
                 }}
               >

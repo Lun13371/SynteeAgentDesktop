@@ -373,20 +373,14 @@ export async function searchMemory(params: SearchMemoryParams): Promise<SearchRe
     kindArgs.push(params.kind)
   }
 
-  // LIKE pre-filter for queries > 3 chars — finds low-importance relevant items
-  let likeWhere = ''
-  const likeArgs: unknown[] = []
-  if (params.query.trim().length > 3) {
-    const pattern = `%${params.query.trim().toLowerCase()}%`
-    likeWhere = `AND (LOWER(content) LIKE ? OR LOWER(title) LIKE ?)`
-    likeArgs.push(pattern, pattern)
-  }
-
-  // Берём top-500 по importance (чтобы не гонять cosine по всей базе)
+  // Берём top-500 по importance (чтобы не гонять cosine по всей базе).
+  // LIKE pre-filter убран — он исключал семантически релевантные записи,
+  // не содержащие точной подстроки запроса. TF-IDF cosine + LIKE boost
+  // в скоринге ниже обеспечивают ранжирование без потери recall.
   const rows = db.prepare(
-    `SELECT * FROM memory_items WHERE ${scopeWhere} ${kindWhere} ${likeWhere}
+    `SELECT * FROM memory_items WHERE ${scopeWhere} ${kindWhere}
      ORDER BY importance DESC, updated_at DESC LIMIT 500`
-  ).all(...scopeArgs, ...kindArgs, ...likeArgs) as Record<string, unknown>[]
+  ).all(...scopeArgs, ...kindArgs) as Record<string, unknown>[]
 
   if (rows.length === 0) return []
 
@@ -408,13 +402,17 @@ export async function searchMemory(params: SearchMemoryParams): Promise<SearchRe
       } catch { /* skip */ }
     }
 
+    // Substring match check — используется для TF-IDF fallback и LIKE boost.
+    // Проверяем и content, и title.
+    const contentLower = (row.content as string).toLowerCase()
+    const titleLower = ((row.title as string) ?? '').toLowerCase()
+    const queryLower = params.query.toLowerCase()
+    const hasSubstring = queryLower.length > 0 &&
+      (contentLower.includes(queryLower) || titleLower.includes(queryLower))
+
     // LIKE-fallback если embedding отсутствует или cosine=0
-    if (tfidfCos === 0) {
-      const contentLower = (row.content as string).toLowerCase()
-      const queryLower = params.query.toLowerCase()
-      if (contentLower.includes(queryLower)) {
-        tfidfCos = 0.3 // базовый score за substring match
-      }
+    if (tfidfCos === 0 && hasSubstring) {
+      tfidfCos = 0.3 // базовый score за substring match
     }
 
     const importance = (row.importance as number) ?? 0.5
@@ -427,7 +425,10 @@ export async function searchMemory(params: SearchMemoryParams): Promise<SearchRe
 
     // Tuned: TF-IDF is the primary signal (×12), importance slightly reduced (×1.5)
     // so low-importance but relevant items surface. Recency boosted (×1.5).
-    const combo = tfidfCos * 12 + importance * 1.5 + recencyBoost * 1.5 + pinnedBoost * 0.8
+    // LIKE boost (+1.0) — точное совпадение подстроки чуть повышает ранг,
+    // но не исключает семантически релевантные записи без подстроки.
+    const likeBoost = hasSubstring ? 1.0 : 0
+    const combo = tfidfCos * 12 + importance * 1.5 + recencyBoost * 1.5 + pinnedBoost * 0.8 + likeBoost
     if (combo < minScore) continue
 
     scored.push({ item: rowToItem(row), score: combo })

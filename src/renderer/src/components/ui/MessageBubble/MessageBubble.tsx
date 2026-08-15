@@ -1,5 +1,6 @@
 import { useState, useMemo, memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { copyToClipboard } from '@renderer/utils/clipboard'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -185,8 +186,9 @@ const CopyButton = memo(function CopyButton({ raw }: { raw: string }) {
   return (
     <button
       className={`code-copy-btn ${copied ? 'code-copy-btn--copied' : ''}`}
-      onClick={() => {
-        navigator.clipboard.writeText(raw)
+      onClick={async () => {
+        const ok = await copyToClipboard(raw)
+        if (!ok) return
         setCopied(true)
         setTimeout(() => setCopied(false), 1500)
       }}
@@ -1164,10 +1166,12 @@ const MessageContent = memo(function MessageContent({
             return (
               <div className="message-content selectable">
                 {isUser && !userMarkdown ? (
-                  <p>{content}</p>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{content}</p>
                 ) : isUser ? (
-                  // User-сообщения: один md-сегмент, парсинг admonition/plan не нужен.
-                  renderParsedSegments(segments as ReturnType<typeof parseContent>, remarkPlugins, rehypePlugins, message.planData?.filePath)
+                  // User-сообщения с markdown: через ParsedContent (с кэшем)
+                  // вместо прямого renderParsedSegments — консистентно с
+                  // ассистентскими сообщениями и надёжнее.
+                  <ParsedContent text={content} allowPlanCard={false} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} />
                 ) : (
                   // Ассистентские сообщения — через ParsedContent с module-level
                   // кэшем: scroll-remount виртуализатора и hover (showActions)
@@ -1334,9 +1338,9 @@ const MessageBubble = memo(function MessageBubble({
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(message.content)
-    onCopy?.(message.content)
+  const handleCopy = useCallback(async () => {
+    const ok = await copyToClipboard(message.content)
+    if (ok) onCopy?.(message.content)
   }, [message.content, onCopy])
 
   const handleReply = useCallback(() => {
