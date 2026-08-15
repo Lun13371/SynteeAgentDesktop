@@ -1,4 +1,4 @@
-import type Store from 'electron-store'
+﻿import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import { needsApproval } from './commandSafety'
 import { updateStructuredMemory } from '../context/structuredMemory'
@@ -8,7 +8,7 @@ import {
   findFiles,
   searchWeb, getSystemInfo, generateImage,
   readFiles, searchCode, analyzeProject,
-  httpRequest, getDiagnostics, smartTrimOutput, stripAnsi,
+  httpRequest, getDiagnostics,
   TOOL_SCHEMAS, type ToolResult, editFile,
 } from '../tools'
 import {
@@ -20,7 +20,7 @@ import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
 import { isReadonlyPersona, getPersonaAllowedTools } from '../../shared/modes'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
-import { statSync } from 'fs'
+import { statSync, existsSync } from 'fs'
 import { createHash } from 'crypto'
 import { resolve } from 'path'
 import { log } from '../logger'
@@ -90,8 +90,24 @@ export class Agent {
   private fileCache = new Map<string, FileCacheEntry>()
   private dirtyFileCacheKeys = new Set<string>()
 
+  // Трекер «читал ли AI файл в этой сессии» — для read-before-edit проверки.
+  // НЕ сбрасывается между run() (как loopGuardHits) — переживает turn'ы.
+  // Ключ — нормализованный абсолютный путь (resolve(workdir, path)).
+  private filesReadInSession = new Set<string>()
+
+  // Auto-advance: максимальная строка, уже возвращённая моделью для каждого
+  // файла. При повторном read_file БЕЗ offset — вместо возврата того же
+  // первого чанка (cache hit), автоматически сдвигаем на следующий непрочитанный
+  // чанк. Ключ — нормализованный абсолютный путь. Сбрасывается в run().
+  private readFileMaxLine = new Map<string, number>()
+
   // Журнал выполненных команд — для структурированного результата суб-агента
-  private commandsRun: Array<{ command: string; exitCode?: string; success: boolean }> = []
+  private commandsRun: Array<{ command: string; exitCode?: string; success: boolean; cwd?: string }> = []
+
+  // Claude Code approach: persistent cwd между run_command вызовами.
+  // После каждой команды runCommand возвращает cwd (через __SYNTEE_CWD__ маркер).
+  // Сохраняем его и передаём в следующий runCommand — cd переживает без PTY.
+  private lastShellCwd: string | undefined
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
@@ -132,6 +148,7 @@ export class Agent {
     this.readFileCache = new Map<string, string>()
     this.pendingDiffEntries = []
     this.fileMap = new Map()
+    this.readFileMaxLine = new Map()
     // recentToolFingerprints / loopGuardHits НЕ сбрасываем между run() —
     // session-level loop detection ловит зацикливание через несколько
     // turn'ов пользователя (модель «по кд» повторяет одно и то же в
@@ -140,6 +157,9 @@ export class Agent {
     this.recentErrorFingerprints = []
     this.recentParseFailures = []
     this.commandsRun = []
+    // Сбрасываем lastShellCwd — если сменился workdir (другой проект),
+    // cwd из предыдущей команды «протекает» и команда выполнится в чужой директории.
+    this.lastShellCwd = undefined
     // Инициализируем персистентный кэш из снимка (передаётся из main через worker)
     this.fileCache = new Map(Object.entries(options?.fileCacheSnapshot ?? {}))
     this.dirtyFileCacheKeys = new Set()
@@ -524,70 +544,86 @@ export class Agent {
           const { callId, fn, args, isHiddenTool, pendingCallId, parseError } = item
           if (!isHiddenTool) {
             const fingerprint = buildToolFingerprint(fn.name, args)
-            this.recentToolFingerprints.push(fingerprint)
-            // Окно 8 (вместо 3) позволяет ловить чередования вида
-            // A,B,A,B,A,B — 2 уникальных fingerprint'а на 8 записей.
-            // При окне 3 окно [B,A,B] / [A,B,A] никогда не совпадало
-            // полностью → guard не срабатывал на пинг-понге.
-            if (this.recentToolFingerprints.length > 8) {
-              this.recentToolFingerprints.shift()
+
+            // Auto-advance: read_file без offset на уже прочитанном файле (≥400
+            // строк) вернёт ДРУГОЙ чанк (401-800, 801-1200, ...) — это НЕ
+            // повтор. Не пушим fingerprint в recentToolFingerprints, иначе
+            // loop guard ложно срабатывает: видит N одинаковых fingerprint'ов
+            // (path одинаковый, offset/limit отсутствуют) и блокирует тул,
+            // хотя каждый вызов возвращал уникальный контент.
+            let isReadFileAutoAdvance = false
+            if (fn.name === 'read_file' && args.offset === undefined) {
+              let autoAbsPath: string
+              try { autoAbsPath = resolve(this.workdir ?? process.cwd(), args.path as string) } catch { autoAbsPath = args.path as string }
+              isReadFileAutoAdvance = (this.readFileMaxLine.get(autoAbsPath) ?? 0) > 0
             }
-            const fpCount = this.recentToolFingerprints.length
-            const repeatedCalls = fpCount >= maxRepeatedToolCalls &&
-              this.recentToolFingerprints.every(entry =>
-                entry.toolName === fingerprint.toolName && entry.argsKey === fingerprint.argsKey,
-              )
-            // Чередование: в окне ≥6 записей всего 2 уникальных fingerprint'а,
-            // и оба повторяются ≥2 раза. Ловит A,B,A,B / A,B,C,A,B,C и т.п.
-            const alternation = fpCount >= 6 && (() => {
-              const keys = this.recentToolFingerprints.map(f => `${f.toolName}|${f.argsKey}`)
-              const unique = new Set(keys)
-              if (unique.size !== 2) return false
-              const counts = new Map<string, number>()
-              for (const k of keys) counts.set(k, (counts.get(k) ?? 0) + 1)
-              return [...counts.values()].every(c => c >= 2)
-            })()
-            if (repeatedCalls || alternation) {
-              // Считаем сколько раз подряд сработал guard на этом тул+args.
-              // 1-2 раза — мягкое предупреждение (текст в messages).
-              // 3+ раза (т.е. 3× maxRepeatedToolCalls = 9 фактических вызовов) —
-              // hard block: тул НЕ выполняется, возвращаем ошибку в AI.
-              const blockKey = `${fingerprint.toolName}|${fingerprint.argsKey}`
-              const guardHits = (this.loopGuardHits.get(blockKey) ?? 0) + 1
-              this.loopGuardHits.set(blockKey, guardHits)
-              const hardBlock = guardHits >= 3
-              const loopMsg = alternation
-                ? `Loop guard: you are alternating ${fingerprint.toolName} with another tool in a loop (${fpCount} recent calls, 2 unique). Change strategy: analyze what is already done and choose a different approach.`
-                : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
-              messages.push({
-                role: 'user',
-                content: hardBlock
-                  ? `${loopMsg}\n\nATTENTION: tool "${fn.name}" is blocked for this run() after ${guardHits} loop-guard warnings (${guardHits * maxRepeatedToolCalls} actual calls). It was NOT executed. Change strategy or ask the user.`
-                  : loopMsg,
-              })
-              callbacks.onStep({
-                type: 'tool_result',
-                toolName: '_loop_guard',
-                content: hardBlock
-                  ? `${fn.name} blocked after ${guardHits * maxRepeatedToolCalls} repeats (hard loop guard).`
-                  : `${fn.name} repeated ${maxRepeatedToolCalls} times with the same arguments — warning ${guardHits}/3. Hard block after 3.`,
-                success: false,
-              })
-              if (hardBlock) {
-                resultMap.set(callId, {
-                  contentForAI: `Hard loop guard: tool "${fn.name}" is blocked — repeated ${guardHits * maxRepeatedToolCalls} times with the same/similar arguments. The call was NOT executed. Change strategy: use a different tool, different arguments, or ask the user.`,
-                  callId,
-                  name: fn.name,
+
+            if (!isReadFileAutoAdvance) {
+              this.recentToolFingerprints.push(fingerprint)
+              // Окно 8 (вместо 3) позволяет ловить чередования вида
+              // A,B,A,B,A,B — 2 уникальных fingerprint'а на 8 записей.
+              // При окне 3 окно [B,A,B] / [A,B,A] никогда не совпадало
+              // полностью → guard не срабатывал на пинг-понге.
+              if (this.recentToolFingerprints.length > 8) {
+                this.recentToolFingerprints.shift()
+              }
+              const fpCount = this.recentToolFingerprints.length
+              const repeatedCalls = fpCount >= maxRepeatedToolCalls &&
+                this.recentToolFingerprints.every(entry =>
+                  entry.toolName === fingerprint.toolName && entry.argsKey === fingerprint.argsKey,
+                )
+              // Чередование: в окне ≥6 записей всего 2 уникальных fingerprint'а,
+              // и оба повторяются ≥2 раза. Ловит A,B,A,B / A,B,C,A,B,C и т.п.
+              const alternation = fpCount >= 6 && (() => {
+                const keys = this.recentToolFingerprints.map(f => `${f.toolName}|${f.argsKey}`)
+                const unique = new Set(keys)
+                if (unique.size !== 2) return false
+                const counts = new Map<string, number>()
+                for (const k of keys) counts.set(k, (counts.get(k) ?? 0) + 1)
+                return [...counts.values()].every(c => c >= 2)
+              })()
+              if (repeatedCalls || alternation) {
+                // Считаем сколько раз подряд сработал guard на этом тул+args.
+                // 1-2 раза — мягкое предупреждение (текст в messages).
+                // 3+ раза (т.е. 3× maxRepeatedToolCalls = 9 фактических вызовов) —
+                // hard block: тул НЕ выполняется, возвращаем ошибку в AI.
+                const blockKey = `${fingerprint.toolName}|${fingerprint.argsKey}`
+                const guardHits = (this.loopGuardHits.get(blockKey) ?? 0) + 1
+                this.loopGuardHits.set(blockKey, guardHits)
+                const hardBlock = guardHits >= 3
+                const loopMsg = alternation
+                  ? `Loop guard: you are alternating ${fingerprint.toolName} with another tool in a loop (${fpCount} recent calls, 2 unique). Change strategy: analyze what is already done and choose a different approach.`
+                  : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
+                messages.push({
+                  role: 'user',
+                  content: hardBlock
+                    ? `${loopMsg}\n\nATTENTION: tool "${fn.name}" is blocked for this run() after ${guardHits} loop-guard warnings (${guardHits * maxRepeatedToolCalls} actual calls). It was NOT executed. Change strategy or ask the user.`
+                    : loopMsg,
                 })
                 callbacks.onStep({
                   type: 'tool_result',
-                  toolName: fn.name,
-                  content: '[Blocked by loop guard — tool not executed]',
+                  toolName: '_loop_guard',
+                  content: hardBlock
+                    ? `${fn.name} blocked after ${guardHits * maxRepeatedToolCalls} repeats (hard loop guard).`
+                    : `${fn.name} repeated ${maxRepeatedToolCalls} times with the same arguments — warning ${guardHits}/3. Hard block after 3.`,
                   success: false,
-                  callId,
-                  hidden: isHiddenTool,
                 })
-                return
+                if (hardBlock) {
+                  resultMap.set(callId, {
+                    contentForAI: `Hard loop guard: tool "${fn.name}" is blocked — repeated ${guardHits * maxRepeatedToolCalls} times with the same/similar arguments. The call was NOT executed. Change strategy: use a different tool, different arguments, or ask the user.`,
+                    callId,
+                    name: fn.name,
+                  })
+                  callbacks.onStep({
+                    type: 'tool_result',
+                    toolName: fn.name,
+                    content: '[Blocked by loop guard — tool not executed]',
+                    success: false,
+                    callId,
+                    hidden: isHiddenTool,
+                  })
+                  return
+                }
               }
             }
           }
@@ -781,6 +817,10 @@ export class Agent {
                 for (const fckey of Array.from(this.fileCache.keys())) {
                   if (fckey.startsWith(p + ':')) this.fileCache.delete(fckey)
                 }
+                // Инвалидируем readFileMaxLine — файл изменился, старые offset'ы невалидны
+                let invAbsPath: string
+                try { invAbsPath = resolve(this.workdir ?? process.cwd(), p) } catch { invAbsPath = p }
+                this.readFileMaxLine.delete(invAbsPath)
                 if (ctxSettings.diffJournalEnabled && diffSummary) {
                   this.pendingDiffEntries.push({ file: p, summary: diffSummary })
                 }
@@ -1045,6 +1085,26 @@ export class Agent {
     }
   }
 
+  /**
+   * Обновляет readFileMaxLine для absPath на основе output read_file.
+   * Парсит два формата:
+   *  - с offset:  [File: path | Lines 401-800 of 1686]
+   *  - без offset: [File: path | 1686 lines]
+   */
+  private updateReadFileMaxLine(absPath: string, output: string): void {
+    const rangedMatch = output.match(/Lines (\d+)-(\d+) of (\d+)/)
+    if (rangedMatch) {
+      const toLine = parseInt(rangedMatch[2], 10)
+      this.readFileMaxLine.set(absPath, Math.max(this.readFileMaxLine.get(absPath) ?? 0, toLine))
+      return
+    }
+    const totalMatch = output.match(/\[File: [^\]]+ \| (\d+) lines\]/)
+    if (totalMatch) {
+      const totalLines = parseInt(totalMatch[1], 10)
+      this.readFileMaxLine.set(absPath, Math.max(this.readFileMaxLine.get(absPath) ?? 0, Math.min(totalLines, 400)))
+    }
+  }
+
   private async executeTool(
     name: string,
     args: Record<string, unknown>,
@@ -1063,54 +1123,16 @@ export class Agent {
         }
         // cwd модели → workdir чата → (внутри runCommand/persistent shell) homedir()
         // Модель может явно переопределить cwd; иначе берём workdir чата.
-        const effectiveCwd = (args.cwd as string | undefined) ?? this.workdir
-        const timeoutSec = (args.timeout as number | undefined) ?? 60
-        let cmdResult: ToolResult
-        // Persistent shell — только для главного агента (role === 'main') и
-        // только если явный shell не запрошен (powershell по умолч. на Windows
-        // соответствует тому, что запускает persistent сессия).
-        if (callbacks?.onShellExec && this.role === 'main' && !args.shell) {
-          const shellRes = await callbacks.onShellExec(cmd, effectiveCwd, timeoutSec)
-          // PTY-вывод содержит raw ANSI-коды и возможные остатки маркера
-          // завершения (__SYNTEE_DONE_...__:N, __SDE <hex>). feedExec срезает
-          // маркер из AI-вывода, но при дроблении чанков могут остаться огрызки
-          // — вырезаем надёжно. Сначала stripAnsi (ANSI-коды могут разрывать
-          // маркер), потом regex по всем вхождениям (не только trailing).
-          const cleanShellOutput = (raw: string) => {
-            return stripAnsi(raw)
-              .replace(/__SDE [a-f0-9]{8}/g, '')            // echo суффикса (PowerShell)
-              .replace(/__SYNTEE_DONE_[a-f0-9]{8}__:\d+/g, '')  // вывод маркера (все шеллы)
-              .replace(/^warning:.*LF will be replaced by CRLF.*$/gm, '')  // #4: git LF/CRLF warnings
-              .replace(/\r\n\r\n/g, '\r\n')                  // пустые строки от вырезанных маркеров
-              .trim()
-          }
-          if (shellRes.interrupted) {
-            // Пользователь нажал Stop (chat:stop → interruptByChat) —
-            // команда прервана вручную, не по таймауту.
-            const partial = smartTrimOutput(cleanShellOutput(shellRes.output || ''))
-            cmdResult = {
-              success: false,
-              output: `[interrupted by user — command stopped]\n${partial || '(no output)'}`,
-              error: 'Command interrupted by user',
-            }
-          } else if (shellRes.timedOut) {
-            // Сессия прервана Ctrl+C по таймауту (см. PtyManager.execInSession) —
-            // env/cwd сохранены, следующий run_command продолжится в ней.
-            // shellRes.output содержит частичный вывод команды до прерывания.
-            const partial = smartTrimOutput(cleanShellOutput(shellRes.output || ''))
-            cmdResult = {
-              success: false,
-              output: `[timeout after ${timeoutSec}s — command interrupted via Ctrl+C]\n${partial || '(no output)'}`,
-              error: 'Command exceeded the timeout',
-            }
-          } else {
-            const out = smartTrimOutput(cleanShellOutput(shellRes.output)) || '(no output)'
-            cmdResult = shellRes.exitCode === 0
-              ? { success: true, output: `[exit: 0]\n${out}` }
-              : { success: false, output: `[exit: ${shellRes.exitCode}]\n${out}`, error: out.slice(0, 500) || 'Command failed' }
-          }
-        } else {
-          cmdResult = await runCommand(cmd, effectiveCwd, args.shell as string | undefined, timeoutSec)
+        // Claude Code approach: child_process.exec + pwd marker для persistent cwd.
+        // cwd приоритет: явный args.cwd → lastShellCwd (из предыдущей команды) → workdir чата.
+        // PTY-путь (onShellExec) убран — child_process стабильнее на Windows (нет ConPTY багов).
+        const effectiveCwd = (args.cwd as string | undefined) ?? this.lastShellCwd ?? this.workdir
+        const rawTimeout = args.timeout
+        const timeoutSec = typeof rawTimeout === 'number' ? rawTimeout : Number(rawTimeout) || 60
+        const cmdResult: ToolResult = await runCommand(cmd, effectiveCwd, args.shell as string | undefined, timeoutSec)
+        // Сохраняем cwd из маркера для следующей команды — cd переживает
+        if (cmdResult.cwd) {
+          this.lastShellCwd = cmdResult.cwd
         }
         // Трекаем для структурированного результата суб-агента
         const exitMatch = cmdResult.output.match(/\[exit: (\d+)\]/)
@@ -1118,15 +1140,71 @@ export class Agent {
           command: cmd,
           exitCode: exitMatch?.[1],
           success: cmdResult.success,
+          cwd: cmdResult.cwd,
         })
         return cmdResult
       }
       case 'read_file': {
         const filePath = args.path as string
-        const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}`
+        const cacheKey = `${filePath}:${args.offset ?? 0}:${args.limit ?? 'all'}:${args.full ? 'full' : 'std'}`
+
+        // Нормализованный абсолютный путь для readFileMaxLine.
+        let absPath: string
+        try { absPath = resolve(this.workdir ?? process.cwd(), filePath) } catch { absPath = filePath }
+
+        // Auto-advance: если модель повторно вызывает read_file БЕЗ offset на
+        // уже прочитанном файле — вместо возврата того же чанка (cache hit),
+        // автоматически сдвигаем на следующий непрочитанный чанк. Устраняет
+        // зацикливание: модель получает НОВЫЙ контент вместо повторения того
+        // же вызова 5 раз.
+        // ВАЖНО: срабатывает при любом limit (включая limit=80) — модель часто
+        // передаёт limit но забывает offset, и без auto-advance получает тот
+        // же кэшированный чанк снова и снова. Порог >0 (не ≥400) — даже файлы
+        // меньше 400 строк могут быть прочитаны чанками по limit=80.
+        const readNoOffset = args.offset === undefined
+        const maxLineKnown = this.readFileMaxLine.get(absPath)
+        const shouldAutoAdvance = readNoOffset && maxLineKnown !== undefined && maxLineKnown > 0
+
+        if (shouldAutoAdvance) {
+          const autoOffset = maxLineKnown! + 1
+          const autoLimit = (args.limit as number | undefined) ?? 400
+          const result = await readFile(filePath, autoOffset, autoLimit, this.workdir, args.full as boolean | undefined)
+          if (result.success) {
+            // Проверяем, есть ли реальный контент (offset может быть за пределами файла)
+            const hasLines = /^[0-9]+\|/m.test(result.output)
+            if (!hasLines) {
+              return { success: true, output: `[File fully read: ${filePath} — all lines have been read in this session. No more content to show. Use offset=1 to re-read from the beginning if needed.]` }
+            }
+            this.updateReadFileMaxLine(absPath, result.output)
+            result.output = `[Auto-advanced to offset=${autoOffset}: lines 1-${autoOffset - 1} were already read in this session. Pass offset explicitly to jump to a specific line.]\n${result.output}`
+            try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
+            // Кэшируем этот чанк под его собственным ключом
+            const advCacheKey = `${filePath}:${autoOffset}:${autoLimit}:${args.full ? 'full' : 'std'}`
+            if (this.readFileCacheEnabled) {
+              this.readFileCache.set(advCacheKey, result.output)
+              try {
+                const stat = statSync(filePath)
+                this.fileCache.set(advCacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, output: result.output, cachedAt: Date.now() })
+                this.dirtyFileCacheKeys.add(advCacheKey)
+              } catch { /* ok */ }
+            }
+            const localCtx = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
+            if (localCtx.fileMapEnabled) {
+              const existing = this.fileMap.get(filePath)
+              this.fileMap.set(filePath, { reads: (existing?.reads ?? 0) + 1, writes: existing?.writes ?? 0, note: existing?.note || result.output.slice(0, 400).replace(/\n/g, ' ') })
+            }
+          }
+          return result
+        }
 
         // 1. Быстрый in-session кэш (в рамках одного run())
         if (this.readFileCacheEnabled && this.readFileCache.has(cacheKey)) {
+          // Трекаем чтение даже при кэш-хите — иначе edit_file read-before-edit
+          // блок ложно срабатывает после компрессии контекста.
+          try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
+          // Обновляем readFileMaxLine из кэшированного output — persistent cache
+          // мог пережить run() (readFileMaxLine сброшен, но кэш валиден).
+          this.updateReadFileMaxLine(absPath, this.readFileCache.get(cacheKey)!)
           return { success: true, output: this.readFileCache.get(cacheKey)! }
         }
 
@@ -1141,6 +1219,10 @@ export class Agent {
               if (stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
                 // Кэш-хит — файл не менялся, отдаём закэшированный результат
                 this.readFileCache.set(cacheKey, cached.output)
+                // Трекаем чтение даже при кэш-хите — иначе edit_file read-before-edit
+                // блок ложно срабатывает после компрессии контекста.
+                try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
+                this.updateReadFileMaxLine(absPath, cached.output)
                 return { success: true, output: cached.output }
               }
             } catch {
@@ -1149,23 +1231,31 @@ export class Agent {
           }
         }
 
-        const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, this.workdir)
-        // #3: Anti-loop hint — если файл уже читался без offset в этой сессии
-        // и снова читается без offset — добавляем подсказку про offset.
-        const readNoOffset = args.offset === undefined && args.limit === undefined
-        const alreadyReadNoOffset = this.readFileCache.has(`${filePath}:0:all`) ||
+        const result = await readFile(filePath, args.offset as number | undefined, args.limit as number | undefined, this.workdir, args.full as boolean | undefined)
+        // Anti-loop hint — если файл уже читался без offset и снова читается
+        // без offset, но auto-advance не сработал (файл ≤400 строк — читать
+        // дальше нечего). Усиленный HINT вместо мягкого.
+        const alreadyReadNoOffset = this.readFileCache.has(`${filePath}:0:all:${args.full ? 'full' : 'std'}`) ||
           (this.fileMap.get(filePath)?.reads ?? 0) > 0
         if (readNoOffset && alreadyReadNoOffset && result.success) {
-          // Извлекаем total lines из output для точной подсказки
           const linesMatch = result.output.match(/(\d+)\s+lines\]/)
           const totalLines = linesMatch ? parseInt(linesMatch[1], 10) : 400
-          const hint = `[HINT] You already read this file without offset (lines 1-${Math.min(totalLines, 400)} shown previously). Use offset=${Math.min(totalLines, 400) + 1} to continue reading, or pass offset/limit for a specific range.\n`
-          result.output = hint + result.output
+          if (totalLines <= 400) {
+            // Файл полностью прочитан — читать дальше нечего
+            result.output = `[STOP] You already read this file (all ${totalLines} lines shown). The file is only ${totalLines} lines — you have seen ALL of it. Do not call read_file on this file again without offset. If you need a specific section, pass offset/limit.\n${result.output}`
+          } else {
+            result.output = `[HINT] You already read this file without offset (lines 1-${Math.min(totalLines, 400)} shown previously). Use offset=${Math.min(totalLines, 400) + 1} to continue reading, or pass offset/limit for a specific range.\n${result.output}`
+          }
         }
 
         if (result.success) {
+          // Трекаем что файл был прочитан в этой сессии — для read-before-edit.
+          try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
+
+          // Обновляем readFileMaxLine для auto-advance
+          this.updateReadFileMaxLine(absPath, result.output)
+
           // Relevance feedback: AI читает файл → boost для fast context ranking.
-          // UPDATE ... WHERE — no-op если файла нет в индексе, безопасно.
           const rbProjectId = this.projectId
             ?? `fc:${createHash('sha1').update(resolve(this.workdir)).digest('hex').slice(0, 16)}`
           bumpRelevanceBoost(rbProjectId, filePath, 1)
@@ -1213,8 +1303,39 @@ export class Agent {
         })
       case 'write_file':
         return writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir, force: args.force as boolean | undefined })
-      case 'edit_file':
-        return editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun, workdir: this.workdir })
+      case 'edit_file': {
+        // Read-before-edit guard: soft warning если файл не был прочитан в этой
+        // сессии. НЕ блокируем — edit_file сам вернёт ошибку со сниппетом если
+        // SEARCH не найден. Жёсткий блок заставлял AI делать лишний read_file
+        // (2000+ токенов на большие файлы) после компрессии контекста, даже
+        // когда контент файла уже был в кэше.
+        // Исключения: create_if_not_exists=true (создание нового файла) и
+        // overwrite с confirm_overwrite (осознанная перезапись) — пропускаем.
+        const editPath = args.path as string
+        const editMode = args.mode as string
+        const createNew = args.create_if_not_exists === true
+        const isOverwrite = editMode === 'overwrite' && args.confirm_overwrite === true
+        let readWarning = ''
+        if (editPath && !createNew && !isOverwrite) {
+          let absPath: string
+          try {
+            absPath = resolve(this.workdir ?? process.cwd(), editPath)
+          } catch {
+            absPath = editPath
+          }
+          const fileExists = existsSync(absPath)
+          if (fileExists && !this.filesReadInSession.has(absPath)) {
+            readWarning = `[Warning: this file was not read via read_file in the current session. If the SEARCH block fails, read the file first with read_file.]`
+          }
+        }
+        const editResult = await editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun, workdir: this.workdir })
+        if (readWarning && editResult.success) {
+          editResult.output = `${readWarning}\n${editResult.output}`
+        } else if (readWarning && !editResult.success) {
+          editResult.error = `${readWarning}\n${editResult.error ?? ''}`
+        }
+        return editResult
+      }
       case 'list_directory':
         return listDirectory(args.path as string, {
           recursive: args.recursive as boolean | undefined,
@@ -1231,8 +1352,16 @@ export class Agent {
         return getSystemInfo()
       case 'generate_image':
         return generateImage(args as { prompt: string; model?: string; size?: string; quality?: string; style?: string }, this.store)
-      case 'read_files':
-        return readFiles(args.paths as string[], this.workdir)
+      case 'read_files': {
+        const rfResult = await readFiles(args.paths as string[], this.workdir)
+        // Трекаем все прочитанные пути для read-before-edit
+        if (rfResult.success) {
+          for (const p of (args.paths as string[])) {
+            try { this.filesReadInSession.add(resolve(this.workdir ?? process.cwd(), p)) } catch { /* ok */ }
+          }
+        }
+        return rfResult
+      }
       case 'search_code':
         return searchCode(
           args.pattern as string,
@@ -1432,6 +1561,28 @@ export class Agent {
             idx++
           }
           return { success: true, output: `Found ${result.results.length} results:\n\n${lines.join('\n')}` }
+        } catch (e) {
+          return { success: false, output: '', error: (e as Error).message }
+        }
+      }
+      case 'get_graph': {
+        if (!callbacks?.onGetGraph) {
+          return { success: false, output: '', error: 'get_graph unavailable (no graph backend)' }
+        }
+        if (!this.projectId) {
+          return { success: false, output: '', error: 'No project context — get_graph requires a project.' }
+        }
+        try {
+          const result = await callbacks.onGetGraph({
+            projectId: this.projectId,
+            nodeTypes: args.nodeTypes as string[] | undefined,
+            edgeTypes: args.edgeTypes as string[] | undefined,
+            minWeight: args.minWeight as number | undefined,
+            limit: args.limit as number | undefined,
+            format: args.format as string | undefined,
+          })
+          if (!result.success) return { success: false, output: '', error: result.error ?? 'graph query failed' }
+          return { success: true, output: result.output }
         } catch (e) {
           return { success: false, output: '', error: (e as Error).message }
         }

@@ -270,6 +270,13 @@
 
 .message-content p { margin: 0 0 8px; }
 .message-content p:last-child { margin-bottom: 0; }
+/* Сохранение пробелов и переносов в пользовательских сообщениях
+   независимо от режима markdown. pre-wrap: множественные пробелы
+   не схлопываются, переносы строк сохраняются. Не затрагивает
+   код-блоки (они в <pre> со своим white-space). */
+.message-bubble--user .message-content p {
+  white-space: pre-wrap;
+}
 .message-content h1, .message-content h2, .message-content h3 {
   margin: 12px 0 6px;
   font-weight: 600;

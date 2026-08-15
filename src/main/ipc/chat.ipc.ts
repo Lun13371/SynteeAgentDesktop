@@ -28,7 +28,7 @@ import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } fr
 
 import { onCompactionTrigger, extractAndSaveFacts } from '../../core/memory/extractor'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
-import { getGraphStats } from '../../core/memory/graphStore'
+import { getGraphStats, getProjectGraph, formatGraphForAI } from '../../core/memory/graphStore'
 import { extractAndSaveOutcomes } from '../../core/memory/outcomeExtractor'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
@@ -2259,6 +2259,45 @@ ${subModeOutro}`,
                 replyId: msg.replyId,
                 success: false,
                 results: [],
+                error: (e as Error).message,
+              })
+            }
+          })()
+          break
+        }
+        case 'get_graph': {
+          ;(async () => {
+            try {
+              const graphProjectId = msg.projectId as string | undefined
+              if (!graphProjectId) {
+                worker.postMessage({
+                  type: 'get_graph_reply',
+                  replyId: msg.replyId,
+                  success: false,
+                  output: '',
+                  error: 'No project context — get_graph requires a project.',
+                })
+                return
+              }
+              const graph = getProjectGraph(graphProjectId, {
+                nodeTypes: msg.nodeTypes as string[] | undefined,
+                edgeTypes: msg.edgeTypes as string[] | undefined,
+                minWeight: msg.minWeight as number | undefined,
+                limit: msg.limit as number | undefined,
+              })
+              const output = formatGraphForAI(graph, (msg.format as string) ?? 'text')
+              worker.postMessage({
+                type: 'get_graph_reply',
+                replyId: msg.replyId,
+                success: true,
+                output,
+              })
+            } catch (e) {
+              worker.postMessage({
+                type: 'get_graph_reply',
+                replyId: msg.replyId,
+                success: false,
+                output: '',
                 error: (e as Error).message,
               })
             }

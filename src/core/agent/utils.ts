@@ -1,5 +1,7 @@
+﻿import { resolve, normalize } from 'path'
 import { estimateTokens, TOOL_SCHEMAS_OVERHEAD } from '../context/contextManager'
 import { log } from '../logger'
+import { TOOL_SCHEMAS } from '../tools/schemas'
 import type { AgentMessage, AgentToolCallFingerprint, ToolRound } from './types'
 
 export const FALLBACK_SYSTEM_PROMPT = 'You are a capable coding agent. Follow the provided system prompt and use tools when needed.'
@@ -69,44 +71,115 @@ export function findMissingRequiredArgs(
  * только наблюдаемые паттерны; если модель придумает новый — функция
  * расширяема.
  */
+// ─── JSON repair helpers ───────────────────────────────────────────────────
+
+/**
+ * Levenshtein distance между двумя строками. Используется для fuzzy-коррекции
+ * опечаток в enum-значениях (userr_fact → user_fact, applyy_patch → apply_patch).
+ */
+function levenshtein(a: string, b: string): number {
+  const m = a.length
+  const n = b.length
+  if (m === 0) return n
+  if (n === 0) return m
+  const dp: number[] = new Array(n + 1)
+  for (let j = 0; j <= n; j++) dp[j] = j
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0]
+    dp[0] = i
+    for (let j = 1; j <= n; j++) {
+      const tmp = dp[j]
+      dp[j] = Math.min(
+        dp[j] + 1,
+        dp[j - 1] + 1,
+        prev + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+      prev = tmp
+    }
+  }
+  return dp[n]
+}
+
+/**
+ * Динамически строит карту enum-ключей из TOOL_SCHEMAS: { keyName → Set<allowedValues> }.
+ * Рекурсивно обходит вложенные properties/items (update_todo status, ask_user type).
+ * Покрывает: mode, shell, method, kind, scope, action, approval_mode, isolation,
+ * status, type — и любые будущие enum-ключи без ручного обновления.
+ */
+function buildEnumKeyMap(
+  schemas: Array<{ function: { parameters?: { properties?: Record<string, unknown> } } }>,
+): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>()
+  const visitProps = (props: Record<string, unknown> | undefined) => {
+    if (!props || typeof props !== 'object') return
+    for (const [key, val] of Object.entries(props)) {
+      const prop = val as Record<string, unknown>
+      if (prop?.enum && Array.isArray(prop.enum)) {
+        if (!map.has(key)) map.set(key, new Set())
+        for (const e of prop.enum) map.get(key)!.add(String(e))
+      }
+      if (prop?.properties) visitProps(prop.properties as Record<string, unknown>)
+      if (prop?.items) {
+        const items = prop.items as Record<string, unknown>
+        if (items.properties) visitProps(items.properties as Record<string, unknown>)
+      }
+    }
+  }
+  for (const schema of schemas) {
+    const params = schema.function.parameters
+    if (params?.properties) visitProps(params.properties)
+  }
+  return map
+}
+
+const ENUM_KEY_MAP = buildEnumKeyMap(
+  TOOL_SCHEMAS as Array<{ function: { parameters?: { properties?: Record<string, unknown> } } }>,
+)
+const ENUM_KEY_NAMES = [...ENUM_KEY_MAP.keys()]
+
 export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; fixes: string[] } {
   let result = raw
   const fixes: string[] = []
 
-  // Проход 1: исправляем незакавыченные значения после известных ключей.
-  // Матчит: `"mode": apply_patch"` → `"mode": "apply_patch"`
-  // Также ловит опечатку applyy_patch → apply_patch.
+  // Проход 1: исправляем незакавыченные значения после ЛЮБЫХ enum-ключей
+  // из TOOL_SCHEMAS (mode, shell, kind, scope, action, approval_mode, isolation,
+  // status, type, method, ...). Динамически — нулевое обслуживание.
+  //
+  // Матчит: `"kind": user_fact"` → `"kind": "user_fact"`
+  // Также: `"mode": applyy_patch"` → `"mode": "apply_patch"` (Levenshtein ≤ 2)
   //
   // КРИТИЧНО: capture group для prefix (ключ + двоеточие + пробелы),
   // чтобы replacement восстанавливал ключ. Раньше replacement был
-  // `": "${corrected}"` — это теряло ключ "mode", и второй JSON.parse
-  // тоже падал на `Unexpected token 'a'` (applyy_patch без ключа).
-  // Теперь prefix захватывается отдельно и подставляется обратно.
-  const enumValues = [
-    'apply_patch', 'insert', 'overwrite',
-    'powershell', 'cmd',
-  ]
-  const unquotedEnum = new RegExp(
-    `("(?:mode|shell)":\\s*)(?!")(${enumValues.join('|')})"`,
-    'gi',
-  )
-  result = result.replace(unquotedEnum, (_m, prefix: string, val: string) => {
-    const corrected = val === 'applyy_patch' ? 'apply_patch' : val
-    if (corrected !== val) fixes.push(`typo: ${val} → ${corrected}`)
-    fixes.push(`unquoted enum: ${val}`)
-    return `${prefix}"${corrected}"`
-  })
-
-  // Если первый паттерн не сработал (из-за опечатки applyy_patch или
-  // незнакомого значения), пробуем более толерантный: любое слово-значение
-  // после "mode":. Тот же capture-group подход для prefix.
-  const unquotedGeneric = /("(?:mode|shell)":\s*)(?!")([a-zA-Z_]+)"/g
-  result = result.replace(unquotedGeneric, (_fullMatch, prefix: string, val: string) => {
-    const corrected = val === 'applyy_patch' ? 'apply_patch' : val
-    if (corrected !== val) fixes.push(`typo: ${val} → ${corrected}`)
-    fixes.push(`unquoted value: ${val}`)
-    return `${prefix}"${corrected}"`
-  })
+  // `": "${corrected}"` — это теряло ключ, и второй JSON.parse тоже падал.
+  if (ENUM_KEY_NAMES.length > 0) {
+    const keyPattern = ENUM_KEY_NAMES.join('|')
+    const unquotedEnum = new RegExp(
+      `("(?:${keyPattern})":\\s*)(?!")([a-zA-Z_]+)"`,
+      'gi',
+    )
+    result = result.replace(unquotedEnum, (_m, prefix: string, val: string) => {
+      const keyMatch = prefix.match(/^"([^"]+)"/)
+      const keyName = keyMatch?.[1] ?? ''
+      const allowed = ENUM_KEY_MAP.get(keyName)
+      let corrected = val
+      if (allowed && !allowed.has(val)) {
+        // Fuzzy typo correction: ближайший enum с Levenshtein ≤ 2
+        let bestDist = Infinity
+        let bestMatch = val
+        for (const candidate of allowed) {
+          const dist = levenshtein(val.toLowerCase(), candidate.toLowerCase())
+          if (dist < bestDist) {
+            bestDist = dist
+            bestMatch = candidate
+          }
+        }
+        if (bestDist <= 2) corrected = bestMatch
+      }
+      if (corrected !== val) fixes.push(`typo: ${val} → ${corrected}`)
+      fixes.push(`unquoted enum: ${val}`)
+      return `${prefix}"${corrected}"`
+    })
+  }
 
   // Проход 2: trailing comma перед } или ]
   if (/,\s*[}\]]/.test(result)) {
@@ -115,8 +188,6 @@ export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; 
   }
 
   // Проход 3: незакрытая кавычка последнего строкового значения перед }
-  // Паттерн: `"key": "value` без закрывающей `"` перед `}`
-  // Ищем `: "....` в конце без `"` перед `}`
   const unclosedString = /:\s*"([^"]*[^"\\])\s*(\})\s*$/
   if (unclosedString.test(result) && !result.endsWith('"')) {
     result = result.replace(unclosedString, ': "$1"$2')
@@ -178,6 +249,12 @@ export function getToolErrorHint(toolName: string, error: string): string {
 }
 
 export function isSequentialTool(name: string): boolean {
+  // run_command — sequential: lastShellCwd это shared state, и при
+  // Promise.all параллельные команды читают/пишут его одновременно
+  // (cd project + npm test в одном раунде → npm test запустится в wrong cwd).
+  // run_command вернули в sequential: lastShellCwd — shared state, и при
+  // Promise.all параллельные команды читают/пишут его одновременно
+  // (cd project + npm test в одном раунде → npm test в wrong cwd).
   return name === 'write_file' ||
     name === 'edit_file' ||
     name === 'run_command'
@@ -217,6 +294,24 @@ export function buildToolFingerprint(toolName: string, args: Record<string, unkn
     if (typeof normalizedArgs.pattern === 'string' && normalizedArgs.pattern.length > 120) {
       normalizedArgs.pattern = (normalizedArgs.pattern as string).slice(0, 120)
     }
+  }
+  // Для read_file / read_files нормализуем `path` (и `paths`) так, чтобы
+  // косметические вариации (./src/foo.ts, src\foo.ts, src/foo.ts) давали
+  // ОДИНАКОВЫЙ fingerprint — иначе loop-guard не ловит повторное чтение
+  // того же файла с чуть другим путём. normalize() убирает ./ и нормализует
+  // разделители; resolve() делает путь абсолютным (от cwd), что дополнительно
+  // унифицирует относительные и абсолютные пути.
+  // ВАЖНО: offset/limit НЕ убираем из fingerprint — auto-advance в Agent.ts
+  // вызывает read_file без offset, но каждый раз получает РАЗНЫЙ чанк.
+  // Если стереть offset/limit, все вызовы получают одинаковый fingerprint →
+  // loop guard ложно срабатывает на auto-advance.
+  if (toolName === 'read_file' && typeof normalizedArgs.path === 'string') {
+    try { normalizedArgs.path = resolve(normalize(normalizedArgs.path as string)) } catch { /* ok */ }
+  }
+  if (toolName === 'read_files' && Array.isArray(normalizedArgs.paths)) {
+    normalizedArgs.paths = (normalizedArgs.paths as string[]).map((p) => {
+      try { return resolve(normalize(p)) } catch { return p }
+    })
   }
   return {
     toolName,

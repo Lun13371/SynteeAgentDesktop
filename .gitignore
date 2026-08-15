@@ -40,3 +40,7 @@ electron.vite.config.d.ts
 # Stray build output
 /index.js
 Upload
+
+# Stray temp/diagnostic artifacts
+SynteeHelper
+agent_diff.txt

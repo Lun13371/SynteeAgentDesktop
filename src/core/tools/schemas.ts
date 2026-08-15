@@ -6,7 +6,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'edit_file',
-      description: 'Edit a file. apply_patch — search/replace blocks (Codex-style, supports multiple edits, fuzzy matching and replace_all). insert — insert after a line. overwrite — replace the whole file. create_if_not_exists=true creates the file and directories. Returns a diff.',
+      description: 'Edit a file. You MUST read the file with read_file before calling edit_file — the SEARCH block must match the actual file content. apply_patch — search/replace blocks (Codex-style, supports multiple edits, fuzzy matching and replace_all). insert — insert after a line. overwrite — replace the whole file. create_if_not_exists=true creates the file and directories. Returns a diff.',
       parameters: {
         type: 'object',
         properties: {
@@ -14,7 +14,7 @@ export const TOOL_SCHEMAS = [
           mode: { type: 'string', enum: ['apply_patch', 'insert', 'overwrite'], description: 'Edit mode' },
           after_line: { type: 'number', description: '[insert] Insert after this line (1-indexed)' },
           content: { type: 'string', description: '[insert/overwrite] Content to insert or overwrite' },
-          patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one occurrence (or all if replace_all=true). Fuzzy-matches by ignoring leading whitespace.' },
+          patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one occurrence (or all if replace_all=true). Fuzzy-matches by ignoring leading whitespace. Example:\n<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE' },
           replace_all: { type: 'boolean', description: '[apply_patch] Replace ALL occurrences of each SEARCH block (default: false = first occurrence only)' },
           create_if_not_exists: { type: 'boolean', description: 'Создать файл (и директории) если не существует' },
           confirm_overwrite: { type: 'boolean', description: '[overwrite] Set to true to confirm a destructive overwrite (when >90% of lines are removed). Required when overwrite would drastically shrink the file.' },
@@ -58,13 +58,14 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: 'Читает файл. Без offset — первые 400 строк. С offset/limit — точный диапазон строк. Всегда показывает [total_lines] и подсказку с готовым offset если файл обрезан.',
+      description: 'Читает файл. Без offset — первые 400 строк. С offset/limit — точный диапазон строк. Всегда показывает [total_lines] и подсказку с готовым offset если файл обрезан. Если повторно вызвать без offset на уже прочитанном файле — автоматически вернёт следующий непрочитанный чанк (auto-advance). Параметр full=true читает чанками по ~5000 символов — удобно для полного чтения больших файлов без ручного управления offset.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Путь к файлу (абсолютный или относительный от workdir)' },
           offset: { type: 'number', description: 'Начальная строка (1-indexed). Для чтения по частям.' },
           limit: { type: 'number', description: 'Кол-во строк (по умолч. 400). Увеличь до 500-800 если нужно больше за один вызов.' },
+          full: { type: 'boolean', description: 'Read the entire file in chunks of ~5000 characters. Each repeated call without offset returns the next chunk automatically. Use for files you need to fully understand. Mutually exclusive with offset/limit.' },
         },
         required: ['path'],
       },
@@ -570,6 +571,45 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
+  // ── get_graph: query the project knowledge graph ──
+  // Returns file relationships (imports, calls), decision→file links,
+  // concept connections. Text format for reading, mermaid for visualization.
+  {
+    type: 'function',
+    function: {
+      name: 'get_graph',
+      description: 'Query the project knowledge graph — file relationships (who imports whom, who calls whom), decision→file links, concept connections. Use to understand project structure: which files are central hubs, what a decision affects, how files relate. Returns formatted text or mermaid diagram.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nodeTypes: {
+            type: 'array',
+            items: { type: 'string', enum: ['decision', 'concept', 'file', 'symbol', 'conversation', 'task'] },
+            description: 'Filter by node type (optional). E.g. ["file"] — only file nodes. ["decision","file"] — decisions and files. Default: all types.',
+          },
+          edgeTypes: {
+            type: 'array',
+            items: { type: 'string', enum: ['affects', 'mentions', 'implemented_in', 'depends_on', 'supersedes', 'references', 'imports', 'calls', 'implements'] },
+            description: 'Filter by edge type (optional). E.g. ["imports"] — only import relationships. Default: all types.',
+          },
+          minWeight: {
+            type: 'number',
+            description: 'Minimum node weight (default 0). Higher = only well-connected nodes.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max nodes to return (default 100). Edges are filtered to only those between returned nodes.',
+          },
+          format: {
+            type: 'string',
+            enum: ['text', 'mermaid'],
+            description: 'Output format. text — grouped list of nodes + edges (compact, for reading). mermaid — mermaid flowchart diagram (for visualization). Default: text.',
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ]
 
 // Dynamic tool set — added by mode
@@ -643,6 +683,8 @@ export function getToolSchemas(options: {
     // Always available — the model decides when to save/recall.
     'save_memory',
     'recall_memory',
+    // Knowledge graph: query project structure (file relationships, decisions).
+    'get_graph',
     // Notes: manage project/chat notes (create/update/delete/list).
     'manage_notes',
     // Web search, HTTP and sub-agents — always available to the agent, the

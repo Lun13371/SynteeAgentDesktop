@@ -23,15 +23,28 @@
   border: 1px solid var(--overlay-4);
 }
 
-.colorpicker-cursor {
+/* Слой фона SV-зоны — для прямого DOM-мува при hue-drag (без ре-рендера).
+   Абсолютный, перекрывает родительский background, под курсором. */
+.colorpicker-sv-bg {
   position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.colorpicker-cursor {
+  z-index: 1;
+  position: absolute;
+  left: 0;
+  top: 0;
   width: 14px;
   height: 14px;
   border-radius: 50%;
   border: 2px solid #fff;
-  transform: translate(-50%, -50%);
   pointer-events: none;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.4);
+  will-change: transform;
 }
 
 .colorpicker-controls {
@@ -62,14 +75,15 @@
 .colorpicker-hue-thumb {
   position: absolute;
   left: 50%;
+  top: 0;
   width: 18px;
   height: 6px;
   border-radius: 3px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.4);
-  transform: translate(-50%, -50%);
   pointer-events: none;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  will-change: transform;
 }
 
 .colorpicker-preview {

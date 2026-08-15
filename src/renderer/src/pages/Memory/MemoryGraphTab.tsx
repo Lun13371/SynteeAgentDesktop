@@ -77,6 +77,7 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
   const [loading, setLoading] = useState(false)
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
   const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set())
+  const [viewMode, setViewMode] = useState<'all' | 'memory' | 'files'>('all')
   const [error, setError] = useState<string | null>(null)
   const networkRef = useRef<Network | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -300,6 +301,19 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
     })
   }
 
+  // View mode presets: "memory" shows decisions/concepts/conversations/tasks,
+  // "files" shows files/symbols, "all" shows everything.
+  const applyViewMode = (mode: 'all' | 'memory' | 'files') => {
+    setViewMode(mode)
+    if (mode === 'memory') {
+      setFilterTypes(new Set(['decision', 'concept', 'conversation', 'task']))
+    } else if (mode === 'files') {
+      setFilterTypes(new Set(['file', 'symbol']))
+    } else {
+      setFilterTypes(new Set())
+    }
+  }
+
   // Connected nodes для выбранного узла — вычисляем из graph.edges
   const connectedNodes = useMemo(() => {
     if (!selectedNode || !graph) return []
@@ -387,6 +401,28 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
             <AppIcon name="refreshCw" size="sm" className={loading ? 'graph-action-btn-spinner' : ''} /> {loading ? '…' : 'Перестроить'}
           </button>
         </div>
+      </div>
+
+      {/* View mode toggle: Memory / Files / All */}
+      <div className="memory-graph-view-toggle">
+        {(['all', 'memory', 'files'] as const).map(mode => (
+          <button
+            key={mode}
+            className={`graph-view-btn ${viewMode === mode ? 'graph-view-btn--active' : ''}`}
+            onClick={() => applyViewMode(mode)}
+          >
+            {viewMode === mode && (
+              <motion.span
+                layoutId="graph-view-active"
+                className="graph-view-btn-pill"
+                transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+              />
+            )}
+            <span className="graph-view-btn-label">
+              {mode === 'all' ? 'Все' : mode === 'memory' ? 'Память' : 'Файлы'}
+            </span>
+          </button>
+        ))}
       </div>
 
       {/* Filters */}

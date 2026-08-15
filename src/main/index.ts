@@ -53,7 +53,7 @@ import { initCommandManager } from '../core/commands/commandManager'
 import { initMcpManager } from '../core/mcp/McpManager'
 import { migrateGlobalMcpToFile } from '../core/mcp/mcpConfig'
 import { ptyManager } from './PtyManager'
-import { ipcMain } from 'electron'
+import { ipcMain, clipboard } from 'electron'
 
 // Single-instance lock — обязателен для deep-link flow (synteehelper://).
 // Второй запуск с deep-link URL приходит в событие second-instance.
@@ -182,6 +182,26 @@ app.whenReady().then(async () => {
       return { tokens: 0 }
     }
   })
+
+  // ── Clipboard: нативный буфер обмена через Electron (работает на file://) ──
+  // navigator.clipboard.writeText падает в production (file:// — не secure
+  // context), поэтому копирование идёт через IPC → electron.clipboard.
+  ipcMain.handle('clipboard:writeText', (_e, text: string) => {
+    try {
+      clipboard.writeText(String(text ?? ''))
+      return true
+    } catch {
+      return false
+    }
+  })
+  ipcMain.handle('clipboard:readText', () => {
+    try {
+      return clipboard.readText()
+    } catch {
+      return ''
+    }
+  })
+
 
   // ── Загрузка контента в окна (теперь IPC-хендлеры готовы) ──────────
   const main = mainWindow.create()

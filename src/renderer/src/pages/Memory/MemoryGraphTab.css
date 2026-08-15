@@ -226,6 +226,50 @@
   to { transform: rotate(360deg); }
 }
 
+/* ─── View mode toggle ──────────────────────────────────────── */
+
+.memory-graph-view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-secondary, rgba(128, 128, 128, 0.1));
+  border-radius: 8px;
+  flex-shrink: 0;
+  width: fit-content;
+}
+
+.graph-view-btn {
+  position: relative;
+  border: none;
+  background: transparent;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s;
+  z-index: 1;
+}
+
+.graph-view-btn--active {
+  color: var(--text-primary, #e5e7eb);
+}
+
+.graph-view-btn-pill {
+  position: absolute;
+  inset: 0;
+  background: var(--accent, #3b82f6);
+  border-radius: 6px;
+  z-index: -1;
+}
+
+.graph-view-btn-label {
+  position: relative;
+  z-index: 1;
+}
+
 /* ─── Filters ───────────────────────────────────────────────── */
 
 .memory-graph-filters {

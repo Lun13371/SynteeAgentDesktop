@@ -162,6 +162,18 @@ export function applyCustomThemeToDOM(theme: CustomTheme | null) {
   const glassBg = theme.base === 'light'
     ? withAlpha('#ffffff', 0.7 * (theme.glass.opacity / 100))
     : withAlpha(accent, 0.05 * (theme.glass.opacity / 100))
+  // ── Опциональные поля с fallback на вычисление из accent ──
+  const borderColor = c.border || withAlpha(accent, 0.12)
+  const borderStrongColor = c.borderStrong || withAlpha(accent, 0.25)
+  const accentBg = c.accentGradient
+    ? `linear-gradient(135deg, ${accent}, ${c.accentGradient})`
+    : accent
+  const overlayMult = theme.effects?.overlayIntensity ?? 1
+  let shadowRgbFinal = shadowRgb
+  if (c.shadowColor) {
+    const sc = hexToRgb(c.shadowColor)
+    if (sc) shadowRgbFinal = `${sc.r}, ${sc.g}, ${sc.b}`
+  }
   const css = `
 [data-theme="custom"][data-custom-theme="${theme.id}"] {
   --body-bg: ${c.bodyBg};
@@ -172,20 +184,21 @@ export function applyCustomThemeToDOM(theme: CustomTheme | null) {
   --text-secondary: ${c.textSecondary};
   --text-muted: ${c.textMuted};
   --accent: ${accent};
+  --accent-bg: ${accentBg};
   --accent-hover: ${withAlpha(accent, 0.85)};
   --accent-subtle: ${withAlpha(accent, 0.1)};
   --accent-rgb: ${accentRgbStr};
-  --border: ${withAlpha(accent, 0.12)};
-  --border-strong: ${withAlpha(accent, 0.25)};
+  --border: ${borderColor};
+  --border-strong: ${borderStrongColor};
   --sidebar-bg: ${c.sidebarBg};
-  --shadow: 0 8px 32px rgba(${shadowRgb}, 0.5);
-  --shadow-lg: 0 20px 60px rgba(${shadowRgb}, 0.7);
-  --overlay-1: rgba(${overlayRgb}, 0.02);
-  --overlay-2: rgba(${overlayRgb}, 0.04);
-  --overlay-3: rgba(${overlayRgb}, 0.06);
-  --overlay-4: rgba(${overlayRgb}, 0.08);
-  --overlay-5: rgba(${overlayRgb}, 0.12);
-  --overlay-6: rgba(${overlayRgb}, 0.16);
+  --shadow: 0 8px 32px rgba(${shadowRgbFinal}, 0.5);
+  --shadow-lg: 0 20px 60px rgba(${shadowRgbFinal}, 0.7);
+  --overlay-1: rgba(${overlayRgb}, ${(0.02 * overlayMult).toFixed(3)});
+  --overlay-2: rgba(${overlayRgb}, ${(0.04 * overlayMult).toFixed(3)});
+  --overlay-3: rgba(${overlayRgb}, ${(0.06 * overlayMult).toFixed(3)});
+  --overlay-4: rgba(${overlayRgb}, ${(0.08 * overlayMult).toFixed(3)});
+  --overlay-5: rgba(${overlayRgb}, ${(0.12 * overlayMult).toFixed(3)});
+  --overlay-6: rgba(${overlayRgb}, ${(0.16 * overlayMult).toFixed(3)});
   --on-accent: ${onAccent === '#000' ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.95)'};
   --on-accent-strong: ${onAccent};
   --on-accent-muted: ${onAccent === '#000' ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.7)'};
@@ -195,7 +208,7 @@ export function applyCustomThemeToDOM(theme: CustomTheme | null) {
   --glass-saturate: ${theme.glass.saturate}%;
   --glass-highlight-1: ${theme.base === 'light' ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.06)'};
   --glass-highlight-2: ${withAlpha(accent, 0.03)};
-  --shadow-rgb: ${shadowRgb};
+  --shadow-rgb: ${shadowRgbFinal};
   --overlay-rgb: ${overlayRgb};
 }`.trim()
   if (styleEl) {
@@ -415,7 +428,7 @@ export default function App() {
           avatarStyle, showTime, userMarkdown, uiSounds, sendEffect,
           fontFamily, savedPanelWidth, savedPanelOpen, savedPanelTab,
           glassBlur, density, accentGradient, rainbowAccent, bgImage, bgImageEnabled,
-          animatedBgOpacity, animatedBgSpeed,
+          animatedBgOpacity, animatedBgSpeed, bgStyleParams,
           customThemes, activeCustomThemeId, themeSchedule, recentAccents,
           soundVolume, soundAssignments, mouseNavEnabled] = await Promise.all([
           window.syntee.settings.get('theme'),
@@ -440,6 +453,7 @@ export default function App() {
           window.syntee.settings.get('bgImageEnabled'),
           window.syntee.settings.get('animatedBgOpacity'),
           window.syntee.settings.get('animatedBgSpeed'),
+          window.syntee.settings.get('bgStyleParams'),
           window.syntee.settings.get('customThemes'),
           window.syntee.settings.get('activeCustomThemeId'),
           window.syntee.settings.get('themeSchedule'),
@@ -473,6 +487,7 @@ export default function App() {
         if (typeof bgImageEnabled === 'boolean') st.setBgImageEnabled(bgImageEnabled)
         if (typeof animatedBgOpacity === 'number') st.setAnimatedBgOpacity(animatedBgOpacity)
         if (typeof animatedBgSpeed === 'number') st.setAnimatedBgSpeed(animatedBgSpeed)
+        if (bgStyleParams && typeof bgStyleParams === 'object') st.setBgStyleParams(bgStyleParams as any)
         if (Array.isArray(customThemes)) st.setCustomThemes(customThemes as any)
         if (activeCustomThemeId !== undefined) st.setActiveCustomThemeId(activeCustomThemeId as any)
         if (themeSchedule) st.setThemeSchedule(themeSchedule as any)

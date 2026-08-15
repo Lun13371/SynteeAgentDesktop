@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import AppIcon from '../../ui/AppIcon/AppIcon'
+import { copyToClipboard } from '@renderer/utils/clipboard'
 import Identicon from '../../ui/Identicon/Identicon'
 import { useAuthStore, type GatewayUser } from '../../../store/auth.store'
 import { useBillingStore } from '../../../store/billing.store'
@@ -492,11 +493,11 @@ function ApiKeysSection() {
   }
 
   const handleCopy = async (key: string) => {
-    try {
-      await navigator.clipboard.writeText(key)
+    const ok = await copyToClipboard(key)
+    if (ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch {
+    } else {
       toast('Не удалось скопировать', 'error')
     }
   }

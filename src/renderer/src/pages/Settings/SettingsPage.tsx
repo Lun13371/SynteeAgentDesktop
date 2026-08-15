@@ -96,7 +96,7 @@ export default function SettingsPage() {
   const { setTheme, setAccentColor, setBgStyle, setMsgAnim,
     setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect,
     setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
-    setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
+    setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed, setBgStyleParams,
     setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
     setSoundVolume, setSoundAssignments, setMouseNavEnabled } = useUIStore(useShallow(s => ({
     setTheme: s.setTheme, setAccentColor: s.setAccentColor, setBgStyle: s.setBgStyle,
@@ -105,7 +105,7 @@ export default function SettingsPage() {
     setGlassBlur: s.setGlassBlur, setDensity: s.setDensity, setAccentGradient: s.setAccentGradient,
     setRainbowAccent: s.setRainbowAccent, setBgImage: s.setBgImage,
     setBgImageEnabled: s.setBgImageEnabled, setAnimatedBgOpacity: s.setAnimatedBgOpacity,
-    setAnimatedBgSpeed: s.setAnimatedBgSpeed,
+    setAnimatedBgSpeed: s.setAnimatedBgSpeed, setBgStyleParams: s.setBgStyleParams,
     setCustomThemes: s.setCustomThemes, setActiveCustomThemeId: s.setActiveCustomThemeId,
     setThemeSchedule: s.setThemeSchedule, setRecentAccents: s.setRecentAccents,
     setSoundVolume: s.setSoundVolume, setSoundAssignments: s.setSoundAssignments,
@@ -176,6 +176,7 @@ export default function SettingsPage() {
     }
     if (key === 'animatedBgOpacity') setAnimatedBgOpacity(value as number)
     if (key === 'animatedBgSpeed') setAnimatedBgSpeed(value as number)
+    if (key === 'bgStyleParams') setBgStyleParams(value as Record<string, number>)
     if (key === 'soundVolume') { setSoundVolume(value as number); setSoundVolumeModule(value as number) }
     if (key === 'soundAssignments') { setSoundAssignments(value as any); setSoundAssignmentsFlag(value as any) }
     if (key === 'mouseNavEnabled') setMouseNavEnabled(value as boolean)
@@ -200,6 +201,7 @@ export default function SettingsPage() {
   }, [set, setTheme, setAccentColor, setBgStyle, setMsgAnim, setAvatarStyle, setShowTime,
     setUserMarkdown, setUiSounds, setSendEffect, setGlassBlur, setDensity, setAccentGradient,
     setRainbowAccent, setBgImage, setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
+    setBgStyleParams,
     setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
     setSoundVolume, setSoundAssignments, setMouseNavEnabled])
 
@@ -423,6 +425,9 @@ const THEMES = [
   { id: 'amber',    label: 'Янтарь',     group: 'dark',  colors: { bg: '#100a05', surface: '#26190e', text: '#f5e6d3', accent: '#ff9b3d' } },
   { id: 'rose',     label: 'Роза',       group: 'dark',  colors: { bg: '#120810', surface: '#2a1620', text: '#fce8ee', accent: '#ff6b9d' } },
   { id: 'crimson',  label: 'Багровый',   group: 'dark',  colors: { bg: '#100406', surface: '#281012', text: '#ffe8ea', accent: '#ff5a4d' } },
+  { id: 'pitch',    label: 'Антрацит',   group: 'dark',  colors: { bg: '#000000', surface: '#141414', text: '#e0e0e0', accent: '#737373' } },
+  { id: 'ocean',    label: 'Океан',      group: 'dark',  colors: { bg: '#020a0e', surface: '#0a1a22', text: '#d0f0f5', accent: '#22d3ee' } },
+  { id: 'carbon',   label: 'Карбон',     group: 'dark',  colors: { bg: '#0c0c0c', surface: '#1c1c1c', text: '#e0e0e0', accent: '#a3a3a3' } },
   { id: 'light',    label: 'Светлая',    group: 'light', colors: { bg: '#f4f1ec', surface: '#f3efe8', text: '#2a2620', accent: '#4a3f2f' } },
   { id: 'paper',    label: 'Бумага',     group: 'light', colors: { bg: '#f6f8fa', surface: '#f0f3f6', text: '#1f2328', accent: '#0969da' } },
 ]
@@ -447,6 +452,9 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
   const [accentPickerOpen, setAccentPickerOpen] = useState(false)
   const [accentPickerPos, setAccentPickerPos] = useState<{ top: number; left: number } | null>(null)
   const accentBtnRef = useRef<HTMLButtonElement>(null)
+  // rAF-throttle для applyAccentToDOM — без него каждый pointermove
+  // переписывает CSS-переменные на :root → полная пересчётка стилей 60+ раз/сек.
+  const accentRafRef = useRef<number | null>(null)
   const [themeEditorOpen, setThemeEditorOpen] = useState(false)
   const customThemes = (settings['customThemes'] as CustomTheme[]) || []
   const activeCustomThemeId = settings['activeCustomThemeId'] as string | null
@@ -635,9 +643,19 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
                   value={(settings['accentColor'] as string) || '#ffffff'}
                   onChange={(c) => {
                     useUIStore.getState().setAccentColor(c)
-                    if (!useUIStore.getState().rainbowAccent) applyAccentToDOM(c)
+                    // rAF-throttle: applyAccentToDOM переписывает CSS-переменные
+                    // на :root → полная пересчётка стилей. Без throttle лагает
+                    // на каждый pointermove (десятки раз/сек). С throttle — не
+                    // чаще одного раза за кадр (≤60fps).
+                    if (accentRafRef.current) cancelAnimationFrame(accentRafRef.current)
+                    accentRafRef.current = requestAnimationFrame(() => {
+                      if (!useUIStore.getState().rainbowAccent) applyAccentToDOM(c)
+                    })
                   }}
-                  onCommit={commitAccent}
+                  onCommit={(c) => {
+                    if (accentRafRef.current) { cancelAnimationFrame(accentRafRef.current); accentRafRef.current = null }
+                    commitAccent(c)
+                  }}
                   recent={recentAccents}
                 />
               </motion.div>
@@ -994,12 +1012,53 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
   )
 })
 
-// Гирька параметров анимированного фона: прозрачность + скорость.
+// Пер-стиль параметры анимированного фона. Каждый стиль имеет свои настройки.
+const BG_STYLE_PARAMS: Record<string, {
+  key: string; label: string; min: number; max: number; step: number; def: number; fmt?: (v: number) => string
+}[]> = {
+  particles: [
+    { key: 'particles.density', label: 'Плотность', min: 15, max: 80, step: 1, def: 45 },
+    { key: 'particles.lineOpacity', label: 'Линии', min: 0, max: 0.2, step: 0.01, def: 0.05, fmt: v => v.toFixed(2) },
+  ],
+  matrix: [
+    { key: 'matrix.fallSpeed', label: 'Скорость', min: 1, max: 20, step: 1, def: 8 },
+    { key: 'matrix.colWidth', label: 'Ширина', min: 8, max: 24, step: 1, def: 16 },
+  ],
+  starfield: [
+    { key: 'starfield.count', label: 'Количество', min: 50, max: 300, step: 10, def: 140 },
+    { key: 'starfield.parallax', label: 'Параллакс', min: 0, max: 1, step: 0.05, def: 0.6, fmt: v => v.toFixed(2) },
+  ],
+  fireflies: [
+    { key: 'fireflies.count', label: 'Количество', min: 10, max: 60, step: 1, def: 30 },
+    { key: 'fireflies.glowRadius', label: 'Свечение', min: 1, max: 5, step: 0.5, def: 2.5, fmt: v => v.toFixed(1) },
+  ],
+}
+
+// Гирька параметров анимированного фона: пер-стиль + прозрачность + скорость.
 function AnimatedBgGear({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const [open, setOpen] = useState(false)
   const gearRef = useRef<HTMLButtonElement>(null)
   const opacity = (settings['animatedBgOpacity'] as number) ?? 60
   const speed = (settings['animatedBgSpeed'] as number) ?? 1
+  const bgStyle = (settings['bgStyle'] as string) || 'particles'
+  const params = (settings['bgStyleParams'] as Record<string, number>) || {}
+  const [localParams, setLocalParams] = useState<Record<string, number>>({})
+  const pendingRef = useRef<Record<string, number>>({})
+  const debounceRef = useRef<number | null>(null)
+
+  const styleParams = BG_STYLE_PARAMS[bgStyle] || []
+  const getParam = (key: string, def: number) => localParams[key] ?? params[key] ?? def
+
+  const setParam = (key: string, value: number) => {
+    pendingRef.current[key] = value
+    setLocalParams(prev => ({ ...prev, [key]: value }))
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = window.setTimeout(() => {
+      onSet('bgStyleParams', { ...params, ...pendingRef.current })
+      pendingRef.current = {}
+      setLocalParams({})
+    }, 300)
+  }
 
   return (
     <div className="anim-bg-gear-wrap">
@@ -1015,6 +1074,14 @@ function AnimatedBgGear({ settings, onSet }: { settings: Record<string, unknown>
       <Popover open={open} onClose={() => setOpen(false)} anchorRef={gearRef} side="auto" align="start">
         <div className="bg-gear-panel">
           <div className="bg-gear-title">Анимированный фон</div>
+          {styleParams.map(p => (
+            <label key={p.key} className="bg-gear-row">
+              <span>{p.label}: {p.fmt ? p.fmt(getParam(p.key, p.def)) : getParam(p.key, p.def)}</span>
+              <input type="range" min={p.min} max={p.max} step={p.step} value={getParam(p.key, p.def)}
+                onChange={e => setParam(p.key, Number(e.target.value))}
+                className="settings-slider" />
+            </label>
+          ))}
           <label className="bg-gear-row">
             <span>Прозрачность: {opacity}%</span>
             <input type="range" min={0} max={100} value={opacity}

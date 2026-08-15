@@ -464,6 +464,123 @@ body {
   --overlay-rgb: 255, 255, 255;
 }
 
+/* ── PITCH — full-black, антрацит (чистый чёрный фон) ─────────── */
+[data-theme="pitch"] {
+  --body-bg: #000000;
+  --bg-primary: rgba(8, 8, 8, 0.85);
+  --bg-secondary: rgba(14, 14, 14, 0.88);
+  --bg-tertiary: rgba(20, 20, 20, 0.90);
+  --text-primary: #e0e0e0;
+  --text-secondary: #888888;
+  --text-muted: #555555;
+  --accent: #737373;
+  --accent-hover: rgba(115, 115, 115, 0.85);
+  --accent-subtle: rgba(115, 115, 115, 0.08);
+  --accent-bg: var(--accent);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --sidebar-bg: rgba(6, 6, 6, 0.92);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.9);
+
+  --overlay-1: rgba(255, 255, 255, 0.015);
+  --overlay-2: rgba(255, 255, 255, 0.03);
+  --overlay-3: rgba(255, 255, 255, 0.05);
+  --overlay-4: rgba(255, 255, 255, 0.08);
+  --overlay-5: rgba(255, 255, 255, 0.12);
+  --overlay-6: rgba(255, 255, 255, 0.16);
+
+  --on-accent: rgba(0, 0, 0, 0.85);
+  --on-accent-strong: #1a1a1a;
+  --on-accent-muted: rgba(0, 0, 0, 0.6);
+
+  --glass-bg: rgba(255, 255, 255, 0.04);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-highlight-1: rgba(255, 255, 255, 0.04);
+  --glass-highlight-2: rgba(255, 255, 255, 0.02);
+
+  --shadow-rgb: 0, 0, 0;
+  --overlay-rgb: 255, 255, 255;
+}
+
+/* ── OCEAN — глубокий бирюзовый, cyber-aqua ─────────────────── */
+[data-theme="ocean"] {
+  --body-bg: #020a0e;
+  --bg-primary: rgba(6, 18, 24, 0.82);
+  --bg-secondary: rgba(10, 26, 34, 0.85);
+  --bg-tertiary: rgba(14, 34, 44, 0.88);
+  --text-primary: #d0f0f5;
+  --text-secondary: #6a9aa8;
+  --text-muted: #3d6772;
+  --accent: #22d3ee;
+  --accent-hover: rgba(34, 211, 238, 0.85);
+  --accent-subtle: rgba(34, 211, 238, 0.1);
+  --accent-bg: var(--accent);
+  --border: rgba(34, 211, 238, 0.12);
+  --border-strong: rgba(34, 211, 238, 0.25);
+  --sidebar-bg: rgba(4, 14, 18, 0.88);
+  --shadow: 0 8px 32px rgba(0, 8, 12, 0.6);
+  --shadow-lg: 0 20px 60px rgba(0, 8, 12, 0.8);
+
+  --overlay-1: rgba(255, 255, 255, 0.02);
+  --overlay-2: rgba(255, 255, 255, 0.04);
+  --overlay-3: rgba(255, 255, 255, 0.06);
+  --overlay-4: rgba(34, 211, 238, 0.08);
+  --overlay-5: rgba(34, 211, 238, 0.12);
+  --overlay-6: rgba(34, 211, 238, 0.18);
+
+  --on-accent: rgba(0, 20, 30, 0.9);
+  --on-accent-strong: #001418;
+  --on-accent-muted: rgba(0, 20, 30, 0.65);
+
+  --glass-bg: rgba(34, 211, 238, 0.05);
+  --glass-border: rgba(34, 211, 238, 0.1);
+  --glass-highlight-1: rgba(255, 255, 255, 0.06);
+  --glass-highlight-2: rgba(34, 211, 238, 0.03);
+
+  --shadow-rgb: 0, 8, 12;
+  --overlay-rgb: 255, 255, 255;
+}
+
+/* ── CARBON — тёплый тёмно-серый, углерод ────────────────────── */
+[data-theme="carbon"] {
+  --body-bg: #0c0c0c;
+  --bg-primary: rgba(20, 20, 20, 0.85);
+  --bg-secondary: rgba(28, 28, 28, 0.88);
+  --bg-tertiary: rgba(38, 38, 38, 0.90);
+  --text-primary: #e0e0e0;
+  --text-secondary: #909090;
+  --text-muted: #5a5a5a;
+  --accent: #a3a3a3;
+  --accent-hover: rgba(163, 163, 163, 0.85);
+  --accent-subtle: rgba(163, 163, 163, 0.08);
+  --accent-bg: var(--accent);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --sidebar-bg: rgba(16, 16, 16, 0.90);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.8);
+
+  --overlay-1: rgba(255, 255, 255, 0.02);
+  --overlay-2: rgba(255, 255, 255, 0.04);
+  --overlay-3: rgba(255, 255, 255, 0.06);
+  --overlay-4: rgba(255, 255, 255, 0.08);
+  --overlay-5: rgba(255, 255, 255, 0.12);
+  --overlay-6: rgba(255, 255, 255, 0.16);
+
+  --on-accent: rgba(0, 0, 0, 0.85);
+  --on-accent-strong: #1a1a1a;
+  --on-accent-muted: rgba(0, 0, 0, 0.6);
+
+  --glass-bg: rgba(255, 255, 255, 0.05);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-highlight-1: rgba(255, 255, 255, 0.06);
+  --glass-highlight-2: rgba(255, 255, 255, 0.03);
+
+  --shadow-rgb: 0, 0, 0;
+  --overlay-rgb: 255, 255, 255;
+}
+
 /* ========== LIQUID GLASS ========== */
 .glass {
   background: var(--glass-bg);

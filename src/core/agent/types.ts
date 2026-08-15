@@ -148,6 +148,20 @@ export interface AgentCallbacks {
     error?: string
   }>
   /**
+   * get_graph-тул: запросить knowledge graph проекта (file relationships,
+   * decision→file links, concept connections). Round-trip в main-процесс,
+   * где есть доступ к graphStore. Возвращает {success, output, error?}.
+   * output — форматированный текст (text) или mermaid-диаграмма.
+   */
+  onGetGraph?: (params: {
+    projectId?: string
+    nodeTypes?: string[]
+    edgeTypes?: string[]
+    minWeight?: number
+    limit?: number
+    format?: string
+  }) => Promise<{ success: boolean; output: string; error?: string }>
+  /**
    * manage_notes-тул: CRUD для проектных и чат-заметок.
    * Round-trip в main-процесс, где есть доступ к БД.
    */

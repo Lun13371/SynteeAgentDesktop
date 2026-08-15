@@ -798,6 +798,15 @@ const synteeAPI = {
     },
   },
 
+  // Clipboard — нативный буфер обмена через IPC (работает на file://).
+  // navigator.clipboard.writeText в production (file:// — не secure context)
+  // молча реджектит промис → копирование не работает. Этот канал идёт через
+  // electron.clipboard в main-процессе и не зависит от secure context.
+  clipboard: {
+    writeText: (text: string) => ipcRenderer.invoke('clipboard:writeText', text) as Promise<boolean>,
+    readText: () => ipcRenderer.invoke('clipboard:readText') as Promise<string>,
+  },
+
   // Заметки — проектные (видны во всех чатах проекта) и чат-заметки (только в чате).
   // CRUD через IPC, live-обновление через событие 'notes:changed'.
   notes: {
