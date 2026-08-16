@@ -15,6 +15,7 @@ import {
   type WorktreeInfo,
 } from './WorktreeIsolation'
 import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../core/db/subagents'
+import { getSubagentRole } from '../shared/subagent-roles'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -61,6 +62,9 @@ export interface AgentRecord {
   isolationMode: 'worktree' | 'none'
   /** Созданный worktree, если isolationMode === 'worktree' и creation удалось. */
   worktreeInfo?: WorktreeInfo
+  /** Роль суб-агента (researcher/deep-researcher/editor/implementer/reviewer).
+   *  undefined = старая запись до миграции → fallback на implementer. */
+  role?: string
 }
 
 export interface SubagentContext {
@@ -169,6 +173,7 @@ class AgentManager {
       error: record.error ?? null,
       workdir: record.workdir ?? null,
       isolationMode: record.isolationMode ?? null,
+      role: record.role ?? null,
     }
   }
 
@@ -189,6 +194,7 @@ class AgentManager {
       error: row.error ?? undefined,
       workdir: row.workdir ?? undefined,
       isolationMode: (row.isolationMode as 'worktree' | 'none') ?? 'none',
+      role: row.role ?? undefined,
     }
   }
 
@@ -316,6 +322,7 @@ class AgentManager {
     context?: SubagentContext
     approvalMode?: 'auto' | 'ask' | 'full'  // §1.10 — override глобального режима
     isolation?: IsolationMode  // §изоляция — override режима worktree
+    role?: string  // §roles — специализация суб-агента (researcher/editor/...)
   }): Promise<{ summary: string; error?: string }> {
     const maxParallel = this.getMaxParallel()
     const running = this.getRunningCount()
@@ -335,7 +342,11 @@ class AgentManager {
     // isGitRepo проверяется позже в _runWorker (асинхронно); если не-git —
     // fallback на 'none' там.
     const workdir = opts.context?.workdir
-    const isolationRequest: IsolationMode = opts.isolation ?? opts.context?.isolation ?? 'auto'
+    const roleDef = getSubagentRole(opts.role)
+    // Isolation: явный override > context > role default > 'auto'.
+    // Read-only роли (researcher/deep-researcher/reviewer) → 'none' (безопасно),
+    // пишущие (editor/implementer) → 'worktree' (защита от гонок).
+    const isolationRequest: IsolationMode = opts.isolation ?? opts.context?.isolation ?? roleDef.defaultIsolation
     let isolationMode: 'worktree' | 'none' = 'none'
     if (isolationRequest === 'worktree') {
       isolationMode = 'worktree'
@@ -357,6 +368,7 @@ class AgentManager {
       createdAt: Date.now(),
       workdir,
       isolationMode,
+      role: opts.role ?? 'implementer',
     }
 
     this.agents.set(opts.id, record)
@@ -372,6 +384,8 @@ class AgentManager {
     context?: SubagentContext,
     approvalModeOverride?: 'auto' | 'ask' | 'full',
   ): Promise<{ summary: string; error?: string }> {
+    // §roles — получаем roleDef из record.role (roleDef из spawn здесь не виден).
+    const roleDef = getSubagentRole(record.role)
     // §изоляция — если режим 'worktree', создаём отдельный git worktree ДО старта
     // worker'а и подменяем workdir. Не-git workdir → fallback на 'none' (shared).
     // Cancel во время создания: cancel() ставит status='cancelled' синхронно,
@@ -453,27 +467,48 @@ class AgentManager {
       if (approvalModeOverride) {
         agentSettings.approvalMode = approvalModeOverride
       }
+      // §roles — maxSteps: единый потолок 1024 для всех ролей (как у main agent).
+      // Раньше был per-role лимит, но это искусственно ограничивало суб-агентов.
+      agentSettings.maxSteps = 1024
+      // §roles — tool filtering: отдаём только тулы из role allowlist.
+      // Пустой allowlist (implementer) = полный набор (обратная совместимость).
+      // MCP tools (префикс mcp__) всегда проходят.
+      const fullSchemas = getToolSchemas({ mode: record.mode })
+      const effectiveToolSchemas = roleDef.allowedTools.length > 0
+        ? fullSchemas.filter(s => {
+            const name = (s as { function: { name: string } }).function.name
+            return name.startsWith('mcp__') || roleDef.allowedTools.includes(name)
+          })
+        : fullSchemas
+      // §roles — subagentRole для Agent.run() options (defense-in-depth в Agent.ts)
+      const subagentRole = record.role
 
       // Work-режим удалён — всегда Code-формулировка для суб-агентов.
       const subModeIntro = 'Работай только в рамках этой подзадачи.\nСначала пойми релевантный код и контекст, затем выполни работу.'
       const subModeOutro = '- что найдено или сделано\n- какие файлы важны\n- какие есть риски или следующий шаг'
+      // §roles — fallback systemPrompt с role injection (когда context?.systemPrompt
+      // не передан, т.е. chat.ipc.ts не сформировал промпт).
+      const fallbackRoleInjection = roleDef.id !== 'implementer' ? `\n${roleDef.systemPromptInjection}\n` : ''
+      const fallbackRoleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''
+      const fallbackSystemPrompt = `Ты суб-агент${fallbackRoleLabel}. Твоя задача: ${record.task}
+
+${fallbackRoleInjection}${subModeIntro}
+Финальный ответ дай кратко:
+${subModeOutro}`
 
       worker.postMessage({
         chatId: `subagent:${record.id}`,
         msgId: record.id,
         content: record.task,
         history: context?.history ?? [],
-        systemPrompt: context?.systemPrompt ?? `Ты суб-агент. Твоя задача: ${record.task}
-
-${subModeIntro}
-Финальный ответ дай кратко:
-${subModeOutro}`,
+        systemPrompt: context?.systemPrompt ?? fallbackSystemPrompt,
         enableTools: true,
         incognito: false,
         agentSettings,
         storeData,
         workingMemory: context?.workingMemory ?? '',
-        toolSchemas: getToolSchemas({ mode: record.mode }),
+        toolSchemas: effectiveToolSchemas,
+        subagentRole,
       })
 
       worker.on('message', (msg: Record<string, unknown>) => {

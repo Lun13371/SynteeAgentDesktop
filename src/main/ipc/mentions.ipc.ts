@@ -173,16 +173,27 @@ export function registerMentionsIPC(): void {
         : mime === 'image/bmp' ? '.bmp'
         : mime === 'image/svg+xml' ? '.svg'
         : '.png'
-      const name = (params.suggestedName || `image-${Date.now()}`) + ext
-      const fullPath = join(dir, name)
+      const baseName = params.suggestedName || `image-${Date.now()}`
+      // Защита от коллизии: если файл с таким именем уже есть (две картинки
+      // с одинаковым именем при drag&drop/paste) — добавляем счётчик.
+      // Без этого второй файл перезапишет первый, и оба attachment будут
+      // указывать на один файл (виден только последний).
+      let name = baseName + ext
+      let dest = join(dir, name)
+      let counter = 1
+      while (existsSync(dest)) {
+        name = `${baseName}-${counter}${ext}`
+        dest = join(dir, name)
+        counter++
+      }
       // Очищаем data:URL prefix если есть
       const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '')
       const buf = Buffer.from(cleanBase64, 'base64')
       if (buf.length > MAX_IMAGE_BYTES) {
         return { success: false, error: `Image too large (${(buf.length / 1024 / 1024).toFixed(1)} MB). Max 10 MB.` }
       }
-      await writeFile(fullPath, buf)
-      return { success: true, path: fullPath, name, size: buf.length, mime }
+      await writeFile(dest, buf)
+      return { success: true, path: dest, name, size: buf.length, mime }
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e) }
     }

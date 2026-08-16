@@ -19,6 +19,7 @@ import { computeContextSnapshot } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
 import { isReadonlyPersona, getPersonaAllowedTools } from '../../shared/modes'
+import { getSubagentRole } from '../../shared/subagent-roles'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { statSync, existsSync } from 'fs'
 import { createHash } from 'crypto'
@@ -174,6 +175,10 @@ export class Agent {
     const persona = options?.persona
     const personaReadonly = persona ? isReadonlyPersona(persona) : false
     const personaAllowed = persona ? getPersonaAllowedTools(persona) : undefined
+    // §roles — sub-agent role for defense-in-depth (blockedMsg when model
+    // hallucinates a tool outside the role's allowlist).
+    const subagentRole = options?.subagentRole
+    const subagentRoleDef = subagentRole ? getSubagentRole(subagentRole) : undefined
     // Реальный лимит контекста активной модели — для аварийного клапана.
     // Раньше здесь был Math.max(32_000, realContextWindow) — искусственный пол,
     // который мог занижать эффективный лимит для моделей с честным большим
@@ -699,11 +704,13 @@ export class Agent {
             // модель могла скопировать edit/run тулы из старой истории чата.
             const blockedMsg = planningMode
               ? `You are in PLANNING MODE (read-only). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Return to the protocol: Step 2 — read-only research (get_fast_context, read_file, search_code, analyze_project, spawn_agent) + ask_user about hard parts. Step 3 — plan inside <plan title="..." summary="...">…</plan> with per-phase Ownership/Verification/Edge cases. Step 4 — review against the original request. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
-              : personaAllowed
-                ? `You are in the ${persona} persona. "${fn.name}" is not in this persona's toolset. Stay in role: use only the allowed tools for this persona. Allowed: ${allowed}. If the task genuinely needs "${fn.name}", tell the user — they can switch persona (e.g. /classic or the + menu). Do not call "${fn.name}" again.`
-                : personaReadonly
-                  ? `You are in a READ-ONLY persona (${persona}). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Use read-tools (read_file, search_code, get_fast_context, analyze_project, ask_user) to research and answer in words. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
-                  : `Tool "${fn.name}" is unavailable in the current mode (read-only/planning/side-chat). Allowed only: ${allowed}. Do not call it again — use the allowed tools for research.`
+              : subagentRoleDef
+                ? `You are a ${subagentRoleDef.nameEn} sub-agent. "${fn.name}" is not available for this role. Allowed tools: ${allowed}. If the task genuinely needs "${fn.name}", report this to the parent agent — it can spawn an implementer sub-agent. Do not call "${fn.name}" again.`
+                : personaAllowed
+                  ? `You are in the ${persona} persona. "${fn.name}" is not in this persona's toolset. Stay in role: use only the allowed tools for this persona. Allowed: ${allowed}. If the task genuinely needs "${fn.name}", tell the user — they can switch persona (e.g. /classic or the + menu). Do not call "${fn.name}" again.`
+                  : personaReadonly
+                    ? `You are in a READ-ONLY persona (${persona}). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Use read-tools (read_file, search_code, get_fast_context, analyze_project, ask_user) to research and answer in words. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
+                    : `Tool "${fn.name}" is unavailable in the current mode (read-only/planning/side-chat). Allowed only: ${allowed}. Do not call it again — use the allowed tools for research.`
             resultMap.set(callId, { contentForAI: blockedMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockedMsg, success: false, callId, hidden: isHiddenTool })
             return
@@ -1444,6 +1451,7 @@ export class Agent {
           model: args.model as string | undefined,
           approvalMode: args.approval_mode as 'auto' | 'ask' | 'full' | undefined,
           isolation: args.isolation as 'auto' | 'worktree' | 'none' | undefined,
+          role: args.role as string | undefined,
           callId,
         })
         if (result.error) return {

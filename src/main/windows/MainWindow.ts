@@ -9,6 +9,8 @@ interface SavedBounds {
   y: number
   width: number
   height: number
+  /** Окно было свёрнуто в maximized-режим при последнем выходе. */
+  maximized?: boolean
 }
 
 function resourcesDir(): string {
@@ -35,6 +37,8 @@ export class MainWindow {
       typeof width !== 'number' || typeof height !== 'number' ||
       width < 1000 || height < 700
     ) return undefined
+    // maximized-флаг опционален (старые записи без него — окно не было maximized)
+    if (typeof saved.maximized !== 'boolean') saved.maximized = false
 
     // Проверяем, что окно попадает на какой-то из подключённых дисплеев.
     // Если монитор отключили/сменили разрешение — saved bounds могут
@@ -130,6 +134,15 @@ export class MainWindow {
       this.win = null
     })
 
+    // Восстанавливаем maximized-режим, если окно было развёрнуто при
+    // последнем выходе. Вызываем ПОСЛЕ создания (с saved bounds как
+    // начальными нормальными размерами) — maximize() запомнит их для
+    // последующего unmaximize, а растянутые габариты не перетрут
+    // сохранённые windowBounds (saveBoundsNow игнорирует maximized-окно).
+    if (saved?.maximized) {
+      this.win.maximize()
+    }
+
     // Загружаем renderer
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.win.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -213,10 +226,15 @@ export class MainWindow {
   private saveBoundsNow(): void {
     if (!this.win || this.win.isDestroyed()) return
     try {
-      // Если окно максимизировано — getBounds() вернёт "растянутые"
-      // размеры; всё равно сохраняем, при восстановлении окно откроется
-      // в этих габаритах, что приемлемо.
-      this.store.set('windowBounds', this.win.getBounds())
+      if (this.win.isMaximized()) {
+        // Окно развёрнуто — НЕ перезаписываем нормальные windowBounds
+        // растянутыми (иначе при unmaximize/перезапуске потеряем
+        // прежний размер). Сохраняем только флаг maximized.
+        this.store.set('windowBounds', { ...(this.store.get('windowBounds') as SavedBounds ?? {}), maximized: true })
+      } else {
+        // Нормальный режим — сохраняем актуальные bounds и флаг false.
+        this.store.set('windowBounds', { ...this.win.getBounds(), maximized: false })
+      }
     } catch { /* окно могло быть уничтожено в момент записи */ }
   }
 }

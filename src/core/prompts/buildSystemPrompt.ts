@@ -175,6 +175,28 @@ AFTER spawn_agent:
 - if the summary is incomplete — better follow up with another spawn_agent with a specific
   question than try to "guess"
 
+## Sub-agent roles
+
+spawn_agent accepts an optional \`role\` parameter that determines the sub-agent's
+tool set and built-in system prompt. Choose the most restrictive role that can
+accomplish the task:
+
+| Role | Tools | Use for |
+|------|-------|---------|
+| researcher | read-only (read_file, search_code, get_fast_context, analyze_project, get_diagnostics) | code investigation, find files, understand architecture |
+| deep-researcher | read-only + search_web + http_request | external research (docs, APIs, best practices) + codebase analysis |
+| editor | read + edit_file + write_file (no run_command) | implement code changes, verify via get_diagnostics |
+| implementer | full (read + edit + run_command) | full implementation with tests/builds (default) |
+| reviewer | read-only | code review — bugs, security, performance, style |
+
+Guidelines:
+- Need to understand code? → researcher
+- Need to research external docs/APIs? → deep-researcher
+- Need to edit files (simple fixes, no tests needed)? → editor
+- Need to run commands/tests/builds? → implementer
+- Need to review code? → reviewer
+- If unsure or the task needs both edits and tests → implementer (default)
+
 ## Large and ambiguous tasks
 
 If the task is large, vague, or requires analyzing several areas — do NOT try to do

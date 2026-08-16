@@ -3,6 +3,7 @@ import { Worker } from 'worker_threads'
 import * as path from 'path'
 import type Store from 'electron-store'
 import { agentManager } from '../AgentManager'
+import { getSubagentRole } from '../../shared/subagent-roles'
 import {
   createChat, getAllChats, getMessages, getMessagesPage, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB, getDB,
@@ -891,6 +892,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }> = []
     let hasErrors = false
 
+    // Промпт для vision-модели: если есть текст вопроса пользователя —
+    // передаём его, чтобы модель знала, что именно искать на картинке.
+    const userQuestion = content?.trim()
+    const visionPrompt = userQuestion
+      ? `Пользователь прислал изображение со следующим вопросом/задачей:\n«${userQuestion.slice(0, 2000)}»\n\nОпиши содержимое этого изображения подробно, обращая особое внимание на детали, нужные для ответа на вопрос пользователя. Отвечай на русском. Опиши: что изображено, любой текст на картинке, и все релевантные детали.`
+      : `Опиши содержимое этого изображения подробно. Это вложение пользователя к вопросу. Отвечай на русском. Опиши: что изображено, любой текст на картинке, контекст, который может быть полезен для ответа на вопрос пользователя.`
+
+    // ── Phase 1: Первый проход — некартинки (последовательно, быстрый I/O) ──
+    // Картинки собираем в imageAtts для параллельной обработки во втором проходе.
+    const imageAtts: Array<{ att: Attachment; index: number }> = []
+
     for (const att of attachments) {
       if (att.kind === 'skill' || att.kind === 'command' || !att.path) {
         processedFiles.push({
@@ -917,45 +929,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         if (st.isDirectory()) {
           textBlocks.push(`[Директория: ${att.name}]`)
           processedFiles.push({ name: att.name, kind: att.kind, status: 'binary_path', size: 0, detail: 'Директория' })
+          processed++
         } else if (att.kind === 'image' || isImageMime(att.mime)) {
-          // Картинка → vision-модель
-          win?.webContents.send('agent:tool_progress', {
-            msgId, chatId,
-            toolName: 'process_attachments',
-            stage: 'analyzing_image',
-            detail: att.name,
-            filesProcessed: processed,
-            filesTotal: total,
-            ts: Date.now(),
-          })
-
-          const base64 = readFileSync(att.path).toString('base64')
-          const aiClient = new AIClient(store)
-          const description = await new Promise<string>((resolve) => {
-            let full = ''
-            aiClient.analyzeImage(
-              base64,
-              `Опиши содержимое этого изображения подробно. Это вложение пользователя к вопросу. Отвечай на русском. Опиши: что изображено, любой текст на картинке, контекст, который может быть полезен для ответа на вопрос пользователя.`,
-              {
-                onToken: (token) => {
-                  full += token
-                },
-                onDone: (text) => resolve(text || full),
-                onError: (err) => {
-                  resolve(`[Ошибка анализа изображения: ${err.message}]`)
-                },
-              },
-            ).catch(() => resolve('[Ошибка анализа изображения]'))
-          })
-
-          textBlocks.push(`─── Изображение: ${att.name} ───\n${description}\n─── Конец описания: ${att.name} ───`)
-          processedFiles.push({
-            name: att.name,
-            kind: att.kind,
-            status: 'image_described',
-            size: st.size,
-            description: description.slice(0, 200) + (description.length > 200 ? '…' : ''),
-          })
+          // Картинку откладываем для параллельной обработки во втором проходе.
+          const idx = processedFiles.length
+          imageAtts.push({ att, index: idx })
+          processedFiles.push({ name: att.name, kind: att.kind, status: 'image_described', size: st.size, description: '' })
         } else {
           // Текстовый или бинарный файл
           const mime = att.mime || ''
@@ -979,14 +958,84 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               detail: `${(st.size / 1024).toFixed(1)} KB — только путь`,
             })
           }
+          processed++
         }
       } catch (e) {
         hasErrors = true
         const errMsg = (e as Error).message
         textBlocks.push(`[Файл недоступен: ${att.name} — ${errMsg}]`)
         processedFiles.push({ name: att.name, kind: att.kind, status: 'error', detail: errMsg })
+        processed++
       }
-      processed++
+    }
+
+    // ── Phase 2: Параллельная обработка картинок через Promise.all ──
+    // Все изображения анализируются одновременно (сетевой I/O), а не по очереди.
+    // 5 картинок → общее время ≈ время самой медленной, а не сумма пяти.
+    if (imageAtts.length > 0) {
+      const nonImageProcessed = processed
+      let imagesDone = 0
+
+      win?.webContents.send('agent:tool_progress', {
+        msgId, chatId,
+        toolName: 'process_attachments',
+        stage: 'analyzing_image',
+        detail: `Анализ ${imageAtts.length} ${imageAtts.length === 1 ? 'изображения' : 'изображений'}...`,
+        filesProcessed: nonImageProcessed,
+        filesTotal: total,
+        ts: Date.now(),
+      })
+
+      await Promise.all(imageAtts.map(({ att, index }) => (async () => {
+        try {
+          const base64 = readFileSync(att.path!).toString('base64')
+          const aiClient = new AIClient(store)
+          const description = await new Promise<string>((resolve) => {
+            let full = ''
+            aiClient.analyzeImage(
+              base64,
+              visionPrompt,
+              {
+                onToken: (token) => {
+                  full += token
+                },
+                onDone: (text) => resolve(text || full),
+                onError: (err) => {
+                  resolve(`[Ошибка анализа изображения: ${err.message}]`)
+                },
+              },
+            ).catch(() => resolve('[Ошибка анализа изображения]'))
+          })
+
+          textBlocks.push(`─── Изображение: ${att.name} ───\n${description}\n─── Конец описания: ${att.name} ───`)
+          processedFiles[index] = {
+            ...processedFiles[index],
+            status: 'image_described',
+            description: description.slice(0, 200) + (description.length > 200 ? '…' : ''),
+          }
+        } catch (e) {
+          const errMsg = (e as Error).message
+          textBlocks.push(`[Ошибка анализа изображения: ${att.name} — ${errMsg}]`)
+          processedFiles[index] = {
+            ...processedFiles[index],
+            status: 'error',
+            detail: errMsg,
+          }
+          hasErrors = true
+        }
+        imagesDone++
+        win?.webContents.send('agent:tool_progress', {
+          msgId, chatId,
+          toolName: 'process_attachments',
+          stage: 'analyzing_image',
+          detail: `${imagesDone}/${imageAtts.length}`,
+          filesProcessed: nonImageProcessed + imagesDone,
+          filesTotal: total,
+          ts: Date.now(),
+        })
+      })()))
+
+      processed += imageAtts.length
     }
 
     // Эмитим финальный прогресс — блок в UI покажет финальный результат
@@ -1819,12 +1868,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               msgId: msg.msgId as string,
               chatId: msg.chatId as string,
               model: msg.model as string | undefined,
+              role: (msg.role as string | undefined) ?? 'implementer',
               ts: Date.now(),
             })
             const parentSummary = getChatSummary(msg.chatId as string)
             const parentWorkingMemory = getWorkingMemory(msg.chatId as string)
             const subModeIntro = 'Сначала пойми релевантный код и ограничения, потом выполни только свою часть работы.'
             const subModeOutro = 'Финальный ответ дай кратко: что найдено или сделано, важные файлы, риски или следующий шаг.'
+            // §roles — role injection в system prompt суб-агента
+            const roleDef = getSubagentRole(msg.role as string | undefined)
+            const roleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''
+            const roleInjection = roleDef.id !== 'implementer' ? `\n${roleDef.systemPromptInjection}\n` : ''
             const spawnResult = await agentManager.spawn({
               id: msg.id as string,
               parentId: msg.msgId as string,
@@ -1833,11 +1887,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               model: msg.model as string | undefined,
               approvalMode: msg.approval_mode as 'auto' | 'ask' | 'full' | undefined,
               isolation: msg.isolation as 'auto' | 'worktree' | 'none' | undefined,
+              role: msg.role as string | undefined,
               mode: chatMode,
               storeData,
               context: {
-                systemPrompt: `Ты суб-агент. Твоя задача: ${msg.task as string}
-
+                systemPrompt: `Ты суб-агент${roleLabel}. Твоя задача: ${msg.task as string}
+${roleInjection}
 Контекст родителя:
 ${parentSummary ? `${parentSummary}\n\n` : ''}${parentWorkingMemory ? `Рабочая память:\n${parentWorkingMemory}` : 'Рабочая память отсутствует.'}
 

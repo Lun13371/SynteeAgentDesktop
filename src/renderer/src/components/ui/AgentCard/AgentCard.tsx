@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
+import { getSubagentRole } from '../../../../../shared/subagent-roles'
 import './AgentCard.css'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
@@ -16,6 +17,7 @@ export interface AgentCardData {
   error?: string
   createdAt: number
   finishedAt?: number
+  role?: string
   steps?: Array<{ type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; timestamp: number }>
 }
 
@@ -114,6 +116,14 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
             <span className="agent-c__current-tool" title={currentTool}>
               <AppIcon name={getToolIcon(currentTool)} size="xs" tone="muted" />
               {currentTool}
+            </span>
+          )}
+          {agent.role && (
+            <span
+              className="agent-c__role-badge"
+              style={{ color: getSubagentRole(agent.role).color }}
+            >
+              {getSubagentRole(agent.role).nameEn}
             </span>
           )}
           <span className={`agent-c__badge agent-c__badge--${agent.status}`}>{meta.label}</span>

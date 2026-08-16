@@ -106,6 +106,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     systemPrompt, enableTools, incognito,
     agentSettings,
     toolSchemas,
+    subagentRole,
     modelId: resolvedModelId,
     providerId: resolvedProviderId,
   } = msg as {
@@ -117,6 +118,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     enableTools: boolean
     incognito: boolean
     toolSchemas?: unknown[]
+    subagentRole?: string
     modelId?: string
     providerId?: string
     agentSettings: {
@@ -707,6 +709,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, import('../core/context/fileCacheTypes').FileCacheEntry> | undefined,
           planningMode,
           persona: workerPersona,
+          subagentRole,
         }
       )
     } else {

@@ -11,6 +11,20 @@ export function getDB(): Database.Database {
   return db
 }
 
+/**
+ * Инициализирует подключение к базе данных SQLite.
+ *
+ * Путь к файлу БД: `<userData>/syntee.db`, где `userData` — каталог данных
+ * пользователя Electron (app.getPath('userData')). Каталог создаётся при
+ * необходимости через mkdirSync с флагом recursive.
+ *
+ * Включает две SQLite-прагмы:
+ *  - `journal_mode = WAL` — режим Write-Ahead Logging для повышения
+ *    производительности конкурентного доступа и устойчивости к сбоям.
+ *  - `foreign_keys = ON` — включает проверку внешних ключей.
+ *
+ * После открытия соединения запускает миграции (runMigrations).
+ */
 export function initDB(): void {
   const userData = app.getPath('userData')
   mkdirSync(userData, { recursive: true })
