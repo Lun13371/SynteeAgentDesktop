@@ -765,6 +765,18 @@ const MessageContent = memo(function MessageContent({
     const popup = actionsRef.current
     if (!bubble || !popup) return
 
+    // Проверяем: длиннее ли bubble viewport. Если нет — scroll-listener
+    // не нужен (absolute-центрирование работает). Это убирает N listeners
+    // (по одному на каждый видимый bubble) в idle → минус ~1-2% CPU.
+    const checkOverflow = () => {
+      const b = bubble.getBoundingClientRect()
+      return b.bottom - b.top > window.innerHeight
+    }
+    if (!checkOverflow()) {
+      setActionsPos(null)
+      return
+    }
+
     const recompute = () => {
       const b = bubble.getBoundingClientRect()
       const vh = window.innerHeight

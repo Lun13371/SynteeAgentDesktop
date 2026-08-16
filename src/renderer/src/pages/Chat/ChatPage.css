@@ -75,6 +75,10 @@
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;
+  /* content-visibility: auto — браузер пропускает rendering для off-screen
+     контента. Меньше paint/composite работы в idle. Chromium поддерживает. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 600px;
   /* Scroll-компенсация при prepend делается вручную в ChatPage
      (useLayoutEffect на messages.length) — отключаем встроенный
      scroll-anchoring Chromium, чтобы он не дублировал компенсацию. */

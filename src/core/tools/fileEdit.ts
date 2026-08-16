@@ -22,63 +22,18 @@ export function writeWithOptionalBom(filePath: string, content: string): Promise
   return fsWriteFile(filePath, content, 'utf-8')
 }
 
-// Fuzzy find-and-replace: игнорирует leading whitespace (tabs vs spaces,
-// лишние/недостающие отступы). Используется и apply_patch, и legacy replace.
-// Возвращает { found, result }. При replaceAll=true заменяет все вхождения.
-function fuzzyFindAndReplace(
-  haystack: string,
-  needle: string,
-  replacement: string,
-  replaceAll: boolean,
-): { found: boolean; result: string } {
-  // trimStart + trimEnd (trailing whitespace) для сравнения — но не для замены
-  const stripIndent = (s: string) => s.split('\n').map(l => l.trimStart().replace(/\s+$/, '')).join('\n')
-  const strippedHaystack = stripIndent(haystack)
-  const strippedNeedle = stripIndent(needle)
-
-  if (!strippedHaystack.includes(strippedNeedle)) {
-    return { found: false, result: haystack }
-  }
-
-  const needleLines = strippedNeedle.split('\n')
-  const origLines = haystack.split('\n')
-
-  // Находим все стартовые позиции совпадений по trimStart+trimEnd сравнению строк
-  const matchStarts: number[] = []
-  for (let i = 0; i <= origLines.length - needleLines.length; i++) {
-    if (needleLines.every((nl, j) => (origLines[i + j] ?? '').trimStart().replace(/\s+$/, '') === nl)) {
-      matchStarts.push(i)
-    }
-  }
-
-  if (matchStarts.length === 0) {
-    return { found: false, result: haystack }
-  }
-
-  const startsToReplace = replaceAll ? matchStarts : [matchStarts[0]]
-  // Заменяем с последней позиции к первой, чтобы не сбить индексы
-  for (let k = startsToReplace.length - 1; k >= 0; k--) {
-    const start = startsToReplace[k]
-    origLines.splice(start, needleLines.length, ...replacement.split('\n'))
-  }
-
-  return { found: true, result: origLines.join('\n') }
-}
-
-
 export async function writeFile(path: string, content: string, opts?: { dryRun?: boolean; workdir?: string; force?: boolean }): Promise<ToolResult> {
   try {
     path = resolveToolPath(path, opts?.workdir)
     // write_file — СОЗДАНИЕ нового файла с нуля. Перезапись существующего
     // запрещена (если force !== true): для правок используй edit_file
-    // (mode=apply_patch/insert/overwrite) — он возвращает diff и сохраняет
-    // оригинал для undo/rewind. force=true позволяет перезаписать существующий
+    // (old_str/new_str). force=true позволяет перезаписать существующий
     // файл (например, для восстановления после неудачной правки).
     if (existsSync(path) && !opts?.force) {
       return {
         success: false,
         output: '',
-        error: 'File already exists. write_file is only for creating a new file. To edit an existing file use edit_file (mode=apply_patch/insert/overwrite), or pass force=true to overwrite.',
+        error: 'File already exists. write_file is only for creating a new file. To edit an existing file use edit_file (old_str/new_str), or pass force=true to overwrite.',
       }
     }
     let originalContent: string | null = null
@@ -100,156 +55,357 @@ export async function writeFile(path: string, content: string, opts?: { dryRun?:
   }
 }
 
-// §3.2 — Парсер search/replace patch формата (Codex-style).
-// Формат: один или несколько блоков, разделённых маркерами:
-//   <<<<<<< SEARCH
-//   <точный текст для поиска>
-//   =======
-//   <новый текст>
-//   >>>>>>> REPLACE
-// Каждый блок заменяет ровно одно вхождение (или все при replaceAll=true).
-// Если SEARCH не найден ни точно, ни fuzzy (по отступам) — ошибка.
-function applySearchReplacePatch(original: string, patch: string, replaceAll = false): string {
-  const SEARCH_START = '<<<<<<< SEARCH'
-  const SEPARATOR = '======='
-  const REPLACE_END = '>>>>>>> REPLACE'
+// ════════════════════════════════════════════════════════════════════════════
+// str_replace: 9-replacer pipeline (OpenCode-style, adapted from
+// cline/diff-apply and gemini-cli/editCorrector).
+//
+// Каждый Replacer — генератор, который выдаёт кандидатов (строки, которые
+// МОГУТ быть вхождением old_str в content). Функция replace() перебирает
+// replacers по очереди: первый, выдавший уникальное совпадение — побеждает.
+// Если ни один не нашёл — ошибка "old_str not found". Если несколько
+// совпадений — ошибка "multiple matches".
+// ════════════════════════════════════════════════════════════════════════════
 
-  const lines = patch.split('\n')
-  let result = original
-  let i = 0
-  const errors: string[] = []
+type Replacer = (content: string, find: string) => Generator<string, void, unknown>
 
-  while (i < lines.length) {
-    // Ищем начало блока SEARCH
-    const searchStartIdx = lines.indexOf(SEARCH_START, i)
-    if (searchStartIdx === -1) break
+// Similarity thresholds for block anchor fallback matching
+const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.65
+const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65
 
-    const sepIdx = lines.indexOf(SEPARATOR, searchStartIdx + 1)
-    if (sepIdx === -1) {
-      errors.push('Found SEARCH without a ======= separator')
-      break
+/**
+ * Levenshtein distance — для fuzzy-матчинга в BlockAnchorReplacer.
+ */
+function levenshtein(a: string, b: string): number {
+  if (a === '' || b === '') return Math.max(a.length, b.length)
+  const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  )
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost)
     }
+  }
+  return matrix[a.length][b.length]
+}
 
-    const replaceEndIdx = lines.indexOf(REPLACE_END, sepIdx + 1)
-    if (replaceEndIdx === -1) {
-      errors.push('Found SEARCH/SEPARATOR without >>>>>>> REPLACE')
-      break
+// 1. SimpleReplacer — точное совпадение
+const SimpleReplacer: Replacer = function* (_content, find) {
+  yield find
+}
+
+// 2. LineTrimmedReplacer — сравнение по строкам, обрезав пробелы в начале/конце
+const LineTrimmedReplacer: Replacer = function* (content, find) {
+  const originalLines = content.split('\n')
+  const searchLines = find.split('\n')
+  if (searchLines[searchLines.length - 1] === '') searchLines.pop()
+
+  for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
+    let matches = true
+    for (let j = 0; j < searchLines.length; j++) {
+      if (originalLines[i + j].trim() !== searchLines[j].trim()) { matches = false; break }
     }
-
-    const searchText = lines.slice(searchStartIdx + 1, sepIdx).join('\n')
-    const replaceText = lines.slice(sepIdx + 1, replaceEndIdx).join('\n')
-
-    // Обрезаем пустые строки в начале/конце SEARCH — модель часто добавляет
-    // случайные пустые строки вокруг паттерна, что ломает точный поиск.
-    const trimmedSearch = searchText.replace(/^\n+/, '').replace(/\n+$/, '')
-
-    if (!trimmedSearch) {
-      errors.push(`Empty SEARCH in block ${searchStartIdx + 1}`)
-      i = replaceEndIdx + 1
-      continue
+    if (matches) {
+      let start = 0
+      for (let k = 0; k < i; k++) start += originalLines[k].length + 1
+      let end = start
+      for (let k = 0; k < searchLines.length; k++) {
+        end += originalLines[i + k].length
+        if (k < searchLines.length - 1) end++
+      }
+      yield content.substring(start, end)
     }
+  }
+}
 
-    // Normalize CRLF → LF for comparison
-    const normResult = normalizeLineEndings(result)
-    const normSearch = normalizeLineEndings(trimmedSearch)
+// 3. BlockAnchorReplacer — первая+последняя строка как "якоря", середина — fuzzy по Levenshtein
+const BlockAnchorReplacer: Replacer = function* (content, find) {
+  const originalLines = content.split('\n')
+  const searchLines = find.split('\n')
+  if (searchLines.length < 3) return
+  if (searchLines[searchLines.length - 1] === '') searchLines.pop()
 
-    if (normResult.includes(normSearch)) {
-      // Exact match found
-      if (replaceAll) {
-        result = normResult.split(normSearch).join(replaceText)
-      } else {
-        result = normResult.replace(normSearch, replaceText)
+  const firstLineSearch = searchLines[0].trim()
+  const lastLineSearch = searchLines[searchLines.length - 1].trim()
+  const searchBlockSize = searchLines.length
+  const maxLineDelta = Math.max(1, Math.floor(searchBlockSize * 0.25))
+
+  const candidates: Array<{ startLine: number; endLine: number }> = []
+  for (let i = 0; i < originalLines.length; i++) {
+    if (originalLines[i].trim() !== firstLineSearch) continue
+    for (let j = i + 2; j < originalLines.length; j++) {
+      if (originalLines[j].trim() === lastLineSearch) {
+        if (Math.abs(j - i + 1 - searchBlockSize) <= maxLineDelta) {
+          candidates.push({ startLine: i, endLine: j })
+        }
+        break
+      }
+    }
+  }
+  if (candidates.length === 0) return
+
+  // Single candidate — check similarity
+  if (candidates.length === 1) {
+    const { startLine, endLine } = candidates[0]
+    const actualBlockSize = endLine - startLine + 1
+    let similarity = 0
+    const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2)
+    if (linesToCheck > 0) {
+      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+        const origLine = originalLines[startLine + j].trim()
+        const searchLine = searchLines[j].trim()
+        const maxLen = Math.max(origLine.length, searchLine.length)
+        if (maxLen === 0) continue
+        similarity += (1 - levenshtein(origLine, searchLine) / maxLen) / linesToCheck
+        if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) break
       }
     } else {
-      // Fuzzy attempt: ignore leading/trailing whitespace of each line (tabs vs
-      // spaces, extra/missing indent, trailing whitespace). Same logic as
-      // replace-mode fuzzy, now shared.
-      const fuzzy = fuzzyFindAndReplace(normResult, normSearch, replaceText, replaceAll)
-      if (fuzzy.found) {
-        result = fuzzy.result
-      } else {
-        const hint = 'Tip: the SEARCH block does not match the file. Reread the file with read_file and copy the exact content into the SEARCH block. The snippet below shows the actual file content around the expected location.'
-        errors.push(buildNotFoundSnippetError(normResult, normSearch, `apply_patch SEARCH (lines ${searchStartIdx + 2}-${sepIdx})`) + ' ' + hint)
+      similarity = 1.0
+    }
+    if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
+      let start = 0
+      for (let k = 0; k < startLine; k++) start += originalLines[k].length + 1
+      let end = start
+      for (let k = startLine; k <= endLine; k++) {
+        end += originalLines[k].length
+        if (k < endLine) end++
+      }
+      yield content.substring(start, end)
+    }
+    return
+  }
+
+  // Multiple candidates — pick best similarity
+  let bestMatch: { startLine: number; endLine: number } | null = null
+  let maxSim = -1
+  for (const cand of candidates) {
+    const { startLine, endLine } = cand
+    const actualBlockSize = endLine - startLine + 1
+    let sim = 0
+    const toCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2)
+    if (toCheck > 0) {
+      for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+        const origLine = originalLines[startLine + j].trim()
+        const searchLine = searchLines[j].trim()
+        const maxLen = Math.max(origLine.length, searchLine.length)
+        if (maxLen === 0) continue
+        sim += 1 - levenshtein(origLine, searchLine) / maxLen
+      }
+      sim /= toCheck
+    } else {
+      sim = 1.0
+    }
+    if (sim > maxSim) { maxSim = sim; bestMatch = cand }
+  }
+  if (maxSim >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
+    const { startLine, endLine } = bestMatch
+    let start = 0
+    for (let k = 0; k < startLine; k++) start += originalLines[k].length + 1
+    let end = start
+    for (let k = startLine; k <= endLine; k++) {
+      end += originalLines[k].length
+      if (k < endLine) end++
+    }
+    yield content.substring(start, end)
+  }
+}
+
+// 4. WhitespaceNormalizedReplacer — нормализует все whitespace в одну пробелу
+const WhitespaceNormalizedReplacer: Replacer = function* (content, find) {
+  const norm = (text: string) => text.replace(/\s+/g, ' ').trim()
+  const normFind = norm(find)
+  const lines = content.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    if (norm(lines[i]) === normFind) yield lines[i]
+  }
+  const findLines = find.split('\n')
+  if (findLines.length > 1) {
+    for (let i = 0; i <= lines.length - findLines.length; i++) {
+      const block = lines.slice(i, i + findLines.length)
+      if (norm(block.join('\n')) === normFind) yield block.join('\n')
+    }
+  }
+}
+
+// 5. IndentationFlexibleReplacer — игнорирует отступы (tabs vs spaces)
+const IndentationFlexibleReplacer: Replacer = function* (content, find) {
+  const removeIndent = (text: string) => {
+    const lines = text.split('\n')
+    const nonEmpty = lines.filter(l => l.trim().length > 0)
+    if (nonEmpty.length === 0) return text
+    const minIndent = Math.min(...nonEmpty.map(l => { const m = l.match(/^(\s*)/); return m ? m[1].length : 0 }))
+    return lines.map(l => l.trim().length === 0 ? l : l.slice(minIndent)).join('\n')
+  }
+  const normFind = removeIndent(find)
+  const contentLines = content.split('\n')
+  const findLines = find.split('\n')
+  for (let i = 0; i <= contentLines.length - findLines.length; i++) {
+    const block = contentLines.slice(i, i + findLines.length).join('\n')
+    if (removeIndent(block) === normFind) yield block
+  }
+}
+
+// 6. EscapeNormalizedReplacer — нормализует escape-последовательности
+const EscapeNormalizedReplacer: Replacer = function* (content, find) {
+  const unescape = (str: string): string =>
+    str.replace(/\\(n|t|r|'|"|`|\\|\$)/g, (m, c: string) => {
+      switch (c) {
+        case 'n': return '\n'; case 't': return '\t'; case 'r': return '\r'
+        case "'": return "'"; case '"': return '"'; case '`': return '`'
+        case '\\': return '\\'; case '$': return '$'; default: return m
+      }
+    })
+  const unescapedFind = unescape(find)
+  if (content.includes(unescapedFind)) yield unescapedFind
+  const lines = content.split('\n')
+  const findLines = unescapedFind.split('\n')
+  for (let i = 0; i <= lines.length - findLines.length; i++) {
+    const block = lines.slice(i, i + findLines.length).join('\n')
+    if (unescape(block) === unescapedFind) yield block
+  }
+}
+
+// 7. TrimmedBoundaryReplacer — ищет trimmed-версию old_str
+const TrimmedBoundaryReplacer: Replacer = function* (content, find) {
+  const trimmedFind = find.trim()
+  if (trimmedFind === find) return
+  if (content.includes(trimmedFind)) yield trimmedFind
+  const lines = content.split('\n')
+  const findLines = find.split('\n')
+  for (let i = 0; i <= lines.length - findLines.length; i++) {
+    const block = lines.slice(i, i + findLines.length).join('\n')
+    if (block.trim() === trimmedFind) yield block
+  }
+}
+
+// 8. ContextAwareReplacer — первая+последняя строка как контекст, середина ≥50% совпадения
+const ContextAwareReplacer: Replacer = function* (content, find) {
+  const findLines = find.split('\n')
+  if (findLines.length < 3) return
+  if (findLines[findLines.length - 1] === '') findLines.pop()
+  const contentLines = content.split('\n')
+  const firstLine = findLines[0].trim()
+  const lastLine = findLines[findLines.length - 1].trim()
+
+  for (let i = 0; i < contentLines.length; i++) {
+    if (contentLines[i].trim() !== firstLine) continue
+    for (let j = i + 2; j < contentLines.length; j++) {
+      if (contentLines[j].trim() === lastLine) {
+        const blockLines = contentLines.slice(i, j + 1)
+        if (blockLines.length === findLines.length) {
+          let matching = 0, total = 0
+          for (let k = 1; k < blockLines.length - 1; k++) {
+            const bl = blockLines[k].trim()
+            const fl = findLines[k].trim()
+            if (bl.length > 0 || fl.length > 0) {
+              total++
+              if (bl === fl) matching++
+            }
+          }
+          if (total === 0 || matching / total >= 0.5) {
+            yield blockLines.join('\n')
+            break
+          }
+        }
+        break
       }
     }
-    i = replaceEndIdx + 1
   }
-
-  if (errors.length > 0) {
-    throw new Error(`apply_patch errors (${errors.length}):\n${errors.join('\n')}`)
-  }
-
-  // Preserve original line endings: normalizeLineEndings above converted
-  // result to LF for comparison. If original had CRLF, restore it so the
-  // file doesn't silently switch from CRLF to LF (which would make git diff
-  // show every line as changed on Windows).
-  if (original.includes('\r\n')) {
-    result = result.replace(/\r?\n/g, '\r\n')
-  }
-
-  return result
 }
+
+// 9. MultiOccurrenceReplacer — выдаёт все точные совпадения
+const MultiOccurrenceReplacer: Replacer = function* (content, find) {
+  let start = 0
+  while (true) {
+    const idx = content.indexOf(find, start)
+    if (idx === -1) break
+    yield find
+    start = idx + find.length
+  }
+}
+
+// Защита от "съело пол-файла": если найденный кусок сильно больше old_str — отказ.
+function isDisproportionateMatch(search: string, oldString: string): boolean {
+  const oldLines = oldString.split('\n').length
+  const searchLines = search.split('\n').length
+  if (searchLines >= Math.max(oldLines + 3, oldLines * 2)) return true
+  if (oldLines === 1) return false
+  return search.trim().length > Math.max(oldString.trim().length + 500, oldString.trim().length * 4)
+}
+
+/**
+ * Главная функция замены — перебирает 9 replacers, первый уникальный матч побеждает.
+ * Бросает Error с понятным сообщением если old_str не найден или найдён многократно.
+ */
+function strReplaceCore(content: string, oldStr: string, newStr: string): string {
+  if (oldStr === newStr) {
+    throw new Error('old_str and new_str are identical — nothing to change.')
+  }
+  if (oldStr === '') {
+    throw new Error('old_str cannot be empty. Provide the exact text to replace.')
+  }
+
+  let notFound = true
+
+  for (const replacer of [
+    SimpleReplacer,
+    LineTrimmedReplacer,
+    BlockAnchorReplacer,
+    WhitespaceNormalizedReplacer,
+    IndentationFlexibleReplacer,
+    EscapeNormalizedReplacer,
+    TrimmedBoundaryReplacer,
+    ContextAwareReplacer,
+    MultiOccurrenceReplacer,
+  ]) {
+    for (const search of replacer(content, oldStr)) {
+      const index = content.indexOf(search)
+      if (index === -1) continue
+      notFound = false
+      if (isDisproportionateMatch(search, oldStr)) {
+        throw new Error(
+          'Refusing replacement because the matched span is much larger than old_str. Re-read the file and provide the full exact old_str for the intended replacement.',
+        )
+      }
+      const lastIndex = content.lastIndexOf(search)
+      if (index !== lastIndex) continue // multiple matches — skip, try next replacer
+      return content.substring(0, index) + newStr + content.substring(index + search.length)
+    }
+  }
+
+  if (notFound) {
+    throw new Error(
+      buildNotFoundSnippetError(content, oldStr, 'edit_file') +
+      '\n\nTip: old_str must match the file exactly (including whitespace and indentation). Reread the file with read_file and copy the exact content.',
+    )
+  }
+  throw new Error(
+    'Found multiple matches for old_str. Provide more surrounding lines in old_str to make it unique.',
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 
 export async function editFile(params: {
   path: string
-  mode: 'replace' | 'insert' | 'overwrite' | 'apply_patch'
-  old_str?: string
-  new_str?: string
-  after_line?: number
-  content?: string
+  old_str: string
+  new_str: string
   create_if_not_exists?: boolean
   dryRun?: boolean
-  patch?: string
-  replace_all?: boolean
-  confirm_overwrite?: boolean
   workdir?: string
 }): Promise<EditResult> {
   try {
-    // Legacy fallback: если модель передаёт mode='replace' (старый контекст
-    // из истории чата или устаревший системный промпт) — конвертируем в
-    // single-block apply_patch. Это сохраняет обратную совместимость: старые
-    // чаты не ломаются, модель не получает "invalid mode" error.
-    if (params.mode === 'replace') {
-      if (!params.old_str) return { success: false, output: '', error: 'edit_file replace: old_str is required' }
-      if (params.new_str === undefined) {
-        return {
-          success: false,
-          output: '',
-          error: 'edit_file replace: new_str is required. If you want to delete old_str — pass new_str: "" explicitly.',
-        }
-      }
-      params = {
-        ...params,
-        mode: 'apply_patch',
-        patch: `<<<<<<< SEARCH\n${params.old_str}\n=======\n${params.new_str}\n>>>>>>> REPLACE`,
-      }
-    }
-
-    // Validate mode BEFORE any actions. Previously an invalid mode (typo,
-    // hallucination: "delete", "append") silently fell through all if/else
-    // branches → updated = original → file rewritten with same content →
-    // success=true "0 lines changed". The AI thought the edit applied. Now —
-    // an explicit error with the list of allowed modes.
-    const VALID_MODES = ['apply_patch', 'insert', 'overwrite']
-    if (!params.mode || !VALID_MODES.includes(params.mode)) {
-      // Если mode пустой или невалидный — дефолтим на apply_patch вместо ошибки.
-      // Модель может передать пустой mode из-за обрыва стрима или битого JSON —
-      // лучше тихо дефолтить, чем блокировать тул.
-      params.mode = 'apply_patch'
-    }
-
     params.path = resolveToolPath(params.path, params.workdir)
     const fileExists = existsSync(params.path)
 
-    // create_if_not_exists — создать файл если не существует (только overwrite/insert)
+    // create_if_not_exists — создать файл если не существует
     if (!fileExists) {
       if (params.create_if_not_exists) {
+        const initial = params.new_str ?? ''
         if (params.dryRun) {
-          const initial = params.content ?? params.new_str ?? ''
           return { success: true, output: `[DRY RUN] CREATING new file: ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}`.slice(0, 4000), diff: `+++ ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}` }
         }
         await ensureDirFor(params.path)
-        const initial = params.content ?? params.new_str ?? ''
         await writeWithOptionalBom(params.path, initial)
         return { success: true, output: `File created: ${params.path}`, diff: `+++ ${params.path}\n${initial.split('\n').map(l => '+' + l).join('\n')}` }
       }
@@ -272,50 +428,26 @@ export async function editFile(params: {
 
     const original = await fsReadFile(params.path, 'utf-8')
     let updated = original
-    let insertWarning = ''
 
-    if (params.mode === 'apply_patch') {
-      if (!params.patch) return { success: false, output: '', error: 'edit_file apply_patch: patch is required' }
-      updated = applySearchReplacePatch(original, params.patch, params.replace_all ?? false)
-    } else if (params.mode === 'insert') {
-      // Protection against silent empty insert: content is MANDATORY for insert. Previously
-      // `content ?? ''` silently inserted one empty line if the model forgot content
-      // → success=true, the AI thought it inserted code.
-      if (params.content === undefined) {
-        return {
-          success: false,
-          output: '',
-          error: 'edit_file insert: content is required. Pass the content to insert (an empty string "" is allowed if you want to insert a blank line).',
-        }
-      }
-      const lines = original.split('\n')
-      const at = Math.min(params.after_line ?? lines.length, lines.length)
-      // Context check: предупредить если after_line внутри незакрытой многострочной
-      // конструкции (открытый {, (, [). Вставка туда может сломать синтаксис.
-      const braceWarn = checkBraceBalance(lines, at)
-      lines.splice(at, 0, ...params.content.split('\n'))
-      updated = lines.join('\n')
-      if (braceWarn) {
-        insertWarning = braceWarn
-      }
+    // Defense-in-depth: old_str/new_str теперь required в schema, но на случай
+    // если args пришли через salvageEditFileArgs или другой обход валидации.
+    if (params.old_str === undefined) {
+      return { success: false, output: '', error: 'edit_file: old_str is required' }
+    }
+    if (params.new_str === undefined) {
+      return { success: false, output: '', error: 'edit_file: new_str is required. If you want to delete old_str — pass new_str: "" explicitly.' }
+    }
 
-    } else if (params.mode === 'overwrite') {
-      if (params.content === undefined) return { success: false, output: '', error: 'edit_file overwrite: content is required' }
-      // Safety guard: предотвратить случайное уничтожение файла (4128 строк → 1).
-      // Если новый контент составляет <10% строк от оригинала и модель НЕ передала
-      // confirm_overwrite=true — отказ. Модель повторит с confirm_overwrite=true
-      // если это действительно intended.
-      const origLines = original.split('\n').length
-      const newLines = params.content.split('\n').length
-      if (origLines > 10 && newLines < origLines * 0.1 && !params.confirm_overwrite) {
-        const pct = Math.round((1 - newLines / origLines) * 100)
-        return {
-          success: false,
-          output: '',
-          error: `overwrite will replace ${origLines} lines with ${newLines} lines (${pct}% reduction). This looks like accidental data loss. If this is intentional, pass confirm_overwrite=true.`,
-        }
-      }
-      updated = params.content
+    // Normalize CRLF → LF for comparison, preserve original line endings in result
+    const normOrig = normalizeLineEndings(original)
+    const normOld = normalizeLineEndings(params.old_str)
+    const normNew = normalizeLineEndings(params.new_str)
+    const replaced = strReplaceCore(normOrig, normOld, normNew)
+    // Restore CRLF if original had it
+    if (original.includes('\r\n')) {
+      updated = replaced.replace(/\r?\n/g, '\r\n')
+    } else {
+      updated = replaced
     }
 
     const diff = makeDiff(original, updated, params.path)
@@ -325,61 +457,30 @@ export async function editFile(params: {
       return {
         success: false,
         output: '',
-        error: `edit_file ${params.mode}: the edit did not change the file (old_str not found or new_str matches old_str). Check the arguments or reread the file with read_file.`,
+        error: `edit_file: the edit did not change the file (old_str not found or new_str matches old_str). Check the arguments or reread the file with read_file.`,
       }
     }
     if (params.dryRun) {
       const changedLines = countChangedLines(diff)
-      return { success: true, output: `[DRY RUN] Edit ${params.mode} for: ${params.path} (${changedLines} lines changed)\n${diff}`.slice(0, 4000), diff }
+      return { success: true, output: `[DRY RUN] Edit for: ${params.path} (${changedLines} lines changed)\n${diff}`.slice(0, 4000), diff }
     }
     await writeWithOptionalBom(params.path, updated)
     const changedLines2 = countChangedLines(diff)
     const outMsg = `File updated: ${params.path} (${changedLines2} lines changed)`
-    return { success: true, output: insertWarning ? `${outMsg}\n⚠ ${insertWarning}` : outMsg, diff, originalContent: original }
+    return { success: true, output: outMsg, diff, originalContent: original }
   } catch (e: any) {
     return { success: false, output: '', error: e.message }
   }
 }
-// ── Проверка баланса скобок для insert context warning ──────────────────────
-// Считает баланс { } ( ) [ ] от строки 1 до upToLine. Если баланс ненулевой —
-// after_line находится внутри незакрытой конструкции. Упрощённо: не парсит
-// строковые литералы и комментарии (false positives возможны, но warning
-// не блокирует — лучше ложный warning, чем сломанный import).
-function checkBraceBalance(lines: string[], upToLine: number): string | null {
-  let depth = 0
-  let openChar = ''
-  const pairs: Record<string, string> = { '}': '{', ')': '(', ']': '[' }
-  const opens = new Set(['{', '(', '['])
-  for (let i = 0; i < Math.min(upToLine, lines.length); i++) {
-    // Упрощённо: убираем содержимое строковых литералов в той же строке
-    // (одинарные/двойные кавычки, backtick template literals)
-    const stripped = lines[i].replace(/'(?:[^'\\]|\\.)*'/g, '').replace(/"(?:[^"\\]|\\.)*"/g, '').replace(/`(?:[^`\\]|\\.)*`/g, '')
-    for (const ch of stripped) {
-      if (opens.has(ch)) {
-        if (depth === 0) openChar = ch
-        depth++
-      } else if (pairs[ch]) {
-        depth = Math.max(0, depth - 1)
-      }
-    }
-  }
-  if (depth > 0) {
-    const typeName = openChar === '{' ? 'brace' : openChar === '(' ? 'paren' : 'bracket'
-    return `Line ${upToLine} is inside an unclosed ${typeName} block (depth=${depth}). Insert here may break syntax.`
-  }
-  return null
-}
-
 
 // ── Snippet-хелпер для ошибок "not found" ──────────────────────────────────
-// Когда old_str / SEARCH не найден в файле, включаем в сообщение об ошибке
-// фрагмент актуального содержимого файла (15 строк) с номерами строк. Это
+// Когда old_str не найден в файле, включаем в сообщение об ошибке
+// фрагмент актуального содержимого файла (30 строк) с номерами строк. Это
 // позволяет AI скорректировать old_str без отдельного вызова read_file —
 // экономит round-trip и снижает количество ошибок редактирования.
 function buildNotFoundSnippetError(normOrig: string, normOld: string, context: string): string {
   const lines = normOrig.split('\n')
   // Пытаемся найти ЛЮБУЮ строку из old_str в файле (не только первую).
-  // Перебираем строки old_str — больше шансов попасть в нужную область.
   const oldLines = normOld.split('\n').map(l => l.trimStart()).filter(l => l.length > 0)
   let partialIdx = -1
   for (const oldLine of oldLines) {

@@ -225,7 +225,7 @@ Signs that decomposition is needed: task about "the whole project", "everything"
 
 ### Looping and repeats (CRITICAL)
 
-Do not call the same tool with the same arguments more than 2 times in a row. Loop guard tracks repeats: after 3 identical calls — a warning, after 9 (3×) — **hard block**: the tool will not execute and returns an error. Alternation of two tools (A→B→A→B) is also caught.
+Do not call the same tool with the same arguments more than 2 times in a row. Loop guard tracks repeats: after 3 identical calls — a warning, after 9 (3×) — **hard block**: the tool will not execute and returns an error. Alternation of two tools (A→B→A→B) is also caught. For invalid JSON: 2 failures — soft warning (retry with valid JSON), 3 failures — hard block for destructive tools. Non-destructive tools (save_memory, update_todo, ask_user, etc.) are never hard-blocked on invalid JSON — you can always retry.
 
 If you see "Loop guard" in history — do NOT retry the same call. Change strategy:
 - reread the context and understand why the previous approach did not work
@@ -339,7 +339,7 @@ Which tool to prefer:
 - orient in a large file → read_file with offset/limit to read the needed chunk, do not reread the whole file
 - search file contents → search_code (ripgrep, faster than reading everything; smart-case by default so lowercase patterns find CamelCase; path optional, defaults to project root; invalid regex auto-retried as literal). If "showing X of Y" — narrow file_glob/path or raise max_results; do NOT loop over pattern variants. 0 matches → switch to find_files (file names) or get_fast_context (concepts) instead of retrying variants
 - understand which files/functions relate to the task in a project → get_fast_context (FIRST step for any code task — instantly finds relevant files and line ranges via tree-sitter index + fast LLM, saves the main model's tokens on search)
-- pinpoint edit of an existing file → edit_file (mode=apply_patch — search/replace blocks with fuzzy matching and optional replace_all)
+- pinpoint edit of an existing file → edit_file (pass old_str + new_str — replaces old_str with new_str, with fuzzy matching for whitespace/indentation)
 - create a new file → write_file (creating a new file only; for editing existing use edit_file)
 - read several independent files at once → read_files
 - study an unfamiliar project end-to-end → analyze_project
@@ -382,8 +382,8 @@ questions: [
 
 ## Working with files
 
-- BEFORE editing a file, read it with read_file first. The SEARCH block in apply_patch must match the ACTUAL file content — copy it from what you read, not from memory. Editing a file you haven't read leads to "SEARCH not found" errors.
-- to change an existing file use edit_file (mode=apply_patch for one or multiple edits, mode=insert to insert at a line, mode=overwrite to replace the whole file)
+- BEFORE editing a file, read it with read_file first. The old_str in str_replace must match the ACTUAL file content — copy it from what you read, not from memory. Editing a file you haven't read leads to "old_str not found" errors.
+- to change an existing file use edit_file (pass old_str — exact text to find, and new_str — replacement text)
 - use write_file only to create a new file from scratch — to overwrite an existing one it returns an error, use edit_file
 - after a change rely on the diff and do not reread the file without reason
 

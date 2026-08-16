@@ -5,17 +5,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 //   • pinnedRef=true («прилип» к низу) — rAF-loop догоняет низ шагом
 //     clamp(diff × 0.22, 1.5, 90px): экспоненциальное сближение с капом
 //     скорости, БЕЗ телепортов.
-//   • Loop ОСТАНАВЛИВАЕТСЯ когда diff <= 0.5 (контент не растёт) —
-//     ResizeObserver на scroll-контенте перезапускает loop при росте.
-//     Это убирает 60fps layout-thrashing в idle (минус 10-25% CPU).
+//   • Loop работает ТОЛЬКО когда isStreaming=true (идёт стрим ответа).
+//     Не стримит → loop мёртв → 0% CPU. Стримит → плавный доскролл.
 //   • Отлип: колесо вверх / touch-drag вверх — мгновенно; перетаскивание
 //     скроллбара — по уменьшению scrollTop в handleScroll (наши записи его
 //     только увеличивают, поэтому уменьшение = пользователь).
 //   • Прилип обратно: только когда пользователь ДВИЖЕТСЯ ВНИЗ и доехал до
-//     низа (dist < 8px). НЕ «любое событие рядом с низом» — старая модель
-//     перезакрепляла на каждом scroll-событии в 24px от низа и боролась с
-//     отлипом колесом → «баганый» скролл.
+//     низа (dist < 8px).
 //   • Плюс явный pin(): отправка запроса, кнопка «вниз», смена чата.
+//     pin(instant=true) — мгновенный прыжок (смена чата, первая загрузка),
+//     работает даже без стрима.
 //
 // Защита от ложного отлипа при СЖАТИИ контента: если scrollHeight уменьшился
 // (схлопнулся шаг/картинка), Chromium клампит scrollTop вниз и стреляет
@@ -32,6 +31,8 @@ export interface UseChatAutoscrollOptions {
   scrollContainerRef: React.RefObject<HTMLDivElement | null>
   /** Доп. логика в rAF-throttled scroll-хендлере (догрузка старых у верха). */
   onScrollExtra?: () => void
+  /** Идёт ли стриминг ответа. Loop работает ТОЛЬКО когда true → 0% CPU в idle. */
+  isStreaming?: boolean
 }
 
 export interface ChatAutoscroll {
@@ -63,7 +64,7 @@ export interface ChatAutoscroll {
   handleTouchMove: (e: React.TouchEvent<HTMLDivElement>) => void
 }
 
-export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChatAutoscrollOptions): ChatAutoscroll {
+export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreaming = false }: UseChatAutoscrollOptions): ChatAutoscroll {
   const pinnedRef = useRef(true)
   const [showScrollDownBtn, setShowScrollDownBtn] = useState(false)
 
@@ -72,20 +73,19 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChat
   const lastScrollTopRef = useRef(0)
   const lastScrollHeightRef = useRef(0)
   const touchYRef = useRef<number | null>(null)
+  const isStreamingRef = useRef(isStreaming)
 
   // Свежая ссылка на onScrollExtra без пересоздания handleScroll.
-  // Запись в ref — только в эффекте (правило React Compiler).
   const onScrollExtraRef = useRef(onScrollExtra)
   useEffect(() => { onScrollExtraRef.current = onScrollExtra })
 
-  // rAF-loop догона: живёт пока pinned. Каждый кадр — плавный шаг к низу.
-  // tick в ref: loop самоперезапускается через rAF, а React Compiler
-  // запрещает самоссылку useCallback — ref-обёртка снимает проблему.
+  // rAF-loop догона: работает ТОЛЬКО когда isStreaming=true AND pinned.
+  // Не стримит → loop мёртв → 0% CPU. Стримит → плавный доскролл.
   const tickRef = useRef<() => void>(() => {})
   useEffect(() => {
     tickRef.current = () => {
       rafRef.current = null
-      if (!pinnedRef.current) return // отлип — loop умирает
+      if (!pinnedRef.current || !isStreamingRef.current) return
       const el = scrollContainerRef.current
       if (!el) return
       const target = el.scrollHeight - el.clientHeight
@@ -94,44 +94,45 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChat
       if (diff > 0.5) {
         const step = Math.min(Math.max(diff * SMOOTH_FACTOR, MIN_STEP), MAX_STEP, diff)
         el.scrollTop = current + step
-        // Наши записи только увеличивают scrollTop — синхронизируем refs,
-        // чтобы handleScroll не считал это пользовательским событием.
         lastScrollTopRef.current = el.scrollTop
         lastScrollHeightRef.current = el.scrollHeight
-        // Контент ещё растёт/не догнали — планируем следующий кадр.
-        rafRef.current = requestAnimationFrame(() => tickRef.current())
       }
-      // diff <= 0.5 → loop ОСТАНАВЛИВАЕТСЯ. ResizeObserver перезапустит
-      // при росте контента (стриминг, тулы, mermaid-ресайз).
+      rafRef.current = requestAnimationFrame(() => tickRef.current())
     }
   }, [scrollContainerRef])
 
   const ensureLoop = useCallback(() => {
-    if (rafRef.current === null) rafRef.current = requestAnimationFrame(() => tickRef.current())
+    // Loop запускается только если стримит. Не стримит — мгновенный прыжок
+    // в pin(instant=true) уже сделал свою работу, loop не нужен.
+    if (rafRef.current === null && isStreamingRef.current) {
+      rafRef.current = requestAnimationFrame(() => tickRef.current())
+    }
   }, [])
 
-  // Loop при монтировании (pinned стартует true) + очистка при размонтировании.
+  // Старт/стоп loop при смене isStreaming.
   useEffect(() => {
-    ensureLoop()
-    // ResizeObserver: перезапускает rAF-loop когда контент растёт.
-    // Заменяет постоянный 60fps polling — loop работает только при изменениях.
-    const el = scrollContainerRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      if (pinnedRef.current) ensureLoop()
-    })
-    // Наблюдаем за внутренним контейнером (контент растёт → его высота меняется).
-    // firstElementChild — обычно inner wrapper; если нет — наблюдаем сам el.
-    const content = el.firstElementChild ?? el
-    ro.observe(content)
-    return () => {
-      ro.disconnect()
+    isStreamingRef.current = isStreaming
+    if (isStreaming && pinnedRef.current) {
+      ensureLoop()
+    } else if (!isStreaming) {
+      // Стрим закончился — убиваем loop. Финальный pin(instant=true)
+      // из ChatPage (при isTyping false→true transition) делает прыжок.
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current)
         rafRef.current = null
       }
     }
-  }, [ensureLoop, scrollContainerRef])
+  }, [isStreaming, ensureLoop])
+
+  // Очистка при размонтировании.
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [])
 
   const scrollToBottomInstant = useCallback(() => {
     const el = scrollContainerRef.current
@@ -151,7 +152,10 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChat
   const pin = useCallback((instant = false) => {
     pinnedRef.current = true
     setShowScrollDownBtn(false)
-    if (instant) scrollToBottomInstant()
+    // instant=true — мгновенный прыжок (смена чата, отправка, первая загрузка).
+    // Не стримит — тоже мгновенный прыжок: rAF-loop догона мёртв в idle
+    // (оптимизация 0% CPU), поэтому кнопка «вниз» без этого не двигала скролл.
+    if (instant || !isStreamingRef.current) scrollToBottomInstant()
     ensureLoop()
   }, [ensureLoop, scrollToBottomInstant])
 

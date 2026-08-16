@@ -6,20 +6,16 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'edit_file',
-      description: 'Edit a file. You MUST read the file with read_file before calling edit_file — the SEARCH block must match the actual file content. apply_patch — search/replace blocks (Codex-style, supports multiple edits, fuzzy matching and replace_all). insert — insert after a line. overwrite — replace the whole file. create_if_not_exists=true creates the file and directories. Returns a diff.',
+      description: 'Edit a file. You MUST read the file with read_file before calling edit_file — old_str must match the actual file content. Pass old_str (exact text to find) and new_str (replacement text) — the tool finds old_str in the file and replaces it with new_str. Fuzzy-matches whitespace/indentation differences. If old_str appears multiple times, add more surrounding lines to make it unique. create_if_not_exists=true creates the file and directories. Returns a diff.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Path to the file' },
-          mode: { type: 'string', enum: ['apply_patch', 'insert', 'overwrite'], description: 'Edit mode', default: 'apply_patch' },
-          after_line: { type: 'number', description: '[insert] Insert after this line (1-indexed)' },
-          content: { type: 'string', description: '[insert/overwrite] Content to insert or overwrite' },
-          patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one occurrence (or all if replace_all=true). Fuzzy-matches by ignoring leading whitespace. Example:\n<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE' },
-          replace_all: { type: 'boolean', description: '[apply_patch] Replace ALL occurrences of each SEARCH block (default: false = first occurrence only)' },
+          old_str: { type: 'string', description: 'The exact text to find in the file. Copy it from read_file output. Must match exactly (including whitespace and indentation). If found multiple times, add more surrounding lines to make it unique.' },
+          new_str: { type: 'string', description: 'The text to replace old_str with. Must be different from old_str. Pass empty string "" to delete old_str.' },
           create_if_not_exists: { type: 'boolean', description: 'Создать файл (и директории) если не существует' },
-          confirm_overwrite: { type: 'boolean', description: '[overwrite] Set to true to confirm a destructive overwrite (when >90% of lines are removed). Required when overwrite would drastically shrink the file.' },
         },
-        required: ['path', 'mode'],
+        required: ['path', 'old_str', 'new_str'],
       },
     },
   },
@@ -75,7 +71,7 @@ export const TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: 'CREATE a new file from scratch. If the file already exists — use edit_file (mode=apply_patch/insert/overwrite) for edits, or pass force=true to overwrite (useful for restoring a corrupted file). Returns a diff.',
+      description: 'CREATE a new file from scratch. If the file already exists — use edit_file (old_str/new_str) for edits, or pass force=true to overwrite (useful for restoring a corrupted file). Returns a diff.',
       parameters: {
         type: 'object',
         properties: {

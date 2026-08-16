@@ -188,6 +188,19 @@ export default function AnimatedBackground() {
     window.addEventListener('scroll', markScroll, { capture: true, passive: true })
     window.addEventListener('touchmove', markScroll, { capture: true, passive: true })
 
+    // ── Idle pause: 30с без мыши/скролла → stop(). Возобновить при mousemove.
+    // В открытом idle анимация крутится 8fps — это ~0.3% CPU. С idle pause
+    // — 0% пока пользователь не двигает мышью. Движение фоновых частиц
+    // незаметно когда не взаимодействуешь с окном.
+    const IDLE_TIMEOUT = 30_000
+    let idleTimer: ReturnType<typeof setTimeout> | null = null
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => { stop(); idleTimer = null }, IDLE_TIMEOUT)
+    }
+    window.addEventListener('mousemove', resetIdle, { passive: true })
+    resetIdle()
+
     const draw = (now: number) => {
       if (!running) return
       // Пауза при скролле — пропускаем кадр, но планируем следующий.
@@ -438,6 +451,7 @@ export default function AnimatedBackground() {
       running = true
       lastTime = 0
       animId = window.setTimeout(() => draw(performance.now()), FRAME_MS) as unknown as number
+      resetIdle()
     }
     const stop = () => {
       running = false
@@ -462,10 +476,12 @@ export default function AnimatedBackground() {
 
     return () => {
       stop()
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('resize', onResize)
+      window.removeEventListener('mousemove', resetIdle)
       window.removeEventListener('wheel', markScroll, { capture: true } as EventListenerOptions)
       window.removeEventListener('scroll', markScroll, { capture: true } as EventListenerOptions)
       window.removeEventListener('touchmove', markScroll, { capture: true } as EventListenerOptions)
