@@ -823,7 +823,12 @@ export class AIClient {
     let attempt = 0
     let retried401 = false
     const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
+    const VISION_STREAM_TIMEOUT_MS = 60_000 // 60с — таймаут на стрим vision-модели
     while (attempt <= this.maxRetries) {
+      // AbortController для таймаута стрима — если провайдер держит соединение,
+      // но не шлёт данные, прерываем через 60с вместо бесконечного ожидания.
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), VISION_STREAM_TIMEOUT_MS)
       try {
         const stream = await client.chat.completions.create({
           model,
@@ -832,16 +837,23 @@ export class AIClient {
             { type: 'text', text: prompt },
           ]}],
           stream: true, max_tokens: 4096, temperature: 0,
-        })
+        }, { signal: controller.signal })
         let fullText = ''
         for await (const chunk of stream) {
           const token = chunk.choices[0]?.delta?.content || ''
           if (token) { fullText += token; callbacks.onToken(token) }
         }
+        clearTimeout(timeoutId)
         callbacks.onDone(fullText)
         return
       } catch (err: unknown) {
-        const error = err as { status?: number }
+        clearTimeout(timeoutId)
+        const error = err as { status?: number; name?: string }
+        // AbortError — таймаут стрима
+        if (error?.name === 'AbortError' || (err as Error)?.message?.includes('abort')) {
+          callbacks.onError(new Error(`Vision stream timeout (${VISION_STREAM_TIMEOUT_MS / 1000}s) — провайдер не отвечает.`))
+          return
+        }
         if (error?.status === 429) {
           const delay = backoffDelay(attempt)
           callbacks.onRateLimit?.(Math.round(delay / 1000))
