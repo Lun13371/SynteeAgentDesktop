@@ -230,3 +230,76 @@
 .changes-popup-body::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,0.2);
 }
+
+
+/* ── Live-режим: shimmer + glow ──────────────────────────────────────── */
+
+.changes-badge-pill--live {
+  position: relative;
+  border-color: color-mix(in srgb, #4ade80 50%, transparent);
+  background: color-mix(in srgb, #4ade80 15%, transparent);
+  box-shadow:
+    0 0 12px color-mix(in srgb, #4ade80 30%, transparent),
+    0 0 24px color-mix(in srgb, #4ade80 15%, transparent);
+  animation: changes-badge-live-glow 2s ease-in-out infinite;
+}
+
+@keyframes changes-badge-live-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 12px color-mix(in srgb, #4ade80 25%, transparent),
+      0 0 24px color-mix(in srgb, #4ade80 10%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 18px color-mix(in srgb, #4ade80 45%, transparent),
+      0 0 36px color-mix(in srgb, #4ade80 20%, transparent);
+  }
+}
+
+/* Shimmer-эффект — бегущий блик по бейджу */
+.changes-badge-pill--live::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    color-mix(in srgb, #ffffff 25%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: changes-badge-shimmer 2.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes changes-badge-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Live-индикатор в popup */
+.changes-popup-live-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: #4ade80;
+  border-top: 1px solid var(--border);
+  justify-content: center;
+}
+
+.changes-popup-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ade80;
+  animation: changes-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes changes-dot-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50%      { opacity: 1;   transform: scale(1.2); }
+}

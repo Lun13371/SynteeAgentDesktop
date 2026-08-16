@@ -17,6 +17,7 @@ import LiveTodoBar from '../LiveTodoBar/LiveTodoBar'
 import AppIcon from '../AppIcon/AppIcon'
 import Logo from '../Logo/Logo'
 import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../../store/chat.store'
+import { computeLiveChanges } from '../../../utils/changes'
 import { playDoneSound } from '../../../utils/sounds'
 import { parseSlashCommandWithCustom } from '../../../../../shared/slashCommands'
 // Общие классы чата (chat-main/chat-messages/chat-skeleton/chat-empty-state/
@@ -109,6 +110,9 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const hasOlderMessages = cacheEntry?.hasOlder ?? false
   const live = useChatStore(s => s.liveByChat[chatId]) ?? EMPTY_LIVE
   const lastTurnChanges = useChatStore(s => s.lastTurnChangesByChat[chatId]) ?? null
+  const liveChanges = useMemo(() => computeLiveChanges(live.steps), [live.steps])
+  const badgeChanges = lastTurnChanges ?? (live.isAgentRunning ? liveChanges : null)
+  const badgeLive = live.isAgentRunning && !!liveChanges && !lastTurnChanges
   const chats = useChatStore(s => s.chats)
   const setMessagesWindow = useChatStore(s => s.setMessagesWindow)
   const prependOlderMessages = useChatStore(s => s.prependOlderMessages)
@@ -752,7 +756,8 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
           customCommands={customCommands}
           attachments={draftAttachments}
           onAttachmentsChange={handleAttachmentsChange}
-          lastTurnChanges={lastTurnChanges}
+          lastTurnChanges={badgeChanges}
+          badgeLive={badgeLive}
         />
       </div>
     </main>

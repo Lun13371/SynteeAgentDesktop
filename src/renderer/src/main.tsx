@@ -50,7 +50,7 @@ class RootErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
         <div style={{
           position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', gap: 20,
-          background: '#0e0e12', color: '#fff', fontFamily: 'system-ui, sans-serif',
+          background: '#0e0e12', color: '#fff', fontFamily: 'var(--font-family, system-ui, sans-serif)',
           textAlign: 'center', padding: 24, zIndex: 9999,
         }}>
           <div style={{
@@ -101,6 +101,12 @@ if (!window.syntee) {
       save: () => Promise.resolve(null),
       load: () => Promise.resolve(null),
       clear: () => Promise.resolve(true),
+    },
+    fonts: {
+      import: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      read: () => Promise.resolve(null),
+      delete: () => Promise.resolve(false),
     },
     system: {
       info: () => Promise.resolve({ platform: 'win32', version: '10', appVersion: '0.1.0' }),

@@ -51,6 +51,18 @@ const synteeAPI = {
     saveRemote: (identifier: string, filename: string, title: string) => ipcRenderer.invoke('sound:saveRemote', identifier, filename, title) as Promise<string | null>,
   },
 
+  // Custom fonts — кастомные шрифты в userData/custom-fonts/.
+  // import: сохранить файл шрифта, вернуть custom-fonts:// URL.
+  // list: список установленных шрифтов.
+  // read: прочитать файл как data URL для @font-face инжекта.
+  // delete: удалить шрифт.
+  fonts: {
+    import: (data: Uint8Array, filename: string) => ipcRenderer.invoke('font:import', data, filename) as Promise<string | null>,
+    list: () => ipcRenderer.invoke('font:list') as Promise<{ id: string; name: string; size: number; mtime: number }[]>,
+    read: (id: string) => ipcRenderer.invoke('font:read', id) as Promise<string | null>,
+    delete: (id: string) => ipcRenderer.invoke('font:delete', id) as Promise<boolean>,
+  },
+
   // Syntee-Gateway авторизация и профиль
   auth: {
     // Открыть браузер на consent-странице gateway (deep-link вернёт код обратно).

@@ -20,6 +20,8 @@ export const DEFAULT_SETTINGS = {
   accentColor: '#ffffff',
   language: 'ru',
   fontFamily: 'Inter',
+  fontMono: 'JetBrains Mono',
+  customFonts: [] as { id: string; name: string }[],
   fontSize: 'medium',
   animatedBackground: true,
   animatedBgOpacity: 60,

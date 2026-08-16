@@ -15,6 +15,8 @@ import './ChangesBadge.css'
 interface ChangesBadgeProps {
   chatId: string
   changes: LastTurnChanges
+  /** Live-режим: shimmer/glow анимация, undo скрыт. */
+  live?: boolean
 }
 
 const POPUP_W = 360
@@ -27,7 +29,7 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p
 }
 
-export default function ChangesBadge({ chatId, changes }: ChangesBadgeProps) {
+export default function ChangesBadge({ chatId, changes, live = false }: ChangesBadgeProps) {
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const [dropPos, setDropPos] = useState<{ bottom: number; left: number; width: number } | null>(null)
@@ -38,6 +40,18 @@ export default function ChangesBadge({ chatId, changes }: ChangesBadgeProps) {
   const closeTimer = useRef<number | null>(null)
 
   const { files, totalAdded, totalDeleted } = changes
+
+  // Pop-анимация при изменении счётчиков (live-режим)
+  const prevAdded = useRef(totalAdded)
+  const prevDeleted = useRef(totalDeleted)
+  const [popKey, setPopKey] = useState(0)
+  useEffect(() => {
+    if (prevAdded.current !== totalAdded || prevDeleted.current !== totalDeleted) {
+      prevAdded.current = totalAdded
+      prevDeleted.current = totalDeleted
+      setPopKey(k => k + 1)
+    }
+  }, [totalAdded, totalDeleted])
 
   const computeDropPos = useCallback(() => {
     if (!btnRef.current) return null
@@ -163,7 +177,7 @@ export default function ChangesBadge({ chatId, changes }: ChangesBadgeProps) {
     <div className="changes-badge-wrap">
       <motion.button
         ref={btnRef}
-        className="changes-badge-pill"
+        className={`changes-badge-pill${live ? ' changes-badge-pill--live' : ''}`}
         onClick={handleClick}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
@@ -180,8 +194,20 @@ export default function ChangesBadge({ chatId, changes }: ChangesBadgeProps) {
           <path d="M15 14l3-3 3 3"/>
           <path d="M15 17h6"/>
         </svg>
-        <span className="changes-badge-added">+{totalAdded}</span>
-        <span className="changes-badge-deleted">-{totalDeleted}</span>
+        <motion.span
+          key={`added-${popKey}`}
+          className="changes-badge-added"
+          initial={popKey > 0 ? { scale: 1.6, y: -2 } : false}
+          animate={{ scale: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 700, damping: 12 }}
+        >+{totalAdded}</motion.span>
+        <motion.span
+          key={`deleted-${popKey}`}
+          className="changes-badge-deleted"
+          initial={popKey > 0 ? { scale: 1.6, y: -2 } : false}
+          animate={{ scale: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 700, damping: 12 }}
+        >-{totalDeleted}</motion.span>
         {files.length > 1 && (
           <span className="changes-badge-files">{files.length} файлах</span>
         )}
@@ -225,51 +251,60 @@ export default function ChangesBadge({ chatId, changes }: ChangesBadgeProps) {
                         <span className="changes-popup-stat-added">+{f.added}</span>
                         <span className="changes-popup-stat-deleted">-{f.deleted}</span>
                       </span>
-                      <button
-                        className="changes-popup-undo-btn"
-                        onClick={() => handleUndoFile(f.path)}
-                        disabled={!!undoing}
-                        title="Отменить изменения в этом файле"
-                      >
-                        {undoing === f.path ? (
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
-                            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                          </svg>
-                        ) : (
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M3 7v6h6"/>
-                            <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
-                          </svg>
-                        )}
-                      </button>
+                      {!live && (
+                        <button
+                          className="changes-popup-undo-btn"
+                          onClick={() => handleUndoFile(f.path)}
+                          disabled={!!undoing}
+                          title="Отменить изменения в этом файле"
+                        >
+                          {undoing === f.path ? (
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
+                              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                            </svg>
+                          ) : (
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M3 7v6h6"/>
+                              <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+                            </svg>
+                          )}
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
-              <div className="changes-popup-footer">
-                <button
-                  className="changes-popup-undo-all"
-                  onClick={handleUndoAll}
-                  disabled={!!undoing}
-                >
-                  {undoing === '__all__' ? (
-                    <>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
-                        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                      </svg>
-                      Отмена...
-                    </>
-                  ) : (
-                    <>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M3 7v6h6"/>
-                        <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
-                      </svg>
-                      Отменить все
-                    </>
-                  )}
-                </button>
-              </div>
+              {!live ? (
+                <div className="changes-popup-footer">
+                  <button
+                    className="changes-popup-undo-all"
+                    onClick={handleUndoAll}
+                    disabled={!!undoing}
+                  >
+                    {undoing === '__all__' ? (
+                      <>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
+                          <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                        </svg>
+                        Отмена...
+                      </>
+                    ) : (
+                      <>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M3 7v6h6"/>
+                          <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+                        </svg>
+                        Отменить все
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="changes-popup-live-hint">
+                  <span className="changes-popup-live-dot" />
+                  Изменения появляются в реальном времени
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>,

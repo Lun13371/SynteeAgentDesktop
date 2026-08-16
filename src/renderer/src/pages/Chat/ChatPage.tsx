@@ -28,6 +28,7 @@ import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
 import ChatMinimap from '../../components/ui/ChatMinimap/ChatMinimap'
 import { useSettingsStore } from '../../store/settings.store'
 import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.store'
+import { computeLiveChanges } from '../../utils/changes'
 import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
@@ -140,6 +141,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const live = (useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId] : undefined) ?? EMPTY_LIVE)
   const runStatus = useChatStore(s => s.currentChatId ? s.runStatusByChat[s.currentChatId] : undefined)
   const lastTurnChanges = useChatStore(s => s.currentChatId ? s.lastTurnChangesByChat[s.currentChatId] : null)
+  // Live-изменения: вычисляем из live.steps во время выполнения запроса.
+  // Бейдж показывается сразу при правках файлов, с shimmer/glow анимацией.
+  const liveChanges = useMemo(() => computeLiveChanges(live.steps), [live.steps])
+  const badgeChanges = lastTurnChanges ?? (live.isAgentRunning ? liveChanges : null)
+  const badgeLive = live.isAgentRunning && !!liveChanges && !lastTurnChanges
   const { setChats, setCurrentChat, setMessages, setMessagesWindow, prependOlderMessages,
     setIsLoadingOlder, setHasOlderMessages, addMessage, pinMessage,
     setProjects, setActiveProject, markChatRead } = useChatStore(useShallow(s => ({
@@ -1891,7 +1897,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               customCommands={customCommands}
               attachments={draftAttachments}
               onAttachmentsChange={handleAttachmentsChange}
-              lastTurnChanges={lastTurnChanges}
+              lastTurnChanges={badgeChanges}
+              badgeLive={badgeLive}
             />
           </div>
 

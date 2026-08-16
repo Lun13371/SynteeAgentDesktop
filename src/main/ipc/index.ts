@@ -341,6 +341,99 @@ function registerSettingsIPC({ store }: IPCContext): void {
       return null
     }
   })
+
+  // ── Custom font persistence ───────────────────────────────────
+  // Кастомные шрифты хранятся как файлы в userData/custom-fonts/.
+  // Схема как bg-images/sounds: file:// URL для @font-face инжекта.
+  // Поддерживаемые форматы: .woff2, .woff, .ttf, .otf.
+  const fontDir = join(app.getPath('userData'), 'custom-fonts')
+
+  function safeFontPath(filename: string): string | null {
+    if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+      return null
+    }
+    const filepath = join(fontDir, filename)
+    if (!filepath.startsWith(fontDir)) return null
+    return filepath
+  }
+
+  // Разрешённые расширения шрифтов
+  const FONT_EXTS = ['woff2', 'woff', 'ttf', 'otf']
+  function fontExt(filename: string): string {
+    return (filename.split('.').pop() || '').toLowerCase()
+  }
+
+  ipcMain.handle('font:import', async (_, data: Uint8Array, filename: string) => {
+    try {
+      const ext = fontExt(filename)
+      if (!FONT_EXTS.includes(ext)) return null
+      if (!existsSync(fontDir)) mkdirSync(fontDir, { recursive: true })
+      // Sanitize filename: убираем путь, оставляем имя + расширение
+      const safeName = filename.replace(/[^a-zA-Z0-9а-яА-Я._-]/g, '_').slice(0, 60)
+      const finalName = `${Date.now()}-${safeName}`
+      const filepath = join(fontDir, finalName)
+      writeFileSync(filepath, Buffer.from(data))
+      return `custom-fonts://${finalName}`
+    } catch (e) {
+      console.error('[font:import]', e)
+      return null
+    }
+  })
+
+  ipcMain.handle('font:list', async () => {
+    try {
+      if (!existsSync(fontDir)) return []
+      return readdirSync(fontDir)
+        .filter(f => !f.startsWith('.') && FONT_EXTS.includes(fontExt(f)))
+        .map(f => {
+          const filepath = join(fontDir, f)
+          let size = 0, mtime = 0
+          try { const st = statSync(filepath); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
+          return { id: `custom-fonts://${f}`, name: f, size, mtime }
+        })
+        .sort((a, b) => b.mtime - a.mtime)
+    } catch (e) {
+      console.error('[font:list]', e)
+      return []
+    }
+  })
+
+  ipcMain.handle('font:delete', async (_, id: string) => {
+    try {
+      if (!id || !id.startsWith('custom-fonts://')) return false
+      const filename = id.replace('custom-fonts://', '')
+      const filepath = safeFontPath(filename)
+      if (!filepath || !existsSync(filepath)) return false
+      unlinkSync(filepath)
+      return true
+    } catch (e) {
+      console.error('[font:delete]', e)
+      return false
+    }
+  })
+
+  // Читает файл шрифта и возвращает как data URL для @font-face инжекта
+  ipcMain.handle('font:read', async (_, id: string) => {
+    if (!id || !id.startsWith('custom-fonts://')) return null
+    try {
+      const filename = id.replace('custom-fonts://', '')
+      const filepath = safeFontPath(filename)
+      if (!filepath || !existsSync(filepath)) return null
+      const buf = readFileSync(filepath)
+      const base64 = buf.toString('base64')
+      const ext = fontExt(filename)
+      const mime = ext === 'woff2' ? 'font/woff2'
+        : ext === 'woff' ? 'font/woff'
+        : ext === 'ttf' ? 'font/ttf'
+        : ext === 'otf' ? 'font/otf'
+        : 'font/woff2'
+      return `data:${mime};base64,${base64}`
+    } catch (e) {
+      console.error('[font:read]', e)
+      return null
+    }
+  })
+
 }
 
 function registerSystemIPC(_ctx: IPCContext): void {
