@@ -8,6 +8,7 @@ export class SpotlightWindow {
   private isVisible = false
 
   create(): BrowserWindow {
+    if (this.win) return this.win // idempotent — lazy creation
     const primary = screen.getPrimaryDisplay()
     const { width: sw, height: sh, y: waY } = primary.workArea
     const { width: ww, height: wh } = WINDOW_SIZES.spotlight
@@ -53,6 +54,7 @@ export class SpotlightWindow {
   }
 
   show(quickMode = false): void {
+    if (!this.win) this.create() // lazy creation on first show
     if (!this.win) return
     this.win.webContents.send('spotlight:mode', quickMode ? 'quick' : 'normal')
     // Сначала показываем окно, потом центрируем. На Windows setPosition/

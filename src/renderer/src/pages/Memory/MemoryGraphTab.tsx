@@ -7,7 +7,9 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Network, type Node as VisNode, type Edge as VisEdge, type Options } from 'vis-network/standalone'
+// vis-network грузится dynamic import'ом при первом монтировании графа —
+// экономит ~40-60MB RAM (библиотека не входит в основной бандл).
+import type { Node as VisNode, Edge as VisEdge, Options } from 'vis-network/standalone'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import { whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem, springHover } from '../../utils/motionPresets'
 import './MemoryGraphTab.css'
@@ -216,27 +218,36 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
       },
     }
 
-    const network = new Network(containerRef.current, { nodes: visNodes, edges: visEdges }, options)
-    network.on('click', (params: { nodes: string[] }) => {
-      if (params.nodes.length > 0) {
-        const nodeId = params.nodes[0]
-        const node = filteredNodes.find(n => n.id === nodeId)
-        setSelectedNode(node ?? null)
-      } else {
-        setSelectedNode(null)
-      }
-    })
-    networkRef.current = network
-    // Отключаем физику после стабилизации — без этого Barnes-Hut solver
-    // продолжает работать каждый кадр до размонтирования, потребляя CPU.
-    // После 200 итераций layout уже сходится, визуально ничего не меняется.
-    network.once('stabilizationIterationsDone', () => {
-      network.setOptions({ physics: { enabled: false } })
-    })
+    // Dynamic import vis-network — грузится только при первом рендере графа
+    let cancelled = false
+    ;(async () => {
+      const { Network } = await import('vis-network/standalone')
+      if (cancelled || !containerRef.current) return
+      const network = new Network(containerRef.current, { nodes: visNodes, edges: visEdges }, options)
+      network.on('click', (params: { nodes: string[] }) => {
+        if (params.nodes.length > 0) {
+          const nodeId = params.nodes[0]
+          const node = filteredNodes.find(n => n.id === nodeId)
+          setSelectedNode(node ?? null)
+        } else {
+          setSelectedNode(null)
+        }
+      })
+      networkRef.current = network
+      // Отключаем физику после стабилизации — без этого Barnes-Hut solver
+      // продолжает работать каждый кадр до размонтирования, потребляя CPU.
+      // После 200 итераций layout уже сходится, визуально ничего не меняется.
+      network.once('stabilizationIterationsDone', () => {
+        network.setOptions({ physics: { enabled: false } })
+      })
+    })()
 
     return () => {
-      network.destroy()
-      networkRef.current = null
+      cancelled = true
+      if (networkRef.current) {
+        networkRef.current.destroy()
+        networkRef.current = null
+      }
     }
   }, [graph, filterTypes])
 

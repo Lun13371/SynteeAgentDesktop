@@ -88,6 +88,11 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
     CREATE INDEX IF NOT EXISTS idx_memory_category ON memory(category);
     CREATE INDEX IF NOT EXISTS idx_clipboard_created ON clipboard_history(created_at);
+    -- Composite index для cursor-based пагинации (getMessagesPage):
+    -- WHERE chat_id=? AND (created_at < ? OR (created_at = ? AND id < ?))
+    -- ORDER BY created_at DESC, id DESC
+    -- Без этого индекса SQLite делает full scan по chat_id + filesort.
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_cursor ON messages(chat_id, created_at DESC, id DESC);
   `)
 
   // Миграция: добавляем tool_steps если колонки нет

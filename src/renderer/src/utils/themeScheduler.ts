@@ -38,6 +38,10 @@ export function startThemeScheduler(
     onTheme(target, custom)
   }
   tick()
-  const id = window.setInterval(tick, 60_000)
+  const id = window.setInterval(() => {
+    // Не тикаем когда окно свёрнуто — тема переключится при возврате.
+    if (document.hidden) return
+    tick()
+  }, 60_000)
   return () => clearInterval(id)
 }

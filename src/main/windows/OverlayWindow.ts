@@ -6,6 +6,7 @@ export class OverlayWindow {
   private win: BrowserWindow | null = null
 
   create(): BrowserWindow {
+    if (this.win) return this.win // idempotent — lazy creation
     const { x, y, width, height } = this.getTotalBounds()
 
     this.win = new BrowserWindow({
@@ -48,13 +49,15 @@ export class OverlayWindow {
   }
 
   show(): void {
+    if (!this.win) this.create() // lazy creation on first show
     if (!this.win) return
     this.win.show()
     this.win.focus()
   }
 
   hide(): void {
-    this.win?.hide()
+    if (!this.win) return
+    this.win.hide()
   }
 
   getDisplaysInfo() {

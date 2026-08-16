@@ -23,7 +23,7 @@ import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
 import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
-import { registerVoiceIPC, prewarmWhisper } from './ipc/voice.ipc'
+import { registerVoiceIPC } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerNotesIPC } from './ipc/notes.ipc'
@@ -140,9 +140,8 @@ app.whenReady().then(async () => {
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerVoiceIPC(store, () => mainWindow.getWindow())
-  // Прогрев локального Whisper в фоне: модель (~40MB для tiny) скачивается
-  // сразу при старте, чтобы первый клик микрофона не висел на скачивании.
-  prewarmWhisper(store)
+  // Whisper worker создаётся лениво при первом voice:transcribe —
+  // не держим ~40-80MB ONNX-модели в памяти с момента старта.
   registerAgentIPC(store, () => mainWindow.getWindow())
   registerMemoryIPC(store)
   registerNotesIPC(() => mainWindow.getWindow())
@@ -204,11 +203,10 @@ app.whenReady().then(async () => {
 
 
   // ── Загрузка контента в окна (теперь IPC-хендлеры готовы) ──────────
+  // Только главное окно создаётся при старте. Вспомогательные окна
+  // (overlay/voice/spotlight/trayMenu) создаются лениво при первом
+  // show() — это экономит ~4 renderer-процесса и сотни МБ RAM в фоне.
   const main = mainWindow.create()
-  overlayWindow.create()
-  voiceWindow.create()
-  spotlightWindow.create()
-  trayMenuWindow.create()
 
   // MCP: фиксируем sender + прогреваем глобальные серверы (нужно окно).
   mcpManager.setWindow(mainWindow.getWindow())

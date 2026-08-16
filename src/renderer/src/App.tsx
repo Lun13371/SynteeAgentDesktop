@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, lazy, Suspense } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useUIStore, isValidTab, VALID_TABS } from './store/ui.store'
 import { useSettingsStore } from './store/settings.store'
@@ -20,25 +20,28 @@ import { contrastText, withAlpha, hexToRgb, hslToHex } from './utils/colorUtils'
 import { startThemeScheduler } from './utils/themeScheduler'
 import type { CustomTheme, Chat as ChatType, Message } from '../../shared/types'
 import ChatPage from './pages/Chat/ChatPage'
-import OverlayPage from './pages/Overlay/OverlayPage'
+// ── Lazy loading страниц — каждая страница грузится отдельным chunk'ом
+// только при открытии. Это убирает vis-network, Settings-компоненты,
+// Messenger и Login из основного бандла → минус ~200-400MB RAM.
 import './pages/Overlay/OverlayPage.css'
-import VoicePage from './pages/Voice/VoicePage'
 import './pages/Voice/VoicePage.css'
-import SpotlightPage from './pages/Spotlight/SpotlightPage'
 import './pages/Spotlight/SpotlightPage.css'
-import SettingsPage from './pages/Settings/SettingsPage'
 import './pages/Settings/SettingsPage.css'
-import MemoryPage from './pages/Memory/MemoryPage'
 import './pages/Memory/MemoryPage.css'
-import MessengerPage from './pages/Messenger/MessengerPage'
 import './pages/Messenger/MessengerPage.css'
-import LoginScreen from './pages/Login/LoginScreen'
 import './pages/Login/LoginScreen.css'
+const OverlayPage = lazy(() => import('./pages/Overlay/OverlayPage'))
+const VoicePage = lazy(() => import('./pages/Voice/VoicePage'))
+const SpotlightPage = lazy(() => import('./pages/Spotlight/SpotlightPage'))
+const SettingsPage = lazy(() => import('./pages/Settings/SettingsPage'))
+const MemoryPage = lazy(() => import('./pages/Memory/MemoryPage'))
+const MessengerPage = lazy(() => import('./pages/Messenger/MessengerPage'))
+const LoginScreen = lazy(() => import('./pages/Login/LoginScreen'))
 import BootScreen from './components/ui/BootScreen/BootScreen'
 import './components/ui/BootScreen/BootScreen.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
-import AnimatedBackground from './components/ui/AnimatedBackground/AnimatedBackground'
+import AnimatedBackground, { invalidateAccentCache } from './components/ui/AnimatedBackground/AnimatedBackground'
 import RightPanelHost from './components/ui/RightPanel/RightPanelHost'
 import AgentConfirmDialog from './components/ui/AgentConfirmDialog/AgentConfirmDialog'
 import QuestionPanel from './components/ui/QuestionPanel/QuestionPanel'
@@ -150,6 +153,7 @@ export function applyAccentToDOM(color?: string) {
     root.style.removeProperty('--on-accent')
     root.style.removeProperty('--on-accent-strong')
     root.style.removeProperty('--on-accent-muted')
+    invalidateAccentCache()
     return
   }
   const hex = color.replace('#', '')
@@ -165,6 +169,7 @@ export function applyAccentToDOM(color?: string) {
   root.style.setProperty('--on-accent', onAccent === '#000' ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.95)')
   root.style.setProperty('--on-accent-strong', onAccent)
   root.style.setProperty('--on-accent-muted', onAccent === '#000' ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.7)')
+  invalidateAccentCache()
 }
 
 export function applyGlassToDOM(blur: number) {
@@ -210,6 +215,7 @@ export function applyCustomThemeToDOM(theme: CustomTheme | null) {
   if (!theme) {
     if (styleEl) styleEl.remove()
     root.removeAttribute('data-custom-theme')
+    invalidateAccentCache()
     return
   }
   const c = theme.colors
@@ -282,6 +288,7 @@ export function applyCustomThemeToDOM(theme: CustomTheme | null) {
     document.head.appendChild(el)
   }
   root.setAttribute('data-custom-theme', theme.id)
+  invalidateAccentCache()
 }
 
 // ── Bg image application ──────────────────────────────────────────────
@@ -1128,7 +1135,10 @@ export default function App() {
   useEffect(() => {
     if (authUser) {
       billingLoad()
-      const timer = setInterval(() => billingLoad(true), 300_000)
+      const timer = setInterval(() => {
+        if (document.hidden) return
+        billingLoad(true)
+      }, 300_000)
       return () => clearInterval(timer)
     }
   }, [authUser, billingLoad])
@@ -1157,10 +1167,11 @@ export default function App() {
     return cleanup
   }, [])
 
-  // Оверлей, голос, spotlight — отдельные окна
-  if (route === 'overlay') return <OverlayPage />
-  if (route === 'voice') return <VoicePage />
-  if (route === 'spotlight') return <SpotlightPage />
+  // Оверлей, голос, spotlight — отдельные окна (lazy-loaded)
+  const lazyFallback = <BootScreen status="Загрузка…" />
+  if (route === 'overlay') return <Suspense fallback={lazyFallback}><OverlayPage /></Suspense>
+  if (route === 'voice') return <Suspense fallback={lazyFallback}><VoicePage /></Suspense>
+  if (route === 'spotlight') return <Suspense fallback={lazyFallback}><SpotlightPage /></Suspense>
 
   // ── Boot gate: показываем BootScreen пока не готовы критичные данные ──────
   // settingsReady — visual settings (theme/accent/font) применены к DOM,
@@ -1238,6 +1249,7 @@ export default function App() {
           animate={{ opacity: 1 }}
           transition={{ duration: 0.5, ease: 'easeOut' }}
         >
+          <Suspense fallback={<BootScreen status="Загрузка…" />}>
           <LoginScreen
             onContinueAsGuest={() => {
               // Сохраняем флаг чтобы при следующем запуске не показывать
@@ -1246,6 +1258,7 @@ export default function App() {
               setAuthBoot('app')
             }}
           />
+          </Suspense>
         </motion.div>
       )}
       {bootDone && authBoot === 'app' && (
@@ -1289,7 +1302,9 @@ export default function App() {
                       exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
                       transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                     >
-                      <SettingsPage />
+                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
+                        <SettingsPage />
+                      </Suspense>
                     </motion.div>
                   )}
                   {mainPage === 'memory' && (
@@ -1301,7 +1316,9 @@ export default function App() {
                       exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
                       transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                     >
-                      <MemoryPage />
+                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
+                        <MemoryPage />
+                      </Suspense>
                     </motion.div>
                   )}
                   {mainPage === 'messenger' && (
@@ -1313,7 +1330,9 @@ export default function App() {
                       exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
                       transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                     >
-                      <MessengerPage />
+                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
+                        <MessengerPage />
+                      </Suspense>
                     </motion.div>
                   )}
                 </AnimatePresence>

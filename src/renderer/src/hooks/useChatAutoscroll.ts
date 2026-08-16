@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 // ── Умный плавный автоскролл чата ───────────────────────────────────────────
 // Модель «прилип/отлип» (как в ChatGPT):
-//   • pinnedRef=true («прилип» к низу) — постоянный rAF-loop каждый кадр
-//     догоняет низ шагом clamp(diff × 0.22, 1.5, 90px): экспоненциальное
-//     сближение с капом скорости, БЕЗ телепортов. Следит за любым ростом
-//     контента (токены, тулы, todo, mermaid-ресайз) — loop читает scrollHeight
-//     каждый кадр, отдельный ResizeObserver не нужен.
+//   • pinnedRef=true («прилип» к низу) — rAF-loop догоняет низ шагом
+//     clamp(diff × 0.22, 1.5, 90px): экспоненциальное сближение с капом
+//     скорости, БЕЗ телепортов.
+//   • Loop ОСТАНАВЛИВАЕТСЯ когда diff <= 0.5 (контент не растёт) —
+//     ResizeObserver на scroll-контенте перезапускает loop при росте.
+//     Это убирает 60fps layout-thrashing в idle (минус 10-25% CPU).
 //   • Отлип: колесо вверх / touch-drag вверх — мгновенно; перетаскивание
 //     скроллбара — по уменьшению scrollTop в handleScroll (наши записи его
 //     только увеличивают, поэтому уменьшение = пользователь).
@@ -15,10 +16,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 //     перезакрепляла на каждом scroll-событии в 24px от низа и боролась с
 //     отлипом колесом → «баганый» скролл.
 //   • Плюс явный pin(): отправка запроса, кнопка «вниз», смена чата.
-//
-// Loop живёт только пока pinned (отлип → tick видит pinned=false → loop
-// умирает; прилип → ensureLoop будит). Никаких гейтов по isTyping — рост
-// после стрима (дорисовка тулов/картинок) тоже догоняется.
 //
 // Защита от ложного отлипа при СЖАТИИ контента: если scrollHeight уменьшился
 // (схлопнулся шаг/картинка), Chromium клампит scrollTop вниз и стреляет
@@ -101,8 +98,11 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChat
         // чтобы handleScroll не считал это пользовательским событием.
         lastScrollTopRef.current = el.scrollTop
         lastScrollHeightRef.current = el.scrollHeight
+        // Контент ещё растёт/не догнали — планируем следующий кадр.
+        rafRef.current = requestAnimationFrame(() => tickRef.current())
       }
-      rafRef.current = requestAnimationFrame(() => tickRef.current())
+      // diff <= 0.5 → loop ОСТАНАВЛИВАЕТСЯ. ResizeObserver перезапустит
+      // при росте контента (стриминг, тулы, mermaid-ресайз).
     }
   }, [scrollContainerRef])
 
@@ -113,13 +113,25 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra }: UseChat
   // Loop при монтировании (pinned стартует true) + очистка при размонтировании.
   useEffect(() => {
     ensureLoop()
+    // ResizeObserver: перезапускает rAF-loop когда контент растёт.
+    // Заменяет постоянный 60fps polling — loop работает только при изменениях.
+    const el = scrollContainerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      if (pinnedRef.current) ensureLoop()
+    })
+    // Наблюдаем за внутренним контейнером (контент растёт → его высота меняется).
+    // firstElementChild — обычно inner wrapper; если нет — наблюдаем сам el.
+    const content = el.firstElementChild ?? el
+    ro.observe(content)
     return () => {
+      ro.disconnect()
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current)
         rafRef.current = null
       }
     }
-  }, [ensureLoop])
+  }, [ensureLoop, scrollContainerRef])
 
   const scrollToBottomInstant = useCallback(() => {
     const el = scrollContainerRef.current

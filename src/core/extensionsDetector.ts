@@ -31,8 +31,9 @@ let _pollTimer: NodeJS.Timeout | null = null
 let _mcpHash: string | ''
 let _skillsHash: string = ''
 
-/** Интервал polling — 2с. Быстро для UX, дёшево для CPU (один stat+hash). */
-const POLL_INTERVAL_MS = 2000
+/** Интервал polling — 5с. Достаточно быстро для UX (onboarding-флоу),
+ * дёшево для CPU (один stat+hash). 2с было слишком агрессивно для idle. */
+const POLL_INTERVAL_MS = 5000
 
 /** Установить getter окна для push-ивентов в renderer. */
 export function initExtensionsDetector(getWindow: () => BrowserWindow | null): void {
@@ -84,6 +85,10 @@ function skillsDirHash(dir: string): string {
 /** Один scan-цикл: сравнить хэши, при изменении дернуть менеджеры. */
 function scanOnce(): void {
   if (!_workdir || !_projectId) return
+  // Пауза когда главное окно скрыто — экономит FS-stat'ы в фоне.
+  // При возврате окна следующий тик обновит состояние.
+  const win = _getWindow?.()
+  if (win && !win.isDestroyed() && !win.isVisible()) return
   const mcpJsonPath = join(_workdir, '.mcp.json')
   const skillsDir = join(_workdir, '.syntee', 'skills')
 

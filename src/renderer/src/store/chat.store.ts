@@ -181,6 +181,13 @@ interface ChatStore {
   setActiveRun: (chatId: string, meta: QueueItemMeta | null) => void
   setLastTurnChanges: (chatId: string, changes: LastTurnChanges | null) => void
 
+  // ── Prune stale per-chat state ──────────────────────────────────────
+  // Удаляет liveByChat/activeRunByChat записи для неактивных, не-running
+  // чатов. Вызывается из setRunStatus при терминальном статусе — момент,
+  // когда чат гарантированно закончил работу. Оставляет currentChatId и
+  // чаты со статусом running/queued.
+  pruneStaleChatState: () => void
+
   // ── Side chat (параллельный доп-чат) ──
   sideChatByChat: Record<string, SideChatState>
   addSideMessage: (parentId: string, message: Message) => void
@@ -210,14 +217,14 @@ interface ChatStore {
 
 // LRU-кеш окон сообщений: максимум хранимых чатов. Большие чаты в кеше —
 // это массивы Message[]; капа удерживает память в рамках пары десятков МБ.
-const MSG_CACHE_CAP = 8
+const MSG_CACHE_CAP = 4
 
 // Порог «большого чата»: чаты с messageCount > порога НЕ догружаются тихим
 // фоном целиком (рисково по памяти/перформансу на 10k+). Для них остаётся
 // старый reverse-infinite scroll по требованию (со спиннером сверху). Чаты
 // меньше порога грузятся полностью в фоне — минимапа стабильна, спиннер
 // не показывается никогда. См. хук useBackgroundLoadFullChat.
-export const LARGE_CHAT_THRESHOLD = 500
+export const LARGE_CHAT_THRESHOLD = 200
 
 /** Селектор: является ли чат «большим» (по messageCount из списка chats).
  *  messageCount приходит из БД (COUNT(*)) при загрузке списка чатов. */
@@ -414,14 +421,39 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // Для терминальных статусов — помечаем как unread (бейдж в сайдбаре).
       // Для running/queued — просто обновляем runStatus (spinner).
       const isTerminal = TERMINAL_RUN_STATUSES.includes(status)
+      if (!isTerminal) {
+        return {
+          runStatusByChat: {
+            ...s.runStatusByChat,
+            [chatId]: nextRunStatus,
+          },
+        }
+      }
+      // Терминальный статус — заодно чистим stale live-состояние чужих чатов.
+      const cur = s.currentChatId
+      const split = s.splitChatId
+      const nextLive = { ...s.liveByChat }
+      const nextActive = { ...s.activeRunByChat }
+      for (const id of Object.keys(nextLive)) {
+        if (id === cur || id === split || id === chatId) continue
+        const rs = s.runStatusByChat[id]
+        if (rs && (rs.status === 'running' || rs.status === 'queued')) continue
+        delete nextLive[id]
+      }
+      for (const id of Object.keys(nextActive)) {
+        if (id === cur || id === chatId) continue
+        const rs = s.runStatusByChat[id]
+        if (rs && (rs.status === 'running' || rs.status === 'queued')) continue
+        delete nextActive[id]
+      }
       return {
         runStatusByChat: {
           ...s.runStatusByChat,
           [chatId]: nextRunStatus,
         },
-        unreadStatusByChat: isTerminal
-          ? { ...s.unreadStatusByChat, [chatId]: status }
-          : s.unreadStatusByChat,
+        unreadStatusByChat: { ...s.unreadStatusByChat, [chatId]: status },
+        liveByChat: nextLive,
+        activeRunByChat: nextActive,
       }
     }),
 
@@ -487,6 +519,33 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (changes === null) delete next[chatId]
       else next[chatId] = changes
       return { lastTurnChangesByChat: next }
+    }),
+
+  pruneStaleChatState: () =>
+    set((s) => {
+      const cur = s.currentChatId
+      const split = s.splitChatId
+      let changed = false
+      // liveByChat — оставляем только current + split + running
+      const nextLive = { ...s.liveByChat }
+      for (const id of Object.keys(nextLive)) {
+        if (id === cur || id === split) continue
+        const rs = s.runStatusByChat[id]
+        if (rs && (rs.status === 'running' || rs.status === 'queued')) continue
+        delete nextLive[id]
+        changed = true
+      }
+      // activeRunByChat — оставляем только running
+      const nextActive = { ...s.activeRunByChat }
+      for (const id of Object.keys(nextActive)) {
+        if (id === cur) continue
+        const rs = s.runStatusByChat[id]
+        if (rs && (rs.status === 'running' || rs.status === 'queued')) continue
+        delete nextActive[id]
+        changed = true
+      }
+      if (!changed) return s
+      return { liveByChat: nextLive, activeRunByChat: nextActive }
     }),
 
   // ── Side chat actions ──

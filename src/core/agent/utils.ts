@@ -346,6 +346,74 @@ export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; 
   return { repaired: result, fixed: fixes.length > 0, fixes }
 }
 
+/**
+ * Salvage mode для edit_file: если jsonrepair и tryRepairJson оба не справились,
+ * пытаемся извлечь path и patch из битого JSON по регексу.
+ * mode дефолтим к apply_patch (самый частый, >95% вызовов edit_file).
+ *
+ * patch может быть усечён — это БЕЗОПАСНО: edit_file использует SEARCH/REPLACE
+ * блоки. Если patch обрезан — SEARCH не совпадёт → тул вернёт "SEARCH not found"
+ * → модель перечитает файл и retry. Никакая неправильная правка не применится.
+ *
+ * Возвращает null если path или patch не найдены — тогда parseError остаётся.
+ */
+export function salvageEditFileArgs(raw: string): Record<string, unknown> | null {
+  // path — всегда в начале JSON, обычно intact (короткое значение)
+  const pathMatch = raw.match(/"path":\s*"([^"]+)"/)
+  if (!pathMatch) return null
+
+  // patch — всё между "patch": " и концом строки.
+  // Берём максимально жадно: до последней возможной закрывающей кавычки.
+  // Если стрим обрезан — берём что есть.
+  const patchStart = raw.indexOf('"patch"')
+  if (patchStart === -1) return null
+
+  // Ищем начало значения после "patch":
+  const colonAfterPatch = raw.indexOf(':', patchStart)
+  if (colonAfterPatch === -1) return null
+
+  // Пропускаем пробелы и открывающую кавычку
+  let i = colonAfterPatch + 1
+  while (i < raw.length && (raw[i] === ' ' || raw[i] === '\t' || raw[i] === '\n')) i++
+  if (i >= raw.length || raw[i] !== '"') return null
+  i++ // пропускаем открывающую кавычку
+
+  // Собираем patch до конца строки, раскрывая JSON-эскейпы.
+  // Если последняя кавычка есть — обрезаем по ней. Если нет — берём до конца.
+  let patch = ''
+  let escaped = false
+  while (i < raw.length) {
+    const ch = raw[i]
+    if (escaped) {
+      // JSON escape: \n → newline, \t → tab, \" → ", \\ → \
+      if (ch === 'n') patch += '\n'
+      else if (ch === 't') patch += '\t'
+      else if (ch === 'r') patch += '\r'
+      else if (ch === '"') patch += '"'
+      else if (ch === '\\') patch += '\\'
+      else if (ch === '/') patch += '/'
+      else patch += ch // неизвестный escape — берём как есть
+      escaped = false
+    } else if (ch === '\\') {
+      escaped = true
+    } else if (ch === '"') {
+      // Закрывающая кавычка — конец patch value
+      break
+    } else {
+      patch += ch
+    }
+    i++
+  }
+
+  if (!patch.trim()) return null
+
+  return {
+    path: pathMatch[1],
+    mode: 'apply_patch', // дефолт — самый частый (>95%)
+    patch,
+  }
+}
+
 
 export function getToolErrorHint(toolName: string, error: string): string {
   const e = error.toLowerCase()

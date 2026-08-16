@@ -232,6 +232,9 @@ export const useGatewayModelsStore = create<GatewayModelsStore>((set) => ({
 export function startGatewayStatusPolling(): () => void {
   if (pollTimer) return () => {}
   pollTimer = setInterval(() => {
+    // Не поллим когда окно свёрнуто/вкладка не видна — экономит IPC-трафик
+    // и сетевые запросы в фоне. При возврате — следующий тик обновит статус.
+    if (document.hidden) return
     useGatewayModelsStore.getState().loadStatus()
   }, POLL_INTERVAL_MS)
   return () => {
