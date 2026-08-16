@@ -33,6 +33,27 @@ declare const synteeAPI: {
         }[]>;
         load: (id: string) => Promise<string | null>;
         delete: (id: string) => Promise<boolean>;
+        search: (query: string, page?: number, shortOnly?: boolean) => Promise<{
+            results: {
+                identifier: string;
+                title: string;
+                downloads: number;
+                size: number;
+            }[];
+            total: number;
+            page: number;
+        }>;
+        getFiles: (identifier: string) => Promise<{
+            files: {
+                name: string;
+                length: string;
+                size: number;
+            }[];
+            title: string;
+        }>;
+        fetchPreview: (identifier: string, filename: string) => Promise<string | null>;
+        cancelPreview: () => Promise<boolean>;
+        saveRemote: (identifier: string, filename: string, title: string) => Promise<string | null>;
     };
     auth: {
         login: () => Promise<any>;
