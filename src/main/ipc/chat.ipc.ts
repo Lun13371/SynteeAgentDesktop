@@ -147,6 +147,9 @@ interface ActiveRun {
   attachmentResult: AttachmentProcessingResult | null
   // imageParts для прямой передачи в основную модель (vision-capable)
   imageParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>
+  // AbortController для прерывания обработки вложений (processAttachmentsAndStream)
+  // при chat:stop — воркер ещё не создан, terminate() не помогает.
+  attachmentAbort?: AbortController
 }
 
 const activeRuns = new Map<string, ActiveRun>()
@@ -938,14 +941,38 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     // ── Vision capability check: если основная модель поддерживает vision,
     //    передаём картинки напрямую (без промежуточного описания через vision-модель).
-    const mainAssignment = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined)
-      ?.find(a => a.role === 'main')
-    let mainModelSupportsVision = false
-    if (mainAssignment && isCatalogReady()) {
-      const catalogInfo = getCatalogModel(mainAssignment.providerId, mainAssignment.modelId)
-      if (catalogInfo?.capabilities?.includes('vision')) {
-        mainModelSupportsVision = true
+    //    ВНИМАНИЕ: storeData из runChatSend НЕ доступен тут (processAttachmentsAndStream —
+    //    сиблинг runChatSend, не вложенная функция). Используем store.get() напрямую.
+    const modelAssignments = store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
+    const mainAssignment = modelAssignments?.find(a => a.role === 'main')
+
+    // Авто-определение vision: НЕ проверяем по провайдеру (провайдер ≠ модель —
+    // gateway/OpenAI/Anthropic могут обслуживать и vision, и text-only модели).
+    // Только по имени модели + каталог models.dev как fallback.
+    function modelSupportsVisionByHeuristic(providerId: string, modelId: string): boolean {
+      const id = modelId.toLowerCase()
+      // Известные vision-модели по имени (БЕЗ провайдера — провайдер не определяет vision)
+      if (id.includes('gpt-4o') || id.includes('gpt-4-turbo') || id.includes('gpt-4-vision')) return true
+      if (id.includes('claude-3') || id.includes('claude-sonnet') || id.includes('claude-opus') || id.includes('claude-haiku')) return true
+      if (id.includes('gemini') && !id.includes('gemini-1.0-pro') && !id.includes('gemini-1.5-pro-text')) return true
+      if (id.includes('grok-2') || id.includes('grok-3') || id.includes('grok-4')) return true
+      // Qwen VL — vision variant (qwen-vl, qwen2-vl, qwen2.5-vl)
+      if (id.includes('qwen') && id.includes('vl')) return true
+      // Llama vision variant
+      if (id.includes('llama') && id.includes('vision')) return true
+      // GLM: только -V варианты (glm-4v, glm-4.5v). glm-4, glm-5, glm-5.2 — text-only!
+      if (id.includes('glm') && (id.includes('-v') || id.includes('4v') || id.includes('vision'))) return true
+      // Fallback: проверяем каталог если он есть
+      if (isCatalogReady()) {
+        const info = getCatalogModel(providerId, modelId)
+        if (info?.capabilities?.includes('vision')) return true
       }
+      return false
+    }
+
+    let mainModelSupportsVision = false
+    if (mainAssignment) {
+      mainModelSupportsVision = modelSupportsVisionByHeuristic(mainAssignment.providerId, mainAssignment.modelId)
     }
     const imageParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> = []
 
@@ -1099,6 +1126,20 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             ).catch(() => resolve('[Ошибка анализа изображения]'))
           })
 
+          // Фолбэк: если analyzeImage вернул ошибку — передаём картинку
+          // напрямую в основную модель как imageParts (авось модель поймёт).
+          // Лучше чем инлайнить бесполезный текст "[Ошибка анализа...]".
+          if (description.startsWith('[Ошибка')) {
+            try {
+              const fbBase64 = readFileSync(att.path!).toString('base64')
+              const fbMime = att.mime || 'image/png'
+              imageParts.push({
+                type: 'image_url',
+                image_url: { url: `data:${fbMime};base64,${fbBase64}`, detail: 'high' },
+              })
+            } catch { /* skip fallback read error */ }
+          }
+
           textBlocks.push(`─── Изображение: ${att.name} ───\n${description}\n─── Конец описания: ${att.name} ───`)
           processedFiles[index] = {
             ...processedFiles[index],
@@ -1130,16 +1171,22 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       processed += imageAtts.length
     }
 
-    // Эмитим финальный прогресс — блок в UI покажет финальный результат
-    win?.webContents.send('agent:tool_progress', {
-      msgId, chatId,
-      toolName: 'process_attachments',
-      stage: 'done',
-      detail: hasErrors ? 'Завершено с ошибками' : 'Готово',
-      filesProcessed: total,
-      filesTotal: total,
-      ts: Date.now(),
-    })
+    // Эмитим финальный прогресс — блок в UI покажет финальный результат.
+    // Гарантируется через try/finally — даже если Promise.all упал/завис,
+    // UI не останется в live-режиме (stage !== 'done') навсегда.
+    try {
+      // Phase 2 уже выполнена выше (if/else if)
+    } finally {
+      win?.webContents.send('agent:tool_progress', {
+        msgId, chatId,
+        toolName: 'process_attachments',
+        stage: 'done',
+        detail: hasErrors ? 'Завершено с ошибками' : 'Готово',
+        filesProcessed: total,
+        filesTotal: total,
+        ts: Date.now(),
+      })
+    }
 
     // Собираем augmented content
     const augmentedContent = textBlocks.length > 0
@@ -1779,16 +1826,44 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // assistantMsg для отображения после рестарта.
     let effectiveContent = params.content
     if (params.attachments && params.attachments.length > 0) {
+      // AbortController для прерывания обработки вложений при chat:stop.
+      // Воркер ещё не создан, terminate() не помогает — нужен отдельный signal.
+      const attachmentAbort = new AbortController()
+      run.attachmentAbort = attachmentAbort
       try {
-        const processed = await processAttachmentsAndStream(
-          win, params.chatId, assistantMsgId, params.content, params.attachments,
-        )
+        // Promise.race с таймаутом 2 минуты — если processAttachmentsAndStream
+        // зависнет (vision-модель не отвечает, Promise.all висит), не блокируем
+        // весь чат навсегда. Таймаут в analyzeImage (60с) покрывает стрим, но
+        // для надёжности добавляем общий потолок на все вложения.
+        const ATTACHMENT_TIMEOUT_MS = 120_000
+        const processed = await Promise.race([
+          processAttachmentsAndStream(
+            win, params.chatId, assistantMsgId, params.content, params.attachments,
+          ),
+          new Promise<never>((_, reject) => {
+            const t = setTimeout(() => reject(new Error('Таймаут обработки вложений')), ATTACHMENT_TIMEOUT_MS)
+            // Очистка таймера если abort сработал раньше
+            attachmentAbort.signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Обработка вложений прервана')) })
+          }),
+        ])
         effectiveContent = processed.content
         run.attachmentResult = processed.result
         run.imageParts = processed.imageParts
       } catch (e) {
         log('[runChatSend] processAttachments failed: %s', (e as Error).message)
+        // Эмитим 'done' для process_attachments чтобы UI не завис в live-режиме
+        win?.webContents.send('agent:tool_progress', {
+          msgId: assistantMsgId, chatId: params.chatId,
+          toolName: 'process_attachments',
+          stage: 'done',
+          detail: 'Ошибка обработки вложений',
+          filesProcessed: 0,
+          filesTotal: params.attachments.length,
+          ts: Date.now(),
+        })
         // Продолжаем с исходным content — лучше чем уронить весь запрос
+      } finally {
+        run.attachmentAbort = undefined
       }
     }
 
@@ -3260,8 +3335,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // запуске (ниже) activeRuns.set может задержаться (runChatSend выполняется
     // синхронно только до первого await), а activeRunMeta устанавливается
     // синхронно тут — надёжный индикатор занятости слота.
-    if (activeRuns.has(params.chatId) || activeRunMeta.has(params.chatId)) {
-      log('[chat:send] chatId=%s уже работает — ставим в очередь', params.chatId)
+    if (activeRuns.has(params.chatId) || activeRunMeta.has(params.chatId) || compactRuns.has(params.chatId)) {
+      log('[chat:send] chatId=%s уже работает (или идёт сжатие) — ставим в очередь', params.chatId)
       emitRunStatus(win, params.chatId, 'queued', assistantMsgId)
       const queued: QueuedSend = {
         run: async () => { await runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow) },
@@ -3404,6 +3479,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   ipcMain.handle('chat:stop', (_, chatId?: string) => {
     const win = mainWindow.getWindow()
     const stopRun = (run: ActiveRun) => {
+      // Прерываем обработку вложений если она ещё идёт (воркер ещё не создан).
+      // Без этого chat:stop во время "Подготовки файлов" не прерывает
+      // processAttachmentsAndStream — Promise.all висит на analyzeImage.
+      if (run.attachmentAbort) run.attachmentAbort.abort()
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
       run.worker.terminate()
       // Прерываем agent PTY: Ctrl+C + очистка pending. Без этого сессия
@@ -3910,8 +3989,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     if (chatId.startsWith('sidechat:')) {
       return { error: 'Компакция недоступна для параллельного side-чата.' }
     }
-    if (activeRuns.has(chatId)) {
+    if (activeRuns.has(chatId) || activeRunMeta.has(chatId)) {
       return { error: 'Чат активен — дождитесь завершения ответа перед сжатием.' }
+    }
+    if (compactRuns.has(chatId)) {
+      return { error: 'Сжатие уже идёт — дождитесь завершения.' }
     }
 
     try {
@@ -4136,6 +4218,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // Всегда убираем AbortController из map — даже на cancel/error/early-return.
       // Без этого повторный /compact после cancel думал бы что он ещё активен.
       compactRuns.delete(chatId)
+      // Запускаем накопленные запросы из очереди (если во время сжатия пришли
+      // новые chat:send — они стояли в chatQueues, т.к. compactRuns.has
+      // блокировал их старт). drainQueue безопасен при пустой очереди.
+      drainQueue(mainWindow.getWindow(), chatId)
     }
   })
 
