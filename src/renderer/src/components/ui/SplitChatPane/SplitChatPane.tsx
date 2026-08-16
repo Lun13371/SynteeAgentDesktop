@@ -307,6 +307,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     handleTouchMove,
   } = useChatAutoscroll({
     scrollContainerRef,
+    isStreaming: isTyping,
     onScrollExtra: () => {
       const el = scrollContainerRef.current
       if (!el) return
@@ -522,7 +523,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
     getItemKey,
-    overscan: 10,
+    overscan: 5,
     useAnimationFrameWithResizeObserver: true,
   })
 

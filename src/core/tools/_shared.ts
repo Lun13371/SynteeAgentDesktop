@@ -11,7 +11,7 @@ export const execFileAsync = promisify(execFile)
 // Единый список игнорируемых директорий для list_directory/find_files/search_code/analyze_project
 export const DEFAULT_IGNORE_DIRS = ['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage']
 
-// Нормализация CRLF→LF (используется в edit_file/applySearchReplacePatch)
+// Нормализация CRLF→LF (используется в edit_file/strReplaceCore)
 export function normalizeLineEndings(s: string): string {
   return s.replace(/\r\n/g, '\n')
 }

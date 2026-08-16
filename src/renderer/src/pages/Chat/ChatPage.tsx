@@ -343,6 +343,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // во время стриминга. Без этого сообщение рендерится но не видно.
       requestAnimationFrame(() => pinAutoscroll(true))
     }
+    if (!prevIsTypingRef.current && isTyping) {
+      // Стрим начался (в т.ч. queued-запрос стартовал). Если всё ещё
+      // закреплены — прыгаем к низу: покажет user-сообщение + начало
+      // ответа. Для queued-сообщений addMessage+initChatSend происходят
+      // в useChatRunSubscription БЕЗ pinAutoscroll — это единственный
+      // скролл для них. Если пользователь отскроллил вверх после отправки
+      // (pinnedRef=false) — не навязываем скролл.
+      requestAnimationFrame(() => { if (pinnedRef.current) pinAutoscroll(true) })
+    }
     prevIsTypingRef.current = isTyping
     // pinAutoscroll объявлен ниже по коду (const), включать в deps нельзя —
     // упадёт с TDZ. Ссылка внутри тела эффекта безопасна (выполняется после рендера).
@@ -793,6 +802,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // у верхнего края (reverse-infinite scroll), вызывается в rAF-throttled
   // scroll-хендлере хука.
   const {
+    pinnedRef,
     showScrollDownBtn,
     pin: pinAutoscroll,
     unpin: unpinAutoscroll,
@@ -804,6 +814,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     handleTouchMove,
   } = useChatAutoscroll({
     scrollContainerRef,
+    isStreaming: isTyping,
     onScrollExtra: () => {
       const el = scrollContainerRef.current
       if (!el) return
@@ -1050,8 +1061,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
     // При отправке сообщения — принудительно закрепляем автоскролл.
     // Пользователь ожидает увидеть своё сообщение и ответ, даже если до этого
-    // скроллил вверх по истории.
-    pinAutoscroll()
+    // скроллил вверх по истории. instant=true — мгновенный прыжок (не ждём
+    // rAF-loop), работает даже если предыдущий стрим ещё не завершился.
+    pinAutoscroll(true)
 
     if (slash?.command.name === 'clear') {
       if (currentChatId) { setMessages([]); toast('Чат очищен', 'info') }
@@ -1411,10 +1423,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Запрос стартовал сразу — показываем user-сообщение и live-пузырь.
       addMessage(userMsg)
       initChatSend(chatId)
-      // Принудительно скроллим вниз в следующем кадре — addMessage обновит
-      // DOM, и scrollHeight станет актуальным. Без этого в новом чате
-      // (где isInitialScrollRef=true) эффект мог не сработать вовремя.
-      requestAnimationFrame(() => pinAutoscroll(true))
+      // Принудительно скроллим вниз — addMessage обновит DOM, и scrollHeight
+      // станет актуальным. Двойной rAF: первый кадр — React коммитит DOM +
+      // виртуализатор рендерит новый item с оценочным размером, второй кадр —
+      // scrollHeight актуален, прыгаем к низу. Без двойного rAF виртуализатор
+      // может ещё не отдать итоговую высоту → скролл к позиции «без сообщения».
+      requestAnimationFrame(() => requestAnimationFrame(() => pinAutoscroll(true)))
     }
 
     // ── Обновляем историю навигации по стрелкам ──
@@ -1656,11 +1670,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
     getItemKey,
-    // overscan 10 (вместо 5): больше элементов держится смонтированными вокруг
-    // вьюпорта → меньше mount/unmount циклов при скролле → меньше ре-парсов
-    // markdown больших сообщений при переходе границы. Памяти чуть больше,
-    // но плавность скролла важнее.
-    overscan: 10,
+    // overscan 5 (вместо 10): вдвое меньше ResizeObservers и активных
+    // MessageBubble listeners → меньше CPU в idle. Плавность скролла
+    // визуально не страдает (5 рядов сверху/снизу достаточно).
+    overscan: 5,
     // useAnimationFrameWithResizeObserver (v3.17): батчит колбэки ResizeObserver
     // с requestAnimationFrame вместо синхронного срабатывания. Во время стрима
     // RO может стрелять на каждом flush'е токенов (50мс) → без батчинга

@@ -348,69 +348,68 @@ export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; 
 
 /**
  * Salvage mode для edit_file: если jsonrepair и tryRepairJson оба не справились,
- * пытаемся извлечь path и patch из битого JSON по регексу.
- * mode дефолтим к apply_patch (самый частый, >95% вызовов edit_file).
+ * пытаемся извлечь path, old_str, new_str из битого JSON по регексу.
+ * mode дефолтим к str_replace (единственный режим правки существующих файлов).
  *
- * patch может быть усечён — это БЕЗОПАСНО: edit_file использует SEARCH/REPLACE
- * блоки. Если patch обрезан — SEARCH не совпадёт → тул вернёт "SEARCH not found"
- * → модель перечитает файл и retry. Никакая неправильная правка не применится.
+ * old_str/new_str могут быть усечены — это БЕЗОПАСНО: если old_str обрезан —
+ * strReplaceCore не найдёт совпадение → тул вернёт "old_str not found" →
+ * модель перечитает файл и retry. Никакая неправильная правка не применится.
  *
- * Возвращает null если path или patch не найдены — тогда parseError остаётся.
+ * Возвращает null если path или old_str не найдены — тогда parseError остаётся.
  */
 export function salvageEditFileArgs(raw: string): Record<string, unknown> | null {
   // path — всегда в начале JSON, обычно intact (короткое значение)
   const pathMatch = raw.match(/"path":\s*"([^"]+)"/)
   if (!pathMatch) return null
 
-  // patch — всё между "patch": " и концом строки.
-  // Берём максимально жадно: до последней возможной закрывающей кавычки.
-  // Если стрим обрезан — берём что есть.
-  const patchStart = raw.indexOf('"patch"')
-  if (patchStart === -1) return null
+  // Извлекаем строковое значение по имени ключа из битого JSON.
+  // Берём максимально жадно: до закрывающей кавычки. Если стрим обрезан — берём до конца.
+  const extractString = (key: string): string | null => {
+    const keyIdx = raw.indexOf(`"${key}"`)
+    if (keyIdx === -1) return null
+    const colonIdx = raw.indexOf(':', keyIdx)
+    if (colonIdx === -1) return null
+    let i = colonIdx + 1
+    while (i < raw.length && (raw[i] === ' ' || raw[i] === '\t' || raw[i] === '\n')) i++
+    if (i >= raw.length || raw[i] !== '"') return null
+    i++ // пропускаем открывающую кавычку
 
-  // Ищем начало значения после "patch":
-  const colonAfterPatch = raw.indexOf(':', patchStart)
-  if (colonAfterPatch === -1) return null
-
-  // Пропускаем пробелы и открывающую кавычку
-  let i = colonAfterPatch + 1
-  while (i < raw.length && (raw[i] === ' ' || raw[i] === '\t' || raw[i] === '\n')) i++
-  if (i >= raw.length || raw[i] !== '"') return null
-  i++ // пропускаем открывающую кавычку
-
-  // Собираем patch до конца строки, раскрывая JSON-эскейпы.
-  // Если последняя кавычка есть — обрезаем по ней. Если нет — берём до конца.
-  let patch = ''
-  let escaped = false
-  while (i < raw.length) {
-    const ch = raw[i]
-    if (escaped) {
-      // JSON escape: \n → newline, \t → tab, \" → ", \\ → \
-      if (ch === 'n') patch += '\n'
-      else if (ch === 't') patch += '\t'
-      else if (ch === 'r') patch += '\r'
-      else if (ch === '"') patch += '"'
-      else if (ch === '\\') patch += '\\'
-      else if (ch === '/') patch += '/'
-      else patch += ch // неизвестный escape — берём как есть
-      escaped = false
-    } else if (ch === '\\') {
-      escaped = true
-    } else if (ch === '"') {
-      // Закрывающая кавычка — конец patch value
-      break
-    } else {
-      patch += ch
+    let result = ''
+    let escaped = false
+    while (i < raw.length) {
+      const ch = raw[i]
+      if (escaped) {
+        if (ch === 'n') result += '\n'
+        else if (ch === 't') result += '\t'
+        else if (ch === 'r') result += '\r'
+        else if (ch === '"') result += '"'
+        else if (ch === '\\') result += '\\'
+        else if (ch === '/') result += '/'
+        else result += ch
+        escaped = false
+      } else if (ch === '\\') {
+        escaped = true
+      } else if (ch === '"') {
+        break
+      } else {
+        result += ch
+      }
+      i++
     }
-    i++
+    return result
   }
 
-  if (!patch.trim()) return null
+  const oldStr = extractString('old_str')
+  if (!oldStr || !oldStr.trim()) return null
+
+  // new_str опционален для salvage — если нет, дефолтим к пустой строке
+  // (означает удаление old_str). Лучше попытаться, чем сдаться.
+  const newStr = extractString('new_str') ?? ''
 
   return {
     path: pathMatch[1],
-    mode: 'apply_patch', // дефолт — самый частый (>95%)
-    patch,
+    old_str: oldStr,
+    new_str: newStr,
   }
 }
 

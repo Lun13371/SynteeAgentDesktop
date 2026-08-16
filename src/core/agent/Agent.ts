@@ -39,6 +39,20 @@ import {
 import { validateAndCoerceArgs } from './validateArgs'
 import { jsonrepair } from 'jsonrepair'
 
+// Тулы, которые НЕ блокируются hard block при parse-failure loop guard —
+// они не деструктивны (идемпотентны, не меняют файлы/систему).
+// Hard block на весь run лишает модель возможности сохранить
+// результат работы или спросить пользователя.
+const NON_DESTRUCTIVE_TOOLS = new Set([
+  'edit_file',
+  'save_memory',
+  'recall_memory',
+  'update_working_memory',
+  'update_todo',
+  'manage_notes',
+  'ask_user',
+])
+
 export class Agent {
   private store: Store
   private client: AIClient
@@ -79,7 +93,7 @@ export class Agent {
   private recentToolFingerprints: AgentToolCallFingerprint[] = []
   private recentErrorFingerprints: string[] = []
   // Fingerprint'ы JSON parse failures — для быстрого loop-guard:
-  // 2 одинаковых подряд → стоп (не ждём 17 раундов обычного guard).
+  // 2 одинаковых подряд → soft warning, 3+ → hard block (кроме non-destructive тулов).
   private recentParseFailures: string[] = []
   // Счётчик срабатываний loop-guard на конкретный тул+args. Ключ
   // `${toolName}|${argsKey}`. 1-2 — мягкое предупреждение, 3 — hard block
@@ -529,14 +543,14 @@ export class Agent {
               normalizedName, (parseErr as Error).message, (fn.arguments ?? '').slice(0, 500))
             // Phase 2: попытка починить битый JSON. Три слоя, ПОСЛЕДОВАТЕЛЬНО:
             //   1) tryRepairJson (регексы) — чинит enum-опечатки и незакавыченные
-            //      значения (mode: applyy_patch" → "mode": "apply_patch").
+            //      значения (mode: str_replace" → "mode": "str_replace").
             //      Работает ПЕРВЫМ, т.к. jsonrepair путается в незакавыченных
-            //      enum-значениях с остаточной кавычкой (applyy_patch").
+            //      enum-значениях с остаточной кавычкой (str_replace").
             //   2) jsonrepair (программный парсер) — чинит структуру: усечённый
             //      стрим (незакрытые строки, missing }), trailing comma, и т.д.
             //      Работает на РЕЗУЛЬТАТЕ tryRepairJson, не на оригинале.
             //   3) salvageEditFileArgs — последний шанс для edit_file: извлекает
-            //      path и patch регексом, mode дефолтит к apply_patch.
+            //      path, old_str, new_str регексом, mode дефолтит к str_replace.
             // Если ремонт успешен — тул выполняется, модель не знает о проблеме.
             if (fn.arguments) {
               let repaired = false
@@ -560,14 +574,14 @@ export class Agent {
                 log('[Agent] jsonrepair не удался для %s: %s',
                   normalizedName, (jsonrepairErr as Error).message)
               }
-              // Слой 3: salvage для edit_file — извлекаем path и patch регексом.
+              // Слой 3: salvage для edit_file — извлекаем path, old_str, new_str регексом.
               if (!repaired && normalizedName === 'edit_file') {
                 const salvaged = salvageEditFileArgs(fn.arguments)
                 if (salvaged) {
                   args = salvaged
                   repaired = true
-                  log('[Agent] edit_file SALVAGE для %s: path=%s, patch len=%d',
-                    normalizedName, salvaged.path, String(salvaged.patch).length)
+                  log('[Agent] edit_file SALVAGE для %s: path=%s, old_str len=%d',
+                    normalizedName, salvaged.path, String(salvaged.old_str).length)
                 }
               }
               if (!repaired) {
@@ -689,7 +703,7 @@ export class Agent {
                   content: hardBlock
                     ? `${fn.name} blocked after ${guardHits * maxRepeatedToolCalls} repeats (hard loop guard).`
                     : fn.name === 'edit_file'
-                      ? `${fn.name} repeated ${maxRepeatedToolCalls} times with similar arguments — warning ${guardHits}. Reread the file and use the exact content in your SEARCH block.`
+                      ? `${fn.name} repeated ${maxRepeatedToolCalls} times with similar arguments — warning ${guardHits}. Reread the file and use the exact content in old_str.`
                       : `${fn.name} repeated ${maxRepeatedToolCalls} times with the same arguments — warning ${guardHits}/3. Hard block after 3.`,
                   success: false,
                 })
@@ -723,52 +737,21 @@ export class Agent {
             this.recentParseFailures.push(parseFp)
             if (this.recentParseFailures.length > 4) this.recentParseFailures.shift()
 
-            // Phase 3: одинаковые parse failure подряд → жёсткий стоп.
-            // Не ждём 17 раундов обычного loop-guard — parse failure означает
-            // что модель системно не может сгенерировать валидный JSON для
-            // этого тула, ретраи бесполезны.
-            //
-            // edit_file exempt от parse-failure hard block (как и от обычного
-            // loop guard, строка ~666): тул не деструктивен (undo-stack, diff),
-            // и битый JSON часто означает что модель пытается сделать сложную
-            // правку большого SEARCH-блока. Hard block убивает возможность
-            // восстановления на весь run. Soft warning остаётся.
-            const parseRepeated = this.recentParseFailures.length >= 2 &&
-              this.recentParseFailures.every(e => e === parseFp)
+            // Phase 3: одинаковые parse failure подряд → эскалация.
+            // 2 одинаковых → soft warning (тул не выполняется, но не блокируется).
+            // 3+ одинаковых → hard block, НО только для деструктивных тулов.
+            // Non-destructive тулы (save_memory, update_todo, ask_user, ...)
+            // никогда не hard-block: блокировка save_memory на весь run
+            // лишает модель возможности сохранить результат работы.
+            const parseFailCount = this.recentParseFailures.filter(e => e === parseFp).length
+            const parseRepeated = parseFailCount >= 2
             if (parseRepeated) {
-              const isEditFile = fn.name === 'edit_file'
-              if (isEditFile) {
-                // Soft warning для edit_file — не блокируем, даём модели
-                // продолжить попытки (тул не деструктивен).
-                const softMsg = `Loop guard (soft): ${fn.name} produced invalid JSON ${this.recentParseFailures.length} times. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure the "mode" value is exactly "apply_patch" (quoted), and all string values are properly quoted. Consider using a smaller SEARCH block or splitting the edit.`
-                messages.push({ role: 'user', content: softMsg })
-                resultMap.set(callId, {
-                  contentForAI: softMsg,
-                  callId,
-                  name: fn.name,
-                })
-                callbacks.onStep({
-                  type: 'tool_result',
-                  toolName: '_loop_guard',
-                  content: `${fn.name} produced invalid JSON ${this.recentParseFailures.length} times — soft warning (edit_file exempt from hard block). Parse error: ${parseError.message}`,
-                  success: false,
-                })
-                // return — тул не выполняется (args={} т.к. все попытки
-                // ремонта провалились), но модель НЕ блокируется на run —
-                // может попробовать снова с другим JSON в следующем раунде.
-                // Ключевое отличие от hard block: модель не видит "blocked
-                // for this run", видит "please retry with valid JSON".
-                callbacks.onStep({
-                  type: 'tool_result',
-                  toolName: fn.name,
-                  content: `[Soft warning: invalid JSON ${this.recentParseFailures.length}× — ${parseError.message}. Tool not executed, but not blocked — retry with valid JSON.]`,
-                  success: false,
-                  callId,
-                  hidden: isHiddenTool,
-                })
-                return
-              } else {
-                const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${this.recentParseFailures.length} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
+              const isNonDestructive = NON_DESTRUCTIVE_TOOLS.has(fn.name)
+              // Hard block: 3+ одинаковых parse failure И тул деструктивный.
+              const shouldHardBlock = parseFailCount >= 3 && !isNonDestructive
+
+              if (shouldHardBlock) {
+                const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${parseFailCount} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
                 messages.push({ role: 'user', content: hardStopMsg })
                 resultMap.set(callId, {
                   contentForAI: `${hardStopMsg}\n\nLast parse error: ${parseError.message}\nYou sent (first 200 chars): ${parseError.snippet}`,
@@ -778,13 +761,40 @@ export class Agent {
                 callbacks.onStep({
                   type: 'tool_result',
                   toolName: '_loop_guard',
-                  content: `${fn.name} produced invalid JSON ${this.recentParseFailures.length} times — blocked. Parse error: ${parseError.message}`,
+                  content: `${fn.name} produced invalid JSON ${parseFailCount} times — blocked. Parse error: ${parseError.message}`,
                   success: false,
                 })
                 callbacks.onStep({
                   type: 'tool_result',
                   toolName: fn.name,
-                  content: `[Blocked: invalid JSON ${this.recentParseFailures.length}× — ${parseError.message}]`,
+                  content: `[Blocked: invalid JSON ${parseFailCount}× — ${parseError.message}]`,
+                  success: false,
+                  callId,
+                  hidden: isHiddenTool,
+                })
+                return
+              } else {
+                // Soft warning — для ВСЕХ non-destructive тулов и для
+                // 2-го удара любых тулов. Тул не выполняется (args={}
+                // т.к. ремонт провалился), но модель НЕ блокируется —
+                // может retry с другим JSON в следующем раунде.
+                const softMsg = `Loop guard (soft): ${fn.name} produced invalid JSON ${parseFailCount} times. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure all string values are properly quoted (e.g. "mode": "str_replace", not "mode": str_replace).`
+                messages.push({ role: 'user', content: softMsg })
+                resultMap.set(callId, {
+                  contentForAI: softMsg,
+                  callId,
+                  name: fn.name,
+                })
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: '_loop_guard',
+                  content: `${fn.name} produced invalid JSON ${parseFailCount} times — soft warning${isNonDestructive ? ` (${fn.name} exempt from hard block)` : ` (${parseFailCount}/3 before hard block)`}. Parse error: ${parseError.message}`,
+                  success: false,
+                })
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: fn.name,
+                  content: `[Soft warning: invalid JSON ${parseFailCount}× — ${parseError.message}. Tool not executed, but not blocked — retry with valid JSON.]`,
                   success: false,
                   callId,
                   hidden: isHiddenTool,
@@ -794,7 +804,7 @@ export class Agent {
             }
 
             // Phase 1: точное сообщение об ошибке парсинга
-            const parseMsg = `${fn.name}: your tool call arguments were not valid JSON. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure all string values are properly quoted (e.g. "mode": "apply_patch", not "mode": apply_patch").`
+            const parseMsg = `${fn.name}: your tool call arguments were not valid JSON. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure all string values are properly quoted (e.g. "mode": "str_replace", not "mode": str_replace").`
             resultMap.set(callId, { contentForAI: parseMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: parseMsg, success: false, callId, hidden: isHiddenTool })
             return
@@ -1460,17 +1470,14 @@ export class Agent {
       case 'edit_file': {
         // Read-before-edit guard: soft warning если файл не был прочитан в этой
         // сессии. НЕ блокируем — edit_file сам вернёт ошибку со сниппетом если
-        // SEARCH не найден. Жёсткий блок заставлял AI делать лишний read_file
+        // old_str не найден. Жёсткий блок заставлял AI делать лишний read_file
         // (2000+ токенов на большие файлы) после компрессии контекста, даже
         // когда контент файла уже был в кэше.
-        // Исключения: create_if_not_exists=true (создание нового файла) и
-        // overwrite с confirm_overwrite (осознанная перезапись) — пропускаем.
+        // Исключение: create_if_not_exists=true (создание нового файла) — пропускаем.
         const editPath = args.path as string
-        const editMode = args.mode as string
         const createNew = args.create_if_not_exists === true
-        const isOverwrite = editMode === 'overwrite' && args.confirm_overwrite === true
         let readWarning = ''
-        if (editPath && !createNew && !isOverwrite) {
+        if (editPath && !createNew) {
           let absPath: string
           try {
             absPath = resolve(this.workdir ?? process.cwd(), editPath)
@@ -1479,7 +1486,7 @@ export class Agent {
           }
           const fileExists = existsSync(absPath)
           if (fileExists && !this.filesReadInSession.has(absPath)) {
-            readWarning = `[Warning: this file was not read via read_file in the current session. If the SEARCH block fails, read the file first with read_file.]`
+            readWarning = `[Warning: this file was not read via read_file in the current session. If old_str is not found, read the file first with read_file.]`
           }
         }
         const editResult = await editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun, workdir: this.workdir })

@@ -74,7 +74,6 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
   const [activeOrigIndex, setActiveOrigIndex] = useState(-1)
   const [hasOverflow, setHasOverflow] = useState(false)
   const [hover, setHover] = useState<{ origIndex: number; clientY: number } | null>(null)
-  const scrollRafRef = useRef(false)
 
   // Свежая ссылка на onJump без пересоздания handleClick (как onScrollExtraRef
   // в useChatAutoscroll). React Compiler не любит самоссылку useCallback —
@@ -82,33 +81,20 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
   const onJumpRef = useRef(onJump)
   useEffect(() => { onJumpRef.current = onJump })
 
-  // Активное сообщение — по центру вьюпорта. Свой scroll-listener (passive,
-  // rAF-throttled) — независим от onScroll страницы.
-  // ВАЖНО: scrollContainerRef.current может быть null на первом рендере —
-  // .chat-messages монтируется только в ветке !showSkeleton && messages>0.
-  // Ref-object не триггерит эффект при заполнении .current, поэтому эффект
-  // перевыполняется на messages.length/dots.length (меняются когда контейнер
-  // появляется). Дополнительно — retry-цикл на rAF пока el не появится.
+  // Активное сообщение — по центру вьюпорта. БЕЗ собственного scroll-listener:
+  // читаем virtualizer.getVirtualItems() + scrollContainer dimensions через
+  // один ResizeObserver (только на resize, не на scroll). Virtualizer уже
+  // отслеживает scroll position — нам нужен только resize + initial setup.
   useEffect(() => {
     let raf = 0
     let cancelled = false
-    let cleanup: (() => void) | undefined
     let ro: ResizeObserver | undefined
-    const onScroll = () => {
-      if (scrollRafRef.current) return
-      scrollRafRef.current = true
-      requestAnimationFrame(() => {
-        scrollRafRef.current = false
-        update()
-      })
-    }
     const update = () => {
       const el = scrollContainerRef.current
       if (!el) return
       setHasOverflow(el.scrollHeight - el.clientHeight > 24)
       const center = el.scrollTop + el.clientHeight / 2
       const items = virtualizer.getVirtualItems()
-      // Бинарный линейный поиск по видимым items: первый, чей конец ниже центра.
       let idx = items.length ? items[items.length - 1].index : -1
       for (const it of items) {
         if (it.end >= center) { idx = it.index; break }
@@ -120,24 +106,20 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
       if (cancelled) return
       const el = scrollContainerRef.current
       if (!el) {
-        // Контейнер ещё не смонтирован (showSkeleton/empty) — retry в след. кадре.
         raf = requestAnimationFrame(attach)
         return
       }
       update()
-      el.addEventListener('scroll', onScroll, { passive: true })
+      // ResizeObserver для resize-обновления (контент растёт/меняется).
+      // Скролл отслеживает virtualizer — нам не нужен второй scroll-listener.
       ro = new ResizeObserver(update)
       ro.observe(el)
-      cleanup = () => {
-        el.removeEventListener('scroll', onScroll)
-        ro?.disconnect()
-      }
     }
     attach()
     return () => {
       cancelled = true
       if (raf) cancelAnimationFrame(raf)
-      cleanup?.()
+      ro?.disconnect()
     }
   }, [virtualizer, scrollContainerRef, messages.length])
 

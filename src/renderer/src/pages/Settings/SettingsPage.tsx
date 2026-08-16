@@ -277,14 +277,14 @@ export default function SettingsPage() {
 
       {/* Контент */}
       <div className="settings-content">
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="popLayout">
           <motion.div
             key={section}
             className="settings-section"
-            initial={{ opacity: 0, x: 28, scale: 0.96, filter: 'blur(8px)' }}
-            animate={{ opacity: 1, x: 0, scale: 1, filter: 'blur(0px)' }}
-            exit={{ opacity: 0, x: -28, scale: 1.04, filter: 'blur(8px)' }}
-            transition={{ type: 'spring', stiffness: 340, damping: 28, opacity: { duration: 0.18 } }}
+            initial={{ opacity: 0, x: 16 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -16 }}
+            transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
           >
             {section === 'profile' && (
               <ProfileSection />

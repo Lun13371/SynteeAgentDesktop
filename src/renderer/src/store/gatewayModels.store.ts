@@ -189,11 +189,12 @@ export const useGatewayModelsStore = create<GatewayModelsStore>((set) => ({
 
       // Self-retry: если модели не приехали — повторяем через 25с без спиннера.
       // Гасим таймер при следующем load()/logout, чтобы не плодить запросы.
+      // Пауза при document.hidden — не дёргаем gateway когда окно свёрнуто.
       if (!modelsSucceeded) {
         if (selfRetryTimer) clearTimeout(selfRetryTimer)
         selfRetryTimer = setTimeout(() => {
           selfRetryTimer = null
-          // Повторяем только если юзер всё ещё залогинен (мог сделать logout).
+          if (document.hidden) return
           if (useAuthStore.getState().user) {
             useGatewayModelsStore.getState().load(true)
           }
