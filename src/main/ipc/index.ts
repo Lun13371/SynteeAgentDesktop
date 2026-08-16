@@ -227,6 +227,120 @@ function registerSettingsIPC({ store }: IPCContext): void {
       return false
     }
   })
+
+  // ── Internet Archive sound search (keyless, free) ───────────────
+  // Поиск звуков на archive.org — не требует API-ключа.
+  // CSP блокирует внешние запросы из renderer, поэтому fetch идёт здесь.
+  // shortOnly: фильтр item_size:[* TO 2000000] — отсекает музыку/альбомы,
+  // оставляя короткие звуки (клики, уведомления и т.д.).
+  ipcMain.handle('sound:search', async (_, query: string, page = 1, shortOnly = true) => {
+    try {
+      const rows = 30
+      const start = (page - 1) * rows
+      // Поиск и по title, и по subject — даёт релевантные SFX, а не музыку.
+      const quoted = query.includes(' ') ? `"${query}"` : query
+      let q = `collection:opensource_audio AND (title:${quoted} OR subject:${quoted})`
+      if (shortOnly) q += ` AND item_size:[* TO 2000000]`
+      const url = `https://archive.org/advancedsearch.php`
+        + `?q=${encodeURIComponent(q)}`
+        + `&fl[]=identifier&fl[]=title&fl[]=downloads&fl[]=item_size`
+        + `&sort[]=downloads desc&rows=${rows}&start=${start}&output=json`
+      const res = await fetch(url)
+      if (!res.ok) return { results: [], total: 0, page }
+      const data = await res.json() as {
+        response: { docs: { identifier: string; title: string; downloads: number; item_size: number }[]; numFound: number }
+      }
+      return {
+        results: data.response.docs.map(d => ({
+          identifier: d.identifier,
+          title: d.title,
+          downloads: d.downloads,
+          size: d.item_size,
+        })),
+        total: data.response.numFound,
+        page,
+      }
+    } catch (e) {
+      console.error('[sound:search]', e)
+      return { results: [], total: 0, page }
+    }
+  })
+
+  // Получить список аудиофайлов для превью/скачивания
+  ipcMain.handle('sound:getFiles', async (_, identifier: string) => {
+    try {
+      const res = await fetch(`https://archive.org/metadata/${identifier}`)
+      if (!res.ok) return { files: [], title: identifier }
+      const data = await res.json() as {
+        files: { name: string; format: string; length?: string; size?: string }[]
+        metadata?: { title?: string }
+      }
+      // Берём MP3-файлы (original или derivative)
+      const audioFiles = (data.files || [])
+        .filter(f => f.format === 'VBR MP3' || f.format === 'MP3')
+        .map(f => ({
+          name: f.name,
+          length: f.length || '?',
+          size: parseInt(f.size || '0', 10),
+        }))
+      return { files: audioFiles, title: data.metadata?.title || identifier }
+    } catch (e) {
+      console.error('[sound:getFiles]', e)
+      return { files: [], title: identifier }
+    }
+  })
+
+  // AbortController для отмены превью — позволяет мгновенно стопнуть загрузку.
+  let previewAbort: AbortController | null = null
+
+  ipcMain.handle('sound:cancelPreview', async () => {
+    if (previewAbort) {
+      previewAbort.abort()
+      previewAbort = null
+    }
+    return true
+  })
+
+  // Скачать удалённый звук и вернуть как data URL (для превью).
+  // Поддерживает отмену через sound:cancelPreview.
+  ipcMain.handle('sound:fetchPreview', async (_, identifier: string, filename: string) => {
+    // Отменяем предыдущий превью-запрос если он ещё в полёте.
+    if (previewAbort) previewAbort.abort()
+    previewAbort = new AbortController()
+    const ac = previewAbort
+    try {
+      const url = `https://archive.org/download/${identifier}/${encodeURIComponent(filename)}`
+      const res = await fetch(url, { signal: ac.signal })
+      if (!res.ok) return null
+      const buf = Buffer.from(await res.arrayBuffer())
+      const base64 = buf.toString('base64')
+      return `data:audio/mpeg;base64,${base64}`
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') return null
+      console.error('[sound:fetchPreview]', e)
+      return null
+    } finally {
+      if (previewAbort === ac) previewAbort = null
+    }
+  })
+
+  // Скачать удалённый звук и сохранить как кастомный
+  ipcMain.handle('sound:saveRemote', async (_, identifier: string, filename: string, title: string) => {
+    try {
+      const url = `https://archive.org/download/${identifier}/${encodeURIComponent(filename)}`
+      const res = await fetch(url)
+      if (!res.ok) return null
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (!existsSync(soundDir)) mkdirSync(soundDir, { recursive: true })
+      const base = title.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9а-яА-Я_-]/g, '_').slice(0, 40) || `sound-${Date.now()}`
+      const filename_local = `${base}-${Date.now()}.mp3`
+      writeFileSync(join(soundDir, filename_local), buf)
+      return `custom://${filename_local}`
+    } catch (e) {
+      console.error('[sound:saveRemote]', e)
+      return null
+    }
+  })
 }
 
 function registerSystemIPC(_ctx: IPCContext): void {

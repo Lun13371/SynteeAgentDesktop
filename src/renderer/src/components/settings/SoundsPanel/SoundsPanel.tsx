@@ -10,6 +10,7 @@ import {
   BUILTIN_SOUNDS, SOUND_ACTIONS, DEFAULT_SOUND_ASSIGNMENTS,
   previewSound, clearCustomSoundCache, type SoundAction,
 } from '../../../utils/sounds'
+import SoundSearchModal from './SoundSearchModal'
 import './SoundsPanel.css'
 
 interface CustomSoundItem { id: string; name: string; size: number; mtime: number }
@@ -19,6 +20,8 @@ export default function SoundsPanel({ settings, onSet }: {
   onSet: (k: string, v: unknown) => void
 }) {
   const [customSounds, setCustomSounds] = useState<CustomSoundItem[]>([])
+  const [searchModalOpen, setSearchModalOpen] = useState(false)
+  const [searchTargetAction, setSearchTargetAction] = useState<SoundAction | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { add: toast } = useToast()
 
@@ -170,12 +173,31 @@ export default function SoundsPanel({ settings, onSet }: {
                       </option>
                     ))}
                   </select>
+                  <button
+                    className="sounds-search-btn"
+                    onClick={() => { setSearchTargetAction(action.id); setSearchModalOpen(true) }}
+                    title="Найти звук в интернете"
+                  >
+                    <AppIcon name="search" size="xs" />
+                  </button>
                 </div>
               </div>
             )
           })}
         </div>
       </div>
+
+      {/* ── Модалка поиска звуков в интернете ── */}
+      <SoundSearchModal
+        open={searchModalOpen}
+        onClose={() => setSearchModalOpen(false)}
+        onSelect={(customId) => {
+          if (searchTargetAction) setActionSound(searchTargetAction, customId)
+          setSearchModalOpen(false)
+          reloadCustom()
+          toast('Звук добавлен и назначен', 'success')
+        }}
+      />
     </div>
   )
 }

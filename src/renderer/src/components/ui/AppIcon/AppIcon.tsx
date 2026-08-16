@@ -10,7 +10,7 @@ import {
   History, Undo2, Puzzle, Power, ChevronLeft, Server, Wrench, Star, Download,
   Compass, HelpCircle, GitFork, Camera, Command, FlaskConical, Bug, Shuffle,
   Users, UserPlus, Smile, Ban, Phone, DownloadCloud, AppWindow, Columns2,
-  Square,
+  Square, Pause,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -57,6 +57,7 @@ const ICONS = {
   // restore — два перекрывающихся квадрата.
   maximize: Square,
   restore: Copy,
+  pause: Pause,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS

@@ -37,6 +37,18 @@ const synteeAPI = {
     list: () => ipcRenderer.invoke('sound:list') as Promise<{ id: string; name: string; size: number; mtime: number }[]>,
     load: (id: string) => ipcRenderer.invoke('sound:load', id) as Promise<string | null>,
     delete: (id: string) => ipcRenderer.invoke('sound:delete', id) as Promise<boolean>,
+    // ── Internet Archive search (keyless, free) ──
+    search: (query: string, page?: number, shortOnly?: boolean) => ipcRenderer.invoke('sound:search', query, page, shortOnly) as Promise<{
+      results: { identifier: string; title: string; downloads: number; size: number }[]
+      total: number; page: number
+    }>,
+    getFiles: (identifier: string) => ipcRenderer.invoke('sound:getFiles', identifier) as Promise<{
+      files: { name: string; length: string; size: number }[]
+      title: string
+    }>,
+    fetchPreview: (identifier: string, filename: string) => ipcRenderer.invoke('sound:fetchPreview', identifier, filename) as Promise<string | null>,
+    cancelPreview: () => ipcRenderer.invoke('sound:cancelPreview') as Promise<boolean>,
+    saveRemote: (identifier: string, filename: string, title: string) => ipcRenderer.invoke('sound:saveRemote', identifier, filename, title) as Promise<string | null>,
   },
 
   // Syntee-Gateway авторизация и профиль
