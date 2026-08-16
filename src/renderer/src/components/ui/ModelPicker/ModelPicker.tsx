@@ -11,6 +11,7 @@ import { filterModels, isModelFree, tooltipPrice, type PriceFilter } from '../..
 import { useGatewayModelsStore, normalizeStatus, GATEWAY_PROVIDER_ID } from '../../../store/gatewayModels.store'
 import { useAuthStore } from '../../../store/auth.store'
 import MiniUptimeBar from '../MiniUptimeBar/MiniUptimeBar'
+import { whileHoverTiny, whileTapTiny, whileHoverSm, whileTapSm, springHover } from '../../../utils/motionPresets'
 import './ModelPicker.css'
 
 interface ModelPickerProps {
@@ -320,18 +321,21 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                     onChange={e => setQuery(e.target.value)}
                   />
                   {query && (
-                    <button className="model-picker-search-clear" onClick={() => setQuery('')}>
+                    <motion.button className="model-picker-search-clear" onClick={() => setQuery('')} whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
                       <AppIcon name="x" size="xs" />
-                    </button>
+                    </motion.button>
                   )}
-                  <button
+                  <motion.button
                     className={`model-filter-toggle ${filtersOpen ? 'model-filter-toggle--open' : ''}`}
                     onClick={() => setFiltersOpen(o => !o)}
                     title="Фильтры: возможности и цена"
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <AppIcon name="filter" size="xs" />
                     {(activeCaps.length > 0 || priceFilter !== 'any') && <span className="model-filter-toggle-dot" />}
-                  </button>
+                  </motion.button>
                 </div>
 
                 {/* Панель фильтров: capabilities + цена (общая с ModelSelector) */}
@@ -396,13 +400,16 @@ export default function ModelPicker({ value, providerId, onChange, filterCaps, p
                         <span className="model-picker-gateway-error-text">
                           {gatewayError ? `Не удалось загрузить: ${gatewayError}` : 'Модели Syntee-Gateway не найдены'}
                         </span>
-                        <button
+                        <motion.button
                           type="button"
                           className="model-picker-gateway-retry"
                           onClick={() => gatewayLoad()}
+                          whileHover={whileHoverSm}
+                          whileTap={whileTapSm}
+                          transition={springHover}
                         >
                           Повторить
-                        </button>
+                        </motion.button>
                       </div>
                     </div>
                   )}

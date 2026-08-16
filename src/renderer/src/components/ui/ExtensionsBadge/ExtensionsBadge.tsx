@@ -16,6 +16,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import { useExtensionsStore } from '../../../store/extensions.store'
 import type { Skill, McpServerRuntime } from '../../../../../shared/types'
 import { mcpStatusLabel, McpLogsList } from '../ExtensionsPopover/ExtensionsPopover'
+import { whileHoverTiny, whileTapTiny, whileHoverSm, whileTapSm, springHover } from '../../../utils/motionPresets'
 import '../ExtensionsPopover/ExtensionsPopover.css'
 
 interface ExtensionsBadgeProps {
@@ -284,9 +285,9 @@ function SkillDetail({ skill, onBack }: { skill: Skill | undefined; onBack: () =
   return (
     <>
       <div className="ext-popup-header">
-        <button className="ext-popup-back" onClick={onBack} title="Назад">
+        <motion.button className="ext-popup-back" onClick={onBack} title="Назад" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
           <AppIcon name="chevronLeft" size="xs" />
-        </button>
+        </motion.button>
         <span className="ext-popup-title">Скилл</span>
       </div>
       <div className="ext-popup-body">
@@ -330,9 +331,9 @@ function McpDetail({ server, onBack }: { server: McpServerRuntime | undefined; o
   return (
     <>
       <div className="ext-popup-header">
-        <button className="ext-popup-back" onClick={onBack} title="Назад">
+        <motion.button className="ext-popup-back" onClick={onBack} title="Назад" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
           <AppIcon name="chevronLeft" size="xs" />
-        </button>
+        </motion.button>
         <span className="ext-popup-title">{server.name}</span>
         <span className={`ext-card-status ext-card-status--${server.status}`} title={server.status} style={{ marginTop: 0 }} />
       </div>
@@ -355,10 +356,13 @@ function McpDetail({ server, onBack }: { server: McpServerRuntime | undefined; o
           {/* Журнал подключения — компактно, последние записи. По умолчанию свёрнут,
               раскрывается кнопкой. При ошибке удобная быстрая диагностика. */}
           <div className="ext-detail-section" style={{ marginTop: 8 }}>
-            <button
+            <motion.button
               className="ext-action-btn ext-action-btn--xs"
               onClick={() => setShowLogs(v => !v)}
               style={{ width: '100%', justifyContent: 'space-between' }}
+              whileHover={whileHoverSm}
+              whileTap={whileTapSm}
+              transition={springHover}
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <AppIcon name="fileText" size="xs" />
@@ -367,7 +371,7 @@ function McpDetail({ server, onBack }: { server: McpServerRuntime | undefined; o
               <span style={{ color: 'var(--text-muted)', fontSize: '10px' }}>
                 {server.logs?.length ?? 0} {showLogs ? '▲' : '▼'}
               </span>
-            </button>
+            </motion.button>
             {showLogs && (
               <div className="ext-logs-box" style={{ marginTop: 4 }}>
                 <McpLogsList logs={server.logs} limit={8} maxHeight={160} />
@@ -394,10 +398,10 @@ function McpDetail({ server, onBack }: { server: McpServerRuntime | undefined; o
             {server.tools.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>Нет тулов</div>}
           </div>
           <div className="ext-detail-actions">
-            <button className="ext-action-btn" onClick={quickDisable}>
+            <motion.button className="ext-action-btn" onClick={quickDisable} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
               <AppIcon name="power" size="xs" />
               Выключить
-            </button>
+            </motion.button>
           </div>
         </div>
       </div>

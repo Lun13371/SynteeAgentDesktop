@@ -6,6 +6,7 @@ import { useMessengerStore } from '../../../store/messenger.store'
 import { useAuthStore } from '../../../store/auth.store'
 import { useToast } from '../Toast/Toast'
 import type { UserBrief } from '../../../store/messenger.store'
+import { whileHoverTiny, whileTapTiny, whileHoverWide, whileTapWide, springHover } from '../../../utils/motionPresets'
 import './ShareChatModal.css'
 
 interface Props {
@@ -93,9 +94,9 @@ export default function ShareChatModal({ open, onClose, chatId, chatTitle }: Pro
                 <h2>Поделиться чатом</h2>
                 <p className="share-chat-subtitle">«{chatTitle}»</p>
               </div>
-              <button className="share-chat-close" onClick={onClose} aria-label="Закрыть">
+              <motion.button className="share-chat-close" onClick={onClose} aria-label="Закрыть" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
                 <X size={16} />
-              </button>
+              </motion.button>
             </div>
 
             <div className="share-chat-search">
@@ -109,10 +110,13 @@ export default function ShareChatModal({ open, onClose, chatId, chatTitle }: Pro
             </div>
 
             <div className="share-chat-list">
-              <button
+              <motion.button
                 className="share-chat-global-btn"
                 disabled={sendingGlobal}
                 onClick={() => void handleShareGlobal()}
+                whileHover={whileHoverWide}
+                whileTap={whileTapWide}
+                transition={springHover}
               >
                 <div className="share-chat-global-icon">
                   <Send size={14} />
@@ -122,7 +126,7 @@ export default function ShareChatModal({ open, onClose, chatId, chatTitle }: Pro
                   <span className="share-chat-global-desc">Опубликовать для всех пользователей</span>
                 </div>
                 {sendingGlobal && <span className="share-chat-global-spinner">…</span>}
-              </button>
+              </motion.button>
 
               <div className="share-chat-divider" />
 
@@ -140,14 +144,17 @@ export default function ShareChatModal({ open, onClose, chatId, chatTitle }: Pro
                     <span className="share-chat-friend-name">{f.display_name || f.email}</span>
                     {f.display_name && <span className="share-chat-friend-email">{f.email}</span>}
                   </div>
-                  <button
+                  <motion.button
                     className="share-chat-send"
                     disabled={sending === f.id}
                     onClick={() => void handleShare(f)}
                     title="Отправить"
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <Send size={14} />
-                  </button>
+                  </motion.button>
                 </div>
               ))}
             </div>

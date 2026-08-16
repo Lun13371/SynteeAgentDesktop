@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
+import { motion } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
+import { whileHoverListItem, whileTapListItem, whileHoverTiny, whileTapTiny, whileHoverWide, whileTapWide, springHover } from '../../../utils/motionPresets'
 import './NotesPanel.css'
 
 interface Note {
@@ -175,29 +177,38 @@ export default function NotesPanel({ currentChatId }: NotesPanelProps) {
     <div className="notes-panel">
       <div className="notes-panel__header">
         <div className="notes-panel__scope-toggle">
-          <button
+          <motion.button
             className={`notes-panel__scope-btn ${scope === 'chat' ? 'active' : ''}`}
             onClick={() => setScope('chat')}
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             Чат
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             className={`notes-panel__scope-btn ${scope === 'project' ? 'active' : ''} ${!canUseProject ? 'disabled' : ''}`}
             onClick={() => canUseProject && setScope('project')}
             disabled={!canUseProject}
             title={canUseProject ? 'Проектные заметки' : 'Чат не привязан к проекту'}
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             Проект
-          </button>
+          </motion.button>
         </div>
-        <button
+        <motion.button
           className="notes-panel__add-btn"
           onClick={() => setCreating(true)}
           title="Новая заметка"
           disabled={scope === 'project' && !canUseProject}
+          whileHover={whileHoverTiny}
+          whileTap={whileTapTiny}
+          transition={springHover}
         >
           <AppIcon name="plus" size="xs" />
-        </button>
+        </motion.button>
       </div>
 
       {error && <div className="notes-panel__error">{error}</div>}
@@ -221,12 +232,12 @@ export default function NotesPanel({ currentChatId }: NotesPanelProps) {
             rows={4}
           />
           <div className="notes-panel__form-actions">
-            <button className="notes-panel__btn notes-panel__btn--save" onClick={handleCreate} disabled={!newTitle.trim()}>
+            <motion.button className="notes-panel__btn notes-panel__btn--save" onClick={handleCreate} disabled={!newTitle.trim()} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
               Сохранить
-            </button>
-            <button className="notes-panel__btn notes-panel__btn--cancel" onClick={() => { setCreating(false); setNewTitle(''); setNewContent('') }}>
+            </motion.button>
+            <motion.button className="notes-panel__btn notes-panel__btn--cancel" onClick={() => { setCreating(false); setNewTitle(''); setNewContent('') }} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
               Отмена
-            </button>
+            </motion.button>
           </div>
         </div>
       )}
@@ -260,12 +271,12 @@ export default function NotesPanel({ currentChatId }: NotesPanelProps) {
                   rows={4}
                 />
                 <div className="notes-panel__form-actions">
-                  <button className="notes-panel__btn notes-panel__btn--save" onClick={() => handleUpdate(note.id)} disabled={!editTitle.trim()}>
-                    Сохранить
-                  </button>
-                  <button className="notes-panel__btn notes-panel__btn--cancel" onClick={cancelEdit}>
-                    Отмена
-                  </button>
+              <motion.button className="notes-panel__btn notes-panel__btn--save" onClick={() => handleUpdate(note.id)} disabled={!editTitle.trim()} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
+                Сохранить
+              </motion.button>
+              <motion.button className="notes-panel__btn notes-panel__btn--cancel" onClick={cancelEdit} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
+                Отмена
+              </motion.button>
                 </div>
               </div>
             ) : (
@@ -273,12 +284,12 @@ export default function NotesPanel({ currentChatId }: NotesPanelProps) {
                 <div className="notes-panel__note-header">
                   <span className="notes-panel__note-title">{note.title}</span>
                   <div className="notes-panel__note-actions">
-                    <button className="notes-panel__note-btn" onClick={() => startEdit(note)} title="Редактировать">
+                    <motion.button className="notes-panel__note-btn" onClick={() => startEdit(note)} title="Редактировать" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
                       <AppIcon name="edit" size="xs" />
-                    </button>
-                    <button className="notes-panel__note-btn" onClick={() => handleDelete(note.id)} title="Удалить">
+                    </motion.button>
+                    <motion.button className="notes-panel__note-btn" onClick={() => handleDelete(note.id)} title="Удалить" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
                       <AppIcon name="trash" size="xs" />
-                    </button>
+                    </motion.button>
                   </div>
                 </div>
                 {note.content && (

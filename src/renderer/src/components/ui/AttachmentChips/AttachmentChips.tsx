@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Attachment, AttachmentKind } from '../../../../../shared/types'
+import { whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './AttachmentChips.css'
 
 interface AttachmentChipsProps {
@@ -82,16 +83,19 @@ export default function AttachmentChips({ attachments, onRemove, onPreview, maxR
             )}
             <span className="attachment-chip-name">{a.name}</span>
             {!readOnly && (
-              <button
+              <motion.button
                 className="attachment-chip-remove"
                 onClick={(e) => { e.stopPropagation(); onRemove(a.id) }}
                 title="Убрать вложение"
+                whileHover={whileHoverTiny}
+                whileTap={whileTapTiny}
+                transition={springHover}
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
-              </button>
+              </motion.button>
             )}
           </motion.div>
         ))}

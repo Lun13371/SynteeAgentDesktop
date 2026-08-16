@@ -6,6 +6,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import { getContextMenuPosition } from '../../../utils/contextMenuPosition'
 import { useChatStore } from '../../../store/chat.store'
 import { openInSplit } from '../../../store/tabs.store'
+import { whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem, springHover } from '../../../utils/motionPresets'
 import './ChatContextMenu.css'
 
 export interface ContextMenuPos { x: number; y: number }
@@ -76,13 +77,16 @@ export default function ChatContextMenu({ chat, pos, onClose, onOpenInTab, onRen
         >
           {/* Цветные метки */}
           <div className="ctx-colors">
-            <button className={`ctx-color-dot ctx-color-dot--none ${!chat.color ? 'active' : ''}`}
-              onClick={() => { onColor(chat, null); onClose() }} title="Без цвета">×</button>
+            <motion.button className={`ctx-color-dot ctx-color-dot--none ${!chat.color ? 'active' : ''}`}
+              onClick={() => { onColor(chat, null); onClose() }} title="Без цвета" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>×</motion.button>
             {COLORS.map(c => (
-              <button key={c.value} className={`ctx-color-dot ${chat.color === c.value ? 'active' : ''}`}
+              <motion.button key={c.value} className={`ctx-color-dot ${chat.color === c.value ? 'active' : ''}`}
                 style={{ background: c.value }}
                 onClick={() => { onColor(chat, c.value); onClose() }}
                 title={c.label}
+                whileHover={whileHoverTiny}
+                whileTap={whileTapTiny}
+                transition={springHover}
               />
             ))}
           </div>
@@ -137,9 +141,9 @@ export default function ChatContextMenu({ chat, pos, onClose, onOpenInTab, onRen
 
 function CtxItem({ icon, label, onClick, danger, indent }: { icon: string; label: string; onClick: () => void; danger?: boolean; indent?: boolean }) {
   return (
-    <button className={`ctx-item ${danger ? 'ctx-item--danger' : ''} ${indent ? 'ctx-item--indent' : ''}`} onClick={onClick}>
+    <motion.button className={`ctx-item ${danger ? 'ctx-item--danger' : ''} ${indent ? 'ctx-item--indent' : ''}`} onClick={onClick} whileHover={whileHoverListItem} whileTap={whileTapListItem} transition={springHover}>
       <AppIcon name={icon as 'edit'} size="sm" />
       <span>{label}</span>
-    </button>
+    </motion.button>
   )
 }

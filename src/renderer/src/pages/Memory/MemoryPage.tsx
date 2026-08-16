@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import IconButton from '../../components/ui/IconButton/IconButton'
 import MemoryGraphTab from './MemoryGraphTab'
+import { whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverWide, whileTapWide, whileHoverListItem, whileTapListItem, springHover } from '../../utils/motionPresets'
 import './MemoryPage.css'
 
 interface MemoryItem {
@@ -253,18 +254,18 @@ export default function MemoryPage() {
         <div className="memory-header-actions">
           {activeTab === 'list' && (
             <>
-              <button className="memory-add-btn" onClick={handleExtractOutcomes} title="Извлечь уроки из логов агента">
+              <motion.button className="memory-add-btn" onClick={handleExtractOutcomes} title="Извлечь уроки из логов агента" whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
                 <AppIcon name="wrench" size="sm" /> Уроки
-              </button>
-              <button className="memory-add-btn" onClick={handlePrune} title="Очистить устаревшие">
+              </motion.button>
+              <motion.button className="memory-add-btn" onClick={handlePrune} title="Очистить устаревшие" whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
                 <AppIcon name="trash" size="sm" /> Чистка
-              </button>
-              <button className="memory-add-btn" onClick={handleReindex} title="Переиндексировать embeddings">
+              </motion.button>
+              <motion.button className="memory-add-btn" onClick={handleReindex} title="Переиндексировать embeddings" whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
                 <AppIcon name="refreshCw" size="sm" /> Реиндекс
-              </button>
-              <button className="memory-add-btn memory-add-btn--primary" onClick={() => setAdding(p => !p)}>
+              </motion.button>
+              <motion.button className="memory-add-btn memory-add-btn--primary" onClick={() => setAdding(p => !p)} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
                 <AppIcon name="plus" size="sm" /> Добавить
-              </button>
+              </motion.button>
             </>
           )}
         </div>
@@ -273,12 +274,15 @@ export default function MemoryPage() {
       {/* Табы: Записи | Граф — segmented control со скользящим pill */}
       <div className="memory-tabs" role="tablist" aria-label="Разделы памяти">
         {(['list', 'graph'] as const).map(t => (
-          <button
+          <motion.button
             key={t}
             role="tab"
             aria-selected={activeTab === t}
             className={`memory-tab ${activeTab === t ? 'memory-tab--active' : ''}`}
             onClick={() => setActiveTab(t)}
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             {activeTab === t && (
               <motion.span
@@ -289,7 +293,7 @@ export default function MemoryPage() {
             )}
             <AppIcon name={t === 'list' ? 'listChecks' : 'gitBranch'} size="sm" />
             <span className="memory-tab-label">{t === 'list' ? 'Записи' : 'Граф знаний'}</span>
-          </button>
+          </motion.button>
         ))}
       </div>
 
@@ -349,8 +353,8 @@ export default function MemoryPage() {
               />
             </div>
             <div className="memory-form-actions">
-              <button className="memory-save-btn" onClick={handleAdd}>Сохранить</button>
-              <button className="memory-cancel-btn" onClick={() => setAdding(false)}>Отмена</button>
+              <motion.button className="memory-save-btn" onClick={handleAdd} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>Сохранить</motion.button>
+              <motion.button className="memory-cancel-btn" onClick={() => setAdding(false)} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>Отмена</motion.button>
             </div>
           </motion.div>
         )}
@@ -359,22 +363,28 @@ export default function MemoryPage() {
       {/* Row 1: kind-фильтры + поиск + режим */}
       <div className="memory-toolbar-primary">
         <div className="memory-filter-chips">
-          <button
+          <motion.button
             className={`memory-cat-btn ${filterKind === '' ? 'memory-cat-btn--active' : ''}`}
             onClick={() => setFilterKind('')}
+            whileHover={whileHoverSm}
+            whileTap={whileTapSm}
+            transition={springHover}
           >
             <AppIcon name="brain" size="sm" tone={filterKind === '' ? 'accent' : 'muted'} />
             Все {stats ? `(${stats.total})` : ''}
-          </button>
+          </motion.button>
           {KIND_OPTIONS.map(k => (
-            <button
+            <motion.button
               key={k.id}
               className={`memory-cat-btn ${filterKind === k.id ? 'memory-cat-btn--active' : ''}`}
               onClick={() => setFilterKind(filterKind === k.id ? '' : k.id)}
+              whileHover={whileHoverSm}
+              whileTap={whileTapSm}
+              transition={springHover}
             >
               <AppIcon name={k.icon} size="sm" tone={filterKind === k.id ? 'accent' : 'muted'} />
               {k.label} {stats?.byKind?.[k.id] ? `(${stats.byKind[k.id]})` : ''}
-            </button>
+            </motion.button>
           ))}
         </div>
         <div className="memory-search-wrap">
@@ -389,12 +399,15 @@ export default function MemoryPage() {
         </div>
         <div className="memory-mode-toggle" role="tablist" aria-label="Режим поиска">
           {(['list', 'semantic'] as const).map(m => (
-            <button
+            <motion.button
               key={m}
               role="tab"
               aria-selected={searchMode === m}
               className={`memory-mode-btn ${searchMode === m ? 'memory-mode-btn--active' : ''}`}
               onClick={() => setSearchMode(m)}
+              whileHover={whileHoverListItem}
+              whileTap={whileTapListItem}
+              transition={springHover}
             >
               {searchMode === m && (
                 <motion.span
@@ -404,7 +417,7 @@ export default function MemoryPage() {
                 />
               )}
               <span className="memory-mode-label">{m === 'list' ? 'Список' : 'Семантика'}</span>
-            </button>
+            </motion.button>
           ))}
         </div>
       </div>
@@ -412,38 +425,50 @@ export default function MemoryPage() {
       {/* Row 2: scope + category-фильтры */}
       <div className="memory-toolbar-secondary">
         <div className="memory-filter-chips">
-          <button
+          <motion.button
             className={`memory-cat-btn ${filterScope === '' ? 'memory-cat-btn--active' : ''}`}
             onClick={() => setFilterScope('')}
+            whileHover={whileHoverSm}
+            whileTap={whileTapSm}
+            transition={springHover}
           >
             <AppIcon name="layers" size="sm" tone={filterScope === '' ? 'accent' : 'muted'} />
             Все scope
-          </button>
+          </motion.button>
           {SCOPE_OPTIONS.map(s => (
-            <button
+            <motion.button
               key={s.id}
               className={`memory-cat-btn ${filterScope === s.id ? 'memory-cat-btn--active' : ''}`}
               onClick={() => setFilterScope(filterScope === s.id ? '' : s.id)}
+              whileHover={whileHoverSm}
+              whileTap={whileTapSm}
+              transition={springHover}
             >
               <AppIcon name={s.icon} size="sm" tone={filterScope === s.id ? 'accent' : 'muted'} />
               {s.label}
-            </button>
+            </motion.button>
           ))}
         </div>
         <div className="memory-toolbar-divider" />
         <div className="memory-filter-chips">
-          <button
+          <motion.button
             className={`memory-cat-btn ${filterCategory === '' ? 'memory-cat-btn--active' : ''}`}
             onClick={() => setFilterCategory('')}
+            whileHover={whileHoverSm}
+            whileTap={whileTapSm}
+            transition={springHover}
           >
             <AppIcon name="filter" size="sm" tone={filterCategory === '' ? 'accent' : 'muted'} />
             Все кат.
-          </button>
+          </motion.button>
           {categories.map(c => (
-            <button
+            <motion.button
               key={c.id}
               className={`memory-cat-btn ${filterCategory === c.name ? 'memory-cat-btn--active' : ''}`}
               onClick={() => setFilterCategory(filterCategory === c.name ? '' : c.name)}
+              whileHover={whileHoverSm}
+              whileTap={whileTapSm}
+              transition={springHover}
             >
               <AppIcon name={(c.icon as IconName) || 'pin'} size="sm" tone={filterCategory === c.name ? 'accent' : 'muted'} />
               {c.label}
@@ -454,15 +479,18 @@ export default function MemoryPage() {
                   title="Удалить категорию"
                 >×</span>
               )}
-            </button>
+            </motion.button>
           ))}
-          <button
+          <motion.button
             className="memory-cat-btn memory-cat-btn--add"
             onClick={() => setAddingCategory(p => !p)}
             title="Создать категорию"
+            whileHover={whileHoverSm}
+            whileTap={whileTapSm}
+            transition={springHover}
           >
             <AppIcon name="plus" size="sm" tone="muted" />
-          </button>
+          </motion.button>
         </div>
       </div>
 
@@ -491,7 +519,7 @@ export default function MemoryPage() {
               />
             </div>
             <div className="memory-form-actions">
-              <button
+              <motion.button
                 className="memory-save-btn"
                 onClick={async () => {
                   if (!newCatName.trim() || !newCatLabel.trim()) return
@@ -505,8 +533,11 @@ export default function MemoryPage() {
                   setAddingCategory(false)
                   load()
                 }}
-              >Создать</button>
-              <button className="memory-cancel-btn" onClick={() => setAddingCategory(false)}>Отмена</button>
+                whileHover={whileHoverWide}
+                whileTap={whileTapWide}
+                transition={springHover}
+              >Создать</motion.button>
+              <motion.button className="memory-cancel-btn" onClick={() => setAddingCategory(false)} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>Отмена</motion.button>
             </div>
           </motion.div>
         )}
@@ -572,7 +603,7 @@ export default function MemoryPage() {
                             }
                           </div>
                           {m.content.length > 120 && (
-                            <button
+                            <motion.button
                               className="memory-item-expand"
                               onClick={() => setExpandedItems(prev => {
                                 const next = new Set(prev)
@@ -580,9 +611,12 @@ export default function MemoryPage() {
                                 else next.add(m.id)
                                 return next
                               })}
+                              whileHover={whileHoverSm}
+                              whileTap={whileTapSm}
+                              transition={springHover}
                             >
                               {isExpanded ? 'Свернуть ▲' : 'Развернуть ▼'}
-                            </button>
+                            </motion.button>
                           )}
                         </>
                       )}
@@ -605,13 +639,16 @@ export default function MemoryPage() {
                         <AppIcon name="star" size="xs" tone={importanceTone(m.importance)} />
                         <span>{Math.round(m.importance * 100)}%</span>
                       </div>
-                      <button
+                      <motion.button
                         className={`memory-pin-btn ${m.pinned ? 'memory-pin-btn--active' : ''}`}
                         onClick={() => handlePin(m.id, !m.pinned)}
                         title={m.pinned ? 'Открепить' : 'Закрепить (защита от авто-удаления)'}
+                        whileHover={whileHoverTiny}
+                        whileTap={whileTapTiny}
+                        transition={springHover}
                       >
                         <AppIcon name="pin" size="sm" tone={m.pinned ? 'warning' : 'muted'} />
-                      </button>
+                      </motion.button>
                       <IconButton icon="trash" label="Удалить" danger onClick={() => handleDelete(m.id)} />
                     </div>
                   </div>

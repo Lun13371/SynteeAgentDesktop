@@ -10,6 +10,7 @@ import {
   BUILTIN_SOUNDS, SOUND_ACTIONS, DEFAULT_SOUND_ASSIGNMENTS,
   previewSound, clearCustomSoundCache, type SoundAction,
 } from '../../../utils/sounds'
+import { whileHoverBtn, whileTapBtn, whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import SoundSearchModal from './SoundSearchModal'
 import './SoundsPanel.css'
 
@@ -102,9 +103,9 @@ export default function SoundsPanel({ settings, onSet }: {
       <div className="sounds-section">
         <div className="sounds-section-header">
           <span className="sounds-section-title">Свои звуки</span>
-          <button className="sounds-upload-btn" onClick={() => fileInputRef.current?.click()}>
+          <motion.button className="sounds-upload-btn" onClick={() => fileInputRef.current?.click()} whileHover={whileHoverBtn} whileTap={whileTapBtn} transition={springHover}>
             <AppIcon name="plus" size="xs" /> Добавить
-          </button>
+          </motion.button>
           <input ref={fileInputRef} type="file" accept="audio/*" multiple onChange={onPickSound} style={{ display: 'none' }} />
         </div>
         {customSounds.length === 0 ? (
@@ -122,20 +123,26 @@ export default function SoundsPanel({ settings, onSet }: {
                 >
                   <span className="sounds-custom-name" title={s.name}>{s.name}</span>
                   <div className="sounds-custom-actions">
-                    <button
+                    <motion.button
                       className="sounds-preview-btn"
                       onClick={() => previewSound(s.id)}
                       title="Прослушать"
+                      whileHover={whileHoverTiny}
+                      whileTap={whileTapTiny}
+                      transition={springHover}
                     >
                       <AppIcon name="volume" size="xs" />
-                    </button>
-                    <button
+                    </motion.button>
+                    <motion.button
                       className="sounds-delete-btn"
                       onClick={() => onDeleteCustom(s.id)}
                       title="Удалить"
+                      whileHover={whileHoverTiny}
+                      whileTap={whileTapTiny}
+                      transition={springHover}
                     >
                       <AppIcon name="trash" size="xs" />
-                    </button>
+                    </motion.button>
                   </div>
                 </motion.div>
               ))}
@@ -154,14 +161,17 @@ export default function SoundsPanel({ settings, onSet }: {
               <div key={action.id} className="sounds-action-row">
                 <span className="sounds-action-label">{action.label}</span>
                 <div className="sounds-action-controls">
-                  <button
+                  <motion.button
                     className="sounds-preview-btn"
                     onClick={() => previewSound(assigned)}
                     title="Прослушать"
                     disabled={!assigned}
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <AppIcon name="volume" size="xs" />
-                  </button>
+                  </motion.button>
                   <select
                     className="settings-select sounds-action-select"
                     value={assignments[action.id] ?? ''}
@@ -173,13 +183,16 @@ export default function SoundsPanel({ settings, onSet }: {
                       </option>
                     ))}
                   </select>
-                  <button
+                  <motion.button
                     className="sounds-search-btn"
                     onClick={() => { setSearchTargetAction(action.id); setSearchModalOpen(true) }}
                     title="Найти звук в интернете"
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <AppIcon name="search" size="xs" />
-                  </button>
+                  </motion.button>
                 </div>
               </div>
             )

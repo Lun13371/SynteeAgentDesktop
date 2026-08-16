@@ -1,7 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import type { Message } from '../../../../../shared/types'
 import { useSettingsStore } from '../../../store/settings.store'
+import { whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './ChatMinimap.css'
 // ── ChatMinimap — миникарта сообщений (точки справа по центру) ─────────────
 // Вертикальная полоса точек: одна точка = одно сообщение. Клик — прыжок к
@@ -191,7 +193,7 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
     <>
     <div className="chat-minimap" style={{ maxHeight: `${STRIP_MAX_RATIO * 100}%` }}>
       {dots.map((d, i) => (
-        <button
+        <motion.button
           key={d.id}
           type="button"
           className={[
@@ -204,6 +206,9 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
           onMouseEnter={e => setHover({ origIndex: d.origIndex, clientY: e.clientY })}
           onMouseLeave={() => setHover(null)}
           aria-label={`Сообщение ${i + 1} из ${dots.length}`}
+          whileHover={whileHoverTiny}
+          whileTap={whileTapTiny}
+          transition={springHover}
         />
       ))}
     </div>

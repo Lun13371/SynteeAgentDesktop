@@ -12,6 +12,7 @@ import { useGatewayModelsStore, normalizeStatus, GATEWAY_PROVIDER_ID } from '../
 import { useRecentModelsStore, resolveRecentModels, resolvePinnedModels } from '../../../store/recentModels.store'
 import { useAuthStore } from '../../../store/auth.store'
 import MiniUptimeBar from '../MiniUptimeBar/MiniUptimeBar'
+import { whileHoverSm, whileTapSm, springHover, whileHoverTiny, whileTapTiny } from '../../../utils/motionPresets'
 import './ModelSelector.css'
 
 interface ModelSelectorProps {
@@ -363,6 +364,7 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
         ref={btnRef}
         className="model-selector-badge"
         onClick={handleOpen}
+        whileHover={whileHoverSm}
         whileTap={{ scale: 0.97 }}
         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
         title={displayModelId ? `${displayName} (${displayProviderId})` : 'Выбрать модель'}
@@ -410,18 +412,27 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                     onChange={e => setQuery(e.target.value)}
                   />
                   {query && (
-                    <button className="model-selector-search-clear" onClick={() => setQuery('')}>
+                    <motion.button
+                      className="model-selector-search-clear"
+                      onClick={() => setQuery('')}
+                      whileHover={whileHoverTiny}
+                      whileTap={whileTapTiny}
+                      transition={springHover}
+                    >
                       <AppIcon name="x" size="xs" />
-                    </button>
+                    </motion.button>
                   )}
-                  <button
+                  <motion.button
                     className={`model-filter-toggle ${filtersOpen ? 'model-filter-toggle--open' : ''}`}
                     onClick={() => setFiltersOpen(o => !o)}
                     title="Фильтры: возможности и цена"
+                    whileHover={whileHoverSm}
+                    whileTap={whileTapSm}
+                    transition={springHover}
                   >
                     <AppIcon name="filter" size="xs" />
                     {filtersActive && <span className="model-filter-toggle-dot" />}
-                  </button>
+                  </motion.button>
                 </div>
 
                 {/* Панель фильтров: capabilities + цена (сворачиваемая) */}
@@ -457,16 +468,19 @@ export default function ModelSelector({ modelId, onChange }: ModelSelectorProps)
                             {resolvedPinned.map(({ model, logo, color }) => {
                               const isActive = model.id === displayModelId && model.providerId === displayProviderId
                               return (
-                                <button
+                                <motion.button
                                   key={`pin-${model.id}-${model.providerId}`}
                                   className={`model-selector-chip ${isActive ? 'model-selector-chip--active' : ''}`}
                                   onClick={() => handleSelect(model)}
                                   onContextMenu={e => handleContextMenu(e, model)}
                                   title={model.name}
+                                  whileHover={whileHoverSm}
+                                  whileTap={whileTapSm}
+                                  transition={springHover}
                                 >
                                   <BrandAvatar logo={logo} fallbackColor={color} size={12} className="model-selector-chip-logo" />
                                   <span className="model-selector-chip-name">{model.name}</span>
-                                </button>
+                                </motion.button>
                               )
                             })}
                           </div>

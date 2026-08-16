@@ -14,6 +14,7 @@ import TerminalView from '../TerminalView/TerminalView'
 import { disposeTerminal } from '../../../utils/terminalRegistry'
 import { useTerminalStore, DOCK_HEIGHT_MIN, DOCK_HEIGHT_DEFAULT, type TerminalSessionMeta } from '../../../store/terminal.store'
 import { useChatStore } from '../../../store/chat.store'
+import { whileHoverListItem, whileTapListItem, whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './BottomDock.css'
 
 interface ShellInfo {
@@ -141,10 +142,13 @@ export default function BottomDock() {
             <div className="bottom-dock__header">
               <div className="bottom-dock__tabs">
                 {visibleSessions.map((s: TerminalSessionMeta) => (
-                  <button
+                  <motion.button
                     key={s.id}
                     className={`bottom-dock__tab ${s.id === activeSessionId ? 'bottom-dock__tab--active' : ''} ${aiBusySessionIds.has(s.id) ? 'bottom-dock__tab--ai-busy' : ''} ${s.dead ? 'bottom-dock__tab--dead' : ''}`}
                     onClick={() => switchSession(s.id)}
+                    whileHover={whileHoverListItem}
+                    whileTap={whileTapListItem}
+                    transition={springHover}
                   >
                     {s.source === 'agent' && <AppIcon name="bot" size="xs" tone="accent" />}
                     <span className="bottom-dock__tab-shell">{shellIconLabel(s.shell)}</span>
@@ -153,11 +157,11 @@ export default function BottomDock() {
                     <span className="bottom-dock__tab-close" onClick={(e) => handleClose(s.id, e)}>
                       <AppIcon name="x" size="xs" />
                     </span>
-                  </button>
+                  </motion.button>
                 ))}
 
                 <div className="bottom-dock__new-wrap">
-                  <button
+                  <motion.button
                     ref={newBtnRef}
                     className="bottom-dock__new-btn"
                     onClick={(e) => {
@@ -166,9 +170,12 @@ export default function BottomDock() {
                       setPickerPos({ x: r.left, y: r.bottom + 4 })
                     }}
                     title="Новая сессия"
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <AppIcon name="plus" size="xs" />
-                  </button>
+                  </motion.button>
                 </div>
               </div>
 
@@ -207,10 +214,10 @@ export default function BottomDock() {
             >
               {shells.length === 0 && <div className="bottom-dock__shell-empty">Shells не найдены</div>}
               {shells.map(sh => (
-                <button key={sh.type + sh.label} className="bottom-dock__shell-item" onClick={() => handleCreate(sh.type)}>
+                <motion.button key={sh.type + sh.label} className="bottom-dock__shell-item" onClick={() => handleCreate(sh.type)} whileHover={whileHoverListItem} whileTap={whileTapListItem} transition={springHover}>
                   <AppIcon name="terminal" size="xs" />
                   <span>{sh.label}</span>
-                </button>
+                </motion.button>
               ))}
             </motion.div>
           )}

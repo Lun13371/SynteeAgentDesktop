@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { getReasoningConfig } from '../../../../../shared/reasoningModels'
+import { whileHoverSm, whileTapSm, whileHoverListItem, whileTapListItem, springHover } from '../../../utils/motionPresets'
 import './ReasoningSelector.css'
 
 interface ReasoningSelectorProps {
@@ -64,7 +65,7 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
 
   return (
     <>
-      <button
+      <motion.button
         ref={btnRef}
         className={`rs-btn${open ? ' rs-btn--active' : ''}`}
         onClick={openPanel}
@@ -75,6 +76,9 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
         }}
         onMouseLeave={() => setTooltipPos(null)}
         title=""
+        whileHover={whileHoverSm}
+        whileTap={whileTapSm}
+        transition={springHover}
       >
         <svg className="rs-btn-icon" width="12" height="12" viewBox="0 0 24 24" fill="none">
           <path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5L12 2z"
@@ -86,7 +90,7 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
         <svg className="rs-btn-chevron" viewBox="0 0 10 6" fill="none">
           <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
         </svg>
-      </button>
+      </motion.button>
 
       {/* Тултип */}
       {tooltipPos && createPortal(
@@ -114,10 +118,13 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
               <div className="rs-panel-param">{config.apiParam}</div>
               <div className="rs-panel-options">
                 {config.options.map(opt => (
-                  <button
+                  <motion.button
                     key={opt.value}
                     className={`rs-option${opt.value === current.value ? ' rs-option--active' : ''}`}
                     onClick={() => { onChange(opt.value); setOpen(false) }}
+                    whileHover={whileHoverListItem}
+                    whileTap={whileTapListItem}
+                    transition={springHover}
                   >
                     <span className="rs-option-val">{opt.label}</span>
                     {opt.value === current.value && (
@@ -125,7 +132,7 @@ export default function ReasoningSelector({ modelId, value, onChange }: Reasonin
                         <path d="M2 6l3 3 5-5" stroke="#a78bfa" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
                       </svg>
                     )}
-                  </button>
+                  </motion.button>
                 ))}
               </div>
             </motion.div>

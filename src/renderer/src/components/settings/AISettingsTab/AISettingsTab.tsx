@@ -7,6 +7,7 @@ import AppIcon from '../../ui/AppIcon/AppIcon'
 import BrandAvatar from '../../ui/BrandAvatar/BrandAvatar'
 import { getBrandLogo } from '../../../utils/modelFormat'
 import { useGatewayModelsStore } from '../../../store/gatewayModels.store'
+import { whileHoverBtn, whileTapBtn, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverWide, whileTapWide, springHover } from '../../../utils/motionPresets'
 import './AISettingsTab.css'
 
 const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; filterCaps?: ModelCapability[] }> = {
@@ -200,12 +201,15 @@ export default function AISettingsTab() {
           вместо underline-табов. layoutId animates между сегментами. */}
       <div className="ai-seg" role="tablist" aria-label="Настройки ИИ">
         {(['providers', 'models', 'params'] as const).map(t => (
-          <button
+          <motion.button
             key={t}
             role="tab"
             aria-selected={tab === t}
             className={`ai-seg-item ${tab === t ? 'ai-seg-item--active' : ''}`}
             onClick={() => setTab(t)}
+            whileHover={whileHoverWide}
+            whileTap={whileTapWide}
+            transition={springHover}
           >
             {tab === t && (
               <motion.span
@@ -217,7 +221,7 @@ export default function AISettingsTab() {
             <span className="ai-seg-item-label">
               {t === 'providers' ? 'Провайдеры' : t === 'models' ? 'Назначения' : 'Параметры'}
             </span>
-          </button>
+          </motion.button>
         ))}
       </div>
 
@@ -284,20 +288,26 @@ export default function AISettingsTab() {
                                     onChange={e => setEditKeys(ks => ks.map((k, i) => i === ki ? e.target.value : k))}
                                   />
                                   {editKeys.length > 1 && (
-                                    <button
+                                    <motion.button
                                       className="provider-key-remove"
                                       onClick={() => setEditKeys(ks => ks.filter((_, i) => i !== ki))}
                                       title="Удалить ключ"
-                                    >×</button>
+                                      whileHover={whileHoverTiny}
+                                      whileTap={whileTapTiny}
+                                      transition={springHover}
+                                    >×</motion.button>
                                   )}
                                 </div>
                               ))}
-                              <button
+                              <motion.button
                                 className="provider-key-add"
                                 onClick={() => setEditKeys(ks => [...ks, ''])}
+                                whileHover={whileHoverBtn}
+                                whileTap={whileTapBtn}
+                                transition={springHover}
                               >
                                 + Добавить ключ
-                              </button>
+                              </motion.button>
                             </div>
                           </>
                         )}
@@ -312,10 +322,13 @@ export default function AISettingsTab() {
                           </>
                         )}
                         <div className="provider-form-actions">
-                          <button
+                          <motion.button
                             className="provider-btn provider-btn--test"
                             onClick={() => testKey(id)}
                             disabled={testStatus[id] === 'loading' || (isKeyRequiredProvider(id) && !editKeys.some(k => k.trim()))}
+                            whileHover={whileHoverBtn}
+                            whileTap={whileTapBtn}
+                            transition={springHover}
                           >
                             {testStatus[id] === 'loading' ? (
                               <AppIcon name="loader" size="xs" animation="spin" />
@@ -327,18 +340,21 @@ export default function AISettingsTab() {
                               <AppIcon name="zap" size="xs" />
                             )}
                             Проверить
-                          </button>
-                          <button
+                          </motion.button>
+                          <motion.button
                             className="provider-btn provider-btn--save"
                             onClick={saveProvider}
                             disabled={isKeyRequiredProvider(id) && !editKeys.some(k => k.trim())}
                             title={isKeyRequiredProvider(id) && !editKeys.some(k => k.trim()) ? 'Введите API-ключ' : undefined}
+                            whileHover={whileHoverBtn}
+                            whileTap={whileTapBtn}
+                            transition={springHover}
                           >
                             Сохранить
-                          </button>
-                          <button className="provider-btn provider-btn--cancel" onClick={() => setConfiguring(null)}>
+                          </motion.button>
+                          <motion.button className="provider-btn provider-btn--cancel" onClick={() => setConfiguring(null)} whileHover={whileHoverBtn} whileTap={whileTapBtn} transition={springHover}>
                             Отмена
-                          </button>
+                          </motion.button>
                         </div>
                       </motion.div>
                     )}
@@ -346,15 +362,18 @@ export default function AISettingsTab() {
 
                   <div className="provider-card-footer">
                     {configuring !== id && (
-                      <button className="provider-btn provider-btn--configure" onClick={() => startConfigure(id)}>
+                      <motion.button className="provider-btn provider-btn--configure" onClick={() => startConfigure(id)} whileHover={whileHoverBtn} whileTap={whileTapBtn} transition={springHover}>
                         {configured ? 'Изменить' : 'Настроить'}
-                      </button>
+                      </motion.button>
                     )}
                     {configured && (
-                      <button
+                      <motion.button
                         className="provider-btn provider-btn--fetch"
                         onClick={() => fetchModels(id)}
                         disabled={fetchStatus[id] === 'loading'}
+                        whileHover={whileHoverBtn}
+                        whileTap={whileTapBtn}
+                        transition={springHover}
                       >
                         {fetchStatus[id] === 'loading' ? (
                           <AppIcon name="loader" size="xs" animation="spin" />
@@ -362,7 +381,7 @@ export default function AISettingsTab() {
                           <AppIcon name="refreshCw" size="xs" />
                         )}
                         Модели
-                      </button>
+                      </motion.button>
                     )}
                     {/* Статус последнего fetchModels */}
                     {fetchStatus[id] && fetchStatus[id] !== 'loading' && (
@@ -373,9 +392,9 @@ export default function AISettingsTab() {
                       </span>
                     )}
                     {configured && (
-                      <button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(id)}>
+                      <motion.button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(id)} whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
                         <AppIcon name="trash" size="xs" />
-                      </button>
+                      </motion.button>
                     )}
                   </div>
                 </motion.div>
@@ -397,15 +416,15 @@ export default function AISettingsTab() {
                 </div>
                 <div className="provider-url">{p.baseUrl}</div>
                 <div className="provider-card-footer">
-                  <button className="provider-btn provider-btn--configure" onClick={() => { setEditForm(p); setConfiguring(p.id) }}>
+                  <motion.button className="provider-btn provider-btn--configure" onClick={() => { setEditForm(p); setConfiguring(p.id) }} whileHover={whileHoverBtn} whileTap={whileTapBtn} transition={springHover}>
                     Изменить
-                  </button>
-                  <button className="provider-btn provider-btn--fetch" onClick={() => fetchModels(p.id)} disabled={fetchStatus[p.id] === 'loading'}>
+                  </motion.button>
+                  <motion.button className="provider-btn provider-btn--fetch" onClick={() => fetchModels(p.id)} disabled={fetchStatus[p.id] === 'loading'} whileHover={whileHoverBtn} whileTap={whileTapBtn} transition={springHover}>
                     {fetchStatus[p.id] === 'loading'
                       ? <AppIcon name="loader" size="xs" animation="spin" />
                       : <AppIcon name="refreshCw" size="xs" />}
                     Модели
-                  </button>
+                  </motion.button>
                   {fetchStatus[p.id] && fetchStatus[p.id] !== 'loading' && (
                     <span className={`provider-fetch-status ${fetchStatus[p.id].startsWith('ok') ? 'provider-fetch-status--ok' : 'provider-fetch-status--err'}`}>
                       {fetchStatus[p.id].startsWith('ok:')
@@ -413,9 +432,9 @@ export default function AISettingsTab() {
                         : `✗ ${fetchStatus[p.id].startsWith('error:') ? fetchStatus[p.id].slice(6) : fetchStatus[p.id]}`}
                     </span>
                   )}
-                  <button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(p.id)}>
+                  <motion.button className="provider-btn provider-btn--delete" onClick={() => deleteProvider(p.id)} whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
                     <AppIcon name="trash" size="xs" />
-                  </button>
+                  </motion.button>
                 </div>
               </motion.div>
             ))}
@@ -423,10 +442,10 @@ export default function AISettingsTab() {
             {/* Кнопка добавить кастомный */}
             <motion.div className="provider-card provider-card--add glass" layout>
               {!showAddCustom ? (
-                <button className="provider-add-btn" onClick={() => setShowAddCustom(true)}>
+                <motion.button className="provider-add-btn" onClick={() => setShowAddCustom(true)} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
                   <AppIcon name="plus" size="md" />
                   <span>Добавить свой</span>
-                </button>
+                </motion.button>
               ) : (
                 <div className="provider-form">
                   <label className="provider-form-label">Название</label>
@@ -436,8 +455,8 @@ export default function AISettingsTab() {
                   <label className="provider-form-label">API Key (если нужен)</label>
                   <input className="provider-form-input" type="password" value={customForm.apiKey} onChange={e => setCustomForm(f => ({ ...f, apiKey: e.target.value }))} />
                   <div className="provider-form-actions">
-                    <button className="provider-btn provider-btn--save" onClick={addCustomProvider}>Добавить</button>
-                    <button className="provider-btn provider-btn--cancel" onClick={() => setShowAddCustom(false)}>Отмена</button>
+                    <motion.button className="provider-btn provider-btn--save" onClick={addCustomProvider} whileHover={whileHoverBtn} whileTap={whileTapBtn} transition={springHover}>Добавить</motion.button>
+                    <motion.button className="provider-btn provider-btn--cancel" onClick={() => setShowAddCustom(false)} whileHover={whileHoverBtn} whileTap={whileTapBtn} transition={springHover}>Отмена</motion.button>
                   </div>
                 </div>
               )}
@@ -530,12 +549,15 @@ export default function AISettingsTab() {
               Стриминг
               <span className="ai-param-hint">Показывать ответ по мере генерации</span>
             </label>
-            <button
+            <motion.button
               className={`ai-param-toggle ${params.streaming ? 'ai-param-toggle--on' : ''}`}
               onClick={() => updateParams({ streaming: !params.streaming })}
+              whileHover={whileHoverSm}
+              whileTap={whileTapSm}
+              transition={springHover}
             >
               <motion.div className="ai-param-toggle-thumb" layout transition={{ type: 'spring', stiffness: 500, damping: 30 }} />
-            </button>
+            </motion.button>
           </div>
 
           <div className="ai-param-row ai-param-row--full">

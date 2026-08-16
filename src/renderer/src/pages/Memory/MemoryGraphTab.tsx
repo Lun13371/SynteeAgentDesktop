@@ -9,6 +9,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Network, type Node as VisNode, type Edge as VisEdge, type Options } from 'vis-network/standalone'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
+import { whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem, springHover } from '../../utils/motionPresets'
 import './MemoryGraphTab.css'
 
 // ─── Типы (mirror graphStore.ts, но без зависимостей на main side) ───────────
@@ -394,22 +395,25 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
           )}
         </div>
         <div className="memory-graph-actions">
-          <button className="graph-action-btn" onClick={handlePruneIsolated} title="Удалить изолированные узлы">
+          <motion.button className="graph-action-btn" onClick={handlePruneIsolated} title="Удалить изолированные узлы" whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
             <AppIcon name="trash" size="sm" /> Чистка
-          </button>
-          <button className="graph-action-btn graph-action-btn--primary" onClick={handleRebuild} disabled={loading} title="Полная перестройка">
+          </motion.button>
+          <motion.button className="graph-action-btn graph-action-btn--primary" onClick={handleRebuild} disabled={loading} title="Полная перестройка" whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
             <AppIcon name="refreshCw" size="sm" className={loading ? 'graph-action-btn-spinner' : ''} /> {loading ? '…' : 'Перестроить'}
-          </button>
+          </motion.button>
         </div>
       </div>
 
       {/* View mode toggle: Memory / Files / All */}
       <div className="memory-graph-view-toggle">
         {(['all', 'memory', 'files'] as const).map(mode => (
-          <button
+          <motion.button
             key={mode}
             className={`graph-view-btn ${viewMode === mode ? 'graph-view-btn--active' : ''}`}
             onClick={() => applyViewMode(mode)}
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             {viewMode === mode && (
               <motion.span
@@ -421,7 +425,7 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
             <span className="graph-view-btn-label">
               {mode === 'all' ? 'Все' : mode === 'memory' ? 'Память' : 'Файлы'}
             </span>
-          </button>
+          </motion.button>
         ))}
       </div>
 
@@ -429,20 +433,23 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
       <div className="memory-graph-filters">
         <span className="filter-label">Типы:</span>
         {Object.entries(NODE_TYPE_META).map(([type, meta]) => (
-          <button
+          <motion.button
             key={type}
             className={`graph-filter-chip ${filterTypes.has(type) ? 'graph-filter-chip--active' : ''}`}
             style={filterTypes.has(type) ? { borderColor: meta.color, background: `${meta.color}22` } : {}}
             onClick={() => toggleFilter(type)}
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             <span className="filter-dot" style={{ background: meta.color }} />
             {meta.label}
-          </button>
+          </motion.button>
         ))}
         {filterTypes.size > 0 && (
-          <button className="graph-filter-clear" onClick={() => setFilterTypes(new Set())}>
+          <motion.button className="graph-filter-clear" onClick={() => setFilterTypes(new Set())} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
             Сбросить
-          </button>
+          </motion.button>
         )}
       </div>
 
@@ -486,15 +493,15 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
 
           {/* Zoom controls */}
           <div className="memory-graph-zoom">
-            <button className="memory-graph-zoom-btn" onClick={handleZoomIn} title="Приблизить">
+            <motion.button className="memory-graph-zoom-btn" onClick={handleZoomIn} title="Приблизить" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
               <AppIcon name="plus" size="sm" />
-            </button>
-            <button className="memory-graph-zoom-btn" onClick={handleZoomOut} title="Отдалить">
+            </motion.button>
+            <motion.button className="memory-graph-zoom-btn" onClick={handleZoomOut} title="Отдалить" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
               <AppIcon name="minus" size="sm" />
-            </button>
-            <button className="memory-graph-zoom-btn" onClick={handleZoomFit} title="Вписать в экран">
+            </motion.button>
+            <motion.button className="memory-graph-zoom-btn" onClick={handleZoomFit} title="Вписать в экран" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
               <AppIcon name="maximize" size="sm" />
-            </button>
+            </motion.button>
           </div>
         </div>
 
@@ -515,7 +522,7 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
                 >
                   {NODE_TYPE_META[selectedNode.type]?.label ?? selectedNode.type}
                 </span>
-                <button className="sidepanel-close" onClick={() => setSelectedNode(null)}>×</button>
+                <motion.button className="sidepanel-close" onClick={() => setSelectedNode(null)} whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>×</motion.button>
               </div>
               <div className="sidepanel-body">
                 <div className="sidepanel-label">{selectedNode.label}</div>
@@ -587,12 +594,12 @@ export default function MemoryGraphTab({ selectedProjectId, onSelectProject, pro
 
                 {/* Actions */}
                 <div className="sidepanel-actions">
-                  <button className="sidepanel-btn" onClick={() => handlePin(selectedNode.id, !selectedNode.pinned)}>
+                  <motion.button className="sidepanel-btn" onClick={() => handlePin(selectedNode.id, !selectedNode.pinned)} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
                     <AppIcon name="pin" size="sm" /> {selectedNode.pinned ? 'Открепить' : 'Закрепить'}
-                  </button>
-                  <button className="sidepanel-btn sidepanel-btn--danger" onClick={() => handleDelete(selectedNode.id)}>
+                  </motion.button>
+                  <motion.button className="sidepanel-btn sidepanel-btn--danger" onClick={() => handleDelete(selectedNode.id)} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
                     <AppIcon name="trash" size="sm" /> Удалить
-                  </button>
+                  </motion.button>
                 </div>
               </div>
             </motion.div>

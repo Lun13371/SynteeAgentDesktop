@@ -91,7 +91,6 @@
   animation: tc2-header-shimmer 5s linear infinite;
   pointer-events: none;
   z-index: 0;
-  will-change: opacity, filter, transform;
   /* default (не running) — растворённое состояние */
   opacity: 0;
   filter: blur(20px);
@@ -106,6 +105,7 @@
   opacity: 1;
   filter: blur(0px);
   transform: scale(1) translateY(0) rotate(0deg);
+  will-change: opacity, filter, transform;
   transition:
     opacity 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
     filter 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
@@ -497,8 +497,12 @@
 }
 
 /* ── Детали итерации ── */
+/* contain: изолирует layout/paint тяжёлого контента (SyntaxHighlighter,
+   DiffBlock, FileList) от остального DOM → браузер не ре-вычисляет layout
+   соседних итераций при раскрытии/изменении этого блока. */
 .tc2-iter-details {
   padding: 4px 6px 4px 6px;
+  contain: layout style paint;
 }
 
 .tc2-section {

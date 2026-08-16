@@ -2,6 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback, useMem
 import { createPortal } from 'react-dom'
 import { copyToClipboard } from '@renderer/utils/clipboard'
 import { AnimatePresence, motion } from 'framer-motion'
+import { springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem } from '../../utils/motionPresets'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useShallow } from 'zustand/react/shallow'
 import { v4 as uuid } from 'uuid'
@@ -1678,15 +1679,23 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // следующий ряд позиционируется по устаревшей (меньшей) высоте и налезает на
   // предыдущий. См. комментарии в remeasure.ts. Вызывается листьями
   // (MermaidBlock, SystemDivider) по факту дорисовки, НЕ на каждом токене.
+  // rAF-дедуп: если перемер уже запланирован, новые вызовы no-op → батчит
+  // всплеск remeasure-вызовов (раскрытие нескольких тул-блоков подряд) в один
+  // замер на следующем кадре вместо N синхронных reflow-циклов.
+  const remeasureRafRef = useRef<number | null>(null)
   const requestRemeasure = useCallback(() => {
-    const el = scrollContainerRef.current
-    if (!el) return
-    const rows = el.querySelectorAll('[data-index]')
-    if (rows.length === 0) return
-    rows.forEach((node) => {
-      const idx = Number((node as HTMLElement).getAttribute('data-index'))
-      if (!Number.isFinite(idx)) return
-      virtualizer.resizeItem(idx, Math.ceil(node.getBoundingClientRect().height))
+    if (remeasureRafRef.current !== null) return
+    remeasureRafRef.current = requestAnimationFrame(() => {
+      remeasureRafRef.current = null
+      const el = scrollContainerRef.current
+      if (!el) return
+      const rows = el.querySelectorAll('[data-index]')
+      if (rows.length === 0) return
+      rows.forEach((node) => {
+        const idx = Number((node as HTMLElement).getAttribute('data-index'))
+        if (!Number.isFinite(idx)) return
+        virtualizer.resizeItem(idx, Math.ceil(node.getBoundingClientRect().height))
+      })
     })
   }, [virtualizer])
 
@@ -1908,7 +1917,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               style={{ left: selectionPopup.x, top: selectionPopup.y }}
               onMouseDown={e => e.preventDefault()}
             >
-              <button
+              <motion.button
                 className="selection-reply-btn"
                 onClick={() => {
                   const syntheticMsg = { id: `sel-${Date.now()}`, role: 'user', content: selectionPopup.text, createdAt: Date.now() } as Message
@@ -1916,18 +1925,24 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   setSelectionPopup(null)
                   window.getSelection()?.removeAllRanges()
                 }}
+                whileHover={whileHoverSm}
+                whileTap={whileTapSm}
+                transition={springHover}
               >
                 ↩ Reply
-              </button>
-              <button
+              </motion.button>
+              <motion.button
                 className="selection-reply-copy"
                 onClick={async () => {
                   await copyToClipboard(selectionPopup.text)
                   setSelectionPopup(null)
                 }}
+                whileHover={whileHoverSm}
+                whileTap={whileTapSm}
+                transition={springHover}
               >
                 Copy
-              </button>
+              </motion.button>
             </div>,
             document.body
           )}
@@ -1956,17 +1971,20 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               >
                 <div className="snapshot-picker-header">
                   <h3>Восстановить снапшот</h3>
-                  <button
+                  <motion.button
                     className="snapshot-picker-close"
                     onClick={() => setSnapshotPicker(null)}
                     title="Закрыть"
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <AppIcon name="x" size="sm" />
-                  </button>
+                  </motion.button>
                 </div>
                 <div className="snapshot-picker-list">
                   {snapshotPicker.map(snap => (
-                    <button
+                    <motion.button
                       key={snap.id}
                       className="snapshot-picker-item"
                       onClick={async () => {
@@ -1987,6 +2005,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                           setSnapshotPicker(null)
                         }
                       }}
+                      whileHover={whileHoverListItem}
+                      whileTap={whileTapListItem}
+                      transition={springHover}
                     >
                       <span className="snapshot-picker-icon">
                         <AppIcon name="camera" size="sm" />
@@ -2000,7 +2021,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                           {snap.filesChanged} ф.
                         </span>
                       )}
-                    </button>
+                    </motion.button>
                   ))}
                 </div>
               </div>

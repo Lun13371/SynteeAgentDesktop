@@ -1279,9 +1279,44 @@ export default function App() {
                 <div className={`page-host ${mainPage === 'chat' ? '' : 'page-host--hidden'}`}>
                   <ChatPage embedded />
                 </div>
-                {mainPage === 'settings' && <SettingsPage />}
-                {mainPage === 'memory' && <MemoryPage />}
-                {mainPage === 'messenger' && <MessengerPage />}
+                <AnimatePresence>
+                  {mainPage === 'settings' && (
+                    <motion.div
+                      key="settings-page"
+                      className="page-motion-host"
+                      initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
+                      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                      exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                    >
+                      <SettingsPage />
+                    </motion.div>
+                  )}
+                  {mainPage === 'memory' && (
+                    <motion.div
+                      key="memory-page"
+                      className="page-motion-host"
+                      initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
+                      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                      exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                    >
+                      <MemoryPage />
+                    </motion.div>
+                  )}
+                  {mainPage === 'messenger' && (
+                    <motion.div
+                      key="messenger-page"
+                      className="page-motion-host"
+                      initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
+                      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                      exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                    >
+                      <MessengerPage />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
               <RightPanelHost />
             </div>

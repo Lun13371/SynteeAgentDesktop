@@ -1,6 +1,8 @@
 import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { motion } from 'framer-motion'
 import { getPersona, type PersonaId } from '../../../../../shared/modes'
+import { whileHoverWide, whileTapWide, springHover } from '../../../utils/motionPresets'
 import './PersonaSuggestionModal.css'
 
 export interface PersonaSuggestionModalProps {
@@ -78,25 +80,34 @@ export function PersonaSuggestionModal({
           Switch the chat's persona to {name}? You can change it any time via the <strong>+</strong> menu or <strong>/persona</strong>.
         </div>
         <div className="chat-input-persona-suggest-actions">
-          <button
+          <motion.button
             className="chat-input-persona-suggest-btn chat-input-persona-suggest-btn--primary"
             onClick={onAccept}
             autoFocus
+            whileHover={whileHoverWide}
+            whileTap={whileTapWide}
+            transition={springHover}
           >
             Switch to {name}
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             className="chat-input-persona-suggest-btn chat-input-persona-suggest-btn--ghost"
             onClick={onDismiss}
+            whileHover={whileHoverWide}
+            whileTap={whileTapWide}
+            transition={springHover}
           >
             Not now
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             className="chat-input-persona-suggest-btn chat-input-persona-suggest-btn--never"
             onClick={onNeverAsk}
+            whileHover={whileHoverWide}
+            whileTap={whileTapWide}
+            transition={springHover}
           >
             Never suggest
-          </button>
+          </motion.button>
         </div>
       </div>
     </div>,

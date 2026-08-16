@@ -25,6 +25,7 @@ import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubb
 import { playNavigateSound, setSoundVolume as setSoundVolumeModule, setSoundAssignmentsFlag } from '../../utils/sounds'
 import { applyFontToDOM, applyMonoToDOM, injectCustomFonts, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM } from '../../App'
 import type { CustomFont } from '../../App'
+import { whileHoverWide, whileTapWide, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../utils/motionPresets'
 import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings, type CustomTheme } from '../../../../shared/types'
 import './SettingsPage.css'
 
@@ -210,26 +211,52 @@ export default function SettingsPage() {
   return (
     <div className="settings-root">
       {/* Сайдбар разделов (сгруппированный) */}
-      <nav className="settings-nav glass">
-        <button
+      <motion.nav
+        className="settings-nav glass"
+        initial={{ opacity: 0, x: -20 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ type: 'spring', stiffness: 360, damping: 30 }}
+      >
+        <motion.button
           type="button"
           className="settings-back-btn"
           onClick={() => setMainPage('chat')}
           title="Назад к чату"
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
+          initial={{ opacity: 0, x: -16 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ type: 'spring', stiffness: 400, damping: 30, delay: 0.02 }}
         >
           <AppIcon name="chevronLeft" size="sm" />
           <span>Назад</span>
-        </button>
-        <div className="settings-nav-title">Настройки</div>
-        {SECTION_GROUPS.map(group => (
-          <div key={group.title} className="settings-nav-group">
+        </motion.button>
+        <motion.div
+          className="settings-nav-title"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.05 }}
+        >Настройки</motion.div>
+        {SECTION_GROUPS.map((group, gi) => (
+          <motion.div
+            key={group.title}
+            className="settings-nav-group"
+            initial={{ opacity: 0, x: -12 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 30, delay: 0.06 + gi * 0.04 }}
+          >
             <div className="settings-nav-group-title">{group.title}</div>
-            {group.items.map(s => (
+            {group.items.map((s, si) => (
               <motion.button
                 key={s.id}
                 className={`settings-nav-item no-drag ${section === s.id ? 'settings-nav-item--active' : ''}`}
                 onClick={() => handleSectionChange(s.id)}
                 whileTap={{ scale: 0.97 }}
+                whileHover={{ x: 2 }}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 30, delay: 0.08 + gi * 0.04 + si * 0.02 }}
               >
                 {/* Скользящий активный индикатор: один motion.div с layoutId,
                     который "переезжает" между пунктами через shared layout-анимацию. */}
@@ -244,19 +271,21 @@ export default function SettingsPage() {
                 <span className="settings-nav-item-label">{s.label}</span>
               </motion.button>
             ))}
-          </div>
+          </motion.div>
         ))}
-      </nav>
+      </motion.nav>
 
       {/* Контент */}
       <div className="settings-content">
-        <motion.div
-          key={section}
-          className="settings-section"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', stiffness: 320, damping: 30 }}
-        >
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={section}
+            className="settings-section"
+            initial={{ opacity: 0, x: 28, scale: 0.96, filter: 'blur(8px)' }}
+            animate={{ opacity: 1, x: 0, scale: 1, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, x: -28, scale: 1.04, filter: 'blur(8px)' }}
+            transition={{ type: 'spring', stiffness: 340, damping: 28, opacity: { duration: 0.18 } }}
+          >
             {section === 'profile' && (
               <ProfileSection />
             )}
@@ -297,6 +326,7 @@ export default function SettingsPage() {
               <ChangelogSettingsTab />
             )}
           </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   )
@@ -368,11 +398,14 @@ function AnimPreview({ animId, active, onClick }: { animId: string; active: bool
   const v = MSG_ANIM_VARIANTS[animId]
 
   return (
-    <button
+    <motion.button
       className={`anim-preview-btn ${active ? 'anim-preview-btn--active' : ''}`}
       onClick={onClick}
       onMouseEnter={() => setKey(k => k + 1)}
       title={v.desc}
+      whileHover={whileHoverWide}
+      whileTap={whileTapWide}
+      transition={springHover}
     >
       <div className="anim-preview-canvas">
         <AnimatePresence mode="wait">
@@ -400,7 +433,7 @@ function AnimPreview({ animId, active, onClick }: { animId: string; active: bool
       </div>
       <span className="anim-preview-label">{v.label}</span>
       <span className="anim-preview-desc">{v.desc}</span>
-    </button>
+    </motion.button>
   )
 }
 
@@ -561,13 +594,16 @@ function FontSettingsBlock({ settings, onSet }: { settings: Record<string, unkno
             ))}
           </select>
           {isCustomFont && (
-            <button
+            <motion.button
               className="font-picker-delete"
               title="Удалить шрифт"
               onClick={() => handleDeleteCustomFont(currentUiFont)}
+              whileHover={whileHoverTiny}
+              whileTap={whileTapTiny}
+              transition={springHover}
             >
               <AppIcon name="trash" size="sm" />
-            </button>
+            </motion.button>
           )}
         </div>
       </Field>
@@ -620,21 +656,27 @@ function FontSettingsBlock({ settings, onSet }: { settings: Record<string, unkno
                   </span>
                   <div className="font-custom-actions">
                     {!isActive && (
-                      <button
+                      <motion.button
                         className="font-custom-apply"
                         title="Сделать активным"
                         onClick={() => onSet('fontFamily', fontName)}
+                        whileHover={whileHoverTiny}
+                        whileTap={whileTapTiny}
+                        transition={springHover}
                       >
                         <AppIcon name="check" size="sm" />
-                      </button>
+                      </motion.button>
                     )}
-                    <button
+                    <motion.button
                       className="font-custom-delete"
                       title="Удалить"
                       onClick={() => handleDeleteCustomFont(fontName)}
+                      whileHover={whileHoverTiny}
+                      whileTap={whileTapTiny}
+                      transition={springHover}
                     >
                       <AppIcon name="trash" size="sm" />
-                    </button>
+                    </motion.button>
                   </div>
                 </div>
               )
@@ -1190,10 +1232,10 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
           <div className="voice-model-block">
             {statusBadge}
             {!downloading && !(modelStatus?.cached || modelStatus?.status === 'ready') && (
-              <button className="voice-model-download-btn" onClick={handleDownload}>
+              <motion.button className="voice-model-download-btn" onClick={handleDownload} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Скачать модель
-              </button>
+              </motion.button>
             )}
             {downloading && (
               <div className="voice-model-progress">
@@ -1275,15 +1317,18 @@ function AnimatedBgGear({ settings, onSet }: { settings: Record<string, unknown>
 
   return (
     <div className="anim-bg-gear-wrap">
-      <button
+      <motion.button
         ref={gearRef}
         className={`anim-bg-gear${open ? ' anim-bg-gear--active' : ''}`}
         onClick={() => setOpen(v => !v)}
         title="Параметры анимации"
+        whileHover={whileHoverSm}
+        whileTap={whileTapSm}
+        transition={springHover}
       >
         <AppIcon name="settings" size="sm" />
         <span>Параметры анимации</span>
-      </button>
+      </motion.button>
       <Popover open={open} onClose={() => setOpen(false)} anchorRef={gearRef} side="auto" align="start">
         <div className="bg-gear-panel">
           <div className="bg-gear-title">Анимированный фон</div>
@@ -1383,18 +1428,21 @@ const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { setti
               <span className="hk-label">{k.label}</span>
             </div>
             <div className="hk-bind-wrap">
-              <button
+              <motion.button
                 className={`hk-bind-btn ${recording === k.id ? 'hk-bind-btn--recording' : ''}`}
                 onClick={() => { setRecording(recording === k.id ? null : k.id); setPressed('') }}
+                whileHover={whileHoverWide}
+                whileTap={whileTapWide}
+                transition={springHover}
               >
                 {recording === k.id
                   ? (pressed
                       ? <>{pressed.split('+').map((p, i) => <span key={i} className="hk-key hk-key--live">{p}</span>)}</>
                       : <span className="hk-recording-hint">Нажмите клавиши...</span>)
                   : renderBind(hotkeys[k.id] || '')}
-              </button>
+              </motion.button>
               {hotkeys[k.id] && recording !== k.id && (
-                <button className="hk-clear" onClick={() => onSet('hotkeys', { ...hotkeys, [k.id]: '' })} title="Очистить">×</button>
+                <motion.button className="hk-clear" onClick={() => onSet('hotkeys', { ...hotkeys, [k.id]: '' })} title="Очистить" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>×</motion.button>
               )}
             </div>
           </div>
@@ -1403,7 +1451,7 @@ const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { setti
       {recording && (
         <div className="hk-overlay-hint">
           <span>Нажмите комбинацию клавиш для <strong>{KEYS.find(k => k.id === recording)?.label}</strong></span>
-          <button onClick={() => { setRecording(null); setPressed('') }}>Отмена</button>
+          <motion.button onClick={() => { setRecording(null); setPressed('') }} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>Отмена</motion.button>
         </div>
       )}
     </>
@@ -1458,14 +1506,17 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <div style={{ display: 'flex', gap: 8 }}>
             {OUTPUT_MODES.map(m => (
-              <button
+              <motion.button
                 key={m.value}
                 className={`settings-chip ${agentSettings.toolOutputMode === m.value ? 'settings-chip--active' : ''}`}
                 onClick={() => updateAgent({ toolOutputMode: m.value })}
                 title={m.desc}
+                whileHover={whileHoverSm}
+                whileTap={whileTapSm}
+                transition={springHover}
               >
                 {m.label}
-              </button>
+              </motion.button>
             ))}
           </div>
           <ResetButton current={agentSettings.toolOutputMode} defaultValue={DEFAULT_AGENT_SETTINGS.toolOutputMode} onReset={() => updateAgent({ toolOutputMode: DEFAULT_AGENT_SETTINGS.toolOutputMode })} />
