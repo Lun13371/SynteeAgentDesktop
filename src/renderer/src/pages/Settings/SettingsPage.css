@@ -1049,3 +1049,126 @@
   color: var(--accent);
   background: var(--accent-subtle);
 }
+
+/* ========== FONT PICKER ========== */
+.font-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.font-picker-select {
+  min-width: 160px;
+}
+.font-picker-delete {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.font-picker-delete:hover {
+  border-color: rgba(255, 80, 80, 0.4);
+  color: #ff6666;
+  background: rgba(255, 80, 80, 0.06);
+}
+
+/* ── Upload area ── */
+.font-upload-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.font-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-family);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.font-upload-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.font-upload-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Custom font list ── */
+.font-custom-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+.font-custom-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  transition: border-color 0.15s;
+}
+.font-custom-item:hover {
+  border-color: var(--border-strong);
+}
+.font-custom-item--active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.font-custom-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.font-custom-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.font-custom-apply,
+.font-custom-delete {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.font-custom-apply:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.font-custom-delete:hover {
+  border-color: rgba(255, 80, 80, 0.4);
+  color: #ff6666;
+  background: rgba(255, 80, 80, 0.06);
+}

@@ -140,6 +140,41 @@ function buildIterations(steps: ToolStep[]): Iteration[] {
   return iters
 }
 
+// ── Группировка последовательных итераций с одним toolName ──────────
+// Схлопываем длинные цепочки однотипных тулов (6 read_file подряд) в
+// одну раскрывающуюся группу. Только в финальном состоянии (!isRunning),
+// чтобы во время live-прогона не дезориентировать внезапным коллапсом.
+const NO_GROUP_TOOLS = new Set(['spawn_agent', 'ask_user', 'think', 'update_todo'])
+
+type GroupedItem =
+  | { type: 'single'; iter: Iteration }
+  | { type: 'group'; meta: ReturnType<typeof getToolMeta>; iters: Iteration[] }
+
+function groupConsecutiveIters(iters: Iteration[], isRunning: boolean): GroupedItem[] {
+  if (isRunning) return iters.map(iter => ({ type: 'single' as const, iter }))
+  const groups: GroupedItem[] = []
+  let i = 0
+  while (i < iters.length) {
+    const name = iters[i].call.toolName
+    const noGroup = !name || NO_GROUP_TOOLS.has(name)
+    let j = i + 1
+    while (j < iters.length && iters[j].call.toolName === name && !noGroup) j++
+    if (j - i >= 3 && !noGroup) {
+      groups.push({ type: 'group', meta: getToolMeta(iters[i].call.toolName, iters[i].call.serverName), iters: iters.slice(i, j) })
+    } else {
+      for (let k = i; k < j; k++) groups.push({ type: 'single', iter: iters[k] })
+    }
+    i = j
+  }
+  return groups
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}мс`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}с`
+  return `${Math.floor(ms / 60000)}м ${Math.round((ms % 60000) / 1000)}с`
+}
+
 function truncate(s: string, n = 80) {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
@@ -289,7 +324,7 @@ const IterationBlock = memo(function IterationBlock({
   // «ошибка» в заголовке — раскрытие по клику. (Во время live-прогона тело
   // и так уже раскрыто эффектом выше, так что ошибку видно сразу.)
 
-  const statusColor = failed ? '#f87171' : (running || pending) ? meta.color : meta.color
+  const statusColor = failed ? '#f87171' : meta.color
 
   return (
     <motion.div
@@ -302,15 +337,29 @@ const IterationBlock = memo(function IterationBlock({
     >
       <div className="tc2-rail">
         <div
-          className={`tc2-dot ${(running || pending) ? 'tc2-dot--pulse' : ''}`}
-          style={{ background: statusColor }}
-        />
-        {!isLast && <div className="tc2-rail-line" />}
+          className={`tc2-dot ${(running || pending) ? 'tc2-dot--pulse' : ''} ${iter.result ? (failed ? 'tc2-dot--fail' : 'tc2-dot--done') : ''}`}
+          style={{ '--dot-color': statusColor } as React.CSSProperties}
+        >
+          {iter.result && !failed ? (
+            <svg className="tc2-dot-check" viewBox="0 0 16 16" fill="none">
+              <path d="M3.5 8.5l3 3L12.5 5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          ) : iter.result && failed ? (
+            <svg className="tc2-dot-cross" viewBox="0 0 16 16" fill="none">
+              <path d="M5 5l6 6M11 5l-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <AppIcon name={meta.icon as 'zap'} size="xs" />
+          )}
+        </div>
+        {!isLast && (
+          <div className={`tc2-rail-line ${failed ? 'tc2-rail-line--fail' : iter.result ? 'tc2-rail-line--ok' : ''}`} />
+        )}
       </div>
 
       <div className="tc2-iter-body">
         <button
-          className={`tc2-iter-header ${open ? 'tc2-iter-header--open' : ''}`}
+          className={`tc2-iter-header ${open ? 'tc2-iter-header--open' : ''} ${failed ? 'tc2-iter-header--fail' : ''} ${(running || pending) ? 'tc2-iter-header--running' : ''}`}
           onClick={() => setOpen(o => !o)}
         >
           <span className="tc2-iter-icon" style={{ color: meta.color }}>
@@ -341,6 +390,10 @@ const IterationBlock = memo(function IterationBlock({
 
           <span className="tc2-iter-spacer" />
 
+          {iter.result && iter.call.timestamp && iter.result.timestamp && (
+            <span className="tc2-iter-duration">{formatDuration(iter.result.timestamp - iter.call.timestamp)}</span>
+          )}
+
           {meta.isMcp && <span className="tc2-badge tc2-badge--mcp">MCP</span>}
           {pending && <span className="tc2-badge tc2-badge--running">готовится</span>}
           {running && <span className="tc2-badge tc2-badge--running">выполняется</span>}
@@ -354,24 +407,13 @@ const IterationBlock = memo(function IterationBlock({
           {open && (
             <motion.div
               className="tc2-iter-details"
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.15, ease: 'easeOut' }}
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              style={{ overflow: 'hidden' }}
             >
-              {iter.call.toolArgs && Object.keys(iter.call.toolArgs).length > 0 && mode === 'detailed' && (
-                <div className="tc2-section">
-                  <div className="tc2-section-title">Аргументы</div>
-                  <div className="tc2-code-block">
-                    {Object.entries(iter.call.toolArgs).map(([k, v]) => (
-                      <div key={k} className="tc2-arg-row">
-                        <span className="tc2-arg-key">{k}</span>
-                        <pre className="tc2-arg-val">{truncate(formatArg(v), 300)}</pre>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+
 
               {iter.result && mode !== 'compact' && (() => {
                 // ask_user — рендер вопросов и ответов пользователя
@@ -529,6 +571,120 @@ const IterationBlock = memo(function IterationBlock({
 const ITERS_PAGE = 15
 const ITERS_CHUNK = 10
 
+// ── Живая шапка с тикающим таймером ─────────────────────────────────
+// Вынесена в отдельный memo-компонент: setInterval 1s ре-рендерит только
+// шапку, а не всю цепочку (десятки IterationBlock).
+const LiveHeader = memo(function LiveHeader({
+  currentTool, currentArg, startTime,
+}: {
+  currentTool: string
+  currentArg: string
+  startTime: number
+}) {
+  const [liveElapsed, setLiveElapsed] = useState(0)
+  useEffect(() => {
+    setLiveElapsed(Date.now() - startTime)
+    const id = setInterval(() => setLiveElapsed(Date.now() - startTime), 1000)
+    return () => clearInterval(id)
+  }, [startTime])
+
+  const elapsedStr = liveElapsed >= 60000
+    ? `${Math.floor(liveElapsed / 60000)}м ${Math.round((liveElapsed % 60000) / 1000)}с`
+    : liveElapsed >= 1000
+      ? `${(liveElapsed / 1000).toFixed(0)}с`
+      : `${liveElapsed}мс`
+
+  return (
+    <>
+      <span className="tc2-spinner" />
+      <span className="tc2-header-title">{currentTool}</span>
+      {currentArg && <code className="tc2-header-current-arg">{currentArg}</code>}
+      <span className="tc2-elapsed tc2-elapsed--live">{elapsedStr}</span>
+    </>
+  )
+})
+
+// ── Группа повторяющихся тулов ──────────────────────────────────────
+// Схлопывает N одинаковых итераций в одну раскрывающуюся строку.
+const GroupBlock = memo(function GroupBlock({
+  group, index, mode, animateEntrance,
+}: {
+  group: { type: 'group'; meta: ReturnType<typeof getToolMeta>; iters: Iteration[] }
+  index: number
+  mode: ToolOutputMode
+  animateEntrance: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const { meta, iters } = group
+  const hasFailed = iters.some(i => i.result?.success === false)
+  const totalDur = iters.reduce((sum, i) => {
+    if (i.result && i.call.timestamp && i.result.timestamp)
+      return sum + (i.result.timestamp - i.call.timestamp)
+    return sum
+  }, 0)
+
+  return (
+    <motion.div
+      className="tc2-iter tc2-iter--group"
+      initial={animateEntrance ? { opacity: 0, y: 6 } : false}
+      animate={{ opacity: 1, y: 0 }}
+      transition={animateEntrance
+        ? { delay: Math.min(index, 10) * 0.04, type: 'spring', stiffness: 420, damping: 32 }
+        : { duration: 0 }}
+    >
+      <div className="tc2-rail">
+        <div
+          className="tc2-dot tc2-dot--group"
+          style={{ '--dot-color': meta.color } as React.CSSProperties}
+        >
+          <AppIcon name={meta.icon as 'zap'} size="xs" />
+        </div>
+      </div>
+      <div className="tc2-iter-body">
+        <button
+          className={`tc2-iter-header tc2-group-header ${open ? 'tc2-iter-header--open' : ''} ${hasFailed ? 'tc2-iter-header--fail' : ''}`}
+          onClick={() => setOpen(o => !o)}
+        >
+          <span className="tc2-iter-label">{meta.label}</span>
+          <span className="tc2-group-count">×{iters.length}</span>
+          <span className="tc2-iter-spacer" />
+          {totalDur > 0 && <span className="tc2-iter-duration">{formatDuration(totalDur)}</span>}
+          {hasFailed
+            ? <span className="tc2-badge tc2-badge--fail">ошибка</span>
+            : <span className="tc2-badge tc2-badge--ok">✓</span>
+          }
+          <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="xs" />
+        </button>
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              className="tc2-group-iters"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              style={{ overflow: 'hidden' }}
+            >
+              {iters.map((iter, i) => (
+                <IterationBlock
+                  key={iter.id}
+                  iter={iter}
+                  index={i}
+                  isLast={i === iters.length - 1}
+                  isRunning={false}
+                  mode={mode}
+                  defaultOpen={false}
+                  animateEntrance={false}
+                />
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  )
+})
+
 const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elapsed, summary, toolProgress }: {
   steps: ToolStep[]
   mode: ToolOutputMode
@@ -579,6 +735,44 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   const hiddenCount = iters.length - visibleCount
   const visibleIters = iters.slice(hiddenCount)
 
+  // Агрегация мини-чипов по типу тула — вместо N одинаковых чипов
+  // показываем [icon ×count] на каждый тип.
+  const chipGroups = useMemo(() => {
+    const map = new Map<string, { meta: ReturnType<typeof getToolMeta>; count: number; toolName?: string }>()
+    for (const { call } of iters) {
+      const key = call.toolName ?? 'unknown'
+      const entry = map.get(key) ?? { meta: getToolMeta(call.toolName, call.serverName), count: 0, toolName: call.toolName }
+      entry.count++
+      map.set(key, entry)
+    }
+    return [...map.values()]
+  }, [iters])
+
+  // Текущее действие для живой шапки — последний iter без результата.
+  const currentRunningIter = useMemo(() => {
+    if (!isRunning) return null
+    for (let i = iters.length - 1; i >= 0; i--) {
+      if (!iters[i].result) return iters[i]
+    }
+    return null
+  }, [iters, isRunning])
+
+  // Время старта для тикающего таймера (стабильное — timestamp первого шага).
+  const runStartTime = steps.length > 0 && steps[0]?.timestamp ? steps[0].timestamp : Date.now()
+
+  // Группировка видимых итераций (только в финальном состоянии).
+  const groupedVisible = useMemo(
+    () => groupConsecutiveIters(visibleIters, !!isRunning),
+    [visibleIters, isRunning],
+  )
+
+  // Map id→index для быстрого определения isLast/defaultOpen.
+  const iterIndexMap = useMemo(() => {
+    const m = new Map<string, number>()
+    iters.forEach((iter, i) => m.set(iter.id, i))
+    return m
+  }, [iters])
+
   if (mode === 'compact') {
     return (
       <div className="tc2 tc2--compact">
@@ -599,70 +793,100 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   )
   }
 
+  const statusClass = isRunning ? '' : hasFailed ? ' tc2--has-fail' : iters.length > 0 ? ' tc2--all-ok' : ''
+  const okCount = totalDone - failedCount
+  const toolsStr = chipGroups.map(g => `${g.meta.label}${g.count > 1 ? ` ×${g.count}` : ''}`).join(' · ')
+
   return (
-    <div className={`tc2${summary ? ' tc2--summary' : ''}`}>
-      <div className="tc2-header">
-        <button className="tc2-collapse-btn" onClick={() => setCollapsed(c => !c)}>
+    <div className={`tc2${summary ? ' tc2--summary' : ''}${isRunning ? ' tc2--running' : ''}${statusClass}`}>
+      <div className="tc2-header" onClick={() => setCollapsed(c => !c)}>
+        <span className="tc2-collapse-btn">
           <AppIcon name={collapsed ? 'chevronRight' : 'chevronDown'} size="xs" />
-        </button>
+        </span>
 
         <div className="tc2-header-summary">
           {label
             ? <span className="tc2-header-title tc2-header-title--label">{label}</span>
             : isRunning
-              ? <><span className="tc2-spinner" /><span className="tc2-header-title">Агент работает</span></>
+              ? currentRunningIter
+                ? (() => {
+                    const m = getToolMeta(currentRunningIter.call.toolName, currentRunningIter.call.serverName)
+                    const arg = currentRunningIter.call.toolArgs
+                      ? truncate(String(Object.values(currentRunningIter.call.toolArgs)[0] ?? ''), 40)
+                      : ''
+                    return <LiveHeader currentTool={m.label} currentArg={arg} startTime={runStartTime} />
+                  })()
+                : <><span className="tc2-spinner" /><span className="tc2-header-title">Агент работает</span></>
               : <span className="tc2-header-title">
-                  {hasFailed ? `⚠ ${failedCount} ${failedCount === 1 ? 'ошибка' : failedCount < 5 ? 'ошибки' : 'ошибок'} из ${totalDone}` : `${totalDone} ${totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}`}
+                  {hasFailed
+                    ? <span className="tc2-status-badges">
+                        <span className="tc2-status-badge tc2-status-badge--ok">{okCount}</span>
+                        <span className="tc2-status-badge tc2-status-badge--fail">{failedCount}</span>
+                        <span className="tc2-status-label">{totalDone === 1 ? 'действие' : 'действий'}</span>
+                      </span>
+                    : <span className="tc2-status-badges">
+                        <span className="tc2-status-badge tc2-status-badge--ok">{okCount}</span>
+                        <span className="tc2-status-label">{totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}</span>
+                      </span>
+                  }
                 </span>
           }
           {elapsedStr && !isRunning && (
-            <span className="tc2-elapsed">{elapsedStr}</span>
+            <span className="tc2-elapsed-badge">
+              <AppIcon name="clock" size="xs" />
+              {elapsedStr}
+            </span>
           )}
         </div>
 
-        <div className="tc2-header-chips">
-          {iters.map(({ id, call }) => {
-            const meta = getToolMeta(call.toolName, call.serverName)
-            return (
-              <span
-                key={id}
-                className="tc2-mini-chip"
-                style={{ background: meta.color + '22', color: meta.color }}
-                title={meta.isMcp && meta.server ? `${meta.server} · ${meta.label}` : call.toolName}
-              >
-                <AppIcon name={meta.icon as 'zap'} size="xs" />
-              </span>
-            )
-          })}
+        <div className="tc2-header-chips" data-tools={toolsStr}>
+          {chipGroups.map(({ meta, count, toolName }, i) => (
+            <span
+              key={toolName ?? i}
+              className="tc2-mini-chip"
+              style={{ background: meta.color + '22', color: meta.color }}
+            >
+              <AppIcon name={meta.icon as 'zap'} size="xs" />
+              {count > 1 && <span className="tc2-mini-chip-count">{count}</span>}
+            </span>
+          ))}
           {isRunning && <span className="tc2-mini-chip tc2-mini-chip--pulse">···</span>}
         </div>
       </div>
 
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.div
-            className="tc2-iters"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
-          >
+
+
+      <div className={`tc2-iters-wrap${collapsed ? '' : ' tc2-iters-wrap--open'}`}>
+        <div className="tc2-iters">
             {hiddenCount > 0 && (
               <button className="tc2-show-more" onClick={() => setItersExtra(e => e + ITERS_CHUNK)}>
                 Показать ещё {Math.min(ITERS_CHUNK, hiddenCount)} из {hiddenCount} предыдущих действий
               </button>
             )}
-            {visibleIters.map((iter, vIdx) => {
-              const idx = hiddenCount + vIdx
+            {groupedVisible.map((item, vIdx) => {
+              if (item.type === 'group') {
+                return (
+                  <GroupBlock
+                    key={`group-${vIdx}`}
+                    group={item}
+                    index={vIdx}
+                    mode={mode}
+                    animateEntrance={false}
+                  />
+                )
+              }
+              const iter = item.iter
+              const origIdx = iterIndexMap.get(iter.id) ?? 0
+              const isLastVisible = vIdx === groupedVisible.length - 1
               return (
                 <IterationBlock
                   key={iter.id}
                   iter={iter}
                   index={vIdx}
-                  isLast={idx === iters.length - 1}
+                  isLast={isLastVisible}
                   isRunning={!!isRunning}
                   mode={mode}
-                  defaultOpen={!!isRunning && idx === iters.length - 1}
+                  defaultOpen={!!isRunning && origIdx === iters.length - 1}
                   liveSessionId={runCmdActive && iter.call.toolName === 'run_command' && !iter.result ? runCmdSessionId : undefined}
                   animateEntrance={!!isRunning}
                 />
@@ -671,7 +895,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
 
             {/* Пульс — ждём следующего тула */}
             {isRunning && iters.length > 0 && iters[iters.length - 1].result && (
-              <motion.div className="tc2-iter" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <div className="tc2-iter">
                 <div className="tc2-rail">
                   <div className="tc2-dot tc2-dot--thinking" />
                 </div>
@@ -681,7 +905,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
                     <span className="tc2-thinking-label">Думаю…</span>
                   </div>
                 </div>
-              </motion.div>
+              </div>
             )}
 
             {/* Старт — нет тулов ещё */}
@@ -698,9 +922,8 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
                 </div>
               </div>
             )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+        </div>
+      </div>
     </div>
   )
 }, (prev, next) => prev.steps === next.steps && prev.mode === next.mode &&

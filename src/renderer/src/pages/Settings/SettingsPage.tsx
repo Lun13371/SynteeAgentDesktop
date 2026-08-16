@@ -23,7 +23,8 @@ import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/Appro
 import ResetButton from '../../components/ui/ResetButton/ResetButton'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
 import { playNavigateSound, setSoundVolume as setSoundVolumeModule, setSoundAssignmentsFlag } from '../../utils/sounds'
-import { applyFontToDOM, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM } from '../../App'
+import { applyFontToDOM, applyMonoToDOM, injectCustomFonts, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM } from '../../App'
+import type { CustomFont } from '../../App'
 import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings, type CustomTheme } from '../../../../shared/types'
 import './SettingsPage.css'
 
@@ -198,6 +199,7 @@ export default function SettingsPage() {
     if (key === 'themeSchedule') setThemeSchedule(value as any)
     if (key === 'recentAccents') setRecentAccents(value as string[])
     if (key === 'fontFamily') applyFontToDOM(value as string)
+    if (key === 'fontMono') applyMonoToDOM(value as string)
   }, [set, setTheme, setAccentColor, setBgStyle, setMsgAnim, setAvatarStyle, setShowTime,
     setUserMarkdown, setUiSounds, setSendEffect, setGlassBlur, setDensity, setAccentGradient,
     setRainbowAccent, setBgImage, setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
@@ -443,10 +445,207 @@ const ACCENT_PRESETS = [
   '#facc15', // yellow
   '#06b6d4', // cyan
 ]
-// Только шрифты, подключённые локально в styles/fonts.css.
-// Plus Jakarta Sans / Geist / DM Sans убраны — грузились с Google Fonts
-// CDN (без интернета fallback), Geist ещё и без кириллицы.
-const FONTS = ['Inter', 'system']
+// Встроенные шрифты, подключённые локально в styles/fonts.css.
+// Manrope, Unbounded, Space Grotesk, Onest, Sora — variable fonts.
+// Space Grotesk и Sora не имеют Cyrillic subset — кириллица идёт через
+// fallback (Inter) в font-stack. Кастомные шрифты добавляются динамически.
+const BUILTIN_UI_FONTS = ['Inter', 'Manrope', 'Unbounded', 'Space Grotesk', 'Onest', 'Sora', 'system']
+const BUILTIN_MONO_FONTS = ['JetBrains Mono', 'Fira Code', 'system mono']
+// Превью-текст для каждого шрифта в dropdown
+const FONT_PREVIEW = 'Aa Бб 123'
+const MONO_PREVIEW = 'fn x = 1'
+
+// ── FontSettingsBlock ──────────────────────────────────────────
+// UI для выбора шрифтов: UI-шрифт, код-шрифт, загрузка кастомных.
+// Кастомные шрифты хранятся в userData/custom-fonts/ (через IPC),
+// инжектируются в DOM через injectCustomFonts().
+function FontSettingsBlock({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+  const { add: toast } = useToast()
+  const [customFonts, setCustomFonts] = useState<CustomFont[]>([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Загружаем список кастомных шрифтов при монтировании
+  useEffect(() => {
+    refreshCustomFonts()
+  }, [])
+
+  async function refreshCustomFonts() {
+    try {
+      const list = await window.syntee.fonts.list()
+      setCustomFonts(list.map(f => ({ id: f.id, name: f.name })))
+    } catch { /* ok */ }
+  }
+
+  // Все доступные UI-шрифты: встроенные + кастомные
+  const allUiFonts = useMemo(() => {
+    const custom = customFonts.map(cf => cf.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '-'))
+    return [...BUILTIN_UI_FONTS, ...custom]
+  }, [customFonts])
+
+  const allMonoFonts = BUILTIN_MONO_FONTS
+
+  async function handleUploadClick() {
+    fileInputRef.current?.click()
+  }
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = '' // reset для повторного выбора того же файла
+
+    // Проверяем расширение
+    const ext = (file.name.split('.').pop() || '').toLowerCase()
+    if (!['woff2', 'woff', 'ttf', 'otf'].includes(ext)) {
+      toast('Поддерживаются только .woff2, .woff, .ttf, .otf', 'error')
+      return
+    }
+
+    setUploading(true)
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer())
+      const fontUrl = await window.syntee.fonts.import(buf, file.name)
+      if (!fontUrl) {
+        toast('Не удалось загрузить шрифт', 'error')
+        return
+      }
+      // Обновляем список кастомных шрифтов
+      await refreshCustomFonts()
+      // Инжектим в DOM
+      const updatedList = await window.syntee.fonts.list()
+      await injectCustomFonts(updatedList.map(f => ({ id: f.id, name: f.name })))
+      toast(`Шрифт «${file.name}» загружен`, 'success')
+    } catch {
+      toast('Ошибка загрузки шрифта', 'error')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleDeleteCustomFont(fontName: string) {
+    // Находим кастомный шрифт по имени
+    const cf = customFonts.find(f => f.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '-') === fontName)
+    if (!cf) return
+    try {
+      await window.syntee.fonts.delete(cf.id)
+      await refreshCustomFonts()
+      const updatedList = await window.syntee.fonts.list()
+      await injectCustomFonts(updatedList.map(f => ({ id: f.id, name: f.name })))
+      // Если удалили активный шрифт — сбрасываем на Inter
+      if ((settings['fontFamily'] as string) === fontName) {
+        onSet('fontFamily', 'Inter')
+      }
+      toast('Шрифт удалён', 'success')
+    } catch {
+      toast('Не удалось удалить шрифт', 'error')
+    }
+  }
+
+  const currentUiFont = (settings['fontFamily'] as string) || 'Inter'
+  const currentMonoFont = (settings['fontMono'] as string) || 'JetBrains Mono'
+  const isCustomFont = !BUILTIN_UI_FONTS.includes(currentUiFont)
+
+  return (
+    <>
+      <Field label="Шрифт интерфейса" description="Основной шрифт приложения">
+        <div className="font-picker-row">
+          <select
+            className="settings-select font-picker-select"
+            value={currentUiFont}
+            onChange={e => onSet('fontFamily', e.target.value)}
+          >
+            {allUiFonts.map(f => (
+              <option key={f} value={f} style={{ fontFamily: f === 'system' ? undefined : `'${f}', sans-serif` }}>
+                {f}
+              </option>
+            ))}
+          </select>
+          {isCustomFont && (
+            <button
+              className="font-picker-delete"
+              title="Удалить шрифт"
+              onClick={() => handleDeleteCustomFont(currentUiFont)}
+            >
+              <AppIcon name="trash" size="sm" />
+            </button>
+          )}
+        </div>
+      </Field>
+
+      <Field label="Шрифт кода" description="Для блоков кода, путей, ID">
+        <select
+          className="settings-select"
+          value={currentMonoFont}
+          onChange={e => onSet('fontMono', e.target.value)}
+        >
+          {allMonoFonts.map(f => (
+            <option key={f} value={f} style={{ fontFamily: `'${f}', monospace` }}>
+              {f}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Свой шрифт" description="Загрузить .woff2, .woff, .ttf или .otf">
+        <div className="font-upload-area">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".woff2,.woff,.ttf,.otf"
+            style={{ display: 'none' }}
+            onChange={handleFileSelected}
+          />
+          <motion.button
+            className="font-upload-btn"
+            onClick={handleUploadClick}
+            disabled={uploading}
+            whileTap={{ scale: 0.97 }}
+          >
+            <AppIcon name="upload" size="sm" />
+            <span>{uploading ? 'Загрузка...' : 'Загрузить шрифт'}</span>
+          </motion.button>
+        </div>
+      </Field>
+
+      {customFonts.length > 0 && (
+        <Field label="Загруженные шрифты" description={`${customFonts.length} шт.`} block>
+          <div className="font-custom-list">
+            {customFonts.map(cf => {
+              const fontName = cf.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '-')
+              const isActive = currentUiFont === fontName
+              return (
+                <div key={cf.id} className={`font-custom-item${isActive ? ' font-custom-item--active' : ''}`}>
+                  <span className="font-custom-name" style={{ fontFamily: `'${fontName}', sans-serif` }}>
+                    {cf.name}
+                  </span>
+                  <div className="font-custom-actions">
+                    {!isActive && (
+                      <button
+                        className="font-custom-apply"
+                        title="Сделать активным"
+                        onClick={() => onSet('fontFamily', fontName)}
+                      >
+                        <AppIcon name="check" size="sm" />
+                      </button>
+                    )}
+                    <button
+                      className="font-custom-delete"
+                      title="Удалить"
+                      onClick={() => handleDeleteCustomFont(fontName)}
+                    >
+                      <AppIcon name="trash" size="sm" />
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </Field>
+      )}
+    </>
+  )
+}
+
 
 const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   const [accentPickerOpen, setAccentPickerOpen] = useState(false)
@@ -707,11 +906,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         )}
       </AnimatePresence>
 
-      <Field label="Шрифт">
-        <select className="settings-select" value={(settings['fontFamily'] as string) || 'Inter'} onChange={e => onSet('fontFamily', e.target.value)}>
-          {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
-        </select>
-      </Field>
+      <FontSettingsBlock settings={settings} onSet={onSet} />
 
       <Field label="Плотность интерфейса" description="Компактный / Комфортный / Просторный">
         <div className="settings-theme-grid">

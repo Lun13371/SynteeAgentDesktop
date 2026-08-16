@@ -58,20 +58,82 @@ function getRoute(): Route {
   return 'chat'
 }
 
-// Доступные UI-шрифты. Только те, что подключены локально в fonts.css.
-// Моноширинный (--font-mono) не настраивается пользователем — всегда
-// JetBrains Mono для кода/путей.
+// ── Шрифты ──────────────────────────────────────────────────────
+// UI_FONTS — встроенные шрифты, подключённые локально в fonts.css.
+// MONO_FONTS — моноширинные шрифты для кода/путей/ID.
+// Кастомные шрифты добавляются динамически через injectCustomFonts().
+export interface CustomFont { id: string; name: string }
+
 const UI_FONTS: Record<string, string> = {
   'Inter': "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  'Manrope': "'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  'Unbounded': "'Unbounded', 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  'Space Grotesk': "'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  'Onest': "'Onest', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  'Sora': "'Sora', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
   'system': '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 }
 
-// Применяет выбранный шрифт к CSS-переменной --font-family на :root.
-// Раньше select в Settings сохранял значение, но не менял реальный
-// шрифт — CSS-переменная оставалась дефолтной.
+const MONO_FONTS: Record<string, string> = {
+  'JetBrains Mono': "'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Consolas', monospace",
+  'Fira Code': "'Fira Code', 'JetBrains Mono', 'SF Mono', 'Consolas', monospace",
+  'system mono': "'SF Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace",
+}
+
+// Динамический реестр кастомных шрифтов: name → font-family stack.
+// Заполняется injectCustomFonts() при старте и при импорте нового шрифта.
+const customFontStacks: Record<string, string> = {}
+
+// Получает font-stack по ID шрифта. Ищет сначала в кастомных, потом во встроенных.
+export function getFontStack(fontId: string, isMono = false): string | undefined {
+  if (customFontStacks[fontId]) return customFontStacks[fontId]
+  return (isMono ? MONO_FONTS : UI_FONTS)[fontId]
+}
+
+// Получить список всех доступных шрифтов (встроенные + кастомные).
+export function getAllFonts(isMono = false): string[] {
+  return [...Object.keys(isMono ? MONO_FONTS : UI_FONTS), ...Object.keys(customFontStacks)]
+}
+
+// Применяет выбранный UI-шрифт к CSS-переменной --font-family на :root.
 export function applyFontToDOM(fontId: string) {
-  const stack = UI_FONTS[fontId] ?? UI_FONTS['Inter']
+  const stack = getFontStack(fontId) ?? UI_FONTS['Inter']
   document.documentElement.style.setProperty('--font-family', stack)
+}
+
+// Применяет выбранный моноширинный шрифт к --font-mono.
+export function applyMonoToDOM(fontId: string) {
+  const stack = getFontStack(fontId, true) ?? MONO_FONTS['JetBrains Mono']
+  document.documentElement.style.setProperty('--font-mono', stack)
+}
+
+// Инжектит @font-face для кастомных шрифтов через <style id="custom-fonts">.
+// Вызывается при старте и при добавлении нового шрифта.
+// customFonts — массив { id: "custom-fonts://file.woff2", name: "file.woff2" }.
+export async function injectCustomFonts(customFonts: CustomFont[]): Promise<void> {
+  let styleEl = document.getElementById('custom-fonts-style') as HTMLStyleElement | null
+  if (!styleEl) {
+    styleEl = document.createElement('style')
+    styleEl.id = 'custom-fonts-style'
+    document.head.appendChild(styleEl)
+  }
+
+  // Очищаем реестр и стиль
+  styleEl.textContent = ''
+  for (const k of Object.keys(customFontStacks)) delete customFontStacks[k]
+
+  for (const cf of customFonts) {
+    try {
+      const dataUrl = await window.syntee.fonts.read(cf.id)
+      if (!dataUrl) continue
+      // Имя шрифта для CSS = имя файла без расширения
+      const fontName = cf.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '-')
+      const css = `@font-face { font-family: '${fontName}'; font-style: normal; font-weight: 100 900; font-display: swap; src: url('${dataUrl}') format('woff2'); }`
+      styleEl.textContent += css + '\n'
+      // Регистрием в реестре: stack с fallback на Inter
+      customFontStacks[fontName] = `'${fontName}', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
+    } catch { /* skip broken font */ }
+  }
 }
 
 // Применяет кастомный accent цвет поверх темы. Меняет --accent и
@@ -426,7 +488,7 @@ export default function App() {
       try {
         const [theme, bgStyle, msgAnim, accentColor, animatedBg,
           avatarStyle, showTime, userMarkdown, uiSounds, sendEffect,
-          fontFamily, savedPanelWidth, savedPanelOpen, savedPanelTab,
+          fontFamily, fontMono, customFontsList, savedPanelWidth, savedPanelOpen, savedPanelTab,
           glassBlur, density, accentGradient, rainbowAccent, bgImage, bgImageEnabled,
           animatedBgOpacity, animatedBgSpeed, bgStyleParams,
           customThemes, activeCustomThemeId, themeSchedule, recentAccents,
@@ -442,6 +504,8 @@ export default function App() {
           window.syntee.settings.get('uiSounds'),
           window.syntee.settings.get('sendEffect'),
           window.syntee.settings.get('fontFamily'),
+          window.syntee.settings.get('fontMono'),
+          window.syntee.fonts.list(),
           window.syntee.settings.get('agentPanelWidth'),
           window.syntee.settings.get('agentPanelOpen'),
           window.syntee.settings.get('agentPanelTab'),
@@ -498,7 +562,13 @@ export default function App() {
         // Запись в electron-store идёт через SettingsPage при toggle.
         st.setMouseNavEnabled(typeof mouseNavEnabled === 'boolean' ? mouseNavEnabled : true)
 
+        // Инжектим кастомные шрифты (если есть) ДО применения fontFamily,
+        // чтобы applyFontToDOM нашёл шрифт в customFontStacks.
+        if (Array.isArray(customFontsList) && customFontsList.length > 0) {
+          await injectCustomFonts(customFontsList)
+        }
         if (fontFamily) applyFontToDOM(fontFamily as string)
+        if (fontMono) applyMonoToDOM(fontMono as string)
 
         const currentTheme = useUIStore.getState().theme
         const themes = useUIStore.getState().customThemes

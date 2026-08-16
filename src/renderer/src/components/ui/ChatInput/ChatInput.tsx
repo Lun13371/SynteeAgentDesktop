@@ -83,6 +83,8 @@ interface ChatInputProps {
   /** Изменения последнего turn'а — для ChangesBadge над инпутом.
    *  null = нет правок / инкогнито / новый запрос сбросил. */
   lastTurnChanges?: LastTurnChanges | null
+  /** Бейдж в live-режиме — shimmer/glow анимация, нет undo. */
+  badgeLive?: boolean
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -198,6 +200,7 @@ function ChatInput({
   onAttachmentsChange,
   maxAttachments = 10,
   lastTurnChanges = null,
+  badgeLive = false,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
@@ -1014,7 +1017,7 @@ function ChatInput({
         {chatId && <ExtensionsBadge chatId={chatId} isIncognito={isIncognito} />}
 
         {/* Бейдж изменений последнего запроса — +N -M строк, popup с undo. */}
-        {chatId && lastTurnChanges && <ChangesBadge chatId={chatId} changes={lastTurnChanges} />}
+        {chatId && lastTurnChanges && <ChangesBadge chatId={chatId} changes={lastTurnChanges} live={badgeLive} />}
 
         {/* Бейдж режима планирования — над инпут полем */}
         <AnimatePresence>

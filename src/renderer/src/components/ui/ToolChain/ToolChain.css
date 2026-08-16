@@ -38,23 +38,105 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 8px 10px 8px 10px;
   border-bottom: 1px solid transparent;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, background 0.15s;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
-.tc2-header:has(+ .tc2-iters) {
+.tc2-header:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.03));
+}
+.tc2-header:has(+ .tc2-iters-wrap--open) {
   border-bottom-color: var(--border);
 }
 
+/* ── Статус-полоска слева (2px) ── */
+.tc2 {
+  border-left: 2px solid transparent;
+  transition: border-left-color 0.3s ease;
+}
+.tc2--running {
+  border-left-color: var(--accent, #6366f1);
+}
+.tc2--has-fail {
+  border-left-color: #f87171;
+}
+.tc2--all-ok {
+  border-left-color: rgba(74,222,128,0.45);
+}
+
+/* Shimmer на шапке — всегда в DOM.
+   Медленный плавный блик, 5s линейный цикл.
+   Появление: 0.5s мягкий fade-in.
+   Исчезновение: "распад дымки" 1.5s —
+   opacity гаснет, blur 0→20px расплывается,
+   scale 1→1.2 расширяется, Y-сдвиг вверх + лёгкий поворот.
+   Эффект: дымка рассыпается и улетает. */
+.tc2-header::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 15%,
+    color-mix(in srgb, var(--accent, #6366f1) 24%, transparent) 50%,
+    transparent 85%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: tc2-header-shimmer 5s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+  will-change: opacity, filter, transform;
+  /* default (не running) — растворённое состояние */
+  opacity: 0;
+  filter: blur(20px);
+  transform: scale(1.2) translateY(-8px) rotate(-1deg);
+  transform-origin: center;
+  transition:
+    opacity 1.5s cubic-bezier(0.32, 0, 0.67, 0),
+    filter 1.5s cubic-bezier(0.32, 0, 0.67, 0),
+    transform 1.5s cubic-bezier(0.32, 0, 0.67, 0);
+}
+.tc2--running .tc2-header::after {
+  opacity: 1;
+  filter: blur(0px);
+  transform: scale(1) translateY(0) rotate(0deg);
+  transition:
+    opacity 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
+    filter 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.tc2-header > * {
+  position: relative;
+  z-index: 1;
+}
+@keyframes tc2-header-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 .tc2-collapse-btn {
-  background: none; border: none; cursor: pointer;
+  background: none; border: none;
+  cursor: pointer;
   color: var(--text-muted); padding: 2px;
   display: flex; align-items: center;
   border-radius: 3px;
-  transition: color 0.15s, background 0.15s;
+  transition: color 0.15s, transform 0.2s ease;
   flex-shrink: 0;
 }
-.tc2-collapse-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.tc2-header:hover .tc2-collapse-btn {
+  color: var(--text-primary);
+  transform: translateX(-1px);
+}
+.tc2-header:hover .tc2-collapse-btn svg {
+  transform: scale(1.1);
+  transition: transform 0.2s ease;
+}
 
 .tc2-header-summary {
   display: flex; align-items: center; gap: 6px; flex: 1;
@@ -64,11 +146,49 @@
   color: var(--text-secondary);
 }
 
-.tc2-elapsed {
-  font-size: 11px;
+/* ── Elapsed pill-бейдж ── */
+.tc2-elapsed-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--bg-tertiary, rgba(255,255,255,0.05));
   color: var(--text-muted);
-  margin-left: 6px;
-  opacity: 0.7;
+  margin-left: 4px;
+  transition: opacity 0.2s;
+}
+
+/* ── Статус-бейджи (✓count ✗count) ── */
+.tc2-status-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tc2-status-badge {
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
+  border-radius: 8px;
+  line-height: 1.4;
+}
+.tc2-status-badge--ok {
+  background: rgba(74,222,128,0.15);
+  color: #4ade80;
+}
+.tc2-status-badge--fail {
+  background: rgba(248,113,113,0.15);
+  color: #f87171;
+}
+.tc2-status-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-left: 2px;
 }
 
 /* Summary — финальный свёрнутый блок как в Codex */
@@ -87,23 +207,90 @@
 .tc2-header-chips {
   display: flex; gap: 3px; align-items: center;
   flex-shrink: 0;
+  position: relative;
+}
+/* CSS-tooltip при hover на чипы — показывает список тулов */
+.tc2-header-chips:hover::after {
+  content: attr(data-tools);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-tertiary, rgba(30,30,35,0.95));
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-3px);
+  animation: tc2-tooltip-in 0.2s ease forwards;
+  animation-delay: 0.15s;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+@keyframes tc2-tooltip-in {
+  to { opacity: 1; transform: translateY(0); }
 }
 .tc2-mini-chip {
   padding: 2px 5px; border-radius: 4px;
   display: flex; align-items: center; gap: 2px;
   font-size: 10px;
+  flex-shrink: 0;
+}
+.tc2-mini-chip-count {
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
 }
 .tc2-mini-chip--pulse {
   color: var(--text-muted);
   animation: tc2-pulse-opacity 1.2s infinite;
 }
 
-/* ── Контейнер итераций ── */
+/* Живая шапка — текущий аргул */
+.tc2-header-current-arg {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary, rgba(255,255,255,0.05));
+  padding: 1px 6px;
+  border-radius: 3px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tc2-elapsed--live {
+  color: var(--accent, #6366f1);
+  opacity: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Контейнер итераций — grid 0fr→1fr для плавной height-анимации ── */
+.tc2-iters-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.tc2-iters-wrap--open {
+  grid-template-rows: 1fr;
+}
 .tc2-iters {
-  padding: 8px 10px 10px;
+  overflow: hidden;
+  min-height: 0;
+  padding: 0 10px;
   display: flex;
   flex-direction: column;
   gap: 0;
+  opacity: 0;
+  transition: opacity 0.2s ease, padding 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.tc2-iters-wrap--open .tc2-iters {
+  opacity: 1;
+  padding: 8px 10px 10px;
 }
 
 /* ── Одна итерация ── */
@@ -113,40 +300,77 @@
   position: relative;
 }
 
-/* Вертикальная линия + точка */
+/* Вертикальная линия + точка с иконкой */
 .tc2-rail {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 11px;
+  padding-top: 5px;
   flex-shrink: 0;
-  width: 14px;
+  width: 20px;
 }
 .tc2-dot {
-  width: 10px; height: 10px;
+  width: 20px; height: 20px;
   border-radius: 50%;
   flex-shrink: 0;
   position: relative;
   z-index: 1;
-  transition: background 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--dot-color, #94a3b8) 15%, transparent);
+  color: var(--dot-color, #94a3b8);
+  transition: background 0.3s, color 0.3s;
 }
+/* Спиннер-кольцо вокруг точки — бегает по радиусу */
 .tc2-dot--pulse::after {
   content: '';
   position: absolute;
   inset: -3px;
   border-radius: 50%;
-  animation: tc2-pulse-ring 1.4s infinite;
-  background: currentColor;
-  opacity: 0.4;
+  border: 1.5px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  animation: tc2-spin 0.7s linear infinite;
+}
+.tc2-dot--done {
+  animation: tc2-dot-pop 0.35s ease-out;
+}
+.tc2-dot--fail {
+  background: rgba(248,113,113,0.15);
+  color: #f87171;
+}
+.tc2-dot--group {
+  background: color-mix(in srgb, var(--dot-color, #94a3b8) 15%, transparent);
+  color: var(--dot-color, #94a3b8);
+}
+.tc2-dot-check {
+  width: 12px; height: 12px;
+  stroke-dasharray: 20;
+  stroke-dashoffset: 20;
+  animation: tc2-check-draw 0.3s ease-out forwards;
+}
+.tc2-dot-cross {
+  width: 12px; height: 12px;
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+  animation: tc2-check-draw 0.3s ease-out forwards;
 }
 .tc2-dot--thinking {
   background: var(--border) !important;
+  color: var(--text-muted) !important;
   animation: tc2-pulse-opacity 1.2s infinite;
 }
 .tc2-rail-line {
   width: 1px; flex: 1; min-height: 8px;
   background: var(--border);
   margin: 3px 0;
+}
+.tc2-rail-line--ok {
+  background: rgba(74,222,128,0.3);
+}
+.tc2-rail-line--fail {
+  background: rgba(248,113,113,0.3);
 }
 
 /* ── Тело итерации ── */
@@ -175,6 +399,37 @@
 }
 .tc2-iter-header--open {
   background: var(--bg-hover, var(--overlay-2));
+}
+.tc2-iter-header--fail {
+  background: rgba(248,113,113,0.07);
+  box-shadow: inset 2px 0 0 #f87171;
+}
+.tc2-iter-header--fail:hover {
+  background: rgba(248,113,113,0.12);
+}
+.tc2-iter-header--running {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent, #6366f1) 7%, transparent),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: tc2-shimmer 2s linear infinite;
+}
+@keyframes tc2-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Длительность итерации */
+.tc2-iter-duration {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
 }
 
 .tc2-iter-icon {
@@ -631,6 +886,72 @@
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.35; }
 }
+@keyframes tc2-check-draw {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes tc2-dot-pop {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+
+/* ── Conic-gradient рамка на running-блоке ── */
+@property --tc2-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+/* Conic-рамка — всегда в DOM, плавный fade in/out через opacity */
+.tc2 {
+  position: relative;
+}
+.tc2::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--tc2-angle, 0deg),
+    transparent 70%,
+    var(--accent, #6366f1),
+    transparent 90%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: tc2-border-spin 2.5s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.tc2--running::before {
+  opacity: 1;
+}
+@keyframes tc2-border-spin {
+  to { --tc2-angle: 360deg; }
+}
+
+/* ── Группа повторяющихся тулов ── */
+.tc2-iter--group > .tc2-iter-body {
+  padding-bottom: 4px;
+}
+.tc2-group-header {
+  gap: 5px;
+}
+.tc2-group-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.tc2-group-iters {
+  padding-left: 4px;
+  margin-left: 6px;
+  border-left: 1px solid var(--border);
+}
 
 /* Кнопка догрузки («Показать ещё») — для окна итераций и chunked DiffBlock.
    Визуально повторяет .trr-expand-btn из ToolResultRenderer.css. */
@@ -644,9 +965,12 @@
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
   align-self: flex-start;
-  margin: 4px 0 4px 26px;
+  margin: 4px 0 4px 30px;
 }
 .tc2-show-more:hover {
   background: var(--overlay-3);
   color: var(--text-primary);
 }
+
+
+

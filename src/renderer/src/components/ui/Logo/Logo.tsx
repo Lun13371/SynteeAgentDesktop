@@ -31,7 +31,7 @@ export default function Logo({ size = 32, className }: LogoProps) {
     >
       <span
         style={{
-          fontFamily: 'system-ui, sans-serif',
+          fontFamily: 'var(--font-family, system-ui, sans-serif)',
           fontSize: size * (18 / 32),
           fontWeight: 800,
           color: 'var(--on-accent)',
