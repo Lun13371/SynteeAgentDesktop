@@ -29,6 +29,66 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p
 }
 
+/** Внутренний счётчик: плавно увеличивается от from к to с ускорением
+ *  (easeInCubic — медленный старт, быстрый финал). rAF для 60fps. */
+function CounterAnim({ from, to, prefix }: { from: number; to: number; prefix: string }) {
+  const [display, setDisplay] = useState(from)
+  const rafRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (from === to) { setDisplay(to); return }
+    const diff = Math.abs(to - from)
+    const duration = Math.min(1500, Math.max(200, diff * 60))
+    const start = performance.now()
+    const ease = (t: number) => t * t * t
+
+    const tick = (now: number) => {
+      const elapsed = now - start
+      const t = Math.min(1, elapsed / duration)
+      setDisplay(Math.round(from + (to - from) * ease(t)))
+      if (t < 1) rafRef.current = requestAnimationFrame(tick)
+      else { setDisplay(to); rafRef.current = null }
+    }
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(tick)
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
+  }, [from, to])
+
+  return <>{prefix}{display}</>
+}
+
+/** Slot-machine + counter: старая цифра уезжает вниз и исчезает,
+ *  новая приезжает сверху — и внутри неё значение плавно растёт
+ *  от старого к новому с ускорением. */
+function RollingNumber({ value, prefix, className }: { value: number; prefix: string; className: string }) {
+  const [round, setRound] = useState(0)
+  const fromRef = useRef(value)
+
+  useEffect(() => {
+    if (fromRef.current !== value) {
+      setRound(r => r + 1)
+    }
+  }, [value])
+
+  return (
+    <span className="changes-badge-roll">
+      <AnimatePresence mode="popLayout" initial={false}>
+        <motion.span
+          key={round}
+          className={className}
+          initial={{ y: -18, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: 18, opacity: 0 }}
+          transition={{ type: 'spring', stiffness: 600, damping: 22 }}
+          onAnimationComplete={() => { fromRef.current = value }}
+        >
+          <CounterAnim from={fromRef.current} to={value} prefix={prefix} />
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  )
+}
+
 export default function ChangesBadge({ chatId, changes, live = false }: ChangesBadgeProps) {
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
@@ -40,18 +100,6 @@ export default function ChangesBadge({ chatId, changes, live = false }: ChangesB
   const closeTimer = useRef<number | null>(null)
 
   const { files, totalAdded, totalDeleted } = changes
-
-  // Pop-анимация при изменении счётчиков (live-режим)
-  const prevAdded = useRef(totalAdded)
-  const prevDeleted = useRef(totalDeleted)
-  const [popKey, setPopKey] = useState(0)
-  useEffect(() => {
-    if (prevAdded.current !== totalAdded || prevDeleted.current !== totalDeleted) {
-      prevAdded.current = totalAdded
-      prevDeleted.current = totalDeleted
-      setPopKey(k => k + 1)
-    }
-  }, [totalAdded, totalDeleted])
 
   const computeDropPos = useCallback(() => {
     if (!btnRef.current) return null
@@ -174,7 +222,13 @@ export default function ChangesBadge({ chatId, changes, live = false }: ChangesB
   }, [chatId, files.length, undoing])
 
   return (
-    <div className="changes-badge-wrap">
+    <motion.div
+      className="changes-badge-wrap"
+      initial={{ opacity: 0, scale: 0.5, y: 8 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.5, y: 8 }}
+      transition={{ type: 'spring', stiffness: 500, damping: 28 }}
+    >
       <motion.button
         ref={btnRef}
         className={`changes-badge-pill${live ? ' changes-badge-pill--live' : ''}`}
@@ -194,20 +248,8 @@ export default function ChangesBadge({ chatId, changes, live = false }: ChangesB
           <path d="M15 14l3-3 3 3"/>
           <path d="M15 17h6"/>
         </svg>
-        <motion.span
-          key={`added-${popKey}`}
-          className="changes-badge-added"
-          initial={popKey > 0 ? { scale: 1.6, y: -2 } : false}
-          animate={{ scale: 1, y: 0 }}
-          transition={{ type: 'spring', stiffness: 700, damping: 12 }}
-        >+{totalAdded}</motion.span>
-        <motion.span
-          key={`deleted-${popKey}`}
-          className="changes-badge-deleted"
-          initial={popKey > 0 ? { scale: 1.6, y: -2 } : false}
-          animate={{ scale: 1, y: 0 }}
-          transition={{ type: 'spring', stiffness: 700, damping: 12 }}
-        >-{totalDeleted}</motion.span>
+        <RollingNumber value={totalAdded} prefix="+" className="changes-badge-added" />
+        <RollingNumber value={totalDeleted} prefix="-" className="changes-badge-deleted" />
         {files.length > 1 && (
           <span className="changes-badge-files">{files.length} файлах</span>
         )}
@@ -302,7 +344,6 @@ export default function ChangesBadge({ chatId, changes, live = false }: ChangesB
               ) : (
                 <div className="changes-popup-live-hint">
                   <span className="changes-popup-live-dot" />
-                  Изменения появляются в реальном времени
                 </div>
               )}
             </motion.div>
@@ -310,6 +351,6 @@ export default function ChangesBadge({ chatId, changes, live = false }: ChangesB
         </AnimatePresence>,
         document.body,
       )}
-    </div>
+    </motion.div>
   )
 }

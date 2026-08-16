@@ -39,15 +39,49 @@ export function normalizeToolName(name: string, schemas: Array<{ function: { nam
 // аргументов тихо упал (args = {}) — раньше это доходило до низкоуровневых
 // ошибок вида `The "paths[1]" argument must be of type string. Received
 // undefined` внутри path.resolve(), непонятных и для модели, и для пользователя.
+//
+// Возвращает структурированный результат с типом и описанием каждого
+// отсутствующего поля — модель быстрее исправляется, когда видит не просто
+// "missing path", а "missing path (string): Path to the file".
+
+export interface MissingArg {
+  name: string
+  expectedType: string
+  description: string
+}
+
 export function findMissingRequiredArgs(
   name: string,
   args: Record<string, unknown>,
-  schemas: Array<{ function: { name: string; parameters?: { required?: string[] } } }>,
-): string[] {
+  schemas: Array<{ function: { name: string; parameters?: { required?: string[]; properties?: Record<string, unknown> } } }>,
+): MissingArg[] {
   const schema = schemas.find(s => s.function.name === name)
   const required = schema?.function.parameters?.required
   if (!required?.length) return []
-  return required.filter(key => args[key] === undefined || args[key] === null || args[key] === '')
+  const props = schema?.function.parameters?.properties ?? {}
+  return required
+    .filter(key => args[key] === undefined || args[key] === null || args[key] === '')
+    .map(key => {
+      const prop = props[key] as { type?: string; description?: string } | undefined
+      return {
+        name: key,
+        expectedType: prop?.type ?? 'unknown',
+        description: prop?.description ?? '',
+      }
+    })
+}
+
+/**
+ * Форматирует список отсутствующих аргументов в понятное для модели сообщение.
+ * Показывает имя, ожидаемый тип и описание каждого поля — модель быстрее
+ * исправляется со структурированным фидбеком, чем с простым "missing: path, mode".
+ */
+export function formatMissingArgsMessage(toolName: string, missing: MissingArg[]): string {
+  const lines = missing.map(a => {
+    const desc = a.description ? ` — ${a.description.slice(0, 120)}` : ''
+    return `  - ${a.name} (${a.expectedType})${desc}`
+  })
+  return `${toolName}: missing required arguments:\n${lines.join('\n')}\n\nRepeat the call with ALL required arguments.`
 }
 
 /**
@@ -193,6 +227,110 @@ export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; 
     result = result.replace(unclosedString, ': "$1"$2')
     fixes.push('unclosed string quote')
   }
+
+  // Проход 4: одинарные кавычки вместо двойных.
+  // Модель (особенно DeepSeek) иногда генерирует: 'path': 'src/foo.ts'
+  // вместо 'path': "src/foo.ts". JSON требует двойные кавычки.
+  // Ловим только key:value пары с одинарными кавычками, не трогаем
+  // двойные (внутри которых могут быть апострофы: "don't").
+  const beforeSingleQuotes = result
+  result = result.replace(
+    /'([^'\\]*(?:\\.[^'\\]*)*)'(\s*[:,\]}])/g,
+    (_m, content: string, suffix: string) => `"${content}"${suffix}`,
+  )
+  if (result !== beforeSingleQuotes) fixes.push('single quotes → double quotes')
+
+  // Проход 5: литеральные newlines внутри строковых значений.
+  // Модель шлёт реальный \n внутри "content": "строка1\nстрока2"
+  // (с настоящим переводом строки, а не escape-последовательностью).
+  // JSON.parse падает на этом. Заменяем литеральный \n на \\n.
+  if (/:\s*"[^"]*\n[^"]*"/.test(result)) {
+    // Внутри строковых значений заменяем реальные newlines на \n
+    // Идём по строке, отслеживая контекст (внутри/вне строки)
+    let inString = false
+    let escaped = false
+    let out = ''
+    for (let i = 0; i < result.length; i++) {
+      const ch = result[i]
+      if (escaped) {
+        out += ch
+        escaped = false
+        continue
+      }
+      if (ch === '\\' && inString) {
+        out += ch
+        escaped = true
+        continue
+      }
+      if (ch === '"') {
+        inString = !inString
+        out += ch
+        continue
+      }
+      if (ch === '\n' && inString) {
+        out += '\\n'
+        continue
+      }
+      if (ch === '\r' && inString) {
+        // \r и \r\n → \n
+        if (result[i + 1] === '\n') i++ // skip \n
+        out += '\\n'
+        continue
+      }
+      if (ch === '\t' && inString) {
+        out += '\\t'
+        continue
+      }
+      out += ch
+    }
+    result = out
+    fixes.push('literal newline → \\n')
+  }
+
+  // Проход 6: незакрытые скобки — JSON обрезан на середине (обрыв стрима).
+  // Считаем баланс {/[ и }/]. Если есть недостающие закрывающие — добавляем.
+  // Это безопасно: лишние } в конце JSON валидны (парсится внешний объект).
+  {
+    const opens = (result.match(/[[{]/g) ?? []).length
+    const closes = (result.match(/[}\]]/g) ?? []).length
+    const diff = opens - closes
+    if (diff > 0 && diff <= 4) {
+      // Нужно добавить diff закрывающих скобок. Но порядок важен:
+      // } и ] должны соответствовать открывающим. Простой подход:
+      // парсим стеком, добавляем в обратном порядке.
+      const stack: string[] = []
+      let inStr = false
+      let esc = false
+      for (let i = 0; i < result.length; i++) {
+        const ch = result[i]
+        if (esc) { esc = false; continue }
+        if (ch === '\\' && inStr) { esc = true; continue }
+        if (ch === '"') { inStr = !inStr; continue }
+        if (inStr) continue
+        if (ch === '{') stack.push('}')
+        else if (ch === '[') stack.push(']')
+        else if (ch === '}' || ch === ']') stack.pop()
+      }
+      if (stack.length > 0 && stack.length <= 4) {
+        // Добавляем закрывающие в обратном порядке (стек уже LIFO)
+        result = result + stack.reverse().join('')
+        fixes.push(`added ${stack.length} missing closing bracket(s)`)
+      }
+    }
+  }
+
+  // Проход 7: незакавыченные пути Windows с обратными слешами.
+  // Модель шлёт: "path": C:\Projects\foo.ts → "path": "C:\\Projects\\foo.ts"
+  // Ловим только для path/cwd/url ключей, и только если значение
+  // начинается с буквы диска (C:\, D:\) или / — признаки пути.
+  const pathKeyPattern = /("(?:path|cwd|url)":\s*)(?!")([A-Za-z]:\\[^\s,}\]]+|[\\/][^\s,}\]]+)/g
+  const beforePaths = result
+  result = result.replace(pathKeyPattern, (_m, prefix: string, val: string) => {
+    // Экранируем обратные слеши для JSON
+    const escaped = val.replace(/\\/g, '\\\\')
+    return `${prefix}"${escaped}"`
+  })
+  if (result !== beforePaths) fixes.push('unquoted Windows path')
 
   return { repaired: result, fixed: fixes.length > 0, fixes }
 }

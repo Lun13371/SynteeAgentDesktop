@@ -46,6 +46,19 @@
   font-weight: 400;
 }
 
+/* ── RollingNumber — slot-machine обёртка ──
+   overflow:hidden обрезает уезжающую/приезжающую цифру. */
+.changes-badge-roll {
+  display: inline-flex;
+  position: relative;
+  overflow: hidden;
+  line-height: 1.2;
+}
+.changes-badge-roll > span {
+  display: inline-block;
+  white-space: nowrap;
+}
+
 /* ── Popup (portal) — glass-эстетика как ext-popup ────────────────────── */
 
 .changes-popup {
