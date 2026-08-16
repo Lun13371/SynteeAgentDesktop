@@ -154,7 +154,7 @@ export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; 
   if (ENUM_KEY_NAMES.length > 0) {
     const keyPattern = ENUM_KEY_NAMES.join('|')
     const unquotedEnum = new RegExp(
-      `("(?:${keyPattern})":\\s*)(?!")([a-zA-Z_]+)"`,
+      `("(?:${keyPattern})":\\s*)(?!")([a-zA-Z_][a-zA-Z0-9_-]*)"`,
       'gi',
     )
     result = result.replace(unquotedEnum, (_m, prefix: string, val: string) => {

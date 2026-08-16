@@ -867,6 +867,7 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
   const [modelStatus, setModelStatus] = useState<{ status: string; cached: boolean; displaySize: string } | null>(null)
   const [downloading, setDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
 
   // Запрос статуса при монтировании / смене размера модели.
   const refreshStatus = useCallback(() => {
@@ -889,13 +890,24 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
     const unsubProgress = api.voice.onProgress?.((info: { stage: string; progress?: number; message?: string }) => {
       if (info.stage === 'loading-model') {
         setDownloading(true)
+        setDownloadError(null)
         if (typeof info.progress === 'number') setDownloadProgress(info.progress)
         if (info.progress === 100) setDownloading(false)
+      }
+      // Сообщения об ошибках приходят без stage (type:'error' в voice.ipc.ts
+      // пересылает { stage: undefined, message: "..." }). Раньше они
+      // игнорировались — юзер видел «Ошибка загрузки» без деталей.
+      if (info.message && !info.stage) {
+        setDownloadError(info.message)
+        setDownloading(false)
       }
     })
     const unsubStatus = api.voice.onStatus?.((info: { status: string; cached: boolean; displaySize: string }) => {
       setModelStatus(info)
-      if (info.status === 'ready' || info.status === 'idle') setDownloading(false)
+      if (info.status === 'ready' || info.status === 'idle') {
+        setDownloading(false)
+        setDownloadError(null)
+      }
     })
     return () => { unsubProgress?.(); unsubStatus?.() }
   }, [sttProvider])
@@ -906,6 +918,7 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
     if (!api?.voice?.download) return
     setDownloading(true)
     setDownloadProgress(0)
+    setDownloadError(null)
     try {
       const res = await api.voice.download(sttModelSize)
       if (res?.ok) {
@@ -935,7 +948,7 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
         </div>
       )
     }
-    if (modelStatus.status === 'error') {
+    if (modelStatus.status === 'error' || downloadError) {
       return (
         <div className="voice-model-status voice-model-status--error">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -990,6 +1003,11 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
             {downloading && (
               <div className="voice-model-progress">
                 <div className="voice-model-progress-bar" style={{ width: `${downloadProgress}%` }} />
+              </div>
+            )}
+            {downloadError && (
+              <div className="voice-model-error-text" title={downloadError}>
+                {downloadError}
               </div>
             )}
           </div>

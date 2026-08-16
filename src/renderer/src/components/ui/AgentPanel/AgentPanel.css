@@ -244,6 +244,14 @@
 .agent-detail__status--error     { color: #f87171; background: color-mix(in srgb, #f87171 12%, transparent); }
 .agent-detail__status--pending,
 .agent-detail__status--cancelled { color: var(--text-muted); background: var(--bg-tertiary); }
+.agent-detail__role-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+  letter-spacing: 0.2px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
 .agent-detail__model {
   font-size: 11px;
   color: var(--text-muted);

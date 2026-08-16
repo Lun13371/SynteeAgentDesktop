@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import ToolResultRenderer from './ToolResultRenderer'
 import type { ToolOutputMode } from '../../../../../shared/types'
+import { getSubagentRole } from '../../../../../shared/subagent-roles'
+
 import './ToolChain.css'
 
 export interface ToolStep {
@@ -321,6 +323,15 @@ const IterationBlock = memo(function IterationBlock({
           {iter.call.toolName && !meta.isMcp && (
             <code className="tc2-iter-name">{iter.call.toolName}</code>
           )}
+          {iter.call.toolName === 'spawn_agent' && iter.call.toolArgs?.role && (
+            <span
+              className="tc2-iter-role-badge"
+              style={{ color: getSubagentRole(iter.call.toolArgs.role as string).color }}
+            >
+              {getSubagentRole(iter.call.toolArgs.role as string).nameEn}
+            </span>
+          )}
+
 
           {iter.call.toolArgs && !open && (
             <span className="tc2-iter-preview">

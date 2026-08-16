@@ -4,7 +4,7 @@
   width: 100%;
   display: flex;
   flex-direction: column;
-  background: #0c0c10;
+  background: var(--body-bg);
   border-top: 1px solid var(--border);
   overflow: hidden;
   z-index: 4;
@@ -52,7 +52,7 @@ body.dock-resize-active * {
   justify-content: space-between;
   height: 34px;
   padding: 0 6px;
-  background: var(--panel-bg, #14141a);
+  background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   gap: 8px;
 }
@@ -165,10 +165,10 @@ body.dock-resize-active * {
 
 .bottom-dock__shell-picker {
   min-width: 160px;
-  background: var(--panel-bg, #1a1a20);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.4);
   padding: 4px;
   display: flex;
   flex-direction: column;

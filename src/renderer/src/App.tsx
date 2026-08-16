@@ -728,6 +728,10 @@ export default function App() {
     } else {
       applyCustomThemeToDOM(null)
     }
+    // xterm не читает CSS-переменные — обновляем JS-тему после применения
+    requestAnimationFrame(() => {
+      import('./utils/terminalRegistry').then(m => m.applyTerminalThemeAll())
+    })
   }, [theme])
 
   const glassBlur = useUIStore(s => s.glassBlur)
@@ -740,6 +744,9 @@ export default function App() {
   const accentColor = useUIStore(s => s.accentColor)
   useEffect(() => {
     applyGradientAccentToDOM(accentGradient.enabled, accentGradient.color2, accentGradient.angle, accentColor)
+    requestAnimationFrame(() => {
+      import('./utils/terminalRegistry').then(m => m.applyTerminalThemeAll())
+    })
   }, [accentGradient, accentColor])
 
   const bgImage = useUIStore(s => s.bgImage)
@@ -753,6 +760,9 @@ export default function App() {
       const ct = customThemes.find(t => t.id === activeCustomThemeId)
       if (ct) applyCustomThemeToDOM(ct)
     }
+    requestAnimationFrame(() => {
+      import('./utils/terminalRegistry').then(m => m.applyTerminalThemeAll())
+    })
   }, [customThemes, activeCustomThemeId])
 
   const rainbowAccent = useUIStore(s => s.rainbowAccent)

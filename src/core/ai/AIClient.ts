@@ -863,6 +863,8 @@ export class AIClient {
         return
       }
     }
+    // Все retry-попытки исчерпаны (429 на каждой) — не оставляем Promise висеть.
+    callbacks.onError(new Error(`Max retries (${this.maxRetries}) exceeded — rate limit persists.`))
   }
 
   async embed(text: string): Promise<number[]> {

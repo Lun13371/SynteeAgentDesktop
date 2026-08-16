@@ -8,6 +8,7 @@
  * обращении к реестру; данные пишутся в соответствующий term по sessionId.
  */
 import { Terminal } from '@xterm/xterm'
+import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 
@@ -21,6 +22,50 @@ interface Entry {
 
 const entries = new Map<string, Entry>()
 let globalSubscribed = false
+
+// ── Динамическая тема xterm из CSS-переменных ────────────────────────
+// xterm.js не читает CSS-переменные — его тема это JS-объект. Чтобы
+// терминал адаптировался под тему приложения (dark/light/custom),
+// читаем переменные из :root через getComputedStyle и мапим в ITheme.
+// ANSI-цвета оставляем фиксированными (One Dark palette) — они
+// универсально читаемы и на тёмном, и на светлом фоне.
+function getTerminalThemeFromCSS(): ITheme {
+  const cs = getComputedStyle(document.documentElement)
+  const get = (name: string, fallback: string): string =>
+    cs.getPropertyValue(name).trim() || fallback
+  return {
+    background: get('--body-bg', '#0e0e12'),
+    foreground: get('--text-primary', '#e8e8ec'),
+    cursor: get('--text-primary', '#e8e8ec'),
+    selectionBackground: get('--accent-subtle', 'rgba(255,255,255,0.12)'),
+    black: '#000000',
+    red: '#e06c75',
+    green: '#98c379',
+    yellow: '#e5c07b',
+    blue: '#61afef',
+    magenta: '#c678dd',
+    cyan: '#56b6c2',
+    white: '#d4d4d4',
+    brightBlack: '#5c5c5c',
+    brightRed: '#e06c75',
+    brightGreen: '#98c379',
+    brightYellow: '#e5c07b',
+    brightBlue: '#61afef',
+    brightMagenta: '#c678dd',
+    brightCyan: '#56b6c2',
+    brightWhite: '#ffffff',
+  }
+}
+
+/** Обновляет тему всех живых xterm-инстансов. Вызывать при смене темы
+ *  приложения (dark→light→custom и т.д.). Должна вызываться ПОСЛЕ того,
+ *  как CSS-переменные уже применены к DOM — используйте requestAnimationFrame. */
+export function applyTerminalThemeAll(): void {
+  const theme = getTerminalThemeFromCSS()
+  for (const e of entries.values()) {
+    e.term.options.theme = theme
+  }
+}
 
 // ── Throttling pty:data → term.write через rAF ──────────────────────────
 // Без этого каждый чанк pty:data синхронно пишет в xterm → при большом
@@ -86,28 +131,7 @@ export function getOrCreateTerminal({ sessionId, onData }: GetOrCreateOpts): Ent
     cursorBlink: true,
     fontSize: 13,
     fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, monospace',
-    theme: {
-      background: '#0c0c10',
-      foreground: '#d4d4d4',
-      cursor: '#d4d4d4',
-      selectionBackground: '#264f78',
-      black: '#000000',
-      red: '#e06c75',
-      green: '#98c379',
-      yellow: '#e5c07b',
-      blue: '#61afef',
-      magenta: '#c678dd',
-      cyan: '#56b6c2',
-      white: '#d4d4d4',
-      brightBlack: '#5c5c5c',
-      brightRed: '#e06c75',
-      brightGreen: '#98c379',
-      brightYellow: '#e5c07b',
-      brightBlue: '#61afef',
-      brightMagenta: '#c678dd',
-      brightCyan: '#56b6c2',
-      brightWhite: '#ffffff',
-    },
+    theme: getTerminalThemeFromCSS(),
     allowProposedApi: true,
     scrollback: 5000,
   })

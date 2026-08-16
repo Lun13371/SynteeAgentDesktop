@@ -193,6 +193,16 @@
   padding: 1px 5px; border-radius: 3px;
   flex-shrink: 0;
 }
+.tc2-iter-role-badge {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  letter-spacing: 0.2px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  flex-shrink: 0;
+}
+
 .tc2-iter-preview {
   font-size: 11px;
   color: var(--text-muted);

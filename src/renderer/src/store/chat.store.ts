@@ -33,7 +33,7 @@ export interface ChatLiveState {
    *  Заполняется событием agent:spawn (эмитится из main ДО запуска worker'а
    *  суб-агента). Renderer матчит запись с live-шагом tool_call spawn_agent
    *  по callId (или по task как fallback) и сразу рисует карточку саб-агента. */
-  spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
+  spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
   /** Структурированный ретрай для UI-счётчика «повтор 3/5». Не затирается
    *  следующим onStatus (в отличие от agentStatus). Сбрасывается в null
    *  при успехе/новом раунде. */

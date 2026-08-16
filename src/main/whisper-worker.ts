@@ -49,7 +49,11 @@ function isModelCached(modelId: string): { cached: boolean; path?: string } {
     const { env } = require('@huggingface/transformers')
     const { existsSync, readdirSync, statSync } = require('fs')
     const { join } = require('path')
-    const cacheDir = env.cacheDir || (process.env.TRANSFORMERS_CACHE || './.cache')
+    // ⚠️ @huggingface/transformers v4 НЕ читает TRANSFORMERS_CACHE из process.env
+    // (в отличие от Python-версии). По умолчанию cacheDir = <__dirname библиотеки>/.cache/
+    // — в production это внутри app.asar.unpacked (read-only в Program Files).
+    // Явно перенаправляем в userData/transformers-cache (writable).
+    const cacheDir = process.env.TRANSFORMERS_CACHE || env.cacheDir || './.cache'
     // transformers.js v3: models--{org}--{model}/snapshots/{hash}/
     const [org, model] = modelId.split('/')
     const modelDir = join(cacheDir, `models--${org}--${model}`)
@@ -96,11 +100,21 @@ async function ensurePipeline(modelSize: string): Promise<void> {
       // require вместо await import: нативный import() не работает в V8-байткоде
       // (паттерн из core/context/embeddings.ts).
       const { pipeline, env } = require('@huggingface/transformers')
+      // ⚠️ КРИТИЧНО: @huggingface/transformers v4 НЕ читает TRANSFORMERS_CACHE
+      // из process.env (в отличие от Python-версии). По умолчанию cacheDir =
+      // <__dirname библиотеки>/.cache/ — в production это внутри app.asar.unpacked
+      // (read-only в Program Files). Явно перенаправляем в userData/transformers-cache.
+      if (process.env.TRANSFORMERS_CACHE) {
+        env.cacheDir = process.env.TRANSFORMERS_CACHE
+      }
       try {
         env.backends.onnx.wasm.numThreads = 1
       } catch { /* onnx may not be configured */ }
       _pipeline = await pipeline('automatic-speech-recognition', modelId, {
         quantized: true,
+        // Явно передаём cache_dir в pipeline — FileCache использует
+        // file_cache_dir ?? env.cacheDir, и это самый надёжный способ.
+        cache_dir: process.env.TRANSFORMERS_CACHE || undefined,
         // Прогресс-колбэк загрузки модели.
         progress_callback: (info: { status?: string; progress?: number; loaded?: number; total?: number }) => {
           if (info.status === 'progress' && typeof info.progress === 'number') {

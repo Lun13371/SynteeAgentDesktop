@@ -503,6 +503,16 @@ export function runMigrations(db: Database.Database): void {
     }
   }
 
+  // Автомиграция: добавляем role колонку к subagents — для специализированных
+  // суб-агентов (researcher, deep-researcher, editor, implementer, reviewer).
+  // NULL у старых записей → getSubagentRole(null) → implementer (default).
+  {
+    const subCols = db.prepare(`PRAGMA table_info(subagents)`).all() as { name: string }[]
+    if (!subCols.find(c => c.name === 'role')) {
+      db.prepare(`ALTER TABLE subagents ADD COLUMN role TEXT`).run()
+    }
+  }
+
   // ── Attachments ──────────────────────────────────────────────────────────
   // Колонка attachments в messages — JSON-массив Attachment[] (метаданные для
   // рендера чипов над отправленным сообщением). Текстовое содержимое уже

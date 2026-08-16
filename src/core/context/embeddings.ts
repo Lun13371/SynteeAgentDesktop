@@ -46,11 +46,17 @@ async function initNeural(): Promise<void> {
     // require вместо await import: нативный import() не работает в V8-байткоде
     // (пакет имеет CJS-сборку dist/transformers.node.cjs для require-экспорта)
     const { pipeline, env } = require('@huggingface/transformers')
+    // ⚠️ @huggingface/transformers v4 НЕ читает TRANSFORMERS_CACHE из process.env.
+    // Явно перенаправляем в userData/transformers-cache (writable в production).
+    if (process.env.TRANSFORMERS_CACHE) {
+      env.cacheDir = process.env.TRANSFORMERS_CACHE
+    }
     try {
       env.backends.onnx.wasm.numThreads = 1
     } catch { /* onnx may not be configured */ }
     _pipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
       quantized: true,
+      cache_dir: process.env.TRANSFORMERS_CACHE || undefined,
     })
   } catch (e) {
     _neuralInitFailed = true

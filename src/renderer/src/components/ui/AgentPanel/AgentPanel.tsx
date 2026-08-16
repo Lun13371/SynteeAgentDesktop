@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
 import ToolChain from '../ToolChain/ToolChain'
+import { getSubagentRole } from '../../../../../shared/subagent-roles'
 import './AgentPanel.css'
 
 interface AgentStep {
@@ -28,6 +29,7 @@ interface AgentRecord {
   createdAt: number
   finishedAt?: number
   error?: string
+  role?: string
 }
 
 interface AgentPanelProps {
@@ -210,6 +212,14 @@ export default function AgentPanel({ focusAgentId, currentChatId }: AgentPanelPr
                   />
                   {STATUS_LABEL[selectedAgent.status]}
                 </span>
+                {selectedAgent.role && (
+                  <span
+                    className="agent-detail__role-badge"
+                    style={{ color: getSubagentRole(selectedAgent.role).color }}
+                  >
+                    {getSubagentRole(selectedAgent.role).nameEn}
+                  </span>
+                )}
                 <span className="agent-detail__model">{selectedAgent.model}</span>
                 <span className="agent-detail__elapsed">{elapsed(selectedAgent)}</span>
               </div>

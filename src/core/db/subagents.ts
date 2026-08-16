@@ -29,6 +29,7 @@ export interface SubagentRow {
   error: string | null
   workdir: string | null
   isolationMode: string | null
+  role: string | null
 }
 
 type SavedRow = {
@@ -47,6 +48,7 @@ type SavedRow = {
   error: string | null
   workdir: string | null
   isolation_mode: string | null
+  role: string | null
 }
 
 function parseRow(r: SavedRow): SubagentRow {
@@ -66,19 +68,20 @@ function parseRow(r: SavedRow): SubagentRow {
     error: r.error,
     workdir: r.workdir,
     isolationMode: r.isolation_mode,
+    role: r.role,
   }
 }
 
 const COLS = `id, parent_id, chat_id, task, status, model, mode,
   steps as steps_json, result, summary, created_at, finished_at, error,
-  workdir, isolation_mode`
+  workdir, isolation_mode, role`
 
 export function saveSubagent(rec: SubagentRow): void {
   getDB().prepare(`
     INSERT OR REPLACE INTO subagents
       (id, parent_id, chat_id, task, status, model, mode, steps, result,
-       summary, created_at, finished_at, error, workdir, isolation_mode)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       summary, created_at, finished_at, error, workdir, isolation_mode, role)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     rec.id,
     rec.parentId,
@@ -95,6 +98,7 @@ export function saveSubagent(rec: SubagentRow): void {
     rec.error,
     rec.workdir,
     rec.isolationMode,
+    rec.role,
   )
 }
 

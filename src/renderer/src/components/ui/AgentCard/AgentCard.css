@@ -111,6 +111,17 @@
 .agent-c__badge--error     { color: #f87171; background: color-mix(in srgb, #f87171 14%, transparent); }
 .agent-c__badge--cancelled { color: var(--text-muted); background: var(--overlay-3); }
 
+/* Role badge — показывает специализацию суб-агента */
+.agent-c__role-badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  letter-spacing: 0.2px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
 .agent-c__chevron {
   flex-shrink: 0;
   transition: transform 0.2s;

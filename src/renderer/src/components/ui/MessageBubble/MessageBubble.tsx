@@ -487,6 +487,19 @@ const ParsedContent = memo(function ParsedContent({
 // Обновления приходят через agent:update (кэш актуализируется событием).
 const agentCardCache = new Map<string, AgentCardData>()
 
+// Module-level agent:update listener — ОБНОВЛЯЕТ кэш даже когда ни один
+// AgentCardLive не смонтирован (виртуализация скролла размонтирует компоненты,
+// снимая их слушатели). Без этого финальный agent:update (done/cancelled)
+// прилетает без слушателя → кэш залипает в 'running' → карточка вечно "выполняется".
+let _agentCacheListenerInstalled = false
+if (!_agentCacheListenerInstalled) {
+  _agentCacheListenerInstalled = true
+  window.syntee.on('agent:update', (updated: { id: string } & Record<string, unknown>) => {
+    const normalized = normalizeAgent(updated)
+    agentCardCache.set(updated.id, normalized)
+  })
+}
+
 /**
  * Нормализует сырой AgentRecord из IPC (у него нет stepsCount/currentStep —
  * это computed-поля для UI) в AgentCardData, ожидаемую карточкой. Без этого
@@ -507,6 +520,7 @@ function normalizeAgent(raw: Record<string, unknown> & { id: string }): AgentCar
     error: raw.error as string | undefined,
     createdAt: (raw.createdAt as number) ?? Date.now(),
     finishedAt: raw.finishedAt as number | undefined,
+    role: raw.role as string | undefined,
     steps,
   }
 }
@@ -518,8 +532,11 @@ function AgentCardLive({ agentId, task }: {
   const [agent, setAgent] = useState<AgentCardData | null>(() => agentCardCache.get(agentId) ?? null)
 
   useEffect(() => {
-    // IPC только при cache-miss — scroll-remount не дёргает main повторно.
-    if (!agentCardCache.has(agentId)) {
+    // IPC при cache-miss ИЛИ если кэш stale (статус non-terminal — агент
+    // мог завершиться пока компонент был размонтирован виртуализатором).
+    const cached = agentCardCache.get(agentId)
+    const needsRefresh = !cached || cached.status === 'pending' || cached.status === 'running'
+    if (needsRefresh) {
       window.syntee.agent.get(agentId).then((a: unknown) => {
         if (a) {
           if (agentCardCache.size > 200) evictOldest(agentCardCache, 150)
@@ -539,13 +556,13 @@ function AgentCardLive({ agentId, task }: {
     // agent:spawn — main эмитит сразу при регистрации записи (status='pending'),
     // ДО первого step. Без этого карточка рисует 'pending' + '…' пока не придёт
     // первый agent:update с реальной моделью.
-    const offSpawn = window.syntee.on('agent:spawn', (e: { agentId: string; model?: string; task: string; ts: number }) => {
+    const offSpawn = window.syntee.on('agent:spawn', (e: { agentId: string; model?: string; role?: string; task: string; ts: number }) => {
       if (e.agentId !== agentId) return
       if (!agentCardCache.has(agentId) || !agentCardCache.get(agentId)?.model) {
         const initial: AgentCardData = {
           id: agentId, task: e.task, status: 'pending',
           model: e.model ?? '…', stepsCount: 0,
-          createdAt: e.ts, steps: [],
+          createdAt: e.ts, role: e.role, steps: [],
         }
         agentCardCache.set(agentId, initial)
         setAgent(initial)
@@ -571,6 +588,7 @@ function AgentCardLive({ agentId, task }: {
         error: agent?.error,
         createdAt: agent?.createdAt ?? Date.now(),
         finishedAt: agent?.finishedAt,
+        role: agent?.role,
         steps: agent?.steps as Array<{ type: string; toolName?: string; toolArgs?: Record<string, unknown>; content: string; success?: boolean; timestamp: number }> | undefined,
       }}
       live={status === 'pending' || status === 'running'}

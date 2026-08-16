@@ -47,7 +47,7 @@ export interface AgentCallbacks {
   onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
-  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none'; callId?: string }) => Promise<{ summary: string; error?: string }>
+  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none'; role?: string; callId?: string }) => Promise<{ summary: string; error?: string }>
   /**
    * Персистентный shell (§1 GAP_ANALYSIS.md) — если задан, run_command
    * выполняется через живую shell-сессию в main-процессе вместо
@@ -237,6 +237,10 @@ export type AgentRuntimeOptions = {
   /** Persona — single-select run mode. Read-only personas get an explicit
     *  reminder in defense-in-depth (same mechanism as planningMode). */
   persona?: import('../../shared/modes').PersonaId
+  /** §roles — role of this sub-agent (researcher/editor/implementer/...).
+    *  When set, defense-in-depth in executeTool issues a role-specific
+    *  blocked message for tools outside the role's allowlist. */
+  subagentRole?: string
 }
 
 export type AgentToolCallFingerprint = {

@@ -642,7 +642,7 @@ export function useChatRunSubscription() {
     // и мгновенно рисует карточку саб-агента, не дожидаясь tool_result.
     const offSpawn = window.syntee.on('agent:spawn', (data: {
       agentId: string; task: string; callId?: string
-      msgId: string; chatId: string; model?: string; ts: number
+      msgId: string; chatId: string; model?: string; role?: string; ts: number
     }) => {
       if (!data.chatId) return
       const buf = getBuf(data.chatId)
@@ -660,6 +660,7 @@ export function useChatRunSubscription() {
         task: data.task,
         msgId: data.msgId,
         model: data.model,
+        role: data.role,
         ts: data.ts,
       }]
       liveSet(data.chatId, { spawnedAgents: [...buf.spawnedAgents] })
