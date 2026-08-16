@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { motion } from 'framer-motion'
 import IconButton from '../../ui/IconButton/IconButton'
 import Identicon from '../../ui/Identicon/Identicon'
 import Logo from '../../ui/Logo/Logo'
@@ -8,6 +9,7 @@ import { useAuthStore } from '../../../store/auth.store'
 import { useBillingStore } from '../../../store/billing.store'
 import { useMessengerStore } from '../../../store/messenger.store'
 import { useUpdateStore, selectUpdateAvailable } from '../../../store/update.store'
+import { springHover, whileHoverSm, whileTapSm } from '../../../utils/motionPresets'
 import './TitleBar.css'
 
 interface TitleBarProps {
@@ -100,7 +102,7 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
         {onAgentClick && <IconButton icon="panelRight" label="Панель" onClick={onAgentClick} />}
         {onSettingsClick && <IconButton icon="settings" label="Настройки" onClick={onSettingsClick} />}
         {user && onProfileClick && (
-          <button
+          <motion.button
             type="button"
             className={`titlebar-avatar-btn ${limitCritical ? 'titlebar-avatar-btn--critical' : limitWarning ? 'titlebar-avatar-btn--warning' : ''}`}
             onClick={onProfileClick}
@@ -110,6 +112,9 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
                 : user.display_name || user.email
             }
             aria-label="Профиль"
+            whileHover={whileHoverSm}
+            whileTap={whileTapSm}
+            transition={springHover}
           >
             <Identicon
               seed={user.id || user.email}
@@ -125,7 +130,7 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
                 }}
               />
             )}
-          </button>
+          </motion.button>
         )}
         <IconButton icon="minus" label="Свернуть" onClick={handleMinimize} />
         <IconButton

@@ -1,4 +1,5 @@
 import { useMemo, memo } from 'react'
+import { motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import { useAuthStore } from '../../../store/auth.store'
 import {
@@ -6,6 +7,7 @@ import {
   normalizeStatus,
   type UptimeBucket,
 } from '../../../store/gatewayModels.store'
+import { whileHoverSm, whileTapSm, springHover } from '../../../utils/motionPresets'
 import './ModelStatusSection.css'
 
 /**
@@ -60,11 +62,14 @@ export default function ModelStatusSection() {
         )}
       </p>
 
-      <button
+      <motion.button
         type="button"
         className="model-status-refresh"
         onClick={() => load()}
         disabled={loading}
+        whileHover={whileHoverSm}
+        whileTap={whileTapSm}
+        transition={springHover}
       >
         {loading ? (
           <AppIcon name="loader" size="sm" animation="spin" />
@@ -72,7 +77,7 @@ export default function ModelStatusSection() {
           <AppIcon name="refreshCw" size="sm" />
         )}
         Обновить
-      </button>
+      </motion.button>
 
       {/* ── Провайдеры ── */}
       {providerStatus.length > 0 && (

@@ -11,6 +11,7 @@ import SideChatPanel from '../SideChatPanel/SideChatPanel'
 import TerminalPanel from '../TerminalPanel/TerminalPanel'
 import NotesPanel from '../NotesPanel/NotesPanel'
 import { useUIStore, type RightPanelTab } from '../../../store/ui.store'
+import { whileHoverListItem, whileTapListItem, springHover } from '../../../utils/motionPresets'
 import './RightPanel.css'
 
 export type { RightPanelTab }
@@ -131,7 +132,7 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
           <div className="right-panel__header">
             <div className="right-panel__tabs">
               {TABS.map(t => (
-                <button
+                <motion.button
                   key={t.id}
                   className={`right-panel__tab ${tab === t.id ? 'right-panel__tab--active' : ''}`}
                   onClick={() => {
@@ -139,6 +140,9 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
                     window.syntee.settings.set('agentPanelTab', t.id)
                   }}
                   title={t.label}
+                  whileHover={whileHoverListItem}
+                  whileTap={whileTapListItem}
+                  transition={springHover}
                 >
                   <AppIcon name={t.icon} size="xs" />
                   <span>{t.label}</span>
@@ -149,7 +153,7 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
                       transition={{ type: 'spring', stiffness: 400, damping: 30 }}
                     />
                   )}
-                </button>
+                </motion.button>
               ))}
             </div>
             <IconButton icon="x" label="Закрыть панель" size="sm" onClick={onClose} />

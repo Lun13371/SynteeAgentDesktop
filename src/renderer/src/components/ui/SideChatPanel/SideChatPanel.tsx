@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { motion } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import MessageBubble from '../MessageBubble/MessageBubble'
 import { useChatStore } from '../../../store/chat.store'
 import { initSideChatSend } from '../../../hooks/useChatRunSubscription'
 import type { Message } from '../../../../shared/types'
+import { whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import '../MessageBubble/MessageBubble.css'
 import './SideChatPanel.css'
 
@@ -126,13 +128,16 @@ export default function SideChatPanel({ currentChatId }: SideChatPanelProps) {
           {isRunning && <AppIcon name="loader" size="xs" animation="spin" />}
         </div>
         {messages.length > 0 && (
-          <button
+          <motion.button
             className="side-chat__reset"
             onClick={handleReset}
             title="Сбросить доп-чат"
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
           >
             <AppIcon name="trash" size="xs" />
-          </button>
+          </motion.button>
         )}
       </div>
 
@@ -170,18 +175,21 @@ export default function SideChatPanel({ currentChatId }: SideChatPanelProps) {
           rows={1}
         />
         {isRunning ? (
-          <button className="side-chat__stop" onClick={handleStop} title="Остановить">
+          <motion.button className="side-chat__stop" onClick={handleStop} title="Остановить" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
             <AppIcon name="x" size="xs" />
-          </button>
+          </motion.button>
         ) : (
-          <button
+          <motion.button
             className="side-chat__send"
             onClick={handleSend}
             disabled={!input.trim()}
             title="Отправить"
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
           >
             <AppIcon name="send" size="xs" />
-          </button>
+          </motion.button>
         )}
       </div>
     </div>

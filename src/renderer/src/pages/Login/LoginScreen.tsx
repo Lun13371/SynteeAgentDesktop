@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
+import { motion } from 'framer-motion'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import Logo from '../../components/ui/Logo/Logo'
 import { useAuthStore } from '../../store/auth.store'
+import { whileHoverWide, whileTapWide, springHover } from '../../utils/motionPresets'
 import './LoginScreen.css'
 
 interface LoginScreenProps {
@@ -109,11 +111,14 @@ export default function LoginScreen({ onContinueAsGuest }: LoginScreenProps) {
           </div>
         )}
 
-        <button
+        <motion.button
           type="button"
           className="login-screen__btn login-screen__btn--primary"
           onClick={waiting ? handleCancel : handleLogin}
           disabled={false}
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
         >
           {waiting ? (
             <>
@@ -126,17 +131,20 @@ export default function LoginScreen({ onContinueAsGuest }: LoginScreenProps) {
               <span>Войти через Syntee</span>
             </>
           )}
-        </button>
+        </motion.button>
 
-        <button
+        <motion.button
           type="button"
           className="login-screen__btn login-screen__btn--ghost"
           onClick={onContinueAsGuest}
           disabled={false}
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
         >
           <AppIcon name="user" size="sm" />
           <span>Продолжить как гость</span>
-        </button>
+        </motion.button>
 
         <p className="login-screen__hint">
           Гостевой режим: свои провайдеры и локальные модели, без моделей gateway и биллинга.

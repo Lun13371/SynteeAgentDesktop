@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid'
 import ColorPickerPopover from '../../ui/ColorPicker/ColorPickerPopover'
 import { normalizeHex } from '../../../utils/colorUtils'
 import { applyCustomThemeToDOM } from '../../../App'
+import { whileHoverBtn, whileTapBtn, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import type { CustomTheme } from '../../../../../shared/types'
 import './CustomThemeEditor.css'
 
@@ -249,15 +250,18 @@ export default function CustomThemeEditor({ themes, activeId, onChange, onApply 
         {themes.map(t => (
           <div key={t.id} className={`cte-item${t.id === editingId ? ' cte-item--editing' : ''}`}>
             <div className="cte-item-row">
-              <button
+              <motion.button
                 className="cte-item-preview"
                 style={{ background: t.colors.bodyBg, borderColor: t.colors.accent + '22' }}
                 onClick={() => onApply(t.id)}
                 title="Применить"
+                whileHover={whileHoverBtn}
+                whileTap={whileTapBtn}
+                transition={springHover}
               >
                 <div className="cte-item-sidebar" style={{ background: t.colors.bgSecondary }} />
                 <div className="cte-item-bubble" style={{ background: t.colors.accent }} />
-              </button>
+              </motion.button>
               <input
                 ref={t.id === editingId ? nameRef : undefined}
                 className="cte-item-name"
@@ -265,12 +269,12 @@ export default function CustomThemeEditor({ themes, activeId, onChange, onApply 
                 onChange={e => updateTheme(t.id, { name: e.target.value })}
               />
               <div className="cte-item-actions">
-                <button className="cte-icon-btn" onClick={() => setEditingId(editingId === t.id ? null : t.id)} title="Редактировать">
+                <motion.button className="cte-icon-btn" onClick={() => setEditingId(editingId === t.id ? null : t.id)} title="Редактировать" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
                   {editingId === t.id ? '▲' : '▼'}
-                </button>
-                <button className="cte-icon-btn" onClick={() => duplicate(t)} title="Дублировать">⧉</button>
-                <button className="cte-icon-btn" onClick={() => exportTheme(t)} title="Экспорт JSON">⤓</button>
-                <button className="cte-icon-btn cte-icon-btn--danger" onClick={() => remove(t.id)} title="Удалить">✕</button>
+                </motion.button>
+                <motion.button className="cte-icon-btn" onClick={() => duplicate(t)} title="Дублировать" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>⧉</motion.button>
+                <motion.button className="cte-icon-btn" onClick={() => exportTheme(t)} title="Экспорт JSON" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>⤓</motion.button>
+                <motion.button className="cte-icon-btn cte-icon-btn--danger" onClick={() => remove(t.id)} title="Удалить" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.button>
               </div>
             </div>
 
@@ -286,14 +290,20 @@ export default function CustomThemeEditor({ themes, activeId, onChange, onApply 
                 <div className="cte-edit-row">
                   <label className="cte-edit-label">Базовый режим</label>
                   <div className="cte-base-toggle">
-                    <button
+                    <motion.button
                       className={`cte-base-btn ${t.base === 'dark' ? 'cte-base-btn--active' : ''}`}
                       onClick={() => updateTheme(t.id, { base: 'dark' })}
-                    >Тёмный</button>
-                    <button
+                      whileHover={whileHoverSm}
+                      whileTap={whileTapSm}
+                      transition={springHover}
+                    >Тёмный</motion.button>
+                    <motion.button
                       className={`cte-base-btn ${t.base === 'light' ? 'cte-base-btn--active' : ''}`}
                       onClick={() => updateTheme(t.id, { base: 'light' })}
-                    >Светлый</button>
+                      whileHover={whileHoverSm}
+                      whileTap={whileTapSm}
+                      transition={springHover}
+                    >Светлый</motion.button>
                   </div>
                 </div>
 
@@ -303,11 +313,14 @@ export default function CustomThemeEditor({ themes, activeId, onChange, onApply 
                     return (
                     <div key={keyStr} className="cte-color-field">
                       <label className="cte-color-label">{f.label}</label>
-                      <button
+                      <motion.button
                         ref={openPicker === keyStr ? activeSwatchRef : undefined}
                         className="cte-color-swatch"
                         style={{ background: (draftColor?.themeId === t.id && draftColor?.key === keyStr) ? draftColor.value : t.colors[f.key] }}
                         onClick={() => setOpenPicker(openPicker === keyStr ? null : keyStr)}
+                        whileHover={whileHoverTiny}
+                        whileTap={whileTapTiny}
+                        transition={springHover}
                       />
                       <input
                         className="cte-color-input"

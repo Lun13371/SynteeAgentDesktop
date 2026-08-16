@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
+import { motion } from 'framer-motion'
 import { useSettingsStore } from '../../../store/settings.store'
 import { useChatStore } from '../../../store/chat.store'
 import { DEFAULT_INDEXING_SETTINGS, DEFAULT_IGNORE_DIRS_LIST, type IndexingSettings } from '../../../../../core/context/fastContextSettings'
 import Toggle from '../../ui/Toggle/Toggle'
 import ResetButton from '../../ui/ResetButton/ResetButton'
+import { whileHoverWide, whileTapWide, springHover } from '../../../utils/motionPresets'
 import './IndexingSettingsTab.css'
 
 interface IndexStatus {
@@ -258,7 +260,7 @@ export default function IndexingSettingsTab() {
             spellCheck={false}
           />
           <div className="idx-ignore-actions">
-            <button className="idx-btn idx-btn--ghost" onClick={resetIgnoreDirs}>Сбросить к дефолту</button>
+            <motion.button className="idx-btn idx-btn--ghost" onClick={resetIgnoreDirs} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>Сбросить к дефолту</motion.button>
             <span className="ctx-hint">{ignoreText.split('\n').filter(d => d.trim()).length} директорий</span>
           </div>
         </div>
@@ -276,20 +278,26 @@ export default function IndexingSettingsTab() {
             </div>
           </div>
           <div className="idx-actions">
-            <button
+            <motion.button
               className="idx-btn idx-btn--primary"
               onClick={handleReindex}
               disabled={busy !== null || status?.indexingInProgress}
+              whileHover={whileHoverWide}
+              whileTap={whileTapWide}
+              transition={springHover}
             >
               {busy === 'reindex' || status?.indexingInProgress ? 'Индексация…' : 'Реиндексировать сейчас'}
-            </button>
-            <button
+            </motion.button>
+            <motion.button
               className="idx-btn idx-btn--danger"
               onClick={handleClear}
               disabled={busy !== null}
+              whileHover={whileHoverWide}
+              whileTap={whileTapWide}
+              transition={springHover}
             >
               {busy === 'clear' ? 'Очистка…' : 'Очистить индекс'}
-            </button>
+            </motion.button>
           </div>
           <span className="ctx-hint">
             Изменение настроек (maxFileSize, ignoreDirs, neuralEmbeddings) не обновляет существующий индекс автоматически —

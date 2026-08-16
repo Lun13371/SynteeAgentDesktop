@@ -13,6 +13,7 @@ import { RefreshCw, Zap, Check } from 'lucide-react'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import ChangelogMarkdown from '../../ui/ChangelogMarkdown/ChangelogMarkdown'
 import { useUpdateStore } from '../../../store/update.store'
+import { whileHoverWide, whileTapWide, springHover } from '../../../utils/motionPresets'
 import type { ChangelogEntry } from '../../../../../shared/types'
 import './ChangelogSettingsTab.css'
 
@@ -54,14 +55,17 @@ export default function ChangelogSettingsTab() {
       <h2 className="settings-section-title">Список изменений</h2>
 
       <div className="changelog-settings-toolbar">
-        <button
+        <motion.button
           className="changelog-settings-check-btn"
           onClick={() => check().then(() => load())}
           disabled={checking}
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
         >
           {checking ? <AppIcon name="loader" size="xs" animation="spin" /> : <RefreshCw size={14} />}
           Проверить обновления
-        </button>
+        </motion.button>
       </div>
 
       {loading ? (

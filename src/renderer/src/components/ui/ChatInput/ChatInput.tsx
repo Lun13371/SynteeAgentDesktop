@@ -23,6 +23,7 @@ import { useUIStore } from '../../../store/ui.store'
 import { useSettingsStore } from '../../../store/settings.store'
 import { useVoiceInput } from '../../../hooks/useVoiceInput'
 import { playSendSound } from '../../../utils/sounds'
+import { whileHoverBtn, whileTapBtn, springHover, whileHoverTiny, whileTapTiny } from '../../../utils/motionPresets'
 import './ChatInput.css'
 
 interface ChatInputProps {
@@ -1064,7 +1065,7 @@ function ChatInput({
                 <line x1="16" y1="17" x2="8" y2="17"/>
               </svg>
               <span>Режим плана</span>
-              <span className="chat-input-planning-badge-close">✕</span>
+              <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
             </motion.div>
           )}
           {imageMode && (
@@ -1083,7 +1084,7 @@ function ChatInput({
                 <polyline points="21 15 16 10 5 21"/>
               </svg>
               <span>Генерация изображений</span>
-              <span className="chat-input-planning-badge-close">✕</span>
+              <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
             </motion.div>
           )}
           {askMode && !planningMode && (
@@ -1100,7 +1101,7 @@ function ChatInput({
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
               </svg>
               <span>Ask — только чтение</span>
-              <span className="chat-input-planning-badge-close">✕</span>
+              <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
             </motion.div>
           )}
           {persona !== 'classic' && (() => {
@@ -1121,7 +1122,7 @@ function ChatInput({
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: p.iconSvg }} />
                 )}
                 <span>{lang === 'en' ? p.nameEn : p.nameRu}</span>
-                <span className="chat-input-planning-badge-close">✕</span>
+                <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
               </motion.div>
             )
           })()}
@@ -1143,7 +1144,13 @@ function ChatInput({
                 <span className="chat-input-reply-role">{r.role === 'user' ? 'Вы' : 'Syntee'}</span>
                 <span className="chat-input-reply-text">{r.content.slice(0, 100)}{r.content.length > 100 ? '…' : ''}</span>
               </div>
-              <button className="chat-input-reply-cancel" onClick={() => onCancelReply?.(r.id)}>✕</button>
+              <motion.button
+                className="chat-input-reply-cancel"
+                onClick={() => onCancelReply?.(r.id)}
+                whileHover={{ scale: 1.1, rotate: 90 }}
+                whileTap={{ scale: 0.9 }}
+                transition={springHover}
+              >✕</motion.button>
             </div>
           ))}
         </div>
@@ -1197,7 +1204,7 @@ function ChatInput({
         </AnimatePresence>
         {/* + кнопка с меню */}
         <div className="chat-input-plus-wrap" ref={plusWrapRef}>
-          <button
+          <motion.button
             ref={plusBtnRef}
             className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
             onClick={() => {
@@ -1214,12 +1221,15 @@ function ChatInput({
               })
               setPlusMenuOpen(v => !v)
             }}
+            whileHover={whileHoverBtn}
+            whileTap={whileTapBtn}
+            transition={springHover}
             title="Прикрепить / Режим"
           >
             <motion.svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" animate={{ rotate: plusMenuOpen ? 45 : 0 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
               <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
             </motion.svg>
-          </button>
+          </motion.button>
 
           {createPortal(
             <AnimatePresence>

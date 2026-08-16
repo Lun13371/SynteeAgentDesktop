@@ -4,6 +4,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import DiffBlock from '../DiffBlock/DiffBlock'
 import type { CheckpointMeta, RewindResult, LastTurnChanges } from '../../../../../shared/types'
 import { useChatStore } from '../../../store/chat.store'
+import { whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem, springHover } from '../../../utils/motionPresets'
 import './SessionChangesPanel.css'
 
 interface SessionChangesPanelProps {
@@ -279,9 +280,9 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
         <AppIcon name="x" size="lg" tone="danger" />
         <p>Ошибка загрузки</p>
         <p className="session-panel__hint">{error}</p>
-        <button className="session-panel__retry" onClick={refresh}>
+        <motion.button className="session-panel__retry" onClick={refresh} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
           <AppIcon name="refreshCw" size="xs" /> Повторить
-        </button>
+        </motion.button>
       </div>
     )
   }
@@ -294,14 +295,17 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
             <AppIcon name="history" size="xs" />
             <span>Сессия</span>
           </div>
-          <button
+          <motion.button
             className="session-panel__refresh"
             title="Обновить"
             onClick={refresh}
             disabled={loading}
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
           >
             <AppIcon name="refreshCw" size="xs" animation={loading ? 'spin' : 'none'} />
-          </button>
+          </motion.button>
         </div>
 
         {/* ── Redo-баннер: отмена отката ── */}
@@ -318,37 +322,46 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                 <AppIcon name="rewind" size="xs" tone="warning" />
                 <span>Откат активен</span>
               </div>
-              <button
+              <motion.button
                 className="session-panel__redo-btn"
                 onClick={handleRedo}
                 disabled={redoing}
                 title="Отменить откат — вернуть сообщения и файлы"
+                whileHover={whileHoverSm}
+                whileTap={whileTapSm}
+                transition={springHover}
               >
                 <AppIcon name="refreshCw" size="xs" animation={redoing ? 'spin' : 'none'} />
                 <span>{redoing ? 'Отмена...' : 'Отменить откат'}</span>
-              </button>
+              </motion.button>
             </motion.div>
           )}
         </AnimatePresence>
 
         {/* Переключатель режимов */}
         <div className="session-panel__mode-switch">
-          <button
+          <motion.button
             className={`session-panel__mode-btn ${viewMode === 'last' ? 'session-panel__mode-btn--active' : ''}`}
             onClick={() => setViewMode('last')}
             title="Что изменилось в последнем запросе"
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             <AppIcon name="zap" size="xs" />
             <span>Последний запрос</span>
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             className={`session-panel__mode-btn ${viewMode === 'all' ? 'session-panel__mode-btn--active' : ''}`}
             onClick={() => setViewMode('all')}
             title="Все изменения за всю сессию"
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             <AppIcon name="listChecks" size="xs" />
             <span>Все изменения</span>
-          </button>
+          </motion.button>
         </div>
 
         {/* Статистика в режиме "Все изменения" */}
@@ -387,10 +400,13 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                     key={cp.id}
                     className={`session-checkpoint ${isSelected ? 'session-checkpoint--selected' : ''} ${isLast ? 'session-checkpoint--latest' : ''}`}
                   >
-                    <button
+                    <motion.button
                       className="session-checkpoint__main"
                       onClick={() => loadCheckpointDiff(cp)}
                       title={cp.userPromptPreview}
+                      whileHover={whileHoverListItem}
+                      whileTap={whileTapListItem}
+                      transition={springHover}
                     >
                       <div className="session-checkpoint__header-row">
                         <span className="session-checkpoint__time">
@@ -399,7 +415,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                         {isLast && <span className="session-checkpoint__latest-tag">последний</span>}
                       </div>
                       <div className="session-checkpoint__preview">{cp.userPromptPreview}</div>
-                    </button>
+                    </motion.button>
                     {cp.filesChanged > 0 && (
                       <>
                         <div className="session-checkpoint__files-summary">
@@ -416,11 +432,14 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                               ? lastTurnChanges.files.find(f => f.path === p)
                               : null
                             return (
-                              <button
+                              <motion.button
                                 key={`${p}-${i}`}
                                 className={`session-checkpoint__path ${isSelected ? 'session-checkpoint__path--active' : ''}`}
                                 onClick={() => loadCheckpointDiff(cp)}
                                 title={p}
+                                whileHover={whileHoverListItem}
+                                whileTap={whileTapListItem}
+                                transition={springHover}
                               >
                                 <span className="session-checkpoint__path-name">{fileName}</span>
                                 {stats && (
@@ -430,21 +449,24 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                                   </span>
                                 )}
                                 {dir && <span className="session-checkpoint__path-dir">{dir}</span>}
-                              </button>
+                              </motion.button>
                             )
                           })}
                         </div>
                       </>
                     )}
-                    <button
+                    <motion.button
                       className="session-checkpoint__rewind"
                       title="Откатить к этому сообщению"
                       onClick={() => handleRewind(cp)}
                       disabled={rewinding}
+                      whileHover={whileHoverSm}
+                      whileTap={whileTapSm}
+                      transition={springHover}
                     >
                       <AppIcon name="rewind" size="xs" />
                       <span>Откатить сюда</span>
-                    </button>
+                    </motion.button>
                   </div>
                 )
               })}
@@ -475,11 +497,14 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                   </span>
                 </div>
                 {selectedCheckpoint.filesChanged > 0 && (
-                  <button
+                  <motion.button
                     className="session-panel__diff-undo-all"
                     onClick={handleUndoAllFiles}
                     disabled={!!undoingFile || undoingAll}
                     title="Отменить все изменения этого запроса"
+                    whileHover={whileHoverSm}
+                    whileTap={whileTapSm}
+                    transition={springHover}
                   >
                     {undoingAll ? (
                       <AppIcon name="refreshCw" size="xs" animation="spin" />
@@ -487,7 +512,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                       <AppIcon name="undo" size="xs" />
                     )}
                     <span>{undoingAll ? 'Отмена...' : 'Отменить все'}</span>
-                  </button>
+                  </motion.button>
                 )}
               </div>
 
@@ -511,18 +536,21 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                             </span>
                           )}
                         </div>
-                        <button
+                        <motion.button
                           className="session-file-chip__undo"
                           onClick={() => handleUndoFile(p)}
                           disabled={!!undoingFile || undoingAll}
                           title="Отменить изменения в этом файле"
+                          whileHover={whileHoverTiny}
+                          whileTap={whileTapTiny}
+                          transition={springHover}
                         >
                           {isUndoing ? (
                             <AppIcon name="refreshCw" size="xs" animation="spin" />
                           ) : (
                             <AppIcon name="undo" size="xs" />
                           )}
-                        </button>
+                        </motion.button>
                       </div>
                     )
                   })}

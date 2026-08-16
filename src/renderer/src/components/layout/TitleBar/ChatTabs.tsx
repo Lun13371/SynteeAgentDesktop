@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Reorder } from 'framer-motion'
+import { Reorder, motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import ChatTabContextMenu from './ChatTabContextMenu'
 import { useChatStore } from '../../../store/chat.store'
@@ -7,6 +7,7 @@ import { useNavStore } from '../../../store/nav.store'
 import { useTabsStore, tabActions } from '../../../store/tabs.store'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import type { Chat } from '../../../../../shared/types'
+import { springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny } from '../../../utils/motionPresets'
 
 // Вкладки открытых чатов в шапке — как в браузере: переключение по клику,
 // drag&drop для перестановки (Reorder из framer-motion, прецедент —
@@ -106,27 +107,33 @@ export default function ChatTabs() {
               <span className="titlebar-tab-title">{chat.title}</span>
               {/* Последнюю вкладку закрыть нельзя — всегда есть хотя бы одна. */}
               {tabIds.length > 1 && (
-                <button
+                <motion.button
                   className="titlebar-tab-close"
                   onPointerDown={e => e.stopPropagation()}
                   onClick={e => { e.stopPropagation(); handleClose(id) }}
                   title="Закрыть вкладку"
+                  whileHover={whileHoverTiny}
+                  whileTap={whileTapTiny}
+                  transition={springHover}
                 >
                   <AppIcon name="x" size="xs" />
-                </button>
+                </motion.button>
               )}
             </Reorder.Item>
           )
         })}
       </Reorder.Group>
-      <button
+      <motion.button
         type="button"
         className="titlebar-tab-add no-drag"
         onClick={handleCreate}
         title="Новый чат"
+        whileHover={whileHoverSm}
+        whileTap={whileTapSm}
+        transition={springHover}
       >
         <AppIcon name="plus" size="sm" />
-      </button>
+      </motion.button>
 
       {/* Чип сплит-чата: виден пока открыта вторая половина экрана.
           Крестик закрывает сплит (вкладка чата остаётся). */}
@@ -142,13 +149,16 @@ export default function ChatTabs() {
             splitChat.color && <span className="titlebar-tab-color" style={{ background: splitChat.color }} />
           )}
           <span className="titlebar-split-chip-title">{splitChat.title}</span>
-          <button
+          <motion.button
             className="titlebar-tab-close titlebar-split-chip-close"
             onClick={() => setSplitChat(null)}
             title="Закрыть сплит"
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
           >
             <AppIcon name="x" size="xs" />
-          </button>
+          </motion.button>
         </div>
         )
       })()}

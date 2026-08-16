@@ -7,6 +7,7 @@ import { getContextMenuPosition, type MenuPos } from '../../../utils/contextMenu
 import { useChatStore } from '../../../store/chat.store'
 import { useNavStore } from '../../../store/nav.store'
 import { openInSplit } from '../../../store/tabs.store'
+import { springHover, whileHoverListItem, whileTapListItem } from '../../../utils/motionPresets'
 // Классы chat-ctx-menu/ctx-item/ctx-divider — общие с сайдбар-меню.
 import '../../ui/ChatContextMenu/ChatContextMenu.css'
 
@@ -87,9 +88,15 @@ export default function ChatTabContextMenu({ chat, pos, onClose, onSelectChat, o
 
 function CtxItem({ icon, label, onClick }: { icon: 'appWindow' | 'columns' | 'x'; label: string; onClick: () => void }) {
   return (
-    <button className="ctx-item" onClick={onClick}>
+    <motion.button
+      className="ctx-item"
+      onClick={onClick}
+      whileHover={whileHoverListItem}
+      whileTap={whileTapListItem}
+      transition={springHover}
+    >
       <AppIcon name={icon} size="sm" />
       <span>{label}</span>
-    </button>
+    </motion.button>
   )
 }

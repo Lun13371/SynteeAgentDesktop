@@ -4,6 +4,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import ToolResultRenderer from './ToolResultRenderer'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
+import { useChatRemeasure } from '../MessageBubble/remeasure'
 
 import './ToolChain.css'
 
@@ -300,6 +301,7 @@ const IterationBlock = memo(function IterationBlock({
   animateEntrance: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  const remeasure = useChatRemeasure()
   const meta = getToolMeta(iter.call.toolName, iter.call.serverName)
   const failed = iter.result?.success === false
   // pending — модель ещё генерирует аргументы этого вызова (см. Agent.ts
@@ -407,11 +409,12 @@ const IterationBlock = memo(function IterationBlock({
           {open && (
             <motion.div
               className="tc2-iter-details"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
+              initial={{ maxHeight: 0, opacity: 0 }}
+              animate={{ maxHeight: 2000, opacity: 1 }}
+              exit={{ maxHeight: 0, opacity: 0 }}
               transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
               style={{ overflow: 'hidden' }}
+              onAnimationComplete={() => remeasure?.()}
             >
 
 
@@ -615,6 +618,7 @@ const GroupBlock = memo(function GroupBlock({
   animateEntrance: boolean
 }) {
   const [open, setOpen] = useState(false)
+  const remeasure = useChatRemeasure()
   const { meta, iters } = group
   const hasFailed = iters.some(i => i.result?.success === false)
   const totalDur = iters.reduce((sum, i) => {
@@ -659,11 +663,12 @@ const GroupBlock = memo(function GroupBlock({
           {open && (
             <motion.div
               className="tc2-group-iters"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
+              initial={{ maxHeight: 0, opacity: 0 }}
+              animate={{ maxHeight: 5000, opacity: 1 }}
+              exit={{ maxHeight: 0, opacity: 0 }}
               transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
               style={{ overflow: 'hidden' }}
+              onAnimationComplete={() => remeasure?.()}
             >
               {iters.map((iter, i) => (
                 <IterationBlock

@@ -12,6 +12,7 @@ import UserCard from './UserCard'
 import { useChatStore } from '../../../store/chat.store'
 import { useTabsStore } from '../../../store/tabs.store'
 import { getContextMenuPosition } from '../../../utils/contextMenuPosition'
+import { springHover, whileHoverTiny, whileTapTiny, whileHoverWide, whileTapWide, whileHoverSm, whileTapSm } from '../../../utils/motionPresets'
 import './Sidebar.css'
 
 interface SidebarProps {
@@ -525,7 +526,7 @@ function Sidebar({
           />
         </div>
       ) : (
-        <button
+        <motion.button
           className={`sidebar-chat-item ${currentChatId === chat.id ? 'sidebar-chat-item--active' : ''} ${selectedIds.has(chat.id) ? 'sidebar-chat-item--selected' : ''}`}
           data-chat-id={chat.id}
           onClick={(e) => {
@@ -543,6 +544,9 @@ function Sidebar({
             }
           }}
           onContextMenu={e => handleCtx(e, chat)}
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.99 }}
+          transition={springHover}
         >
           {chat.color && (
             <span className="sidebar-chat-color" style={{ background: chat.color }} />
@@ -582,7 +586,7 @@ function Sidebar({
               {formatTime(chat.updatedAt)}
             </span>
           </div>
-        </button>
+        </motion.button>
       )}
     </motion.div>
     )
@@ -594,18 +598,29 @@ function Sidebar({
     const isActive = activeProjectId === project.id
     return (
       <div key={project.id} className={`sidebar-project ${isActive ? 'sidebar-project--active' : ''}`}>
-        <div
+        <motion.div
           className="sidebar-project-header"
           onClick={() => onSelectProject?.(project.id)}
           onContextMenu={e => handleProjectCtx(e, project)}
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.99 }}
+          transition={springHover}
         >
-          <button
+          <motion.button
             className="sidebar-project-chevron"
             onClick={(e) => { e.stopPropagation(); toggleCollapse(project.id) }}
             title={isCollapsed ? 'Развернуть' : 'Свернуть'}
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
           >
-            <AppIcon name={isCollapsed ? 'chevronRight' : 'chevronDown'} size="xs" />
-          </button>
+            <motion.span
+              style={{ display: 'inline-flex' }}
+              animate={{ rotate: isCollapsed ? 0 : 0 }}
+            >
+              <AppIcon name={isCollapsed ? 'chevronRight' : 'chevronDown'} size="xs" />
+            </motion.span>
+          </motion.button>
           <AppIcon name="folder" size="xs" tone={isActive ? 'accent' : 'default'} />
           {renamingProjectId === project.id ? (
             <input
@@ -623,14 +638,17 @@ function Sidebar({
           ) : (
             <span className="sidebar-project-name" title={project.workdir}>{project.name}</span>
           )}
-          <button
+          <motion.button
             className="sidebar-project-add"
             onClick={(e) => { e.stopPropagation(); onNewChat?.(project.id) }}
             title="Новый чат в проекте"
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
           >
             <AppIcon name="plus" size="xs" />
-          </button>
-        </div>
+          </motion.button>
+        </motion.div>
         <div className="sidebar-project-workdir" title={project.workdir}>
           {shortWorkdir(project.workdir)}
         </div>
@@ -701,11 +719,14 @@ function Sidebar({
       </div>
 
       {/* Расширения (MCP и Skills) — отдельная широкая кнопка на всю ширину. */}
-      <button
+      <motion.button
         type="button"
         className="sidebar-extensions-btn"
         data-extensions-btn
         onClick={() => setExtPopoverOpen(true)}
+        whileHover={whileHoverWide}
+        whileTap={whileTapWide}
+        transition={springHover}
       >
         <span className="sidebar-extensions-btn-icon">
           <AppIcon name="puzzle" size="sm" />
@@ -713,7 +734,7 @@ function Sidebar({
         <span className="sidebar-extensions-btn-label">Расширения</span>
         <span className="sidebar-extensions-btn-sub">MCP и Skills</span>
         <AppIcon name="chevronRight" size="xs" className="sidebar-extensions-btn-chevron" />
-      </button>
+      </motion.button>
 
       {/* Поиск + кнопка-фильтр */}
       <div className="sidebar-search">
@@ -724,19 +745,28 @@ function Sidebar({
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
-        <button
+        <motion.button
           ref={filterToggleRef}
           className={`sidebar-filter-toggle ${hasActiveFilters ? 'sidebar-filter-toggle--active' : ''} ${filterPopoverOpen ? 'sidebar-filter-toggle--open' : ''}`}
           title="Фильтры"
           onClick={openFilterPopover}
+          whileHover={whileHoverSm}
+          whileTap={whileTapSm}
+          transition={springHover}
         >
           <AppIcon name="filter" size="xs" />
           {hasActiveFilters && <span className="sidebar-filter-toggle-dot" />}
-        </button>
+        </motion.button>
         {search && (
-          <button className="sidebar-search-clear" onClick={() => setSearch('')}>
+          <motion.button
+            className="sidebar-search-clear"
+            onClick={() => setSearch('')}
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
+          >
             <AppIcon name="x" size="xs" />
-          </button>
+          </motion.button>
         )}
       </div>
 
@@ -764,19 +794,25 @@ function Sidebar({
                 Скрываем, если пользователь скрыл «Без проекта» в фильтрах. */}
             {!hiddenProjects.has('__noproject__') && noProjectChats.length > 0 && (
               <div className="sidebar-project sidebar-project--noproject">
-                <div
+                <motion.div
                   className="sidebar-project-header"
                   onClick={() => onSelectProject?.(null)}
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  transition={springHover}
                 >
-                  <button
+                  <motion.button
                     className="sidebar-project-chevron"
                     onClick={(e) => { e.stopPropagation(); toggleCollapse('__noproject__') }}
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <AppIcon name={collapsedProjects.has('__noproject__') ? 'chevronRight' : 'chevronDown'} size="xs" />
-                  </button>
+                  </motion.button>
                   <AppIcon name="layers" size="xs" tone="muted" />
                   <span className="sidebar-project-name">Без проекта</span>
-                </div>
+                </motion.div>
                 <AnimatePresence initial={false}>
                   {!collapsedProjects.has('__noproject__') && (
                     <motion.div
@@ -879,28 +915,37 @@ function Sidebar({
           >
             <span className="sidebar-bulk-count">{selectedIds.size} выбрано</span>
             <div className="sidebar-bulk-actions">
-              <button
+              <motion.button
                 className="sidebar-bulk-btn"
                 title={anyUnpinned ? 'Закрепить' : 'Открепить'}
                 onClick={() => bulkPin(anyUnpinned)}
+                whileHover={whileHoverSm}
+                whileTap={whileTapSm}
+                transition={springHover}
               >
                 <AppIcon name="pin" size="sm" />
-              </button>
-              <button
+              </motion.button>
+              <motion.button
                 className="sidebar-bulk-btn"
                 title={anyNonArchived ? 'Архивировать' : 'Разархивировать'}
                 onClick={() => bulkArchive(anyNonArchived)}
+                whileHover={whileHoverSm}
+                whileTap={whileTapSm}
+                transition={springHover}
               >
                 <AppIcon name="archive" size="sm" />
-              </button>
+              </motion.button>
               <div className="sidebar-bulk-export-wrap" ref={bulkExportRef}>
-                <button
+                <motion.button
                   className="sidebar-bulk-btn"
                   title="Экспорт"
                   onClick={() => setBulkExportOpen(v => !v)}
+                  whileHover={whileHoverSm}
+                  whileTap={whileTapSm}
+                  transition={springHover}
                 >
                   <AppIcon name="fileText" size="sm" />
-                </button>
+                </motion.button>
                 {bulkExportOpen && (
                   <div className="sidebar-bulk-export-menu">
                     <button onClick={() => bulkExport('md')}>Markdown (.md)</button>
@@ -908,21 +953,27 @@ function Sidebar({
                   </div>
                 )}
               </div>
-              <button
+              <motion.button
                 className="sidebar-bulk-btn sidebar-bulk-btn--danger"
                 title="Удалить"
                 onClick={bulkDelete}
+                whileHover={whileHoverSm}
+                whileTap={whileTapSm}
+                transition={springHover}
               >
                 <AppIcon name="trash" size="sm" />
-              </button>
+              </motion.button>
             </div>
-            <button
+            <motion.button
               className="sidebar-bulk-clear"
               title="Снять выделение (Esc)"
               onClick={clearSelection}
+              whileHover={whileHoverTiny}
+              whileTap={whileTapTiny}
+              transition={springHover}
             >
               <AppIcon name="x" size="xs" />
-            </button>
+            </motion.button>
           </motion.div>
         )}
       </AnimatePresence>

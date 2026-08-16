@@ -9,6 +9,7 @@ import Popover from '../../ui/Popover/Popover'
 import ColorPickerPopover from '../../ui/ColorPicker/ColorPickerPopover'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import Toggle from '../../ui/Toggle/Toggle'
+import { whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './BgImageGallery.css'
 
 interface BgImageItem { src: string; name: string; size: number; mtime: number }
@@ -139,15 +140,18 @@ export default function BgImageGallery({ onSet }: { onSet: (k: string, v: unknow
           onChange={v => onSet('bgImageEnabled', v)}
         />
         <span className="bg-gallery-header-label">Включить фон</span>
-        <button
+        <motion.button
           ref={gearRef}
           className={`bg-gallery-gear${gearOpen ? ' bg-gallery-gear--active' : ''}`}
           onClick={() => setGearOpen(v => !v)}
           title="Параметры фона"
           disabled={!bgImage}
+          whileHover={whileHoverSm}
+          whileTap={whileTapSm}
+          transition={springHover}
         >
           <AppIcon name="settings" size="sm" />
-        </button>
+        </motion.button>
       </div>
 
       <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={onPickFiles} style={{ display: 'none' }} />
@@ -174,13 +178,16 @@ export default function BgImageGallery({ onSet }: { onSet: (k: string, v: unknow
                   <AppIcon name="check" size="xs" tone="accent" />
                 </div>
               )}
-              <button
+              <motion.button
                 className="bg-gallery-tile-delete"
                 onClick={(e) => { e.stopPropagation(); onDelete(item.src) }}
                 title="Удалить"
+                whileHover={whileHoverTiny}
+                whileTap={whileTapTiny}
+                transition={springHover}
               >
                 <AppIcon name="x" size="xs" />
-              </button>
+              </motion.button>
             </motion.div>
           ))}
         </AnimatePresence>
@@ -217,11 +224,14 @@ export default function BgImageGallery({ onSet }: { onSet: (k: string, v: unknow
           </label>
           <div className="bg-gear-row bg-gear-tint">
             <span>Цвет тинта</span>
-            <button
+            <motion.button
               ref={tintPickerOpen ? tintSwatchRef : undefined}
               className="bg-gear-tint-swatch"
               style={{ background: bgImage?.tint || '#000000' }}
               onClick={() => setTintPickerOpen(v => !v)}
+              whileHover={whileHoverTiny}
+              whileTap={whileTapTiny}
+              transition={springHover}
             />
             <ColorPickerPopover
               open={tintPickerOpen}

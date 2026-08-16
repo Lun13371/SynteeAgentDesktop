@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
 import ToolChain from '../ToolChain/ToolChain'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
+import { whileHoverListItem, whileTapListItem, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './AgentPanel.css'
 
 interface AgentStep {
@@ -129,27 +130,33 @@ export default function AgentPanel({ focusAgentId, currentChatId }: AgentPanelPr
       {/* Фильтр по чатам */}
       {chatIds.length > 1 && (
         <div className="agent-panel__chat-filter">
-          <button
+          <motion.button
             className={`agent-panel__chat-pill ${filterChat === null ? 'active' : ''}`}
             onClick={() => setFilterChat(null)}
+            whileHover={whileHoverListItem}
+            whileTap={whileTapListItem}
+            transition={springHover}
           >
             Все
-          </button>
+          </motion.button>
           {chatIds.map(cid => {
             const count = agents.filter(a => a.chatId === cid).length
             const running = agents.filter(a => a.chatId === cid && a.status === 'running').length
             return (
-              <button
+              <motion.button
                 key={cid}
                 className={`agent-panel__chat-pill ${filterChat === cid ? 'active' : ''}`}
                 onClick={() => setFilterChat(cid)}
+                whileHover={whileHoverListItem}
+                whileTap={whileTapListItem}
+                transition={springHover}
               >
                 <span>Чат {cid.slice(-4)}</span>
                 {running > 0
                   ? <span className="agent-panel__chat-pill-dot agent-panel__chat-pill-dot--running" />
                   : <span className="agent-panel__chat-pill-count">{count}</span>
                 }
-              </button>
+              </motion.button>
             )
           })}
         </div>
@@ -250,13 +257,16 @@ export default function AgentPanel({ focusAgentId, currentChatId }: AgentPanelPr
 
               {/* Отмена */}
               {selectedAgent.status === 'running' && (
-                <button
+                <motion.button
                   className="agent-detail__cancel"
                   onClick={() => handleCancel(selectedAgent.id)}
+                  whileHover={whileHoverSm}
+                  whileTap={whileTapSm}
+                  transition={springHover}
                 >
                   <AppIcon name="x" size="xs" />
                   Остановить агента
-                </button>
+                </motion.button>
               )}
             </motion.div>
           )}
@@ -294,13 +304,16 @@ function AgentListItem({ agent, selected, onSelect, onCancel }: {
           />
           <span className="agent-list-item__task">{shortTask}</span>
           {agent.status === 'running' && (
-            <button
+            <motion.button
               className="agent-list-item__cancel"
               onClick={e => { e.stopPropagation(); onCancel(agent.id) }}
               title="Остановить"
+              whileHover={whileHoverTiny}
+              whileTap={whileTapTiny}
+              transition={springHover}
             >
               <AppIcon name="x" size="xs" />
-            </button>
+            </motion.button>
           )}
         </div>
         {agent.status === 'running' && currentTool && (

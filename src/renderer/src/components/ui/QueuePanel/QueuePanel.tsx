@@ -5,6 +5,7 @@ import AppIcon from '../AppIcon/AppIcon'
 import { useChatStore } from '../../../store/chat.store'
 import { removePendingUserMsg } from '../../../hooks/useChatRunSubscription'
 import type { QueueItemMeta } from '../../../../../shared/types'
+import { whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './QueuePanel.css'
 
 interface QueueBadgeProps {
@@ -225,13 +226,16 @@ export default function QueuePanel({ chatId }: QueueBadgeProps) {
                       <div className="queue-running-status">Выполняется</div>
                       <div className="queue-running-preview">{activeRun.preview || 'Запрос…'}</div>
                     </div>
-                    <button
+                    <motion.button
                       className="queue-item-btn queue-item-btn--cancel"
                       onClick={cancelActive}
                       title="Остановить выполнение"
+                      whileHover={whileHoverTiny}
+                      whileTap={whileTapTiny}
+                      transition={springHover}
                     >
                       <AppIcon name="x" size="xs" />
-                    </button>
+                    </motion.button>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -261,13 +265,16 @@ export default function QueuePanel({ chatId }: QueueBadgeProps) {
                         </div>
                         <span className="queue-item-index">{idx + 1}</span>
                         <span className="queue-item-preview">{item.preview || 'Запрос…'}</span>
-                        <button
+                        <motion.button
                           className="queue-item-btn queue-item-btn--remove"
                           onClick={() => removeQueued(item)}
                           title="Убрать из очереди"
+                          whileHover={whileHoverTiny}
+                          whileTap={whileTapTiny}
+                          transition={springHover}
                         >
                           <AppIcon name="x" size="xs" />
-                        </button>
+                        </motion.button>
                       </Reorder.Item>
                     ))}
                   </Reorder.Group>

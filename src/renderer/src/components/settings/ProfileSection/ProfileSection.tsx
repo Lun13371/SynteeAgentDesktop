@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
+import { motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import { copyToClipboard } from '@renderer/utils/clipboard'
 import Identicon from '../../ui/Identicon/Identicon'
 import { useAuthStore, type GatewayUser } from '../../../store/auth.store'
 import { useBillingStore } from '../../../store/billing.store'
 import { useToast } from '../../ui/Toast/Toast'
+import { whileHoverWide, whileTapWide, springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny } from '../../../utils/motionPresets'
 import './ProfileSection.css'
 
 interface ApiKey {
@@ -125,10 +127,13 @@ function GuestProfile() {
           Войдите через Syntee-Gateway, чтобы получить доступ к моделям, балансу,
           тарифам и синхронизации профиля.
         </p>
-        <button
+        <motion.button
           type="button"
           className="profile-btn profile-btn--primary"
           onClick={waiting ? handleCancel : handleLogin}
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
         >
           {waiting ? (
             <>
@@ -141,7 +146,7 @@ function GuestProfile() {
               Войти через Syntee
             </>
           )}
-        </button>
+        </motion.button>
       </div>
     </div>
   )
@@ -274,12 +279,15 @@ function ProfileForm({ user, onUpdated }: { user: GatewayUser; onUpdated: () => 
                 claimTaken ? 'Этот логин уже занят' :
                 '3–32 символа: a-z, 0-9, _. Задаётся один раз, затем неизменен.'}
             </span>
-            <button
+            <motion.button
               type="button"
               className="profile-btn profile-btn--primary"
               onClick={handleClaim}
               disabled={!usernameValid || claimSaving}
               style={{ marginTop: 8 }}
+              whileHover={whileHoverWide}
+              whileTap={whileTapWide}
+              transition={springHover}
             >
               {claimSaving ? (
                 <>
@@ -289,7 +297,7 @@ function ProfileForm({ user, onUpdated }: { user: GatewayUser; onUpdated: () => 
               ) : (
                 <>Забронировать логин</>
               )}
-            </button>
+            </motion.button>
           </>
         ) : (
           <>
@@ -342,11 +350,14 @@ function ProfileForm({ user, onUpdated }: { user: GatewayUser; onUpdated: () => 
         </label>
       </div>
 
-      <button
+      <motion.button
         type="button"
         className="profile-btn profile-btn--primary"
         onClick={handleSave}
         disabled={!dirty || saving}
+        whileHover={whileHoverWide}
+        whileTap={whileTapWide}
+        transition={springHover}
       >
         {saving ? (
           <>
@@ -356,7 +367,7 @@ function ProfileForm({ user, onUpdated }: { user: GatewayUser; onUpdated: () => 
         ) : (
           <>Сохранить</>
         )}
-      </button>
+      </motion.button>
     </div>
   )
 }
@@ -428,14 +439,17 @@ function PasswordForm() {
 
       {error && <div className="profile-error">{error}</div>}
 
-      <button
+      <motion.button
         type="button"
         className="profile-btn"
         onClick={handleSave}
         disabled={!current || !next || saving}
+        whileHover={whileHoverWide}
+        whileTap={whileTapWide}
+        transition={springHover}
       >
         {saving ? 'Сохранение…' : 'Сменить пароль'}
-      </button>
+      </motion.button>
     </div>
   )
 }
@@ -518,14 +532,17 @@ function ApiKeysSection() {
           onChange={(e) => setNewKeyName(e.target.value)}
           placeholder="Название ключа (например, Skript)"
         />
-        <button
+        <motion.button
           type="button"
           className="profile-btn"
           onClick={handleCreate}
           disabled={creating}
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
         >
           {creating ? 'Создание…' : 'Создать ключ'}
-        </button>
+        </motion.button>
       </div>
 
       {revealedKey && (
@@ -536,21 +553,27 @@ function ApiKeysSection() {
           </div>
           <code className="profile-apikey-revealed__key">{revealedKey}</code>
           <div className="profile-apikey-revealed__actions">
-            <button
+            <motion.button
               type="button"
               className="profile-btn profile-btn--primary"
               onClick={() => handleCopy(revealedKey)}
+              whileHover={whileHoverWide}
+              whileTap={whileTapWide}
+              transition={springHover}
             >
               <AppIcon name={copied ? 'check' : 'copy'} size="sm" />
               {copied ? 'Скопировано' : 'Копировать'}
-            </button>
-            <button
+            </motion.button>
+            <motion.button
               type="button"
               className="profile-btn"
               onClick={() => setRevealedKey(null)}
+              whileHover={whileHoverWide}
+              whileTap={whileTapWide}
+              transition={springHover}
             >
               Закрыть
-            </button>
+            </motion.button>
           </div>
         </div>
       )}
@@ -572,14 +595,17 @@ function ApiKeysSection() {
                     : 'не использовался'}
                 </div>
               </div>
-              <button
+              <motion.button
                 type="button"
                 className="profile-apikey__delete"
                 onClick={() => handleDelete(k.id)}
                 title="Удалить"
+                whileHover={whileHoverTiny}
+                whileTap={whileTapTiny}
+                transition={springHover}
               >
                 <AppIcon name="trash" size="sm" />
-              </button>
+              </motion.button>
             </div>
           ))
         )}
@@ -626,19 +652,22 @@ function BillingSection() {
       <div className="profile-form">
         <div className="billing-header">
           <h3 className="profile-form__title">Баланс и тариф</h3>
-          <button
+          <motion.button
             type="button"
             className="profile-btn profile-btn--ghost"
             onClick={handleRefresh}
             disabled={loading}
             title="Обновить"
+            whileHover={whileHoverTiny}
+            whileTap={whileTapTiny}
+            transition={springHover}
           >
             {loading ? (
               <AppIcon name="loader" size="sm" animation="spin" />
             ) : (
               <AppIcon name="refreshCw" size="sm" />
             )}
-          </button>
+          </motion.button>
         </div>
 
         <div className="billing-grid">
@@ -653,14 +682,17 @@ function BillingSection() {
                 в холде: ${balance.held.toFixed(4)}
               </div>
             )}
-            <button
+            <motion.button
               type="button"
               className="profile-btn profile-btn--primary billing-topup-btn"
               onClick={handleTopup}
+              whileHover={whileHoverWide}
+              whileTap={whileTapWide}
+              transition={springHover}
             >
               <AppIcon name="plus" size="sm" />
               Пополнить
-            </button>
+            </motion.button>
           </div>
 
           {/* Тариф */}

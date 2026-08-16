@@ -14,6 +14,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
+import { whileHoverTiny, whileTapTiny, whileHoverSm, whileTapSm, springHover } from '../../../utils/motionPresets'
 import './SoundSearchModal.css'
 
 interface SearchResult {
@@ -274,9 +275,9 @@ export default function SoundSearchModal({ open, onClose, onSelect }: SoundSearc
               <span>Поиск звуков</span>
             </h2>
             <span className="sound-search-source">Internet Archive · бесплатно</span>
-            <button className="sound-search-close" onClick={onClose} title="Закрыть (Esc)">
+            <motion.button className="sound-search-close" onClick={onClose} title="Закрыть (Esc)" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>
               <AppIcon name="x" size="sm" />
-            </button>
+            </motion.button>
           </div>
 
           {/* Search input + toggle */}
@@ -291,22 +292,28 @@ export default function SoundSearchModal({ open, onClose, onSelect }: SoundSearc
               autoFocus
             />
             {query && (
-              <button
+              <motion.button
                 className="sound-search-clear"
                 onClick={() => { setQuery(''); setResults([]); setTotal(0) }}
                 title="Очистить"
+                whileHover={whileHoverTiny}
+                whileTap={whileTapTiny}
+                transition={springHover}
               >
                 <AppIcon name="x" size="xs" />
-              </button>
+              </motion.button>
             )}
-            <button
+            <motion.button
               className={`sound-search-toggle ${shortOnly ? 'active' : ''}`}
               onClick={() => setShortOnly(v => !v)}
               title={shortOnly ? 'Показывать только короткие звуки (< 2MB)' : 'Показывать все размеры'}
+              whileHover={whileHoverSm}
+              whileTap={whileTapSm}
+              transition={springHover}
             >
               <AppIcon name="filter" size="xs" />
               <span>Короткие</span>
-            </button>
+            </motion.button>
           </div>
 
           {/* Results */}
@@ -388,29 +395,35 @@ export default function SoundSearchModal({ open, onClose, onSelect }: SoundSearc
                                       {file.name}
                                     </span>
                                     <div className="sound-search-file-actions">
-                                      <button
+                                      <motion.button
                                         className="sound-search-play-btn"
                                         onClick={() => playPreview(result.identifier, file.name)}
                                         title={isPlaying ? 'Стоп' : isLoading ? 'Отменить' : 'Прослушать'}
+                                        whileHover={whileHoverTiny}
+                                        whileTap={whileTapTiny}
+                                        transition={springHover}
                                       >
                                         <AppIcon
                                           name={isLoading ? 'loader' : isPlaying ? 'pause' : 'volume'}
                                           size="xs"
                                           animation={isLoading ? 'spin' : 'none'}
                                         />
-                                      </button>
-                                      <button
+                                      </motion.button>
+                                      <motion.button
                                         className="sound-search-select-btn"
                                         onClick={() => handleSelect(result.identifier, file.name, result.title)}
                                         disabled={isDownloading}
                                         title="Выбрать этот звук"
+                                        whileHover={whileHoverTiny}
+                                        whileTap={whileTapTiny}
+                                        transition={springHover}
                                       >
                                         {isDownloading ? (
                                           <AppIcon name="loader" size="xs" animation="spin" />
                                         ) : (
                                           <AppIcon name="check" size="xs" />
                                         )}
-                                      </button>
+                                      </motion.button>
                                     </div>
                                   </div>
                                 )
@@ -424,17 +437,20 @@ export default function SoundSearchModal({ open, onClose, onSelect }: SoundSearc
                 </div>
                 {hasMore && (
                   <div className="sound-search-loadmore">
-                    <button
+                    <motion.button
                       className="sound-search-loadmore-btn"
                       onClick={handleLoadMore}
                       disabled={loadingMore}
+                      whileHover={whileHoverSm}
+                      whileTap={whileTapSm}
+                      transition={springHover}
                     >
                       {loadingMore ? (
                         <><AppIcon name="loader" size="xs" animation="spin" /> Загрузка...</>
                       ) : (
                         <>Загрузить ещё ({(total - results.length).toLocaleString('ru-RU')})</>
                       )}
-                    </button>
+                    </motion.button>
                   </div>
                 )}
               </>

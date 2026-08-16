@@ -6,6 +6,7 @@ import Identicon from '../../ui/Identicon/Identicon'
 import { useAuthStore } from '../../../store/auth.store'
 import { useNavStore } from '../../../store/nav.store'
 import { useBillingStore } from '../../../store/billing.store'
+import { whileHoverWide, whileTapWide, whileHoverListItem, whileTapListItem, springHover } from '../../../utils/motionPresets'
 import './UserCard.css'
 
 export default function UserCard() {
@@ -98,11 +99,14 @@ export default function UserCard() {
   if (!user) {
     return (
       <div className="usercard usercard--guest" ref={cardRef}>
-        <button
+        <motion.button
           type="button"
           className="usercard-signin"
           onClick={() => openSettings('profile')}
           title="Нажмите, чтобы войти в Syntee-Gateway"
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
         >
           <div className="usercard-avatar-placeholder">
             <AppIcon name="user" size="sm" />
@@ -111,7 +115,7 @@ export default function UserCard() {
             <div className="usercard-name">Гость</div>
             <div className="usercard-email">Нажмите, чтобы войти</div>
           </div>
-        </button>
+        </motion.button>
       </div>
     )
   }
@@ -123,10 +127,13 @@ export default function UserCard() {
   return (
     <>
       <div className="usercard" ref={cardRef}>
-        <button
+        <motion.button
           type="button"
           className="usercard-btn"
           onClick={() => openPanel()}
+          whileHover={whileHoverWide}
+          whileTap={whileTapWide}
+          transition={springHover}
         >
           <Identicon
             seed={user.id || user.email}
@@ -139,7 +146,7 @@ export default function UserCard() {
             <div className="usercard-email">{handle}</div>
           </div>
           <AppIcon name={panelOpen ? 'chevronDown' : 'chevronRight'} size="xs" tone="muted" />
-        </button>
+        </motion.button>
       </div>
 
       {createPortal(
@@ -252,22 +259,25 @@ export default function UserCard() {
               )}
 
               <div className="usercard-panel-actions">
-                <button className="usercard-panel-action" onClick={handleProfile}>
+                <motion.button className="usercard-panel-action" onClick={handleProfile} whileHover={whileHoverListItem} whileTap={whileTapListItem} transition={springHover}>
                   <AppIcon name="user" size="sm" />
                   <span>Профиль</span>
-                </button>
-                <button className="usercard-panel-action" onClick={handleSettings}>
+                </motion.button>
+                <motion.button className="usercard-panel-action" onClick={handleSettings} whileHover={whileHoverListItem} whileTap={whileTapListItem} transition={springHover}>
                   <AppIcon name="settings" size="sm" />
                   <span>Настройки</span>
-                </button>
+                </motion.button>
                 <div className="usercard-panel-divider" />
-                <button
+                <motion.button
                   className="usercard-panel-action usercard-panel-action--danger"
                   onClick={handleLogout}
+                  whileHover={whileHoverListItem}
+                  whileTap={whileTapListItem}
+                  transition={springHover}
                 >
                   <AppIcon name="power" size="sm" />
                   <span>Выйти</span>
-                </button>
+                </motion.button>
               </div>
             </motion.div>
           )}

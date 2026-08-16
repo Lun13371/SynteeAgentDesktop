@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { whileHoverSm, whileTapSm, springHover } from '../../../utils/motionPresets'
 import './ChatSearch.css'
 
 interface ChatSearchProps {
@@ -73,15 +74,15 @@ export default function ChatSearch({ messages, onMatchIds, onClose }: ChatSearch
       <span className="chat-search-count">
         {matchCount > 0 ? `${currentIdx} / ${matchCount}` : query ? '0 совпадений' : ''}
       </span>
-      <button className="chat-search-nav" onClick={goPrev} disabled={!matchCount} title="Предыдущее (Shift+Enter)">
+      <motion.button className="chat-search-nav" onClick={goPrev} disabled={!matchCount} title="Предыдущее (Shift+Enter)" whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
         ↑
-      </button>
-      <button className="chat-search-nav" onClick={goNext} disabled={!matchCount} title="Следующее (Enter)">
+      </motion.button>
+      <motion.button className="chat-search-nav" onClick={goNext} disabled={!matchCount} title="Следующее (Enter)" whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
         ↓
-      </button>
-      <button className="chat-search-close" onClick={() => { onClose(); onMatchIds([], '') }}>
+      </motion.button>
+      <motion.button className="chat-search-close" onClick={() => { onClose(); onMatchIds([], '') }} whileHover={whileHoverSm} whileTap={whileTapSm} transition={springHover}>
         ✕
-      </button>
+      </motion.button>
     </div>
   )
 }

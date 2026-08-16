@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
+import { whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './AgentCard.css'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
@@ -170,9 +171,12 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
               {/* Summary — раскрываемый */}
               {agent.status === 'done' && agent.summary && (
                 <div className="agent-c__summary-wrap">
-                  <button
+                  <motion.button
                     className="agent-c__summary-toggle"
                     onClick={(e) => { e.stopPropagation(); setShowSummary(s => !s) }}
+                    whileHover={whileHoverTiny}
+                    whileTap={whileTapTiny}
+                    transition={springHover}
                   >
                     <AppIcon
                       name="chevronDown"
@@ -181,7 +185,7 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
                       className={showSummary ? 'agent-c__chevron' : 'agent-c__chevron agent-c__chevron--closed'}
                     />
                     <span>Итог</span>
-                  </button>
+                  </motion.button>
                   <AnimatePresence initial={false}>
                     {showSummary && (
                       <motion.p
