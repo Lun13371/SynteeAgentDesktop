@@ -31,10 +31,11 @@ import type {
 } from './types'
 import {
   FALLBACK_SYSTEM_PROMPT, VERIFICATION_INTERVAL,
-  normalizeToolName, findMissingRequiredArgs, getToolErrorHint, isSequentialTool,
+  normalizeToolName, findMissingRequiredArgs, formatMissingArgsMessage, getToolErrorHint, isSequentialTool,
   buildToolFingerprint, dropOldestRoundsIfOverflow, extractMcpServerName,
   tryRepairJson,
 } from './utils'
+import { validateAndCoerceArgs } from './validateArgs'
 
 export class Agent {
   private store: Store
@@ -683,9 +684,29 @@ export class Agent {
 
           const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
           if (missingArgs.length > 0) {
-            const missingMsg = `${fn.name}: missing required arguments: ${missingArgs.join(', ')}. Repeat the call with the full set of arguments.`
+            const missingMsg = formatMissingArgsMessage(fn.name, missingArgs)
             resultMap.set(callId, { contentForAI: missingMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: missingMsg, success: false, callId, hidden: isHiddenTool })
+            return
+          }
+
+          // ── Schema-aware валидация: type coercion, enum fuzzy-fix, defaults ──
+          // Применяется ПОСЛЕ findMissingRequiredArgs (required уже проверены),
+          // но ДО выполнения тула. Чинит типы (string→number), опечатки в enum
+          // (закавыченные, которые tryRepairJson не ловит), заполняет дефолты.
+          // Если есть непреодолимые ошибки (невалидный enum без близкого матча) —
+          // возвращаем ошибку модели с конкретным описанием.
+          const validation = validateAndCoerceArgs(fn.name, args, activeSchemas)
+          if (validation.fixes.length > 0) {
+            // Тихо применяем исправленные args
+            args = validation.args
+            // Перезаписываем fn.arguments валидным JSON — консистентность истории
+            fn.arguments = JSON.stringify(args)
+          }
+          if (validation.errors.length > 0) {
+            const errMsg = `${fn.name}: argument validation failed:\n  - ${validation.errors.join('\n  - ')}\n\nRepeat the call with valid argument types.`
+            resultMap.set(callId, { contentForAI: errMsg, callId, name: fn.name })
+            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: errMsg, success: false, callId, hidden: isHiddenTool })
             return
           }
 

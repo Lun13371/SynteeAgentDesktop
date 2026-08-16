@@ -1017,7 +1017,11 @@ function ChatInput({
         {chatId && <ExtensionsBadge chatId={chatId} isIncognito={isIncognito} />}
 
         {/* Бейдж изменений последнего запроса — +N -M строк, popup с undo. */}
-        {chatId && lastTurnChanges && <ChangesBadge chatId={chatId} changes={lastTurnChanges} live={badgeLive} />}
+        <AnimatePresence>
+          {chatId && lastTurnChanges && (
+            <ChangesBadge chatId={chatId} changes={lastTurnChanges} live={badgeLive} />
+          )}
+        </AnimatePresence>
 
         {/* Бейдж режима планирования — над инпут полем */}
         <AnimatePresence>
