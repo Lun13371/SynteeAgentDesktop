@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
+import { getToolMeta } from '../../../../../shared/toolMeta'
 import { playConfirmSound } from '../../../utils/sounds'
 import './AgentConfirmDialog.css'
 
@@ -14,20 +15,6 @@ interface ConfirmRequest {
   previewDiff?: string  // diff-превью для файловых тулов (§4.1)
 }
 
-// Метаданные тулов только для иконки/лейбла. Опасность больше не дублируем —
-// её считает commandSafety и присылает main-процесс (единый источник правды).
-const TOOL_LABELS: Record<string, { label: string; icon: string }> = {
-  run_command:    { label: 'Выполнить команду',   icon: 'terminal' },
-  write_file:     { label: 'Записать файл',        icon: 'fileText' },
-  edit_file:      { label: 'Редактировать файл',   icon: 'filePen'  },
-  read_file:      { label: 'Прочитать файл',       icon: 'fileText' },
-  list_directory: { label: 'Просмотр папки',       icon: 'folder'   },
-  search_web:     { label: 'Поиск в интернете',    icon: 'globe'    },
-  http_request:   { label: 'HTTP-запрос',          icon: 'globe'    },
-  get_system_info:{ label: 'Инфо о системе',       icon: 'info'     },
-  generate_image: { label: 'Генерация изображения',icon: 'image'    },
-}
-
 export default function AgentConfirmDialog() {
   const [queue, setQueue] = useState<ConfirmRequest[]>([])
 
@@ -37,8 +24,13 @@ export default function AgentConfirmDialog() {
       playConfirmSound()
     }
     const wrapper = window.syntee.agent.onConfirm(handler)
+    // Notification overlay уже обработал ответ — закрыть диалог
+    const offDismiss = window.syntee.agent.onConfirmDismiss((reqId) => {
+      setQueue(q => q.filter(r => r.reqId !== reqId))
+    })
     return () => {
       if (wrapper) window.syntee.agent.offConfirm?.(wrapper as never)
+      offDismiss()
     }
   }, [])
 
@@ -48,7 +40,7 @@ export default function AgentConfirmDialog() {
   }
 
   const current = queue[0]
-  const meta = current ? (TOOL_LABELS[current.toolName] || { label: current.toolName, icon: 'zap' }) : null
+  const meta = current ? getToolMeta(current.toolName) : null
   // Опасность из единого источника (commandSafety), не локальная эвристика
   const level = current?.dangerLevel ?? 'safe'
   const isDanger = level === 'dangerous' || level === 'blocked'

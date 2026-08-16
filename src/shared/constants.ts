@@ -104,6 +104,23 @@ export const DEFAULT_SETTINGS = {
   // ─── Skills ──
   // Per-skill состояние по id скилла. Само тело скилла читается из .md-файла.
   skillsState: {} as Record<string, import('./types').SkillState>,
+  // ─── Уведомления (overlay) ──
+  // Глобальный вкл/выкл + per-type конфиг: enabled + showWhen
+  // showWhen: 'inactive' — только когда главное окно свёрнуто/неактивно,
+  //          'always' — показывать всегда (даже поверх активного окна),
+  //          'minimized' — только когда окно явно свёрнуто.
+  notifications: {
+    enabled: true,
+    types: {
+      ai_response: { enabled: true, showWhen: 'inactive' as const },
+      agent_done: { enabled: true, showWhen: 'inactive' as const },
+      permission: { enabled: true, showWhen: 'always' as const },
+      messenger: { enabled: true, showWhen: 'always' as const },
+      updates: { enabled: true, showWhen: 'always' as const },
+      system: { enabled: true, showWhen: 'inactive' as const },
+      ask_user: { enabled: true, showWhen: 'always' as const },
+    },
+  },
 }
 
 export const WINDOW_SIZES = {
@@ -154,4 +171,9 @@ export const IPC_EVENTS = {
   FASTCONTEXT_UPDATED: 'fastcontext:updated',
   // Skills: пуш при изменении .syntee/skills/ (watcher обнаружил новые/удалённые .md)
   SKILLS_UPDATED: 'skills:updated',
+  // ── Notification overlay ──
+  // main → renderer: отправить данные уведомления в overlay-окно
+  NOTIFICATION_PUSH: 'notification:push',
+  // renderer → main: пользователь кликнул action на уведомлении
+  NOTIFICATION_ACTION: 'notification:action',
 }

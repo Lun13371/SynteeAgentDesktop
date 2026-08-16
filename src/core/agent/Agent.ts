@@ -1002,9 +1002,13 @@ export class Agent {
 
           const imageMatch = result.output?.match(/^\[IMAGE:(.+)\]$/)
           const imageUrl = imageMatch ? imageMatch[1] : undefined
+          // Если output есть — используем его даже при success=false.
+          // Некоторые тулы (get_diagnostics) возвращают success=false
+          // с осмысленным output (ошибки в коде / частичные результаты),
+          // а error при этом не задан. Без этого AI видел «Error: undefined».
           const rawContent = imageUrl
             ? 'Image generated and shown to the user.'
-            : (result.success ? result.output : `Error: ${result.error}`)
+            : (result.output || (result.success ? '' : `Error: ${result.error}`))
           const errorHint = !result.success ? getToolErrorHint(fn.name, result.error ?? '') : ''
           // Per-tool потолок обрезки: search_code уже сам режет до 20 000 симв.
           // по границам файлов (sliceOnFileBoundary), read_file возвращает

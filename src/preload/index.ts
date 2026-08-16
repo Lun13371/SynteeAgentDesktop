@@ -256,6 +256,38 @@ const synteeAPI = {
     saveScreenshot: (base64: string) => ipcRenderer.invoke('overlay:saveScreenshot', base64),
   },
 
+  // ── Notification overlay ──────────────────────────────────────────
+  // Управление overlay-окном уведомлений. push — подписка на входящие
+  // уведомления (main → renderer event). setIgnoreMouseEvents — toggle
+  // click-through. action — клик по action-кнопке уведомления.
+  notification: {
+    show: () => ipcRenderer.invoke('notification:show'),
+    hide: () => ipcRenderer.invoke('notification:hide'),
+    action: (payload: { id: string; actionId: string; type: string; chatId?: string; reqId?: string }) =>
+      ipcRenderer.send('notification:action', payload),
+    // Direct toggle — fire-and-forget через ipcRenderer.send (минимум latency)
+    setIgnoreMouseEvents: (ignore: boolean) =>
+      ipcRenderer.send('notification:setIgnoreMouseEvents', ignore),
+    // Polling backup — renderer отправляет bounds, main процесс polling-ом
+    // проверяет курсор и toggling setIgnoreMouseEvents.
+    updateBounds: (bounds: Array<{ x: number; y: number; w: number; h: number }>) =>
+      ipcRenderer.send('notification:updateBounds', bounds),
+    startTracking: () => ipcRenderer.send('notification:startTracking'),
+    stopTracking: () => ipcRenderer.send('notification:stopTracking'),
+    captureScreen: () => ipcRenderer.invoke('notification:captureScreen') as Promise<string | null>,
+    onPush: (cb: (payload: import('../../shared/types').NotificationPayload) => void) => {
+      const handler = (_: unknown, payload: unknown) =>
+        cb(payload as import('../../shared/types').NotificationPayload)
+      ipcRenderer.on('notification:push', handler)
+      return () => ipcRenderer.removeListener('notification:push', handler)
+    },
+    onDismissAll: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('notification:dismissAll', handler)
+      return () => ipcRenderer.removeListener('notification:dismissAll', handler)
+    },
+  },
+
   // Spotlight
   spotlight: {
     show: () => ipcRenderer.invoke('spotlight:show'),
@@ -503,6 +535,12 @@ const synteeAPI = {
     confirmResponse: (reqId: string, approved: boolean) => {
       ipcRenderer.send(`agent:confirm:response:${reqId}`, approved)
     },
+    // Dismiss — notification overlay уже обработал ответ, закрыть диалог
+    onConfirmDismiss: (cb: (reqId: string) => void) => {
+      const handler = (_: unknown, reqId: string) => cb(reqId)
+      ipcRenderer.on('agent:confirm:dismiss', handler)
+      return () => ipcRenderer.removeListener('agent:confirm:dismiss', handler)
+    },
     // ── ask_user: тул уточняющих вопросов ──
     // onQuestion — подписка на входящие вопросы от AI (renderer показывает
     // QuestionPanel над инпутом). questionResponse — ответ пользователя.
@@ -516,6 +554,12 @@ const synteeAPI = {
     },
     questionResponse: (reqId: string, answers: unknown[]) => {
       ipcRenderer.send(`agent:question:response:${reqId}`, answers)
+    },
+    // Dismiss — notification overlay уже обработал ответ, закрыть панель
+    onQuestionDismiss: (cb: (reqId: string) => void) => {
+      const handler = (_: unknown, reqId: string) => cb(reqId)
+      ipcRenderer.on('agent:question:dismiss', handler)
+      return () => ipcRenderer.removeListener('agent:question:dismiss', handler)
     },
   },
 

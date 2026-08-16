@@ -39,6 +39,31 @@ import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatew
 import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
 import { extractFinalPlan } from '../../shared/planParser'
 import { IPC_EVENTS } from '../../shared/constants'
+import { getNotificationManager } from '../NotificationManager'
+
+// ── Глобальные callback Maps для confirm/question ──────────────────────
+// NotificationManager (permission/ask_user из overlay) вызывает resolveConfirm /
+// resolveQuestion напрямую — тот же main процесс, без IPC round-trip.
+// ipcMain.once (из главного окна AgentConfirmDialog / QuestionPanel) тоже
+// резолвит через эти Map — двойной путь, но callback сработает только один раз.
+const confirmCallbacks = new Map<string, (approved: boolean) => void>()
+const questionCallbacks = new Map<string, (answers: import('../../shared/types').QuestionAnswer[]) => void>()
+
+export function resolveConfirm(reqId: string, approved: boolean): void {
+  const cb = confirmCallbacks.get(reqId)
+  if (cb) {
+    confirmCallbacks.delete(reqId)
+    cb(approved)
+  }
+}
+
+export function resolveQuestion(reqId: string, answers: import('../../shared/types').QuestionAnswer[]): void {
+  const cb = questionCallbacks.get(reqId)
+  if (cb) {
+    questionCallbacks.delete(reqId)
+    cb(answers)
+  }
+}
 import { v4 as uuid } from 'uuid'
 import {
   applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokens,
@@ -219,6 +244,16 @@ function emitRunStatus(
   error?: string,
 ) {
   win?.webContents.send(IPC_EVENTS.CHAT_RUN_STATUS, { chatId, status, msgId, error, ts: Date.now() })
+}
+
+/** Хелпер: получить заголовок чата для уведомления (fallback на "Чат") */
+function getChatTitleForNotif(chatId: string): string {
+  try {
+    const chat = getAllChats().find(c => c.id === chatId)
+    return chat?.title || 'Чат'
+  } catch {
+    return 'Чат'
+  }
 }
 
 /**
@@ -1602,6 +1637,34 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Эмитим терминальный статус для сайдбара (бейдж ✓).
       emitRunStatus(win, params.chatId, 'done', assistantMsgId)
 
+      // ── Notification overlay ──
+      // Не показываем уведомление для incognito-чатов (приватность).
+      // Agent_done показываем только если были toolCalls (агентный режим),
+      // иначе — обычный ai_response.
+      if (!params.incognito) {
+        const nm = getNotificationManager()
+        const hadToolCalls = (assistantMsg.toolSteps?.length ?? 0) > 0
+        if (hadToolCalls) {
+          nm?.push({
+            type: 'agent_done',
+            title: 'Задача выполнена',
+            body: getChatTitleForNotif(params.chatId),
+            priority: 'success',
+            actions: [{ id: 'open', label: 'Открыть' }],
+            chatId: params.chatId,
+          })
+        } else {
+          nm?.push({
+            type: 'ai_response',
+            title: 'Ответ готов',
+            body: getChatTitleForNotif(params.chatId),
+            priority: 'info',
+            actions: [{ id: 'open', label: 'Открыть' }],
+            chatId: params.chatId,
+          })
+        }
+      }
+
       // Запускаем следующий запрос из очереди этого чата, если он есть.
       // drainQueue сам эмитит CHAT_QUEUE_UPDATED (очередь стала короче,
       // а следующий элемент переехал в activeRunMeta).
@@ -1867,8 +1930,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
         case 'confirm': {
           const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
-          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+          // Регистрируем callback в глобальной Map — NotificationManager
+          // вызовет resolveConfirm() напрямую (тот же процесс, без IPC).
+          confirmCallbacks.set(reqId, (approved: boolean) => {
             worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved })
+          })
+          // ipcMain.once — для главного окна (AgentConfirmDialog шлёт через ipcRenderer.send)
+          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+            const cb = confirmCallbacks.get(reqId)
+            if (cb) { confirmCallbacks.delete(reqId); cb(approved) }
           })
           win?.webContents.send('agent:confirm', {
             reqId, toolName, args,
@@ -1876,21 +1946,57 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             dangerReason: msg.dangerReason,
             previewDiff: msg.previewDiff,
           })
+          // ── Notification overlay: запрос разрешения ──
+          const nm = getNotificationManager()
+          const dangerLevel = (msg as { dangerLevel?: string }).dangerLevel
+          const toolLabel = toolName === 'run_command' ? 'Команда' : toolName === 'write_file' ? 'Запись файла' : toolName === 'edit_file' ? 'Правка файла' : toolName
+          nm?.push({
+            type: 'permission',
+            title: `Запрос разрешения: ${toolLabel}`,
+            body: (msg as { dangerReason?: string }).dangerReason || `Агент хочет выполнить ${toolName}`,
+            priority: dangerLevel === 'high' ? 'urgent' : 'warning',
+            actions: [
+              { id: 'approve', label: 'Разрешить' },
+              { id: 'deny', label: 'Отклонить' },
+            ],
+            reqId,
+            chatId: msg.chatId,
+          })
           break
         }
 
         case 'question': {
           // ask_user-тул: AI задаёт уточняющие вопросы пользователю.
-          // Round-trip: worker → main (здесь) → renderer (QuestionPanel) →
-          // main (ipcMain.once) → worker (question_reply).
           const reqId = msg.reqId as string
           const questions = msg.questions as import('../../shared/types').QuestionSpec[]
-          ipcMain.once(`agent:question:response:${reqId}`, (_e, answers: import('../../shared/types').QuestionAnswer[]) => {
+          // Глобальный callback Map — для notification overlay
+          questionCallbacks.set(reqId, (answers: import('../../shared/types').QuestionAnswer[]) => {
             worker.postMessage({ type: 'question_reply', replyId: `question-reply-${reqId}`, answers })
+          })
+          // ipcMain.once — для главного окна (QuestionPanel)
+          ipcMain.once(`agent:question:response:${reqId}`, (_e, answers: import('../../shared/types').QuestionAnswer[]) => {
+            const cb = questionCallbacks.get(reqId)
+            if (cb) { questionCallbacks.delete(reqId); cb(answers) }
           })
           win?.webContents.send('agent:question', {
             reqId, questions, chatId: msg.chatId, msgId: msg.msgId,
           })
+          // ── Notification overlay: вопрос от агента ──
+          // Простая кнопка "Открыть" — разворачивает приложение.
+          // Ответ пользователь даёт в самом приложении (QuestionPanel).
+          const nm = getNotificationManager()
+          const firstQ = questions[0]
+          if (firstQ) {
+            nm?.push({
+              type: 'ask_user',
+              title: firstQ.header || 'Вопрос от агента',
+              body: firstQ.question,
+              priority: 'warning',
+              actions: [{ id: 'open', label: 'Открыть' }],
+              reqId,
+              chatId: msg.chatId,
+            })
+          }
           break
         }
 

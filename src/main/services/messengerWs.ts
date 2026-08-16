@@ -62,7 +62,26 @@ function maybeNotify(envelope: Envelope): void {
     : typeof data.sender?.email === 'string'
       ? data.sender.email
       : 'Новое сообщение'
-  const title = envelope.type === 'global.message' ? `Общий чат — ${senderName}` : 'Новое сообщение'
+  const title = envelope.type === 'global.message' ? `Общий чат — ${senderName}` : senderName
+
+  // ── Overlay-уведомление (iOS-style droplet) ──
+  // Заменяет нативные Windows notifications для красивого UI.
+  try {
+    const { getNotificationManager } = require('../NotificationManager')
+    const nm = getNotificationManager()
+    if (nm) {
+      nm.push({
+        type: 'messenger',
+        title,
+        body: body.length > 120 ? body.slice(0, 117) + '…' : body,
+        priority: 'info',
+        actions: [{ id: 'open', label: 'Открыть' }],
+      })
+      return
+    }
+  } catch { /* fallthrough to native */ }
+
+  // Fallback: нативные Windows notifications (если overlay недоступен)
   const notif = new Notification({
     title,
     body: body.length > 120 ? body.slice(0, 117) + '…' : body,

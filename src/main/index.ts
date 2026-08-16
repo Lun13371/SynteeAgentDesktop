@@ -18,6 +18,7 @@ import { OverlayWindow } from './windows/OverlayWindow'
 import { VoiceWindow } from './windows/VoiceWindow'
 import { SpotlightWindow } from './windows/SpotlightWindow'
 import { TrayMenuWindow } from './windows/TrayMenuWindow'
+import { NotificationWindow } from './windows/NotificationWindow'
 import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
@@ -45,6 +46,8 @@ import { registerGatewayIPC } from './ipc/gateway.ipc'
 import { registerBillingIPC } from './ipc/billing.ipc'
 import { registerMessengerIPC } from './ipc/messenger.ipc'
 import { registerUpdatesIPC } from './ipc/updates.ipc'
+import { registerNotificationIPC } from './ipc/notification.ipc'
+import { initNotificationManager } from './NotificationManager'
 import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
 import { ensureUpdater } from './updater/LauncherBridge'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
@@ -76,6 +79,8 @@ let overlayWindow: OverlayWindow
 let voiceWindow: VoiceWindow
 let spotlightWindow: SpotlightWindow
 let trayMenuWindow: TrayMenuWindow
+let notificationWindow: NotificationWindow
+let notificationManager: ReturnType<typeof initNotificationManager>
 let trayManager: TrayManager
 let hotkeyManager: HotkeyManager
 
@@ -107,6 +112,7 @@ app.whenReady().then(async () => {
   voiceWindow = new VoiceWindow()
   spotlightWindow = new SpotlightWindow()
   trayMenuWindow = new TrayMenuWindow()
+  notificationWindow = new NotificationWindow()
 
   // ── Менеджеры ( ДО окон) ──────────────────────────────────────────
   // IPC-хендлеры используют эти менеджеры, поэтому инициализируем их
@@ -136,7 +142,7 @@ app.whenReady().then(async () => {
   // ── IPC (ДО загрузки URL в окна) ──────────────────────────────────
   // Регистрируем ВСЕ хендлеры до .create(), чтобы рендереры при монтировании
   // находили готовые хендлеры (убирает flood "No handler registered").
-  registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow, trayMenuWindow })
+  registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow, trayMenuWindow, notificationWindow })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerVoiceIPC(store, () => mainWindow.getWindow())
@@ -170,6 +176,14 @@ app.whenReady().then(async () => {
   // In-app update checker (informational; the Go launcher does the actual apply)
   registerUpdatesIPC(() => mainWindow.getWindow())
   startUpdatePolling()
+
+  // ── Notification overlay ──────────────────────────────────────────
+  // NotificationManager решает показывать ли уведомление (по состоянию окна
+  // и настройкам), затем отправляет в NotificationWindow.
+  notificationManager = initNotificationManager(store, mainWindow, notificationWindow)
+  registerNotificationIPC(notificationWindow, mainWindow, (payload) => {
+    notificationManager.handleAction(payload)
+  })
 
   // Лёгкий обработчик оценки токенов текущего ввода (для live-обновления кольца при печати)
   ipcMain.handle('context:estimateInput', (_e, params: { text: string }) => {
@@ -208,12 +222,18 @@ app.whenReady().then(async () => {
   // show() — это экономит ~4 renderer-процесса и сотни МБ RAM в фоне.
   const main = mainWindow.create()
 
+  // Прикрепляем listeners на главное окно (теперь оно создано).
+  notificationManager.attachWindowListeners()
+
   // MCP: фиксируем sender + прогреваем глобальные серверы (нужно окно).
   mcpManager.setWindow(mainWindow.getWindow())
   mcpManager.warmupGlobalServers()
 
   // Предзагрузка контента трей-меню (после IPC + создания окна).
   trayMenuWindow.warmup()
+  // Pre-warm notification overlay — загружает контент заранее,
+  // чтобы первое уведомление не показывало loading screen.
+  notificationWindow.warmup()
 
   // Трей
   trayManager = new TrayManager({

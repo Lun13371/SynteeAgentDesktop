@@ -33,7 +33,10 @@ export function formatDiagnosticsOutput({
   const warningCount = entries.filter((e) => e.severity === 'warning').length
 
   // Если диагностические команды упали — это НЕ «no errors found».
-  // success=false: проверка не выполнилась, нельзя доверять «всё чисто».
+  // Но тул отработал (запустился, вернул результаты) → success=true.
+  // success=false зарезервировано для «тул не смог выполниться» (нет директории и т.п.).
+  // Раньше был success=false → Agent.ts показывал AI «Error: undefined»
+  // вместо реальных результатов, и AI думал что тул сломался.
   if (failures.length > 0) {
     const failLines = failures.map((f) => `⚠ DIAGNOSTICS FAILURE: ${f}`)
     const detectedLine =
@@ -61,7 +64,7 @@ export function formatDiagnosticsOutput({
     ]
       .filter(Boolean)
       .join('\n')
-    return { success: false, output: smartTrimOutput(body, 8000) }
+    return { success: true, output: smartTrimOutput(body, 8000) }
   }
 
   if (entries.length === 0) {
@@ -105,11 +108,14 @@ export function formatDiagnosticsOutput({
 
     const header = `Found ${errorCount} errors, ${warningCount} warnings:`
     const body = smartTrimOutput([header, ...notes, ...sections].join('\n'), 8000)
-    return { success: errorCount === 0, output: body }
+    // success=true: тул отработал (нашёл ошибки — это его работа, а не сбой).
+    // Раньше errorCount>0 → success=false → Agent.ts показывал AI «Error: undefined»
+    // вместо списка реальных ошибок в коде.
+    return { success: true, output: body }
   }
 
   const lines = entries.map(formatEntry)
   const header = `Found ${errorCount} errors, ${warningCount} warnings:`
   const body = smartTrimOutput([header, ...notes, ...lines].join('\n'), 8000)
-  return { success: errorCount === 0, output: body }
+  return { success: true, output: body }
 }

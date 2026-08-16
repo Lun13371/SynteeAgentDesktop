@@ -78,8 +78,20 @@ export default function QuestionPanel() {
       setHelpExpanded(false)
       setTimeout(() => inputRef.current?.focus(), 320)
     })
+    // Notification overlay уже обработал ответ — закрыть панель
+    const offDismiss = window.syntee.agent.onQuestionDismiss((reqId) => {
+      setPending(p => {
+        if (p?.reqId === reqId) {
+          setDrafts({})
+          setVisibleIdx(0)
+          return null
+        }
+        return p
+      })
+    })
     return () => {
       if (wrapper) window.syntee.agent.offQuestion?.(wrapper as never)
+      offDismiss()
     }
   }, [])
 
