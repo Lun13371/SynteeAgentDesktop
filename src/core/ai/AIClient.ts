@@ -493,7 +493,7 @@ export class AIClient {
   }
 
   async chatWithTools(
-    messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
+    messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }>; tool_calls?: unknown[]; tool_call_id?: string; name?: string }>,
     tools: unknown[],
     signal?: AbortSignal,
     role: 'main' | 'subagent' = 'main',
@@ -817,7 +817,7 @@ export class AIClient {
 
 
 
-  async analyzeImage(imageBase64: string, prompt: string, callbacks: StreamCallbacks): Promise<void> {
+  async analyzeImage(imageBase64: string, prompt: string, callbacks: StreamCallbacks, mime?: string): Promise<void> {
     const model = this.getModel('vision')
     let client = await this.getClientForRoleAsync('vision')
     let attempt = 0
@@ -828,10 +828,10 @@ export class AIClient {
         const stream = await client.chat.completions.create({
           model,
           messages: [{ role: 'user', content: [
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+            { type: 'image_url', image_url: { url: `data:${mime || 'image/png'};base64,${imageBase64}`, detail: 'high' } },
             { type: 'text', text: prompt },
           ]}],
-          stream: true, max_tokens: 2048,
+          stream: true, max_tokens: 4096, temperature: 0,
         })
         let fullText = ''
         for await (const chunk of stream) {

@@ -172,6 +172,27 @@ function renderMirrorContent(text: string): JSX.Element {
 // изменениях виртуализатора — без memo инпут-бар (1000+ строк JSX,
 // mirror-рендер draft'а, ModelSelector) перерисовывался бы каждый раз.
 // Пропсы стабилизированы в ChatPage (useCallback-хендлеры).
+const menuContainer = {
+  hidden: { opacity: 0, scale: 0.5 },
+  visible: {
+    opacity: 1,
+    scale: 1,
+    transition: { staggerChildren: 0.04, delayChildren: 0.08, type: 'spring', stiffness: 350, damping: 26 }
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.5,
+    transition: { staggerChildren: 0.02, staggerDirection: -1, duration: 0.18 }
+  }
+}
+
+const menuItem = {
+  hidden: { opacity: 0, x: -12, scale: 0.96 },
+  visible: { opacity: 1, x: 0, scale: 1, transition: { type: 'spring', stiffness: 520, damping: 28 } },
+  exit: { opacity: 0, x: -6, transition: { duration: 0.1 } }
+}
+
+
 function ChatInput({
   chatId,
   onSend, disabled, isIncognito,
@@ -369,12 +390,13 @@ function ChatInput({
   // поместилось на экране и не обрезалось.
   useEffect(() => {
     if (!plusMenuOpen || !menuPos || !menuRef.current || !plusBtnRef.current) return
-    const menuRect = menuRef.current.getBoundingClientRect()
+    // offsetHeight НЕ зависит от CSS-трансформов (scale) — даёт реальную высоту.
+    // getBoundingClientRect вернула бы ~половину из-за scale: 0.5 на старте анимации.
+    const menuH = menuRef.current.offsetHeight + 8
     const btnRect = plusBtnRef.current.getBoundingClientRect()
-    const realH = menuRect.height + 8
-    let top = btnRect.top - realH
+    let top = btnRect.top - menuH
     if (top < 8) top = btnRect.bottom + 8
-    const maxTop = window.innerHeight - menuRect.height - 8
+    const maxTop = window.innerHeight - menuH - 8
     if (top > maxTop) top = Math.max(8, maxTop)
     setMenuPos({ top, left: menuPos.left, openUp: top < btnRect.top })
   }, [plusMenuOpen, menuPos?.left])
@@ -1194,9 +1216,9 @@ function ChatInput({
             }}
             title="Прикрепить / Режим"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <motion.svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" animate={{ rotate: plusMenuOpen ? 45 : 0 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
               <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
+            </motion.svg>
           </button>
 
           {createPortal(
@@ -1205,21 +1227,21 @@ function ChatInput({
                 <motion.div
                   ref={menuRef}
                   className="chat-input-plus-menu"
-                  style={{ position: 'fixed', left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
-                  initial={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
-                  animate={{ opacity: 1, scale: 1, y: 0, transformOrigin: 'bottom left' }}
-                  exit={{ opacity: 0, scale: 0.88, y: 10, transformOrigin: 'bottom left' }}
-                  transition={{ type: 'spring', stiffness: 480, damping: 28 }}
+                  variants={menuContainer}
+                  initial="hidden"
+                  animate="visible"
+                  exit="exit"
+                  style={{ position: 'fixed', left: menuPos.left, top: menuPos.top, zIndex: 9999, transformOrigin: menuPos.openUp ? 'bottom left' : 'top left' }}
                   onMouseDown={e => e.stopPropagation()}
                 >
-                  <button className="chat-input-plus-item" onClick={() => { handleAttachClick(); setPlusMenuOpen(false) }}>
+                  <motion.button variants={menuItem} className="chat-input-plus-item" onClick={() => { handleAttachClick(); setPlusMenuOpen(false) }}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
                     </svg>
                     Прикрепить файл
-                  </button>
+                  </motion.button>
                   <div className="chat-input-plus-divider" />
-                  <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onPlanningModeChange?.(!planningMode) }}>
+                  <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onPlanningModeChange?.(!planningMode) }}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                       <polyline points="14 2 14 8 20 8"/>
@@ -1238,8 +1260,8 @@ function ChatInput({
                         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                       />
                     </motion.button>
-                  </div>
-                  <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onImageModeChange?.(!imageMode) }}>
+                  </motion.div>
+                  <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onImageModeChange?.(!imageMode) }}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="3" y="3" width="18" height="18" rx="2"/>
                       <circle cx="8.5" cy="8.5" r="1.5"/>
@@ -1257,8 +1279,8 @@ function ChatInput({
                         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                       />
                     </motion.button>
-                  </div>
-                  <div className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onAskModeChange?.(!askMode) }}>
+                  </motion.div>
+                  <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onAskModeChange?.(!askMode) }}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                     </svg>
@@ -1274,13 +1296,13 @@ function ChatInput({
                         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                       />
                     </motion.button>
-                  </div>
+                  </motion.div>
 
                   <div className="chat-input-plus-divider" />
-                  <div className="chat-input-plus-section-label">
+                  <motion.div variants={menuItem} className="chat-input-plus-section-label">
                     {lang === 'en' ? 'Mode' : 'Режим'}
-                  </div>
-                  <div className="chat-input-plus-personas">
+                  </motion.div>
+                  <motion.div variants={menuItem} className="chat-input-plus-personas">
                     {PERSONAS.map(p => {
                       const selected = p.id === persona
                       return (
@@ -1314,7 +1336,7 @@ function ChatInput({
                         </div>
                       )
                     })}
-                  </div>
+                  </motion.div>
                 </motion.div>
               )}
             </AnimatePresence>,

@@ -231,12 +231,11 @@ export async function editFile(params: {
     // success=true "0 lines changed". The AI thought the edit applied. Now —
     // an explicit error with the list of allowed modes.
     const VALID_MODES = ['apply_patch', 'insert', 'overwrite']
-    if (!VALID_MODES.includes(params.mode)) {
-      return {
-        success: false,
-        output: '',
-        error: `edit_file: invalid mode="${params.mode}". Allowed modes: ${VALID_MODES.join(', ')}.`,
-      }
+    if (!params.mode || !VALID_MODES.includes(params.mode)) {
+      // Если mode пустой или невалидный — дефолтим на apply_patch вместо ошибки.
+      // Модель может передать пустой mode из-за обрыва стрима или битого JSON —
+      // лучше тихо дефолтить, чем блокировать тул.
+      params.mode = 'apply_patch'
     }
 
     params.path = resolveToolPath(params.path, params.workdir)
