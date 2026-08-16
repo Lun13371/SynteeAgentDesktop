@@ -109,6 +109,20 @@ export async function checkForUpdates(): Promise<UpdateState> {
       lastCheckedAt: Date.now(),
       error: null,
     })
+
+    // ── Overlay-уведомление об обновлении ──
+    if (!dismissed) {
+      try {
+        const { getNotificationManager } = require('../NotificationManager')
+        getNotificationManager()?.push({
+          type: 'updates',
+          title: 'Доступно обновление',
+          body: `Версия ${manifest.version}`,
+          priority: 'info',
+          actions: [{ id: 'open', label: 'Открыть' }],
+        })
+      } catch { /* non-fatal */ }
+    }
     return state
   } catch (err) {
     setState({

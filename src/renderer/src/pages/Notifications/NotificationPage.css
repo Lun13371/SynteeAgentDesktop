@@ -1,0 +1,242 @@
+/* ── Notification overlay ────────────────────────────────────────────
+   Fullscreen click-through. Top-center stack. Compact glass cards.
+   Droplet animation: circle → expand → card.
+   REAL blur: захват экрана через desktopCapturer, CSS filter:blur(). */
+
+.notif-root {
+  position: fixed;
+  inset: 0;
+  /* НЕ pointer-events: none — click-through управляется через
+     setIgnoreMouseEvents в main процессе. Когда setIgnoreMouseEvents(false),
+     окно должно ловить клики, и CSS не должен этому мешать. */
+  z-index: 2147483647;
+  overflow: hidden;
+  --notif-text: rgba(255, 255, 255, 0.95);
+  --notif-text-2: rgba(255, 255, 255, 0.55);
+  --notif-accent-rgb: var(--accent-rgb, 99, 102, 241);
+}
+
+.notif-stack {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.notif-card-wrapper {
+  /* НЕ pointer-events: none — это может блокировать mouseenter на карточке.
+     Click-through управляется через setIgnoreMouseEvents в main процессе. */
+  position: relative;
+}
+
+/* ── Card ────────────────────────────────────────────────────────────
+   Width/height анимируется framer-motion (initial 48px → animate 340px/auto).
+   overflow:hidden чтобы контент не вылезал во время morph. */
+.notif-card {
+  pointer-events: auto;
+  width: 340px;
+  max-width: 90vw;
+  border-radius: 14px;
+  background: rgba(20, 20, 26, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  overflow: hidden;
+  position: relative;
+  will-change: transform, width, height, border-radius, opacity;
+  transform: translateZ(0);
+  isolation: isolate;
+  /* originY: 0 — morph-ит от верхнего края (как капля падает и растекается) */
+  transform-origin: 50% 0%;
+}
+
+/* ── REAL blur background ──
+   Захваченный скриншот экрана через desktopCapturer,
+   CSS filter: blur() даёт НАСТОЯЩИЙ блюр desktop content. */
+.notif-blur-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  filter: blur(28px) brightness(0.7) saturate(1.3);
+  transform: scale(1.15); /* scale чтобы blur не показывал края */
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* Glass highlight overlay (поверх blur) */
+.notif-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.02) 30%,
+    transparent 60%
+  );
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Top edge light (имитация преломления света) */
+.notif-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.15),
+    transparent
+  );
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.notif-card-inner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  position: relative;
+  z-index: 1;
+  overflow: hidden; /* контент не вылезает во время morph */
+}
+
+/* ── Icon ── */
+.notif-icon-wrap {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(var(--notif-accent-rgb), 0.14);
+  border: 1px solid rgba(var(--notif-accent-rgb), 0.2);
+  margin-top: 1px;
+}
+
+/* ── Content ── */
+.notif-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.notif-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--notif-text);
+  line-height: 1.3;
+  margin-bottom: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.notif-body {
+  font-size: 12px;
+  color: var(--notif-text-2);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* ── Actions ── */
+.notif-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.notif-action-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--notif-text);
+  background: rgba(var(--notif-accent-rgb), 0.16);
+  border: 1px solid rgba(var(--notif-accent-rgb), 0.22);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  white-space: nowrap;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.notif-action-btn:hover {
+  background: rgba(var(--notif-accent-rgb), 0.28);
+  transform: translateY(-1px);
+}
+
+.notif-action-btn:active {
+  transform: translateY(0);
+}
+
+/* ── Close button ── */
+.notif-close {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 5px;
+  transition: background 0.15s, opacity 0.15s;
+  z-index: 2;
+  opacity: 0.5;
+}
+
+.notif-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 1;
+}
+
+/* ── Priority variants (left border accent) ── */
+.notif-card--info {
+  border-left: 2px solid rgba(77, 159, 255, 0.5);
+}
+.notif-card--success {
+  border-left: 2px solid rgba(74, 222, 128, 0.5);
+}
+.notif-card--warning {
+  border-left: 2px solid rgba(245, 158, 11, 0.55);
+}
+.notif-card--urgent {
+  border-left: 2px solid rgba(255, 80, 80, 0.6);
+  box-shadow:
+    0 12px 40px rgba(255, 80, 80, 0.12),
+    0 0 0 1px rgba(255, 80, 80, 0.06) inset;
+}
+
+/* ── Droplet link ── */
+.notif-droplet-link {
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 0 0 2px 2px;
+  pointer-events: none;
+  transform-origin: top center;
+}

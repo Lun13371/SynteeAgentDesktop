@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
+import { getToolMeta } from '../../../../../shared/toolMeta'
 import { whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './AgentCard.css'
 
@@ -35,22 +36,6 @@ const STATUS_META: Record<AgentStatus, { label: string; icon: IconName; tone: st
   done:      { label: 'Готово',   icon: 'check',   tone: 'success' },
   error:     { label: 'Ошибка',   icon: 'x',       tone: 'danger' },
   cancelled: { label: 'Отменён',  icon: 'archive', tone: 'muted' },
-}
-
-const TOOL_ICONS: Record<string, IconName> = {
-  run_command: 'terminal', read_file: 'fileText', write_file: 'edit',
-  list_directory: 'folder', search_web: 'globe',
-  get_system_info: 'monitor', generate_image: 'image',
-  read_files: 'fileText', search_code: 'search', analyze_project: 'folder',
-  spawn_agent: 'git-branch',
-  list_extensions: 'puzzle', get_skill: 'puzzle', think: 'brain', update_todo: 'listChecks',
-  update_working_memory: 'database', get_fast_context: 'compass',
-}
-
-function getToolIcon(toolName?: string): IconName {
-  if (!toolName) return 'zap'
-  if (toolName.startsWith('mcp__')) return 'server'
-  return TOOL_ICONS[toolName] ?? 'zap'
 }
 
 function shortTask(task: string, max = 56): string {
@@ -115,7 +100,7 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
           <span className="agent-c__task" title={agent.task}>{shortTask(agent.task)}</span>
           {currentTool && isLive && (
             <span className="agent-c__current-tool" title={currentTool}>
-              <AppIcon name={getToolIcon(currentTool)} size="xs" tone="muted" />
+              <AppIcon name={getToolMeta(currentTool).icon as IconName} size="xs" style={{ color: getToolMeta(currentTool).color }} />
               {currentTool}
             </span>
           )}
@@ -146,12 +131,15 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
               {/* Live tool chips — компактная строка текущих действий */}
               {isLive && recentTools.length > 0 && (
                 <div className="agent-c__chips">
-                  {recentTools.map((t, i) => (
+                  {recentTools.map((t) => {
+                    const tm = getToolMeta(t.toolName)
+                    return (
                     <span key={`${t.toolName}-${t.timestamp}`} className="agent-c__chip">
-                      <AppIcon name={getToolIcon(t.toolName)} size="xs" />
+                      <AppIcon name={tm.icon as IconName} size="xs" style={{ color: tm.color }} />
                       {t.toolName}
                     </span>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
 

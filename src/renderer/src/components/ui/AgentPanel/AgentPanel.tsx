@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
 import ToolChain from '../ToolChain/ToolChain'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
+import { getToolMeta } from '../../../../../shared/toolMeta'
 import { whileHoverListItem, whileTapListItem, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 import './AgentPanel.css'
 
@@ -36,21 +37,6 @@ interface AgentRecord {
 interface AgentPanelProps {
   focusAgentId?: string | null
   currentChatId?: string | null
-}
-
-const TOOL_ICONS: Record<string, IconName> = {
-  run_command: 'terminal', read_file: 'fileText', write_file: 'edit',
-  list_directory: 'folder', search_web: 'globe',
-  get_system_info: 'monitor', generate_image: 'image',
-  read_files: 'fileText', search_code: 'search', analyze_project: 'folder',
-  spawn_agent: 'git-branch',
-  list_extensions: 'puzzle', get_skill: 'puzzle', think: 'brain', update_todo: 'listChecks',
-  update_working_memory: 'database',
-}
-
-function getAgentToolIcon(toolName: string): IconName {
-  if (toolName.startsWith('mcp__')) return 'server'
-  return TOOL_ICONS[toolName] ?? 'zap'
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -318,7 +304,7 @@ function AgentListItem({ agent, selected, onSelect, onCancel }: {
         </div>
         {agent.status === 'running' && currentTool && (
           <div className="agent-list-item__tool">
-            <AppIcon name={getAgentToolIcon(currentTool)} size="xs" />
+            <AppIcon name={getToolMeta(currentTool).icon as IconName} size="xs" style={{ color: getToolMeta(currentTool).color }} />
             <span>{currentTool}</span>
           </div>
         )}

@@ -32,7 +32,7 @@ import './SettingsPage.css'
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
   | 'agent' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
-  | 'changelog'
+  | 'changelog' | 'notifications'
 
 interface SectionDef { id: Section; label: string; icon: IconName }
 interface SectionGroup { title: string; items: SectionDef[] }
@@ -68,6 +68,7 @@ const SECTION_GROUPS: SectionGroup[] = [
     items: [
       { id: 'voice',   label: 'Голос',           icon: 'mic' },
       { id: 'hotkeys', label: 'Горячие клавиши', icon: 'shield' },
+      { id: 'notifications', label: 'Уведомления', icon: 'bell' },
     ],
   },
   {
@@ -324,6 +325,9 @@ export default function SettingsPage() {
             )}
             {section === 'changelog' && (
               <ChangelogSettingsTab />
+            )}
+            {section === 'notifications' && (
+              <NotificationsSection settings={settings} onSet={handleSet} />
             )}
           </motion.div>
         </AnimatePresence>
@@ -1668,6 +1672,80 @@ const DataSection = memo(function DataSection({ settings, onSet, toast }: {
           Сбросить память
         </motion.button>
       </Field>
+    </>
+  )
+})
+
+// ── Notifications section ──────────────────────────────────────────────
+const NOTIF_TYPES: { id: import('../../../../shared/types').NotificationType; label: string }[] = [
+  { id: 'ai_response', label: 'Ответ AI' },
+  { id: 'agent_done', label: 'Агент выполнил задачу' },
+  { id: 'permission', label: 'Запрос разрешения' },
+  { id: 'ask_user', label: 'Вопросы от агента' },
+  { id: 'messenger', label: 'Сообщения мессенджера' },
+  { id: 'updates', label: 'Обновления' },
+  { id: 'system', label: 'Системные события' },
+]
+
+const SHOW_WHEN_LABELS: Record<string, string> = {
+  inactive: 'Когда окно неактивно',
+  minimized: 'Только когда свёрнуто',
+  always: 'Всегда',
+}
+
+const NotificationsSection = memo(function NotificationsSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+  const notifConfig = (settings['notifications'] as {
+    enabled: boolean
+    types: Record<string, { enabled: boolean; showWhen: string }>
+  }) || { enabled: true, types: {} }
+
+  const updateType = (typeId: string, field: 'enabled' | 'showWhen', value: unknown) => {
+    const types = { ...(notifConfig.types ?? {}) }
+    types[typeId] = { ...(types[typeId] ?? { enabled: true, showWhen: 'inactive' }), [field]: value }
+    onSet('notifications', { ...notifConfig, types })
+  }
+
+  const toggleGlobal = () => {
+    onSet('notifications', { ...notifConfig, enabled: !notifConfig.enabled })
+  }
+
+  return (
+    <>
+      <h2 className="settings-section-title">Уведомления</h2>
+
+      <Field label="Показывать уведомления" description="Глобальный вкл/выкл overlay-уведомлений">
+        <Toggle value={notifConfig.enabled} onChange={toggleGlobal} />
+      </Field>
+
+      {notifConfig.enabled && (
+        <>
+          <div className="settings-divider" />
+
+          {NOTIF_TYPES.map(({ id, label }) => {
+            const typeConfig = notifConfig.types?.[id] ?? { enabled: true, showWhen: 'inactive' }
+            return (
+              <Field key={id} label={label} description="Включить и выбрать когда показывать">
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <Toggle
+                    value={typeConfig.enabled}
+                    onChange={(v) => updateType(id, 'enabled', v)}
+                  />
+                  <select
+                    className="settings-select"
+                    value={typeConfig.showWhen}
+                    onChange={(e) => updateType(id, 'showWhen', e.target.value)}
+                    style={{ fontSize: 12, padding: '6px 10px' }}
+                  >
+                    <option value="inactive">{SHOW_WHEN_LABELS.inactive}</option>
+                    <option value="minimized">{SHOW_WHEN_LABELS.minimized}</option>
+                    <option value="always">{SHOW_WHEN_LABELS.always}</option>
+                  </select>
+                </div>
+              </Field>
+            )
+          })}
+        </>
+      )}
     </>
   )
 })

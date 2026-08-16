@@ -30,6 +30,7 @@ import './pages/Settings/SettingsPage.css'
 import './pages/Memory/MemoryPage.css'
 import './pages/Messenger/MessengerPage.css'
 import './pages/Login/LoginScreen.css'
+import './pages/Notifications/NotificationPage.css'
 const OverlayPage = lazy(() => import('./pages/Overlay/OverlayPage'))
 const VoicePage = lazy(() => import('./pages/Voice/VoicePage'))
 const SpotlightPage = lazy(() => import('./pages/Spotlight/SpotlightPage'))
@@ -37,6 +38,9 @@ const SettingsPage = lazy(() => import('./pages/Settings/SettingsPage'))
 const MemoryPage = lazy(() => import('./pages/Memory/MemoryPage'))
 const MessengerPage = lazy(() => import('./pages/Messenger/MessengerPage'))
 const LoginScreen = lazy(() => import('./pages/Login/LoginScreen'))
+// NotificationPage — НЕ lazy: import напрямую, чтобы overlay-окно не
+// показывало Suspense fallback (BootScreen) при первом уведомлении.
+import NotificationPage from './pages/Notifications/NotificationPage'
 import BootScreen from './components/ui/BootScreen/BootScreen'
 import './components/ui/BootScreen/BootScreen.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
@@ -51,13 +55,14 @@ import UpdateAvailableModal from './components/ui/UpdateAvailableModal/UpdateAva
 import ForceUpdateModal from './components/ui/ForceUpdateModal/ForceUpdateModal'
 import { useUpdateStore, selectForceUpdate } from './store/update.store'
 
-type Route = 'chat' | 'overlay' | 'voice' | 'spotlight'
+type Route = 'chat' | 'overlay' | 'voice' | 'spotlight' | 'notifications'
 
 function getRoute(): Route {
   const hash = window.location.hash.replace('#/', '')
   if (hash === 'overlay') return 'overlay'
   if (hash === 'voice') return 'voice'
   if (hash === 'spotlight') return 'spotlight'
+  if (hash === 'notifications') return 'notifications'
   return 'chat'
 }
 
@@ -1172,6 +1177,7 @@ export default function App() {
   if (route === 'overlay') return <Suspense fallback={lazyFallback}><OverlayPage /></Suspense>
   if (route === 'voice') return <Suspense fallback={lazyFallback}><VoicePage /></Suspense>
   if (route === 'spotlight') return <Suspense fallback={lazyFallback}><SpotlightPage /></Suspense>
+  if (route === 'notifications') return <NotificationPage />
 
   // ── Boot gate: показываем BootScreen пока не готовы критичные данные ──────
   // settingsReady — visual settings (theme/accent/font) применены к DOM,

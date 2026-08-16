@@ -6,6 +6,7 @@ import type { ToolOutputMode } from '../../../../../shared/types'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
 import { useChatRemeasure } from '../MessageBubble/remeasure'
 
+import { getToolMeta } from '../../../../../shared/toolMeta'
 import './ToolChain.css'
 
 export interface ToolStep {
@@ -25,55 +26,6 @@ export interface ToolStep {
   // (см. tool_call_pending в Agent.ts). Карточка показывает "готовится" без
   // аргументов, заменяется на обычный tool_call in-place когда придёт полный.
   pending?: boolean
-}
-
-const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
-  edit_file:       { label: 'Редактировать', icon: 'filePen',   color: '#fb923c' },
-  run_command:     { label: 'Команда',       icon: 'terminal',  color: '#f59e0b' },
-  write_file:      { label: 'Запись файла',  icon: 'fileText',  color: '#f87171' },
-  read_file:       { label: 'Чтение файла',  icon: 'fileText',  color: '#60a5fa' },
-  read_files:      { label: 'Чтение файлов', icon: 'fileText',  color: '#60a5fa' },
-  list_directory:  { label: 'Папка',         icon: 'folder',    color: '#a78bfa' },
-  search_web:      { label: 'Поиск в сети',  icon: 'globe',     color: '#34d399' },
-  search_code:     { label: 'Поиск кода',    icon: 'code',      color: '#818cf8' },
-  get_system_info: { label: 'Система',       icon: 'info',      color: '#38bdf8' },
-  generate_image:  { label: 'Генерация',     icon: 'image',     color: '#fb923c' },
-  analyze_project: { label: 'Анализ',        icon: 'folder',    color: '#c084fc' },
-  get_fast_context:{ label: 'Быстрый контекст', icon: 'compass', color: '#06b6d4' },
-  spawn_agent:     { label: 'Суб-агент',     icon: 'gitBranch', color: '#4ade80' },
-  get_agent_status:{ label: 'Статус агента', icon: 'gitBranch', color: '#4ade80' },
-  get_diagnostics: { label: 'Диагностика',   icon: 'info',      color: '#38bdf8' },
-  list_extensions: { label: 'Расширения',    icon: 'puzzle',    color: '#a78bfa' },
-  get_skill:       { label: 'Скилл',         icon: 'puzzle',    color: '#a78bfa' },
-  think:           { label: 'Размышление',   icon: 'brain',     color: '#94a3b8' },
-  update_todo:     { label: 'План',          icon: 'listChecks', color: '#60a5fa' },
-  update_working_memory: { label: 'Память',  icon: 'database',  color: '#34d399' },
-  ask_user:        { label: 'Вопрос',        icon: 'helpCircle', color: '#c084fc' },
-}
-
-/** Парсит mcp__server__tool → { server, tool }. Server может содержать подчёркивания. */
-function parseMcpToolName(toolName: string): { server: string; tool: string } | null {
-  if (!toolName.startsWith('mcp__')) return null
-  const rest = toolName.slice(5)
-  const lastSep = rest.lastIndexOf('__')
-  if (lastSep === -1) return null
-  return { server: rest.slice(0, lastSep), tool: rest.slice(lastSep + 2) }
-}
-
-function getToolMeta(name?: string, serverName?: string): { label: string; icon: string; color: string; isMcp?: boolean; server?: string } {
-  if (!name) return { label: 'Инструмент', icon: 'zap', color: '#94a3b8' }
-  // MCP-тулы — отдельная ветка с иконкой server и фиолетовым цветом.
-  const mcpParsed = parseMcpToolName(name)
-  if (mcpParsed) {
-    return {
-      label: mcpParsed.tool,
-      icon: 'server',
-      color: '#a78bfa',
-      isMcp: true,
-      server: serverName ?? mcpParsed.server,
-    }
-  }
-  return TOOL_META[name] || { label: name, icon: 'zap', color: '#94a3b8' }
 }
 
 // Группируем шаги: каждая итерация = один вызов тула + его результат

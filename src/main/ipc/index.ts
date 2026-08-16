@@ -8,6 +8,7 @@ import type { OverlayWindow } from '../windows/OverlayWindow'
 import type { VoiceWindow } from '../windows/VoiceWindow'
 import type { SpotlightWindow } from '../windows/SpotlightWindow'
 import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
+import type { NotificationWindow } from '../windows/NotificationWindow'
 
 interface IPCContext {
   store: Store
@@ -16,6 +17,7 @@ interface IPCContext {
   voiceWindow: VoiceWindow
   spotlightWindow: SpotlightWindow
   trayMenuWindow: TrayMenuWindow
+  notificationWindow: NotificationWindow
 }
 
 export function registerAllIPC(ctx: IPCContext): void {
