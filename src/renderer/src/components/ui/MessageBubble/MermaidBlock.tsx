@@ -1,27 +1,41 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import mermaid from 'mermaid'
 import { useChatRemeasure } from './remeasure'
 
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'dark',
-  securityLevel: 'loose',
-  themeVariables: {
-    primaryColor: '#a855f7',
-    primaryTextColor: '#e2e8f0',
-    primaryBorderColor: '#3f3f46',
-    lineColor: '#71717a',
-    sectionBkgColor: '#18181b',
-    background: '#09090b',
-    mainBkg: '#18181b',
-    nodeBorder: '#3f3f46',
-    clusterBkg: '#18181b',
-    titleColor: '#e2e8f0',
-    edgeLabelBackground: '#18181b',
-    fontFamily: 'inherit',
-  },
-  flowchart: { curve: 'basis', useMaxWidth: true },
-})
+// ── Dynamic import mermaid — грузится только когда первое сообщение
+// реально содержит ```mermaid блок. Экономит ~50-80MB RAM.
+type MermaidModule = typeof import('mermaid')
+let _mermaid: MermaidModule['default'] | null = null
+let _mermaidPromise: Promise<MermaidModule['default']> | null = null
+
+async function getMermaid(): Promise<MermaidModule['default']> {
+  if (_mermaid) return _mermaid
+  if (_mermaidPromise) return _mermaidPromise
+  _mermaidPromise = import('mermaid').then((mod) => {
+    _mermaid = mod.default
+    _mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      securityLevel: 'loose',
+      themeVariables: {
+        primaryColor: '#a855f7',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#3f3f46',
+        lineColor: '#71717a',
+        sectionBkgColor: '#18181b',
+        background: '#09090b',
+        mainBkg: '#18181b',
+        nodeBorder: '#3f3f46',
+        clusterBkg: '#18181b',
+        titleColor: '#e2e8f0',
+        edgeLabelBackground: '#18181b',
+        fontFamily: 'inherit',
+      },
+      flowchart: { curve: 'basis', useMaxWidth: true },
+    })
+    return _mermaid
+  })
+  return _mermaidPromise
+}
 
 let idCounter = 0
 
@@ -85,7 +99,8 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       try {
         // Уникальный id для каждого рендера чтобы избежать конфликтов
         const renderId = `${idRef.current}-${version}`
-        const result = await mermaid.render(renderId, code)
+        const m = await getMermaid()
+        const result = await m.render(renderId, code)
         // Если за время рендера пришёл новый вызов — игнорируем
         if (version !== activeRef.current) return
         setError(null)

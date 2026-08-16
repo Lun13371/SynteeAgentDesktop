@@ -42,6 +42,29 @@ const buffers = new Map<string, ChatBuffers>()
 // user2 → assistant2, вместо user1 user2 user3 → assistant1 assistant2 assistant3.
 const pendingUserMsgs = new Map<string, Message>()
 
+// ── Periodic cleanup orphaned buffers ──────────────────────────────────
+// Очистка буферов без активного стрима (worker упал без эвита события,
+// IPC разорвался, окно закрылось во время стрима). Без этого буфер с
+// текстом/шагами/токенами остаётся в Map навсегда.
+if (typeof window !== 'undefined') {
+  const CLEANUP_INTERVAL_MS = 5 * 60 * 1000  // проверка раз в 5 минут
+  setInterval(() => {
+    for (const [id, buf] of buffers) {
+      // streamMsgId === 'streaming-pending' и нет flushTimer → стрим не идёт
+      if (buf.streamMsgId === 'streaming-pending' && buf.flushTimer === null) {
+        if (!buf.rateLimitCountdown) {
+          buffers.delete(id)
+        }
+      }
+    }
+    // Также чистим pendingUserMsgs (orphaned queued-сообщения)
+    if (pendingUserMsgs.size > 50) {
+      const oldest = pendingUserMsgs.keys().next().value
+      if (oldest) pendingUserMsgs.delete(oldest)
+    }
+  }, CLEANUP_INTERVAL_MS)
+}
+
 /**
  * Регистрирует user-сообщение как отложенное для queued-запроса.
  * Вызывается из ChatPage.handleSend когда chat:send вернул queued: true.

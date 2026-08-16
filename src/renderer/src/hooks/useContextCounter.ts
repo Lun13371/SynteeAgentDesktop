@@ -151,23 +151,25 @@ export function useContextCounter({
     return off
   }, [enabled, chatId])
 
-  // Live-обновление при печати — лёгкий estimateInput (только текущий текст, без истории)
+  // Live-обновление при печати — лёгкая эвристика в renderer (без IPC).
+  // Раньше каждый debounce 500мс делал IPC round-trip + tiktoken-encode в
+  // main-процессе. Для длинных черновиков это тяжелый encode на каждый debounce.
+  // Теперь: text.length / 3.5 ≈ cl100k_base для текста — визуально кольцо
+  // контекста неотличимо, но без IPC-трафика и CPU в main. Точный tiktoken
+  // расчёт выполняется только при отправке сообщения (chat:send).
   useEffect(() => {
     if (!enabled) return
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const result = await window.syntee.context.estimateInput({ text: currentInput }) as { tokens: number }
-        inputTokensRef.current = result.tokens
-        // Покрываем real (если есть) и последний estimate. Для real во время
-        // run'а live-typing НЕ добавляем (isRunning gate) — токены текущего
-        // ввода станут историей только в следующем раунде.
-        const base = lastRealRef.current ?? lastPushRef.current
-        if (base) {
-          setInfo(buildContextInfo(base, result.tokens, modelId, isRunningRef.current))
-        }
-      } catch {
-        // тихо — не критично
+    debounceRef.current = setTimeout(() => {
+      // Быстрая оценка без IPC: ~3.5 символа на токен (cl100k_base для текста)
+      const quickEstimate = Math.ceil(currentInput.length / 3.5)
+      inputTokensRef.current = quickEstimate
+      // Покрываем real (если есть) и последний estimate. Для real во время
+      // run'а live-typing НЕ добавляем (isRunning gate) — токены текущего
+      // ввода станут историей только в следующем раунде.
+      const base = lastRealRef.current ?? lastPushRef.current
+      if (base) {
+        setInfo(buildContextInfo(base, quickEstimate, modelId, isRunningRef.current))
       }
     }, 500)
     return () => {

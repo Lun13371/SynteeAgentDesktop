@@ -23,14 +23,30 @@ function getEncoder(): ReturnType<typeof getEncoding> {
 
 // ─── Точные оценки через tiktoken ──────────────────────────────────────────────
 
+// LRU-кэш результатов estimateTokens. Текст часто повторяется (system prompt,
+// tool schemas, старые сообщения) — tiktoken-encode дорогой, нет смысла
+// считать дважды для того же текста.
+const _tokenCache = new Map<string, number>()
+const TOKEN_CACHE_CAP = 500
+
 export function estimateTokens(text: string): number {
   if (!text) return 0
+  const cached = _tokenCache.get(text)
+  if (cached !== undefined) return cached
+  let result: number
   try {
-    return getEncoder().encode(text).length
+    result = getEncoder().encode(text).length
   } catch {
     // fallback если tiktoken упал (очень редко)
-    return Math.ceil(text.length / 3.5)
+    result = Math.ceil(text.length / 3.5)
   }
+  if (_tokenCache.size > TOKEN_CACHE_CAP) {
+    // LRU eviction: удаляем старейшую запись
+    const firstKey = _tokenCache.keys().next().value
+    if (firstKey) _tokenCache.delete(firstKey)
+  }
+  _tokenCache.set(text, result)
+  return result
 }
 
 type MessageLike = {

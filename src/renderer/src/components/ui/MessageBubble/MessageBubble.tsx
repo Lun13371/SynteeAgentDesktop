@@ -264,7 +264,7 @@ function parseContentCached(raw: string, allowPlanCard = false): ReturnType<type
   if (!segs) {
     segs = parseContent(raw, allowPlanCard)
     // Ограничиваем размер кэша, чтобы не текло по памяти на длинных чатах.
-    if (parseContentCache.size > 500) evictOldest(parseContentCache, 375)
+    if (parseContentCache.size > 200) evictOldest(parseContentCache, 150)
     parseContentCache.set(key, segs)
   }
   return segs
@@ -469,7 +469,7 @@ const ParsedContent = memo(function ParsedContent({
   let node = parsedRenderCache.get(cacheKey)
   if (!node) {
     node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath)
-    if (parsedRenderCache.size > 400) evictOldest(parsedRenderCache, 300)
+    if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
     parsedRenderCache.set(cacheKey, node)
   }
   return <>{node}</>
@@ -497,6 +497,12 @@ if (!_agentCacheListenerInstalled) {
   window.syntee.on('agent:update', (updated: { id: string } & Record<string, unknown>) => {
     const normalized = normalizeAgent(updated)
     agentCardCache.set(updated.id, normalized)
+    // Cap: agentCardCache — module-level Map, растёт бесконечно (все суб-агенты
+    // за сессию). Ограничиваем 100 записями — UI достаёт старые из БД по IPC.
+    if (agentCardCache.size > 100) {
+      const firstKey = agentCardCache.keys().next().value
+      if (firstKey) agentCardCache.delete(firstKey)
+    }
   })
 }
 

@@ -33,6 +33,17 @@ export function initDB(): void {
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  // ── Performance PRAGMA ──────────────────────────────────────────────
+  // cache_size = -64000 → 64MB page-cache (default 2MB). Ускоряет все
+  // запросы на больших чатах (тысячи сообщений, FTS-поиск, getMessagesPage).
+  // mmap_size = 256MB → memory-mapped I/O для чтения без copy в heap.
+  // synchronous = NORMAL → WAL + NORMAL безопасен (нет потери данных при
+  //   crash в WAL-режиме), но быстрее FULL (не fsync на каждой записи).
+  // temp_store = MEMORY → временные таблицы/индексы в RAM, не на диске.
+  db.pragma('cache_size = -64000')
+  db.pragma('mmap_size = 268435456')
+  db.pragma('synchronous = NORMAL')
+  db.pragma('temp_store = MEMORY')
 
   runMigrations(db)
 }

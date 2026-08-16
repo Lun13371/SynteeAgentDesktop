@@ -21,6 +21,7 @@ export class TrayMenuWindow {
   private isVisible = false
 
   create(): BrowserWindow {
+    if (this.win) return this.win // idempotent — lazy creation
     const { width: ww, height: wh } = WINDOW_SIZES.trayMenu
     this.win = new BrowserWindow({
       width: ww,
@@ -63,6 +64,7 @@ export class TrayMenuWindow {
    * @param trayBounds — rect иконки (Tray.getBounds()) в экранных координатах.
    */
   show(trayBounds?: Rectangle): void {
+    if (!this.win) this.create() // lazy creation on first show
     if (!this.win) return
     const { width: ww, height: wh } = WINDOW_SIZES.trayMenu
     const pos = this.computePosition(trayBounds, ww, wh)

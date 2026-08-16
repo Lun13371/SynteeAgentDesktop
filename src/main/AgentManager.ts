@@ -233,6 +233,18 @@ class AgentManager {
     } catch (e: any) {
       console.warn(`[AgentManager] persistNow failed for ${record.id}: ${e.message}`)
     }
+    // ── LRU eviction: terminated записи (done/error/cancelled) уже в БД —
+    // нет нужды держать их в памяти с полным steps-массивом (мегабайты).
+    // Оставляем последние 50, остальное UI достанет из БД по IPC.
+    if (this.agents.size > 50) {
+      const terminated = [...this.agents.entries()]
+        .filter(([, r]) => r.status === 'done' || r.status === 'cancelled' || r.status === 'error')
+        .sort((a, b) => (a[1].finishedAt ?? 0) - (b[1].finishedAt ?? 0))
+      const toEvict = this.agents.size - 40
+      for (let i = 0; i < toEvict && i < terminated.length; i++) {
+        this.agents.delete(terminated[i][0])
+      }
+    }
   }
 
   /**

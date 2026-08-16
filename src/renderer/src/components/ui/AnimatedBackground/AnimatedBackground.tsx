@@ -7,27 +7,46 @@ export type BgStyle = 'particles' | 'matrix' | 'waves' | 'aurora' | 'fireflies' 
 
 const FALLBACK_RGB = '255, 255, 255'
 
+// ── Кэш accent-цвета ──────────────────────────────────────────────────
+// getComputedStyle форсирует layout recalculation. Раньше звался на каждом
+// кадре (12fps) → постоянный reflow. Теперь кэшируем и сбрасываем кэш через
+// прямую инвалидацию — applyAccentToDOM/applyCustomThemeToDOM в App.tsx
+// вызывают invalidateAccentCache() при смене темы/accent.
+let _cachedAccentRgb: string | null = null
+
+/** Сбрасывает кэш accent-цвета. Вызывается из App.tsx при смене accent/темы. */
+export function invalidateAccentCache(): void {
+  _cachedAccentRgb = null
+}
+
 function getAccentRgb(): string {
   if (typeof window === 'undefined') return FALLBACK_RGB
+  if (_cachedAccentRgb !== null) return _cachedAccentRgb
   const raw = getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim()
-  if (raw) return raw
+  if (raw) { _cachedAccentRgb = raw; return raw }
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
   if (accent && accent.startsWith('#') && accent.length >= 7) {
     const r = parseInt(accent.slice(1, 3), 16)
     const g = parseInt(accent.slice(3, 5), 16)
     const b = parseInt(accent.slice(5, 7), 16)
-    if (!isNaN(r) && !isNaN(g) && !isNaN(b)) return `${r}, ${g}, ${b}`
+    if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+      const result = `${r}, ${g}, ${b}`
+      _cachedAccentRgb = result
+      return result
+    }
   }
+  _cachedAccentRgb = FALLBACK_RGB
   return FALLBACK_RGB
 }
 
 const CELL = 120
 const CONN_DIST_SQ = CELL * CELL
 
-// Все стили на 12fps — движение медленное (0.003 рад/кадр), разница с
-// 20/30fps визуально неразличима, но CPU/GPU работы в 2-3 раза меньше.
-// Плюс pause при скролле — RAF вообще не работает пока чат скроллится.
-const FRAME_MS = 1000 / 12
+// Все стили на 8fps — движение медленное (0.003 рад/кадр), разница с
+// 12/30fps визуально неразличима для фоновых анимаций, но CPU/GPU работы
+// в 1.5-4 раза меньше. Плюс pause при скролле — RAF не работает пока чат
+// скроллится.
+const FRAME_MS = 1000 / 8
 
 export default function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -173,12 +192,15 @@ export default function AnimatedBackground() {
       if (!running) return
       // Пауза при скролле — пропускаем кадр, но планируем следующий.
       if (now < scrollPauseUntil) {
-        animId = requestAnimationFrame(draw)
+        animId = window.setTimeout(() => draw(performance.now()), FRAME_MS) as unknown as number
         return
       }
       const dt = now - lastTime
       if (dt < FRAME_MS) {
-        animId = requestAnimationFrame(draw)
+        // setTimeout вместо requestAnimationFrame — не будит main thread
+        // 60 раз/сек. rAF в idle всё равно планирует каждый кадр, setTimeout
+        // — только через FRAME_MS (125мс при 8fps).
+        animId = window.setTimeout(() => draw(performance.now()), FRAME_MS - dt) as unknown as number
         return
       }
       // Скорость из настроек читается через getState() — не вызывает
@@ -408,18 +430,18 @@ export default function AnimatedBackground() {
         }
       }
 
-      if (running) animId = requestAnimationFrame(draw)
+      if (running) animId = window.setTimeout(() => draw(performance.now()), FRAME_MS) as unknown as number
     }
 
     const start = () => {
       if (running) return
       running = true
       lastTime = 0
-      animId = requestAnimationFrame(draw)
+      animId = window.setTimeout(() => draw(performance.now()), FRAME_MS) as unknown as number
     }
     const stop = () => {
       running = false
-      if (animId !== null) { cancelAnimationFrame(animId); animId = null }
+      if (animId !== null) { clearTimeout(animId); animId = null }
     }
 
     const onVisibility = () => { if (document.hidden) stop(); else start() }

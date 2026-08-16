@@ -34,6 +34,7 @@ import {
   normalizeToolName, findMissingRequiredArgs, formatMissingArgsMessage, getToolErrorHint, isSequentialTool,
   buildToolFingerprint, dropOldestRoundsIfOverflow, extractMcpServerName,
   tryRepairJson,
+  salvageEditFileArgs,
 } from './utils'
 import { validateAndCoerceArgs } from './validateArgs'
 import { jsonrepair } from 'jsonrepair'
@@ -175,6 +176,37 @@ export class Agent {
     // Инициализируем персистентный кэш из снимка (передаётся из main через worker)
     this.fileCache = new Map(Object.entries(options?.fileCacheSnapshot ?? {}))
     this.dirtyFileCacheKeys = new Set()
+    // ── Session-level Map caps (anti-leak) ──────────────────────────────
+    // recentToolFingerprints / loopGuardHits / filesReadInSession / fileCache
+    // НЕ сбрасываются между run() (session-level loop detection). Но за долгую
+    // сессию они растут бесконечно. Обрезаем в начале каждого run() — оставляем
+    // только последние N записей, достаточно для loop-detection.
+    if (this.recentToolFingerprints.length > 50) {
+      this.recentToolFingerprints = this.recentToolFingerprints.slice(-30)
+    }
+    if (this.loopGuardHits.size > 100) {
+      // Оставляем последние 60 записей (самые актуальные тулы)
+      const entries = [...this.loopGuardHits.entries()].slice(-60)
+      this.loopGuardHits = new Map(entries)
+    }
+    if (this.filesReadInSession.size > 200) {
+      // Чистим старейшие — Set упорядочен по вставке
+      const toRemove = this.filesReadInSession.size - 150
+      let removed = 0
+      for (const key of this.filesReadInSession) {
+        if (removed >= toRemove) break
+        this.filesReadInSession.delete(key)
+        removed++
+      }
+    }
+    if (this.fileCache.size > 40) {
+      // LRU eviction: оставляем последние 25 записей (самые свежие чтения)
+      const entries = [...this.fileCache.entries()].slice(-25)
+      this.fileCache = new Map(entries)
+    }
+    if (this.undoStack.length > 100) {
+      this.undoStack = this.undoStack.slice(-50)
+    }
     const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
     const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string; parameters?: { required?: string[] } } }>
     const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
@@ -495,38 +527,47 @@ export class Agent {
             // "JSON пришёл обрезанным/невалидным".
             log('[Agent] JSON.parse tool arguments упал для %s: %s | raw=%s',
               normalizedName, (parseErr as Error).message, (fn.arguments ?? '').slice(0, 500))
-            // Phase 2: попытка починить битый JSON. Два слоя:
-            //   1) jsonrepair (программный парсер) — чинит ЛЮБОЙ битый JSON:
-            //      незакавыченные значения, trailing comma, обрыв стрима,
-            //      одинарные кавычки, литеральные newlines, и т.д.
-            //   2) tryRepairJson (регексы) — fallback если jsonrepair упал,
-            //      ловит специфичные enum-опечатки через Levenshtein.
+            // Phase 2: попытка починить битый JSON. Три слоя, ПОСЛЕДОВАТЕЛЬНО:
+            //   1) tryRepairJson (регексы) — чинит enum-опечатки и незакавыченные
+            //      значения (mode: applyy_patch" → "mode": "apply_patch").
+            //      Работает ПЕРВЫМ, т.к. jsonrepair путается в незакавыченных
+            //      enum-значениях с остаточной кавычкой (applyy_patch").
+            //   2) jsonrepair (программный парсер) — чинит структуру: усечённый
+            //      стрим (незакрытые строки, missing }), trailing comma, и т.д.
+            //      Работает на РЕЗУЛЬТАТЕ tryRepairJson, не на оригинале.
+            //   3) salvageEditFileArgs — последний шанс для edit_file: извлекает
+            //      path и patch регексом, mode дефолтит к apply_patch.
             // Если ремонт успешен — тул выполняется, модель не знает о проблеме.
             if (fn.arguments) {
               let repaired = false
-              // Слой 1: jsonrepair — программный парсер, не регексы.
+              let workingJson = fn.arguments
+              // Слой 1: tryRepairJson — enum-опечатки и незакавыченные значения.
+              const repair = tryRepairJson(workingJson)
+              if (repair.fixed) {
+                workingJson = repair.repaired
+                log('[Agent] tryRepairJson fixes для %s: [%s]',
+                  normalizedName, repair.fixes.join(', '))
+              }
+              // Слой 2: jsonrepair — структурный ремонт (усечение, скобки).
+              // Работает на результате tryRepairJson.
               try {
-                const jsonrepairResult = jsonrepair(fn.arguments)
+                const jsonrepairResult = jsonrepair(workingJson)
                 args = JSON.parse(jsonrepairResult)
                 repaired = true
-                log('[Agent] jsonrepair OK для %s', normalizedName)
+                log('[Agent] jsonrepair OK для %s (after tryRepairJson: %s)',
+                  normalizedName, repair.fixed ? repair.fixes.join(', ') : 'no pre-fixes')
               } catch (jsonrepairErr) {
                 log('[Agent] jsonrepair не удался для %s: %s',
                   normalizedName, (jsonrepairErr as Error).message)
               }
-              // Слой 2: tryRepairJson — fallback для enum-опечаток (Levenshtein)
-              if (!repaired) {
-                const repair = tryRepairJson(fn.arguments)
-                if (repair.fixed) {
-                  try {
-                    args = JSON.parse(repair.repaired)
-                    repaired = true
-                    log('[Agent] JSON repair (fallback) OK для %s: fixes=[%s]',
-                      normalizedName, repair.fixes.join(', '))
-                  } catch (repairErr) {
-                    log('[Agent] JSON repair fallback не удался для %s: %s',
-                      normalizedName, (repairErr as Error).message)
-                  }
+              // Слой 3: salvage для edit_file — извлекаем path и patch регексом.
+              if (!repaired && normalizedName === 'edit_file') {
+                const salvaged = salvageEditFileArgs(fn.arguments)
+                if (salvaged) {
+                  args = salvaged
+                  repaired = true
+                  log('[Agent] edit_file SALVAGE для %s: path=%s, patch len=%d',
+                    normalizedName, salvaged.path, String(salvaged.patch).length)
                 }
               }
               if (!repaired) {
@@ -682,35 +723,74 @@ export class Agent {
             this.recentParseFailures.push(parseFp)
             if (this.recentParseFailures.length > 4) this.recentParseFailures.shift()
 
-            // Phase 3: 2 одинаковых parse failure подряд → жёсткий стоп.
+            // Phase 3: одинаковые parse failure подряд → жёсткий стоп.
             // Не ждём 17 раундов обычного loop-guard — parse failure означает
             // что модель системно не может сгенерировать валидный JSON для
             // этого тула, ретраи бесполезны.
+            //
+            // edit_file exempt от parse-failure hard block (как и от обычного
+            // loop guard, строка ~666): тул не деструктивен (undo-stack, diff),
+            // и битый JSON часто означает что модель пытается сделать сложную
+            // правку большого SEARCH-блока. Hard block убивает возможность
+            // восстановления на весь run. Soft warning остаётся.
             const parseRepeated = this.recentParseFailures.length >= 2 &&
               this.recentParseFailures.every(e => e === parseFp)
             if (parseRepeated) {
-              const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${this.recentParseFailures.length} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
-              messages.push({ role: 'user', content: hardStopMsg })
-              resultMap.set(callId, {
-                contentForAI: `${hardStopMsg}\n\nLast parse error: ${parseError.message}\nYou sent (first 200 chars): ${parseError.snippet}`,
-                callId,
-                name: fn.name,
-              })
-              callbacks.onStep({
-                type: 'tool_result',
-                toolName: '_loop_guard',
-                content: `${fn.name} produced invalid JSON ${this.recentParseFailures.length} times — blocked. Parse error: ${parseError.message}`,
-                success: false,
-              })
-              callbacks.onStep({
-                type: 'tool_result',
-                toolName: fn.name,
-                content: `[Blocked: invalid JSON ${this.recentParseFailures.length}× — ${parseError.message}]`,
-                success: false,
-                callId,
-                hidden: isHiddenTool,
-              })
-              return
+              const isEditFile = fn.name === 'edit_file'
+              if (isEditFile) {
+                // Soft warning для edit_file — не блокируем, даём модели
+                // продолжить попытки (тул не деструктивен).
+                const softMsg = `Loop guard (soft): ${fn.name} produced invalid JSON ${this.recentParseFailures.length} times. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure the "mode" value is exactly "apply_patch" (quoted), and all string values are properly quoted. Consider using a smaller SEARCH block or splitting the edit.`
+                messages.push({ role: 'user', content: softMsg })
+                resultMap.set(callId, {
+                  contentForAI: softMsg,
+                  callId,
+                  name: fn.name,
+                })
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: '_loop_guard',
+                  content: `${fn.name} produced invalid JSON ${this.recentParseFailures.length} times — soft warning (edit_file exempt from hard block). Parse error: ${parseError.message}`,
+                  success: false,
+                })
+                // return — тул не выполняется (args={} т.к. все попытки
+                // ремонта провалились), но модель НЕ блокируется на run —
+                // может попробовать снова с другим JSON в следующем раунде.
+                // Ключевое отличие от hard block: модель не видит "blocked
+                // for this run", видит "please retry with valid JSON".
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: fn.name,
+                  content: `[Soft warning: invalid JSON ${this.recentParseFailures.length}× — ${parseError.message}. Tool not executed, but not blocked — retry with valid JSON.]`,
+                  success: false,
+                  callId,
+                  hidden: isHiddenTool,
+                })
+                return
+              } else {
+                const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${this.recentParseFailures.length} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
+                messages.push({ role: 'user', content: hardStopMsg })
+                resultMap.set(callId, {
+                  contentForAI: `${hardStopMsg}\n\nLast parse error: ${parseError.message}\nYou sent (first 200 chars): ${parseError.snippet}`,
+                  callId,
+                  name: fn.name,
+                })
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: '_loop_guard',
+                  content: `${fn.name} produced invalid JSON ${this.recentParseFailures.length} times — blocked. Parse error: ${parseError.message}`,
+                  success: false,
+                })
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: fn.name,
+                  content: `[Blocked: invalid JSON ${this.recentParseFailures.length}× — ${parseError.message}]`,
+                  success: false,
+                  callId,
+                  hidden: isHiddenTool,
+                })
+                return
+              }
             }
 
             // Phase 1: точное сообщение об ошибке парсинга

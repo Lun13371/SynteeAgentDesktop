@@ -8,6 +8,7 @@ export class VoiceWindow {
   private isVisible = false
 
   create(): BrowserWindow {
+    if (this.win) return this.win // idempotent — lazy creation
     const primary = screen.getPrimaryDisplay()
     const { width: sw, height: sh } = primary.workAreaSize
     const { width: ww, height: wh } = WINDOW_SIZES.voice
@@ -44,12 +45,15 @@ export class VoiceWindow {
   }
 
   show(): void {
-    this.win?.show()
+    if (!this.win) this.create() // lazy creation on first show
+    if (!this.win) return
+    this.win.show()
     this.isVisible = true
   }
 
   hide(): void {
-    this.win?.hide()
+    if (!this.win) return
+    this.win.hide()
     this.isVisible = false
   }
 
