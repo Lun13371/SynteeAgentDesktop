@@ -1,4 +1,4 @@
-﻿import { resolve, normalize } from 'path'
+import { resolve, normalize } from 'path'
 import { estimateTokens, TOOL_SCHEMAS_OVERHEAD } from '../context/contextManager'
 import { log } from '../logger'
 import { TOOL_SCHEMAS } from '../tools/schemas'
@@ -89,13 +89,15 @@ export function formatMissingArgsMessage(toolName: string, missing: MissingArg[]
  * модели (особенно не-OpenAI) регулярно генерируют:
  *
  * 1. Незакавыченные значения enum: `"mode": apply_patch"` — модель забыла
- *    открывающую кавычку. Это самый частый кейс (см. logs/debug.log —
- *    14 раундов зацикливания именно на этом).
- *    Legacy: `"mode": replace"` тоже ловится generic-паттерном и
- *    конвертируется internal-fallback'ом в apply_patch (fileEdit.ts).
+ *    открывающую кавычку, закрывающая может быть, а может нет.
+ *    Самый частый кейс (см. logs/debug.log).
  * 2. Опечатки в enum-значениях: `applyy_patch` → `apply_patch`.
  * 3. Trailing comma перед `}` или `]`.
  * 4. Незакрытая кавычка последнего строкового значения перед `}`.
+ * 5. Одинарные кавычки вместо двойных.
+ * 6. Литеральные newlines внутри строковых значений.
+ * 7. Незакрытые скобки (обрыв стрима).
+ * 8. Незакавыченные пути Windows с обратными слешами.
  *
  * Важно: функция применяется ТОЛЬКО когда JSON.parse уже упал —
  * валидный JSON она не трогает. Все исправления логируются через
@@ -179,16 +181,25 @@ export function tryRepairJson(raw: string): { repaired: string; fixed: boolean; 
   // из TOOL_SCHEMAS (mode, shell, kind, scope, action, approval_mode, isolation,
   // status, type, method, ...). Динамически — нулевое обслуживание.
   //
-  // Матчит: `"kind": user_fact"` → `"kind": "user_fact"`
-  // Также: `"mode": applyy_patch"` → `"mode": "apply_patch"` (Levenshtein ≤ 2)
+  // Матчит все варианты незакавыченного enum-значения:
+  //   "mode": apply_patch"    ← есть закрывающая кавычка (нужно съесть)
+  //   "mode": apply_patch,    ← нет кавычек, запятая
+  //   "mode": apply_patch}    ← нет кавычек, скобка
+  //   "mode": apply_patch     ← нет кавычек, конец строки
+  //
+  // КЛЮЧЕВОЙ ФИКС: `"?` ОПЦИОНАЛЬНО СЪЕДАЕТ закрывающую кавычку.
+  // Раньше был lookahead `(?=...)` который НЕ потреблял кавычку →
+  // получалось `"mode": "apply_patch""` (двойная кавычка) → JSON.parse падал.
+  // Теперь `"?` съедает существующую кавычку, мы добавляем свои → чисто.
+  //
+  // Также: Levenshtein ≤ 2 для опечаток (applyy_patch → apply_patch).
   //
   // КРИТИЧНО: capture group для prefix (ключ + двоеточие + пробелы),
-  // чтобы replacement восстанавливал ключ. Раньше replacement был
-  // `": "${corrected}"` — это теряло ключ, и второй JSON.parse тоже падал.
+  // чтобы replacement восстанавливал ключ.
   if (ENUM_KEY_NAMES.length > 0) {
     const keyPattern = ENUM_KEY_NAMES.join('|')
     const unquotedEnum = new RegExp(
-      `("(?:${keyPattern})":\\s*)(?!")([a-zA-Z_][a-zA-Z0-9_-]*)"`,
+      `("(?:${keyPattern})":\\s*)(?!")([a-zA-Z_][a-zA-Z0-9_-]*)"?(?=[,}\\]]|$)`,
       'gi',
     )
     result = result.replace(unquotedEnum, (_m, prefix: string, val: string) => {
@@ -412,9 +423,14 @@ export function stableStringify(value: unknown): string {
 
 export function buildToolFingerprint(toolName: string, args: Record<string, unknown>): AgentToolCallFingerprint {
   const normalizedArgs: Record<string, unknown> = { ...args }
+  // Truncation head+tail (80+80) вместо head-only (160): правки в КОНЦЕ
+  // patch/old_str/new_str теперь дают другой fingerprint. Раньше модель
+  // правила конец SEARCH-блока при retry, первые 160 символов совпадали →
+  // loop-guard считал это повтором → hard block убивал edit_file на сессии.
   for (const key of ['content', 'old_str', 'new_str', 'patch']) {
     if (typeof normalizedArgs[key] === 'string' && normalizedArgs[key].length > 160) {
-      normalizedArgs[key] = `${normalizedArgs[key].slice(0, 160)}...`
+      const s = normalizedArgs[key] as string
+      normalizedArgs[key] = `${s.slice(0, 80)}...${s.slice(-80)}`
     }
   }
   // Для search_code нормализуем `pattern` так, чтобы косметические вариации

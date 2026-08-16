@@ -109,6 +109,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     subagentRole,
     modelId: resolvedModelId,
     providerId: resolvedProviderId,
+    imageParts,
   } = msg as {
     chatId: string
     msgId: string
@@ -121,6 +122,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     subagentRole?: string
     modelId?: string
     providerId?: string
+    imageParts?: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>
     agentSettings: {
       enableTools: boolean
       maxSteps: number
@@ -710,6 +712,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           planningMode,
           persona: workerPersona,
           subagentRole,
+          imageParts: imageParts as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> | undefined,
         }
       )
     } else {

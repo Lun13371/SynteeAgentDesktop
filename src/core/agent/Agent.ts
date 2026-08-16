@@ -36,6 +36,7 @@ import {
   tryRepairJson,
 } from './utils'
 import { validateAndCoerceArgs } from './validateArgs'
+import { jsonrepair } from 'jsonrepair'
 
 export class Agent {
   private store: Store
@@ -140,7 +141,16 @@ export class Agent {
         ...(m.thinking_blocks ? { thinking_blocks: m.thinking_blocks } : {}),
         ...(m.reasoning_content ? { reasoning_content: m.reasoning_content } : {}),
       })),
-      { role: 'user', content: userMessage },
+      {
+        role: 'user',
+        // Если есть imageParts (основная модель поддерживает vision) —
+        // передаём картинки напрямую как multipart content (image_url блоки +
+        // текст). Иначе — обычный строковый content (возможно с текстовым
+        // описанием картинок от vision-модели).
+        content: options?.imageParts && options.imageParts.length > 0
+          ? [...options.imageParts, { type: 'text' as const, text: userMessage }]
+          : userMessage,
+      },
     ]
 
     const modifiedFiles = new Set<string>()
@@ -485,27 +495,41 @@ export class Agent {
             // "JSON пришёл обрезанным/невалидным".
             log('[Agent] JSON.parse tool arguments упал для %s: %s | raw=%s',
               normalizedName, (parseErr as Error).message, (fn.arguments ?? '').slice(0, 500))
-
-            // Phase 2: попытка починить частые ошибки JSON (незакавыченные
-            // enum-значения, trailing comma, опечатки). Если ремонт успешен —
-            // тул выполняется нормально, модель даже не знает что был проблема.
+            // Phase 2: попытка починить битый JSON. Два слоя:
+            //   1) jsonrepair (программный парсер) — чинит ЛЮБОЙ битый JSON:
+            //      незакавыченные значения, trailing comma, обрыв стрима,
+            //      одинарные кавычки, литеральные newlines, и т.д.
+            //   2) tryRepairJson (регексы) — fallback если jsonrepair упал,
+            //      ловит специфичные enum-опечатки через Levenshtein.
+            // Если ремонт успешен — тул выполняется, модель не знает о проблеме.
             if (fn.arguments) {
-              const repair = tryRepairJson(fn.arguments)
-              if (repair.fixed) {
-                try {
-                  args = JSON.parse(repair.repaired)
-                  log('[Agent] JSON repair OK для %s: fixes=[%s]',
-                    normalizedName, repair.fixes.join(', '))
-                  // Ремонт успешен — parseError не ставим, тул выполнится.
-                } catch (repairErr) {
-                  log('[Agent] JSON repair не удался для %s: %s',
-                    normalizedName, (repairErr as Error).message)
-                  parseError = {
-                    message: (parseErr as Error).message,
-                    snippet: (fn.arguments ?? '').slice(0, 200),
+              let repaired = false
+              // Слой 1: jsonrepair — программный парсер, не регексы.
+              try {
+                const jsonrepairResult = jsonrepair(fn.arguments)
+                args = JSON.parse(jsonrepairResult)
+                repaired = true
+                log('[Agent] jsonrepair OK для %s', normalizedName)
+              } catch (jsonrepairErr) {
+                log('[Agent] jsonrepair не удался для %s: %s',
+                  normalizedName, (jsonrepairErr as Error).message)
+              }
+              // Слой 2: tryRepairJson — fallback для enum-опечаток (Levenshtein)
+              if (!repaired) {
+                const repair = tryRepairJson(fn.arguments)
+                if (repair.fixed) {
+                  try {
+                    args = JSON.parse(repair.repaired)
+                    repaired = true
+                    log('[Agent] JSON repair (fallback) OK для %s: fixes=[%s]',
+                      normalizedName, repair.fixes.join(', '))
+                  } catch (repairErr) {
+                    log('[Agent] JSON repair fallback не удался для %s: %s',
+                      normalizedName, (repairErr as Error).message)
                   }
                 }
-              } else {
+              }
+              if (!repaired) {
                 parseError = {
                   message: (parseErr as Error).message,
                   snippet: (fn.arguments ?? '').slice(0, 200),
@@ -547,9 +571,16 @@ export class Agent {
         })
 
         const executeCall = async (item: NormalizedToolCall) => {
-          const { callId, fn, args, isHiddenTool, pendingCallId, parseError } = item
+          const { callId, fn, isHiddenTool, pendingCallId, parseError } = item
+          let args = item.args
+          // Ключ loop-guard для сброса при успешном выполнении (Fix 3).
+          // Если тул успешно выполнился — счётчик guard-хитов для этого
+          // fingerprint сбрасывается: модель вышла из лупа, не нужно
+          // держать прошлые неудачи против неё весь session.
+          let loopGuardBlockKey: string | null = null
           if (!isHiddenTool) {
             const fingerprint = buildToolFingerprint(fn.name, args)
+            loopGuardBlockKey = `${fingerprint.toolName}|${fingerprint.argsKey}`
 
             // Auto-advance: read_file без offset на уже прочитанном файле (≥400
             // строк) вернёт ДРУГОЙ чанк (401-800, 801-1200, ...) — это НЕ
@@ -596,7 +627,12 @@ export class Agent {
                 const blockKey = `${fingerprint.toolName}|${fingerprint.argsKey}`
                 const guardHits = (this.loopGuardHits.get(blockKey) ?? 0) + 1
                 this.loopGuardHits.set(blockKey, guardHits)
-                const hardBlock = guardHits >= 3
+                // edit_file exempt от hard block: тул имеет undo-stack,
+                // возвращает diff, не деструктивен. Hard block убивал
+                // edit_file на весь session из-за ложных срабатываний
+                // (правки в конце SEARCH-блока давали тот же fingerprint).
+                // Soft warning остаётся — модель видит "ты повторяешь".
+                const hardBlock = guardHits >= 3 && fn.name !== 'edit_file'
                 const loopMsg = alternation
                   ? `Loop guard: you are alternating ${fingerprint.toolName} with another tool in a loop (${fpCount} recent calls, 2 unique). Change strategy: analyze what is already done and choose a different approach.`
                   : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
@@ -611,7 +647,9 @@ export class Agent {
                   toolName: '_loop_guard',
                   content: hardBlock
                     ? `${fn.name} blocked after ${guardHits * maxRepeatedToolCalls} repeats (hard loop guard).`
-                    : `${fn.name} repeated ${maxRepeatedToolCalls} times with the same arguments — warning ${guardHits}/3. Hard block after 3.`,
+                    : fn.name === 'edit_file'
+                      ? `${fn.name} repeated ${maxRepeatedToolCalls} times with similar arguments — warning ${guardHits}. Reread the file and use the exact content in your SEARCH block.`
+                      : `${fn.name} repeated ${maxRepeatedToolCalls} times with the same arguments — warning ${guardHits}/3. Hard block after 3.`,
                   success: false,
                 })
                 if (hardBlock) {
@@ -682,14 +720,6 @@ export class Agent {
             return
           }
 
-          const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
-          if (missingArgs.length > 0) {
-            const missingMsg = formatMissingArgsMessage(fn.name, missingArgs)
-            resultMap.set(callId, { contentForAI: missingMsg, callId, name: fn.name })
-            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: missingMsg, success: false, callId, hidden: isHiddenTool })
-            return
-          }
-
           // ── Schema-aware валидация: type coercion, enum fuzzy-fix, defaults ──
           // Применяется ПОСЛЕ findMissingRequiredArgs (required уже проверены),
           // но ДО выполнения тула. Чинит типы (string→number), опечатки в enum
@@ -707,6 +737,13 @@ export class Agent {
             const errMsg = `${fn.name}: argument validation failed:\n  - ${validation.errors.join('\n  - ')}\n\nRepeat the call with valid argument types.`
             resultMap.set(callId, { contentForAI: errMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: errMsg, success: false, callId, hidden: isHiddenTool })
+            return
+          }
+          const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
+          if (missingArgs.length > 0) {
+            const missingMsg = formatMissingArgsMessage(fn.name, missingArgs)
+            resultMap.set(callId, { contentForAI: missingMsg, callId, name: fn.name })
+            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: missingMsg, success: false, callId, hidden: isHiddenTool })
             return
           }
 
@@ -815,6 +852,15 @@ export class Agent {
             // сообщением, агент может обработать и продолжить.
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr)
             result = { success: false, output: '', error: `Internal tool error in ${fn.name}: ${errMsg}` }
+          }
+
+          // Fix 3: сброс loop-guard при успешном выполнении. Модель вышла
+          // из лупа — не держим прошлые неудачи против неё весь session.
+          // Особенно важно для edit_file: 2 неудачные попытки + успех →
+          // счётчик обнуляется, следующий edit на другом файле начинает
+          // с чистого листа.
+          if (result.success && loopGuardBlockKey) {
+            this.loopGuardHits.delete(loopGuardBlockKey)
           }
 
           if (result.success && !dryRunMode && (fn.name === 'write_file' || fn.name === 'edit_file')) {

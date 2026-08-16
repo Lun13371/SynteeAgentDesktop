@@ -187,9 +187,14 @@ export interface AgentSummaryDetails {
   fileSnapshots: Array<{ path: string; contentBefore: string | null }>
 }
 
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: string } }
+
+
 export type AgentMessage = {
   role: string
-  content: string
+  content: string | ContentPart[]
   tool_calls?: unknown[]
   tool_call_id?: string
   name?: string
@@ -241,6 +246,11 @@ export type AgentRuntimeOptions = {
     *  When set, defense-in-depth in executeTool issues a role-specific
     *  blocked message for tools outside the role's allowlist. */
   subagentRole?: string
+  /** Изображения для прямой передачи в основную модель (когда она
+    *  поддерживает vision). Agent.run встраивает их в user-сообщение
+    *  как multipart content вместо текстового описания от vision-модели. */
+  imageParts?: ContentPart[]
+
 }
 
 export type AgentToolCallFingerprint = {

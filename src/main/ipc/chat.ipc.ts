@@ -46,6 +46,7 @@ import {
   type ChatMessage,
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
+import { getCatalogModel, isCatalogReady } from '../../core/tokens/modelCatalog'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { startWatching as startFastContextWatch, stopWatching as stopFastContextWatch } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
@@ -119,6 +120,8 @@ interface ActiveRun {
   // Результат обработки вложений (processAttachmentsAndStream) — сохраняется
   // в assistantMsg через sendDone для отображения AttachmentProcessingBlock.
   attachmentResult: AttachmentProcessingResult | null
+  // imageParts для прямой передачи в основную модель (vision-capable)
+  imageParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>
 }
 
 const activeRuns = new Map<string, ActiveRun>()
@@ -854,8 +857,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     msgId: string,
     content: string,
     attachments: Attachment[],
-  ): Promise<{ content: string; result: AttachmentProcessingResult | null }> {
-    if (attachments.length === 0) return { content, result: null }
+  ): Promise<{ content: string; result: AttachmentProcessingResult | null; imageParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> }> {
+    if (attachments.length === 0) return { content, result: null, imageParts: [] }
 
     // require вместо await import для builtin: нативный import() не работает в V8-байткоде.
     // (относительные import() ниже rollup компилирует в require — они безопасны)
@@ -892,12 +895,25 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }> = []
     let hasErrors = false
 
-    // Промпт для vision-модели: если есть текст вопроса пользователя —
-    // передаём его, чтобы модель знала, что именно искать на картинке.
+    // Промпт для vision-модели: структурированный, с нумерацией картинок.
     const userQuestion = content?.trim()
     const visionPrompt = userQuestion
-      ? `Пользователь прислал изображение со следующим вопросом/задачей:\n«${userQuestion.slice(0, 2000)}»\n\nОпиши содержимое этого изображения подробно, обращая особое внимание на детали, нужные для ответа на вопрос пользователя. Отвечай на русском. Опиши: что изображено, любой текст на картинке, и все релевантные детали.`
-      : `Опиши содержимое этого изображения подробно. Это вложение пользователя к вопросу. Отвечай на русском. Опиши: что изображено, любой текст на картинке, контекст, который может быть полезен для ответа на вопрос пользователя.`
+      ? `Проанализируй изображение и предоставь структурированное описание:\n\n1. ТИП: Что изображено (скриншот, фото, диаграмма, схема, код, документ)\n2. ТЕКСТ: Весь видимый текст на изображении (точно, без искажений)\n3. ВИЗУАЛЬНОЕ: Цвета, расположение элементов, UI-компоненты, иконки\n4. КОНТЕКСТ: Относительно вопроса пользователя: «${userQuestion.slice(0, 1000)}»\n\nОтвечай на русском. Будь точен и лаконичен.`
+      : `Проанализируй изображение и предоставь структурированное описание:\n\n1. ТИП: Что изображено (скриншот, фото, диаграмма, схема, код, документ)\n2. ТЕКСТ: Весь видимый текст на изображении (точно, без искажений)\n3. ВИЗУАЛЬНОЕ: Цвета, расположение элементов, UI-компоненты, иконки\n4. КОНТЕКСТ: Общий контекст, который может быть полезен для ответа\n\nОтвечай на русском. Будь точен и лаконичен.`
+
+    // ── Vision capability check: если основная модель поддерживает vision,
+    //    передаём картинки напрямую (без промежуточного описания через vision-модель).
+    const mainAssignment = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined)
+      ?.find(a => a.role === 'main')
+    let mainModelSupportsVision = false
+    if (mainAssignment && isCatalogReady()) {
+      const catalogInfo = getCatalogModel(mainAssignment.providerId, mainAssignment.modelId)
+      if (catalogInfo?.capabilities?.includes('vision')) {
+        mainModelSupportsVision = true
+      }
+    }
+    const imageParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> = []
+
 
     // ── Phase 1: Первый проход — некартинки (последовательно, быстрый I/O) ──
     // Картинки собираем в imageAtts для параллельной обработки во втором проходе.
@@ -969,10 +985,48 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
     }
 
-    // ── Phase 2: Параллельная обработка картинок через Promise.all ──
-    // Все изображения анализируются одновременно (сетевой I/O), а не по очереди.
-    // 5 картинок → общее время ≈ время самой медленной, а не сумма пяти.
-    if (imageAtts.length > 0) {
+    // ── Phase 2: Обработка картинок ──
+    // Если основная модель поддерживает vision — direct pass (без vision-модели).
+    if (imageAtts.length > 0 && mainModelSupportsVision) {
+      let imgIdx = 0
+      for (const { att } of imageAtts) {
+        try {
+          const base64 = readFileSync(att.path!).toString('base64')
+          const mime = att.mime || 'image/png'
+          imageParts.push({
+            type: 'image_url',
+            image_url: { url: `data:${mime};base64,${base64}`, detail: 'high' },
+          })
+          imgIdx++
+          const attIdx = imageAtts.findIndex(x => x.att === att)
+          if (attIdx >= 0) {
+            processedFiles[attIdx] = {
+              ...processedFiles[attIdx],
+              status: 'image_described',
+              description: 'Передано напрямую в основную модель (vision)',
+            }
+          }
+          win?.webContents.send('agent:tool_progress', {
+            msgId, chatId,
+            toolName: 'process_attachments',
+            stage: 'analyzing_image',
+            detail: `${imgIdx}/${imageAtts.length} (прямая передача)`,
+            filesProcessed: processed + imgIdx,
+            filesTotal: total,
+            ts: Date.now(),
+          })
+        } catch (e) {
+          const errMsg = (e as Error).message
+          textBlocks.push(`[Ошибка чтения изображения: ${att.name} — ${errMsg}]`)
+          const attIdx = imageAtts.findIndex(x => x.att === att)
+          if (attIdx >= 0) {
+            processedFiles[attIdx] = { ...processedFiles[attIdx], status: 'error', detail: errMsg }
+          }
+          hasErrors = true
+        }
+      }
+      processed += imageAtts.length
+    } else if (imageAtts.length > 0) {
       const nonImageProcessed = processed
       let imagesDone = 0
 
@@ -992,9 +1046,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           const aiClient = new AIClient(store)
           const description = await new Promise<string>((resolve) => {
             let full = ''
+            const imgNum = imageAtts.findIndex(x => x.att === att) + 1
+            const numberedPrompt = `[Изображение ${imgNum} из ${imageAtts.length}]\n${visionPrompt}`
             aiClient.analyzeImage(
               base64,
-              visionPrompt,
+              numberedPrompt,
               {
                 onToken: (token) => {
                   full += token
@@ -1004,6 +1060,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
                   resolve(`[Ошибка анализа изображения: ${err.message}]`)
                 },
               },
+              att.mime || undefined,
             ).catch(() => resolve('[Ошибка анализа изображения]'))
           })
 
@@ -1064,7 +1121,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       hasErrors,
     }
 
-    return { content: augmentedContent, result }
+    return { content: augmentedContent, result, imageParts }
   }
 
   async function runChatSend(
@@ -1352,6 +1409,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // сохраняется в assistantMsg через sendDone для отображения
       // AttachmentProcessingBlock после рестарта.
       attachmentResult: null as AttachmentProcessingResult | null,
+      imageParts: [] as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>,
     }
 
     // ── UI-батчинг токенов: флеш накопленного перед любыми другими
@@ -1664,6 +1722,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         )
         effectiveContent = processed.content
         run.attachmentResult = processed.result
+        run.imageParts = processed.imageParts
       } catch (e) {
         log('[runChatSend] processAttachments failed: %s', (e as Error).message)
         // Продолжаем с исходным content — лучше чем уронить весь запрос
@@ -2740,6 +2799,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // effectiveContent — с инлайн-блоками из processAttachmentsAndStream
       // (текстовые файлы + описания картинок от vision-модели).
       content: effectiveContent,
+      // imageParts — картинки для прямой передачи в основную модель (vision).
+      imageParts: run.imageParts,
       history: processedHistory,
       systemPrompt,
       enableTools: true,

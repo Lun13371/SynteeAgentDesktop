@@ -11,7 +11,7 @@ export const TOOL_SCHEMAS = [
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Path to the file' },
-          mode: { type: 'string', enum: ['apply_patch', 'insert', 'overwrite'], description: 'Edit mode' },
+          mode: { type: 'string', enum: ['apply_patch', 'insert', 'overwrite'], description: 'Edit mode', default: 'apply_patch' },
           after_line: { type: 'number', description: '[insert] Insert after this line (1-indexed)' },
           content: { type: 'string', description: '[insert/overwrite] Content to insert or overwrite' },
           patch: { type: 'string', description: '[apply_patch] Search/replace patch. Format: blocks of <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Each block replaces one occurrence (or all if replace_all=true). Fuzzy-matches by ignoring leading whitespace. Example:\n<<<<<<< SEARCH\nold line\n=======\nnew line\n>>>>>>> REPLACE' },

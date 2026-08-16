@@ -199,7 +199,8 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
       continue
     }
 
-    // обычное user/assistant сообщение — строковый content
+    // обычное user/assistant сообщение — content может быть string или
+    // массивом content-блоков (multipart с image_url для vision).
     // Если у assistant есть thinking_blocks (без tool_calls — rare but
     // possible when extended thinking ends in text), render them too.
     if (m.role === 'assistant' && m.thinking_blocks && m.thinking_blocks.length > 0) {
@@ -215,6 +216,27 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
         blocks.push({ type: 'text', text: m.content })
       }
       result.push({ role: 'assistant', content: blocks })
+      i++
+      continue
+    }
+    // Multipart content (array) — конвертируем image_url в Anthropic image блоки
+    if (Array.isArray(m.content)) {
+      const blocks: Array<Record<string, unknown>> = []
+      for (const part of m.content) {
+        if (part.type === 'text' && part.text) {
+          blocks.push({ type: 'text', text: part.text })
+        } else if (part.type === 'image_url' && part.image_url) {
+          const url = part.image_url.url || ''
+          const dataMatch = url.match(/^data:([^;]+);base64,(.+)$/)
+          if (dataMatch) {
+            blocks.push({
+              type: 'image',
+              source: { type: 'base64', media_type: dataMatch[1], data: dataMatch[2] },
+            })
+          }
+        }
+      }
+      result.push({ role: m.role as 'user' | 'assistant', content: blocks.length > 0 ? blocks : '' })
       i++
       continue
     }
