@@ -41,6 +41,7 @@ import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlan
 import { extractFinalPlan } from '../../shared/planParser'
 import { IPC_EVENTS } from '../../shared/constants'
 import { getNotificationManager } from '../NotificationManager'
+import { getActivityManager } from '../ActivityManager'
 
 // ── Глобальные callback Maps для confirm/question ──────────────────────
 // NotificationManager (permission/ask_user из overlay) вызывает resolveConfirm /
@@ -248,6 +249,8 @@ function emitRunStatus(
   error?: string,
 ) {
   win?.webContents.send(IPC_EVENTS.CHAT_RUN_STATUS, { chatId, status, msgId, error, ts: Date.now() })
+  // Форвард в ActivityManager (overlay-информер активности)
+  getActivityManager()?.onRunStatus({ chatId, status, msgId, error })
 }
 
 /** Хелпер: получить заголовок чата для уведомления (fallback на "Чат") */
@@ -2001,6 +2004,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // маршрутизировать шаг в нужный чат (раньше фильтрация шла по msgId
           // в локальном стейте ChatPage — не работало для параллельных чатов).
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId, chatId: msg.chatId })
+          // Форвард в ActivityManager (overlay-информер активности)
+          getActivityManager()?.onStep({ ...(msg.step as object), msgId: msg.msgId, chatId: msg.chatId })
           break
         }
 
@@ -2094,6 +2099,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             toolName: msg.toolName, stage: msg.stage, detail: msg.detail,
             filesProcessed: msg.filesProcessed, filesTotal: msg.filesTotal,
             filesFound: msg.filesFound,
+          })
+          // Форвард в ActivityManager (overlay-информер активности)
+          getActivityManager()?.onToolProgress({
+            msgId: msg.msgId, chatId: msg.chatId,
+            toolName: msg.toolName, stage: msg.stage, detail: msg.detail,
+            filesProcessed: msg.filesProcessed, filesTotal: msg.filesTotal,
           })
           break
 
@@ -2191,10 +2202,18 @@ ${subModeOutro}`,
                 toolName: 'run_command', stage: 'start',
                 detail: command, sessionId: agentSession.id, ts: Date.now(),
               })
+              getActivityManager()?.onToolProgress({
+                msgId: shellMsgId, chatId,
+                toolName: 'run_command', stage: 'start', detail: command,
+              })
               const result = await ptyManager.execInSession(agentSession.id, command, timeoutSec, cwd)
               win?.webContents.send('agent:tool_progress', {
                 msgId: shellMsgId, chatId,
                 toolName: 'run_command', stage: 'done', ts: Date.now(),
+              })
+              getActivityManager()?.onToolProgress({
+                msgId: shellMsgId, chatId,
+                toolName: 'run_command', stage: 'done',
               })
               worker.postMessage({
                 type: 'shell_exec_reply',

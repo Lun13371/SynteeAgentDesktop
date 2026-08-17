@@ -48,6 +48,7 @@ import { registerMessengerIPC } from './ipc/messenger.ipc'
 import { registerUpdatesIPC } from './ipc/updates.ipc'
 import { registerNotificationIPC } from './ipc/notification.ipc'
 import { initNotificationManager } from './NotificationManager'
+import { initActivityManager } from './ActivityManager'
 import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
 import { ensureUpdater } from './updater/LauncherBridge'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
@@ -81,6 +82,7 @@ let spotlightWindow: SpotlightWindow
 let trayMenuWindow: TrayMenuWindow
 let notificationWindow: NotificationWindow
 let notificationManager: ReturnType<typeof initNotificationManager>
+let activityManager: ReturnType<typeof initActivityManager>
 let trayManager: TrayManager
 let hotkeyManager: HotkeyManager
 
@@ -185,6 +187,11 @@ app.whenReady().then(async () => {
     notificationManager.handleAction(payload)
   })
 
+  // ── Activity overlay (информер активности ИИ) ──────────────────────
+  // ActivityManager решает показывать ли activity-виджет в overlay-окне
+  // уведомлений (по настройке activityMonitor.enabled + состоянию окна).
+  activityManager = initActivityManager(store, mainWindow, notificationWindow)
+
   // Лёгкий обработчик оценки токенов текущего ввода (для live-обновления кольца при печати)
   ipcMain.handle('context:estimateInput', (_e, params: { text: string }) => {
     try {
@@ -224,6 +231,7 @@ app.whenReady().then(async () => {
 
   // Прикрепляем listeners на главное окно (теперь оно создано).
   notificationManager.attachWindowListeners()
+  activityManager.attachWindowListeners()
 
   // MCP: фиксируем sender + прогреваем глобальные серверы (нужно окно).
   mcpManager.setWindow(mainWindow.getWindow())

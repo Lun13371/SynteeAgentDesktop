@@ -3,6 +3,7 @@ import { join } from 'path'
 import { app } from 'electron'
 import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync, readFileSync, statSync } from 'fs'
 import type Store from 'electron-store'
+import { getActivityManager } from '../ActivityManager'
 import type { MainWindow } from '../windows/MainWindow'
 import type { OverlayWindow } from '../windows/OverlayWindow'
 import type { VoiceWindow } from '../windows/VoiceWindow'
@@ -41,6 +42,10 @@ function registerSettingsIPC({ store }: IPCContext): void {
   ipcMain.handle('settings:get', (_, key: string) => store.get(key))
   ipcMain.handle('settings:set', (_, key: string, value: unknown) => {
     store.set(key, value)
+    // Сброс кэша ActivityManager при изменении его настройки
+    if (key === 'activityMonitor') {
+      getActivityManager()?.refreshConfig()
+    }
   })
   ipcMain.handle('settings:getAll', () => store.store)
   ipcMain.handle('settings:reset', () => { store.clear(); return true })

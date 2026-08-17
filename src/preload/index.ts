@@ -288,6 +288,47 @@ const synteeAPI = {
     },
   },
 
+  // ── Activity overlay (информер активности ИИ) ──────────────────────
+  // Подписки на live-события агента, форвардятся из chat.ipc.ts через
+  // ActivityManager в notificationWindow. События приходят ТОЛЬКО в
+  // overlay-окно уведомлений (notifWin.webContents.send).
+  activity: {
+    onStep: (cb: (step: {
+      type: string; toolName?: string; toolArgs?: Record<string, unknown>
+      content?: string; success?: boolean; msgId?: string
+      callId?: string; pendingCallId?: string; chatId?: string
+    }) => void) => {
+      const handler = (_: unknown, step: unknown) => cb(step as any)
+      ipcRenderer.on('activity:step', handler)
+      return () => ipcRenderer.removeListener('activity:step', handler)
+    },
+    onToolProgress: (cb: (data: {
+      msgId: string; chatId: string; toolName: string; stage: string
+      detail?: string; filesProcessed?: number; filesTotal?: number
+    }) => void) => {
+      const handler = (_: unknown, data: unknown) => cb(data as any)
+      ipcRenderer.on('activity:tool_progress', handler)
+      return () => ipcRenderer.removeListener('activity:tool_progress', handler)
+    },
+    onRunStatus: (cb: (data: {
+      chatId: string; status: string; msgId?: string; error?: string
+    }) => void) => {
+      const handler = (_: unknown, data: unknown) => cb(data as any)
+      ipcRenderer.on('activity:run:status', handler)
+      return () => ipcRenderer.removeListener('activity:run:status', handler)
+    },
+    onHide: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('activity:hide', handler)
+      return () => ipcRenderer.removeListener('activity:hide', handler)
+    },
+    onShow: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('activity:show', handler)
+      return () => ipcRenderer.removeListener('activity:show', handler)
+    },
+  },
+
   // Spotlight
   spotlight: {
     show: () => ipcRenderer.invoke('spotlight:show'),

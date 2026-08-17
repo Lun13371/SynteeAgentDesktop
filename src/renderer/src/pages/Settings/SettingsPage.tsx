@@ -1699,6 +1699,8 @@ const NotificationsSection = memo(function NotificationsSection({ settings, onSe
     types: Record<string, { enabled: boolean; showWhen: string }>
   }) || { enabled: true, types: {} }
 
+  const activityConfig = (settings['activityMonitor'] as { enabled: boolean }) || { enabled: false }
+
   const updateType = (typeId: string, field: 'enabled' | 'showWhen', value: unknown) => {
     const types = { ...(notifConfig.types ?? {}) }
     types[typeId] = { ...(types[typeId] ?? { enabled: true, showWhen: 'inactive' }), [field]: value }
@@ -1707,6 +1709,10 @@ const NotificationsSection = memo(function NotificationsSection({ settings, onSe
 
   const toggleGlobal = () => {
     onSet('notifications', { ...notifConfig, enabled: !notifConfig.enabled })
+  }
+
+  const toggleActivity = () => {
+    onSet('activityMonitor', { enabled: !activityConfig.enabled })
   }
 
   return (
@@ -1746,6 +1752,16 @@ const NotificationsSection = memo(function NotificationsSection({ settings, onSe
           })}
         </>
       )}
+
+      <div className="settings-divider" />
+
+      <h3 className="settings-subsection-title">Информер активности</h3>
+      <Field
+        label="Показывать активность ИИ"
+        description="Компактный индикатор что делает агент (думает / вызывает тул), пока окно неактивно или свёрнуто"
+      >
+        <Toggle value={activityConfig.enabled} onChange={toggleActivity} />
+      </Field>
     </>
   )
 })
