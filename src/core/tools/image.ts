@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import type Store from 'electron-store'
 import type { Provider } from '../../shared/types'
+import { CLIENT_IDENTITY_HEADERS } from '../../shared/constants'
 import { type ToolResult } from './_shared'
 
 export async function generateImage(
@@ -52,7 +53,7 @@ export async function generateImage(
 
   // Стандартный OpenAI-совместимый путь для всех провайдеров
   try {
-    const client = new OpenAI({ apiKey, baseURL: provider.baseUrl })
+    const client = new OpenAI({ apiKey, baseURL: provider.baseUrl, defaultHeaders: CLIENT_IDENTITY_HEADERS })
     const model = args.model || imageModelId
     const size = (args.size || store.get('imageDefaultSize', '1024x1024') as string) as Parameters<typeof client.images.generate>[0]['size']
     const quality = (args.quality || store.get('imageDefaultQuality', 'standard') as string) as Parameters<typeof client.images.generate>[0]['quality']

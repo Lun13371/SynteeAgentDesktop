@@ -7,6 +7,7 @@ import type Store from 'electron-store'
 import { isMainThread, workerData } from 'worker_threads'
 import { buildReasoningParams } from '../../shared/reasoningModels'
 import { getNextApiKey } from '../../shared/roundRobin'
+import { CLIENT_IDENTITY_HEADERS } from '../../shared/constants'
 import type { Provider } from '../../shared/types'
 import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
@@ -99,7 +100,7 @@ export class AIClient {
     // мульти-провайдерную систему. Если endpoint пуст, клиент всё равно
     // создаётся (для совместимости), но запросы без назначения упадут.
     const endpoint = (this.store.get('apiEndpoint') as string) || ''
-    return new OpenAI({ apiKey, baseURL: endpoint || undefined })
+    return new OpenAI({ apiKey, baseURL: endpoint || undefined, defaultHeaders: CLIENT_IDENTITY_HEADERS })
   }
 
   reload(): void {
@@ -200,9 +201,9 @@ export class AIClient {
       if (!token) {
         throw new Error('Not authenticated with Syntee-Gateway. Sign in via Profile → Sign In.')
       }
-      return new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl })
+      return new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl, defaultHeaders: CLIENT_IDENTITY_HEADERS })
     }
-    return new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl })
+    return new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl, defaultHeaders: CLIENT_IDENTITY_HEADERS })
   }
 
   async streamChat(
@@ -580,6 +581,7 @@ export class AIClient {
       const anthropicClient = new Anthropic({
         apiKey: anthropicApiKey,
         baseURL: providerInfo.provider.baseUrl,
+        defaultHeaders: CLIENT_IDENTITY_HEADERS,
       })
       return chatWithToolsAnthropic(
         anthropicClient, messages, tools, signal, model, temperature, maxTokens, reasoningExtra,
@@ -592,6 +594,7 @@ export class AIClient {
       ? new OpenAI({
           apiKey: isGateway ? gatewayToken! : providerInfo.apiKey,
           baseURL: providerInfo.provider.baseUrl,
+          defaultHeaders: CLIENT_IDENTITY_HEADERS,
         })
       : this.client
 
@@ -761,7 +764,7 @@ export class AIClient {
           const fresh = await refreshGatewayTokenAfter401()
           if (fresh) {
             gatewayToken = fresh
-            client = new OpenAI({ apiKey: fresh, baseURL: providerInfo!.provider.baseUrl })
+            client = new OpenAI({ apiKey: fresh, baseURL: providerInfo!.provider.baseUrl, defaultHeaders: CLIENT_IDENTITY_HEADERS })
             continue
           }
           throw new Error('Syntee session expired — sign in again (Profile → Sign In).')

@@ -1,5 +1,22 @@
 export const APP_NAME = 'Syntee Helper'
-export const APP_VERSION = '0.1.0'
+// Version is injected at build time by Vite define from package.json.
+// Fallback '0.1.0' for non-Vite contexts (raw tsc, tests).
+export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.1.0'
+
+/** Подпись клиента для всех исходящих AI API-запросов (аналог Claude Code). */
+export const CLIENT_USER_AGENT = `syntee-agent/${APP_VERSION}`
+
+/**
+ * Идентификационные заголовки клиента. Добавляются во все исходящие
+ * запросы к AI-провайдерам (OpenAI, Anthropic, OpenRouter и т.д.) и
+ * к Syntee-Gateway. Провайдеры и прокси/статистика могут использовать
+ * их для определения источника запроса.
+ */
+export const CLIENT_IDENTITY_HEADERS: Record<string, string> = {
+  'User-Agent': CLIENT_USER_AGENT,
+  'X-Client-Name': 'syntee-agent',
+  'X-Client-Version': APP_VERSION,
+}
 
 /** Путь к файлу глобальных MCP-серверов (относительно home). */
 export const GLOBAL_MCP_FILE = '.syntee/mcp.json'

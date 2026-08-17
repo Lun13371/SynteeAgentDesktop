@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 import JavaScriptObfuscator from 'javascript-obfuscator'
 import type { Plugin } from 'vite'
 import { resolve } from 'path'
+import { readFileSync } from 'fs'
+
+const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf-8')) as { version: string }
 
 const { obfuscate } = JavaScriptObfuscator
 type ObfuscatorOptions = typeof JavaScriptObfuscator extends { obfuscate: (code: string, opts?: infer O) => unknown }
@@ -38,6 +41,19 @@ const RENDERER_OBFUSCATOR_OPTIONS: ObfuscatorOptions = {
   stringArrayEncoding: ['base64'],
   stringArrayRotate: true,
   stringArrayShuffle: true,
+  // reservedStrings — regex-паттерны строк, которые обфускатор НЕ должен
+  // переносить в stringArray. Vite code splitting использует динамические
+  // import() со статическими путями к чанкам: "./SettingsPage-Dq6IdtYq.js",
+  // "./SettingsPage-Mj7zTek5.css" и т.д. Если stringArray заменит эти пути
+  // вызовом функции-декодера, import() сломается → "Failed to fetch
+  // dynamically imported module" в release-сборке. Шаблоны ниже сохраняют
+  // все пути к .js/.css чанкам и любые относительные пути (начинающиеся с ./)
+  // в исходном виде, не трогая остальные строковые литералы.
+  reservedStrings: [
+    '\\.js$',
+    '\\.css$',
+    '^\\./',
+  ],
   splitStrings: false,
   controlFlowFlattening: false,
   deadCodeInjection: false,
@@ -110,6 +126,7 @@ function bakeEnvPlugin(): Plugin {
 
 export default defineConfig({
   main: {
+    define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     plugins: [externalizeDepsPlugin(), bakeEnvPlugin(), ...(protect ? [bytecodePlugin({ removeBundleJS: true })] : [])],
     build: {
       rollupOptions: {
@@ -135,6 +152,7 @@ export default defineConfig({
     }
   },
   preload: {
+    define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     plugins: [externalizeDepsPlugin(), ...(protect ? [bytecodePlugin({ removeBundleJS: true })] : [])],
     resolve: {
       // То же что и renderer: .ts/.tsx приоритетнее .js/.jsx, чтобы Vite не
@@ -144,6 +162,7 @@ export default defineConfig({
     }
   },
   renderer: {
+    define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     plugins: [react(), ...(protect ? [rendererObfuscatorPlugin()] : [])],
     resolve: {
       // По умолчанию Vite резолвит ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'] —
