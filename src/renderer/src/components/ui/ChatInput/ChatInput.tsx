@@ -10,6 +10,7 @@ import SlashMenu from '../SlashMenu/SlashMenu'
 import MentionMenu from '../MentionMenu/MentionMenu'
 import CommandArgMenu from '../CommandArgMenu/CommandArgMenu'
 import AttachmentChips from '../AttachmentChips/AttachmentChips'
+import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import QueuePanel from '../QueuePanel/QueuePanel'
 import ExtensionsBadge from '../ExtensionsBadge/ExtensionsBadge'
 import ChangesBadge from '../ChangesBadge/ChangesBadge'
@@ -227,6 +228,8 @@ function ChatInput({
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
   const [slashIdx, setSlashIdx] = useState(0)
+  // Превью вложения из чипов инпут-бара (модалка-лайтбокс)
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
   // ── Пикер аргументов команды (многоуровневый enum-пикер) ──
   // argPickerCmd — команда, для которой показываем пикер (null = скрыт).
   // argPickerLevel — индекс текущего аргумента в cmd.arguments.
@@ -1172,6 +1175,7 @@ function ChatInput({
           onRemove={handleRemoveAttachment}
           max={maxAttachments}
           maxReached={attachments.length >= maxAttachments}
+          onPreview={setPreviewAttachment}
         />
       )}
 
@@ -1437,6 +1441,13 @@ function ChatInput({
 
       <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · @ — файлы и сущности</p>
       </div>
+
+      {/* Модалка превью вложения — лайтбокс для картинок, CodePreview для файлов */}
+      <AttachmentPreviewModal
+        key={previewAttachment?.id ?? 'none'}
+        attachment={previewAttachment}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </div>
   )
 }

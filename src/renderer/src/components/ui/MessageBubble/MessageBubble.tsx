@@ -73,7 +73,8 @@ import PlanCard from '../PlanCard/PlanCard'
 import Logo from '../Logo/Logo'
 import AttachmentChips from '../AttachmentChips/AttachmentChips'
 import AttachmentProcessingBlock from '../AttachmentProcessingBlock/AttachmentProcessingBlock'
-import type { Message, ToolOutputMode } from '../../../../../shared/types'
+import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
+import type { Message, ToolOutputMode, Attachment } from '../../../../../shared/types'
 import { extractPlanSegments } from '../../../../../shared/planParser'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
@@ -716,6 +717,7 @@ const MessageContent = memo(function MessageContent({
   liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
   userMarkdown = true, timeEl, agentStatus, toolProgress, retry, lastError,
   spawnedAgents,
+  onPreviewAttachment,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -736,6 +738,7 @@ const MessageContent = memo(function MessageContent({
   lastError?: string | null
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
   spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
+  onPreviewAttachment?: (a: Attachment | null) => void
 }) {
   const [showActions, setShowActions] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
@@ -929,7 +932,13 @@ const MessageContent = memo(function MessageContent({
             Показываем только для user-роли и когда есть attachments. read-only
             — это уже отправленное сообщение, кнопка удаления скрыта. */}
         {isUser && message.attachments && message.attachments.length > 0 && (
-          <AttachmentChips attachments={message.attachments} onRemove={() => {}} max={10} readOnly />
+          <AttachmentChips
+            attachments={message.attachments}
+            onRemove={() => {}}
+            max={10}
+            readOnly
+            onPreview={onPreviewAttachment}
+          />
         )}
 
         {(message as Message & { replyTo?: { role: string; content: string } }).replyTo && (
@@ -1374,6 +1383,9 @@ const MessageBubble = memo(function MessageBubble({
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
+  // Превью вложения (модалка-лайтбокс)
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
+
   const handleCopy = useCallback(async () => {
     const ok = await copyToClipboard(message.content)
     if (ok) onCopy?.(message.content)
@@ -1484,6 +1496,7 @@ const MessageBubble = memo(function MessageBubble({
             lastError={(message as Message & { lastError?: string | null }).lastError}
             toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
             spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
+            onPreviewAttachment={setPreviewAttachment}
           />
         </div>
       ) : (
@@ -1514,8 +1527,17 @@ const MessageBubble = memo(function MessageBubble({
         lastError={(message as Message & { lastError?: string | null }).lastError}
         toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
         spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
+        onPreviewAttachment={setPreviewAttachment}
       />
       )}
+
+      {/* Модалка превью вложения — лайтбокс для картинок, CodePreview для файлов.
+          key={id} — перемонтирует компонент при смене вложения, сбрасывая zoom/pan. */}
+      <AttachmentPreviewModal
+        key={previewAttachment?.id ?? 'none'}
+        attachment={previewAttachment}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </motion.div>
   )
 })
