@@ -9,6 +9,7 @@
  * run-prod.bat) and falls back to the local dev backend.
  */
 import { getAccessToken, getRefreshToken, setTokens, clearTokens } from './tokenStore'
+import { CLIENT_IDENTITY_HEADERS } from '../../shared/constants'
 
 const GATEWAY_API_URL = (process.env.SYNTEE_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
 
@@ -119,7 +120,7 @@ interface RequestOptions {
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {  const { method = 'GET', body, headers = {}, noAuth = false, responseType = 'json', timeoutMs = 15000 } = opts
 
   const makeHeaders = (token: string | null): Record<string, string> => {
-    const h: Record<string, string> = { 'Content-Type': 'application/json', ...headers }
+    const h: Record<string, string> = { 'Content-Type': 'application/json', ...CLIENT_IDENTITY_HEADERS, ...headers }
     if (!noAuth && token) h.Authorization = `Bearer ${token}`
     return h
   }

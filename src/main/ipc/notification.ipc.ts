@@ -7,9 +7,9 @@ import type { NotificationPayload } from '../../shared/types'
 /**
  * registerNotificationIPC — IPC-хендлеры для overlay-уведомлений.
  *
- * Click-through: hit-testing в MAIN процессе (polling cursor position).
+ * Click-through: hit-testing в MAIN процессе (polling cursor position 100ms).
  * Renderer отправляет bounds карточек через notification:updateBounds.
- * Main процесс каждые 16ms проверяет курсор и toggling setIgnoreMouseEvents.
+ * Main процесс каждые 100ms проверяет курсор и toggling setIgnoreMouseEvents.
  */
 export function registerNotificationIPC(
   notificationWindow: NotificationWindow,

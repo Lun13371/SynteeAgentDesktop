@@ -6,10 +6,16 @@ import { is } from '@electron-toolkit/utils'
  * NotificationWindow — fullscreen transparent click-through overlay-окно
  * для показа уведомлений поверх всех окон.
  *
- * Click-through: hit-testing делается в MAIN процессе через polling
- * screen.getCursorScreenPoint() (не зависит от forward:true в renderer).
- * Renderer отправляет bounds карточек через IPC, main процесс
- * каждые ~16ms проверяет позицию курсора и toggling setIgnoreMouseEvents.
+ * Click-through: hit-testing в MAIN процессе через polling
+ * screen.getCursorScreenPoint() каждые 100ms. Renderer отправляет bounds
+ * карточек через IPC, main процесс проверяет позицию курсора и toggling
+ * setIgnoreMouseEvents.
+ *
+ * forward:true используется ТОЛЬКО когда окно видимо (есть уведомления) —
+ * это нужно чтобы mouseenter/mouseleave на карточках работали. Когда окно
+ * скрыто — forward:true НЕ используется, т.к. на скрытом окне он заставляет
+ * DWM делать hit-testing на каждое движение мыши → лаг курсора по всей системе.
+ * Окно создаётся лениво (не при старте), поэтому в простое forward:true нет.
  */
 export class NotificationWindow {
   private win: BrowserWindow | null = null
@@ -44,7 +50,10 @@ export class NotificationWindow {
 
     this.win.setAlwaysOnTop(true, 'screen-saver')
     this.win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-    this.win.setIgnoreMouseEvents(true, { forward: true })
+    // БЕЗ forward:true — forward:true заставляет DWM делать hit-testing на
+    // КАЖДОЕ движение курсора, даже когда окно скрыто. Это лагает курсор по всей
+    // системе. Polling (100ms) — единственный механизм hit-testing теперь.
+    this.win.setIgnoreMouseEvents(true)
 
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '#/notifications')
@@ -76,6 +85,10 @@ export class NotificationWindow {
     if (!this.win) this.create()
     if (!this.win) return
     this.win.showInactive()
+    // Окно стало видимым — включаем forward:true чтобы mouseenter/mouseleave
+    // на карточках работали. forward:true НА ВИДИМОМ окне не лагает DWM
+    // (лаг был только на скрытом окне, созданном warmup() при старте).
+    this.win.setIgnoreMouseEvents(true, { forward: true })
   }
 
   hide(): void {
@@ -90,6 +103,11 @@ export class NotificationWindow {
 
   setIgnoreMouseEvents(ignore: boolean): void {
     if (!this.win) return
+    // forward:true когда ignore=true — нужен чтобы mouseenter/mouseleave на
+    // карточках работали (renderer получает mouse-move events сквозь окно).
+    // Используется ТОЛЬКО когда окно видимо (show → startTracking → checkCursor).
+    // stopTracking() вызывает this.win.setIgnoreMouseEvents(true) напрямую —
+    // без forward, т.к. окно скоро скроется.
     if (ignore) {
       this.win.setIgnoreMouseEvents(true, { forward: true })
     } else {
@@ -117,7 +135,10 @@ export class NotificationWindow {
 
   startTracking(): void {
     if (this.trackingTimer) return
-    this.trackingTimer = setInterval(() => this.checkCursor(), 16)
+    // 100ms вместо 16ms — в 6× меньше нагрузки на DWM (setIgnoreMouseEvents
+    // toggling). 10 проверок/сек достаточно для hit-testing на hover —
+    // визуально незаметно. Раньше 60 toggles/сек лагали курсор по всей системе.
+    this.trackingTimer = setInterval(() => this.checkCursor(), 100)
   }
 
   stopTracking(): void {
@@ -126,11 +147,12 @@ export class NotificationWindow {
       this.trackingTimer = null
     }
     this.cardBounds = []
-    // Сброс в click-through
-    if (this.currentIgnore !== true) {
-      this.currentIgnore = true
-      this.setIgnoreMouseEvents(true)
-    }
+    // Сброс в click-through БЕЗ forward:true — окно скоро скроется,
+    // forward на скрытом окне лагает DWM (курсор по всей системе).
+    // Вызываем this.win.setIgnoreMouseEvents напрямую, минуя this.setIgnoreMouseEvents
+    // (который ставит forward:true).
+    this.currentIgnore = true
+    if (this.win) this.win.setIgnoreMouseEvents(true)
   }
 
   private checkCursor(): void {

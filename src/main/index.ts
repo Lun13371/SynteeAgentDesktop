@@ -231,8 +231,10 @@ app.whenReady().then(async () => {
 
   // Предзагрузка контента трей-меню (после IPC + создания окна).
   trayMenuWindow.warmup()
-  // Pre-warm notification overlay — загружает контент заранее,
-  // чтобы первое уведомление не показывало loading screen.
+  // Pre-warm notification overlay — создаёт скрытое окно и грузит контент
+  // в фоне. НЕ лагает курсор: create() ставит setIgnoreMouseEvents(true) без
+  // forward:true (forward включается только в show() когда есть уведомление).
+  // Без warmup первое уведомление пропускается (пока окно грузится — loading screen).
   notificationWindow.warmup()
 
   // Трей

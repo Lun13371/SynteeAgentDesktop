@@ -62,23 +62,23 @@ export default function NotificationPage() {
   useEffect(() => {
     if (notifications.length === 0) {
       window.syntee.notification.stopTracking()
-      // Скрыть overlay-окно после завершения exit-анимаций (0.4s + буфер).
-      // Без этого окно остаётся alwaysOnTop + focusable поверх всех окон,
-      // перехватывая фокус и "замораживая" основное приложение.
+      // Скрыть overlay-окно после завершения exit-анимаций.
+      // 200ms — достаточно для короткой exit-анимации карточки.
       const hideTimer = setTimeout(() => {
         window.syntee.notification.hide()
-      }, 500)
+      }, 200)
       return () => clearTimeout(hideTimer)
     }
     window.syntee.notification.startTracking()
-    let rafId = 0
-    const loop = () => {
-      updateBounds()
-      rafId = requestAnimationFrame(loop)
-    }
-    rafId = requestAnimationFrame(loop)
+    // Обновляем bounds без RAF loop — лёгкий interval 200ms.
+    // Раньше requestAnimationFrame гонял updateBounds() каждый кадр (~60fps),
+    // что слало IPC каждый кадр и дёргало main process + DWM → лаг курсора.
+    // 200ms достаточно: карточки анимируются ~300ms (framer-motion), bounds
+    // успеют обновиться 1-2 раза за анимацию.
+    updateBounds()
+    const boundsTimer = setInterval(updateBounds, 200)
     return () => {
-      cancelAnimationFrame(rafId)
+      clearInterval(boundsTimer)
       window.syntee.notification.stopTracking()
     }
   }, [notifications.length, updateBounds])
