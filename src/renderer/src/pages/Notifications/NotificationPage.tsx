@@ -62,7 +62,13 @@ export default function NotificationPage() {
   useEffect(() => {
     if (notifications.length === 0) {
       window.syntee.notification.stopTracking()
-      return
+      // Скрыть overlay-окно после завершения exit-анимаций (0.4s + буфер).
+      // Без этого окно остаётся alwaysOnTop + focusable поверх всех окон,
+      // перехватывая фокус и "замораживая" основное приложение.
+      const hideTimer = setTimeout(() => {
+        window.syntee.notification.hide()
+      }, 500)
+      return () => clearTimeout(hideTimer)
     }
     window.syntee.notification.startTracking()
     let rafId = 0

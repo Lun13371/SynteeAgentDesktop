@@ -72,10 +72,10 @@
   background: linear-gradient(
     90deg,
     var(--text-muted) 0%,
-    var(--on-accent) 30%,
-    var(--on-accent) 50%,
-    var(--on-accent-muted) 80%,
-    var(--on-accent-muted) 100%
+    var(--text-primary) 30%,
+    var(--text-primary) 50%,
+    var(--text-secondary) 80%,
+    var(--text-secondary) 100%
   );
   background-size: 200% 100%;
   -webkit-background-clip: text;
@@ -158,8 +158,8 @@
   background: linear-gradient(
     90deg,
     var(--text-muted) 0%,
-    var(--on-accent) 38%,
-    var(--on-accent-muted) 58%,
+    var(--text-primary) 38%,
+    var(--text-secondary) 58%,
     var(--text-muted) 100%
   );
   background-size: 220% 100%;
