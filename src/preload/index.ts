@@ -653,6 +653,8 @@ const synteeAPI = {
       ipcRenderer.invoke('fs:listDirectory', params),
     readFile: (params: { root: string; relPath: string; maxBytes?: number }) =>
       ipcRenderer.invoke('fs:readFile', params),
+    searchFiles: (params: { root: string; query: string; maxResults?: number }) =>
+      ipcRenderer.invoke('fs:searchFiles', params),
   },
 
   // Git-статус для правой панели

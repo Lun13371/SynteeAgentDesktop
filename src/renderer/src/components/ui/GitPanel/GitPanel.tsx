@@ -143,7 +143,7 @@ export default function GitPanel({ workdir }: GitPanelProps) {
   const [error, setError] = useState<string | null>(null)
   const [notARepo, setNotARepo] = useState(false)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
-  const [selectedCommit, setSelectedCommit] = useState<{ hash: string; message: string } | null>(null)
+  const [selectedCommit, setSelectedCommit] = useState<{ hash: string; message: string; author: string; date: string } | null>(null)
   const [diff, setDiff] = useState<string | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
   const [diffError, setDiffError] = useState<string | null>(null)
@@ -279,7 +279,7 @@ export default function GitPanel({ workdir }: GitPanelProps) {
 
   const loadCommit = useCallback(async (entry: GitLogEntry) => {
     if (!workdir) return
-    setSelectedCommit({ hash: entry.hash, message: entry.message.split('\n')[0] })
+    setSelectedCommit({ hash: entry.hash, message: entry.message, author: entry.author, date: entry.date })
     setSelectedFile(null)
     setDiff(null)
     setDiffError(null)
@@ -637,6 +637,7 @@ export default function GitPanel({ workdir }: GitPanelProps) {
                 >
                   <span className="git-log-item__hash">{entry.shortHash}</span>
                   <span className="git-log-item__msg">{entry.message.split('\n')[0]}</span>
+                  <span className="git-log-item__author">{entry.author}</span>
                   <span className="git-log-item__date">{entry.date}</span>
                 </button>
               ))}
@@ -734,9 +735,20 @@ export default function GitPanel({ workdir }: GitPanelProps) {
               <div className="git-panel__diff-header">
                 <AppIcon name="git" size="xs" />
                 <span className="git-panel__diff-path" title={selectedCommit.message}>
-                  {selectedCommit.hash.slice(0, 7)} · {selectedCommit.message}
+                  {selectedCommit.hash.slice(0, 7)} · {selectedCommit.message.split('\n')[0]}
                 </span>
+                {selectedCommit.author && (
+                  <span className="git-panel__commit-author">{selectedCommit.author}</span>
+                )}
+                {selectedCommit.date && (
+                  <span className="git-panel__commit-date">{selectedCommit.date}</span>
+                )}
               </div>
+              {selectedCommit.message.includes('\n') && (
+                <div className="git-panel__commit-body">
+                  {selectedCommit.message.split('\n').slice(1).join('\n').trim()}
+                </div>
+              )}
               <div className="git-panel__diff-body">
                 {diffLoading ? (
                   <div className="git-panel__diff-loading">

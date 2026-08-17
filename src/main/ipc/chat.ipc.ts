@@ -20,6 +20,7 @@ import {
   getCheckpoints, getLastCheckpoint, getSnapshotsAfter, getSnapshotsForCheckpoint, getContextSnapshot,
   deleteCheckpointsAfter, pruneOldCheckpoints, deleteMessagesAfter,
   saveRewindHistory, getRewindHistory, deleteRewindHistory, deleteMessageById,
+  getLastRewindMessage,
   saveNamedSnapshot, getNamedSnapshots,
   logAgentAction,
 } from '../../core/db'
@@ -3888,6 +3889,86 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     } catch (e) {
       log('[chat:rewindTo] error chatId=%s: %s', chatId, (e as Error).message)
       return { error: `Ошибка отката: ${(e as Error).message}` }
+    }
+  })
+
+  // ── Undo правок файлов любого checkpoint'а (правая панель «Сессия») ──────
+  // Восстанавливает файлы из file_snapshots указанного turn'а (по userMessageId).
+  ipcMain.handle('chat:undoCheckpointFiles', (_, chatId: string, userMessageId: string) => {
+    if (activeRuns.has(chatId)) {
+      return { error: 'Чат активен — дождитесь завершения ответа.' }
+    }
+    try {
+      const snapshots = getSnapshotsForCheckpoint(chatId, userMessageId)
+      if (snapshots.length === 0) {
+        return { error: 'Снапшоты файлов не найдены.' }
+      }
+      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
+      const { dirname } = require('path')
+      const restored: string[] = []
+      const failed: string[] = []
+      for (const snap of snapshots) {
+        try {
+          if (snap.contentBefore === null) {
+            if (existsSync(snap.path)) {
+              unlinkSync(snap.path)
+              restored.push(snap.path)
+            }
+          } else {
+            try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
+            writeFileSync(snap.path, snap.contentBefore, 'utf-8')
+            restored.push(snap.path)
+          }
+        } catch (e) {
+          failed.push(`${snap.path}: ${(e as Error).message}`)
+        }
+      }
+      const win = BrowserWindow.getAllWindows()[0] ?? null
+      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
+      log('[chat:undoCheckpointFiles] chatId=%s userMsgId=%s restored=%d failed=%d',
+        chatId, userMessageId, restored.length, failed.length)
+      return { restored: restored.length, failed }
+    } catch (e) {
+      return { error: (e as Error).message }
+    }
+  })
+
+  // ── Undo одного файла указанного checkpoint'а ───────────────────────────
+  ipcMain.handle('chat:undoCheckpointFile', (_, chatId: string, userMessageId: string, filePath: string) => {
+    if (activeRuns.has(chatId)) {
+      return { error: 'Чат активен — дождитесь завершения ответа.' }
+    }
+    try {
+      const snapshots = getSnapshotsForCheckpoint(chatId, userMessageId)
+      const snap = snapshots.find(s => s.path === filePath)
+      if (!snap) {
+        return { error: 'Файл не найден в снапшотах этого turn\'а.' }
+      }
+      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
+      const { dirname } = require('path')
+      if (snap.contentBefore === null) {
+        if (existsSync(snap.path)) unlinkSync(snap.path)
+      } else {
+        try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
+        writeFileSync(snap.path, snap.contentBefore, 'utf-8')
+      }
+      const win = BrowserWindow.getAllWindows()[0] ?? null
+      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
+      log('[chat:undoCheckpointFile] chatId=%s userMsgId=%s path=%s', chatId, userMessageId, filePath)
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: (e as Error).message }
+    }
+  })
+
+  // ── Последнее rewind-сообщение (для redo-баннера в панели «Сессия») ────
+  ipcMain.handle('chat:getLastRewind', (_, chatId: string) => {
+    try {
+      const row = getLastRewindMessage(chatId)
+      if (!row) return null
+      return { rewindMessageId: row.id, createdAt: row.createdAt }
+    } catch {
+      return null
     }
   })
 

@@ -1,7 +1,7 @@
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export const GIT_TIMEOUT_MS = 8000
 
@@ -10,12 +10,17 @@ export const GIT_TIMEOUT_MS = 8000
  * Используется как IPC-хендлерами git.ipc.ts, так и модулем изоляции суб-агентов
  * (WorktreeIsolation.ts) — отсюда общий экспорт, а не приватный хелпер в ipc.
  *
- * Аргументы экранируются (заменяем `"` на `\"`), workdir подставляется через
- * `git -C "<path>"`. maxBuffer 4MB — достаточно для status/log/diff типичных репо.
+ * ВНИМАНИЕ: используем execFile, а НЕ exec. exec гонит команду через cmd.exe
+ * (Windows), который раскрывает %VAR% паттерны. Git log --format='%H%n%an%n%ad%n%s%n%b'
+ * ломается: %H%, %an%, %ad%, %s%, %b% интерпретируются cmd.exe как env vars.
+ * execFile передаёт аргументы напрямую git без shell-обработки — % сохраняются.
+ * maxBuffer 4MB — достаточно для status/log/diff типичных репо.
  */
 export async function runGit(workdir: string, args: string[]): Promise<string> {
-  const cmd = `git -C "${workdir}" ${args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ')}`
-  const { stdout } = await execAsync(cmd, { timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 })
+  const { stdout } = await execFileAsync('git', ['-C', workdir, ...args], {
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: 4 * 1024 * 1024,
+  })
   return stdout
 }
 

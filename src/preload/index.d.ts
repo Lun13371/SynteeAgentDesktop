@@ -482,6 +482,11 @@ declare const synteeAPI: {
             relPath: string;
             maxBytes?: number;
         }) => Promise<any>;
+        searchFiles: (params: {
+            root: string;
+            query: string;
+            maxResults?: number;
+        }) => Promise<any>;
     };
     git: {
         status: (workdir: string) => Promise<any>;
