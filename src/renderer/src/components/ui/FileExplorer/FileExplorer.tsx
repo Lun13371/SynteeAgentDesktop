@@ -114,6 +114,8 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
   const [preview, setPreview] = useState<FilePreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [searchResults, setSearchResults] = useState<FsEntry[] | null>(null)
+  const [searchLoading, setSearchLoading] = useState(false)
   const previewAbortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -231,18 +233,62 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
 
   const rootName = workdir ? (workdir.split(/[\\/]/).pop() || workdir) : ''
 
-  // Flat tree для виртуализации — пересчитывается только при смене
-  // tree/expanded/loadingDir/selectedFile/search.
-  // При активном поиске фильтруем ноды по имени (case-insensitive).
+  // ── Backend search с debounce ──────────────────────────────────────
+  // При вводе в поиск — идёт рекурсивный обход ФС через fs:searchFiles IPC,
+  // а не фильтрация локального дерева (которое содержит только загруженные
+  // и раскрытые папки). Это находит файлы в свёрнутых/неоткрытых папках.
+  // 200ms debounce — чтобы не спамить IPC на каждый символ.
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const q = search.trim()
+    if (!q) {
+      setSearchResults(null)
+      setSearchLoading(false)
+      return
+    }
+    if (!workdir) return
+    setSearchLoading(true)
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const result = await window.syntee.fs.searchFiles({ root: workdir, query: q, maxResults: 200 }) as
+          { success: boolean; entries: FsEntry[]; error?: string }
+        if (result.success) {
+          setSearchResults(result.entries)
+        } else {
+          setSearchResults([])
+        }
+      } catch {
+        setSearchResults([])
+      } finally {
+        setSearchLoading(false)
+      }
+    }, 200)
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    }
+  }, [search, workdir])
+
+  // Flat tree для виртуализации. При активном поиске — используем результаты
+  // backend search (плоский список файлов). Без поиска — обычное дерево.
   const flatNodes = useMemo(
     () => {
       if (!workdir) return []
-      const all = buildFlatTree(tree, expanded, loadingDir, selectedFile, rootName)
-      if (!search.trim()) return all
-      const q = search.toLowerCase()
-      return all.filter(n => n.name.toLowerCase().includes(q) || n.relPath.toLowerCase().includes(q))
+      if (search.trim() && searchResults) {
+        // Результаты поиска — плоский список, показываем как depth=0 файлы
+        return searchResults.map(e => ({
+          relPath: e.relPath,
+          name: e.name,
+          isDir: false,
+          depth: 0,
+          isOpen: false,
+          isLoading: false,
+          isSelected: selectedFile === e.relPath,
+        }))
+      }
+      return buildFlatTree(tree, expanded, loadingDir, selectedFile, rootName)
     },
-    [tree, expanded, loadingDir, selectedFile, rootName, workdir, search],
+    [tree, expanded, loadingDir, selectedFile, rootName, workdir, search, searchResults],
   )
 
   const virtualizer = useVirtualizer({
@@ -308,6 +354,17 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
           )}
         </div>
         <div className="file-explorer__tree-body" ref={scrollRef}>
+          {searchLoading && (
+            <div className="git-panel__diff-loading" style={{ padding: '12px 8px' }}>
+              <AppIcon name="loader" size="xs" animation="spin" />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Поиск…</span>
+            </div>
+          )}
+          {!searchLoading && search.trim() && flatNodes.length === 0 && (
+            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-muted)' }}>
+              Ничего не найдено
+            </div>
+          )}
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
             {virtualizer.getVirtualItems().map(vi => {
               const node = flatNodes[vi.index]
@@ -327,6 +384,7 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
                     node={node}
                     onToggleDir={toggleDir}
                     onOpenFile={openFile}
+                    showPath={!!search.trim()}
                   />
                 </div>
               )
@@ -412,9 +470,10 @@ interface FileTreeRowProps {
   node: FlatNode
   onToggleDir: (relPath: string) => void
   onOpenFile: (entry: FsEntry) => void
+  showPath?: boolean
 }
 
-const FileTreeRow = memo(function FileTreeRow({ node, onToggleDir, onOpenFile }: FileTreeRowProps) {
+const FileTreeRow = memo(function FileTreeRow({ node, onToggleDir, onOpenFile, showPath }: FileTreeRowProps) {
   const { relPath, name, isDir, depth, isOpen, isLoading, isSelected } = node
   const fileColor = !isDir ? getFileColor(name) : undefined
 
@@ -446,7 +505,9 @@ const FileTreeRow = memo(function FileTreeRow({ node, onToggleDir, onOpenFile }:
           <span className="file-tree-item__type-dot" style={{ background: fileColor ?? 'var(--text-muted)' }} />
         </>
       )}
-      <span className="file-tree-item__name" title={name}>{name}</span>
+      <span className="file-tree-item__name" title={showPath ? relPath : name}>
+        {showPath && !isDir ? relPath : name}
+      </span>
       {isLoading && <AppIcon name="loader" size="xs" animation="spin" />}
     </button>
   )

@@ -78,6 +78,69 @@ export function registerFsIPC(): void {
     }
   })
 
+  // ── Рекурсивный поиск файлов по имени ────────────────────────────────
+  // Обходит файловую систему от root, фильтрует по query (case-insensitive
+  // substring match по имени файла). Возвращает до maxResults записей.
+  // Игнорирует node_modules/.git/dist и т.п. (DEFAULT_IGNORE_DIRS).
+  // Используется FileExplorer для поиска по всем файлам, а не только по
+  // загруженным/раскрытым папкам.
+  ipcMain.handle('fs:searchFiles', async (_e, params: { root: string; query: string; maxResults?: number }) => {
+    const root = params.root
+    if (!root) return { success: false, entries: [], error: 'root is required' }
+    const query = params.query?.toLowerCase().trim() ?? ''
+    if (!query) return { success: true, entries: [] }
+
+    const maxResults = params.maxResults ?? 200
+    const results: FsEntry[] = []
+    const visited = new Set<string>()
+
+    const walk = async (dirPath: string): Promise<void> => {
+      if (results.length >= maxResults) return
+      if (visited.has(dirPath)) return
+      visited.add(dirPath)
+
+      let dirents
+      try {
+        dirents = await fsReaddir(dirPath, { withFileTypes: true })
+      } catch {
+        return // нет прав / нет папки — пропускаем
+      }
+
+      for (const d of dirents) {
+        if (results.length >= maxResults) return
+        if (DEFAULT_IGNORE_DIRS.has(d.name)) continue
+        if (d.name.startsWith('.') && d.name !== '.env' && d.name !== '.gitignore') continue
+
+        const fullPath = join(dirPath, d.name)
+        const relPath = relative(root, fullPath).split(sep).join('/')
+
+        if (d.isDirectory()) {
+          await walk(fullPath)
+        } else {
+          if (d.name.toLowerCase().includes(query) || relPath.toLowerCase().includes(query)) {
+            results.push({
+              name: d.name,
+              path: fullPath,
+              relPath,
+              isDir: false,
+              isSymlink: d.isSymbolicLink(),
+              size: 0,
+              mtime: 0,
+            })
+          }
+        }
+      }
+    }
+
+    try {
+      await walk(root)
+      results.sort((a, b) => a.relPath.localeCompare(b.relPath, undefined, { numeric: true, sensitivity: 'base' }))
+      return { success: true, entries: results }
+    } catch (e) {
+      return { success: false, entries: [], error: String((e as Error)?.message ?? e) }
+    }
+  })
+
   ipcMain.handle('fs:readFile', async (_e, params: { root: string; relPath: string; maxBytes?: number }) => {
     const root = params.root
     if (!root) return { success: false, content: '', error: 'root is required' }

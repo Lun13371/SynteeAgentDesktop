@@ -57,7 +57,14 @@ export interface GitLogEntry {
 }
 
 function parseLog(raw: string): GitLogEntry[] {
-  const records = raw.split('\x00').filter(r => r.length > 0)
+  // Git добавляет \n между записями лога после \x00 разделителя.
+  // Формат: hash1\nauthor1\ndate1\nsubject1\nbody1\x00\nhash2\nauthor2\n...
+  // После split('\x00') вторая и последующие записи начинаются с \n,
+  // что ломает split('\n')[0] → hash = '' (пустой).
+  // Фикс: обрезаем ведущие \n в каждой записи.
+  const records = raw.split('\x00')
+    .map(r => r.replace(/^\n+/, ''))
+    .filter(r => r.length > 0)
   return records.map(r => {
     const [hash, author, date, ...msgParts] = r.split('\n')
     return {
