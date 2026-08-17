@@ -290,6 +290,14 @@
   border-radius: inherit;
 }
 
+.settings-subsection-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 12px;
+  padding: 0;
+}
+
 .settings-field {
   display: flex;
   align-items: flex-start;
