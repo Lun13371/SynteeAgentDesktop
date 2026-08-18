@@ -98,6 +98,17 @@ export interface ActiveRun {
   // AbortController для прерывания обработки вложений (processAttachmentsAndStream)
   // при chat:stop — воркер ещё не создан, terminate() не помогает.
   attachmentAbort?: AbortController
+  // ── Единое зеркало ephemeral live-состояния ──────────────────────────
+  // Накапливается параллельно с webContents.send в IPC-хендлерах событий
+  // от worker'а (tool_progress, spawn_agent, и любые будущие ephemeral-блоки).
+  // chat:getLiveState возвращает это как есть → renderer гидрирует целиком.
+  // Универсально: любой новый live-блок добавляется сюда в своём хендлере
+  // и автоматически работает при переключении чатов — без изменения схемы
+  // снапшота или hydrateFromMain.
+  bufferedLiveState: {
+    toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+    spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
+  }
 }
 
 export const activeRuns = new Map<string, ActiveRun>()

@@ -26,6 +26,7 @@ import { PersonaSuggestionModal } from '../../components/ui/PersonaSuggestionMod
 import { detectPersona, isPersonaSuggestionsDisabled, disablePersonaSuggestions } from '../../utils/personaDetect'
 import Logo from '../../components/ui/Logo/Logo'
 import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
+import FileEditorPane from '../../components/ui/FileEditorPane/FileEditorPane'
 import ChatMinimap from '../../components/ui/ChatMinimap/ChatMinimap'
 import { useSettingsStore } from '../../store/settings.store'
 import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.store'
@@ -34,10 +35,12 @@ import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
 import { useUIStore } from '../../store/ui.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
+import { useFileTabsStore } from '../../store/fileTabs.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
 import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../../../shared/modes'
+import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
 import './ChatPage.css'
 
 const itemStyle: React.CSSProperties = {
@@ -136,6 +139,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // сплит, здесь — страховка от кадра-гонки) и не в архиве.
   const splitChatId = useChatStore(s => s.splitChatId)
   const setSplitChat = useChatStore(s => s.setSplitChat)
+  // ── Файловые табы (просмотр/редактирование файлов как в VSCode) ──
+  // activeFileTab — активный файловый таб (null = показывается чат).
+  // При клике по файловому табу в шапке — показываем FileEditorPane
+  // вместо сообщений чата. Клик по chat-табу — возвращает к чату.
+  const activeFileTab = useFileTabsStore(s =>
+    s.activeFileTabId ? s.openFileTabs.find(t => t.id === s.activeFileTabId) : null
+  )
   // Live-состояние ТОЛЬКО текущего чата. Селектор возвращает ссылку на
   // liveByChat[currentChatId] — она меняется только при setLiveState для
   // ЭТОГО chatId (спред копирует ссылки остальных). Чужой чат стримит —
@@ -481,20 +491,22 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       return parts.join('+')
     }
     const handler = (e: KeyboardEvent) => {
-      // Не перехватываем в полях ввода
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
       // Только на странице чата
       if (useNavStore.getState().mainPage !== 'chat') return
       // Если правая панель открыта — Ctrl+1..6 заняты табами, не мешаем
       const { agentPanelOpen } = useUIStore.getState()
       if (agentPanelOpen) return
 
-      const hotkeys = (useSettingsStore.getState().settings['hotkeys'] as Record<string, string>) || {}
+      // Fallback к DEFAULT_HOTKEYS: если settings ещё не загружен (load()
+      // не завершился или упал), hotkeys будет пустым — используем дефолты,
+      // чтобы кейбинды работали сразу при старте, без открытия настроек.
+      const hotkeys = (useSettingsStore.getState().settings['hotkeys'] as Record<string, string>)
+        ?? DEFAULT_HOTKEYS as Record<string, string>
       const combo = formatCombo(e)
 
-      // Режим чтения (Ask)
-      if (hotkeys.chatAskMode && combo === hotkeys.chatAskMode) {
+      // Режим чтения (Ask) — fallback к DEFAULT_HOTKEYS.chatAskMode
+      const askKey = hotkeys.chatAskMode ?? DEFAULT_HOTKEYS.chatAskMode
+      if (askKey && combo === askKey) {
         e.preventDefault()
         const next = !askModeRef.current
         handleAskModeChange(next)
@@ -502,8 +514,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         if (next && planningModeRef.current) handlePlanningModeChange(false)
         return
       }
-      // Режим планирования (Planning)
-      if (hotkeys.chatPlanningMode && combo === hotkeys.chatPlanningMode) {
+      // Режим планирования (Planning) — fallback к DEFAULT_HOTKEYS.chatPlanningMode
+      const planKey = hotkeys.chatPlanningMode ?? DEFAULT_HOTKEYS.chatPlanningMode
+      if (planKey && combo === planKey) {
         e.preventDefault()
         const next = !planningModeRef.current
         handlePlanningModeChange(next)
@@ -925,6 +938,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [])
 
   // Динамический отступ под ChatInput
+  // Зависит от activeFileTab: когда файл открыт — chatInputWrap размонтируется,
+  // при возврате к чату — монтируется заново. Без activeFileTab в deps
+  // ResizeObserver остаётся на старом (удалённом) элементе → --chat-input-h stale.
   useEffect(() => {
     const holder = chatInputWrapRef.current
     const container = holder?.parentElement
@@ -937,7 +953,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const ro = new ResizeObserver(apply)
     ro.observe(wrap)
     return () => ro.disconnect()
-  }, [])
+  }, [activeFileTab])
 
   // Первый скролл при открытии чата — мгновенно к низу + прилип. Дальнейшее
   // следование за ростом контента (токены, тулы, todo) делает rAF-loop
@@ -1280,7 +1296,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       manualCompactJustDoneRef.current = true
       const compactGuardTimer = setTimeout(() => { manualCompactJustDoneRef.current = false }, 10000)
       try {
-        const result = await window.syntee.chat.compact(currentChatId) as {
+        const result = await window.syntee.chat.compact(currentChatId, slash.args || undefined) as {
           messages?: Message[]
           stats?: { removedCount: number; tokensBefore: number; tokensAfter: number; tokensSaved: number; dividerMessageId: string }
           error?: string
@@ -1785,6 +1801,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         <main className="chat-main">
           <LiveTodoBar items={overlayTodo} active={overlayActive} />
 
+          {/* ── Режим просмотра/редактирования файла (как в VSCode) ──
+              Когда активен файловый таб — показываем Monaco-редактор
+              вместо сообщений чата. Клик по chat-табу сбрасывает
+              activeFileTabId → возвращаемся к чату. */}
+          {activeFileTab ? (
+            <FileEditorPane tab={activeFileTab} />
+          ) : (
+          <>
           <AnimatePresence>
             {showSearch && (
               <motion.div key="search" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
@@ -2091,6 +2115,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               </div>
             </div>,
             document.body,
+          )}
+          </>
           )}
         </main>
 

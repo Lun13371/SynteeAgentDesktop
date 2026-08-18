@@ -291,6 +291,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           return wm ?? ''
         }
       }
+      // Live-обновление файлов: при записи/редактировании файла агентом —
+      // шлём сообщение в main-процесс, который форвардит в renderer как
+      // 'file:changed' IPC event для обновления открытых файловых табов.
+      agent.onFileChanged = (filePath) => {
+        send({ type: 'file_changed', path: filePath })
+      }
 
       // Синхронизируем workdir/projectId/chatId/gateway/колбэки в ToolDispatcher —
       // они устанавливаются ПОСЛЕ конструктора Agent, но ToolDispatcher создаётся

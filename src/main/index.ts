@@ -12,7 +12,7 @@ app.setPath('userData', join(app.getPath('appData'), 'SynteeHelper'))
 
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import Store from 'electron-store'
-import { DEFAULT_SETTINGS } from '../shared/constants'
+import { DEFAULT_SETTINGS, DEFAULT_HOTKEYS } from '../shared/constants'
 import { MainWindow } from './windows/MainWindow'
 import { OverlayWindow } from './windows/OverlayWindow'
 import { VoiceWindow } from './windows/VoiceWindow'
@@ -73,6 +73,25 @@ if (!gotLock) {
 // через `import type Store from 'electron-store'` (дефолтный generic —
 // Record<string, unknown>).
 const store = new Store<Record<string, unknown>>({ defaults: DEFAULT_SETTINGS, name: 'config', cwd: undefined })
+
+// ── Merge hotkeys: добавляем недостающие ключи из DEFAULT_HOTKEYS ──────
+// Для существующих юзеров, у которых hotkeys сохранён до добавления
+// chatAskMode/chatPlanningMode — записываем их в config.json, чтобы
+// in-app кейбинды работали сразу при старте (без открытия настроек).
+// conf делает shallow merge defaults+fileStore, поэтому вложенные ключи
+// hotkeys из файла полностью перезаписывают defaults.hotkeys — нужно
+// явно merge и записать обратно.
+{
+  const stored = store.get('hotkeys') as Record<string, string> | undefined
+  if (stored && typeof stored === 'object') {
+    const merged = { ...DEFAULT_HOTKEYS, ...stored }
+    const hasNewKeys = (merged.chatAskMode !== stored.chatAskMode)
+      || (merged.chatPlanningMode !== stored.chatPlanningMode)
+    if (hasNewKeys) {
+      store.set('hotkeys', merged)
+    }
+  }
+}
 
 // Глобальные окна
 let mainWindow: MainWindow

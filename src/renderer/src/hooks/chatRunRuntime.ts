@@ -150,6 +150,10 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
       bufferedAgentStatus: string | null; bufferedRateLimitSec: number
       bufferedRetry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
+      liveState?: {
+        toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+        spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
+      }
       meta: QueueItemMeta | null
     } | null
     if (!live || !live.isRunning) {
@@ -171,6 +175,11 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
     buf.agentStatus = live.bufferedAgentStatus
     buf.rateLimitSec = live.bufferedRateLimitSec || 0
     buf.tokenBuf = ''
+    // Восстанавливаем ephemeral live-состояние из единого снапшота main.
+    // Универсально: любые будущие ephemeral-блоки добавляются в bufferedLiveState
+    // в main и автоматически подхватываются здесь.
+    buf.toolProgress = live.liveState?.toolProgress ?? {}
+    buf.spawnedAgents = live.liveState?.spawnedAgents ?? []
     useChatStore.getState().hydrateLiveState(chatId, {
       msgId: live.msgId,
       text: buf.text,
@@ -183,6 +192,8 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       agentStatus: buf.agentStatus,
       rateLimitSec: buf.rateLimitSec,
       retry: live.bufferedRetry ?? null,
+      toolProgress: buf.toolProgress,
+      spawnedAgents: buf.spawnedAgents,
       isTyping: true,
       isAgentRunning: buf.iters.length > 0 || buf.steps.length > 0,
     })

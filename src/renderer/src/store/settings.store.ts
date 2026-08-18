@@ -16,13 +16,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   load: async () => {
     const all = await window.syntee.settings.getAll() as Record<string, unknown>
-    // Merge default hotkeys with stored ones. Для существующих юзеров, у
-    // которых hotkeys сохранён до добавления новых ключей (chatAskMode,
-    // chatPlanningMode), — недостающие ключи берутся из DEFAULT_HOTKEYS.
-    // Ключи, явно очищенные юзером (значение ''), не перезаписываются.
-    if (all.hotkeys && typeof all.hotkeys === 'object') {
-      all.hotkeys = { ...DEFAULT_HOTKEYS, ...(all.hotkeys as Record<string, string>) }
-    }
+    // Merge default hotkeys with stored ones. Всегда merge — даже если
+    // all.hotkeys отсутствует (новая установка, сброс) или это не объект
+    // (повреждённые данные). Недостающие ключи (chatAskMode, chatPlanningMode
+    // для существующих юзеров) берутся из DEFAULT_HOTKEYS. Ключи, явно
+    // очищенные юзером (значение ''), не перезаписываются.
+    const storedHotkeys = (all.hotkeys && typeof all.hotkeys === 'object')
+      ? all.hotkeys as Record<string, string>
+      : {}
+    all.hotkeys = { ...DEFAULT_HOTKEYS, ...storedHotkeys }
     set({ settings: all, loaded: true })
   },
 

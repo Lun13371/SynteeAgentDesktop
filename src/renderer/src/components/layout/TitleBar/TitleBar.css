@@ -342,3 +342,23 @@
     box-shadow: 0 0 0 2px var(--bg-secondary, #1a1a1a), 0 0 0 6px rgba(59, 130, 246, 0);
   }
 }
+
+/* ── Индикаторы для файловых табов (в той же полосе, что и чаты) ──────── */
+/* Dirty — точка для несохранённых правок (как в VSCode) */
+.titlebar-tab-dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #60a5fa);
+  flex-shrink: 0;
+}
+
+/* Conflict — жёлтая точка для файлов изменённых внешне */
+.titlebar-tab-conflict {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fbbf24;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px rgba(251, 191, 36, 0.5);
+}
