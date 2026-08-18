@@ -134,6 +134,7 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           'ai-worker': resolve('src/main/ai-worker.ts'),
           'whisper-worker': resolve('src/main/whisper-worker.ts'),
+          'fastContext-worker': resolve('src/main/fastContext-worker.ts'),
         },
         external: ['web-tree-sitter', 'better-sqlite3', '@huggingface/transformers', 'onnxruntime-node'],
       },

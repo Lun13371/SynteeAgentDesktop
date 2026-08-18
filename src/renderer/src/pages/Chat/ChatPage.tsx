@@ -32,6 +32,7 @@ import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.st
 import { computeLiveChanges } from '../../utils/changes'
 import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
+import { useUIStore } from '../../store/ui.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
@@ -461,6 +462,60 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (!currentChatId || isIncognito) return
     window.syntee.chat.setAskMode(currentChatId, v).catch(e => console.error('[askMode] IPC fail:', e))
   }, [currentChatId, isIncognito])
+
+  // ── In-app hotkeys для переключения режимов чата ──────────────────────
+  // Ctrl+1 — toggle Ask (режим чтения), Ctrl+2 — toggle Planning.
+  // Хоткеи читаются из settings.hotkeys (настраиваются в Настройки → Горячие клавиши).
+  // Работают только внутри приложения (не глобальные).
+  // Не перехватываем в полях ввода, вне страницы чата, и когда правая панель
+  // открыта (Ctrl+1..6 заняты переключением табов панели).
+  useEffect(() => {
+    const formatCombo = (e: KeyboardEvent): string => {
+      const parts: string[] = []
+      if (e.ctrlKey)  parts.push('Ctrl')
+      if (e.altKey)   parts.push('Alt')
+      if (e.shiftKey) parts.push('Shift')
+      if (e.metaKey)  parts.push('Meta')
+      const key = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key
+      if (!['Control','Alt','Shift','Meta'].includes(e.key)) parts.push(key)
+      return parts.join('+')
+    }
+    const handler = (e: KeyboardEvent) => {
+      // Не перехватываем в полях ввода
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      // Только на странице чата
+      if (useNavStore.getState().mainPage !== 'chat') return
+      // Если правая панель открыта — Ctrl+1..6 заняты табами, не мешаем
+      const { agentPanelOpen } = useUIStore.getState()
+      if (agentPanelOpen) return
+
+      const hotkeys = (useSettingsStore.getState().settings['hotkeys'] as Record<string, string>) || {}
+      const combo = formatCombo(e)
+
+      // Режим чтения (Ask)
+      if (hotkeys.chatAskMode && combo === hotkeys.chatAskMode) {
+        e.preventDefault()
+        const next = !askModeRef.current
+        handleAskModeChange(next)
+        // Снимаем planning если включаем ask (взаимоисключающие по смыслу)
+        if (next && planningModeRef.current) handlePlanningModeChange(false)
+        return
+      }
+      // Режим планирования (Planning)
+      if (hotkeys.chatPlanningMode && combo === hotkeys.chatPlanningMode) {
+        e.preventDefault()
+        const next = !planningModeRef.current
+        handlePlanningModeChange(next)
+        // Снимаем ask если включаем planning
+        if (next && askModeRef.current) handleAskModeChange(false)
+        return
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [handleAskModeChange, handlePlanningModeChange])
+
   // ── Persona — single-select run mode. Persisted in chats.persona (one
   //  UPDATE per change). 'classic' is the neutral default (no badge, no
   //  injection). Invalid stored values fall back to 'classic' on load.
@@ -1530,15 +1585,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => { cancelled = true }
   }, [currentWorkdir])
 
-  // ── Запуск file indexer для @mention-пикера ──
-  // При смене workdir — запускаем chokidar-индексацию в main-процессе.
-  // Indexer держит in-memory кэш файлов для быстрого fuzzy-поиска в @пикере.
-  useEffect(() => {
-    if (!currentWorkdir) return
-    window.syntee.mentions.startIndexing(currentWorkdir).catch(() => {})
-    // Не останавливаем при размонтировании — main держит один watcher на
-    // workdir, может использоваться другими чатами того же проекта.
-  }, [currentWorkdir])
+  // ── File indexer для @mention-пикера ──
+  // Раньше запускали chokidar+scanDir(10k stat) в main-процессе на маунте —
+  // это забивало libuv thread pool и вешало UI на пару секунд при открытии
+  // большого проекта. Теперь индексация стартует ЛЕНИВО при первом вызове
+  // mentions:search (когда юзер вводит @) — см. mentions.ipc.ts:95.
 
   const activeProject = useMemo(() => {
     if (!currentChatId) return undefined

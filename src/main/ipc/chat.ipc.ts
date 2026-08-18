@@ -75,7 +75,7 @@ import {
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getCatalogModel, isCatalogReady } from '../../core/tokens/modelCatalog'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
-import { startWatching as startFastContextWatch, stopWatching as stopFastContextWatch } from '../../core/context/fastContextWatcher'
+import { stopWatching as stopFastContextWatch, setFastContextPaths, registerProjectWorkdir } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import { existsSync } from 'fs'
 import { ptyManager, type ShellType } from '../PtyManager'
@@ -598,23 +598,30 @@ function resolveTreeSitterWasmDir(): string {
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
 
-  // Fast Context: инициализируем main-процессное connection к БД для watcher'а.
-  // Worker открывает своё отдельное connection через initFastContextDb в ai-worker.ts.
-  // WAL mode → оба могут работать concurrently с одним файлом.
+  // Fast Context: инициализируем main-процессное connection к БД для watcher'а
+  // (getFastContextStats/recordHistory/graph sync читают из main). Worker
+  // открывает своё отдельное connection через initFastContextDb в fastContext-worker.
+  // WAL mode → все работают concurrently с одним файлом.
   const fastContextDbPath = path.join(app.getPath('userData'), 'syntee.db')
   const fastContextWasmDir = resolveTreeSitterWasmDir()
   try {
     initFastContextDb(fastContextDbPath)
     initFastContextWasmDir(fastContextWasmDir)
+    // Передаём пути в watcher — нужны для спавна worker_thread.
+    setFastContextPaths(fastContextDbPath, fastContextWasmDir)
   } catch (e) {
     log('[registerChatIPC] fast context init failed: %s', (e as Error).message)
   }
 
-  // Стартуем fast context watchers для всех проектов, но pre-warm индексации
-  // происходит только если индекс пустой. Watcher ловит изменения файлов.
+  // Watcher стартует ТОЛЬКО для активного проекта (через setActiveProject из
+  // fastContext.ipc при активации чата). Раньше здесь был цикл по всем проектам —
+  // это порождало N chokidar-watchers в простое и N pre-warm job'ов, которые
+  // блокировали main-процесс. Pre-warm теперь откладывается на 30с и идёт в
+  // worker_thread (мягкий режим, BATCH=1).
+  // Здесь только регистрируем workdir'ы — setActiveProject подхватит при активации.
   try {
     for (const p of getAllProjects()) {
-      try { startFastContextWatch(p.id, p.workdir) } catch { /* отдельный watcher не критичен */ }
+      registerProjectWorkdir(p.id, p.workdir)
     }
   } catch { /* БД ещё пуста — ок */ }
 
@@ -3068,8 +3075,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // (UNIQUE constraint). Скан запускаем только если project_context пуст.
     const existing = getAllProjects().find(p => p.workdir === workdir)
     if (existing && existing.projectContext) {
-      // Стартуем fast context watcher даже для существующего проекта
-      try { startFastContextWatch(existing.id, existing.workdir) } catch { /* watcher опционален */ }
+      // Регистрируем workdir — watcher стартует при активации проекта (setActiveProject).
+      registerProjectWorkdir(existing.id, existing.workdir)
       return existing
     }
     let projectContext: string | undefined
@@ -3081,17 +3088,17 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       log('[projects:create] analyzeProject exception для workdir=%s: %s', workdir, (e as Error).message)
     }
     const project = createProject(workdir, projectContext)
-    // Стартуем fast context watcher для нового проекта
-    try { startFastContextWatch(project.id, project.workdir) } catch { /* watcher опционален */ }
+    // Регистрируем workdir нового проекта — watcher стартует при активации.
+    registerProjectWorkdir(project.id, project.workdir)
     return project
   })
 
   ipcMain.handle('projects:getAll', () => getAllProjects())
   ipcMain.handle('projects:rename', (_, id: string, name: string) => renameProject(id, name))
-  ipcMain.handle('projects:delete', async (_, id: string) => {
+  ipcMain.handle('projects:delete', async (_, id: string, deleteChats: boolean) => {
     // Останавливаем fast context watcher перед удалением проекта
     try { await stopFastContextWatch(id) } catch { /* watcher опционален */ }
-    deleteProject(id)
+    deleteProject(id, deleteChats)
   })
   ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))
   ipcMain.handle('projects:touch', (_, id: string) => touchProject(id))

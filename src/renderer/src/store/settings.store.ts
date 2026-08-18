@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { DEFAULT_HOTKEYS } from '../../../shared/constants'
 
 interface SettingsStore {
   loaded: boolean
@@ -14,8 +15,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: {},
 
   load: async () => {
-    const all = await window.syntee.settings.getAll()
-    set({ settings: all as Record<string, unknown>, loaded: true })
+    const all = await window.syntee.settings.getAll() as Record<string, unknown>
+    // Merge default hotkeys with stored ones. Для существующих юзеров, у
+    // которых hotkeys сохранён до добавления новых ключей (chatAskMode,
+    // chatPlanningMode), — недостающие ключи берутся из DEFAULT_HOTKEYS.
+    // Ключи, явно очищенные юзером (значение ''), не перезаписываются.
+    if (all.hotkeys && typeof all.hotkeys === 'object') {
+      all.hotkeys = { ...DEFAULT_HOTKEYS, ...(all.hotkeys as Record<string, string>) }
+    }
+    set({ settings: all, loaded: true })
   },
 
   set: async (key, value) => {
