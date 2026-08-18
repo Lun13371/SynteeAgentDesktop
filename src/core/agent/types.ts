@@ -279,4 +279,5 @@ export interface ToolDispatcherContext {
   gatewayToken?: string
   gatewayApiUrl?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
+  onGetWorkingMemory?: (chatId: string) => string
 }

@@ -28,11 +28,11 @@ import { join } from 'path'
 import {
   initFastContextDb, initFastContextWasmDir, buildOrUpdateIndex,
   walkProjectFiles, type IndexProgress, type IndexingSettings,
-} from '../core/context/fastContext'
-import { localGetEntries, getLangForFile } from '../core/context/fastContext/state'
-import { quickHash } from '../core/context/fastContext/fileHash'
-import { initDBFromPath, getDB } from '../core/db/handle'
-import { incrementalUpdateFastContext } from '../core/memory/graphBuilder'
+} from '../../core/context/fastContext'
+import { localGetEntries, getLangForFile } from '../../core/context/fastContext/state'
+import { quickHash } from '../../core/context/fastContext/fileHash'
+import { initDBFromPath, getDB } from '../../core/db/handle'
+import { incrementalUpdateFastContext } from '../../core/memory/graphBuilder'
 
 const fastContextDbPath = (workerData as Record<string, unknown>).fastContextDbPath as string
 const fastContextWasmDir = (workerData as Record<string, unknown>).fastContextWasmDir as string

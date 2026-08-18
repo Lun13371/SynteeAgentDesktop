@@ -176,9 +176,12 @@ HOW TO WRITE the task:
 - the sub-agent ALREADY gets your context (chat summary + working memory + last 12
   history messages) — do NOT duplicate this in the task
 - include in task: what to do, paths to relevant files, constraints, what to return
+- tell the sub-agent to be efficient: "do not explore beyond the task scope, return
+  the result immediately when done"
 - bad task: "research authentication"
 - good task: "Find in src/auth/ how the OAuth flow is implemented. Return: list of files
-  with line ranges, the flow schema step by step, potential vulnerabilities. Do not change code."
+  with line ranges, the flow schema step by step, potential vulnerabilities. Do not change code.
+  Be efficient — minimal tool calls, return immediately when done."
 
 AFTER spawn_agent:
 - the result arrives directly in the tool output — do not call get_agent_status in a loop

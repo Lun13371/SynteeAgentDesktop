@@ -501,7 +501,7 @@ export class AIClient {
     onToken?: (token: string) => void,
     onContextCounted?: (info: ContextCountedInfo) => void,
     onRateLimit?: (waitSec: number) => void,
-    onRetry?: (attempt: number, reason: string, waitSec?: number) => void,
+    onRetry?: (attempt: number, reason: string, waitSec?: number, maxAttempts?: number) => void,
     onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void,
     onThinkingToken?: (token: string) => void,
     onThinkingDone?: (ms: number) => void,

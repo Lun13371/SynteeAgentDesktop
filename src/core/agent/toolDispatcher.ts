@@ -24,7 +24,6 @@ import type { FileCacheEntry } from '../context/fileCacheTypes'
 import type { DiffEntry } from '../context/structuredMemory'
 import type { AgentCallbacks, AgentSummaryDetails } from './types'
 import type { ToolDispatcherContext } from './types'
-import { log } from '../logger'
 
 /**
  * ToolDispatcher — владеет всем mutable state, который нужен для выполнения
@@ -214,7 +213,7 @@ export class ToolDispatcher {
           try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
           this.updateReadFileMaxLine(absPath, result.output)
           const rbProjectId = this.projectId
-            ?? `fc:${createHash('sha1').update(resolve(this.workdir)).digest('hex').slice(0, 16)}`
+            ?? `fc:${createHash('sha1').update(resolve(this.workdir ?? process.cwd())).digest('hex').slice(0, 16)}`
           bumpRelevanceBoost(rbProjectId, filePath, 1)
           if (this.readFileCacheEnabled) this.readFileCache.set(cacheKey, result.output)
           if (this.readFileCacheEnabled) {
@@ -332,7 +331,7 @@ export class ToolDispatcher {
           }
         }
         const fcProjectId = this.projectId
-          ?? `fc:${createHash('sha1').update(resolve(this.workdir)).digest('hex').slice(0, 16)}`
+          ?? `fc:${createHash('sha1').update(resolve(this.workdir ?? process.cwd())).digest('hex').slice(0, 16)}`
         const fcResult = await runFastContext(
           fcProjectId,
           this.workdir,

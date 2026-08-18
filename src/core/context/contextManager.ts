@@ -227,7 +227,7 @@ function pruneToolOutputsForSummary(messages: ChatMessage[]): ChatMessage[] {
     if (m.role === 'assistant' && m.content.includes('[Использованные инструменты]')) {
       const parts = m.content.split('[Использованные инструменты]')
       const toolPart = parts[1] || ''
-      const prunedTools = toolPart.replace(/\[([^\]]+)\]: ([^\[]*)/g, (_, name, result) => {
+      const prunedTools = toolPart.replace(/\[([^\]]+)\]: ([^[]*)/g, (_, name, result) => {
         // Используем умный summarize вместо механической обрезки
         const summary = smartSummarizeToolResult(name.trim(), result.trim())
         return summary

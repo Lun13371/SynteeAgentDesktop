@@ -1936,8 +1936,18 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             })
             const parentSummary = getChatSummary(msg.chatId as string)
             const parentWorkingMemory = getWorkingMemory(msg.chatId as string)
-            const subModeIntro = 'Сначала пойми релевантный код и ограничения, потом выполни только свою часть работы.'
-            const subModeOutro = 'Финальный ответ дай кратко: что найдено или сделано, важные файлы, риски или следующий шаг.'
+            const subModeIntro = `Сначала пойми релевантный код и ограничения, потом выполни только свою часть работы.
+
+Ты суб-агент, а не основной агент. Будь эффективным:
+- Делай только то, что нужно для задачи — не исследуй лишнее.
+- Используй минимальное количество tool calls. Не повторяй уже сделанные действия.
+- Не читай файлы «для полноты картины» — только те, что нужны для задачи.
+- Как только задача выполнена — сразу давай финальный ответ, не продолжай исследовать.`
+            const subModeOutro = `Финальный ответ дай кратко (максимум 15 строк):
+- что найдено или сделано
+- какие файлы важны (пути + ключевые строки)
+- какие есть риски или следующий шаг
+Не включай рассуждения, только результат.`
             // §roles — role injection в system prompt суб-агента
             const roleDef = getSubagentRole(msg.role as string | undefined)
             const roleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''

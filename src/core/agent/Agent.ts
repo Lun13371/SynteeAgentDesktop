@@ -4,12 +4,8 @@ import { needsApproval } from './commandSafety'
 import { updateStructuredMemory } from '../context/structuredMemory'
 import type { DiffEntry } from '../context/structuredMemory'
 import {
-  runCommand, readFile, writeFile, listDirectory,
-  findFiles,
-  searchWeb, getSystemInfo, generateImage,
-  readFiles, searchCode, analyzeProject,
-  httpRequest, getDiagnostics,
-  TOOL_SCHEMAS, type ToolResult, editFile,
+  runCommand,
+  TOOL_SCHEMAS, type ToolResult,
 } from '../tools'
 import {
   truncateToolResult, getContextSettings, getModelContextWindow,
@@ -17,17 +13,14 @@ import {
 } from '../context/contextManager'
 import { computeContextSnapshot } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
-import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
 import { isReadonlyPersona, getPersonaAllowedTools } from '../../shared/modes'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
-import { statSync, existsSync } from 'fs'
-import { createHash } from 'crypto'
 import { resolve } from 'path'
 import { log } from '../logger'
 import type {
-  AgentStep, AgentCallbacks, AgentSummaryDetails, AgentMessage,
-  NormalizedToolCall, AgentRuntimeOptions, AgentToolCallFingerprint, ToolRound,
+  AgentCallbacks, AgentSummaryDetails, AgentMessage,
+  NormalizedToolCall, AgentRuntimeOptions, AgentToolCallFingerprint,
 } from './types'
 import {
   FALLBACK_SYSTEM_PROMPT, VERIFICATION_INTERVAL,
@@ -89,7 +82,6 @@ export class Agent {
   onGetWorkingMemory?: (chatId: string) => string
   pendingDiffEntries: DiffEntry[] = []
   private readFileCache = new Map<string, string>()
-  private readFileCacheEnabled = true
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
   private recentToolFingerprints: AgentToolCallFingerprint[] = []
   private recentErrorFingerprints: string[] = []
@@ -107,7 +99,6 @@ export class Agent {
   // Персистентный кэш read_file — переживает несколько run() вызовов,
   // инвалидация по mtime+size файла на диске.
   private fileCache = new Map<string, FileCacheEntry>()
-  private dirtyFileCacheKeys = new Set<string>()
 
   // Трекер «читал ли AI файл в этой сессии» — для read-before-edit проверки.
   // НЕ сбрасывается между run() (как loopGuardHits) — переживает turn'ы.
@@ -120,18 +111,26 @@ export class Agent {
   // чанк. Ключ — нормализованный абсолютный путь. Сбрасывается в run().
   private readFileMaxLine = new Map<string, number>()
 
-  // Журнал выполненных команд — для структурированного результата суб-агента
-  private commandsRun: Array<{ command: string; exitCode?: string; success: boolean; cwd?: string }> = []
-
-  // Claude Code approach: persistent cwd между run_command вызовами.
-  // После каждой команды runCommand возвращает cwd (через __SYNTEE_CWD__ маркер).
-  // Сохраняем его и передаём в следующий runCommand — cd переживает без PTY.
-  private lastShellCwd: string | undefined
-
   // ToolDispatcher — делегирует выполнение тулов и владеет mutable state
   // (readFileCache, fileCache, filesReadInSession, readFileMaxLine, fileMap,
   // lastShellCwd, commandsRun, undoStack, pendingDiffEntries).
   private toolDispatcher: ToolDispatcher
+
+  /**
+   * Синхронизирует workdir/projectId/chatId/gateway-поля/колбэки в ToolDispatcher.
+   * Вызывается ПОСЛЕ установки полей Agent'а (в ai-worker.ts поля
+   * workdir/projectId/chatId устанавливаются после конструктора, но
+   * ToolDispatcher создаётся в конструкторе и не получает их).
+   */
+  syncToolDispatcher(): void {
+    this.toolDispatcher.workdir = this.workdir
+    this.toolDispatcher.projectId = this.projectId
+    this.toolDispatcher.chatId = this.chatId
+    this.toolDispatcher.gatewayToken = this.gatewayToken
+    this.toolDispatcher.gatewayApiUrl = this.gatewayApiUrl
+    this.toolDispatcher.onUpdateWorkingMemory = this.onUpdateWorkingMemory
+    this.toolDispatcher.onGetWorkingMemory = this.onGetWorkingMemory
+  }
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
     this.store = store
@@ -187,7 +186,6 @@ export class Agent {
     const modifiedFiles = new Set<string>()
     let successfulEditCount = 0
     let lastVerifiedEditCount = 0
-    this.readFileCacheEnabled = options?.readFileCache !== false
     this.readFileCache = new Map<string, string>()
     this.pendingDiffEntries = []
     this.fileMap = new Map()
@@ -199,13 +197,8 @@ export class Agent {
     // привязаны к конкретному контексту/файлу, между turn'ами они unrelated.
     this.recentErrorFingerprints = []
     this.recentParseFailures = []
-    this.commandsRun = []
-    // Сбрасываем lastShellCwd — если сменился workdir (другой проект),
-    // cwd из предыдущей команды «протекает» и команда выполнится в чужой директории.
-    this.lastShellCwd = undefined
     // Инициализируем персистентный кэш из снимка (передаётся из main через worker)
     this.fileCache = new Map(Object.entries(options?.fileCacheSnapshot ?? {}))
-    this.dirtyFileCacheKeys = new Set()
     // ── Session-level Map caps (anti-leak) ──────────────────────────────
     // recentToolFingerprints / loopGuardHits / filesReadInSession / fileCache
     // НЕ сбрасываются между run() (session-level loop detection). Но за долгую
@@ -1331,3 +1324,4 @@ export class Agent {
   private buildSummaryDetails(modifiedFiles: Set<string>): AgentSummaryDetails {
     return this.toolDispatcher.buildSummaryDetails(modifiedFiles)
   }
+}
