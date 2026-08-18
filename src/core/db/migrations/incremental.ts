@@ -84,21 +84,24 @@ export function runIncrementalMigrations(db: Database.Database): void {
   // Колонка attachments в messages — JSON-массив Attachment[] (метаданные для
   // рендера чипов над отправленным сообщением). Текстовое содержимое уже
   // инлайнилось в content при отправке — здесь только UI-метаданные.
-  if (!cols.find(c => c.name === 'attachments')) {
-    db.prepare(`ALTER TABLE messages ADD COLUMN attachments TEXT`).run()
-  }
-  // Колонка attachment_result — JSON AttachmentProcessingResult (для
-  // AttachmentProcessingBlock в сохранённом сообщении). Заполняется только у
-  // user-сообщений с attachments, прошедших processAttachmentsAndStream.
-  if (!cols.find(c => c.name === 'attachment_result')) {
-    db.prepare(`ALTER TABLE messages ADD COLUMN attachment_result TEXT`).run()
-  }
-  // thinking_blocks — JSON массив [{thinking, signature}] для Anthropic
-  // extended thinking. Без signatures Anthropic API отвергает thinking
-  // blocks при resubmission в следующем раунде. Поле хранит signatures,
-  // чтобы после перезахода в чат агент мог продолжить с extended thinking.
-  if (!cols.find(c => c.name === 'thinking_blocks')) {
-    db.prepare(`ALTER TABLE messages ADD COLUMN thinking_blocks TEXT`).run()
+  {
+    const cols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[]
+    if (!cols.find(c => c.name === 'attachments')) {
+      db.prepare(`ALTER TABLE messages ADD COLUMN attachments TEXT`).run()
+    }
+    // Колонка attachment_result — JSON AttachmentProcessingResult (для
+    // AttachmentProcessingBlock в сохранённом сообщении). Заполняется только у
+    // user-сообщений с attachments, прошедших processAttachmentsAndStream.
+    if (!cols.find(c => c.name === 'attachment_result')) {
+      db.prepare(`ALTER TABLE messages ADD COLUMN attachment_result TEXT`).run()
+    }
+    // thinking_blocks — JSON массив [{thinking, signature}] для Anthropic
+    // extended thinking. Без signatures Anthropic API отвергает thinking
+    // blocks при resubmission в следующем раунде. Поле хранит signatures,
+    // чтобы после перезахода в чат агент мог продолжить с extended thinking.
+    if (!cols.find(c => c.name === 'thinking_blocks')) {
+      db.prepare(`ALTER TABLE messages ADD COLUMN thinking_blocks TEXT`).run()
+    }
   }
 
   // chat_draft_attachments — вложения черновика (переживают рестарт, не
@@ -145,5 +148,4 @@ export function runIncrementalMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id) WHERE scope='project';
     CREATE INDEX IF NOT EXISTS idx_notes_chat ON notes(chat_id) WHERE scope='chat';
   `)
-}
 }

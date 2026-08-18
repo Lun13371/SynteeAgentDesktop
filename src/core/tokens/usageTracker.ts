@@ -51,7 +51,7 @@ export function estimateTokens(text: string): number {
 
 type MessageLike = {
   role: string
-  content: string
+  content: string | Array<{ type: string; text?: string; image_url?: unknown }>
   tool_calls?: unknown
   tool_call_id?: string
   name?: string
@@ -69,7 +69,8 @@ type MessageLike = {
  */
 export function estimateMessagesTokensFull(messages: Array<MessageLike>): number {
   return messages.reduce((sum, m) => {
-    let n = estimateTokens(m.content || '') + 4  // +4 служебных (role/разделители)
+    const contentStr = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => 'text' in p ? (p as { text: string }).text : '').join('') : '')
+    let n = estimateTokens(contentStr || '') + 4  // +4 служебных (role/разделители)
     // tool_calls (assistant): {id, type:'function', function:{name, arguments(JSON)}}
     if (m.tool_calls && Array.isArray(m.tool_calls)) {
       for (const tc of m.tool_calls as Array<Record<string, unknown>>) {
@@ -227,7 +228,7 @@ export function buildSnapshotFromReal(
  *   estimated = history + system + tools + current + API_OVERHEAD
  */
 export function computeContextSnapshot(
-  messages: Array<{ role: string; content: string; tool_calls?: unknown; tool_call_id?: string; name?: string }>,
+  messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: unknown }>; tool_calls?: unknown; tool_call_id?: string; name?: string }>,
   limit: number,
   opts: {
     systemPrompt?: string

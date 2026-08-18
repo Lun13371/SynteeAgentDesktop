@@ -7,7 +7,7 @@ import { v4 as uuid } from 'uuid'
  * уникального workdir создаёт проект (имя = basename папки), чатам
  * проставляет project_id. Идемпотентна — повторный запуск не дублирует.
  */
-function migrateChatsToProjects(db: Database.Database): void {
+export function migrateChatsToProjects(db: Database.Database): void {
   const rows = db.prepare(`SELECT DISTINCT workdir FROM chats WHERE workdir IS NOT NULL AND project_id IS NULL`).all() as { workdir: string }[]
   if (rows.length === 0) return
   const now = Date.now()
@@ -39,7 +39,7 @@ function migrateChatsToProjects(db: Database.Database): void {
  * либо отдельная команда реиндекса в UI. Поиск работает и без embeddings
  * (fallback на LIKE по content), просто менее точно.
  */
-function migrateLegacyMemoryToMemoryItems(db: Database.Database): void {
+export function migrateLegacyMemoryToMemoryItems(db: Database.Database): void {
   // Проверяем, есть ли что мигрировать
   const legacyExists = db.prepare(
     `SELECT name FROM sqlite_master WHERE type='table' AND name='memory'`

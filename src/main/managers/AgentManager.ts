@@ -2,11 +2,11 @@ import { BrowserWindow } from 'electron'
 import { Worker } from 'worker_threads'
 import { join } from 'path'
 import type Store from 'electron-store'
-import type { ChatMode } from '../shared/types'
-import { getToolSchemas } from '../core/tools'
-import { getFileCacheSnapshot, mergeFileCache } from '../core/context/fileReadCache'
-import { getAccessToken } from './services/tokenStore'
-import { getGatewayAuthToken, forceRefreshGatewayToken } from './services/gatewayClient'
+import type { ChatMode } from '../../shared/types'
+import { getToolSchemas } from '../../core/tools'
+import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
+import { getAccessToken } from '../services/tokenStore'
+import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
 import {
   createSubagentWorktree,
   mergeWorktreeBack,
@@ -14,8 +14,8 @@ import {
   cleanupWorktree,
   type WorktreeInfo,
 } from './WorktreeIsolation'
-import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../core/db/subagents'
-import { getSubagentRole } from '../shared/subagent-roles'
+import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
+import { getSubagentRole } from '../../shared/subagent-roles'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -496,8 +496,17 @@ class AgentManager {
       const subagentRole = record.role
 
       // Work-режим удалён — всегда Code-формулировка для суб-агентов.
-      const subModeIntro = 'Работай только в рамках этой подзадачи.\nСначала пойми релевантный код и контекст, затем выполни работу.'
-      const subModeOutro = '- что найдено или сделано\n- какие файлы важны\n- какие есть риски или следующий шаг'
+      const subModeIntro = `Работай только в рамках этой подзадачи.
+Сначала пойми релевантный код и контекст, затем выполни работу.
+
+Ты суб-агент, а не основной агент. Будь эффективным:
+- Делай только то, что нужно для задачи — не исследуй лишнее.
+- Используй минимальное количество tool calls. Не повторяй уже сделанные действия.
+- Как только задача выполнена — сразу давай финальный ответ.`
+      const subModeOutro = `- что найдено или сделано
+- какие файлы важны
+- какие есть риски или следующий шаг
+Не включай рассуждения, только результат.`
       // §roles — fallback systemPrompt с role injection (когда context?.systemPrompt
       // не передан, т.е. chat.ipc.ts не сформировал промпт).
       const fallbackRoleInjection = roleDef.id !== 'implementer' ? `\n${roleDef.systemPromptInjection}\n` : ''
