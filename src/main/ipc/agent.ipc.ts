@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Store from 'electron-store'
-import { agentManager } from '../AgentManager'
+import { agentManager } from '../managers/AgentManager'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 
 export function registerAgentIPC(store: Store, getWindow: () => BrowserWindow | null) {
