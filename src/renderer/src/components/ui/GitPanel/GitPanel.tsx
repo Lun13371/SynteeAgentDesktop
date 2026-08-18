@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import DiffBlock from '../DiffBlock/DiffBlock'
 import CodePreview from '../CodePreview/CodePreview'
+import { useFileTabsStore } from '../../../store/fileTabs.store'
+import { useNavStore } from '../../../store/nav.store'
 import './GitPanel.css'
 
 interface GitFileStatus {
@@ -311,6 +313,13 @@ export default function GitPanel({ workdir }: GitPanelProps) {
     if (!workdir || !selectedFile) return
     const fullpath = workdir.replace(/[\\/]+$/, '') + '\\' + selectedFile.replace(/\//g, '\\')
     window.syntee.shell.openPath(fullpath)
+  }
+
+  // Открыть файл в просмотре (Monaco-редактор в основной области)
+  const handleOpenInViewer = () => {
+    if (!workdir || !selectedFile) return
+    useNavStore.getState().setMainPage('chat')
+    void useFileTabsStore.getState().openFile(selectedFile, workdir)
   }
 
   // ── Git actions: stage / unstage / discard ──────────────────────
@@ -677,6 +686,13 @@ export default function GitPanel({ workdir }: GitPanelProps) {
                       <AppIcon name="fileText" size="xs" />
                     </button>
                   </div>
+                  <button
+                    className="git-panel__action-btn"
+                    onClick={handleOpenInViewer}
+                    title="Открыть в просмотре"
+                  >
+                    <AppIcon name="eye" size="xs" />
+                  </button>
                   <button
                     className="git-panel__action-btn"
                     onClick={handleOpenInEditor}

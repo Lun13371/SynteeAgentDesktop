@@ -20,7 +20,7 @@ import {
   logAgentAction,
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
-import { saveMemoryItem, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit } from '../../core/memory/MemoryStore'
+import { saveMemoryItem, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit, searchAllSources } from '../../core/memory/MemoryStore'
 import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } from '../../core/db/notes'
 
 import { onCompactionTrigger } from '../../core/memory/extractor'
@@ -549,7 +549,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
 
     const mergedWorkingMemory = summary
-      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Compressed summary of previous context\n(Background information, NOT active instructions. Do not repeat already-completed work.)\n${summary}`
+      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Summary of previous conversation context\n(Summary of earlier messages. Use this for context — tasks, decisions, files, and state from before compaction. Continue from where the conversation left off.)\n${summary}`
       : workingMemory
 
     // Global system prompt from Settings → AI → Parameters (or /sys command)
@@ -751,8 +751,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Промпт для vision-модели: структурированный, с нумерацией картинок.
     const userQuestion = content?.trim()
     const visionPrompt = userQuestion
-      ? `Проанализируй изображение и предоставь структурированное описание:\n\n1. ТИП: Что изображено (скриншот, фото, диаграмма, схема, код, документ)\n2. ТЕКСТ: Весь видимый текст на изображении (точно, без искажений)\n3. ВИЗУАЛЬНОЕ: Цвета, расположение элементов, UI-компоненты, иконки\n4. КОНТЕКСТ: Относительно вопроса пользователя: «${userQuestion.slice(0, 1000)}»\n\nОтвечай на русском. Будь точен и лаконичен.`
-      : `Проанализируй изображение и предоставь структурированное описание:\n\n1. ТИП: Что изображено (скриншот, фото, диаграмма, схема, код, документ)\n2. ТЕКСТ: Весь видимый текст на изображении (точно, без искажений)\n3. ВИЗУАЛЬНОЕ: Цвета, расположение элементов, UI-компоненты, иконки\n4. КОНТЕКСТ: Общий контекст, который может быть полезен для ответа\n\nОтвечай на русском. Будь точен и лаконичен.`
+      ? `Analyze the image and provide a structured description:\n\n1. TYPE: What is depicted (screenshot, photo, diagram, schema, code, document)\n2. TEXT: All visible text in the image (exactly, without distortion)\n3. VISUAL: Colors, element layout, UI components, icons\n4. CONTEXT: Relative to the user question: "${userQuestion.slice(0, 1000)}"\n\nAnswer in Russian. Be precise and concise.`
+      : `Analyze the image and provide a structured description:\n\n1. TYPE: What is depicted (screenshot, photo, diagram, schema, code, document)\n2. TEXT: All visible text in the image (exactly, without distortion)\n3. VISUAL: Colors, element layout, UI components, icons\n4. CONTEXT: General context that may be useful for the answer\n\nAnswer in Russian. Be precise and concise.`
 
     // ── Vision capability check: если основная модель поддерживает vision,
     //    передаём картинки напрямую (без промежуточного описания через vision-модель).
@@ -1111,14 +1111,32 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       const realContextWindow = getModelContextWindow(storeData)
       const rollingSettings = { ...ctxSettings, contextLimitTokens: realContextWindow }
 
-      const summaryFn = async (prompt: string): Promise<string> => {
+      const summaryFn = async (systemPrompt: string, userContent: string): Promise<string> => {
         const aiClient = new AIClient(store)
         let result = ''
-        await aiClient.streamChat(
-          [{ role: 'user', content: prompt }],
-          { onToken: (t) => { result += t }, onDone: () => {}, onError: () => {} },
-          'fast',
-        )
+        try {
+          await aiClient.streamChat(
+            [{ role: 'user', content: userContent }],
+            { onToken: (t) => { result += t }, onDone: () => {}, onError: () => {} },
+            'summary',
+            systemPrompt,
+          )
+          // streamChat вызывает onError() и возвращается БЕЗ throw —
+          // result остаётся пустым. Проверяем и бросаем, чтобы catch
+          // переключил на main-модель, а при повторном пустом —
+          // applyRollingWindowAsync активировал механический fallback.
+          if (!result) throw new Error('summary model returned empty')
+        } catch {
+          // Если summary-модель не сработала — fallback на main (модель чата)
+          result = ''
+          await aiClient.streamChat(
+            [{ role: 'user', content: userContent }],
+            { onToken: (t) => { result += t }, onDone: () => {}, onError: () => {} },
+            'main',
+            systemPrompt,
+          )
+          if (!result) throw new Error('main model returned empty')
+        }
         return result
       }
 
@@ -1307,6 +1325,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // AttachmentProcessingBlock после рестарта.
       attachmentResult: null as AttachmentProcessingResult | null,
       imageParts: [] as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>,
+      bufferedLiveState: { toolProgress: {}, spawnedAgents: [] },
     }
 
     // ── UI-батчинг токенов: флеш накопленного перед любыми другими
@@ -1905,6 +1924,25 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         case 'tool_progress':
           // Progress для долгих тулов (get_fast_context) — live-индикация этапов.
           // Не персистим в БД (ephemeral), только в live state renderer'а.
+          // Накапливаем в ActiveRun.bufferedLiveState чтобы при переключении
+          // чата и возврате hydrateFromMain мог восстановить прогресс.
+          {
+            const tpRun = activeRuns.get(msg.chatId as string)
+            if (tpRun) {
+              tpRun.bufferedLiveState.toolProgress = {
+                ...tpRun.bufferedLiveState.toolProgress,
+                [msg.toolName as string]: {
+                  stage: msg.stage as string,
+                  detail: msg.detail as string | undefined,
+                  sessionId: msg.sessionId as string | undefined,
+                  filesProcessed: msg.filesProcessed as number | undefined,
+                  filesTotal: msg.filesTotal as number | undefined,
+                  filesFound: msg.filesFound as Array<{ path: string; score: number; why: string }> | undefined,
+                  ts: Date.now(),
+                },
+              }
+            }
+          }
           win?.webContents.send('agent:tool_progress', {
             msgId: msg.msgId, chatId: msg.chatId,
             toolName: msg.toolName, stage: msg.stage, detail: msg.detail,
@@ -1924,6 +1962,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             // Эмитим agent:spawn ДО запуска суб-агента — renderer сразу
             // показывает live-карточку на позиции tool_call'а (маппинг по
             // callId из live-итерации), не дожидаясь финального tool_result.
+            // Накапливаем в ActiveRun.bufferedLiveState чтобы при переключении
+            // чата и возврате hydrateFromMain мог восстановить карточки.
+            const saRun = activeRuns.get(msg.chatId as string)
+            if (saRun) {
+              const agentId = msg.id as string
+              if (!saRun.bufferedLiveState.spawnedAgents.some(a => a.agentId === agentId)) {
+                saRun.bufferedLiveState.spawnedAgents = [...saRun.bufferedLiveState.spawnedAgents, {
+                  agentId,
+                  callId: msg.callId as string | undefined,
+                  task: msg.task as string,
+                  msgId: msg.msgId as string,
+                  model: msg.model as string | undefined,
+                  role: (msg.role as string | undefined) ?? 'implementer',
+                  ts: Date.now(),
+                }]
+              }
+            }
             win?.webContents.send('agent:spawn', {
               agentId: msg.id as string,
               task: msg.task as string,
@@ -2274,6 +2329,16 @@ ${subModeOutro}`,
             }
           } catch (e) {
             log('[update_working_memory] failed: %s', (e as Error).message)
+          }
+          break
+        }
+
+        // Agent записал/отредактировал файл — форвардим в renderer
+        // для live-обновления открытых файловых табов (Monaco editor).
+        case 'file_changed': {
+          const filePath = msg.path as string
+          if (filePath) {
+            win?.webContents.send('file:changed', { path: filePath })
           }
           break
         }
@@ -3232,6 +3297,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       bufferedAgentStatus: run.bufferedAgentStatus,
       bufferedRateLimitSec: run.bufferedRateLimitSec,
       bufferedRetry: run.bufferedRetry,
+      // Единый снапшот ephemeral live-состояния (toolProgress, spawnedAgents,
+      // и любые будущие ephemeral-блоки). Renderer гидрирует их целиком.
+      liveState: run.bufferedLiveState,
       meta: activeRunMeta.get(chatId) ?? null,
     }
   })
@@ -3380,7 +3448,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
    * компакция гоняет LLM-запрос через summaryFn и не должна проходить
    * параллельно с другим ходом.
    */
-  ipcMain.handle('chat:compact', async (event, chatId: string) => {
+  ipcMain.handle('chat:compact', async (event, chatId: string, mode?: string) => {
     // Sidechat-чаты (incognito, префикс 'sidechat:') — эфемерны:
     // история не в БД, summary не сохраняется — компакция бессмысленна.
     if (chatId.startsWith('sidechat:')) {
@@ -3434,7 +3502,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const controller = new AbortController()
       compactRuns.set(chatId, controller)
 
-      const summaryFn = async (prompt: string): Promise<string> => {
+      const summaryFn = async (systemPrompt: string, userContent: string): Promise<string> => {
         const aiClient = new AIClient(store)
         let result = ''
         // Сигнал рендереру: начало стрима резюме (сброс накопленного текста
@@ -3444,22 +3512,42 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         if (!sender.isDestroyed()) {
           sender.send(IPC_EVENTS.CHAT_COMPACT_STREAM, { chatId, start: true })
         }
-        await aiClient.streamChat(
-          [{ role: 'user', content: prompt }],
-          {
-            onToken: (t) => {
-              result += t
-              if (!sender.isDestroyed()) {
-                sender.send(IPC_EVENTS.CHAT_COMPACT_STREAM, { chatId, chunk: t })
-              }
-            },
-            onDone: () => {},
-            onError: () => {},
+        const streamOpts = {
+          onToken: (t: string) => {
+            result += t
+            if (!sender.isDestroyed()) {
+              sender.send(IPC_EVENTS.CHAT_COMPACT_STREAM, { chatId, chunk: t })
+            }
           },
-          'fast',
-          undefined,
-          controller.signal,
-        )
+          onDone: () => {},
+          onError: () => {},
+        }
+        try {
+          await aiClient.streamChat(
+            [{ role: 'user', content: userContent }],
+            streamOpts,
+            'summary',
+            systemPrompt,
+            controller.signal,
+          )
+          // streamChat вызывает onError() и возвращается БЕЗ throw —
+          // result остаётся пустым. Проверяем и бросаем, чтобы catch
+          // переключил на main-модель, а при повторном пустом результате —
+          // applyRollingWindowAsync активировал механический fallback.
+          if (!result) throw new Error('summary model returned empty')
+        } catch {
+          // Если summary-модель не сработала — fallback на main (модель чата)
+          if (controller.signal.aborted) throw new Error('aborted')
+          result = ''
+          await aiClient.streamChat(
+            [{ role: 'user', content: userContent }],
+            streamOpts,
+            'main',
+            systemPrompt,
+            controller.signal,
+          )
+          if (!result) throw new Error('main model returned empty')
+        }
         return result
       }
 
@@ -3469,7 +3557,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // был непустым. Если совсем нечего сжимать (1-2 сообщения) —
       // вернёт compressed=false → сообщим пользователю.
       const tokensBefore = estimateMessagesTokens(rawHistory)
-      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true)
+      const compactMode = mode === 'last' ? 'last' : 'full'
+      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true, compactMode)
       if (!result.compressed) {
         return { error: 'Недостаточно сообщений для сжатия (нужно больше 2).' }
       }

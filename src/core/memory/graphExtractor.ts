@@ -493,31 +493,31 @@ export function syncSingleEntry(
 
 // ─── LLM: extract concepts & relations from conversation ─────────────────────
 
-const GRAPH_EXTRACT_SYSTEM_PROMPT = `Ты — экстрактор сущностей и связей для knowledge graph проекта.
+const GRAPH_EXTRACT_SYSTEM_PROMPT = `You are an entity and relationship extractor for a project knowledge graph.
 
-Извлекай из резюме диалога:
-- concept: абстрактные сущности, технологии, подходы ("авторизация", "Postgres", "TF-IDF", "early return")
-- decision: архитектурные решения ("решили использовать X", "конвенция — Y")
-- task: конкретные задачи ("добавить миграцию", "исправить баг авторизации")
-- file: упомянутые файлы (если есть полные пути или basename с расширением)
-- symbol: упомянутые функции/классы (CamelCase, не тривиальные слова)
+Extract from the dialogue summary:
+- concept: abstract entities, technologies, approaches ("authorization", "Postgres", "TF-IDF", "early return")
+- decision: architectural decisions ("decided to use X", "convention — Y")
+- task: specific tasks ("add migration", "fix auth bug")
+- file: mentioned files (if there are full paths or basenames with extensions)
+- symbol: mentioned functions/classes (CamelCase, not trivial words)
 
-И связи между ними:
-- affects: decision → file (решение затрагивает файл)
-- mentions: decision/concept → symbol (упоминает символ)
-- implemented_in: concept/symbol → file (где реализовано)
-- depends_on: decision → decision/concept (зависит от)
-- supersedes: decision → decision (новое заменяет старое)
-- references: conversation → decision/concept/file (диалог ссылается на)
+And relationships between them:
+- affects: decision → file (decision affects file)
+- mentions: decision/concept → symbol (mentions symbol)
+- implemented_in: concept/symbol → file (where it is implemented)
+- depends_on: decision → decision/concept (depends on)
+- supersedes: decision → decision (new replaces old)
+- references: conversation → decision/concept/file (dialogue references)
 
-Ответ — только JSON без markdown:
-{"nodes":[{"type":"concept|decision|task|file|symbol","label":"короткое имя","evidence":"цитата из текста"}],"edges":[{"from":"label_from","fromType":"concept","to":"label_to","toType":"file","type":"affects"}]}
+Answer — JSON only, no markdown:
+{"nodes":[{"type":"concept|decision|task|file|symbol","label":"short name","evidence":"quote from text"}],"edges":[{"from":"label_from","fromType":"concept","to":"label_to","toType":"file","type":"affects"}]}
 
-Правила:
-- label — короткое имя (не более 80 символов), уникальное в рамках типа
-- Если сущностей нет — верни {"nodes":[],"edges":[]}
-- Не выдумывай связи — только если есть evidence в тексте
-- Максимум 15 узлов и 20 рёбер на диалог`
+Rules:
+- label — short name (no more than 80 characters), unique within the type
+- If there are no entities — return {"nodes":[],"edges":[]}
+- Do not invent relationships — only if there is evidence in the text
+- Maximum 15 nodes and 20 edges per dialogue`
 
 /**
  * LLM-извлечение концепций и связей из резюме диалога.
@@ -536,11 +536,11 @@ export async function extractFromConversationLLM(
   }
 
   const aiClient = new AIClient(store)
-  const prompt = `Извлеки сущности и связи для knowledge graph из резюме диалога:
+  const prompt = `Extract entities and relationships for the knowledge graph from the dialogue summary:
 
 ${params.summary.slice(0, 4000)}
 
-Верни JSON с nodes и edges.`
+Return JSON with nodes and edges.`
 
   let raw = ''
   try {

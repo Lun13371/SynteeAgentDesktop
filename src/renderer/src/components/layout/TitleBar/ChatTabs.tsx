@@ -2,24 +2,42 @@ import { useState } from 'react'
 import { Reorder, motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import ChatTabContextMenu from './ChatTabContextMenu'
+import FileTabContextMenu from './FileTabContextMenu'
 import { useChatStore } from '../../../store/chat.store'
 import { useNavStore } from '../../../store/nav.store'
 import { useTabsStore, tabActions } from '../../../store/tabs.store'
+import { useFileTabsStore } from '../../../store/fileTabs.store'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import type { Chat } from '../../../../../shared/types'
 import { springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny } from '../../../utils/motionPresets'
 
-// Вкладки открытых чатов в шапке — как в браузере: переключение по клику,
-// drag&drop для перестановки (Reorder из framer-motion, прецедент —
-// QueuePanel), закрытие крестиком или средней кнопкой мыши, контекстное
-// меню по правому клику (открыть/сплит/закрыть вкладку).
-// Данные чатов — из chat.store, порядок вкладок — из tabs.store, действия
-// (select/create) — через tabActions (мост в ChatPage, который keep-alive).
-// no-drag на вкладках и «+»: шапка — drag-region окна, без no-drag клики
-// не дошли бы до renderer. Пустое место полосы остаётся drag-зоной.
-// В конце полосы — чип открытого сплит-чата (второй чат 50/50): индикатор
-// + крестик закрытия сплита.
+// ── Единая полоса вкладок в шапке ──────────────────────────────────────
+// Табы чатов и табы файлов — в одной полосе, одинаковым стилем (titlebar-tab).
+// Переключение по клику, drag&drop для перестановки (Reorder из framer-motion),
+// закрытие крестиком или средней кнопкой мыши, контекстное меню по правому клику.
+// Файловые табы идут после «+» — визуально отделены от чатов, но в той же полосе.
+
+// Цветовая метка типа файла (как в FileExplorer)
+const FILE_TYPE_COLORS: Record<string, string> = {
+  ts: '#3178c6', tsx: '#3178c6',
+  js: '#f7df1e', jsx: '#f7df1e', mjs: '#f7df1e',
+  json: '#f0a000',
+  css: '#264de4', scss: '#cc6699',
+  html: '#e34c26',
+  md: '#519aba',
+  py: '#3572a5',
+  go: '#00add8',
+  rs: '#dea584',
+  sh: '#89e051', bash: '#89e051',
+  yml: '#cb171e', yaml: '#cb171e',
+}
+function getFileColor(name: string): string | undefined {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  return FILE_TYPE_COLORS[ext]
+}
+
 export default function ChatTabs() {
+  // ── Chat tabs ──
   const openTabIds = useTabsStore(s => s.openTabIds)
   const reorderTabs = useTabsStore(s => s.reorderTabs)
   const closeTab = useTabsStore(s => s.closeTab)
@@ -30,46 +48,69 @@ export default function ChatTabs() {
   const setSplitChat = useChatStore(s => s.setSplitChat)
   const [ctxMenu, setCtxMenu] = useState<{ chat: Chat; pos: MenuPos } | null>(null)
 
+  // ── File tabs (в той же полосе, тот же стиль) ──
+  const openFileTabs = useFileTabsStore(s => s.openFileTabs)
+  const activeFileTabId = useFileTabsStore(s => s.activeFileTabId)
+  const reorderFileTabs = useFileTabsStore(s => s.reorderFileTabs)
+  const closeFileTab = useFileTabsStore(s => s.closeFileTab)
+  const setActiveFileTab = useFileTabsStore(s => s.setActiveFileTab)
+  const [fileCtxMenu, setFileCtxMenu] = useState<{ tabId: string; pos: MenuPos } | null>(null)
+
   // Значения Reorder.Group должны 1:1 соответствовать Reorder.Item —
   // фильтруем вкладки без живого чата (гонка удаления/переименования).
   const chatById = new Map(chats.map(c => [c.id, c]))
   const tabIds = openTabIds.filter(id => chatById.has(id))
+  const fileTabIds = openFileTabs.map(t => t.id)
 
   const handleClose = (id: string) => {
     const neighbor = closeTab(id)
-    // Закрыли активную — переключаемся на соседнюю (правая, иначе левая).
     if (id === currentChatId && neighbor) {
       useNavStore.getState().setMainPage('chat')
       tabActions.selectChat?.(neighbor)
     }
   }
 
-  // Клик по вкладке / «+» из любой страницы (настройки, мессенджер) —
-  // возвращаем на страницу чата, иначе переключение было бы не видно.
+  // Клик по вкладке чата — сбрасываем активный файловый таб (возвращаемся к чату).
+  // ВАЖНО: setActiveFileTab(null) ДО проверки id === currentChatId — иначе клик
+  // по тому же чату (когда открыт файл) не закрывает редактор.
   const handleSelect = (id: string) => {
+    useFileTabsStore.getState().setActiveFileTab(null)
     if (id === currentChatId) return
     useNavStore.getState().setMainPage('chat')
     tabActions.selectChat?.(id)
   }
 
-  // «+» — новый чат в контексте текущего (чат проекта → чат в том же проекте).
   const handleCreate = () => {
     useNavStore.getState().setMainPage('chat')
     tabActions.createInContext?.()
   }
 
-  // Правый клик по вкладке — контекстное меню (открыть/сплит/закрыть).
   const handleCtx = (e: React.MouseEvent, chat: Chat) => {
     e.preventDefault()
     e.stopPropagation()
     setCtxMenu({ chat, pos: { x: e.clientX, y: e.clientY } })
   }
 
-  // Чип сплит-чата в конце полосы — показывает что открыто 2 чата.
+  // ── File tab handlers ──
+  const handleFileClose = (id: string) => {
+    closeFileTab(id)
+  }
+  const handleFileSelect = (id: string) => {
+    if (id === activeFileTabId) return
+    useNavStore.getState().setMainPage('chat')
+    setActiveFileTab(id)
+  }
+  const handleFileCtx = (e: React.MouseEvent, tabId: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setFileCtxMenu({ tabId, pos: { x: e.clientX, y: e.clientY } })
+  }
+
   const splitChat = splitChatId ? chatById.get(splitChatId) : undefined
 
   return (
     <div className="titlebar-tabs">
+      {/* ── Табы чатов ── */}
       <Reorder.Group
         as="div"
         axis="x"
@@ -81,7 +122,7 @@ export default function ChatTabs() {
           const chat = chatById.get(id)!
           const status = runStatusByChat[id]?.status
           const running = status === 'running' || status === 'queued'
-          const active = id === currentChatId
+          const active = id === currentChatId && !activeFileTabId
           return (
             <Reorder.Item
               as="div"
@@ -91,8 +132,6 @@ export default function ChatTabs() {
               onClick={() => handleSelect(id)}
               onContextMenu={e => handleCtx(e, chat)}
               onAuxClick={(e: React.MouseEvent) => {
-                // Средняя кнопка — закрытие, как в браузере.
-                // preventDefault — не дать Chromium включить auto-scroll.
                 e.preventDefault()
                 if (e.button === 1 && tabIds.length > 1) handleClose(id)
               }}
@@ -105,7 +144,6 @@ export default function ChatTabs() {
                 chat.color && <span className="titlebar-tab-color" style={{ background: chat.color }} />
               )}
               <span className="titlebar-tab-title">{chat.title}</span>
-              {/* Последнюю вкладку закрыть нельзя — всегда есть хотя бы одна. */}
               {tabIds.length > 1 && (
                 <motion.button
                   className="titlebar-tab-close"
@@ -123,6 +161,7 @@ export default function ChatTabs() {
           )
         })}
       </Reorder.Group>
+
       <motion.button
         type="button"
         className="titlebar-tab-add no-drag"
@@ -134,6 +173,60 @@ export default function ChatTabs() {
       >
         <AppIcon name="plus" size="sm" />
       </motion.button>
+
+      {/* ── Табы файлов — в той же полосе, тот же стиль (titlebar-tab) ── */}
+      {fileTabIds.length > 0 && (
+        <Reorder.Group
+          as="div"
+          axis="x"
+          values={fileTabIds}
+          onReorder={reorderFileTabs}
+          className="titlebar-tabs-list"
+        >
+          {openFileTabs.map(tab => {
+            const fileColor = getFileColor(tab.name)
+            const active = tab.id === activeFileTabId
+            return (
+              <Reorder.Item
+                as="div"
+                key={tab.id}
+                value={tab.id}
+                className={`titlebar-tab no-drag ${active ? 'titlebar-tab--active' : ''}`}
+                onClick={() => handleFileSelect(tab.id)}
+                onContextMenu={e => handleFileCtx(e, tab.id)}
+                onAuxClick={(e: React.MouseEvent) => {
+                  e.preventDefault()
+                  if (e.button === 1) handleFileClose(tab.id)
+                }}
+                title={tab.relPath}
+                transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+              >
+                <span className="titlebar-tab-color" style={{ background: fileColor ?? 'var(--text-muted)' }} />
+                <span className="titlebar-tab-title">{tab.name}</span>
+                {/* Dirty indicator — точка для несохранённых правок */}
+                {tab.dirty && (
+                  <span className="titlebar-tab-dirty" title="Несохранённые изменения" />
+                )}
+                {/* Conflict indicator — жёлтая точка */}
+                {tab.conflict && !tab.dirty && (
+                  <span className="titlebar-tab-conflict" title="Файл изменён внешне" />
+                )}
+                <motion.button
+                  className="titlebar-tab-close"
+                  onPointerDown={e => e.stopPropagation()}
+                  onClick={e => { e.stopPropagation(); handleFileClose(tab.id) }}
+                  title="Закрыть"
+                  whileHover={whileHoverTiny}
+                  whileTap={whileTapTiny}
+                  transition={springHover}
+                >
+                  <AppIcon name="x" size="xs" />
+                </motion.button>
+              </Reorder.Item>
+            )
+          })}
+        </Reorder.Group>
+      )}
 
       {/* Чип сплит-чата: виден пока открыта вторая половина экрана.
           Крестик закрывает сплит (вкладка чата остаётся). */}
@@ -170,6 +263,12 @@ export default function ChatTabs() {
         onSelectChat={handleSelect}
         onCloseTab={handleClose}
         tabsCount={tabIds.length}
+      />
+      <FileTabContextMenu
+        tabId={fileCtxMenu?.tabId ?? null}
+        pos={fileCtxMenu?.pos ?? null}
+        onClose={() => setFileCtxMenu(null)}
+        tabsCount={openFileTabs.length}
       />
     </div>
   )

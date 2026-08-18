@@ -40,6 +40,8 @@ export class ToolDispatcher {
   gatewayApiUrl?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
   onGetWorkingMemory?: (chatId: string) => string
+  /** Колбэк после записи/редактирования файла агентом — для live-обновления UI */
+  onFileChanged?: (path: string) => void
 
   // ── Mutable tool-execution state ──
   readFileCache = new Map<string, string>()
@@ -250,8 +252,15 @@ export class ToolDispatcher {
           body: args.body as string | undefined,
           timeout: args.timeout as number | undefined,
         })
-      case 'write_file':
-        return writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir, force: args.force as boolean | undefined })
+      case 'write_file': {
+        const wfResult = await writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir, force: args.force as boolean | undefined })
+        if (wfResult.success && !dryRun) {
+          let absPath: string
+          try { absPath = resolve(this.workdir ?? process.cwd(), args.path as string) } catch { absPath = args.path as string }
+          this.onFileChanged?.(absPath)
+        }
+        return wfResult
+      }
       case 'edit_file': {
         const editPath = args.path as string
         const createNew = args.create_if_not_exists === true
@@ -269,6 +278,11 @@ export class ToolDispatcher {
           editResult.output = `${readWarning}\n${editResult.output}`
         } else if (readWarning && !editResult.success) {
           editResult.error = `${readWarning}\n${editResult.error ?? ''}`
+        }
+        if (editResult.success && !dryRun) {
+          let absPath: string
+          try { absPath = resolve(this.workdir ?? process.cwd(), editPath) } catch { absPath = editPath }
+          this.onFileChanged?.(absPath)
         }
         return editResult
       }

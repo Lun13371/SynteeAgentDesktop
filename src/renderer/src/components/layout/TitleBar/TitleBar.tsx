@@ -62,8 +62,7 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
         <span className="titlebar-title">Syntee</span>
       </div>
 
-      {/* Вкладки открытых чатов — как в браузере. Полоса между ними и «+»
-          остаётся drag-зоной окна, сами вкладки/кнопка — no-drag. */}
+      {/* Единая полоса вкладок: чаты и файлы в одном ряду, одинаковый стиль. */}
       <ChatTabs />
 
       <div className="titlebar-right no-drag">

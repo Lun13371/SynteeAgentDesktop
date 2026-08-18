@@ -80,6 +80,8 @@ export class Agent {
   gatewayApiUrl?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
   onGetWorkingMemory?: (chatId: string) => string
+  /** Колбэк после записи/редактирования файла агентом — для live-обновления UI */
+  onFileChanged?: (path: string) => void
   pendingDiffEntries: DiffEntry[] = []
   private readFileCache = new Map<string, string>()
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
@@ -130,6 +132,7 @@ export class Agent {
     this.toolDispatcher.gatewayApiUrl = this.gatewayApiUrl
     this.toolDispatcher.onUpdateWorkingMemory = this.onUpdateWorkingMemory
     this.toolDispatcher.onGetWorkingMemory = this.onGetWorkingMemory
+    this.toolDispatcher.onFileChanged = this.onFileChanged
   }
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {

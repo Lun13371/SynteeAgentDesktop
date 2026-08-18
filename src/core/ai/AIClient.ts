@@ -132,7 +132,12 @@ export class AIClient {
     const assignments = this.store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
     const found = assignments?.find(a => a.role === type)
     if (found?.modelId) return found.modelId
-    return (this.store.get(`${type}Model`) as string) || defaults[type]
+    const storeModel = this.store.get(`${type}Model`) as string
+    if (storeModel) return storeModel
+    // summary: если не настроена явно — используем модель чата (main),
+    // чтобы суммаризация шла на той же модели что отвечает в чате.
+    if (type === 'summary') return this.getModel('main')
+    return defaults[type]
   }
 
   /**
@@ -209,7 +214,7 @@ export class AIClient {
   async streamChat(
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
-    modelType: 'main' | 'fast' | 'fastContext' = 'main',
+    modelType: 'main' | 'fast' | 'fastContext' | 'summary' = 'main',
     systemPrompt?: string,
     signal?: AbortSignal,
     temperatureOverride?: number,
