@@ -1,8 +1,8 @@
-import { ipcMain, BrowserWindow, app, dialog } from 'electron'
+import { ipcMain, BrowserWindow, app } from 'electron'
 import { Worker } from 'worker_threads'
 import * as path from 'path'
 import type Store from 'electron-store'
-import { agentManager } from '../AgentManager'
+import { agentManager } from '../managers/AgentManager'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import {
   createChat, getAllChats, getMessages, getMessagesPage, saveMessage,
@@ -14,58 +14,29 @@ import {
   getChatPersona, setChatPersona,
   getChatDraft, setChatDraft, getUserMessageContents,
   setChatLastUsage, getChatLastUsage, clearChatLastUsage,
-  createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
-  setProjectVerificationCommand,
+  getAllProjects,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
-  getCheckpoints, getLastCheckpoint, getSnapshotsAfter, getSnapshotsForCheckpoint, getContextSnapshot,
-  deleteCheckpointsAfter, pruneOldCheckpoints, deleteMessagesAfter,
-  saveRewindHistory, getRewindHistory, deleteRewindHistory, deleteMessageById,
-  getLastRewindMessage,
-  saveNamedSnapshot, getNamedSnapshots,
+  getCheckpoints, pruneOldCheckpoints, deleteMessageById,
   logAgentAction,
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
-import { saveMemoryItem, searchAllSources, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit } from '../../core/memory/MemoryStore'
+import { saveMemoryItem, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit } from '../../core/memory/MemoryStore'
 import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } from '../../core/db/notes'
 
-import { onCompactionTrigger, extractAndSaveFacts } from '../../core/memory/extractor'
+import { onCompactionTrigger } from '../../core/memory/extractor'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats, getProjectGraph, formatGraphForAI } from '../../core/memory/graphStore'
-import { extractAndSaveOutcomes } from '../../core/memory/outcomeExtractor'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
-import { getToolSchemas, analyzeProject, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
+import { getToolSchemas, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
 import { extractFinalPlan } from '../../shared/planParser'
 import { IPC_EVENTS } from '../../shared/constants'
-import { getNotificationManager } from '../NotificationManager'
-import { getActivityManager } from '../ActivityManager'
+import { getNotificationManager } from '../managers/NotificationManager'
+import { getActivityManager } from '../managers/ActivityManager'
 
-// ── Глобальные callback Maps для confirm/question ──────────────────────
-// NotificationManager (permission/ask_user из overlay) вызывает resolveConfirm /
-// resolveQuestion напрямую — тот же main процесс, без IPC round-trip.
-// ipcMain.once (из главного окна AgentConfirmDialog / QuestionPanel) тоже
-// резолвит через эти Map — двойной путь, но callback сработает только один раз.
-const confirmCallbacks = new Map<string, (approved: boolean) => void>()
-const questionCallbacks = new Map<string, (answers: import('../../shared/types').QuestionAnswer[]) => void>()
-
-export function resolveConfirm(reqId: string, approved: boolean): void {
-  const cb = confirmCallbacks.get(reqId)
-  if (cb) {
-    confirmCallbacks.delete(reqId)
-    cb(approved)
-  }
-}
-
-export function resolveQuestion(reqId: string, answers: import('../../shared/types').QuestionAnswer[]): void {
-  const cb = questionCallbacks.get(reqId)
-  if (cb) {
-    questionCallbacks.delete(reqId)
-    cb(answers)
-  }
-}
 import { v4 as uuid } from 'uuid'
 import {
   applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokens,
@@ -75,193 +46,26 @@ import {
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getCatalogModel, isCatalogReady } from '../../core/tokens/modelCatalog'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
-import { stopWatching as stopFastContextWatch, setFastContextPaths, registerProjectWorkdir } from '../../core/context/fastContextWatcher'
+import { setFastContextPaths } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import { existsSync } from 'fs'
-import { ptyManager, type ShellType } from '../PtyManager'
+import { ptyManager, type ShellType } from '../managers/PtyManager'
 import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult } from '../../shared/types'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
-import { messageToContextMessages, formatTodoForContext } from './chatContextHelpers'
+import { messageToContextMessages } from './chatContextHelpers'
 import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
-
-/**
- * Состояние одного активного запуска chat:send.
- *
- * Раньше эти буферы были module-scoped и разделялись между ВСЕМИ вызовами
- * chat:send — из-за этого новый send обнулял буферы (chat.ipc.ts:165-168)
- * ДО того, как убивал старый воркер (184-188), и весь накопленный старым
- * прогоном контекст терялся безвозвратно (worker.terminate() рвёт поток
- * мгновенно, единственная точка персистентности — sendDone → saveMessage).
- *
- * Теперь каждый запуск держит свой собственный экземпляр ActiveRun, а
- * module-level `activeRuns` — это Map по chatId. Несколько чатов могут
- * работать параллельно, каждый со своим воркером и буферами. В пределах
- * одного chatId запуски сериализуются через chatQueues (FIFO).
- */
-interface ActiveRun {
-  worker: Worker
-  chatId: string
-  msgId: string
-  startedAt: number
-  bufferedText: string
-  bufferedThinking: string
-  bufferedThinkingMs?: number
-  bufferedSteps: unknown[]
-  bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
-  bufferedAgentStatus: string | null
-  bufferedRateLimitSec: number
-  bufferedRetry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
-  doneSent: boolean
-  sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[], todo?: unknown[], fileSnapshots?: Array<{ path: string; contentBefore: string | null }>, usage?: { promptTokens?: number; completionTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }) => void
-  // ── Реконструкция итераций (зеркало ai-worker.ts:113-125) ──
-  // Раньше bufferedIters был всегда [] — main не группировал шаги в итерации,
-  // полагаясь на worker.collectedIters в сообщении 'done'. Но при stop/exit/
-  // error воркер не успевает отправить collectedIters, и sendDone сохранял
-  // сообщение без iterations → все тулы сливались в одну кучу, а текст
-  // рендерился отдельным блоком. Также chat:getLiveState возвращал [] → при
-  // возврате в чат во время стриминга тулы теряли позиции. Теперь main сам
-  // реконструирует iters из потоковых событий (token/step/thinking).
-  pendingTextAfter: string
-  pendingThinking: string
-  pendingThinkingMs?: number
-  // ── UI-батчинг токенов ──
-  // Раньше каждый LLM-токен летел отдельным IPC-событием (50-200/сек на
-  // быстрых моделях) — structured-clone + dispatch на каждый. Рендерер всё
-  // равно буферизует с флешем 50мс, поэтому батчим симметрично: копим в
-  // uiTokenBuf/uiThinkingBuf и шлём пачкой раз в UI_FLUSH_MS.
-  uiTokenBuf: string
-  uiThinkingBuf: string
-  uiFlushTimer: ReturnType<typeof setTimeout> | null
-  currentIterTextBefore: string
-  currentIterSteps: unknown[]
-  currentIterThinking: string
-  currentIterThinkingMs?: number
-  closedIters: unknown[]
-  // Фаза 4: кэш args tool_call'ов по callId — для логирования в agent_logs
-  // при получении tool_result. tool_result не содержит args (они в tool_call),
-  // но для outcome-extraction важен контекст "что пытались сделать".
-  toolCallArgsCache: Map<string, { toolName: string; args: Record<string, unknown> }>
-  // Результат обработки вложений (processAttachmentsAndStream) — сохраняется
-  // в assistantMsg через sendDone для отображения AttachmentProcessingBlock.
-  attachmentResult: AttachmentProcessingResult | null
-  // imageParts для прямой передачи в основную модель (vision-capable)
-  imageParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>
-  // AbortController для прерывания обработки вложений (processAttachmentsAndStream)
-  // при chat:stop — воркер ещё не создан, terminate() не помогает.
-  attachmentAbort?: AbortController
-}
-
-const activeRuns = new Map<string, ActiveRun>()
-// Последний активный chatId (renderer шлёт chat:setActive). Spotlight-окно
-// спрашивает chat:getActive чтобы предложить "спросить в текущем чате".
-let lastActiveChatId: string | null = null
-// AbortController-ы для отмены /compact. Один на chatId — компакция и
-// chat:send взаимоисключающи (chat:compact отклоняет если activeRuns.has).
-// Используется chat:compact:cancel чтобы прервать LLM-стрим резюме БЕЗ
-// применения частичного/пустого результата к чату.
-const compactRuns = new Map<string, AbortController>()
-// Метаданные активного запуска для UI очереди (preview/userMsgId/startedAt).
-// Дублирует часть ActiveRun, но хранится отдельно — т.к. ActiveRun содержит
-// тяжёлые буферы токенов/шагов, а meta нужна для лёгкого снапшота в renderer.
-const activeRunMeta = new Map<string, QueueItemMeta>()
-
-// FIFO-очередь запусков на один chatId. Новый chat:send в чат, где уже
-// работает воркер, ставится в очередь и стартует после завершения старого.
-// Каждый элемент хранит meta (queueId/msgId/preview/...) для отображения
-// в UI панели очереди и управления (cancel/reorder/remove).
-interface QueuedSend {
-  run: () => Promise<void>
-  meta: QueueItemMeta
-}
-const chatQueues = new Map<string, Array<QueuedSend>>()
-
-// Фаза 3: Idle-timer для memory extraction. После каждого chat:send
-// ставим setTimeout на 10 минут — если за это время не было нового
-// сообщения в этом чате, запускаем LLM-extract фактов из последнего
-// turn'а. Сбрасывается при новом chat:send. Map<chatId, {timer, params}>.
-const IDLE_EXTRACT_DELAY_MS = 10 * 60 * 1000 // 10 минут
-interface IdleExtractPending {
-  timer: NodeJS.Timeout
-  chatId: string
-  userMessage: string
-  assistantMessage: string
-  projectId?: string
-}
-const idleExtractTimers = new Map<string, IdleExtractPending>()
-
-function scheduleIdleExtraction(
-  store: Store,
-  chatId: string,
-  userMessage: string,
-  assistantMessage: string,
-  projectId?: string,
-): void {
-  // Сбрасываем предыдущий таймер если был
-  const existing = idleExtractTimers.get(chatId)
-  if (existing) {
-    clearTimeout(existing.timer)
-  }
-
-  // Skip-условия (дублирование extractor.ts, но без LLM-вызова — дешевле)
-  if (userMessage.trim().length < 20 || userMessage.startsWith('/')) return
-
-  const timer = setTimeout(async () => {
-    idleExtractTimers.delete(chatId)
-    try {
-      const result = await extractAndSaveFacts(store, {
-        chatId,
-        userMessage,
-        assistantMessage,
-        projectId,
-      })
-      log('[chat] idle memory extraction: chatId=%s extracted=%d', chatId, result.extracted)
-      // Фаза 4: outcome-extraction из agent_logs (параллельно, не блокирует)
-      extractAndSaveOutcomes(store, { chatId, projectId })
-        .then(r => log('[chat] idle outcome extraction: chatId=%s extracted=%d', chatId, r.extracted))
-        .catch(e => log('[chat] idle outcome extraction failed: %s', (e as Error).message))
-    } catch (e) {
-      log('[chat] idle memory extraction failed: %s', (e as Error).message)
-    }
-  }, IDLE_EXTRACT_DELAY_MS)
-
-  // unref — таймер не держит процесс alive при выходе
-  if (typeof timer.unref === 'function') timer.unref()
-
-  idleExtractTimers.set(chatId, { timer, chatId, userMessage, assistantMessage, projectId })
-}
-
-function cancelIdleExtraction(chatId: string): void {
-  const existing = idleExtractTimers.get(chatId)
-  if (existing) {
-    clearTimeout(existing.timer)
-    idleExtractTimers.delete(chatId)
-  }
-}
-
-function emitRunStatus(
-  win: BrowserWindow | null,
-  chatId: string,
-  status: 'running' | 'done' | 'error' | 'cancelled' | 'queued',
-  msgId?: string,
-  error?: string,
-) {
-  win?.webContents.send(IPC_EVENTS.CHAT_RUN_STATUS, { chatId, status, msgId, error, ts: Date.now() })
-  // Форвард в ActivityManager (overlay-информер активности)
-  getActivityManager()?.onRunStatus({ chatId, status, msgId, error })
-}
-
-/** Хелпер: получить заголовок чата для уведомления (fallback на "Чат") */
-function getChatTitleForNotif(chatId: string): string {
-  try {
-    const chat = getAllChats().find(c => c.id === chatId)
-    return chat?.title || 'Чат'
-  } catch {
-    return 'Чат'
-  }
-}
+import {
+  confirmCallbacks, questionCallbacks,
+  activeRuns, lastActiveChatId, setLastActiveChatId, compactRuns, activeRunMeta,
+  chatQueues, scheduleIdleExtraction, cancelIdleExtraction, emitRunStatus, getChatTitleForNotif,
+  type ActiveRun, type QueuedSend,
+} from './chatShared'
+import { registerProjectsIPC } from './projects.ipc'
+import { registerCheckpointIPC } from './chatCheckpoint.ipc'
+import { registerForkIPC } from './chatFork.ipc'
 
 /**
  * Эмитит снапшот текущей очереди chatId для UI (список ожидающих запросов).
@@ -3023,86 +2827,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     return { userMsg, assistantMsgId }
   }
 
-  // ── Проекты (рабочие директории) ────────────────────────────────────
-  // Проект = именованная привязка к папке + зафиксированный при создании
-  // контекст (analyzeProject). Чаты создаются внутри проекта и наследуют
-  // его workdir. Пикер папки теперь часть создания проекта, а не чата.
-
-  ipcMain.handle('projects:pickWorkdir', async () => {
-    const win = mainWindow.getWindow()
-    const result = await dialog.showOpenDialog(win ?? new BrowserWindow(), {
-      properties: ['openDirectory'],
-      title: 'Выберите папку проекта',
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
-  })
-
-  // Создание НОВОЙ пустой папки для проекта. Используем showSaveDialog, чтобы
-  // пользователь мог задать имя папки и выбрать родительский каталог; затем
-  // физически создаём каталог через mkdirSync. Если каталог уже существует и
-  // не пуст — отказываемся, чтобы не превращать «пустой проект» в скан
-  // существующего содержимого.
-  ipcMain.handle('projects:pickNewWorkdir', async () => {
-    const win = mainWindow.getWindow()
-    const result = await dialog.showSaveDialog(win ?? new BrowserWindow(), {
-      title: 'Создать папку для нового проекта',
-      buttonLabel: 'Создать проект',
-      defaultPath: 'new-project',
-      properties: ['createDirectory'],
-    })
-    if (result.canceled || !result.filePath) return null
-    try {
-      const fs = require('fs') // require: нативный import() не работает в V8-байткоде
-      if (fs.existsSync(result.filePath)) {
-        const entries = fs.readdirSync(result.filePath)
-        if (entries.length > 0) {
-          log('[projects:pickNewWorkdir] dir not empty, abort: %s', result.filePath)
-          return null
-        }
-      } else {
-        fs.mkdirSync(result.filePath, { recursive: true })
-      }
-    } catch (e) {
-      log('[projects:pickNewWorkdir] mkdir failed: %s', (e as Error).message)
-      return null
-    }
-    return result.filePath
-  })
-
-  ipcMain.handle('projects:create', async (_, workdir: string) => {
-    // Если проект с таким workdir уже существует — createProject вернёт его
-    // (UNIQUE constraint). Скан запускаем только если project_context пуст.
-    const existing = getAllProjects().find(p => p.workdir === workdir)
-    if (existing && existing.projectContext) {
-      // Регистрируем workdir — watcher стартует при активации проекта (setActiveProject).
-      registerProjectWorkdir(existing.id, existing.workdir)
-      return existing
-    }
-    let projectContext: string | undefined
-    try {
-      const scan = await analyzeProject(workdir)
-      if (scan.success && scan.output) projectContext = scan.output
-      else log('[projects:create] analyzeProject не удался для workdir=%s: %s', workdir, scan.error ?? 'no output')
-    } catch (e) {
-      log('[projects:create] analyzeProject exception для workdir=%s: %s', workdir, (e as Error).message)
-    }
-    const project = createProject(workdir, projectContext)
-    // Регистрируем workdir нового проекта — watcher стартует при активации.
-    registerProjectWorkdir(project.id, project.workdir)
-    return project
-  })
-
-  ipcMain.handle('projects:getAll', () => getAllProjects())
-  ipcMain.handle('projects:rename', (_, id: string, name: string) => renameProject(id, name))
-  ipcMain.handle('projects:delete', async (_, id: string, deleteChats: boolean) => {
-    // Останавливаем fast context watcher перед удалением проекта
-    try { await stopFastContextWatch(id) } catch { /* watcher опционален */ }
-    deleteProject(id, deleteChats)
-  })
-  ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))
-  ipcMain.handle('projects:touch', (_, id: string) => touchProject(id))
-  ipcMain.handle('projects:setVerificationCommand', (_, id: string, command: string | null) => setProjectVerificationCommand(id, command))
+  // ── Проекты (рабочие директории) — вынесены в projects.ipc.ts ────────
+  registerProjectsIPC(mainWindow)
 
   ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string) => {
     return createChat(isIncognito, mode, projectId)
@@ -3114,7 +2840,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // Spotlight (отдельное BrowserWindow) спрашивает chat:getActive чтобы
   // знать, в какой чат отправить быстрый запрос вместо создания нового.
   ipcMain.handle('chat:setActive', (_, chatId: string | null) => {
-    lastActiveChatId = chatId ?? null
+    setLastActiveChatId(chatId ?? null)
   })
   ipcMain.handle('chat:getActive', () => lastActiveChatId)
   // ВНИМАНИЕ: в renderer сообщения уходят ТОЛЬКО через slimMessagesForUI —
@@ -3628,454 +3354,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   ipcMain.handle('chat:duplicate', (_, chatId: string) => duplicateChat(chatId))
   ipcMain.handle('chat:export', (_, chatId: string, format: 'txt' | 'md') => exportChat(chatId, format))
 
-  // === CHECKPOINT / REWIND ===
-
-  // Возвращает таймлайн всех чекпоинтов чата (для правой панели "Сессия").
-  ipcMain.handle('chat:getSessionTimeline', (_, chatId: string) => {
-    try { return getCheckpoints(chatId) } catch { return [] }
-  })
-
-  // Кол-во изменённых файлов в последнем turn'е — для badge-счётчика на иконке
-  // правой панели в TitleBar.
-  ipcMain.handle('chat:getLastTurnFilesChanged', (_, chatId: string) => {
-    try { return getLastCheckpoint(chatId)?.filesChanged ?? 0 } catch { return 0 }
-  })
-
-  // ── Изменения последнего запроса (ChangesBadge над инпутом) ──────────────
-  // Возвращает per-file added/deleted для последнего turn'а с правками.
-  // Парсит toolSteps assistant-сообщения (diff-строки), агрегирует по path.
-  ipcMain.handle('chat:getLastTurnChanges', (_, chatId: string) => {
-    try {
-      const cp = getLastCheckpoint(chatId)
-      if (!cp || cp.filesChanged === 0 || !cp.assistantMessageId) return null
-      const messages = getMessages(chatId) as Array<{
-        id: string; toolSteps?: Array<{ type: string; diff?: string; toolName?: string; toolArgs?: Record<string, unknown> }>
-      }>
-      const assistantMsg = messages.find(m => m.id === cp.assistantMessageId)
-      if (!assistantMsg?.toolSteps) return null
-
-      const fileMap = new Map<string, { added: number; deleted: number }>()
-      for (const step of assistantMsg.toolSteps) {
-        if (step.type !== 'tool_result' || !step.diff) continue
-        // Извлекаем path из +++ строки, fallback — toolArgs.path
-        const pathMatch = step.diff.match(/^\+\+\+\s+(.+)$/m)
-        let filePath = pathMatch?.[1]?.trim() ?? (step.toolArgs?.path as string | undefined)
-        if (!filePath) continue
-        // Считаем + и - строки (пропуская +++/--- заголовки)
-        let added = 0, deleted = 0
-        for (const line of step.diff.split('\n')) {
-          if (line.startsWith('+++') || line.startsWith('---')) continue
-          if (line.startsWith('+')) added++
-          else if (line.startsWith('-')) deleted++
-        }
-        const existing = fileMap.get(filePath)
-        if (existing) { existing.added += added; existing.deleted += deleted }
-        else fileMap.set(filePath, { added, deleted })
-      }
-      if (fileMap.size === 0) return null
-      const files = Array.from(fileMap.entries()).map(([path, v]) => ({ path, added: v.added, deleted: v.deleted }))
-      const totalAdded = files.reduce((s, f) => s + f.added, 0)
-      const totalDeleted = files.reduce((s, f) => s + f.deleted, 0)
-      return {
-        files, totalAdded, totalDeleted,
-        userMessageId: cp.userMessageId,
-        assistantMessageId: cp.assistantMessageId,
-      }
-    } catch { return null }
-  })
-
-  // ── Undo правок файлов последнего turn'а (БЕЗ удаления сообщений) ────────
-  // Восстанавливает файлы из file_snapshots последнего checkpoint'а.
-  // contentBefore = null → файл был создан → удаляем. Иначе → перезаписываем.
-  ipcMain.handle('chat:undoLastTurnFiles', (_, chatId: string) => {
-    if (activeRuns.has(chatId)) {
-      return { error: 'Чат активен — дождитесь завершения ответа.' }
-    }
-    try {
-      const cp = getLastCheckpoint(chatId)
-      if (!cp || !cp.assistantMessageId) {
-        return { error: 'Нет изменений для отмены.' }
-      }
-      const snapshots = getSnapshotsForCheckpoint(chatId, cp.userMessageId)
-      if (snapshots.length === 0) {
-        return { error: 'Снапшоты файлов не найдены.' }
-      }
-      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
-      const { dirname } = require('path')
-      const restored: string[] = []
-      const failed: string[] = []
-      for (const snap of snapshots) {
-        try {
-          if (snap.contentBefore === null) {
-            if (existsSync(snap.path)) {
-              unlinkSync(snap.path)
-              restored.push(snap.path)
-            }
-          } else {
-            try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
-            writeFileSync(snap.path, snap.contentBefore, 'utf-8')
-            restored.push(snap.path)
-          }
-        } catch (e) {
-          failed.push(`${snap.path}: ${(e as Error).message}`)
-        }
-      }
-      const win = BrowserWindow.getAllWindows()[0] ?? null
-      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
-      log('[chat:undoLastTurnFiles] chatId=%s restored=%d failed=%d', chatId, restored.length, failed.length)
-      return { restored: restored.length, failed }
-    } catch (e) {
-      return { error: (e as Error).message }
-    }
-  })
-
-  // ── Undo одного файла из последнего turn'а ──────────────────────────────
-  // Восстанавливает один файл из file_snapshots последнего checkpoint'а.
-  ipcMain.handle('chat:undoFile', (_, chatId: string, filePath: string) => {
-    if (activeRuns.has(chatId)) {
-      return { error: 'Чат активен — дождитесь завершения ответа.' }
-    }
-    try {
-      const cp = getLastCheckpoint(chatId)
-      if (!cp || !cp.assistantMessageId) {
-        return { error: 'Нет изменений для отмены.' }
-      }
-      const snapshots = getSnapshotsForCheckpoint(chatId, cp.userMessageId)
-      const snap = snapshots.find(s => s.path === filePath)
-      if (!snap) {
-        return { error: 'Файл не найден в снапшотах этого turn\'а.' }
-      }
-      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
-      const { dirname } = require('path')
-      if (snap.contentBefore === null) {
-        if (existsSync(snap.path)) unlinkSync(snap.path)
-      } else {
-        try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
-        writeFileSync(snap.path, snap.contentBefore, 'utf-8')
-      }
-      const win = BrowserWindow.getAllWindows()[0] ?? null
-      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
-      log('[chat:undoFile] chatId=%s path=%s', chatId, filePath)
-      return { success: true }
-    } catch (e) {
-      return { success: false, error: (e as Error).message }
-    }
-  })
-
-  /**
-   * Откат сессии к указанному user-сообщению.
-   *
-   * Семантика: "вернуться к состоянию ПОСЛЕ этого turn'а" — user+assistant
-   * пара этого turn'а остаётся последними сообщениями, удаляется только всё
-   * что было позже. Файлы откатываются к концу этого turn'а (отменяются
-   * только правки последующих turn'ов). Контекст (working_memory, summary)
-   * восстанавливается из snapshot'а этого turn'а.
-   *
-   * Возвращает обновлённый массив сообщений чата (для обновления store в
-   * renderer) или { error } если откат невозможен.
-   */
-   ipcMain.handle('chat:rewindTo', async (_, chatId: string, userMessageId: string) => {
-    // Блокировка: нельзя откатывать пока чат активен (воркер работает).
-    if (activeRuns.has(chatId)) {
-      return { error: 'Чат активен — дождитесь завершения ответа перед откатом.' }
-    }
-
-    try {
-      // 1. Находим checkpoint для указанного user-сообщения.
-      const checkpoints = getCheckpoints(chatId)
-      const cp = checkpoints.find(c => c.userMessageId === userMessageId)
-      log('[chat:rewindTo] chatId=%s userMsgId=%s — checkpoints total=%d, found=%s, assistantMsgId=%s, createdAt=%d',
-        chatId, userMessageId, checkpoints.length, !!cp, cp?.assistantMessageId ?? 'null', cp?.createdAt ?? 0)
-      if (!cp) {
-        return { error: 'Чекпоинт для этого сообщения не найден (возможно, оно было до включения фичи отката).' }
-      }
-
-      // 2. Получаем file_snapshots всех turn'ов ПОСЛЕ указанного.
-      const snapshots = getSnapshotsAfter(chatId, userMessageId)
-      log('[chat:rewindTo] snapshots after checkpoint: %d', snapshots.length)
-
-      // REDO: сохраняем текущее состояние файлов (contentAfter) до отката —
-      // чтобы при отмене отката вернуть файлы обратно.
-      const { readFileSync, existsSync: pathExistsBefore } = require('fs') // require: нативный import() не работает в V8-байткоде
-      const fileChangesForRedo: Array<{ path: string; contentAfter: string | null }> = []
-      const seenPaths = new Set<string>()
-      for (const snap of snapshots) {
-        if (seenPaths.has(snap.path)) continue
-        seenPaths.add(snap.path)
-        try {
-          if (pathExistsBefore(snap.path)) {
-            fileChangesForRedo.push({ path: snap.path, contentAfter: readFileSync(snap.path, 'utf-8') })
-          } else {
-            fileChangesForRedo.push({ path: snap.path, contentAfter: null })
-          }
-        } catch {
-          fileChangesForRedo.push({ path: snap.path, contentAfter: null })
-        }
-      }
-
-      // 3. Восстанавливаем файлы в обратном порядке (последняя правка первой).
-      //    contentBefore = null → файл был создан later-turn'ом → удаляем.
-      //    Иначе → перезаписываем contentBefore.
-      const { writeFileSync, unlinkSync, existsSync: pathExists } = require('fs') // require: нативный import() не работает в V8-байткоде
-      const restoredFiles: string[] = []
-      const failedFiles: string[] = []
-      for (const snap of snapshots) {
-        try {
-          if (snap.contentBefore === null) {
-            // Файл был создан последующим turn'ом — удаляем.
-            if (pathExists(snap.path)) {
-              unlinkSync(snap.path)
-              restoredFiles.push(`удалён: ${snap.path}`)
-            }
-          } else {
-            // Перезаписываем содержимое до правки последующего turn'а.
-            const { dirname } = require('path') // require: нативный import() не работает в V8-байткоде
-            const { mkdirSync } = require('fs')
-            try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
-            writeFileSync(snap.path, snap.contentBefore, 'utf-8')
-            restoredFiles.push(`восстановлен: ${snap.path}`)
-          }
-        } catch (e) {
-          failedFiles.push(`${snap.path}: ${(e as Error).message}`)
-        }
-      }
-
-      // 4. Восстанавливаем контекст (working_memory + chat_summary) из
-      //    snapshot'а этого turn'а (post-turn состояние).
-      const ctxSnap = getContextSnapshot(chatId, userMessageId)
-      if (ctxSnap) {
-        if (ctxSnap.workingMemory !== null) setWorkingMemory(chatId, ctxSnap.workingMemory)
-        if (ctxSnap.chatSummary !== null) setChatSummary(chatId, ctxSnap.chatSummary)
-      }
-
-      // 5. Удаляем сообщения после этого turn'а.
-      //    Порог — createdAt assistant-сообщения этого turn'а (если найдено),
-      //    иначе createdAt самого checkpoint'а (чуть позже, но до следующего turn'а).
-      let deleteThreshold = cp.createdAt
-      let allMsgsBeforeDelete: Message[] = []
-      if (cp.assistantMessageId) {
-        allMsgsBeforeDelete = getMessages(chatId)
-        const assistantMsg = allMsgsBeforeDelete.find(m => m.id === cp.assistantMessageId)
-        if (assistantMsg) {
-          deleteThreshold = assistantMsg.createdAt
-          log('[chat:rewindTo] found assistant msg: id=%s createdAt=%d', assistantMsg.id, assistantMsg.createdAt)
-        } else {
-          log('[chat:rewindTo] assistant msg NOT FOUND in getMessages — using checkpoint createdAt=%d as threshold', cp.createdAt)
-        }
-      } else {
-        allMsgsBeforeDelete = getMessages(chatId)
-        log('[chat:rewindTo] assistantMessageId is null — using checkpoint createdAt=%d as threshold', cp.createdAt)
-      }
-
-      // REDO: сохраняем сообщения которые будут удалены (до удаления).
-      const msgsToDeleteForRedo = allMsgsBeforeDelete.filter(m => m.createdAt > deleteThreshold)
-
-      const msgsBeforeDelete = getMessageCount(chatId)
-      const deletedMessages = deleteMessagesAfter(chatId, deleteThreshold)
-      log('[chat:rewindTo] messages before=%d, deleted=%d (threshold=%d)', msgsBeforeDelete, deletedMessages, deleteThreshold)
-
-      // 6. Удаляем чекпоинты и снапшоты последующих turn'ов (они больше не валидны).
-      deleteCheckpointsAfter(chatId, userMessageId)
-
-      // 7. Вставляем синтетическое system-сообщение об откате.
-      const rewindMsg: Message = {
-        id: uuid(),
-        chatId,
-        role: 'system',
-        content: `[ОТКАТ к сообщению от ${new Date(cp.createdAt).toLocaleString('ru')}]\n` +
-          `Восстановлено файлов: ${restoredFiles.length}` +
-          (failedFiles.length > 0 ? `, не удалось: ${failedFiles.length}` : '') + '\n' +
-          `Удалено сообщений: ${deletedMessages}\n` +
-          (restoredFiles.length > 0 ? `Файлы:\n${restoredFiles.join('\n')}` : 'Файлы не изменялись.') +
-          (failedFiles.length > 0 ? `\nОшибки восстановления:\n${failedFiles.join('\n')}` : ''),
-        createdAt: Date.now(),
-        isPinned: 0,
-        slashCommand: { name: 'rewind', args: userMessageId },
-      }
-      saveMessage(rewindMsg)
-
-      // REDO: сохраняем redo-точку — можно отменить откат.
-      try {
-        saveRewindHistory(chatId, rewindMsg.id, msgsToDeleteForRedo, fileChangesForRedo, userMessageId)
-        log('[chat:rewindTo] redo history saved: rewindMsgId=%s, msgsToRestore=%d, filesToRestore=%d',
-          rewindMsg.id, msgsToDeleteForRedo.length, fileChangesForRedo.length)
-      } catch (e) {
-        log('[chat:rewindTo] redo history save FAILED: %s', (e as Error).message)
-      }
-
-      // 8. Уведомляем UI об откате.
-      const rewindWin = mainWindow.getWindow()
-      rewindWin?.webContents.send(IPC_EVENTS.CHAT_REWOUND, { chatId, userMessageId, rewindMessageId: rewindMsg.id })
-
-      log('[chat:rewindTo] chatId=%s userMsgId=%s: restored %d files, deleted %d messages',
-        chatId, userMessageId, restoredFiles.length, deletedMessages)
-
-      // 9. Возвращаем обновлённые сообщения для renderer (slim-копии).
-      return { messages: slimMessagesForUI(getMessages(chatId)) }
-    } catch (e) {
-      log('[chat:rewindTo] error chatId=%s: %s', chatId, (e as Error).message)
-      return { error: `Ошибка отката: ${(e as Error).message}` }
-    }
-  })
-
-  // ── Undo правок файлов любого checkpoint'а (правая панель «Сессия») ──────
-  // Восстанавливает файлы из file_snapshots указанного turn'а (по userMessageId).
-  ipcMain.handle('chat:undoCheckpointFiles', (_, chatId: string, userMessageId: string) => {
-    if (activeRuns.has(chatId)) {
-      return { error: 'Чат активен — дождитесь завершения ответа.' }
-    }
-    try {
-      const snapshots = getSnapshotsForCheckpoint(chatId, userMessageId)
-      if (snapshots.length === 0) {
-        return { error: 'Снапшоты файлов не найдены.' }
-      }
-      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
-      const { dirname } = require('path')
-      const restored: string[] = []
-      const failed: string[] = []
-      for (const snap of snapshots) {
-        try {
-          if (snap.contentBefore === null) {
-            if (existsSync(snap.path)) {
-              unlinkSync(snap.path)
-              restored.push(snap.path)
-            }
-          } else {
-            try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
-            writeFileSync(snap.path, snap.contentBefore, 'utf-8')
-            restored.push(snap.path)
-          }
-        } catch (e) {
-          failed.push(`${snap.path}: ${(e as Error).message}`)
-        }
-      }
-      const win = BrowserWindow.getAllWindows()[0] ?? null
-      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
-      log('[chat:undoCheckpointFiles] chatId=%s userMsgId=%s restored=%d failed=%d',
-        chatId, userMessageId, restored.length, failed.length)
-      return { restored: restored.length, failed }
-    } catch (e) {
-      return { error: (e as Error).message }
-    }
-  })
-
-  // ── Undo одного файла указанного checkpoint'а ───────────────────────────
-  ipcMain.handle('chat:undoCheckpointFile', (_, chatId: string, userMessageId: string, filePath: string) => {
-    if (activeRuns.has(chatId)) {
-      return { error: 'Чат активен — дождитесь завершения ответа.' }
-    }
-    try {
-      const snapshots = getSnapshotsForCheckpoint(chatId, userMessageId)
-      const snap = snapshots.find(s => s.path === filePath)
-      if (!snap) {
-        return { error: 'Файл не найден в снапшотах этого turn\'а.' }
-      }
-      const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
-      const { dirname } = require('path')
-      if (snap.contentBefore === null) {
-        if (existsSync(snap.path)) unlinkSync(snap.path)
-      } else {
-        try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
-        writeFileSync(snap.path, snap.contentBefore, 'utf-8')
-      }
-      const win = BrowserWindow.getAllWindows()[0] ?? null
-      win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
-      log('[chat:undoCheckpointFile] chatId=%s userMsgId=%s path=%s', chatId, userMessageId, filePath)
-      return { success: true }
-    } catch (e) {
-      return { success: false, error: (e as Error).message }
-    }
-  })
-
-  // ── Последнее rewind-сообщение (для redo-баннера в панели «Сессия») ────
-  ipcMain.handle('chat:getLastRewind', (_, chatId: string) => {
-    try {
-      const row = getLastRewindMessage(chatId)
-      if (!row) return null
-      return { rewindMessageId: row.id, createdAt: row.createdAt }
-    } catch {
-      return null
-    }
-  })
-
-  /**
-   * Проверяет, доступна ли отмена отката для данного system-сообщения.
-   * Возвращает true если в rewind_history есть запись с этим rewindMessageId.
-   */
-  ipcMain.handle('chat:canRedo', (_, chatId: string, rewindMessageId: string) => {
-    try {
-      return getRewindHistory(chatId, rewindMessageId) !== null
-    } catch {
-      return false
-    }
-  })
-
-  /**
-   * Отмена отката (redo) — возвращает сообщения и файлы, удалённые при rewind.
-   * Принимает id system-сообщения отката (rewindMessageId) — по нему находим
-   * redo-точку в rewind_history.
-   */
-  ipcMain.handle('chat:redo', async (_, chatId: string, rewindMessageId: string) => {
-    if (activeRuns.has(chatId)) {
-      return { error: 'Чат активен — дождитесь завершения ответа.' }
-    }
-
-    try {
-      const entry = getRewindHistory(chatId, rewindMessageId)
-      if (!entry) {
-        return { error: 'Точка отката не найдена — возможно, она уже отменена или устарела.' }
-      }
-
-      log('[chat:redo] chatId=%s rewindMsgId=%s — msgsToRestore=%d, filesToRestore=%d',
-        chatId, rewindMessageId, entry.deletedMessages.length, entry.fileChanges.length)
-
-      // 1. Восстанавливаем файлы — пишем contentAfter (состояние до отката).
-      const { writeFileSync, unlinkSync, existsSync: pathExists, mkdirSync } = require('fs') // require: нативный import() не работает в V8-байткоде
-      const { dirname } = require('path')
-      const restoredFiles: string[] = []
-      const failedFiles: string[] = []
-      for (const fc of entry.fileChanges) {
-        try {
-          if (fc.contentAfter === null) {
-            // Файла не было до отката (был создан, потом удалён при rewind) → удаляем.
-            if (pathExists(fc.path)) {
-              unlinkSync(fc.path)
-              restoredFiles.push(`удалён: ${fc.path}`)
-            }
-          } else {
-            // Возвращаем содержимое которое было до отката.
-            try { mkdirSync(dirname(fc.path), { recursive: true }) } catch { /* ok */ }
-            writeFileSync(fc.path, fc.contentAfter, 'utf-8')
-            restoredFiles.push(`восстановлен: ${fc.path}`)
-          }
-        } catch (e) {
-          failedFiles.push(`${fc.path}: ${(e as Error).message}`)
-        }
-      }
-
-      // 2. Удаляем system-сообщение об откате (оно больше не актуально).
-      deleteMessageById(rewindMessageId)
-
-      // 3. Восстанавливаем удалённые сообщения.
-      for (const msg of entry.deletedMessages) {
-        try { saveMessage(msg) } catch { /* может существовать — ok */ }
-      }
-
-      // 4. Удаляем redo-точку (одноразовая).
-      deleteRewindHistory(chatId, rewindMessageId)
-
-      // 5. Уведомляем UI.
-      const redoWin = mainWindow.getWindow()
-      redoWin?.webContents.send(IPC_EVENTS.CHAT_REWOUND, { chatId, userMessageId: entry.restoredCheckpointUserMsgId, isRedo: true })
-
-      log('[chat:redo] done: restored %d files, %d messages', restoredFiles.length, entry.deletedMessages.length)
-
-      return { messages: slimMessagesForUI(getMessages(chatId)) }
-    } catch (e) {
-      log('[chat:redo] error chatId=%s: %s', chatId, (e as Error).message)
-      return { error: `Ошибка отмены отката: ${(e as Error).message}` }
-    }
-  })
+  // === CHECKPOINT / REWIND — вынесены в chatCheckpoint.ipc.ts ===
+  registerCheckpointIPC(mainWindow)
 
   /**
    * chat:compact — ручное сжатие контекста чата через slash-команду /compact.
@@ -4350,130 +3630,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     return { cancelled: true }
   })
 
-  // === /fork — дублировать чат с этого места ==================================
-  //
-  // Создаёт новый чат, копируя ВСЁ содержимое текущего: сообщения, working
-  // memory, summary, project_id, workdir, mode. Пользователь получает точную
-  // копию чата на текущий момент и может идти в другом направлении ("what-if"
-  // эксперименты без потери оригинала).
-  //
-  // Возвращает { chatId, messages } нового чата (или { error }).
-  ipcMain.handle('chat:fork', async (_, sourceChatId: string, title?: string) => {
-    try {
-      const sourceMessages = getMessages(sourceChatId)
-      if (sourceMessages.length === 0) {
-        return { error: 'Исходный чат пуст — нечего форкать.' }
-      }
+  registerForkIPC()
 
-      // Читаем метаданные исходного чата
-      const sourceChat = getAllChats().find(c => c.id === sourceChatId)
-      if (!sourceChat) {
-        return { error: 'Исходный чат не найден.' }
-      }
-
-      // Создаём новый чат с теми же параметрами (не инкогнито, тот же режим/проект)
-      const forkedChat = createChat(false, sourceChat.mode, sourceChat.projectId)
-      const forkedChatId = forkedChat.id
-      const forkTitle = (title && title.trim()) || `${sourceChat.title} (fork)`
-      renameChat(forkedChatId, forkTitle)
-
-      // Копируем сообщения. saveMessage проставит новый chatId — но чтобы
-      // сохранить порядок и структуру, копируем как есть с новыми id.
-      // createdAt сохраняем оригинальные — порядок в БД (ORDER BY created_at)
-      // остаётся тем же. toolSteps/iterations/thinking/todo/slashCommand тоже
-      // копируем (serialized через JSON в saveMessage).
-      for (const msg of sourceMessages) {
-        const newMsg: Message = {
-          ...msg,
-          id: uuid(), // новый id, чтобы не было PK-конфликта
-          chatId: forkedChatId,
-        }
-        saveMessage(newMsg)
-      }
-
-      // Копируем working memory и summary
-      try {
-        const wm = getWorkingMemory(sourceChatId)
-        if (wm) setWorkingMemory(forkedChatId, wm)
-      } catch { /* ok */ }
-      try {
-        const summary = getChatSummary(sourceChatId)
-        if (summary) setChatSummary(forkedChatId, summary)
-      } catch { /* ok */ }
-
-      log('[chat:fork] source=%s → forked=%s, messages=%d, title=%s',
-        sourceChatId, forkedChatId, sourceMessages.length, forkTitle)
-
-      return {
-        chatId: forkedChatId,
-        messages: slimMessagesForUI(getMessages(forkedChatId)),
-        title: forkTitle,
-      }
-    } catch (e) {
-      log('[chat:fork] error source=%s: %s', sourceChatId, (e as Error).message)
-      return { error: `Ошибка форка: ${(e as Error).message}` }
-    }
-  })
-
-  // === /snapshot <name> — именованный снапшот =================================
-  //
-  // Создаёт именованную точку отката на основе последнего чекпоинта чата.
-  // Именованные снапшоты восстанавливаются через /restore <name> или /restore
-  // (с пикером). В отличие от обычных auto-checkpoint'ов на каждый turn,
-  // именованные явно создаются пользователем и имеют осмысленное имя.
-  //
-  // Возвращает { snapshot } (с id, name, createdAt) или { error }.
-  ipcMain.handle('chat:snapshot:create', (_, chatId: string, name: string) => {
-    try {
-      if (activeRuns.has(chatId)) {
-        return { error: 'Чат активен — дождитесь завершения ответа перед снапшотом.' }
-      }
-      const cleanName = (name || '').trim()
-      if (!cleanName) {
-        return { error: 'Укажите имя снапшота: /snapshot my-feature' }
-      }
-      if (cleanName.length > 80) {
-        return { error: 'Имя снапшота слишком длинное (макс. 80 символов).' }
-      }
-      const snap = saveNamedSnapshot(chatId, cleanName)
-      if (!snap) {
-        return { error: 'В чате ещё нет точек отката — отправьте хотя бы одно сообщение перед снапшотом.' }
-      }
-      log('[chat:snapshot:create] chatId=%s name=%s id=%s', chatId, cleanName, snap.id)
-      return { snapshot: snap }
-    } catch (e) {
-      log('[chat:snapshot:create] error chatId=%s: %s', chatId, (e as Error).message)
-      return { error: `Ошибка создания снапшота: ${(e as Error).message}` }
-    }
-  })
-
-  // === /restore — список именованных снапшотов для пикера ====================
-  //
-  // Возвращает массив именованных снапшотов чата (новые первыми) для UI-пикера.
-  // Само восстановление идёт через существующий chat:rewindTo (по userMessageId).
-  ipcMain.handle('chat:snapshot:list', (_, chatId: string) => {
-    try {
-      return getNamedSnapshots(chatId)
-    } catch (e) {
-      log('[chat:snapshot:list] error chatId=%s: %s', chatId, (e as Error).message)
-      return []
-    }
-  })
-
-  // ── Multi-source history search for Spotlight ─────────────────────────
-  // Объединяет messages / chat_summaries / agent_logs / pinned / memory_items
-  // через searchAllSources (FTS5 + LIKE + TF-IDF). Используется Spotlight-окном
-  // для поиска по истории чатов. projectId не передаётся — поиск глобальный.
-  ipcMain.handle('chat:searchHistory', async (_, params: { query: string; limit?: number }) => {
-    const q = (params.query ?? '').trim()
-    if (!q) return []
-    try {
-      return await searchAllSources({ query: q, limit: params.limit ?? 12 })
-    } catch (e) {
-      log('[chat:searchHistory] error: %s', (e as Error).message)
-      return []
-    }
-  })
 }
 
 async function autoNameChat(chatId: string, firstMessage: string, store: Store, win?: BrowserWindow | null): Promise<void> {

@@ -1,5 +1,6 @@
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import type { QuestionSpec, QuestionAnswer } from '../../shared/types'
+import type Store from 'electron-store'
 
 export interface AgentStep {
   // tool_call_pending — модель только начала генерировать этот вызов (имя
@@ -262,4 +263,20 @@ export type ToolRound = {
   assistantIndex: number
   toolIndices: number[]
   toolNames: string[]
+}
+
+/**
+ * Контекст, который Agent передаёт в ToolDispatcher — всё состояние, к
+ * которому обращается executeTool. Dispatcher владеет собственными mutable
+ * кэшами (readFileCache, fileCache, readFileMaxLine, filesReadInSession,
+ * fileMap, lastShellCwd, commandsRun) и мутирует их при выполнении тулов.
+ */
+export interface ToolDispatcherContext {
+  store: Store
+  workdir?: string
+  projectId?: string
+  chatId?: string
+  gatewayToken?: string
+  gatewayApiUrl?: string
+  onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
 }
