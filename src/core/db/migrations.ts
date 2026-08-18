@@ -473,6 +473,11 @@ export function runMigrations(db: Database.Database): void {
     if (!cols.find(c => c.name === 'embedding')) {
       db.exec(`ALTER TABLE fast_context_index ADD COLUMN embedding BLOB`)
     }
+    // content_hash — быстрый content hash (FNV-1a первых 4KB + size) для точного
+    // детекта изменений вместо mtime+size (mtime может меняться без content change).
+    if (!cols.find(c => c.name === 'content_hash')) {
+      db.exec(`ALTER TABLE fast_context_index ADD COLUMN content_hash INTEGER NOT NULL DEFAULT 0`)
+    }
   }
 
   // Автомиграция: для каждого уникального workdir из chats создаём проект

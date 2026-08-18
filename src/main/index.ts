@@ -144,7 +144,20 @@ app.whenReady().then(async () => {
   // ── IPC (ДО загрузки URL в окна) ──────────────────────────────────
   // Регистрируем ВСЕ хендлеры до .create(), чтобы рендереры при монтировании
   // находили готовые хендлеры (убирает flood "No handler registered").
-  registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow, trayMenuWindow, notificationWindow })
+
+  // Горячие клавиши — создаём ДО registerAllIPC, чтобы IPC-хендлер
+  // settings:set мог вызвать hotkeyManager.reload() при смене биндингов.
+  // Окна уже созданы выше, callbacks безопасно ссылаются на них.
+  hotkeyManager = new HotkeyManager(store, {
+    toggleMain: () => mainWindow.toggle(),
+    showOverlay: () => overlayWindow.show(),
+    toggleVoice: () => voiceWindow.toggle(),
+    toggleSpotlight: () => spotlightWindow.toggle(),
+    quickQuestion: () => spotlightWindow.showQuick(),
+  })
+  hotkeyManager.registerAll()
+
+  registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow, trayMenuWindow, notificationWindow, hotkeyManager })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerVoiceIPC(store, () => mainWindow.getWindow())
@@ -253,16 +266,6 @@ app.whenReady().then(async () => {
     quit: () => app.quit(),
   }, trayMenuWindow)
   trayManager.init()
-
-  // Горячие клавиши
-  hotkeyManager = new HotkeyManager(store, {
-    toggleMain: () => mainWindow.toggle(),
-    showOverlay: () => overlayWindow.show(),
-    toggleVoice: () => voiceWindow.toggle(),
-    toggleSpotlight: () => spotlightWindow.toggle(),
-    quickQuestion: () => spotlightWindow.showQuick(),
-  })
-  hotkeyManager.registerAll()
 
   // Ensure updater.exe exists next to the client; download from website if missing.
   ensureUpdater().catch((e) => console.error('[updater] ensureUpdater failed:', e))

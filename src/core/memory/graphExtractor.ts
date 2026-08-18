@@ -17,7 +17,7 @@
 import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import { extractJsonFromLlmResponse } from '../context/fastContext/annotator'
-import { getFastContextEntries } from '../db/fastContextStore'
+import { getFastContextEntries, type FastContextEntry } from '../db/fastContextStore'
 import { getDB } from '../db/handle'
 import type { FileSymbols } from '../context/fastContext/symbols'
 import {
@@ -303,120 +303,190 @@ function extractConceptsHeuristic(
  * Используется при full rebuild и при incremental reindex.
  * Удаляет устаревшие file/symbol узлы (source_kind='fast_context'), которых
  * больше нет в fast_context_index.
+ *
+ * @param entries — опциональный подмножество записей для обработки (incremental).
+ *   Если не передан — берутся ВСЕ записи проекта из fast_context_index.
  */
-export function syncFromFastContext(projectId: string): { nodes: number; edges: number } {
+export function syncFromFastContext(
+  projectId: string,
+  entries?: FastContextEntry[],
+): { nodes: number; edges: number } {
+  const allEntries = entries ?? getFastContextEntries(projectId)
+
   let nodes = 0
   let edges = 0
 
-  const entries = getFastContextEntries(projectId)
-  const currentFilePaths = new Set<string>()
-
-  for (const entry of entries) {
-    currentFilePaths.add(entry.filePath)
-    const basename = entry.filePath.split(/[/\\]/).pop() ?? entry.filePath
-
-    // File node
-    upsertNode({
-      projectId,
-      type: 'file',
-      label: basename,
-      sourceKind: 'fast_context',
-      sourceId: entry.filePath,
-      metadata: {
-        path: entry.filePath,
-        lang: entry.lang,
-        rankedScore: entry.rankedScore,
-      },
-      weightBoost: Math.max(0.5, entry.rankedScore / 10),
-    })
-    nodes++
-
-    // Symbols
-    if (entry.symbolsJson) {
-      try {
-        const symbols = JSON.parse(entry.symbolsJson) as FileSymbols
-        for (const def of symbols.definitions) {
-          if (!def.name || def.name.length < 2) continue
-          upsertNode({
-            projectId,
-            type: 'symbol',
-            label: def.name,
-            sourceKind: 'fast_context',
-            sourceId: `${entry.filePath}:${def.lineStart}`,
-            metadata: {
-              file: entry.filePath,
-              kind: def.kind,
-              lineStart: def.lineStart,
-              lineEnd: def.lineEnd,
-              parentName: def.parentName,
-            },
-          })
-          nodes++
-
-          // Edge: file DEFINED_IN symbol (точнее: symbol DEFINED_IN file)
-          upsertEdge({
-            projectId,
-            fromType: 'symbol',
-            fromLabel: def.name,
-            toType: 'file',
-            toLabel: basename,
-            type: 'implemented_in',
-            fromSourceKind: 'fast_context',
-            toSourceKind: 'fast_context',
-            fromSourceId: `${entry.filePath}:${def.lineStart}`,
-            toSourceId: entry.filePath,
-          })
-          edges++
-        }
-
-        // Imports → IMPORTS edges (file → file, best-effort по basename)
-        for (const imp of symbols.imports ?? []) {
-          // imports[] содержат raw строки импортов — пытаемся извлечь basename
-          const importMatch = imp.match(/([\w-]+\.[a-z]{1,5})\b/i)
-          if (importMatch) {
-            const importedBasename = importMatch[1]
-            if (importedBasename !== basename) {
-              upsertEdge({
-                projectId,
-                fromType: 'file',
-                fromLabel: basename,
-                toType: 'file',
-                toLabel: importedBasename,
-                type: 'imports',
-                fromSourceKind: 'fast_context',
-                fromSourceId: entry.filePath,
-                metadata: { raw_import: imp },
-              })
-              edges++
-            }
-          }
-        }
-
-        // References → CALLS edges (file → symbol, best-effort по name)
-        for (const ref of symbols.references ?? []) {
-          if (ref.length < 4) continue
-          // Проверяем, есть ли такой symbol в индексе (best-effort)
-          // Не создаём узел — upsertEdge создаст если нужно
-          upsertEdge({
-            projectId,
-            fromType: 'file',
-            fromLabel: basename,
-            toType: 'symbol',
-            toLabel: ref,
-            type: 'calls',
-            fromSourceKind: 'fast_context',
-            fromSourceId: entry.filePath,
-            metadata: { reference: ref },
-          })
-          edges++
-        }
-      } catch { /* skip corrupted symbolsJson */ }
-    }
+  for (const entry of allEntries) {
+    const result = syncSingleEntry(projectId, entry, allEntries)
+    nodes += result.nodes
+    edges += result.edges
   }
 
   // Удаляем устаревшие file/symbol узлы (source_kind='fast_context'), которых
   // больше нет в currentFilePaths. Рёбра удалятся каскадно.
   // NOTE: это делает graphBuilder, не тут — чтобы избежать рекурсии.
+
+  return { nodes, edges }
+}
+
+/**
+ * Синхронизировать ОДНУ запись fast_context в graph (для incremental-обновлений).
+ * - file → file node
+ * - symbols → symbol nodes + DEFINED_IN edges (file → symbol)
+ * - imports → IMPORTS edges (file → file, best-effort по basename)
+ * - references → CALLS edges (file → symbol, best-effort по name)
+ *
+ * @param allEntries — полный список записей проекта. Нужен для резолвинга
+ *   imports/references в полном контексте (при incremental-синке changed файлов).
+ */
+export function syncSingleEntry(
+  projectId: string,
+  entry: FastContextEntry,
+  allEntries: FastContextEntry[],
+): { nodes: number; edges: number } {
+  let nodes = 0
+  let edges = 0
+
+  const basename = entry.filePath.split(/[/\\]/).pop() ?? entry.filePath
+
+  // Build basename → filePath map для резолвинга imports.
+  // allEntries содержит все записи проекта — нужен для точного резолвинга.
+  const basenameToPath = new Map<string, string>()
+  for (const e of allEntries) {
+    const base = e.filePath.split(/[/\\]/).pop() ?? e.filePath
+    const baseNoExt = base.replace(/\.[^.]+$/, '')
+    // Сохраняем оба варианта: с расширением и без
+    if (!basenameToPath.has(base)) basenameToPath.set(base, e.filePath)
+    if (!basenameToPath.has(baseNoExt)) basenameToPath.set(baseNoExt, e.filePath)
+  }
+
+  // File node
+  upsertNode({
+    projectId,
+    type: 'file',
+    label: basename,
+    sourceKind: 'fast_context',
+    sourceId: entry.filePath,
+    metadata: {
+      path: entry.filePath,
+      lang: entry.lang,
+      rankedScore: entry.rankedScore,
+    },
+    weightBoost: Math.max(0.5, entry.rankedScore / 10),
+  })
+  nodes++
+
+  // Symbols
+  if (entry.symbolsJson) {
+    try {
+      const symbols = JSON.parse(entry.symbolsJson) as FileSymbols
+      for (const def of symbols.definitions) {
+        if (!def.name || def.name.length < 2) continue
+        upsertNode({
+          projectId,
+          type: 'symbol',
+          label: def.name,
+          sourceKind: 'fast_context',
+          sourceId: `${entry.filePath}:${def.lineStart}`,
+          metadata: {
+            file: entry.filePath,
+            kind: def.kind,
+            lineStart: def.lineStart,
+            lineEnd: def.lineEnd,
+            parentName: def.parentName,
+          },
+        })
+        nodes++
+
+        // Edge: file DEFINED_IN symbol (точнее: symbol DEFINED_IN file)
+        upsertEdge({
+          projectId,
+          fromType: 'symbol',
+          fromLabel: def.name,
+          toType: 'file',
+          toLabel: basename,
+          type: 'implemented_in',
+          fromSourceKind: 'fast_context',
+          toSourceKind: 'fast_context',
+          fromSourceId: `${entry.filePath}:${def.lineStart}`,
+          toSourceId: entry.filePath,
+        })
+        edges++
+      }
+
+      // Imports → IMPORTS edges (file → file, proper resolution)
+      for (const imp of symbols.imports ?? []) {
+        // Извлекаем путь из import строки: from '...', require('...')
+        const pathMatch = imp.match(/['"]([^'"]+)['"]/)
+        if (!pathMatch) continue
+        const importPath = pathMatch[1]
+
+        // Резолвинг: пробуем несколько стратегий
+        // 1. Извлекаем basename из import path
+        const rawBase = importPath.split('/').pop() ?? importPath
+        // Убираем leading @ ~ . /
+        const cleanBase = rawBase.replace(/^[@~.]/, '').replace(/^\//, '')
+        // 2. Пробуем с расширением и без
+        const candidates = [cleanBase, cleanBase.replace(/\.[^.]+$/, '')]
+        let resolvedPath: string | null = null
+        for (const c of candidates) {
+          const found = basenameToPath.get(c)
+          if (found && found !== entry.filePath) {
+            resolvedPath = found
+            break
+          }
+        }
+        // 3. Fallback: старый метод — filename with extension в import string
+        if (!resolvedPath) {
+          const importMatch = imp.match(/([\w-]+\.[a-z]{1,5})\b/i)
+          if (importMatch) {
+            const importedBasename = importMatch[1]
+            if (importedBasename !== basename) {
+              const found = basenameToPath.get(importedBasename)
+              if (found && found !== entry.filePath) resolvedPath = found
+            }
+          }
+        }
+
+        if (resolvedPath) {
+          const targetBase = resolvedPath.split(/[/\\]/).pop() ?? resolvedPath
+          upsertEdge({
+            projectId,
+            fromType: 'file',
+            fromLabel: basename,
+            toType: 'file',
+            toLabel: targetBase,
+            type: 'imports',
+            fromSourceKind: 'fast_context',
+            fromSourceId: entry.filePath,
+            toSourceKind: 'fast_context',
+            toSourceId: resolvedPath,
+            metadata: { raw_import: imp },
+          })
+          edges++
+        }
+      }
+
+      // References → CALLS edges (file → symbol, best-effort по name)
+      for (const ref of symbols.references ?? []) {
+        if (ref.length < 4) continue
+        // Проверяем, есть ли такой symbol в индексе (best-effort)
+        // Не создаём узел — upsertEdge создаст если нужно
+        upsertEdge({
+          projectId,
+          fromType: 'file',
+          fromLabel: basename,
+          toType: 'symbol',
+          toLabel: ref,
+          type: 'calls',
+          fromSourceKind: 'fast_context',
+          fromSourceId: entry.filePath,
+          metadata: { reference: ref },
+        })
+        edges++
+      }
+    } catch { /* skip corrupted symbolsJson */ }
+  }
 
   return { nodes, edges }
 }
