@@ -22,13 +22,12 @@ export const EDIT_TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: 'CREATE a new file from scratch. If the file already exists — use edit_file (old_str/new_str) for edits, or pass force=true to overwrite (useful for restoring a corrupted file). Returns a diff.',
+      description: 'Write file content. Creates a new file or overwrites an existing one. Returns a diff. For targeted edits to an existing file, prefer edit_file (old_str/new_str).',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Path to the file' },
           content: { type: 'string', description: 'File content' },
-          force: { type: 'boolean', description: 'Overwrite existing file (default false). Use edit_file mode=overwrite as alternative.' },
         },
         required: ['path', 'content'],
       },

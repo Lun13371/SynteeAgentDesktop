@@ -84,7 +84,7 @@ export default function FileTreeContextMenu({ relPath, workdir, pos, onClose }: 
           exit={{ opacity: 0, scale: 0.95, y: -4 }}
           transition={{ type: 'spring', stiffness: 500, damping: 32 }}
         >
-          <CtxItem icon="eye" label="Открыть в просмотре" onClick={handleOpenInViewer} />
+          <CtxItem icon="filePen" label="Открыть в редакторе" onClick={handleOpenInViewer} />
           <CtxItem icon="git" label="Открыть изменения (diff)" onClick={handleOpenDiff} />
           <div className="ctx-divider" />
           <CtxItem icon="folder" label="Открыть в проводнике" onClick={handleOpenInExplorer} />

@@ -1347,7 +1347,7 @@ export default function App() {
                       initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
                       animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
                       exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 }, filter: { type: 'tween', duration: 0.25, ease: 'easeOut' } }}
                     >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <SettingsPage />
@@ -1361,7 +1361,7 @@ export default function App() {
                       initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
                       animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
                       exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 }, filter: { type: 'tween', duration: 0.25, ease: 'easeOut' } }}
                     >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <MemoryPage />
@@ -1375,7 +1375,7 @@ export default function App() {
                       initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
                       animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
                       exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 }, filter: { type: 'tween', duration: 0.25, ease: 'easeOut' } }}
                     >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <MessengerPage />

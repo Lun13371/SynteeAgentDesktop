@@ -1806,7 +1806,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               вместо сообщений чата. Клик по chat-табу сбрасывает
               activeFileTabId → возвращаемся к чату. */}
           {activeFileTab ? (
-            <FileEditorPane tab={activeFileTab} />
+            <FileEditorPane key={activeFileTab.id} tab={activeFileTab} />
           ) : (
           <>
           <AnimatePresence>

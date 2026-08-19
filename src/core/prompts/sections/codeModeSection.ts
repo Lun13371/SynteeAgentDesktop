@@ -61,7 +61,7 @@ Which tool to prefer:
 - search file contents → search_code (ripgrep, faster than reading everything; smart-case by default so lowercase patterns find CamelCase; path optional, defaults to project root; invalid regex auto-retried as literal). If "showing X of Y" — narrow file_glob/path or raise max_results; do NOT loop over pattern variants. 0 matches → switch to find_files (file names) or get_fast_context (concepts) instead of retrying variants
 - understand which files/functions relate to the task in a project → get_fast_context (FIRST step for any code task — instantly finds relevant files and line ranges via tree-sitter index + fast LLM, saves the main model's tokens on search)
 - pinpoint edit of an existing file → edit_file (pass old_str + new_str — replaces old_str with new_str, with fuzzy matching for whitespace/indentation)
-- create a new file → write_file (creating a new file only; for editing existing use edit_file)
+- create a new file or overwrite an existing one → write_file (for targeted edits use edit_file)
 - read several independent files at once → read_files
 - study an unfamiliar project end-to-end → analyze_project
 - need up-to-date info from the internet (news, docs, exchange rates) → search_web
@@ -105,7 +105,7 @@ questions: [
 
 - BEFORE editing a file, read it with read_file first. The old_str in str_replace must match the ACTUAL file content — copy it from what you read, not from memory. Editing a file you haven't read leads to "old_str not found" errors.
 - to change an existing file use edit_file (pass old_str — exact text to find, and new_str — replacement text)
-- use write_file only to create a new file from scratch — to overwrite an existing one it returns an error, use edit_file
+- use write_file to create a new file or overwrite an existing one; for targeted edits use edit_file (old_str/new_str)
 - after a change rely on the diff and do not reread the file without reason
 
 ## Verification before answering

@@ -52,6 +52,10 @@ export interface ActiveRun {
   chatId: string
   msgId: string
   startedAt: number
+  // createdAt сообщения assistant — фиксируется при создании run,
+  // чтобы периодические checkpoint'ы сохраняли оригинальный created_at
+  // (иначе INSERT OR REPLACE сдвинул бы позицию сообщения).
+  createdAt: number
   bufferedText: string
   bufferedThinking: string
   bufferedThinkingMs?: number
@@ -109,6 +113,13 @@ export interface ActiveRun {
     toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
     spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
   }
+  // ── Периодический checkpoint стриминга в БД ──
+  // Таймер сохраняет накопленный bufferedText/steps/thinking в БД каждые
+  // 3 секунды (saveMessage UPSERT — идемпотентен). При жёстком краше
+  // процесса (SIGSEGV, kill -9, OOM) ни before-quit, ни worker.on('exit')
+  // не срабатывают — теряется весь прогресс. С таймером максимум потерь
+  // = 3 секунды стриминга. Очищается в sendDone.
+  streamCheckpointTimer: ReturnType<typeof setInterval> | null
 }
 
 export const activeRuns = new Map<string, ActiveRun>()
