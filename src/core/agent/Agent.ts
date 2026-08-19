@@ -1297,6 +1297,12 @@ export class Agent {
    * contentBefore = null = файл был создан этим turn'ом.
    */
   getFileSnapshots(): Array<{ path: string; contentBefore: string | null }> {
+    // Sync: Agent pushes to its own undoStack in pendingMutations (line ~987),
+    // but ToolDispatcher.getFileSnapshots reads its own (empty) undoStack.
+    // Without this sync, fileSnapshots is always [] → checkpoints get
+    // filesChanged=0 → getLastTurnChanges returns null → badge disappears
+    // after streaming ends and SessionChangesPanel shows no changes.
+    this.toolDispatcher.undoStack = this.undoStack
     return this.toolDispatcher.getFileSnapshots()
   }
 
@@ -1325,6 +1331,15 @@ export class Agent {
    * агенту при spawn_agent, вместо обрезанного 500-символьного текста.
    */
   private buildSummaryDetails(modifiedFiles: Set<string>): AgentSummaryDetails {
+    // Sync: Agent pushes to its own undoStack/pendingDiffEntries/fileMap
+    // in pendingMutations (lines ~987, ~1001, ~1005), but
+    // ToolDispatcher.buildSummaryDetails reads its own (empty) copies.
+    // Without this sync, fileSnapshots/diffs/filesRead are always empty
+    // in AgentSummaryDetails → checkpoints get filesChanged=0 → badge
+    // disappears after streaming and SessionChangesPanel shows no changes.
+    this.toolDispatcher.undoStack = this.undoStack
+    this.toolDispatcher.pendingDiffEntries = this.pendingDiffEntries
+    this.toolDispatcher.fileMap = this.fileMap
     return this.toolDispatcher.buildSummaryDetails(modifiedFiles)
   }
 }

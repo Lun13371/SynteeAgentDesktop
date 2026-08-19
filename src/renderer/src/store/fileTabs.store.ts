@@ -50,6 +50,10 @@ export interface FileTab {
   conflict: boolean
   /** mtime файла при последней загрузке/сохранении */
   lastMtime: number
+  /** Diff-режим: показывать HEAD vs working copy (Open Changes) */
+  diffMode: boolean
+  /** Оригинальный контент (HEAD) для diff-режима */
+  diffOriginal: string
 }
 
 interface FileTabsStore {
@@ -80,6 +84,12 @@ interface FileTabsStore {
   closeAll: () => void
   /** Восстановление сессии при boot */
   restoreTabs: (paths: string[], workdir: string) => Promise<void>
+  /** Переключить diff-режим таба (Open Changes) */
+  toggleDiffMode: (id: string) => void
+  /** Загрузить оригинальную (HEAD) версию файла для diff-режима */
+  loadDiffOriginal: (id: string) => Promise<void>
+  /** Открыть файл в табе СРАЗУ в diff-режиме (Open Changes) */
+  openFileDiff: (relPath: string, workdir: string) => Promise<void>
 }
 
 export const useFileTabsStore = create<FileTabsStore>((set, get) => ({
@@ -117,6 +127,8 @@ export const useFileTabsStore = create<FileTabsStore>((set, get) => ({
       dirty: false,
       conflict: false,
       lastMtime: 0,
+      diffMode: false,
+      diffOriginal: '',
     }
 
     set(state => ({
@@ -284,6 +296,48 @@ export const useFileTabsStore = create<FileTabsStore>((set, get) => ({
   closeAll: () => {
     set({ openFileTabs: [], activeFileTabId: null })
     persistPaths([])
+  },
+
+  toggleDiffMode: (id) => {
+    const tab = get().openFileTabs.find(t => t.id === id)
+    if (!tab) return
+    const newMode = !tab.diffMode
+    set(state => ({
+      openFileTabs: state.openFileTabs.map(t =>
+        t.id === id ? { ...t, diffMode: newMode } : t
+      )
+    }))
+    if (newMode) {
+      // Включаем diff — загружаем HEAD-версию
+      void get().loadDiffOriginal(id)
+    }
+  },
+
+  loadDiffOriginal: async (id) => {
+    const { openFileTabs, workdir } = get()
+    const tab = openFileTabs.find(t => t.id === id)
+    if (!tab || !workdir) return
+    try {
+      const result = await window.syntee.git.fileVersions({ workdir, file: tab.relPath }) as
+        { success: boolean; original: string; modified: string }
+      if (result.success) {
+        set(state => ({
+          openFileTabs: state.openFileTabs.map(t =>
+            t.id === id ? { ...t, diffOriginal: result.original } : t
+          )
+        }))
+      }
+    } catch { /* ok */ }
+  },
+
+  openFileDiff: async (relPath, workdir) => {
+    // Открываем файл в табе (если уже открыт — активируем)
+    await get().openFile(relPath, workdir)
+    // Включаем diff-режим если ещё не включён
+    const tab = get().openFileTabs.find(t => t.id === relPath)
+    if (tab && !tab.diffMode) {
+      get().toggleDiffMode(relPath)
+    }
   },
 
   restoreTabs: async (paths, workdir) => {

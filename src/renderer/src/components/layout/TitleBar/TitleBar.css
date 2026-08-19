@@ -48,17 +48,36 @@
   align-items: center;
   gap: 4px;
   padding: 0 8px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--overlay-4) transparent;
+}
+
+.titlebar-tabs::-webkit-scrollbar {
+  height: 3px;
+}
+
+.titlebar-tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.titlebar-tabs::-webkit-scrollbar-thumb {
+  background: var(--overlay-4);
+  border-radius: 2px;
+}
+
+.titlebar-tabs::-webkit-scrollbar-thumb:hover {
+  background: var(--overlay-5);
 }
 
 .titlebar-tabs-list {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .titlebar-tab {

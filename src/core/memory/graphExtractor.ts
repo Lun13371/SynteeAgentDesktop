@@ -307,6 +307,20 @@ function extractConceptsHeuristic(
  * @param entries — опциональный подмножество записей для обработки (incremental).
  *   Если не передан — берутся ВСЕ записи проекта из fast_context_index.
  */
+/** Build basename → filePath map для резолвинга imports.
+ *  Строится ОДИН раз на весь проект, передаётся в syncSingleEntry.
+ *  Раньше перестраивалось внутри syncSingleEntry для каждого entry → O(N²). */
+export function buildBasenameToPath(allEntries: FastContextEntry[]): Map<string, string> {
+  const basenameToPath = new Map<string, string>()
+  for (const e of allEntries) {
+    const base = e.filePath.split(/[/\\]/).pop() ?? e.filePath
+    const baseNoExt = base.replace(/\.[^.]+$/, '')
+    if (!basenameToPath.has(base)) basenameToPath.set(base, e.filePath)
+    if (!basenameToPath.has(baseNoExt)) basenameToPath.set(baseNoExt, e.filePath)
+  }
+  return basenameToPath
+}
+
 export function syncFromFastContext(
   projectId: string,
   entries?: FastContextEntry[],
@@ -316,8 +330,9 @@ export function syncFromFastContext(
   let nodes = 0
   let edges = 0
 
+  const basenameToPath = buildBasenameToPath(allEntries)
   for (const entry of allEntries) {
-    const result = syncSingleEntry(projectId, entry, allEntries)
+    const result = syncSingleEntry(projectId, entry, allEntries, basenameToPath)
     nodes += result.nodes
     edges += result.edges
   }
@@ -338,27 +353,22 @@ export function syncFromFastContext(
  *
  * @param allEntries — полный список записей проекта. Нужен для резолвинга
  *   imports/references в полном контексте (при incremental-синке changed файлов).
+ * @param basenameToPath — пред-построенный Map basename→filePath (O(1) lookup).
+ *   Если не передан — строится на месте (медленно, O(N) на каждый entry).
  */
 export function syncSingleEntry(
   projectId: string,
   entry: FastContextEntry,
   allEntries: FastContextEntry[],
+  basenameToPath?: Map<string, string>,
 ): { nodes: number; edges: number } {
   let nodes = 0
   let edges = 0
 
   const basename = entry.filePath.split(/[/\\]/).pop() ?? entry.filePath
 
-  // Build basename → filePath map для резолвинга imports.
-  // allEntries содержит все записи проекта — нужен для точного резолвинга.
-  const basenameToPath = new Map<string, string>()
-  for (const e of allEntries) {
-    const base = e.filePath.split(/[/\\]/).pop() ?? e.filePath
-    const baseNoExt = base.replace(/\.[^.]+$/, '')
-    // Сохраняем оба варианта: с расширением и без
-    if (!basenameToPath.has(base)) basenameToPath.set(base, e.filePath)
-    if (!basenameToPath.has(baseNoExt)) basenameToPath.set(baseNoExt, e.filePath)
-  }
+  // Build basename → filePath map для резолвинга imports (если не передан).
+  const bmap = basenameToPath ?? buildBasenameToPath(allEntries)
 
   // File node
   upsertNode({
@@ -430,7 +440,7 @@ export function syncSingleEntry(
         const candidates = [cleanBase, cleanBase.replace(/\.[^.]+$/, '')]
         let resolvedPath: string | null = null
         for (const c of candidates) {
-          const found = basenameToPath.get(c)
+          const found = bmap.get(c)
           if (found && found !== entry.filePath) {
             resolvedPath = found
             break
@@ -442,7 +452,7 @@ export function syncSingleEntry(
           if (importMatch) {
             const importedBasename = importMatch[1]
             if (importedBasename !== basename) {
-              const found = basenameToPath.get(importedBasename)
+              const found = bmap.get(importedBasename)
               if (found && found !== entry.filePath) resolvedPath = found
             }
           }

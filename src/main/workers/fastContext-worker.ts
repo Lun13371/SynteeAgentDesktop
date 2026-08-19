@@ -266,7 +266,11 @@ parentPort?.on('message', async (msg: IndexJobMsg) => {
   }
   const onProgress = (p: IndexProgress) => {
     if (p.stage === 'done') {
-      // done шлём без throttling
+      // done шлём без throttling — сразу
+      postMessage({ type: 'progress', jobId, projectId, progress: p })
+      lastProgressSent = Date.now()
+      pendingProgress = null
+      if (progressTimer) { clearTimeout(progressTimer); progressTimer = null }
       return
     }
     pendingProgress = p

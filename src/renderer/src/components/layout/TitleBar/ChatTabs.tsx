@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Reorder, motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
+import FileIcon from '../../ui/FileIcon/FileIcon'
 import ChatTabContextMenu from './ChatTabContextMenu'
 import FileTabContextMenu from './FileTabContextMenu'
 import { useChatStore } from '../../../store/chat.store'
@@ -16,25 +17,6 @@ import { springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny } f
 // Переключение по клику, drag&drop для перестановки (Reorder из framer-motion),
 // закрытие крестиком или средней кнопкой мыши, контекстное меню по правому клику.
 // Файловые табы идут после «+» — визуально отделены от чатов, но в той же полосе.
-
-// Цветовая метка типа файла (как в FileExplorer)
-const FILE_TYPE_COLORS: Record<string, string> = {
-  ts: '#3178c6', tsx: '#3178c6',
-  js: '#f7df1e', jsx: '#f7df1e', mjs: '#f7df1e',
-  json: '#f0a000',
-  css: '#264de4', scss: '#cc6699',
-  html: '#e34c26',
-  md: '#519aba',
-  py: '#3572a5',
-  go: '#00add8',
-  rs: '#dea584',
-  sh: '#89e051', bash: '#89e051',
-  yml: '#cb171e', yaml: '#cb171e',
-}
-function getFileColor(name: string): string | undefined {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  return FILE_TYPE_COLORS[ext]
-}
 
 export default function ChatTabs() {
   // ── Chat tabs ──
@@ -184,7 +166,6 @@ export default function ChatTabs() {
           className="titlebar-tabs-list"
         >
           {openFileTabs.map(tab => {
-            const fileColor = getFileColor(tab.name)
             const active = tab.id === activeFileTabId
             return (
               <Reorder.Item
@@ -201,7 +182,7 @@ export default function ChatTabs() {
                 title={tab.relPath}
                 transition={{ type: 'spring', stiffness: 500, damping: 35 }}
               >
-                <span className="titlebar-tab-color" style={{ background: fileColor ?? 'var(--text-muted)' }} />
+                <FileIcon name={tab.name} size={14} />
                 <span className="titlebar-tab-title">{tab.name}</span>
                 {/* Dirty indicator — точка для несохранённых правок */}
                 {tab.dirty && (

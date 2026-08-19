@@ -1,8 +1,9 @@
 import { useEffect, useRef, useCallback } from 'react'
-import Editor, { type OnMount, loader } from '@monaco-editor/react'
+import Editor, { DiffEditor, type OnMount, loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
+import FileIcon from '../FileIcon/FileIcon'
 import { getLanguage } from '../CodePreview/CodePreview'
 import { useFileTabsStore, type FileTab } from '../../../store/fileTabs.store'
 import { useSettingsStore } from '../../../store/settings.store'
@@ -34,6 +35,7 @@ export default function FileEditorPane({ tab }: FileEditorPaneProps) {
   const refreshTab = useFileTabsStore(s => s.refreshTab)
   const updateContent = useFileTabsStore(s => s.updateContent)
   const closeFileTab = useFileTabsStore(s => s.closeFileTab)
+  const toggleDiffMode = useFileTabsStore(s => s.toggleDiffMode)
   const addToast = useToast(s => s.add)
 
   // Автосохранение: проверяем настройку
@@ -102,7 +104,7 @@ export default function FileEditorPane({ tab }: FileEditorPaneProps) {
       {/* Шапка с путём и кнопками */}
       <div className="file-editor-pane__header">
         <div className="file-editor-pane__path-info">
-          <AppIcon name="fileText" size="xs" />
+          <FileIcon name={tab.name} size={16} />
           <span className="file-editor-pane__path" title={tab.relPath}>{tab.relPath}</span>
           {tab.dirty && <span className="file-editor-pane__dirty-dot" title="Несохранённые изменения" />}
           {tab.size > 0 && (
@@ -110,6 +112,14 @@ export default function FileEditorPane({ tab }: FileEditorPaneProps) {
           )}
         </div>
         <div className="file-editor-pane__actions">
+          <button
+            className={`file-editor-pane__btn ${tab.diffMode ? 'file-editor-pane__btn--active' : ''}`}
+            onClick={() => toggleDiffMode(tab.id)}
+            disabled={tab.loading || tab.isBinary}
+            title={tab.diffMode ? 'Показать файл' : 'Открыть изменения (diff)'}
+          >
+            <AppIcon name="git" size="xs" />
+          </button>
           <button
             className="file-editor-pane__btn"
             onClick={handleSave}
@@ -180,6 +190,30 @@ export default function FileEditorPane({ tab }: FileEditorPaneProps) {
               </button>
             )}
           </div>
+        ) : tab.diffMode ? (
+          <DiffEditor
+            original={tab.diffOriginal}
+            modified={tab.content}
+            language={lang}
+            theme="vs-dark"
+            loading={<div className="file-editor-pane__loading"><AppIcon name="loader" size="md" animation="spin" /></div>}
+            options={{
+              readOnly: true,
+              fontSize: 13,
+              minimap: { enabled: false },
+              automaticLayout: true,
+              scrollBeyondLastLine: false,
+              wordWrap: 'on',
+              tabSize: 2,
+              lineNumbers: 'on',
+              renderSideBySide: true,
+              padding: { top: 8, bottom: 8 },
+              scrollbar: {
+                verticalScrollbarSize: 10,
+                horizontalScrollbarSize: 10,
+              },
+            }}
+          />
         ) : tab.truncated ? (
           <div className="file-editor-pane__truncated">
             <div className="file-editor-pane__truncated-banner">
