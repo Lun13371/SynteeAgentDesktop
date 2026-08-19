@@ -1,41 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import AppIcon from '../AppIcon/AppIcon'
+import FileIcon from '../FileIcon/FileIcon'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
 import { useNavStore } from '../../../store/nav.store'
 import FileTreeContextMenu from './FileTreeContextMenu'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import './FileExplorer.css'
-
-// ── File type → color mapping (VS Code-style) ─────────────────────
-const FILE_TYPE_COLORS: Record<string, string> = {
-  ts: '#3178c6', tsx: '#3178c6',
-  js: '#f7df1e', jsx: '#f7df1e', mjs: '#f7df1e',
-  json: '#f0a000',
-  css: '#264de4', scss: '#cc6699', sass: '#cc6699',
-  html: '#e34c26', htm: '#e34c26',
-  md: '#519aba',
-  py: '#3572a5',
-  go: '#00add8',
-  rs: '#dea584',
-  java: '#b07219',
-  c: '#555555', cpp: '#f34b7d', h: '#555555',
-  sh: '#89e051', bash: '#89e051',
-  yml: '#cb171e', yaml: '#cb171e',
-  toml: '#9c4221',
-  sql: '#e38c00',
-  vue: '#41b883',
-  svelte: '#ff3e00',
-  png: '#a371f7', jpg: '#a371f7', jpeg: '#a371f7', gif: '#a371f7', svg: '#ffb13b',
-  lock: '#6b7280',
-  env: '#e0b400',
-  gitignore: '#f1502f',
-}
-
-function getFileColor(name: string): string | undefined {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  return FILE_TYPE_COLORS[ext]
-}
 
 interface FsEntry {
   name: string
@@ -365,7 +336,6 @@ interface FileTreeRowProps {
 
 const FileTreeRow = memo(function FileTreeRow({ node, onToggleDir, onOpenFile, showPath, isOpen, isActive, onContextMenu }: FileTreeRowProps) {
   const { relPath, name, isDir, depth, isOpen: nodeIsOpen, isLoading, isSelected } = node
-  const fileColor = !isDir ? getFileColor(name) : undefined
 
   return (
     <button
@@ -392,8 +362,7 @@ const FileTreeRow = memo(function FileTreeRow({ node, onToggleDir, onOpenFile, s
         </>
       ) : (
         <>
-          <span className="file-tree-item__spacer" />
-          <span className="file-tree-item__type-dot" style={{ background: fileColor ?? 'var(--text-muted)' }} />
+          <FileIcon name={name} size={14} />
         </>
       )}
       <span className="file-tree-item__name" title={showPath ? relPath : name}>

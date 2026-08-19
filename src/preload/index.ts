@@ -719,6 +719,32 @@ const synteeAPI = {
       ipcRenderer.invoke('git:discard', params),
     diffStat: (params: { workdir: string; file?: string; staged?: boolean }) =>
       ipcRenderer.invoke('git:diffStat', params),
+    commit: (params: { workdir: string; message: string; amend?: boolean }) =>
+      ipcRenderer.invoke('git:commit', params),
+    push: (params: { workdir: string; remote?: string; branch?: string }) =>
+      ipcRenderer.invoke('git:push', params),
+    pull: (params: { workdir: string; remote?: string; branch?: string }) =>
+      ipcRenderer.invoke('git:pull', params),
+    fetch: (params: { workdir: string; remote?: string }) =>
+      ipcRenderer.invoke('git:fetch', params),
+    fileVersions: (params: { workdir: string; file: string; ref?: string }) =>
+      ipcRenderer.invoke('git:fileVersions', params),
+    showFiles: (params: { workdir: string; hash: string }) =>
+      ipcRenderer.invoke('git:showFiles', params),
+    branchList: (workdir: string) =>
+      ipcRenderer.invoke('git:branchList', workdir),
+    checkout: (params: { workdir: string; branch: string }) =>
+      ipcRenderer.invoke('git:checkout', params),
+    branchCreate: (params: { workdir: string; branch: string; checkout?: boolean }) =>
+      ipcRenderer.invoke('git:branchCreate', params),
+    stash: (params: { workdir: string; message?: string }) =>
+      ipcRenderer.invoke('git:stash', params),
+    stashPop: (params: { workdir: string }) =>
+      ipcRenderer.invoke('git:stashPop', params),
+    stashList: (workdir: string) =>
+      ipcRenderer.invoke('git:stashList', workdir),
+    logFile: (params: { workdir: string; file: string; limit?: number }) =>
+      ipcRenderer.invoke('git:logFile', params),
   },
 
   // Skills — markdown-инструкции в system prompt.

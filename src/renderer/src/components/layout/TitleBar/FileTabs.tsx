@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Reorder, motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
+import FileIcon from '../../ui/FileIcon/FileIcon'
 import FileTabContextMenu from './FileTabContextMenu'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
 import { useNavStore } from '../../../store/nav.store'
@@ -13,26 +14,6 @@ import './TitleBar.css'
 // Drag&drop для перестановки, контекстное меню по правому клику,
 // dirty indicator (точка) для несохранённых файлов, conflict indicator
 // (жёлтый значок) для файлов изменённых внешне.
-
-// Цветовая метка типа файла (как в FileExplorer)
-const FILE_TYPE_COLORS: Record<string, string> = {
-  ts: '#3178c6', tsx: '#3178c6',
-  js: '#f7df1e', jsx: '#f7df1e', mjs: '#f7df1e',
-  json: '#f0a000',
-  css: '#264de4', scss: '#cc6699',
-  html: '#e34c26',
-  md: '#519aba',
-  py: '#3572a5',
-  go: '#00add8',
-  rs: '#dea584',
-  sh: '#89e051', bash: '#89e051',
-  yml: '#cb171e', yaml: '#cb171e',
-}
-
-function getFileColor(name: string): string | undefined {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  return FILE_TYPE_COLORS[ext]
-}
 
 export default function FileTabs() {
   const openFileTabs = useFileTabsStore(s => s.openFileTabs)
@@ -74,7 +55,6 @@ export default function FileTabs() {
         className="titlebar-filetabs-list"
       >
         {openFileTabs.map(tab => {
-          const fileColor = getFileColor(tab.name)
           const active = tab.id === activeFileTabId
           return (
             <Reorder.Item
@@ -91,11 +71,8 @@ export default function FileTabs() {
               title={tab.relPath}
               transition={{ type: 'spring', stiffness: 500, damping: 35 }}
             >
-              {/* Цветовая метка типа файла */}
-              <span
-                className="titlebar-filetab__color"
-                style={{ background: fileColor ?? 'var(--text-muted)' }}
-              />
+              {/* Иконка типа файла */}
+              <FileIcon name={tab.name} size={14} />
               <span className="titlebar-filetab__title">{tab.name}</span>
               {/* Dirty indicator — точка для несохранённых правок */}
               {tab.dirty && (

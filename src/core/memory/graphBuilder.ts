@@ -29,6 +29,7 @@ import {
   extractFromDecisionHeuristic,
   syncFromFastContext,
   syncSingleEntry,
+  buildBasenameToPath,
   extractFromConversationLLM,
   saveExtractionToGraph,
 } from './graphExtractor'
@@ -291,6 +292,8 @@ function incrementalSyncChanged(
   // Получаем все записи — нужны для резолвинга imports/references в полном контексте
   const allEntries = getFastContextEntries(projectId)
   const allPaths = new Set(allEntries.map(e => e.filePath))
+  // Строим basename→path ОДИН раз (раньше O(N²) — для каждого changed файла)
+  const basenameToPath = buildBasenameToPath(allEntries)
 
   // Для каждого изменённого пути: удаляем старые узлы, upsert'им новые
   for (const p of changedPaths) {
@@ -310,7 +313,7 @@ function incrementalSyncChanged(
     if (allPaths.has(p)) {
       const entry = allEntries.find(e => e.filePath === p)
       if (entry) {
-        const result = syncSingleEntry(projectId, entry, allEntries)
+        const result = syncSingleEntry(projectId, entry, allEntries, basenameToPath)
         nodes += result.nodes
         edges += result.edges
       }

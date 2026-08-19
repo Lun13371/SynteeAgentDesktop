@@ -40,6 +40,12 @@ export default function FileTreeContextMenu({ relPath, workdir, pos, onClose }: 
     onClose()
   }
 
+  const handleOpenDiff = () => {
+    useNavStore.getState().setMainPage('chat')
+    void useFileTabsStore.getState().openFileDiff(relPath, workdir)
+    onClose()
+  }
+
   const handleOpenInExplorer = () => {
     window.syntee.shell.openPath(workdir)
     onClose()
@@ -79,6 +85,7 @@ export default function FileTreeContextMenu({ relPath, workdir, pos, onClose }: 
           transition={{ type: 'spring', stiffness: 500, damping: 32 }}
         >
           <CtxItem icon="eye" label="Открыть в просмотре" onClick={handleOpenInViewer} />
+          <CtxItem icon="git" label="Открыть изменения (diff)" onClick={handleOpenDiff} />
           <div className="ctx-divider" />
           <CtxItem icon="folder" label="Открыть в проводнике" onClick={handleOpenInExplorer} />
           <CtxItem icon="copy" label="Копировать путь" onClick={handleCopyPath} />

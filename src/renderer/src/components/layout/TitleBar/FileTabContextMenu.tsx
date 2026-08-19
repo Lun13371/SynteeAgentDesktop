@@ -21,6 +21,7 @@ export default function FileTabContextMenu({ tabId, pos, onClose, tabsCount }: F
   const ref = useRef<HTMLDivElement>(null)
   const openFileTabs = useFileTabsStore(s => s.openFileTabs)
   const closeFileTab = useFileTabsStore(s => s.closeFileTab)
+  const toggleDiffMode = useFileTabsStore(s => s.toggleDiffMode)
   const workdir = useFileTabsStore(s => s.workdir)
   const addToast = useToast(s => s.add)
 
@@ -97,6 +98,13 @@ export default function FileTabContextMenu({ tabId, pos, onClose, tabsCount }: F
             <CtxItem icon="check" label="Закрыть сохранённые" onClick={handleCloseSaved} />
           )}
           <div className="ctx-divider" />
+          {workdir && (
+            <CtxItem
+              icon="git"
+              label={tab.diffMode ? 'Показать файл' : 'Открыть изменения (diff)'}
+              onClick={() => { toggleDiffMode(tabId); onClose() }}
+            />
+          )}
           {workdir && (
             <CtxItem icon="folder" label="Открыть в проводнике" onClick={handleOpenInExplorer} />
           )}
