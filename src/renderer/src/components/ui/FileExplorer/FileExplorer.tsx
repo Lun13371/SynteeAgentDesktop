@@ -1,12 +1,19 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { motion, AnimatePresence } from 'framer-motion'
+import Editor, { loader } from '@monaco-editor/react'
+import * as monaco from 'monaco-editor'
 import AppIcon from '../AppIcon/AppIcon'
 import FileIcon from '../FileIcon/FileIcon'
+import { getLanguage } from '../CodePreview/CodePreview'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
 import { useNavStore } from '../../../store/nav.store'
 import FileTreeContextMenu from './FileTreeContextMenu'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import './FileExplorer.css'
+
+// Офлайн Monaco (уже сконфигурирован в FileEditorPane/GitPanel, повторный вызов безопасен)
+loader.config({ monaco })
 
 interface FsEntry {
   name: string
@@ -83,6 +90,13 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
   const activeFileTabId = useFileTabsStore(s => s.activeFileTabId)
   // Контекстное меню по ПКМ на файле в дереве
   const [ctxMenu, setCtxMenu] = useState<{ relPath: string; pos: MenuPos } | null>(null)
+  // ── Preview-панель (как в GitPanel): клик по файлу открывает preview
+  // рядом с деревом, а не таб в шапке. Таб — только через контекстное меню.
+  const [previewFile, setPreviewFile] = useState<FsEntry | null>(null)
+  const [previewContent, setPreviewContent] = useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewIsBinary, setPreviewIsBinary] = useState(false)
 
   // treeRef — чтобы toggleDir не зависел от tree в deps (стабильный callback).
   const treeRef = useRef(tree)
@@ -134,11 +148,38 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
     }
   }, [loadDir])
 
+  // Клик по файлу → открываем preview рядом с деревом (как в GitPanel).
+  // Открытие в табе (шапка) — только через контекстное меню.
   const openFile = useCallback(async (entry: FsEntry) => {
     if (!workdir) return
-    // Открываем файл в редакторе (Monaco) в основной области — как в VSCode.
-    // Переходим на страницу чата (где живёт FileEditorPane) и открываем таб.
     setSelectedFile(entry.relPath)
+    setPreviewFile(entry)
+    setPreviewLoading(true)
+    setPreviewError(null)
+    setPreviewIsBinary(false)
+    setPreviewContent(null)
+    try {
+      const result = await window.syntee.fs.readFile({
+        root: workdir,
+        relPath: entry.relPath,
+      }) as { success: boolean; content: string; isBinary?: boolean; error?: string; truncated?: boolean; truncatedReason?: string; size?: number }
+      if (!result.success) {
+        setPreviewError(result.error ?? 'Не удалось прочитать файл')
+      } else if (result.isBinary) {
+        setPreviewIsBinary(true)
+      } else {
+        setPreviewContent(result.content)
+      }
+    } catch (e) {
+      setPreviewError(String((e as Error)?.message ?? e))
+    } finally {
+      setPreviewLoading(false)
+    }
+  }, [workdir])
+
+  // Открыть файл в табе (шапка) — через контекстное меню или кнопку в preview.
+  const openInTab = useCallback(async (entry: FsEntry) => {
+    if (!workdir) return
     useNavStore.getState().setMainPage('chat')
     await useFileTabsStore.getState().openFile(entry.relPath, workdir)
   }, [workdir])
@@ -310,6 +351,83 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
             })}
           </div>
         </div>
+      </div>
+      {/* ── Preview-панель (как в GitPanel) ─────────────────────────── */}
+      <div className="file-explorer__preview">
+        <AnimatePresence>
+          {previewFile ? (
+            <motion.div
+              key={previewFile.relPath}
+              className="file-explorer__preview-content"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.12 }}
+            >
+              <div className="file-explorer__preview-header">
+                <AppIcon name="fileText" size="xs" />
+                <span className="file-explorer__preview-path" title={previewFile.relPath}>
+                  {previewFile.relPath}
+                </span>
+                <button
+                  className="file-explorer__refresh"
+                  title="Открыть в редакторе (таб)"
+                  onClick={() => openInTab(previewFile)}
+                >
+                  <AppIcon name="filePen" size="xs" />
+                </button>
+              </div>
+              <div className="file-explorer__preview-body">
+                {previewLoading ? (
+                  <div className="file-explorer__preview-loading">
+                    <AppIcon name="loader" size="sm" animation="spin" />
+                    <span>Загрузка…</span>
+                  </div>
+                ) : previewError ? (
+                  <div className="file-explorer__preview-error">
+                    <AppIcon name="x" size="lg" tone="danger" />
+                    <p>{previewError}</p>
+                  </div>
+                ) : previewIsBinary ? (
+                  <div className="file-explorer__preview-error">
+                    <AppIcon name="fileText" size="lg" tone="muted" />
+                    <p>Бинарный файл</p>
+                  </div>
+                ) : previewContent ? (
+                  <Editor
+                    key={previewFile.relPath}
+                    value={previewContent}
+                    language={getLanguage(previewFile.relPath)}
+                    theme="vs-dark"
+                    loading={<div className="file-explorer__preview-loading"><AppIcon name="loader" size="sm" animation="spin" /></div>}
+                    options={{
+                      readOnly: true,
+                      fontSize: 13,
+                      minimap: { enabled: false },
+                      automaticLayout: true,
+                      scrollBeyondLastLine: false,
+                      wordWrap: 'on',
+                      tabSize: 2,
+                      lineNumbers: 'on',
+                      renderWhitespace: 'selection',
+                      smoothScrolling: true,
+                      padding: { top: 8, bottom: 8 },
+                      scrollbar: {
+                        verticalScrollbarSize: 10,
+                        horizontalScrollbarSize: 10,
+                      },
+                    }}
+                  />
+                ) : null}
+              </div>
+            </motion.div>
+          ) : (
+            <div className="file-explorer__preview-empty">
+              <AppIcon name="fileText" size="lg" tone="muted" />
+              <p>Выберите файл для предпросмотра</p>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
       <FileTreeContextMenu
         relPath={ctxMenu?.relPath ?? null}

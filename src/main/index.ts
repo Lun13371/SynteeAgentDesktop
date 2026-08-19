@@ -338,6 +338,24 @@ app.on('window-all-closed', () => {})
 
 // Реальный выход (а не скрытие в трей) — сохраняем размер/позицию главного окна.
 // 'close' на окне перехватывается для hide(), поэтому persistim здесь.
+// ── Последняя линия защиты: uncaughtException ──
+// При soft-crash (uncaught exception) даём последний шанс сохранить
+// накопленный стриминг в БД. ВАЖНО: НЕ вызываем flushAllActiveRuns() при
+// unhandledRejection — в Electron часто бывают benign unhandled rejections
+// (IPC, async-операции), и flushAllActiveRuns вызовет sendDone с частичным
+// bufferedText → doneSent=true → финальный 'done' от воркера станет no-op
+// → потеря половины ответа при нормальной работе.
+// uncaughtException — более серьёзный сигнал, но тоже не гарантия краша.
+// Если процесс выживет после uncaughtException, sendDone с частичным
+// контентом перезапишет полный — но checkpoint-таймер (каждые 3с) уже
+// сохранил прогресс в БД, так что даже в этом случае данные не теряются.
+process.on('uncaughtException', (err) => {
+  try { console.error('[uncaughtException]', err) } catch { /* noop */ }
+  // НЕ вызываем flushAllActiveRuns — может перезаписать полный ответ
+  // частичным при benign exceptions. Checkpoint-таймер уже сохранил
+  // прогресс в БД каждые 3с. before-quit/will-quit — окончательный флеш.
+})
+
 app.on('before-quit', () => {
   // Флешим все активные стримящиеся ответы в БД — ПЕРВЫМ, до любых cleanup,
   // чтобы частичный ответ ассистента не потерялся при резком выходе.

@@ -216,6 +216,12 @@ function buildFinalIters(run: ActiveRun): unknown[] | undefined {
 export function flushAllActiveRuns(): void {
   for (const [chatId, run] of activeRuns) {
     if (run.doneSent) continue
+    // Останавливаем checkpoint-таймер перед флешем — sendDone ниже
+    // сохранит финальную версию и перезапишет любой частичный checkpoint.
+    if (run.streamCheckpointTimer) {
+      clearInterval(run.streamCheckpointTimer)
+      run.streamCheckpointTimer = null
+    }
     const hasContent = run.bufferedText.trim() || run.bufferedSteps.length > 0 || run.bufferedThinking.trim()
     if (!hasContent) continue
     try {
@@ -1298,6 +1304,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       chatId: params.chatId,
       msgId: assistantMsgId,
       startedAt: Date.now(),
+      createdAt: Date.now(),
       bufferedText: '',
       bufferedThinking: '',
       bufferedThinkingMs: undefined,
@@ -1326,6 +1333,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       attachmentResult: null as AttachmentProcessingResult | null,
       imageParts: [] as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>,
       bufferedLiveState: { toolProgress: {}, spawnedAgents: [] },
+      streamCheckpointTimer: null,
     }
 
     // ── UI-батчинг токенов: флеш накопленного перед любыми другими
@@ -1364,6 +1372,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     ) => {
       if (run.doneSent) return
       run.doneSent = true
+      // Останавливаем периодический checkpoint-таймер — финальный save
+      // ниже перезапишет любую частичную запись полностью.
+      if (run.streamCheckpointTimer) {
+        clearInterval(run.streamCheckpointTimer)
+        run.streamCheckpointTimer = null
+      }
       // Сначала сливаем накопленные токены — иначе хвост ответа пришёл бы
       // в renderer ПОСЛЕ done-события и потерялся бы.
       flushUiTokens()
@@ -1417,6 +1431,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         chatId: params.chatId,
         role: 'assistant',
         content: fullText,
+        // Финальный save — реальное время завершения ответа.
+        // Checkpoint-таймер сохранял с run.createdAt (стабильный timestamp
+        // для UPSERT), но финальный sendDone перезаписывает правильным.
         createdAt: Date.now(),
         isPinned: 0,
         model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
@@ -1646,6 +1663,45 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     })
     run.worker = worker
     activeRuns.set(params.chatId, run)
+
+    // ── Периодический checkpoint стриминга в БД (каждые 3 сек) ──
+    // При жёстком краше процесса (SIGSEGV, kill -9, OOM, BSOD) ни before-quit,
+    // ни worker.on('exit'), ни uncaughtException не гарантированно срабатывают.
+    // Без этого таймера весь накопленный bufferedText/steps/thinking живёт
+    // только в RAM и теряется безвозвратно. С таймером максимум потерь = 3с.
+    // saveMessage использует INSERT OR REPLACE (UPSERT) — идемпотентен,
+    // финальный sendDone перезапишет частичный checkpoint полной версией.
+    run.streamCheckpointTimer = setInterval(() => {
+      if (run.doneSent) return
+      const hasContent = run.bufferedText.trim() || run.bufferedSteps.length > 0 || run.bufferedThinking.trim()
+      if (!hasContent) return
+      try {
+        const iters = buildFinalIters(run)
+        const safeSteps = run.bufferedSteps.length > 0 ? ensureToolResults(run.bufferedSteps) : undefined
+        const checkpointMsg: Message & { iterations?: unknown } = {
+          id: assistantMsgId,
+          chatId: params.chatId,
+          role: 'assistant',
+          content: run.bufferedText,
+          createdAt: run.createdAt,
+          isPinned: 0,
+          model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
+            ?.find(a => a.role === 'main')?.modelId || 'claude-sonnet-4-6',
+          toolSteps: safeSteps && safeSteps.length > 0 ? safeSteps as never : undefined,
+          iterations: iters && iters.length > 0 ? iters as never : undefined,
+          thinking: run.bufferedThinking || undefined,
+          thinkingMs: run.bufferedThinkingMs,
+          todo: run.bufferedTodo.length > 0 ? run.bufferedTodo : undefined,
+          attachmentResult: run.attachmentResult ?? undefined,
+          durationMs: Date.now() - run.startedAt,
+        }
+        if (!params.incognito) saveMessage(checkpointMsg)
+      } catch (e) {
+        log('[streamCheckpoint] failed chatId=%s: %s', params.chatId, (e as Error).message)
+      }
+    }, 3000)
+    // unref — таймер не держит процесс alive при выходе
+    if (typeof run.streamCheckpointTimer.unref === 'function') run.streamCheckpointTimer.unref()
 
     // Эмитим стартовый статус для сайдбара (spinner).
     emitRunStatus(win, params.chatId, 'running', assistantMsgId)
@@ -2933,6 +2989,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // Если в удаляемом чате работает воркер — убиваем его и чистим очередь.
     const run = activeRuns.get(chatId)
     if (run) {
+      if (run.streamCheckpointTimer) {
+        clearInterval(run.streamCheckpointTimer)
+        run.streamCheckpointTimer = null
+      }
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
       run.worker.terminate()
       run.doneSent = true
@@ -3314,6 +3374,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // Без этого chat:stop во время "Подготовки файлов" не прерывает
       // processAttachmentsAndStream — Promise.all висит на analyzeImage.
       if (run.attachmentAbort) run.attachmentAbort.abort()
+      // Останавливаем checkpoint-таймер — sendDone ниже сохранит финал.
+      if (run.streamCheckpointTimer) {
+        clearInterval(run.streamCheckpointTimer)
+        run.streamCheckpointTimer = null
+      }
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
       run.worker.terminate()
       // Прерываем agent PTY: Ctrl+C + очистка pending. Без этого сессия

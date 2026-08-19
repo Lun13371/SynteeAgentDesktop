@@ -1,9 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react'
-import Editor, { DiffEditor, type OnMount, loader } from '@monaco-editor/react'
+import Editor, { type OnMount, loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import FileIcon from '../FileIcon/FileIcon'
+import SafeDiffEditor from '../SafeDiffEditor/SafeDiffEditor'
 import { getLanguage } from '../CodePreview/CodePreview'
 import { useFileTabsStore, type FileTab } from '../../../store/fileTabs.store'
 import { useSettingsStore } from '../../../store/settings.store'
@@ -191,7 +192,8 @@ export default function FileEditorPane({ tab }: FileEditorPaneProps) {
             )}
           </div>
         ) : tab.diffMode ? (
-          <DiffEditor
+          <SafeDiffEditor
+            key={tab.id}
             original={tab.diffOriginal}
             modified={tab.content}
             language={lang}

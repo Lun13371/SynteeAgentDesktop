@@ -253,7 +253,7 @@ export class ToolDispatcher {
           timeout: args.timeout as number | undefined,
         })
       case 'write_file': {
-        const wfResult = await writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir, force: args.force as boolean | undefined })
+        const wfResult = await writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir })
         if (wfResult.success && !dryRun) {
           let absPath: string
           try { absPath = resolve(this.workdir ?? process.cwd(), args.path as string) } catch { absPath = args.path as string }

@@ -99,4 +99,4 @@ RULES:
 - Do not ask more than 5 questions at once. If you can make a reasonable assumption — do it, do not ask.
 - Structure long answers: headings, lists, code blocks. No fluff.
 - This is not planning mode — do not wrap the answer in <plan>. Just answer.`
-}
+  }

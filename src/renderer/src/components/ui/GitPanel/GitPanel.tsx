@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { DiffEditor, loader } from '@monaco-editor/react'
+import { loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 import AppIcon from '../AppIcon/AppIcon'
 import FileIcon from '../FileIcon/FileIcon'
+import SafeDiffEditor from '../SafeDiffEditor/SafeDiffEditor'
 import CodePreview from '../CodePreview/CodePreview'
 import { getLanguage } from '../CodePreview/CodePreview'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
@@ -1210,7 +1211,8 @@ export default function GitPanel({ workdir }: GitPanelProps) {
                         <p>{diffError}</p>
                       </div>
                     ) : diffVersions ? (
-                      <DiffEditor
+                      <SafeDiffEditor
+                        key={selectedFile}
                         original={diffVersions.original}
                         modified={diffVersions.modified}
                         language={getLanguage(selectedFile)}
@@ -1312,7 +1314,8 @@ export default function GitPanel({ workdir }: GitPanelProps) {
                     <p>{diffError}</p>
                   </div>
                 ) : selectedCommitFile && diffVersions ? (
-                  <DiffEditor
+                  <SafeDiffEditor
+                    key={selectedCommitFile}
                     original={diffVersions.original}
                     modified={diffVersions.modified}
                     language={getLanguage(selectedCommitFile)}
