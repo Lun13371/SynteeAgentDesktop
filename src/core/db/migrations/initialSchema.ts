@@ -472,5 +472,33 @@ export function runInitialSchema(db: Database.Database): void {
         INSERT INTO messages_fts(content, message_id, chat_id, role, created_at)
         VALUES (new.content, new.id, new.chat_id, new.role, new.created_at);
       END;
+
+    -- === FTS5 полнотекстовый поиск по chat_summaries ===
+    -- Используется recall_memory для поиска по резюме прошлых диалогов.
+    -- Резюме — самый контентный источник (сжатые итоги длинных чатов).
+    -- tokenize='trigram' — морфология + подстрочный поиск для любых языков.
+    CREATE VIRTUAL TABLE IF NOT EXISTS chat_summaries_fts USING fts5(
+      content,
+      chat_id UNINDEXED,
+      tokenize='trigram'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS chat_summaries_fts_ai AFTER INSERT ON chat_summaries
+      BEGIN
+        INSERT INTO chat_summaries_fts(content, chat_id)
+        VALUES (new.content, new.chat_id);
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS chat_summaries_fts_ad AFTER DELETE ON chat_summaries
+      BEGIN
+        DELETE FROM chat_summaries_fts WHERE chat_id = old.chat_id;
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS chat_summaries_fts_au AFTER UPDATE OF content ON chat_summaries
+      BEGIN
+        DELETE FROM chat_summaries_fts WHERE chat_id = old.chat_id;
+        INSERT INTO chat_summaries_fts(content, chat_id)
+        VALUES (new.content, new.chat_id);
+      END;
   `)
 }

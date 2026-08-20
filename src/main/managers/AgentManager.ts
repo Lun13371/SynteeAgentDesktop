@@ -299,7 +299,7 @@ class AgentManager {
   }
 
   getMaxParallel(): number {
-    return (this.store?.get('agentSettings.maxParallelSubAgents', 3) as number) ?? 3
+    return (this.store?.get('agentSettings.maxParallelSubAgents', 5) as number) ?? 5
   }
 
   getRunningCount(parentId?: string): number {
@@ -501,13 +501,18 @@ class AgentManager {
       // §roles — tool filtering: отдаём только тулы из role allowlist.
       // Пустой allowlist (implementer) = полный набор (обратная совместимость).
       // MCP tools (префикс mcp__) всегда проходят.
+      // §no-nested-subagents — spawn_agent и get_agent_status ВСЕГДА вырезаются
+      // из тулов саб-агента, независимо от роли. Саб-агент не может спавнить
+      // вложенных саб-агентов — только основной агент имеет этот тул.
+      const NO_NESTED_TOOLS = new Set(['spawn_agent', 'get_agent_status'])
       const fullSchemas = getToolSchemas({ mode: record.mode })
-      const effectiveToolSchemas = roleDef.allowedTools.length > 0
+      const effectiveToolSchemas = (roleDef.allowedTools.length > 0
         ? fullSchemas.filter(s => {
             const name = (s as { function: { name: string } }).function.name
             return name.startsWith('mcp__') || roleDef.allowedTools.includes(name)
           })
         : fullSchemas
+      ).filter(s => !NO_NESTED_TOOLS.has((s as { function: { name: string } }).function.name))
       // §roles — subagentRole для Agent.run() options (defense-in-depth в Agent.ts)
       const subagentRole = record.role
 

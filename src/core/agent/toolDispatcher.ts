@@ -456,57 +456,44 @@ export class ToolDispatcher {
           })
           if (!result.success) return { success: false, output: '', error: result.error ?? 'recall failed' }
           if (result.results.length === 0) {
-            return { success: true, output: 'Nothing found in memory. Try a different query or refine the keywords.' }
+            return { success: true, output: 'Nothing found in memory. Try a different query, use different keywords, or try crossProject: true to search across all projects.' }
           }
           const sourceLabels: Record<string, string> = {
-            memory: 'Память', messages: 'Сообщения', summaries: 'Резюме чатов',
-            agent_logs: 'Логи агента', pinned: 'Закреплённые', graph: 'Граф знаний',
+            memory: '🧠 Memory', messages: '💬 Messages', summaries: '📋 Summaries',
+            agent_logs: '⚡ Agent logs', pinned: '📌 Pinned', graph: '🔗 Graph',
           }
+          const sourceCounts: Record<string, number> = {}
+          for (const r of result.results) {
+            sourceCounts[r.source] = (sourceCounts[r.source] ?? 0) + 1
+          }
+          const sourceSummary = Object.entries(sourceCounts)
+            .map(([s, c]) => `${sourceLabels[s] ?? s}: ${c}`)
+            .join(', ')
+
           const lines: string[] = []
           let idx = 1
-          const sorted = [...result.results].sort((a, b) => {
-            if (a.source === 'memory' && b.source !== 'memory') return -1
-            if (a.source !== 'memory' && b.source === 'memory') return 1
-            return b.score - a.score
-          })
+          // Sort by score — no source bias, pure relevance ranking
+          const sorted = [...result.results].sort((a, b) => b.score - a.score)
           for (const r of sorted) {
             const scoreStr = r.score.toFixed(2)
             const meta: string[] = []
             if (r.chatTitle) meta.push(`chat: ${r.chatTitle}`)
             if (r.role) meta.push(r.role)
             if (r.date) meta.push(new Date(r.date).toISOString().slice(0, 10))
-            if (r.kind && r.source === 'memory') meta.push(`${r.kind}`)
+            if (r.kind && r.source === 'memory') meta.push(r.kind)
             if (r.scope && r.source === 'memory') meta.push(r.scope)
             const metaStr = meta.length > 0 ? ` [${meta.join(', ')}]` : ''
             const titleStr = r.title ? `${r.title}: ` : ''
             const sourceLabel = sourceLabels[r.source] ?? r.source
+            // Show up to 400 chars of content for richer context
+            const contentStr = r.content.length > 400
+              ? r.content.slice(0, 400) + '…'
+              : r.content
             lines.push(`${idx}. [${sourceLabel}] (релевантность: ${scoreStr})${metaStr}`)
-            lines.push(`   ${titleStr}${r.content}`)
+            lines.push(`   ${titleStr}${contentStr}`)
             idx++
           }
-          return { success: true, output: `Found ${result.results.length} results:\n\n${lines.join('\n')}` }
-        } catch (e) {
-          return { success: false, output: '', error: (e as Error).message }
-        }
-      }
-      case 'get_graph': {
-        if (!callbacks?.onGetGraph) {
-          return { success: false, output: '', error: 'get_graph unavailable (no graph backend)' }
-        }
-        if (!this.projectId) {
-          return { success: false, output: '', error: 'No project context — get_graph requires a project.' }
-        }
-        try {
-          const result = await callbacks.onGetGraph({
-            projectId: this.projectId,
-            nodeTypes: args.nodeTypes as string[] | undefined,
-            edgeTypes: args.edgeTypes as string[] | undefined,
-            minWeight: args.minWeight as number | undefined,
-            limit: args.limit as number | undefined,
-            format: args.format as string | undefined,
-          })
-          if (!result.success) return { success: false, output: '', error: result.error ?? 'graph query failed' }
-          return { success: true, output: result.output }
+          return { success: true, output: `Found ${result.results.length} results across ${Object.keys(sourceCounts).length} sources (${sourceSummary}):\n\n${lines.join('\n')}` }
         } catch (e) {
           return { success: false, output: '', error: (e as Error).message }
         }

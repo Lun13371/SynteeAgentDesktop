@@ -55,19 +55,6 @@ export function buildMemoryStatsBlock(stats?: MemoryStats): string {
 export function buildGraphStatsBlock(stats?: GraphStats): string {
   if (!stats || stats.nodeCount === 0) return ''
 
-  const nodeTypeLabels: Record<string, string> = {
-    decision: 'decisions',
-    concept: 'concepts',
-    file: 'files',
-    symbol: 'symbols',
-    conversation: 'dialogs',
-    task: 'tasks',
-  }
-  const nodeBreakdown = Object.entries(stats.byNodeType)
-    .filter(([, c]) => c > 0)
-    .map(([t, c]) => `${nodeTypeLabels[t] ?? t}: ${c}`)
-    .join(', ') || 'empty'
-
   const hubsStr = stats.hubs
     .filter(h => h.degree > 0)
     .slice(0, 3)
@@ -82,31 +69,35 @@ export function buildGraphStatsBlock(stats?: GraphStats): string {
     })
     .join('\n')
 
-  let block = `\n## Project knowledge graph\nNodes: ${stats.nodeCount} (${nodeBreakdown})\nEdges: ${stats.edgeCount}\n`
-  if (hubsStr) block += `Hubs: ${hubsStr}\n`
-  if (decisionsStr) block += `Recent decisions:\n${decisionsStr}\n`
+  let block = `\n## Project knowledge graph (${stats.nodeCount} nodes, ${stats.edgeCount} edges)\n`
 
-  // File relationships — top connected files with their imports
+  // Hubs — top connected nodes with their connections (compact, actionable)
+  if (hubsStr) block += `Hubs: ${hubsStr}\n`
+
+  // File relationships — top connected files with their imports/calls
   if (stats.fileHubs && stats.fileHubs.length > 0) {
     const fileLines = stats.fileHubs
       .filter(fh => fh.degree > 0)
       .slice(0, 5)
       .map(fh => {
-        const imports = fh.topImports.length > 0 ? ` →imports→ ${fh.topImports.join(', ')}` : ''
-        return `  - ${fh.label}(${fh.degree} links)${imports}`
+        const imports = fh.topImports.length > 0 ? ` → ${fh.topImports.join(', ')}` : ''
+        return `  - ${fh.label}(${fh.degree})${imports}`
       })
       .join('\n')
-    if (fileLines) block += `File relationships:\n${fileLines}\n`
+    if (fileLines) block += `Key files:\n${fileLines}\n`
   }
 
-  block += `Use get_graph for details and mermaid visualization.\n`
+  // Recent decisions with their targets — shows what decisions affect
+  if (decisionsStr) block += `Recent decisions:\n${decisionsStr}\n`
+
+  block += `💡 Graph connections auto-appear in recall_memory results.\n`
 
   // Dynamic hints based on graph stats — guide the agent toward graph usage.
   if (stats.edgeCount < stats.nodeCount * 0.3 && stats.nodeCount > 5) {
     block += `⚠ Few edges — graph connections may be incomplete.\n`
   }
   if (stats.nodeCount > 20) {
-    block += `💡 Graph has ${stats.nodeCount} nodes — use get_graph to explore project structure.\n`
+    block += `💡 Graph has ${stats.nodeCount} nodes — relevant connections appear automatically in recall_memory.\n`
   }
   if (stats.recentDecisions.length === 0) {
     block += `⚠ No recent decisions in graph — save project_decision to populate.\n`

@@ -25,6 +25,94 @@ import {
   type MultiSourceResult,
 } from './_shared'
 
+// ─── GRAPH DIRECT SEARCH (прямой поиск по графу по keywords) ─────────────────
+
+/**
+ * Прямой поиск по knowledge graph по ключевым словам запроса.
+ * В отличие от expandFromGraph (который расширяет уже найденные memory items),
+ * эта функция ищет узлы графа НАПРЯМУЮ по label — files, decisions, concepts,
+ * symbols — и достаёт их 1-hop соседей с типами рёбер.
+ *
+ * Возвращает формат: "[graph:file] contextManager.ts →imports→ embeddings.ts, →calls→ cosineSimilarity"
+ * — AI видит карту связей проекта без вызова тулов.
+ *
+ * Работает БЕЗ memory hits — графа ищется напрямую.
+ * Score: на основе weight узла (0.3-0.55).
+ */
+export function searchGraphDirect(query: string, projectId: string): MultiSourceResult[] {
+  const db = getDB()
+
+  // Извлекаем keywords из запроса (убираем stopwords, берём значимые термины)
+  const keywords = query
+    .toLowerCase()
+    .replace(/[^\w\u0400-\u04FF]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3)
+    .slice(0, 8)
+  if (keywords.length === 0) return []
+
+  try {
+    // Ищем узлы графа по label LIKE %keyword%
+    const conditions = keywords.map(() => `LOWER(label) LIKE ?`).join(' OR ')
+    const args = keywords.map(k => `%${k}%`)
+    const nodes = db.prepare(
+      `SELECT id, type, label, weight FROM memory_graph_nodes
+       WHERE project_id = ? AND (${conditions})
+       ORDER BY weight DESC LIMIT 10`
+    ).all(projectId, ...args) as Array<{ id: string; type: string; label: string; weight: number }>
+
+    if (nodes.length === 0) return []
+
+    const results: MultiSourceResult[] = []
+    const edgeLabels: Record<string, string> = {
+      imports: '→imports→',
+      calls: '→calls→',
+      references: '→refs→',
+      affects: '→affects→',
+      mentions: '→mentions→',
+      implemented_in: '→impl-in→',
+      depends_on: '→depends→',
+      supersedes: '→replaces→',
+      implements: '→implements→',
+    }
+
+    for (const node of nodes.slice(0, 7)) {
+      // Достаём 1-hop соседей с типами рёбер
+      const neighbors = db.prepare(
+        `SELECT
+           n2.label as neighbor_label,
+           e.type as edge_type,
+           CASE WHEN e.from_node = ? THEN 'out' ELSE 'in' END as direction
+         FROM memory_graph_edges e
+         JOIN memory_graph_nodes n2 ON n2.id = CASE WHEN e.from_node = ? THEN e.to_node ELSE e.from_node END
+         WHERE e.project_id = ? AND (e.from_node = ? OR e.to_node = ?)
+         ORDER BY e.weight DESC LIMIT 5`
+      ).all(node.id, node.id, projectId, node.id, node.id) as Array<{
+        neighbor_label: string; edge_type: string; direction: string
+      }>
+
+      // Форматируем: "[graph:file] contextManager.ts →imports→ embeddings.ts, →calls→ cosineSimilarity"
+      const connections = neighbors
+        .map(n => `${edgeLabels[n.edge_type] ?? `→${n.edge_type}→`} ${n.neighbor_label}`)
+        .join(', ')
+
+      const content = connections
+        ? `[graph:${node.type}] ${node.label} ${connections}`
+        : `[graph:${node.type}] ${node.label}`
+
+      results.push({
+        source: 'graph' as const,
+        content,
+        score: Math.min(0.55, 0.3 + (node.weight ?? 1) * 0.05),
+      })
+    }
+
+    return results
+  } catch {
+    return []
+  }
+}
+
 // ─── GRAPH EXPANSION (1-hop соседи найденных memory items) ───────────────────
 
 /**
@@ -60,23 +148,24 @@ function expandFromGraph(
     // 1-hop соседи: рёбра из seed-узлов + входящие рёбра, JOIN на соседние узлы
     const sph = seedIds.map(() => '?').join(',')
     const neighborRows = db.prepare(
-      `SELECT DISTINCT n.id, n.type, n.label, n.source_id, n.source_kind
+      `SELECT DISTINCT n.id, n.type, n.label, n.source_id, n.source_kind, n.weight
        FROM memory_graph_edges e
        JOIN memory_graph_nodes n ON (n.id = e.to_node OR n.id = e.from_node)
        WHERE e.project_id = ?
          AND (e.from_node IN (${sph}) OR e.to_node IN (${sph}))
          AND n.id NOT IN (${sph})
        ORDER BY n.weight DESC
-       LIMIT 3`
+       LIMIT 5`
     ).all(projectId, ...seedIds, ...seedIds) as Array<{
-      id: string; type: string; label: string; source_id: string | null; source_kind: string | null
+      id: string; type: string; label: string; source_id: string | null; source_kind: string | null; weight: number
     }>
     if (neighborRows.length === 0) return []
 
     return neighborRows.map(n => ({
       source: 'graph' as const,
       content: `[graph:${n.type}] ${n.label}${n.source_kind === 'memory_item' && n.source_id ? ' (related memory item)' : ''}`,
-      score: 0.4,
+      // Score на основе weight узла: 0.3 + weight * 0.2 (weight обычно 1-5)
+      score: Math.min(0.55, 0.3 + (n.weight ?? 1) * 0.05),
     }))
   } catch {
     // Граф недоступен — expansion просто не добавляет ничего
@@ -216,14 +305,15 @@ export async function searchMemory(params: SearchMemoryParams): Promise<SearchRe
       : 0
     const pinnedBoost = (row.pinned as number) ? 0.5 : 0
 
-    // Tuned: TF-IDF is the primary signal (×12), importance slightly reduced (×1.5)
-    // so low-importance but relevant items surface. Recency boosted (×1.5).
+    // Tuned: TF-IDF is the primary signal (×12), importance reduced (×0.5)
+    // so low-importance but relevant items surface over high-importance
+    // but irrelevant ones. Recency ×0.8 — minor tiebreaker.
     // LIKE boost (+1.0) — точное совпадение подстроки чуть повышает ранг,
     // но не исключает семантически релевантные записи без подстроки.
     // FTS boost (+2.5) — trigram-совпадение по слову (морфология).
     const likeBoost = hasSubstring ? 1.0 : 0
     const ftsBoost = ftsIds.has(row.id as string) ? 2.5 : 0
-    const combo = tfidfCos * 12 + importance * 1.5 + recencyBoost * 1.5 + pinnedBoost * 0.8 + likeBoost + ftsBoost
+    const combo = tfidfCos * 12 + importance * 0.5 + recencyBoost * 0.8 + pinnedBoost * 0.8 + likeBoost + ftsBoost
     if (combo < minScore) continue
 
     scored.push({ item: rowToItem(row), score: combo })
@@ -280,16 +370,16 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
           minScore: params.minScore,
         })
         // Нормализуем score memory_items в 0..1.
-        // combo = tfidfCos*12 + importance*1.5 + recency*1.5 + pinned*0.8
-        //       + like + fts (макс ~19, типичный хороший матч 5-8).
-        // Насыщающая экспонента вместо линейного деления: combo 5 → 0.56,
-        // combo 8 → 0.74, combo 12 → 0.86 — сопоставимо с FTS-сигмоидой
-        // других источников (раньше деление на 15 систематически занижало
-        // память относительно messages/pinned).
+        // combo = tfidfCos*12 + importance*0.5 + recency*0.8 + pinned*0.8
+        //       + like + fts (макс ~17.6, типичный хороший матч 5-10).
+        // Насыщающая экспонента с /8: combo 5 → 0.46, combo 8 → 0.63,
+        // combo 12 → 0.78 — более дискриминативно, слабые матчи (combo 2-3)
+        // получают 0.22-0.31 вместо 0.28-0.39 при /6 — лучше отделяет
+        // релевантное от нерелевантного.
         return results.map(r => ({
           source: 'memory' as const,
           content: r.item.content,
-          score: 1 - Math.exp(-r.score / 6),
+          score: 1 - Math.exp(-r.score / 8),
           item: r.item,
         }))
       })()
@@ -334,9 +424,7 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
 
   const perSourceResults = await Promise.all(tasks)
 
-  // Merge all results, sort by score desc, take top-N.
-  // Дедуп: memory item и сообщение с одинаковым контентом не должны
-  // занимать два слота — ключ = первые 100 символов нормализованного content.
+  // Merge all results. Дедуп: точный (первые 100 символов) + MMR-диверсификация.
   const seen = new Set<string>()
   const merged: MultiSourceResult[] = []
   for (const results of perSourceResults) {
@@ -348,17 +436,77 @@ export async function searchAllSources(params: SearchMemoryParams): Promise<Mult
     }
   }
 
+  // Прямой поиск по графу: ищет узлы (files, decisions, concepts) по keywords
+  // запроса напрямую — БЕЗ зависимости от memory hits. Даёт AI карту связей.
+  // Только при наличии projectId (граф per-project) и не в crossProject mode.
+  if (!crossProject && params.projectId) {
+    const graphDirectResults = searchGraphDirect(params.query, params.projectId)
+    merged.push(...graphDirectResults)
+  }
+
   // Графовая экспансия: 1-hop соседи top memory hits (только если memory
-  // источник включён и есть projectId). Добавляется после дедупа — соседи
-  // сами не дедупятся против прямых попаданий (разный контент).
+  // источник включён и есть projectId). Добавляется после дедупа.
   if (allSources.includes('memory') && !crossProject) {
     const graphResults = expandFromGraph(merged, params.projectId)
     merged.push(...graphResults)
   }
 
+  // MMR (Maximal Marginal Relevance) диверсификация:
+  // Сортируем по score, затем итеративно выбираем: берём топ-1, затем
+  // для каждого следующего кандидата проверяем word-overlap (Jaccard)
+  // с уже выбранными. Если similarity > 0.65 — пропускаем (дубликат темы).
+  // Это убирает 5 одинаковых результатов об одном и том же, оставляя
+  // разнообразные релевантные записи из разных источников.
   merged.sort((a, b) => b.score - a.score)
 
-  return merged.slice(0, totalLimit)
+  const selected: MultiSourceResult[] = []
+  const selectedWordSets: Set<string>[] = []
+  const MMR_SIM_THRESHOLD = 0.65
+  let graphCount = 0
+  const MAX_GRAPH_ENTRIES = 5 // граф-результаты — ассоциативные, не больше 5 из 20
+
+  for (const candidate of merged) {
+    if (selected.length >= totalLimit) break
+
+    // Graph entries — всегда пропускаем без MMR (они ассоциативные),
+    // но ограничиваем количество чтобы не забить топ.
+    if (candidate.source === 'graph') {
+      if (graphCount >= MAX_GRAPH_ENTRIES) continue
+      graphCount++
+      selected.push(candidate)
+      continue
+    }
+
+    // Вычисляем word set кандидата
+    const candWords = new Set(
+      candidate.content.toLowerCase().split(/\s+/).filter(w => w.length > 2)
+    )
+    if (candWords.size === 0) {
+      selected.push(candidate)
+      selectedWordSets.push(candWords)
+      continue
+    }
+
+    // Максимальная схожесть с уже выбранными
+    let maxSim = 0
+    for (const selWords of selectedWordSets) {
+      if (selWords.size === 0) continue
+      let intersection = 0
+      for (const w of candWords) {
+        if (selWords.has(w)) intersection++
+      }
+      const union = candWords.size + selWords.size - intersection
+      const sim = union > 0 ? intersection / union : 0
+      if (sim > maxSim) maxSim = sim
+    }
+
+    if (maxSim < MMR_SIM_THRESHOLD) {
+      selected.push(candidate)
+      selectedWordSets.push(candWords)
+    }
+  }
+
+  return selected
 }
 
 /**

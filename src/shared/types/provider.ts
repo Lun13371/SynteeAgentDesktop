@@ -88,7 +88,7 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxSteps: 50,
   toolOutputMode: 'normal',
   enableThinking: false,
-  maxParallelSubAgents: 3,
+  maxParallelSubAgents: 5,
   readFileCache: true,
   autoMemoryInterval: 5,
   maxRepeatedToolCalls: 3,

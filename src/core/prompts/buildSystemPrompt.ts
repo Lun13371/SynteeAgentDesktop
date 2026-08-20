@@ -85,8 +85,10 @@ export function buildSystemPrompt(params: {
   /** Project notes — titles shown in the system prompt so the agent is aware
     * of existing notes. Full content is available via manage_notes tool. */
   notesInfo?: { notes: Array<{ id: string; title: string }>; count: number }
+  /** Max parallel sub-agents — injected into the spawn_agent section. */
+  maxParallelSubAgents?: number
 }): string {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, persona, personaSkill, notesInfo } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -139,6 +141,40 @@ If a task requires multiple steps:
 - start with the cheapest actions: find, read, understand
 - only after that proceed to changes or commands
 
+## Long-term memory (save_memory / recall_memory) — YOUR MAIN CONTINUITY TOOL
+
+You have long-term memory — it survives sessions and is available from different chats. The system prompt shows a compact summary (top facts + stats), but for details use the tools. **Memory is your main continuity tool.** Without it, every session starts from zero.
+
+### 5 fact types (kind)
+
+- **user_fact** — about the user (personal/preferences/work). Category: personal/work/preferences/projects/facts.
+- **project_decision** — architectural decisions, stack choice, patterns.
+- **convention** — gotchas/traps, non-obvious rules, environment specifics.
+- **agent_outcome** — lessons from errors/successes.
+- **conversation** — dialog/task outcome: what done, files changed, what remains. Session "diary".
+
+### save_memory
+
+Required: title (1-5 words), content (detailed Markdown), kind. Scope auto: project if projectId, else global. Dedup by key. Category only for user_fact.
+
+### recall_memory — multi-source search across 5 sources IN PARALLEL
+
+Searches 5 sources IN PARALLEL: memory (facts/decisions), messages (FTS5 trigram), summaries (FTS5 trigram), agent_logs, pinned. Scope: project chats if in project, else no-project chats. Global memory ALWAYS searched. Returns top-20 with MMR diversification (no duplicate topics).
+Query: use keywords ("JWT auth"), not sentences ("tell me about the project").
+Narrow via sources param: ["memory","messages"] etc.
+
+### ⚡ Memory checklist — READ THIS
+
+**Recall when:** new task/topic, "do you remember?", unfamiliar project/file, past decision mentioned, before architectural decision, user preferences.
+**Don't recall when:** trivial question, task in current context, simple file lookup.
+**Save when:** user says "remember", learned preference/fact (user_fact), architectural decision (project_decision), found trap (convention), learned lesson (agent_outcome), END of task (conversation — MANDATORY).
+**Don't save when:** trivial, intermediate steps, duplicates (recall first!), temp details (use working_memory).
+
+### EXAMPLES
+
+✅ Good: title "Auth via JWT", content "Decided JWT with refresh rotation. Access 15min, refresh 7d. httpOnly cookies. Files: src/auth/jwt.ts"
+❌ Bad: title "Fact", content "the user said something" (no details, no title)
+
 ## Todo plans (update_todo)
 
 The update_todo tool creates a checklist of the task plan that is visible to the user.
@@ -155,7 +191,7 @@ user message tagged "[CURRENT TASK PLAN]".
 
 spawn_agent launches a sub-agent with a clean context for a subtask. The call blocks
 the current turn until completion and returns a summary (what was done, changed files,
-diffs, executed commands — up to 4000 chars). Up to 3 agents can run in parallel,
+diffs, executed commands — up to 4000 chars). Up to ${maxParallelSubAgents ?? 5} agents can run in parallel,
 then a queue forms.
 
 WHEN TO USE:
@@ -253,41 +289,6 @@ If you see a notice "Context exceeded — compressed to N messages" or "Context 
 ### Reading large files
 
 Files can be large (thousands of lines). read_file returns 400 lines by default — if you see "shown 400 of N", use offset for the next chunk. Do not reread the whole file in 400-line chunks without need — use get_fast_context to orient yourself and jump to the needed function.
-
-## Long-term memory (save_memory / recall_memory)
-
-You have long-term memory — it survives sessions and is available from different chats. The system prompt shows a compact summary (top facts + stats), but for details use the tools. **Memory is your main continuity tool.** Without it, every session starts from zero.
-
-### 5 fact types (kind)
-
-- **user_fact** — about the user (personal/preferences/work). Category: personal/work/preferences/projects/facts.
-- **project_decision** — architectural decisions, stack choice, patterns.
-- **convention** — gotchas/traps, non-obvious rules, environment specifics.
-- **agent_outcome** — lessons from errors/successes.
-- **conversation** — dialog/task outcome: what done, files changed, what remains. Session "diary".
-
-### save_memory
-
-Required: title (1-5 words), content (detailed Markdown), kind. Scope auto: project if projectId, else global. Dedup by key. Category only for user_fact.
-
-### recall_memory — multi-source search across 5 sources IN PARALLEL
-
-Searches 5 sources IN PARALLEL: memory (facts/decisions), messages (FTS5), summaries, agent_logs, pinned.
-Scope: project chats if in project, else no-project chats. Global memory ALWAYS searched. Returns top-20.
-Query: use keywords ("JWT auth"), not sentences ("tell me about the project").
-Narrow via sources param: ["memory","messages"] etc.
-
-### Checklist
-
-**Recall when:** new task/topic, "do you remember?", unfamiliar project/file, past decision mentioned, before architectural decision, user preferences.
-**Don't recall when:** trivial question, task in current context, simple file lookup.
-**Save when:** user says "remember", learned preference/fact (user_fact), architectural decision (project_decision), found trap (convention), learned lesson (agent_outcome), END of task (conversation — MANDATORY).
-**Don't save when:** trivial, intermediate steps, duplicates (recall first!), temp details (use working_memory).
-
-### EXAMPLES
-
-✅ Good: title "Auth via JWT", content "Decided JWT with refresh rotation. Access 15min, refresh 7d. httpOnly cookies. Files: src/auth/jwt.ts"
-❌ Bad: title "Fact", content "the user said something" (no details, no title)
 
 ## Answer format
 
