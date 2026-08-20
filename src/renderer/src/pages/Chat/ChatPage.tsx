@@ -1,5 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
+import { Reply, Copy } from 'lucide-react'
 import { copyToClipboard } from '@renderer/utils/clipboard'
 import { AnimatePresence, motion } from 'framer-motion'
 import { springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem } from '../../utils/motionPresets'
@@ -733,24 +734,48 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
       const sel = window.getSelection()
       const text = sel?.toString().trim()
-      if (!text || text.length < 2) { setSelectionPopup(null); return }
+      if (!text || text.length < 5) { setSelectionPopup(null); return }
       const anchor = sel?.anchorNode?.parentElement
       if (!anchor?.closest('.chat-messages')) { setSelectionPopup(null); return }
       const range = sel?.getRangeAt(0)
-      const rect = range?.getBoundingClientRect()
-      if (!rect) return
-      setSelectionPopup({ x: rect.left + rect.width / 2, y: rect.top - 8, text })
+      if (!range) return
+      // Позиционируем popup по концу выделения (где курсор), а не по полному rect —
+      // иначе при многострочном выделении popup улетает далеко.
+      const endRange = document.createRange()
+      endRange.setStart(range.endContainer, range.endOffset)
+      endRange.setEnd(range.endContainer, range.endOffset)
+      let r = endRange.getBoundingClientRect()
+      // Если caret-rect пустой — fallback на полный rect
+      if (!r || (r.width === 0 && r.height === 0)) {
+        r = range.getBoundingClientRect()
+      }
+      if (!r) return
+      const POPUP_W = 200, POPUP_H = 40, MARGIN = 8
+      let px = r.left + r.width / 2
+      let py = r.bottom + MARGIN
+      if (py + POPUP_H > window.innerHeight - MARGIN) {
+        py = r.top - POPUP_H - MARGIN
+      }
+      if (py < MARGIN) py = MARGIN
+      px = Math.max(POPUP_W / 2 + MARGIN, Math.min(px, window.innerWidth - POPUP_W / 2 - MARGIN))
+      setSelectionPopup({ x: px, y: py, text })
     }
     const handleMouseDown = (e: MouseEvent) => {
       if (useNavStore.getState().mainPage !== 'chat') return
       if ((e.target as HTMLElement)?.closest('.selection-reply-popup')) return
       setSelectionPopup(null)
     }
+    const handleScroll = () => {
+      if (useNavStore.getState().mainPage !== 'chat') return
+      setSelectionPopup(null)
+    }
     document.addEventListener('mouseup', handleMouseUp)
     document.addEventListener('mousedown', handleMouseDown)
+    document.addEventListener('scroll', handleScroll, true)
     return () => {
       document.removeEventListener('mouseup', handleMouseUp)
       document.removeEventListener('mousedown', handleMouseDown)
+      document.removeEventListener('scroll', handleScroll, true)
     }
   }, [])
 
@@ -2026,7 +2051,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                 whileTap={whileTapSm}
                 transition={springHover}
               >
-                ↩ Reply
+                <Reply size={13} /> Reply
               </motion.button>
               <motion.button
                 className="selection-reply-copy"
@@ -2038,7 +2063,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                 whileTap={whileTapSm}
                 transition={springHover}
               >
-                Copy
+                <Copy size={13} /> Copy
               </motion.button>
             </div>,
             document.body
