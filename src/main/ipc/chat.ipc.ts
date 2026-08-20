@@ -8,6 +8,7 @@ import {
   createChat, getAllChats, getMessages, getMessagesPage, saveMessage,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB, getDB,
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
+  DEFAULT_CHAT_TITLE,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
   getChatModes, setChatModes, setChatPlanningMode, setChatImageMode, setChatAskMode,
@@ -45,6 +46,7 @@ import {
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getCatalogModel, isCatalogReady } from '../../core/tokens/modelCatalog'
+import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { setFastContextPaths } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
@@ -1493,7 +1495,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           }
         } catch { /* ok — extract опционален */ }
       }
-      if (history.length === 0 && !params.incognito) {
+      // Автоимя чата: на первом сообщении, а если название тогда не
+      // сгенерировалось (fast-модель лежала / сеть) — ретрай на следующих
+      // сообщениях, пока титул остаётся дефолтным. Ручной rename снимает
+      // ретрай (титул перестаёт быть DEFAULT_CHAT_TITLE).
+      if (!params.incognito && (history.length === 0 || isChatTitleDefault(params.chatId))) {
         autoNameChat(params.chatId, params.content, store, win)
       }
 
@@ -1645,6 +1651,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         workingMemory: currentWorkingMemory,
         mode: chatMode,
         catalogCachePath,
+        // Снапшот кэша gateway-моделей — worker не может фетчить сам
+        // (gateway:fetchModels только в main), а getModelContextWindow для
+        // 'syntee-gateway' берёт contextWindow из этого кэша.
+        gatewayModels: getGatewayModelsCache(),
         modelId: mainAssignment?.modelId,
         providerId: mainAssignment?.providerId,
         // Свежий токен с авто-refresh: воркер не может рефрешить сам
@@ -2902,14 +2912,17 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       )
     }
 
-    // ── Auto-recall: inject relevant past context for the first message in a chat ──
-    // When this is the first user message (no history), search memory + chat history
-    // for relevant past context and append it to the system prompt. This gives the
-    // agent continuity without the model needing to explicitly call recall_memory.
+    // ── Auto-recall: inject relevant past context ──
+    // First message in a chat: full multi-source recall (memory + chat history)
+    // — continuity without explicit recall_memory calls.
+    // Follow-up messages: light memory-only recall (top-3, score ≥ 0.55) —
+    // тема может смениться посреди диалога; только memory-источник, чтобы
+    // FTS по messages не эхал только что сохранённое текущее сообщение.
     let systemPrompt = sideSystemPrompt
     if (!systemPrompt) {
       systemPrompt = await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)
-      if (!params.incognito && processedHistory.length === 0 && effectiveContent.trim().length > 10) {
+      const isFirstMessage = processedHistory.length === 0
+      if (!params.incognito && effectiveContent.trim().length > (isFirstMessage ? 10 : 20)) {
         try {
           let autoRecallProjectId: string | undefined
           const wctx = (() => { try { return getChatWorkdirContext(dbChatId) } catch { return null } })()
@@ -2920,15 +2933,18 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
           const results = await searchAllSources({
             query: effectiveContent.slice(0, 500),
             projectId: autoRecallProjectId,
-            limit: 10,
+            limit: isFirstMessage ? 10 : 5,
+            sources: isFirstMessage ? 'all' : ['memory'],
           })
-          if (results.length > 0) {
-            const recallLines = results.slice(0, 8).map(r => {
+          // Для follow-up — порог score, чтобы не спамить слабыми матчами
+          const filtered = isFirstMessage ? results : results.filter(r => r.score >= 0.55)
+          if (filtered.length > 0) {
+            const recallLines = filtered.slice(0, isFirstMessage ? 8 : 3).map(r => {
               const tag = r.source === 'memory' ? `[${r.item?.kind ?? 'memory'}]` : `[${r.source}]`
               return `- ${tag} ${r.content.slice(0, 300)}`
             })
             systemPrompt += `\n## Relevant past context (auto-recall)\n${recallLines.join('\n')}\n`
-            log('[chat:send] auto-recall: %d results for first message (chatId=%s)', results.length, params.chatId)
+            log('[chat:send] auto-recall: %d results for %s message (chatId=%s)', filtered.length, isFirstMessage ? 'first' : 'follow-up', params.chatId)
           }
         } catch (e) {
           log('[chat:send] auto-recall failed: %s', (e as Error).message)
@@ -3798,19 +3814,82 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
 
 }
 
-async function autoNameChat(chatId: string, firstMessage: string, store: Store, win?: BrowserWindow | null): Promise<void> {
+/** Титул чата всё ещё дефолтный (название не сгенерировано)? */
+function isChatTitleDefault(chatId: string): boolean {
   try {
-    const client = new AIClient(store)
-    const title = await client.complete(
-      [{ role: 'user', content: `Придумай короткое название (3-5 слов) для чата, который начинается с этого сообщения: "${firstMessage.slice(0, 200)}". Ответь только названием без кавычек и лишних слов.` }],
-      'fast',
-    )
-    const clean = title.trim().slice(0, 60)
-    if (clean) {
-      renameChat(chatId, clean)
-      win?.webContents.send('chat:renamed', { chatId, title: clean })
-    }
+    const row = getDB().prepare('SELECT title FROM chats WHERE id = ?').get(chatId) as { title: string } | undefined
+    return row?.title === DEFAULT_CHAT_TITLE
   } catch {
-    // not critical
+    return false
+  }
+}
+
+// Защита от параллельных запусков autoNameChat для одного чата: ретрай на
+// 2-м сообщении может прийти, пока 1-я попытка ещё в полёте (ретраи 429/сети).
+const autoNameInFlight = new Set<string>()
+
+/** Чистит ответ модели: префикс «Название:», обрамляющие кавычки, длина. */
+function cleanAutoTitle(raw: string): string {
+  let t = raw.trim()
+  t = t.replace(/^(?:название|chat title|title)\s*[:\-–—]\s*/i, '')
+  t = t.replace(/^["'«“]+/, '').replace(/["'»”]+$/, '')
+  return t.trim().slice(0, 60)
+}
+
+/** Локальный фолбэк без LLM: первые слова сообщения пользователя. */
+function localAutoTitle(message: string): string {
+  const t = message.trim().replace(/\s+/g, ' ')
+  // Slash-команды и слишком короткие сообщения — не название.
+  if (!t || t.startsWith('/') || t.length < 3) return ''
+  return t.slice(0, 40)
+}
+
+/**
+ * Генерация названия чата по первому сообщению. Цепочка фолбэков:
+ *   1. fast-модель (дефолт — бесплатная opencode-free, бывает лежит/429)
+ *   2. main-модель чата
+ *   3. локальный фолбэк — первые слова сообщения (без LLM)
+ * Ошибки логируются (раньше — тихий catch, падение было невидимо).
+ */
+async function autoNameChat(chatId: string, firstMessage: string, store: Store, win?: BrowserWindow | null): Promise<void> {
+  if (autoNameInFlight.has(chatId)) return
+  autoNameInFlight.add(chatId)
+  try {
+    const prompt = `Придумай короткое название (3-5 слов) для чата, который начинается с этого сообщения: "${firstMessage.slice(0, 200)}". Ответь только названием без кавычек и лишних слов.`
+    const client = new AIClient(store)
+    const messages = [{ role: 'user' as const, content: prompt }]
+
+    // 1. fast-модель
+    let title = ''
+    try {
+      title = cleanAutoTitle(await client.complete(messages, 'fast'))
+    } catch (e) {
+      log('[autoNameChat] fast model failed chatId=%s: %s', chatId, (e as Error).message)
+    }
+
+    // 2. Фолбэк на основную модель чата (один маленький запрос ~100 токенов)
+    if (!title) {
+      try {
+        title = cleanAutoTitle(await client.complete(messages, 'main'))
+        if (title) log('[autoNameChat] used main-model fallback chatId=%s', chatId)
+      } catch (e) {
+        log('[autoNameChat] main model failed chatId=%s: %s', chatId, (e as Error).message)
+      }
+    }
+
+    // 3. Локальный фолбэк без LLM
+    if (!title) {
+      title = localAutoTitle(firstMessage)
+      if (title) log('[autoNameChat] used local fallback chatId=%s', chatId)
+    }
+
+    if (title) {
+      renameChat(chatId, title)
+      win?.webContents.send('chat:renamed', { chatId, title })
+    }
+  } catch (e) {
+    log('[autoNameChat] unexpected error chatId=%s: %s', chatId, (e as Error).message)
+  } finally {
+    autoNameInFlight.delete(chatId)
   }
 }

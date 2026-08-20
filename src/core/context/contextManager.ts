@@ -27,6 +27,7 @@ export function calcSystemPromptTokens(systemPrompt: string): number {
 
 import { getContextLimit } from '../tokens/ModelContextLimits'
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
+import { getGatewayModelsCache, GATEWAY_PROVIDER_ID } from '../tokens/gatewayModelsCache'
 import type { ModelMeta, ModelAssignment } from '../../shared/types'
 
 export function getModelContextWindow(storeData: Record<string, unknown>, role: 'main' | 'subagent' = 'main'): number {
@@ -45,15 +46,30 @@ export function getModelContextWindow(storeData: Record<string, unknown>, role: 
   const custom = customModels?.find(m => m.id === modelId)
   if (custom?.contextWindow && custom.contextWindow > 0) return custom.contextWindow
 
-  // 2. Каталог models.dev (живые данные)
+  // 2. Модели Syntee-Gateway + каталог models.dev — берём МАКСИМУМ.
+  // Gateway отдаёт max_tokens (часто это output-лимит, а не контекстное окно),
+  // каталог models.dev знает честный contextWindow, но не знает провайдера
+  // 'syntee-gateway' и через vendor-sniff может не найти модель (glm-5.3 нет в
+  // каталоге → только gateway). Берём max(gateway, catalog): contextWindow не
+  // может быть меньше max_output, так что большее число — корректный контекст.
+  if (providerId === GATEWAY_PROVIDER_ID) {
+    const gw = getGatewayModelsCache().find(m => m.id === modelId)
+    const gwCtx = gw?.contextWindow ?? 0
+    const fromCatalog = getCatalogModel(providerId, modelId)
+    const catalogCtx = fromCatalog?.contextWindow ?? 0
+    const best = Math.max(gwCtx, catalogCtx)
+    if (best > 0) return best
+  }
+
+  // 3. Каталог models.dev (живые данные) — для не-gateway провайдеров
   const fromCatalog = getCatalogModel(providerId, modelId)
   if (fromCatalog?.contextWindow && fromCatalog.contextWindow > 0) return fromCatalog.contextWindow
 
-  // 3. Builtin модели
+  // 4. Builtin модели
   const builtin = BUILTIN_MODELS.find(m => m.id === modelId)
   if (builtin?.contextWindow && builtin.contextWindow > 0) return builtin.contextWindow
 
-  // 4. Единая таблица ModelContextLimits (частичное совпадение)
+  // 5. Единая таблица ModelContextLimits (частичное совпадение)
   const limit = getContextLimit(modelId)
   if (limit > 0) return limit
 

@@ -334,7 +334,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // Иначе чужое сообщение (стрим завершился в фоне) попадёт в массив
       // текущего чата → коррупция UI: сообщение A видно в чате B, а кеш B
       // при этом не обновлён → при следующем selectChat(B) оно затрётся.
+      //
+      // RACE GUARD: при быстром переключении чатов (send в A → switch на B
+      // → switch обратно на A) selectChat делает setCurrentChat(B) синхронно,
+      // но s.messages ещё содержит сообщения A пока hydrateFromMain(B) не
+      // завершится и setMessagesWindow(B) не отработает. В этом окне
+      // addMessage с chatId=A и currentChatId=A пройдёт проверку выше, но
+      // запишет сообщение A поверх сообщений B (если setMessagesWindow(B)
+      // успел выполниться). Проверяем последний элемент: если он чужого
+      // chatId — s.messages contaminated, пишем только в кеш.
       if (message.chatId === s.currentChatId) {
+        const lastMsg = s.messages[s.messages.length - 1]
+        if (lastMsg && lastMsg.chatId !== message.chatId) {
+          return { messagesByChat: byChat }
+        }
         return { messages: [...s.messages, message], messagesByChat: byChat }
       }
       return { messagesByChat: byChat }
@@ -361,7 +374,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           [message.chatId]: { messages: [...cached.messages, message], hasOlder: cached.hasOlder },
         }
       }
+      // RACE GUARD (см. addMessage выше): при быстром переключении чатов
+      // s.messages может содержать чужой чат. Не пишем поверх — только кеш.
       if (message.chatId === s.currentChatId) {
+        const lastMsg = s.messages[s.messages.length - 1]
+        if (lastMsg && lastMsg.chatId !== message.chatId) {
+          return { liveByChat: nextLive, messagesByChat: byChat }
+        }
         return { liveByChat: nextLive, messages: [...s.messages, message], messagesByChat: byChat }
       }
       return { liveByChat: nextLive, messagesByChat: byChat }

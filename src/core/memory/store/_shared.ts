@@ -99,9 +99,11 @@ export interface SearchResult {
  * Поле source указывает откуда пришёл результат.
  * Для messages/pinned дополнительно: chatId, chatTitle, messageId, role, date.
  * Для memory: kind, scope, key (внутри item).
+ * Для graph: связанные сущности knowledge graph (1-hop соседи найденных
+ * memory items) — ассоциативные подсказки, score фиксированный.
  */
 export interface MultiSourceResult {
-  source: 'memory' | SearchSourceName
+  source: 'memory' | SearchSourceName | 'graph'
   content: string
   score: number // 0..1, normalized для сравнения между источниками
   // Memory-specific (когда source='memory'):

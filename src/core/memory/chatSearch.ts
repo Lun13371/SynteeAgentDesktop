@@ -51,8 +51,10 @@ function truncate(text: string, max = MAX_CONTENT_CHARS): string {
  * Для длинных запросов (>60 символов) разбиваем на ключевые слова через OR —
  * это улучшает поиск: вместо точного совпадения длинной фразы, ищем совпадения
  * по отдельным словам, что даёт больше релевантных результатов.
+ *
+ * Экспортируется для search.ts (FTS-канал по memory_fts).
  */
-function sanitizeFtsQuery(query: string): string | null {
+export function sanitizeFtsQuery(query: string): string | null {
   const trimmed = query.trim()
   if (trimmed.length < 3) return null
   // Удаляем двойные кавычки (FTS5 строковый разделитель)

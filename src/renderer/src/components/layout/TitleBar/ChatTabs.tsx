@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Reorder, motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import FileIcon from '../../ui/FileIcon/FileIcon'
@@ -90,8 +90,54 @@ export default function ChatTabs() {
 
   const splitChat = splitChatId ? chatById.get(splitChatId) : undefined
 
+  // ── Кастомный скроллбар + горизонтальный скролл колесиком ──
+  const tabsRef = useRef<HTMLDivElement>(null)
+  const [scrollThumb, setScrollThumb] = useState<{ left: number; width: number } | null>(null)
+
+  const updateScrollbar = useCallback(() => {
+    const el = tabsRef.current
+    if (!el) return
+    const { scrollWidth, clientWidth, scrollLeft } = el
+    if (scrollWidth <= clientWidth) {
+      setScrollThumb(null)
+      return
+    }
+    // Скроллбар-трек имеет padding 8px с каждой стороны (left:8, right:8)
+    const trackWidth = clientWidth - 16
+    const ratio = clientWidth / scrollWidth
+    const width = Math.max(20, ratio * trackWidth)
+    const left = (scrollLeft / (scrollWidth - clientWidth)) * (trackWidth - width)
+    setScrollThumb({ left, width })
+  }, [])
+
+  useEffect(() => {
+    const el = tabsRef.current
+    if (!el) return
+    updateScrollbar()
+    // Нативный scroll-listener — надёжнее React onScroll (срабатывает при
+    // программном scrollLeft += ... из handleWheel)
+    const onScroll = () => updateScrollbar()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const ro = new ResizeObserver(updateScrollbar)
+    ro.observe(el)
+    const mo = new MutationObserver(updateScrollbar)
+    mo.observe(el, { childList: true, subtree: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      ro.disconnect()
+      mo.disconnect()
+    }
+  }, [updateScrollbar, tabIds.length, fileTabIds.length])
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    const el = tabsRef.current
+    if (!el) return
+    el.scrollLeft += e.deltaY
+  }, [])
+
   return (
-    <div className="titlebar-tabs">
+    <div className="titlebar-tabs-wrap">
+    <div className="titlebar-tabs" ref={tabsRef} onWheel={handleWheel}>
       {/* ── Табы чатов ── */}
       <Reorder.Group
         as="div"
@@ -113,6 +159,9 @@ export default function ChatTabs() {
               className={`titlebar-tab no-drag ${active ? 'titlebar-tab--active' : ''}`}
               onClick={() => handleSelect(id)}
               onContextMenu={e => handleCtx(e, chat)}
+              onMouseDown={(e: React.MouseEvent) => {
+                if (e.button === 1) e.preventDefault() // подавить автоскролл
+              }}
               onAuxClick={(e: React.MouseEvent) => {
                 e.preventDefault()
                 if (e.button === 1 && tabIds.length > 1) handleClose(id)
@@ -175,6 +224,9 @@ export default function ChatTabs() {
                 className={`titlebar-tab no-drag ${active ? 'titlebar-tab--active' : ''}`}
                 onClick={() => handleFileSelect(tab.id)}
                 onContextMenu={e => handleFileCtx(e, tab.id)}
+                onMouseDown={(e: React.MouseEvent) => {
+                  if (e.button === 1) e.preventDefault() // подавить автоскролл
+                }}
                 onAuxClick={(e: React.MouseEvent) => {
                   e.preventDefault()
                   if (e.button === 1) handleFileClose(tab.id)
@@ -251,6 +303,17 @@ export default function ChatTabs() {
         onClose={() => setFileCtxMenu(null)}
         tabsCount={openFileTabs.length}
       />
+
+      {/* Кастомный скроллбар-индикатор (без стрелок, тонкий) — OUTSIDE скролл-контейнера */}
+      {scrollThumb && (
+        <div className="titlebar-tabs-scrollbar">
+          <div
+            className="titlebar-tabs-scrollbar-thumb"
+            style={{ left: `${scrollThumb.left}px`, width: `${scrollThumb.width}px` }}
+          />
+        </div>
+      )}
+    </div>
     </div>
   )
 }

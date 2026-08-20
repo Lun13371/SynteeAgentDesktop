@@ -12,8 +12,10 @@ import { buildPlanningInjection, buildAskInjection } from '../../core/prompts/bu
 import { getModelContextWindow } from '../../core/context/contextManager'
 import { recordSessionCost, buildSnapshotFromReal } from '../../core/tokens/usageTracker'
 import { initModelCatalog } from '../../core/tokens/modelCatalog'
+import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
+import type { ModelMeta } from '../../shared/types'
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
@@ -27,6 +29,13 @@ const catalogCachePath = (workerData as Record<string, unknown>).catalogCachePat
 if (catalogCachePath) {
   try { initModelCatalog(catalogCachePath) } catch { /* ok — работаем без каталога */ }
 }
+
+// Снапшот кэша gateway-моделей из main: в worker-потоке свой экземпляр кэша
+// (gateway:fetchModels работает только в main), поэтому main передаёт его
+// через workerData. Нужен getModelContextWindow / getModelPriceInfo для
+// провайдера 'syntee-gateway' — gateway первоисточник contextWindow/цен.
+const gatewayModelsSnapshot = (workerData as Record<string, unknown>).gatewayModels as ModelMeta[] | undefined
+if (Array.isArray(gatewayModelsSnapshot)) setGatewayModelsCache(gatewayModelsSnapshot)
 
 // Кэш статусов суб-агентов — обновляется через agent_status_update от main
 const agentStatusCache = new Map<string, { status: string; stepsCount: number; currentStep?: string }>()

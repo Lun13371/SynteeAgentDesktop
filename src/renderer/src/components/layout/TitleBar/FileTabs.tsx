@@ -64,6 +64,9 @@ export default function FileTabs() {
               className={`titlebar-filetab no-drag ${active ? 'titlebar-filetab--active' : ''}`}
               onClick={() => handleSelect(tab.id)}
               onContextMenu={e => handleCtx(e, tab.id)}
+              onMouseDown={(e: React.MouseEvent) => {
+                if (e.button === 1) e.preventDefault() // подавить автоскролл
+              }}
               onAuxClick={(e: React.MouseEvent) => {
                 e.preventDefault()
                 if (e.button === 1) handleClose(tab.id)

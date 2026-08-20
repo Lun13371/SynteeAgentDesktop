@@ -15,6 +15,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .titlebar-logo {
@@ -37,9 +38,18 @@
 }
 
 /* ── Вкладки чатов (как в браузере) ───────────────────────────────────── */
-/* Полоса занимает всё свободное место между брендом и кнопками. Сама
-   полоса — drag-зона окна (наследует от .titlebar), вкладки и «+» —
-   no-drag. overflow: hidden — вкладки сжимаются, излишек клипается. */
+/* Wrap — родительский контейнер: flex:1 + position:relative для скроллбара.
+   .titlebar-tabs — скролл-контейнер (overflow-x: auto, no-drag).
+   .titlebar-tabs-scrollbar — sibling, не скроллится вместе с контентом. */
+.titlebar-tabs-wrap {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
 .titlebar-tabs {
   flex: 1;
   min-width: 0;
@@ -50,24 +60,35 @@
   padding: 0 8px;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: var(--overlay-4) transparent;
+  -webkit-app-region: no-drag;
+  scrollbar-width: none; /* Firefox */
 }
 
+/* WebKit: полностью прячем нативный скроллбар */
 .titlebar-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+/* Кастомный скроллбар-индикатор — вне скролл-контейнера */
+.titlebar-tabs-scrollbar {
+  position: absolute;
+  bottom: 0;
+  left: 8px;
+  right: 8px;
   height: 3px;
+  pointer-events: none;
 }
 
-.titlebar-tabs::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.titlebar-tabs::-webkit-scrollbar-thumb {
+.titlebar-tabs-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  height: 100%;
   background: var(--overlay-4);
   border-radius: 2px;
+  transition: background 0.15s;
 }
 
-.titlebar-tabs::-webkit-scrollbar-thumb:hover {
+.titlebar-tabs-scrollbar-thumb:hover {
   background: var(--overlay-5);
 }
 
@@ -84,9 +105,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 0 1 160px;
+  flex: 1 1 auto;
   min-width: 80px;
-  max-width: 180px;
+  max-width: 280px;
   height: 30px;
   padding: 0 6px 0 10px;
   border: none;

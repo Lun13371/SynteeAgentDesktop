@@ -59,6 +59,22 @@ export function runIncrementalMigrations(db: Database.Database): void {
     }
   }
 
+  // ── memory_fts: FTS5 trigram индекс по memory_items (title + content) ──────
+  // Схема (таблица + триггеры) создаётся в initialSchema (CREATE IF NOT EXISTS
+  // выполняется и на существующих БД при каждом старте). Здесь — одноразовый
+  // backfill существующих записей: триггеры срабатывают только на новые записи.
+  {
+    const ftsCount = (db.prepare(`SELECT COUNT(*) as c FROM memory_fts`).get() as { c: number }).c
+    const miCount = (db.prepare(`SELECT COUNT(*) as c FROM memory_items`).get() as { c: number }).c
+    if (ftsCount === 0 && miCount > 0) {
+      const t0 = Date.now()
+      db.prepare(
+        `INSERT INTO memory_fts(title, content, item_id) SELECT title, content, id FROM memory_items`
+      ).run()
+      console.log(`[migrations] memory_fts: backfilled ${miCount} memory items in ${Date.now() - t0}ms`)
+    }
+  }
+
   // Автомиграция: name колонка в chat_checkpoints — для именованных снапшотов
   // (/snapshot <name>). NULL у обычных чекпоинтов (auto-checkpoint на каждый turn).
   // Именованные снапшоты — поименованные точки отката, которые пользователь
