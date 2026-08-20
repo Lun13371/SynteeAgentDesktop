@@ -26,7 +26,7 @@ import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } fr
 
 import { onCompactionTrigger } from '../../core/memory/extractor'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
-import { getGraphStats, getProjectGraph, formatGraphForAI } from '../../core/memory/graphStore'
+import { getGraphStats } from '../../core/memory/graphStore'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectInstructions } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
@@ -62,12 +62,75 @@ import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
 import {
   confirmCallbacks, questionCallbacks,
   activeRuns, lastActiveChatId, setLastActiveChatId, compactRuns, activeRunMeta,
-  chatQueues, scheduleIdleExtraction, cancelIdleExtraction, emitRunStatus, getChatTitleForNotif,
+  chatQueues, autoRecallInjectedKeys, scheduleIdleExtraction, cancelIdleExtraction, emitRunStatus, getChatTitleForNotif,
   type ActiveRun, type QueuedSend,
 } from './chatShared'
 import { registerProjectsIPC } from './projects.ipc'
 import { registerCheckpointIPC } from './chatCheckpoint.ipc'
 import { registerForkIPC } from './chatFork.ipc'
+
+// ── Auto-recall helpers ─────────────────────────────────────────────────────
+
+/** Stopwords для keyword extraction (Russian + English). */
+const RECALL_STOPWORDS = new Set<string>([
+  // Russian
+  'как', 'что', 'это', 'для', 'на', 'по', 'не', 'но', 'или', 'и', 'а', 'то',
+  'же', 'бы', 'ли', 'ни', 'какой', 'какая', 'который', 'которая', 'его', 'её',
+  'их', 'мы', 'вы', 'он', 'она', 'они', 'меня', 'тебя', 'этом', 'эта', 'эти',
+  'эту', 'всё', 'все', 'всех', 'там', 'тут', 'где', 'когда', 'тогда', 'чтобы',
+  'потому', 'если', 'уже', 'ещё', 'был', 'была', 'есть', 'нет', 'надо', 'нужно',
+  'можно', 'нельзя', 'так', 'такой', 'за', 'из', 'от', 'до', 'об', 'при', 'про',
+  'над', 'под', 'без', 'через', 'мне', 'тебе', 'ему', 'ей', 'им', 'вам', 'нам',
+  'чтобы', 'тоже', 'ведь', 'вот', 'чем', 'того', 'тому', 'ними', 'ней', 'ним',
+  // English
+  'the', 'a', 'an', 'and', 'or', 'but', 'not', 'no', 'yes', 'is', 'are', 'was',
+  'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+  'will', 'would', 'could', 'should', 'may', 'might', 'can', 'for', 'in', 'on',
+  'at', 'to', 'of', 'from', 'with', 'by', 'as', 'this', 'that', 'these',
+  'those', 'it', 'its', 'they', 'them', 'their', 'we', 'us', 'our', 'you',
+  'your', 'he', 'his', 'she', 'her', 'what', 'which', 'who', 'when', 'where',
+  'why', 'how', 'all', 'each', 'every', 'both', 'about', 'into', 'out', 'up',
+  'down', 'over', 'under', 'again', 'just', 'also', 'than', 'then', 'here',
+])
+
+/**
+ * Извлекает ключевые слова из текста пользователя для auto-recall.
+ * Удаляет stopwords, оставляет слова длиной ≥ 3 (trigram-минимум),
+ * берёт топ-10 уникальных. Возвращает строку для FTS5/TF-IDF поиска.
+ * Если keyword extraction даёт пустой результат — fallback на raw text.
+ */
+function extractRecallKeywords(text: string): string {
+  const words = text
+    .toLowerCase()
+    .replace(/[^\w\u0400-\u04FF]/g, ' ') // keep Cyrillic + word chars
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !RECALL_STOPWORDS.has(w))
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const w of words) {
+    if (!seen.has(w)) { seen.add(w); unique.push(w) }
+  }
+  const result = unique.slice(0, 10).join(' ')
+  // Fallback: если extraction дал пустой или слишком короткий — берём raw
+  return result.length >= 3 ? result : text.slice(0, 200)
+}
+
+/**
+ * Build dedup key for auto-recall result. Used by cross-message dedup:
+ * if the same result was already injected in a previous message, skip it.
+ */
+function getRecallDedupKey(r: { source: string; item?: { id?: string }; messageId?: string; content: string }): string {
+  if (r.source === 'memory' && r.item?.id) return `mem:${r.item.id}`
+  if (r.source === 'messages' && r.messageId) return `msg:${r.messageId}`
+  if (r.source === 'pinned' && r.messageId) return `pin:${r.messageId}`
+  if (r.source === 'graph') {
+    // Для графа ключ — label узла (извлекаем из "[graph:file] contextManager.ts →...")
+    const match = r.content.match(/^\[graph:\w+\]\s+(.+?)(?:\s*→|$)/)
+    return `graph:${match?.[1]?.trim() ?? r.content.slice(0, 50)}`
+  }
+  // summaries, agent_logs — по первым 100 символам контента
+  return `${r.source}:${r.content.slice(0, 100)}`
+}
 
 /**
  * Эмитит снапшот текущей очереди chatId для UI (список ожидающих запросов).
@@ -594,7 +657,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       notesInfo = withRetrySync('notesInfo', () => getProjectNotesInfo(promptProjectId!), undefined)
     }
 
-    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, notesInfo })
+    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents })
 
   }
 
@@ -1150,6 +1213,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, false)
       if (result.compressed) {
+        // Сброс dedup-кэша auto-recall: после компакции модель теряет старый
+        // контекст (старые сообщения заменены summary), старые auto-recall
+        // результаты больше не видны — следующий follow-up инжектит как first.
+        autoRecallInjectedKeys.delete(params.chatId)
         const triggerTokens = Math.floor(realContextWindow * ctxSettings.rollingTriggerPct / 100)
         log('[chat:send] rolling-window компакция chatId=%s: contextWindow=%d triggerTokens=%d(=%d%%) removed=%d сообщений',
           params.chatId, realContextWindow, triggerTokens, ctxSettings.rollingTriggerPct, result.removedCount)
@@ -2532,45 +2599,6 @@ ${subModeOutro}`,
           })()
           break
         }
-        case 'get_graph': {
-          ;(async () => {
-            try {
-              const graphProjectId = msg.projectId as string | undefined
-              if (!graphProjectId) {
-                worker.postMessage({
-                  type: 'get_graph_reply',
-                  replyId: msg.replyId,
-                  success: false,
-                  output: '',
-                  error: 'No project context — get_graph requires a project.',
-                })
-                return
-              }
-              const graph = getProjectGraph(graphProjectId, {
-                nodeTypes: msg.nodeTypes as string[] | undefined,
-                edgeTypes: msg.edgeTypes as string[] | undefined,
-                minWeight: msg.minWeight as number | undefined,
-                limit: msg.limit as number | undefined,
-              })
-              const output = formatGraphForAI(graph, (msg.format as string) ?? 'text')
-              worker.postMessage({
-                type: 'get_graph_reply',
-                replyId: msg.replyId,
-                success: true,
-                output,
-              })
-            } catch (e) {
-              worker.postMessage({
-                type: 'get_graph_reply',
-                replyId: msg.replyId,
-                success: false,
-                output: '',
-                error: (e as Error).message,
-              })
-            }
-          })()
-          break
-        }
         case 'manage_notes': {
           ;(async () => {
             try {
@@ -2921,34 +2949,82 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     let systemPrompt = sideSystemPrompt
     if (!systemPrompt) {
       systemPrompt = await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)
-      const isFirstMessage = processedHistory.length === 0
-      if (!params.incognito && effectiveContent.trim().length > (isFirstMessage ? 10 : 20)) {
-        try {
-          let autoRecallProjectId: string | undefined
-          const wctx = (() => { try { return getChatWorkdirContext(dbChatId) } catch { return null } })()
-          if (wctx?.workdir) {
-            const found = getAllProjects().find(p => p.workdir === wctx.workdir)
-            autoRecallProjectId = found?.id
-          }
-          const results = await searchAllSources({
-            query: effectiveContent.slice(0, 500),
-            projectId: autoRecallProjectId,
-            limit: isFirstMessage ? 10 : 5,
-            sources: isFirstMessage ? 'all' : ['memory'],
-          })
-          // Для follow-up — порог score, чтобы не спамить слабыми матчами
-          const filtered = isFirstMessage ? results : results.filter(r => r.score >= 0.55)
-          if (filtered.length > 0) {
-            const recallLines = filtered.slice(0, isFirstMessage ? 8 : 3).map(r => {
-              const tag = r.source === 'memory' ? `[${r.item?.kind ?? 'memory'}]` : `[${r.source}]`
-              return `- ${tag} ${r.content.slice(0, 300)}`
-            })
-            systemPrompt += `\n## Relevant past context (auto-recall)\n${recallLines.join('\n')}\n`
-            log('[chat:send] auto-recall: %d results for %s message (chatId=%s)', filtered.length, isFirstMessage ? 'first' : 'follow-up', params.chatId)
-          }
-        } catch (e) {
-          log('[chat:send] auto-recall failed: %s', (e as Error).message)
+    }
+
+    // ── Auto-recall: всегда запускается (даже при sideSystemPrompt) ──
+    // A1: вынесено из-под guard !sideSystemPrompt — recall работает всегда.
+    // A2: follow-up включает messages + summaries (не только memory).
+    // A3: порог follow-up понижен с 0.55 до 0.40.
+    // C1: keyword extraction из user message вместо raw text.
+    // D3: cross-project fallback если project-scope дал 0 результатов.
+    const isFirstMessage = processedHistory.length === 0
+    if (!params.incognito && effectiveContent.trim().length > (isFirstMessage ? 10 : 20)) {
+      try {
+        let autoRecallProjectId: string | undefined
+        const wctx = (() => { try { return getChatWorkdirContext(dbChatId) } catch { return null } })()
+        if (wctx?.workdir) {
+          const found = getAllProjects().find(p => p.workdir === wctx.workdir)
+          autoRecallProjectId = found?.id
         }
+
+        // C1: keyword extraction — убирает stopwords, оставляет значимые термины
+        const recallQuery = extractRecallKeywords(effectiveContent.slice(0, 500))
+
+        let results = await searchAllSources({
+          query: recallQuery,
+          projectId: autoRecallProjectId,
+          limit: isFirstMessage ? 10 : 5,
+          sources: isFirstMessage ? 'all' : ['memory', 'messages', 'summaries'],
+        })
+
+        // D3: cross-project fallback — если project-scope дал 0, ищем глобально
+        if (results.length === 0 && autoRecallProjectId) {
+          results = await searchAllSources({
+            query: recallQuery,
+            crossProject: true,
+            limit: isFirstMessage ? 10 : 5,
+            sources: isFirstMessage ? 'all' : ['memory', 'messages', 'summaries'],
+          })
+        }
+
+        // A3: порог для follow-up понижен (0.55 → 0.40)
+        const filtered = isFirstMessage ? results : results.filter(r => r.score >= 0.40)
+
+        // ── Cross-message dedup: пропускаем то, что модель уже видела ──
+        // На follow-up в том же топике те же memory/graph результаты найдутся
+        // повторно — инжектить их бессмысленно (модель уже имеет контекст).
+        // First message: всё новое (Set пуст). После компакции: Set очищен.
+        const injectedKeys = isFirstMessage
+          ? new Set<string>()
+          : autoRecallInjectedKeys.get(params.chatId) ?? new Set<string>()
+
+        const newResults = isFirstMessage
+          ? filtered
+          : filtered.filter(r => !injectedKeys.has(getRecallDedupKey(r)))
+
+        if (newResults.length > 0) {
+          const toInject = newResults.slice(0, isFirstMessage ? 8 : 4)
+          const recallLines = toInject.map(r => {
+            const tag = r.source === 'memory' ? `[${r.item?.kind ?? 'memory'}]` : `[${r.source}]`
+            return `- ${tag} ${r.content.slice(0, 300)}`
+          })
+          systemPrompt += `\n## Relevant past context (auto-recall)\n${recallLines.join('\n')}\n`
+          log('[chat:send] auto-recall: %d new results (%d deduped) for %s message (chatId=%s)',
+            newResults.length, filtered.length - newResults.length,
+            isFirstMessage ? 'first' : 'follow-up', params.chatId)
+
+          // Обновляем Set: добавляем ключи инжектированных результатов
+          const updatedKeys = new Set(injectedKeys)
+          for (const r of toInject) {
+            updatedKeys.add(getRecallDedupKey(r))
+          }
+          autoRecallInjectedKeys.set(params.chatId, updatedKeys)
+        } else if (filtered.length > 0) {
+          log('[chat:send] auto-recall: 0 new results (%d already seen) for follow-up (chatId=%s)',
+            filtered.length, params.chatId)
+        }
+      } catch (e) {
+        log('[chat:send] auto-recall failed: %s', (e as Error).message)
       }
     }
 
@@ -3016,6 +3092,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     }
     activeRunMeta.delete(chatId)
     chatQueues.delete(chatId)
+    autoRecallInjectedKeys.delete(chatId)
     cancelIdleExtraction(chatId)
     deleteChat(chatId)
     clearFileCache(chatId)

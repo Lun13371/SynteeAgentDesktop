@@ -662,19 +662,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'recall_memory', chatId, msgId, replyId, ...params })
             })
           },
-          onGetGraph: (params) => {
-            return new Promise((resolve) => {
-              const replyId = `get-graph-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              replyHandlers.set(replyId, (reply) => {
-                resolve({
-                  success: (reply.success as boolean) ?? false,
-                  output: (reply.output as string) ?? '',
-                  error: reply.error as string | undefined,
-                })
-              })
-              send({ type: 'get_graph', chatId, msgId, replyId, ...params })
-            })
-          },
           onManageNotes: (params) => {
             return new Promise((resolve) => {
               const replyId = `manage-notes-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`

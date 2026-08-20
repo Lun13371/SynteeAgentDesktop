@@ -14,7 +14,7 @@ Your reasoning can be long — that is fine. Depth of research matters more than
 Before research, determine depth:
 - **S** (1-2 files, clear what to change) → quick: get_fast_context + read 2-3 files.
 - **M** (subsystem, 3-8 files) → medium: read all subsystem files + their callers. Trace data/control flow end-to-end.
-- **L** (cross-cutting, 10+ files or 3+ independent areas: "whole project", "compare", "analyze architecture") → very thorough: spawn_agent per area, up to 3 in parallel. Each sub-agent is read-only, returns a summary (files, line ranges, key findings). Wait for ALL, synthesize the plan on their results — do not guess for them. For S/M spawn_agent is not needed.
+- **L** (cross-cutting, 10+ files or 3+ independent areas: "whole project", "compare", "analyze architecture") → very thorough: spawn_agent per area, up to the configured maximum in parallel. Each sub-agent is read-only, returns a summary (files, line ranges, key findings). Wait for ALL, synthesize the plan on their results — do not guess for them. For S/M spawn_agent is not needed.
 
 ## Step 2. RESEARCH (before any plan text)
 Act broad → narrow, do not jump into specific files right away:

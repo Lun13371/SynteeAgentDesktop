@@ -20,6 +20,19 @@ export function runIncrementalMigrations(db: Database.Database): void {
     }
   }
 
+  // Backfill chat_summaries_fts существующими резюме (одноразово при первом запуске).
+  {
+    const ftsCount = (db.prepare(`SELECT COUNT(*) as c FROM chat_summaries_fts`).get() as { c: number }).c
+    const csCount = (db.prepare(`SELECT COUNT(*) as c FROM chat_summaries`).get() as { c: number }).c
+    if (ftsCount === 0 && csCount > 0) {
+      const t0 = Date.now()
+      db.prepare(
+        `INSERT INTO chat_summaries_fts(content, chat_id) SELECT content, chat_id FROM chat_summaries`
+      ).run()
+      console.log(`[migrations] chat_summaries_fts: backfilled ${csCount} summaries in ${Date.now() - t0}ms`)
+    }
+  }
+
   // Автомиграция: добавляем relevance_boost колонку для существующих БД.
   // PRAGMA table_info возвращает колонки; если relevance_boost нет — ALTER TABLE ADD COLUMN.
   {

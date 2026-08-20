@@ -1621,7 +1621,7 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
             value={agentSettings.maxParallelSubAgents}
             onChange={e => updateAgent({ maxParallelSubAgents: Number(e.target.value) })}
           >
-            {[1, 2, 3, 4, 6, 8].map(n => (
+            {[5, 6, 7, 8, 9, 10].map(n => (
               <option key={n} value={n}>{n}</option>
             ))}
           </select>

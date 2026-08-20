@@ -23,7 +23,7 @@ export const TOOL_SCHEMAS = [
 ]
 
 // Dynamic tool set — added by mode
-const TOOL_BY_NAME = new Map(
+const TOOL_BY_NAME = new Map<string, (typeof TOOL_SCHEMAS)[number]>(
   TOOL_SCHEMAS.map(schema => [schema.function.name, schema]),
 )
 
@@ -93,8 +93,6 @@ export function getToolSchemas(options: {
     // Always available — the model decides when to save/recall.
     'save_memory',
     'recall_memory',
-    // Knowledge graph: query project structure (file relationships, decisions).
-    'get_graph',
     // Notes: manage project/chat notes (create/update/delete/list).
     'manage_notes',
     // Web search, HTTP and sub-agents — always available to the agent, the

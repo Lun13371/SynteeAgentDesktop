@@ -25,7 +25,7 @@ export const MEMORY_TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'recall_memory',
-      description: 'Find relevant memories and past context. Searches 5 sources IN PARALLEL: (1) long-term memory — facts/decisions/conventions/dialog outcomes (hybrid TF-IDF + FTS5 trigram), (2) messages of all chats in scope (FTS5 trigram), (3) chat summaries (compact outcomes of long dialogs), (4) agent action logs — which tools were called, errors, (5) pinned messages. Additionally expands top memory hits into the knowledge graph: related files/concepts/decisions (1-hop neighbors) appear as [graph] entries — associative context that keyword search misses. Scope: if in a project — searches this project chats; if not — chats without a project. Global memory is ALWAYS in the search. Returns top-20 results with score and source, grouped by source.\n\nWHEN TO USE: start of a new task (especially in a project), "do you remember?", "how we did", "what we decided on X", unfamiliar project/file, a past decision/error mentioned, before an architectural decision.\n\nHOW TO WRITE THE QUERY: use keywords, not full sentences. Good: "JWT authorization", "TypeScript preferences", "ESLint error", "why Postgres". Bad: "tell me everything you know about the project".',
+      description: 'Find relevant memories and past context. Searches 5 sources IN PARALLEL: (1) long-term memory — facts/decisions/conventions/dialog outcomes (hybrid TF-IDF + FTS5 trigram), (2) messages of all chats in scope (FTS5 trigram), (3) chat summaries (FTS5 trigram — compact outcomes of long dialogs), (4) agent action logs — which tools were called, errors, (5) pinned messages. Additionally searches the knowledge graph DIRECTLY by keywords: matching files/decisions/concepts appear with their connections (e.g. "contextManager.ts →imports→ embeddings.ts, →calls→ cosineSimilarity") as [graph] entries — this gives you a map of project structure without calling any extra tool. MMR diversification removes duplicate topics. Scope: if in a project — searches this project chats; if not — chats without a project. Global memory is ALWAYS in the search. Returns top-20 results sorted by relevance score.\n\nWHEN TO USE: start of a new task (especially in a project), "do you remember?", "how we did", "what we decided on X", unfamiliar project/file, a past decision/error mentioned, before an architectural decision.\n\nHOW TO WRITE THE QUERY: use keywords, not full sentences. Good: "JWT authorization", "TypeScript preferences", "ESLint error", "why Postgres". Bad: "tell me everything you know about the project".',
       parameters: {
         type: 'object',
         properties: {
@@ -55,24 +55,6 @@ export const MEMORY_TOOL_SCHEMAS = [
           note_id: { type: 'string', description: '[update/delete] ID of the note to update or delete.' },
         },
         required: ['action', 'scope'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_graph',
-      description: 'Query the project knowledge graph — file relationships (who imports whom, who calls whom), decision→file links, concept connections. Use to understand project structure: which files are central hubs, what a decision affects, how files relate. Returns formatted text or mermaid diagram.',
-      parameters: {
-        type: 'object',
-        properties: {
-          nodeTypes: { type: 'array', items: { type: 'string', enum: ['decision', 'concept', 'file', 'symbol', 'conversation', 'task'] }, description: 'Filter by node type (optional). E.g. ["file"] — only file nodes. ["decision","file"] — decisions and files. Default: all types.' },
-          edgeTypes: { type: 'array', items: { type: 'string', enum: ['affects', 'mentions', 'implemented_in', 'depends_on', 'supersedes', 'references', 'imports', 'calls', 'implements'] }, description: 'Filter by edge type (optional). E.g. ["imports"] — only import relationships. Default: all types.' },
-          minWeight: { type: 'number', description: 'Minimum node weight (default 0). Higher = only well-connected nodes.' },
-          limit: { type: 'number', description: 'Max nodes to return (default 100). Edges are filtered to only those between returned nodes.' },
-          format: { type: 'string', enum: ['text', 'mermaid'], description: 'Output format. text — grouped list of nodes + edges (compact, for reading). mermaid — mermaid flowchart diagram (for visualization). Default: text.' },
-        },
-        required: [],
       },
     },
   },

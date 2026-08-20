@@ -22,7 +22,7 @@ import { startThemeScheduler } from './utils/themeScheduler'
 import type { CustomTheme, Chat as ChatType, Message } from '../../shared/types'
 import ChatPage from './pages/Chat/ChatPage'
 // ── Lazy loading страниц — каждая страница грузится отдельным chunk'ом
-// только при открытии. Это убирает vis-network, Settings-компоненты,
+// только при открытии. Это убирает d3-force graph, Settings-компоненты,
 // Messenger и Login из основного бандла → минус ~200-400MB RAM.
 import './pages/Overlay/OverlayPage.css'
 import './pages/Voice/VoicePage.css'

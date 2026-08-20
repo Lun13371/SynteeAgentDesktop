@@ -362,21 +362,29 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // 1. Очистка live-состояния (live-пузырь схлопывается)
       const nextLive = { ...s.liveByChat }
       delete nextLive[chatId]
-      // 2. Добавление финального сообщения
-      if (s.messages.some(m => m.id === message.id)) {
-        return { liveByChat: nextLive }
-      }
+      // 2. Финальное сообщение. Checkpoint-таймер main мог сохранить partial
+      // с тем же id в БД, и фоновая сверка могла тащить его в кэш/messages.
+      // Заменяем partial по id, не пропускаем (иначе огрызок остаётся навсегда).
       const cached = s.messagesByChat[message.chatId]
       let byChat = s.messagesByChat
       if (cached) {
-        byChat = {
-          ...s.messagesByChat,
-          [message.chatId]: { messages: [...cached.messages, message], hasOlder: cached.hasOlder },
+        const idx = cached.messages.findIndex(m => m.id === message.id)
+        if (idx >= 0) {
+          const newMsgs = [...cached.messages]
+          newMsgs[idx] = message
+          byChat = { ...s.messagesByChat, [message.chatId]: { messages: newMsgs, hasOlder: cached.hasOlder } }
+        } else {
+          byChat = { ...s.messagesByChat, [message.chatId]: { messages: [...cached.messages, message], hasOlder: cached.hasOlder } }
         }
       }
-      // RACE GUARD (см. addMessage выше): при быстром переключении чатов
-      // s.messages может содержать чужой чат. Не пишем поверх — только кеш.
+      // s.messages: заменяем partial если найден, иначе добавляем (с race guard)
       if (message.chatId === s.currentChatId) {
+        const idx = s.messages.findIndex(m => m.id === message.id)
+        if (idx >= 0) {
+          const newMsgs = [...s.messages]
+          newMsgs[idx] = message
+          return { liveByChat: nextLive, messages: newMsgs, messagesByChat: byChat }
+        }
         const lastMsg = s.messages[s.messages.length - 1]
         if (lastMsg && lastMsg.chatId !== message.chatId) {
           return { liveByChat: nextLive, messagesByChat: byChat }
