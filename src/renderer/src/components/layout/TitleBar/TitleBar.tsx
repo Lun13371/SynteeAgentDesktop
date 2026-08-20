@@ -62,7 +62,8 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
         <span className="titlebar-title">Syntee</span>
       </div>
 
-      {/* Единая полоса вкладок: чаты и файлы в одном ряду, одинаковый стиль. */}
+      {/* Единая полоса вкладок: чаты и файлы в одном ряду, одинаковый стиль.
+          drag-region на wrap в ChatTabs.tsx — пустое место перетаскивает окно. */}
       <ChatTabs />
 
       <div className="titlebar-right no-drag">
@@ -131,6 +132,7 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
             )}
           </motion.button>
         )}
+        <div className="titlebar-controls-divider" />
         <IconButton icon="minus" label="Свернуть" onClick={handleMinimize} />
         <IconButton
           icon={maximized ? 'restore' : 'maximize'}

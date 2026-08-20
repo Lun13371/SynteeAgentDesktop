@@ -136,7 +136,7 @@ export default function ChatTabs() {
   }, [])
 
   return (
-    <div className="titlebar-tabs-wrap">
+    <div className="titlebar-tabs-wrap drag-region">
     <div className="titlebar-tabs" ref={tabsRef} onWheel={handleWheel}>
       {/* ── Табы чатов ── */}
       <Reorder.Group
