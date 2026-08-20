@@ -315,6 +315,39 @@ export function runInitialSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_mi_dedup ON memory_items(scope, key);
     CREATE INDEX IF NOT EXISTS idx_mi_access ON memory_items(last_accessed_at);
 
+    -- === FTS5 полнотекстовый поиск по memory_items ===
+    -- Второй канал поиска памяти (первый — TF-IDF cosine). Trigram-токенайзер
+    -- находит морфологические варианты ('улучшени' матчит 'улучшение/улучшения'),
+    -- что критично для русского языка, и даёт кандидатов вне top-500 importance.
+    -- item_id UNINDEXED — хранится для JOIN, не участвует в поиске.
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+      title,
+      content,
+      item_id UNINDEXED,
+      tokenize='trigram'
+    );
+
+    -- Триггеры: авто-синхронизация memory_fts при INSERT/UPDATE/DELETE memory_items.
+    -- UPDATE-триггер только на title/content — bump access_count/importance
+    -- не пересоздаёт FTS-строку.
+    CREATE TRIGGER IF NOT EXISTS memory_fts_ai AFTER INSERT ON memory_items
+      BEGIN
+        INSERT INTO memory_fts(title, content, item_id)
+        VALUES (new.title, new.content, new.id);
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items
+      BEGIN
+        DELETE FROM memory_fts WHERE item_id = old.id;
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS memory_fts_au AFTER UPDATE OF title, content ON memory_items
+      BEGIN
+        DELETE FROM memory_fts WHERE item_id = old.id;
+        INSERT INTO memory_fts(title, content, item_id)
+        VALUES (new.title, new.content, new.id);
+      END;
+
     -- === Динамические категории памяти ===
     -- Кастомные категории (global или project-scoped) для организации памяти
     -- "по полочкам". Builtin категории (personal/work/preferences/projects/facts)

@@ -462,7 +462,7 @@ export class AIClient {
         })
         return res.choices[0]?.message?.content || ''
       } catch (err: unknown) {
-        const error = err as { status?: number }
+        const error = err as { status?: number; message?: string }
         if (error?.status === 429) {
           if (Date.now() >= deadlineMs) {
             throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
@@ -475,6 +475,20 @@ export class AIClient {
           const fresh = await refreshGatewayTokenAfter401()
           if (fresh) { client = await this.getClientForRoleAsync(modelType); continue }
           throw new Error('Syntee session expired — sign in again (Profile → Sign In).')
+        }
+        // Сетевые ошибки / 5xx — ретрай с бэккоффом (как в streamChat).
+        // Раньше пробрасывались сразу — из-за этого, например, молча
+        // падала генерация названий чатов (autoNameChat).
+        const errMessage = (error?.message || '').toLowerCase()
+        const isNetwork = !error?.status || error.status >= 500 ||
+          errMessage.includes('econnreset') || errMessage.includes('etimedout') ||
+          errMessage.includes('enotfound') || errMessage.includes('fetch failed') ||
+          errMessage.includes('network') || errMessage.includes('socket')
+        if (isNetwork && attempt < this.maxRetries) {
+          if (Date.now() >= deadlineMs) {
+            throw new Error(`Overall AI response wait time exceeded (${Math.round(OVERALL_TIMEOUT_MS / 1000)}s). Try again later or switch provider.`)
+          }
+          await sleep(backoffDelay(attempt)); attempt++; continue
         }
         throw err
       }

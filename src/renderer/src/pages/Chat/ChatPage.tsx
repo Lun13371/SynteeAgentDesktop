@@ -819,7 +819,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         const curLastId = cached?.messages.length ? cached.messages[cached.messages.length - 1].id : null
         const freshLastId = res.messages.length ? res.messages[res.messages.length - 1].id : null
         if (curLastId !== freshLastId) {
-          setMessagesWindow(curId, res.messages, res.hasMore)
+          // RACE GUARD: кэш может быть новее БД (finalizeStreamMessage уже
+          // добавила ответ, а getMessagesPage вернул stale-данные ДО sendDone).
+          // Сравниваем createdAt последнего сообщения: если кэш новее — не
+          // перетираем (иначе ответ исчезнет до следующего перезахода).
+          const curLastTs = cached?.messages.length ? cached.messages[cached.messages.length - 1].createdAt : 0
+          const freshLastTs = res.messages.length ? res.messages[res.messages.length - 1].createdAt : 0
+          if (curLastTs <= freshLastTs) {
+            setMessagesWindow(curId, res.messages, res.hasMore)
+          }
         } else if (isCurrent && st.hasOlderMessages !== res.hasMore) {
           setHasOlderMessages(res.hasMore)
         }
@@ -1011,11 +1019,21 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
           const cachedLastId = cached?.messages.length ? cached.messages[cached.messages.length - 1].id : null
           const freshLastId = res.messages.length ? res.messages[res.messages.length - 1].id : null
           if (cachedLastId !== freshLastId) {
-            // Пока пользователя не было — пришли новые сообщения. Обновляем окно.
-            setMessagesWindow(id, res.messages, res.hasMore)
-            if (isCurrent) {
-              isInitialScrollRef.current = true
-              requestAnimationFrame(() => pinAutoscroll(true))
+            // RACE GUARD: кэш может быть новее БД. Сценарий: отправил запрос
+            // → переключился на другой чат → вернулся → cache hit показал
+            // кэш (с userMsg) → фоновая сверка ушла в main ДО завершения
+            // стрима → стрим завершился, finalizeStreamMessage добавила ответ
+            // в кэш → getMessagesPage вернулся БЕЗ ответа (stale) → если
+            // просто сравнить lastId, кэш (с ответом) перетёрся бы stale-данными
+            // без ответа. Проверяем createdAt: кэш новее → не трогаем.
+            const cachedLastTs = cached?.messages.length ? cached.messages[cached.messages.length - 1].createdAt : 0
+            const freshLastTs = res.messages.length ? res.messages[res.messages.length - 1].createdAt : 0
+            if (cachedLastTs <= freshLastTs) {
+              setMessagesWindow(id, res.messages, res.hasMore)
+              if (isCurrent) {
+                isInitialScrollRef.current = true
+                requestAnimationFrame(() => pinAutoscroll(true))
+              }
             }
           } else if (isCurrent && st.hasOlderMessages !== res.hasMore) {
             setHasOlderMessages(res.hasMore)

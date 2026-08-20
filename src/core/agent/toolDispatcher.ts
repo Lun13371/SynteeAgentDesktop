@@ -460,7 +460,7 @@ export class ToolDispatcher {
           }
           const sourceLabels: Record<string, string> = {
             memory: 'Память', messages: 'Сообщения', summaries: 'Резюме чатов',
-            agent_logs: 'Логи агента', pinned: 'Закреплённые',
+            agent_logs: 'Логи агента', pinned: 'Закреплённые', graph: 'Граф знаний',
           }
           const lines: string[] = []
           let idx = 1

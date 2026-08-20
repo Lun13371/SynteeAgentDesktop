@@ -7,6 +7,7 @@ import { getToolSchemas } from '../../core/tools'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
+import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import {
   createSubagentWorktree,
   mergeWorktreeBack,
@@ -32,7 +33,7 @@ export type IsolationMode = 'auto' | 'worktree' | 'none'
 
 export interface AgentStep {
   id: string
-  type: 'tool_call' | 'tool_result'
+  type: 'tool_call' | 'tool_result' | 'thought'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -65,6 +66,13 @@ export interface AgentRecord {
   /** Роль суб-агента (researcher/deep-researcher/editor/implementer/reviewer).
    *  undefined = старая запись до миграции → fallback на implementer. */
   role?: string
+  /** Накопленный thinking/reasoning текст (extended thinking, reasoning_content).
+   *  Стримится live через thinking_token сообщения от worker'а. */
+  thinking?: string
+  /** Время thinking в мс (от первого thinking_token до thinking_done). */
+  thinkingMs?: number
+  /** Live-статус агента ("Думаю...", "Анализирую...", "Rate limit — жду 3с..."). */
+  statusText?: string
 }
 
 export interface SubagentContext {
@@ -97,6 +105,10 @@ export interface SubagentContext {
 class AgentManager {
   private agents = new Map<string, AgentRecord>()
   private workers = new Map<string, Worker>()
+  /** Throttle: последний broadcast thinking_token (мс). */
+  private _lastThinkingBroadcast = 0
+  /** Throttle: последний broadcast token (стриминг result). */
+  private _lastTokenBroadcast = 0
   /**
    * Динамический getter окна для broadcast. Раньше был статический Set
    * `windows`, заполняемый один раз в registerWindow(). Но registerAgentIPC
@@ -445,6 +457,10 @@ class AgentManager {
             storeData,
             isSubAgent: true,
             mode: record.mode,
+            // Снапшот кэша gateway-моделей — worker не может фетчить сам
+            // (gateway:fetchModels только в main), а getModelContextWindow
+            // для 'syntee-gateway' берёт contextWindow из этого кэша.
+            gatewayModels: getGatewayModelsCache(),
             gatewayToken,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
             workdir: effectiveWorkdir,
@@ -560,12 +576,54 @@ ${subModeOutro}`
               record.steps.push(ts)
               this.persist(record)
               this.broadcast('agent:update', record)
+            } else if (step.type === 'thought') {
+              // Сохраняем reasoning агента как thought-шаг — для отображения
+              // "процесса мышления" в панели агентов (как в чате).
+              const ts: AgentStep = {
+                id: `${Date.now()}-${Math.random()}`,
+                type: 'thought',
+                content: step.content,
+                timestamp: Date.now(),
+              }
+              record.steps.push(ts)
+              this.persist(record)
+              this.broadcast('agent:update', record)
             }
             break
           }
-          case 'token':
-            record.result += msg.token as string
+          case 'thinking_token': {
+            // Накапливаем thinking текст и стримим в UI
+            const token = msg.token as string
+            record.thinking = (record.thinking ?? '') + token
+            // Throttled broadcast — не на каждый токен, а каждые ~150мс
+            const now = Date.now()
+            if (!this._lastThinkingBroadcast || now - this._lastThinkingBroadcast > 150) {
+              this._lastThinkingBroadcast = now
+              this.broadcast('agent:update', record)
+            }
             break
+          }
+          case 'thinking_done': {
+            record.thinkingMs = msg.thinkingMs as number
+            this.broadcast('agent:update', record)
+            break
+          }
+          case 'agent_status': {
+            // Live-статус агента ("Думаю...", "Rate limit — жду 3с...")
+            record.statusText = msg.text as string
+            this.broadcast('agent:update', record)
+            break
+          }
+          case 'token': {
+            record.result += msg.token as string
+            // Throttled broadcast — стриминг result в UI без флуда
+            const now = Date.now()
+            if (!this._lastTokenBroadcast || now - this._lastTokenBroadcast > 150) {
+              this._lastTokenBroadcast = now
+              this.broadcast('agent:update', record)
+            }
+            break
+          }
           case 'done': {
             // Персистим round-robin индекс ключей провайдера, обновлённый суб-агентом
             if (msg.updatedProviders && this.store) {

@@ -55,8 +55,8 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
 
   return (
     <div className="titlebar drag-region">
-      <div className="titlebar-left no-drag">
-        <div className="titlebar-logo">
+      <div className="titlebar-left drag-region">
+        <div className="titlebar-logo no-drag">
           <Logo size={22} />
         </div>
         <span className="titlebar-title">Syntee</span>
