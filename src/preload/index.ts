@@ -671,6 +671,7 @@ const synteeAPI = {
   // Shell
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
+    showItemInFolder: (path: string) => ipcRenderer.invoke('shell:showItemInFolder', path),
     getExtensionsPaths: () => ipcRenderer.invoke('extensions:getPaths'),
   },
 
@@ -701,6 +702,9 @@ const synteeAPI = {
       ipcRenderer.invoke('fs:writeFile', params),
     checkFilesExist: (params: { root: string; relPaths: string[] }) =>
       ipcRenderer.invoke('fs:checkFilesExist', params),
+    // Stat по абсолютному пути (файл/папка/существует) — для кликабельных путей
+    statPath: (absPath: string) =>
+      ipcRenderer.invoke('fs:statPath', absPath) as Promise<{ exists: boolean; isDir: boolean; isFile: boolean; size: number; resolved: string }>,
   },
 
   // Git-статус для правой панели

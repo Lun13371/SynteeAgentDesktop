@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from 'react'
+import { useEffect, useState, lazy, Suspense, type ComponentType } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useUIStore, isValidTab, type RightPanelTab } from './store/ui.store'
 import { useRightPanelTabsStore } from './store/rightPanelTabs.store'
@@ -33,13 +33,42 @@ import './pages/Memory/MemoryPage.css'
 import './pages/Messenger/MessengerPage.css'
 import './pages/Login/LoginScreen.css'
 import './pages/Notifications/NotificationPage.css'
-const OverlayPage = lazy(() => import('./pages/Overlay/OverlayPage'))
-const VoicePage = lazy(() => import('./pages/Voice/VoicePage'))
-const SpotlightPage = lazy(() => import('./pages/Spotlight/SpotlightPage'))
-const SettingsPage = lazy(() => import('./pages/Settings/SettingsPage'))
-const MemoryPage = lazy(() => import('./pages/Memory/MemoryPage'))
-const MessengerPage = lazy(() => import('./pages/Messenger/MessengerPage'))
-const LoginScreen = lazy(() => import('./pages/Login/LoginScreen'))
+// ── Восстановление после пересборки out/ на лету ─────────────────
+// Если приложение запущено, а out/renderer пересобрали (dev-watch или
+// повторный build), старый бандл ссылается на чанки со старыми хэшами,
+// которых уже нет на диске → lazy import падает с "Failed to fetch
+// dynamically imported module". Лечение — полная перезагрузка окна:
+// index.html подхватит свежий бандл. Флаг в sessionStorage защищает от
+// бесконечного цикла, если чанк реально отсутствует в сборке.
+const CHUNK_RELOAD_GUARD = '__chunk_reload_guard__'
+
+function isStaleChunkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /Failed to fetch dynamically imported module|Importing a module script failed/.test(msg)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- React.lazy сам типизирован через ComponentType<any>
+function lazyWithReload<T extends ComponentType<any>>(
+  factory: () => Promise<{ default: T }>
+) {
+  return lazy(() =>
+    factory().catch((err) => {
+      if (isStaleChunkError(err) && !sessionStorage.getItem(CHUNK_RELOAD_GUARD)) {
+        sessionStorage.setItem(CHUNK_RELOAD_GUARD, '1')
+        window.location.reload()
+      }
+      throw err
+    })
+  )
+}
+
+const OverlayPage = lazyWithReload(() => import('./pages/Overlay/OverlayPage'))
+const VoicePage = lazyWithReload(() => import('./pages/Voice/VoicePage'))
+const SpotlightPage = lazyWithReload(() => import('./pages/Spotlight/SpotlightPage'))
+const SettingsPage = lazyWithReload(() => import('./pages/Settings/SettingsPage'))
+const MemoryPage = lazyWithReload(() => import('./pages/Memory/MemoryPage'))
+const MessengerPage = lazyWithReload(() => import('./pages/Messenger/MessengerPage'))
+const LoginScreen = lazyWithReload(() => import('./pages/Login/LoginScreen'))
 // NotificationPage — НЕ lazy: import напрямую, чтобы overlay-окно не
 // показывало Suspense fallback (BootScreen) при первом уведомлении.
 import NotificationPage from './pages/Notifications/NotificationPage'
@@ -491,6 +520,12 @@ export default function App() {
   // Монтируется один раз — пишет в Zustand store по chatId, чтобы
   // параллельные чаты каждый имели свой LiveState.
   useChatRunSubscription()
+
+  // Свежая сборка успешно загрузилась и смонтировалась — снимаем guard,
+  // чтобы следующая пересборка на лету снова могла авто-перезагрузить окно.
+  useEffect(() => {
+    sessionStorage.removeItem(CHUNK_RELOAD_GUARD)
+  }, [])
 
   // Загружаем визуальные настройки из electron-store при старте
   useEffect(() => {

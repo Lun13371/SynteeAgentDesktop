@@ -461,6 +461,8 @@ function registerSystemIPC(_ctx: IPCContext): void {
     console.error('[Renderer Error]', message, stack)
   })
   ipcMain.handle('shell:openPath', (_, path: string) => shell.openPath(path))
+  // Показать файл в Проводнике (с выделением). Для папок — открыть папку.
+  ipcMain.handle('shell:showItemInFolder', (_, path: string) => shell.showItemInFolder(path))
 
   ipcMain.handle('extensions:getPaths', () => {
     const { app } = require('electron')

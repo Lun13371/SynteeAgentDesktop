@@ -46,6 +46,9 @@
   gap: 12px;
   padding: 24px 16px;
   overflow: hidden;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
 }
 .chat-skeleton-row {
   display: flex;
@@ -137,6 +140,9 @@
   animation: fade-in-up 0.5s ease;
   position: relative;
   z-index: 1;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
 }
 
 .chat-empty-icon {

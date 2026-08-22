@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { readdir as fsReaddir, stat as fsStat, open as fsOpen, writeFile as fsWriteFile, rename as fsRename, mkdir as fsMkdir } from 'fs/promises'
 import { join, resolve as pathResolve, relative, sep, dirname } from 'path'
+import { homedir } from 'os'
 import { getChatWorkdirContext } from '../../core/db'
 
 // Dotfiles, которые нужно показывать несмотря на точку в начале имени.
@@ -28,8 +29,13 @@ export interface FsTreeEntry extends FsEntry {
 }
 
 function safeJoin(root: string, relativePath: string): string | null {
+  // pathResolve(root) нормализует разделители и регистр диска: root с
+  // forward-слэшами (C:/Projects/x) иначе не совпадает с resolved
+  // (native C:\Projects\x\...) и ЛЮБОЙ путь отбрасывается как
+  // «Path outside root» — даже существующие файлы проекта.
+  const rootNorm = pathResolve(root)
   const resolved = pathResolve(root, relativePath)
-  if (resolved !== root && !resolved.startsWith(root + sep)) {
+  if (resolved !== rootNorm && !resolved.startsWith(rootNorm + sep)) {
     return null
   }
   return resolved
@@ -243,6 +249,28 @@ export function registerFsIPC(): void {
       return { success: true, size: st.size, mtime: st.mtimeMs }
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e) }
+    }
+  })
+
+  // ── fs:statPath — stat по абсолютному пути (вне зависимости от workdir) ──
+  // Используется кликабельными путями в сообщениях: до открытия решаем,
+  // файл это (→ правая панель) или папка (→ Проводник через shell:openPath),
+  // и существует ли путь вообще (→ тост «не найдено» вместо сломанного таба).
+  // Абсолютный путь обязателен — относительные резолвит renderer от workdir.
+  // Возвращает resolved — путь с развёрнутым ~ (для shell.openPath и табов).
+  ipcMain.handle('fs:statPath', async (_e, absPath: string) => {
+    const empty = { exists: false, isDir: false, isFile: false, size: 0, resolved: '' }
+    if (typeof absPath !== 'string' || !absPath) return empty
+    // Только абсолютные пути: C:\... , C:/... , /... , \\server\... , ~/...
+    if (!/^([a-zA-Z]:[\\/]|\\\\|\/|~\/)/.test(absPath)) return empty
+    const resolved = absPath.startsWith('~')
+      ? join(homedir(), absPath.slice(2))
+      : absPath
+    try {
+      const st = await fsStat(resolved)
+      return { exists: true, isDir: st.isDirectory(), isFile: st.isFile(), size: st.size, resolved }
+    } catch {
+      return { exists: false, isDir: false, isFile: false, size: 0, resolved }
     }
   })
 

@@ -77,8 +77,8 @@
 }
 
 .inline-attach-thumb {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 4px;
   object-fit: cover;
   flex-shrink: 0;
@@ -122,20 +122,22 @@
   max-width: 100px;
 }
 
-/* В user-сообщениях — картинки больше, как настоящие inline-изображения */
+/* В user-сообщениях — компактные миниатюры (как в Telegram-инлайн):
+   маленькое превью + имя рядом, не раздувает пузырь */
 .message-content .inline-attach--image {
-  padding: 2px;
+  padding: 1px;
   vertical-align: middle;
 }
 
 .message-content .inline-attach--image .inline-attach-thumb {
-  width: 48px;
-  height: 48px;
-  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 5px;
 }
 
 .message-content .inline-attach--image .inline-attach-name {
-  font-size: 12px;
+  font-size: 11.5px;
+  max-width: 110px;
 }
 
 /* Inline-вложения user-сообщения — ПОСЛЕ текста (внутри пузыря, на своём месте) */
