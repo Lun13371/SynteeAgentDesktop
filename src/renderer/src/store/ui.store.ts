@@ -48,6 +48,7 @@ interface UIStore {
   agentPanelWidth: number
   agentPanelOpen: boolean
   agentPanelTab: RightPanelTab
+  agentPanelExpanded: boolean
   animatedBackground: boolean
   bgStyle: string
   msgAnim: string
@@ -81,6 +82,7 @@ interface UIStore {
   setAgentPanelWidth: (width: number) => void
   setAgentPanelOpen: (open: boolean) => void
   setAgentPanelTab: (tab: RightPanelTab) => void
+  setAgentPanelExpanded: (v: boolean) => void
   setCurrentPage: (page: Page) => void
   setLoading: (loading: boolean) => void
   setBgStyle: (style: string) => void
@@ -128,6 +130,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
   agentPanelOpen: false,
   agentPanelTab: 'sidechat',
+  agentPanelExpanded: false,
   animatedBackground: true,
   bgStyle: 'particles',
   msgAnim: 'slide',
@@ -166,6 +169,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
   },
   setAgentPanelTab: (agentPanelTab) => set({ agentPanelTab }),
+  setAgentPanelExpanded: (agentPanelExpanded) => set({ agentPanelExpanded }),
   setCurrentPage: (currentPage) => set({ currentPage }),
   setLoading: (isLoading) => set({ isLoading }),
   setBgStyle: (bgStyle) => set({ bgStyle }),

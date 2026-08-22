@@ -28,6 +28,10 @@
   overflow: hidden;
   background: transparent;
   position: relative;
+  /* Layout containment: изолирует re-layout чата от сиблингов (RightPanel).
+     Браузер может пропустить re-layout сиблингов при изменении чата,
+     и re-layout чата при изменении панели становится дешевле. */
+  contain: layout style;
 }
 
 .chat-tool-chain-wrap {
