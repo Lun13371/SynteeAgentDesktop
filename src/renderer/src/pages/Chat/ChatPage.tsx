@@ -1950,6 +1950,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   style={{
                     height: virtualizer.getTotalSize(),
                     width: '100%',
+                    maxWidth: '900px',
+                    margin: '0 auto',
                     position: 'relative',
                   }}
                 >

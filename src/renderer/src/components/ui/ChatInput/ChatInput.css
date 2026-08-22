@@ -17,8 +17,10 @@
 /* ОСНОВНОЙ БЛОК — бейджи + инпут. Todo-план вынесен в отдельный
     компонент LiveTodoBar вверху чата. */
 .chat-input-main {
-  padding: 0 16px 16px;
+  padding: 0 8px 16px;
   position: relative;
+  max-width: 900px;
+  margin: 0 auto;
 }
 
 /* Rate limit бар над инпутом */
