@@ -798,12 +798,13 @@ ${subModeOutro}`
 }
 
 /**
- * Строит расширенный summary суб-агента: финальный текст (до 3000 симв.) +
- * структурированный хвост (изменённые файлы, diff-и, команды), общий кап ~4000 симв.
- * Заменяет старый подход с обрезкой до 500 симв. без деталей.
+ * Строит расширенный summary суб-агента: финальный текст (до 30000 симв.) +
+ * структурированный хвост (изменённые файлы, diff-и, команды), общий кап ~50000 симв.
+ * Результат суб-агента НЕ должен обрезаться — родительский агент получает полные
+ * данные для синтеза. Кап 50000 — защитный потолок от аномально раздутого вывода.
  */
 function buildSubagentSummary(text: string, details?: unknown): string {
-  const textPart = text.length > 3000 ? text.slice(0, 3000) + '...' : text
+  const textPart = text.length > 30000 ? text.slice(0, 30000) + '...' : text
 
   if (!details || typeof details !== 'object') return textPart
 
@@ -820,11 +821,11 @@ function buildSubagentSummary(text: string, details?: unknown): string {
     parts.push(`\n[Modified files]\n${d.modifiedFiles.map(f => `- ${f}`).join('\n')}`)
   }
   if (d.diffs && d.diffs.length > 0) {
-    const diffLines = d.diffs.slice(-15).map(e => `- ${e.file}: ${e.summary}`)
+    const diffLines = d.diffs.map(e => `- ${e.file}: ${e.summary}`)
     parts.push(`\n[Diffs]\n${diffLines.join('\n')}`)
   }
   if (d.commandsRun && d.commandsRun.length > 0) {
-    const cmdLines = d.commandsRun.slice(-15).map(c => `- ${c.command} → exit ${c.exitCode ?? '?'} (${c.success ? 'ok' : 'error'})`)
+    const cmdLines = d.commandsRun.map(c => `- ${c.command} → exit ${c.exitCode ?? '?'} (${c.success ? 'ok' : 'error'})`)
     parts.push(`\n[Commands]\n${cmdLines.join('\n')}`)
   }
   if (d.filesRead && d.filesRead.length > 0) {
@@ -832,7 +833,7 @@ function buildSubagentSummary(text: string, details?: unknown): string {
   }
 
   const result = parts.join('\n')
-  return result.length > 4000 ? result.slice(0, 4000) + '\n...' : result
+  return result.length > 50000 ? result.slice(0, 50000) + '\n...' : result
 }
 
 export const agentManager = new AgentManager()

@@ -4,6 +4,7 @@
  * with files, commands, and which tool to prefer for which task.
  */
 
+import type { ProjectInstructions } from '../projectInstructions'
 import type { CodeModeBlockParams } from './_shared'
 
 export function buildCodeModeBlock(workdir?: string, projectContext?: string, projectInstructions?: CodeModeBlockParams['projectInstructions']): string {
@@ -13,8 +14,19 @@ export function buildCodeModeBlock(workdir?: string, projectContext?: string, pr
     : platform === 'linux' ? 'Linux'
     : platform
 
+  // Нормализуем в массив — поддерживаем старый одиночный формат и новый массив
+  const instructions: ProjectInstructions[] = projectInstructions
+    ? Array.isArray(projectInstructions)
+      ? projectInstructions
+      : [projectInstructions]
+    : []
+
+  const instructionsBlock = instructions.length > 0
+    ? instructions.map(i => `\n## Project instructions (${i.source})\n\n${i.content}\n`).join('')
+    : ''
+
   const workdirBlock = workdir
-    ? `\n## Project working directory\n\nAbsolute path: ${workdir}\nRelative paths in read_file/write_file/edit_file/list_directory/find_files/search_code and cwd for run_command resolve relative to this path. Do not ask the user for the path to project files — use relative paths or absolute paths from this directory.\n${projectInstructions ? `\n## Project instructions (${projectInstructions.source})\n\n${projectInstructions.content}\n` : ''}${projectContext ? `\n## Project scan (captured at creation)\n\n${projectContext}\n` : ''}`
+    ? `\n## Project working directory\n\nAbsolute path: ${workdir}\nRelative paths in read_file/write_file/edit_file/list_directory/find_files/search_code and cwd for run_command resolve relative to this path. Do not ask the user for the path to project files — use relative paths or absolute paths from this directory.\n${instructionsBlock}${projectContext ? `\n## Project scan (captured at creation)\n\n${projectContext}\n` : ''}`
     : ''
 
   return `## Role

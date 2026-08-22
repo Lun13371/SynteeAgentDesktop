@@ -662,19 +662,33 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   // фриз. Показываем последние ITERS_PAGE, кнопка «предыдущие» расширяет окно
   // к началу. Live-хвост (последние действия) виден всегда.
   const [itersExtra, setItersExtra] = useState(0)
-  const totalDone = iters.filter(i => i.result).length
-  const hasFailed = iters.some(i => i.result?.success === false)
-  const failedCount = iters.filter(i => i.result?.success === false).length
+  // ── Мемоизированные агрегаты — раньше 4× filter/some на каждом рендере ──
+  // ToolChain ре-рендерится при каждом токен-флеше (50мс) во время стриминга.
+  // 4× filter/some по iters + 1× filter по steps = O(n) на каждый рендер.
+  // Теперь один проход в useMemo — ре-вычисление только при смене iters/steps.
+  const { totalDone, hasFailed, failedCount, autoElapsed } = useMemo(() => {
+    let done = 0, failed = 0, hasFail = false
+    for (const it of iters) {
+      if (it.result) done++
+      if (it.result?.success === false) { failed++; hasFail = true }
+    }
+    // elapsed из timestamps
+    let firstTs = 0, lastTs = 0
+    for (const s of steps) {
+      if (s.timestamp) {
+        if (!firstTs) firstTs = s.timestamp
+        lastTs = s.timestamp
+      }
+    }
+    const elapsed = (firstTs && lastTs && firstTs !== lastTs) ? lastTs - firstTs : undefined
+    return { totalDone: done, hasFailed: hasFail, failedCount: failed, autoElapsed: elapsed }
+  }, [iters, steps])
 
   // НЕТ авто-раскрытия цепочки при сбое: в больших чатах failed-цепочки
   // авто-раскрывались при скролле и монтировали все тела с подсветкой →
   // фризы. Заголовок показывает «⚠ M ошибок из N» — раскрытие по клику.
 
-  // Считаем elapsed из timestamps если не передан явно
-  const allSteps = steps.filter(s => s.timestamp)
-  const autoElapsed = allSteps.length >= 2
-    ? allSteps[allSteps.length - 1].timestamp - allSteps[0].timestamp
-    : undefined
+  // elapsed: переданный извне имеет приоритет, иначе — autoElapsed из useMemo
   const elapsedMs = elapsed ?? autoElapsed
 
   const elapsedStr = elapsedMs != null
@@ -685,12 +699,10 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
         : `${elapsedMs}мс`
     : null
 
-  if (iters.length === 0 && !isRunning) return null
-
-  // Видимое окно итераций (хвост + расширение к началу по клику).
-  const visibleCount = Math.min(iters.length, ITERS_PAGE + itersExtra)
-  const hiddenCount = iters.length - visibleCount
-  const visibleIters = iters.slice(hiddenCount)
+  // ── Все useMemo ДО early return (Rules of Hooks) ──
+  // Раньше early return `if (iters.length === 0 && !isRunning) return null`
+  // стоял ДО 4 useMemo → нарушение Rules of Hooks → React может бросить
+  // исключение при смене iters.length с 0 на >0. Теперь все хуки до return.
 
   // Агрегация мини-чипов по типу тула — вместо N одинаковых чипов
   // показываем [icon ×count] на каждый тип.
@@ -717,6 +729,11 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   // Время старта для тикающего таймера (стабильное — timestamp первого шага).
   const runStartTime = steps.length > 0 && steps[0]?.timestamp ? steps[0].timestamp : Date.now()
 
+  // Видимое окно итераций (хвост + расширение к началу по клику).
+  const visibleCount = Math.min(iters.length, ITERS_PAGE + itersExtra)
+  const hiddenCount = iters.length - visibleCount
+  const visibleIters = iters.slice(hiddenCount)
+
   // Группировка видимых итераций (только в финальном состоянии).
   const groupedVisible = useMemo(
     () => groupConsecutiveIters(visibleIters, !!isRunning),
@@ -729,6 +746,8 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
     iters.forEach((iter, i) => m.set(iter.id, i))
     return m
   }, [iters])
+
+  if (iters.length === 0 && !isRunning) return null
 
   if (mode === 'compact') {
     return (

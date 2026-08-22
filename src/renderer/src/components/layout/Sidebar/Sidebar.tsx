@@ -7,6 +7,7 @@ import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
 import ExtensionsPopover from '../../ui/ExtensionsPopover/ExtensionsPopover'
 import { ProjectIndexModal } from '../../ui/ProjectIndexModal/ProjectIndexModal'
+import { ProjectSettingsModal } from '../../ui/ProjectSettingsModal/ProjectSettingsModal'
 import ShareChatModal from '../../ui/ShareChatModal/ShareChatModal'
 import UserCard from './UserCard'
 import { useChatStore } from '../../../store/chat.store'
@@ -14,6 +15,32 @@ import { useTabsStore } from '../../../store/tabs.store'
 import { getContextMenuPosition } from '../../../utils/contextMenuPosition'
 import { springHover, whileHoverTiny, whileTapTiny, whileHoverWide, whileTapWide, whileHoverSm, whileTapSm } from '../../../utils/motionPresets'
 import './Sidebar.css'
+
+// ── Прелоад чата по hover в сайдбаре ────────────────────────────────────
+// Наведение мыши на чат → фоном грузим последнюю страницу сообщений в
+// LRU-кеш. Клик через 200-400мс → кэш-хит → мгновенный показ без скелетона.
+// Прелоад идёт только для чатов, которых ещё нет в кеше (не трогаем активные).
+// Дебаунс 150мс: быстрое проведение мыши по списку не спамит IPC.
+const HOVER_PRELOAD_DELAY = 150
+let _hoverPreloadTimer: ReturnType<typeof setTimeout> | null = null
+function preloadChatOnHover(chatId: string): void {
+  if (_hoverPreloadTimer) clearTimeout(_hoverPreloadTimer)
+  _hoverPreloadTimer = setTimeout(() => {
+    _hoverPreloadTimer = null
+    const st = useChatStore.getState()
+    // Уже в кеше — не дёргаем IPC. Или чат сейчас активный — тоже не нужен.
+    if (st.messagesByChat[chatId] || st.currentChatId === chatId) return
+    // Грузим последнюю страницу фоном, пишем в кеш (setMessagesWindow для
+    // non-current chatId НЕ трогает s.messages — безопасно).
+    window.syntee.chat.getMessagesPage(chatId, 50).then((res: unknown) => {
+      const r = res as { messages: Message[]; hasMore: boolean }
+      // Проверяем: пока летел IPC, чат мог стать активным или попасть в кеш.
+      const cur = useChatStore.getState()
+      if (cur.messagesByChat[chatId] || cur.currentChatId === chatId) return
+      cur.setMessagesWindow(chatId, r.messages, r.hasMore)
+    }).catch(() => { /* ok — preload не критичен */ })
+  }, HOVER_PRELOAD_DELAY)
+}
 
 interface SidebarProps {
   chats?: Chat[]
@@ -111,6 +138,7 @@ function Sidebar({
   const verifyCmdRef = useRef<HTMLInputElement>(null)
   const [extPopoverOpen, setExtPopoverOpen] = useState(false)
   const [indexModalProject, setIndexModalProject] = useState<{ id: string; name: string } | null>(null)
+  const [settingsModalProject, setSettingsModalProject] = useState<Project | null>(null)
   const [shareTarget, setShareTarget] = useState<{ id: string; title: string } | null>(null)
   // Модалка удаления проекта: хранит проект + состояние чекбокса «удалить чаты».
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<Project | null>(null)
@@ -545,6 +573,7 @@ function Sidebar({
         <motion.button
           className={`sidebar-chat-item ${currentChatId === chat.id ? 'sidebar-chat-item--active' : ''} ${selectedIds.has(chat.id) ? 'sidebar-chat-item--selected' : ''}`}
           data-chat-id={chat.id}
+          onMouseEnter={() => preloadChatOnHover(chat.id)}
           onClick={(e) => {
             if (e.shiftKey) {
               e.preventDefault()
@@ -889,6 +918,7 @@ function Sidebar({
           onNewChat: (p) => { onNewChat?.(p.id); setProjectCtxMenu(null) },
           onEditVerifyCmd: handleEditVerifyCmd,
           onIndexStatus: (p) => setIndexModalProject({ id: p.id, name: p.name }),
+          onSettings: (p) => setSettingsModalProject(p),
         }}
       />
 
@@ -917,6 +947,15 @@ function Sidebar({
         projectId={indexModalProject?.id ?? null}
         projectName={indexModalProject?.name}
         onClose={() => setIndexModalProject(null)}
+      />
+
+      <ProjectSettingsModal
+        open={!!settingsModalProject}
+        project={settingsModalProject}
+        onClose={() => setSettingsModalProject(null)}
+        onSaved={(updated) => {
+          onProjectsUpdate?.(projects.map(p => p.id === updated.id ? { ...p, ...updated } : p))
+        }}
       />
 
       {/* Модалка удаления проекта с галочкой «удалить чаты». */}
@@ -1091,6 +1130,7 @@ function ProjectContextMenu({ state, menuRef, handlers }: {
     onNewChat: (p: Project) => void
     onEditVerifyCmd: (p: Project) => void
     onIndexStatus: (p: Project) => void
+    onSettings: (p: Project) => void
   }
 }) {
   const project = state?.project
@@ -1138,6 +1178,10 @@ function ProjectContextMenu({ state, menuRef, handlers }: {
           <button className="ctx-item" onClick={() => { handlers.onIndexStatus(project); handlers.onClose() }}>
             <AppIcon name="database" size="sm" />
             <span>Статус индекса</span>
+          </button>
+          <button className="ctx-item" onClick={() => { handlers.onSettings(project); handlers.onClose() }}>
+            <AppIcon name="settings" size="sm" />
+            <span>Настройки проекта</span>
           </button>
           <div className="ctx-divider" />
           <button className="ctx-item ctx-item--danger" onClick={() => { handlers.onDelete(project); handlers.onClose() }}>

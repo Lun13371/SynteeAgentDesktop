@@ -47,7 +47,7 @@ export function buildSystemPrompt(params: {
   customSystemPrompt?: string
   workdir?: string
   projectContext?: string
-  projectInstructions?: ProjectInstructions | null
+  projectInstructions?: ProjectInstructions[] | ProjectInstructions | null
   /** Active skills — their instructions are injected as a separate section. */
   activeSkills?: Skill[]
   /** Active MCP servers with their tools — for a brief note in the prompt. */
@@ -190,8 +190,8 @@ user message tagged "[CURRENT TASK PLAN]".
 ## Sub-agents (spawn_agent)
 
 spawn_agent launches a sub-agent with a clean context for a subtask. The call blocks
-the current turn until completion and returns a summary (what was done, changed files,
-diffs, executed commands — up to 4000 chars). Up to ${maxParallelSubAgents ?? 5} agents can run in parallel,
+the current turn until completion and returns a full summary (what was done, changed files,
+diffs, executed commands — NOT truncated). Up to ${maxParallelSubAgents ?? 5} agents can run in parallel,
 then a queue forms.
 
 WHEN TO USE:

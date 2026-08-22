@@ -1034,6 +1034,7 @@ export class Agent {
           // и перечитывала тот же файл → ощущение «контекст пропадает».
           const noTruncTool = fn.name === 'search_code' || fn.name === 'get_file_outline'
             || fn.name === 'read_file' || fn.name === 'read_files'
+            || fn.name === 'spawn_agent'
           const perToolMax = (fn.name === 'search_code' || fn.name === 'get_file_outline')
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars

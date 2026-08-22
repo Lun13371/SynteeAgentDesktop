@@ -8,6 +8,7 @@ import { useChatStore } from '../../../store/chat.store'
 import { useNavStore } from '../../../store/nav.store'
 import { useTabsStore, tabActions } from '../../../store/tabs.store'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
+import { useShallow } from 'zustand/react/shallow'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import type { Chat } from '../../../../../shared/types'
 import { springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny } from '../../../utils/motionPresets'
@@ -31,7 +32,9 @@ export default function ChatTabs() {
   const [ctxMenu, setCtxMenu] = useState<{ chat: Chat; pos: MenuPos } | null>(null)
 
   // ── File tabs (в той же полосе, тот же стиль) ──
-  const openFileTabs = useFileTabsStore(s => s.openFileTabs)
+  // useShallow: раньше openFileTabs без shallow → ре-рендер табов на каждый
+  // символ в Monaco (updateContent создаёт новый массив). Теперь shallow.
+  const openFileTabs = useFileTabsStore(useShallow(s => s.openFileTabs))
   const activeFileTabId = useFileTabsStore(s => s.activeFileTabId)
   const reorderFileTabs = useFileTabsStore(s => s.reorderFileTabs)
   const closeFileTab = useFileTabsStore(s => s.closeFileTab)

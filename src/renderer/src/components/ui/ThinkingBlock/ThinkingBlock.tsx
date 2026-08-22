@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo, memo } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import './ThinkingBlock.css'
 
@@ -19,7 +19,7 @@ function formatMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}с`
 }
 
-export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: ThinkingBlockProps) {
+const ThinkingBlock = memo(function ThinkingBlock({ text, liveText, thinkingMs, isLive }: ThinkingBlockProps) {
   // Live-блок (стримится сейчас) — открыт сразу при монтировании.
   // Persisted-блок (из БД) — свёрнут по умолчанию, раскрывается по клику.
   const [open, setOpen] = useState(!!isLive)
@@ -81,6 +81,12 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
 
   const displayText = typeof liveText === 'string' ? liveText : typeof text === 'string' ? text : ''
   const displayMs = thinkingMs ?? (isLive ? elapsed : undefined)
+
+  // Мемоизируем split — раньше .split('\n').map() на каждом рендере (а рендер
+  // происходит на каждом токене стрима — 50мс). Теперь только при смене текста.
+  // useMemo ДО early return (Rules of Hooks).
+  const lines = useMemo(() => displayText.split('\n'), [displayText])
+
   if (!displayText && !isLive) return null
 
   const label = isLive ? THINKING_WORDS[wordIdx] : 'Размышление'
@@ -140,7 +146,7 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
           >
             <div className="tb-body-inner" ref={bodyRef}>
               <div className={`tb-text ${isLive ? 'tb-text--shimmer' : ''}`}>
-                {displayText.split('\n').map((line, i) => (
+                {lines.map((line, i) => (
                   <p key={i} className={line.trim() === '' ? 'tb-line--empty' : 'tb-line'}>
                     {line || '\u00A0'}
                   </p>
@@ -153,4 +159,6 @@ export default function ThinkingBlock({ text, liveText, thinkingMs, isLive }: Th
       </AnimatePresence>
     </div>
   )
-}
+})
+
+export default ThinkingBlock

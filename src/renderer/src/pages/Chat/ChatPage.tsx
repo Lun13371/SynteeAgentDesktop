@@ -24,6 +24,7 @@ import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import HelpModal from '../../components/ui/HelpModal/HelpModal'
 import { PersonaSuggestionModal } from '../../components/ui/PersonaSuggestionModal/PersonaSuggestionModal'
+import { ProjectSettingsModal } from '../../components/ui/ProjectSettingsModal/ProjectSettingsModal'
 import { detectPersona, isPersonaSuggestionsDisabled, disablePersonaSuggestions } from '../../utils/personaDetect'
 import Logo from '../../components/ui/Logo/Logo'
 import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
@@ -144,9 +145,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // activeFileTab — активный файловый таб (null = показывается чат).
   // При клике по файловому табу в шапке — показываем FileEditorPane
   // вместо сообщений чата. Клик по chat-табу — возвращает к чату.
-  const activeFileTab = useFileTabsStore(s =>
-    s.activeFileTabId ? s.openFileTabs.find(t => t.id === s.activeFileTabId) : null
-  )
+  // activeFileTab — активный файловый таб. useShallow: раньше .find() в
+  // селекторе возвращал новый объект таба при каждом updateContent (набор
+  // текста в Monaco) → ChatPage (2195 строк) ре-рендерился на каждое нажатие
+  // клавиши. Теперь shallow-сравнение: ре-рендер только если поля таба
+  // действительно изменились (id, relPath, content, isDirty).
+  const activeFileTab = useFileTabsStore(useShallow(s =>
+    s.activeFileTabId ? s.openFileTabs.find(t => t.id === s.activeFileTabId) ?? null : null
+  ))
   // Live-состояние ТОЛЬКО текущего чата. Селектор возвращает ссылку на
   // liveByChat[currentChatId] — она меняется только при setLiveState для
   // ЭТОГО chatId (спред копирует ссылки остальных). Чужой чат стримит —
@@ -278,6 +284,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const skipPersonaSuggestRef = useRef(false)
   // ── /restore пикер именованных снапшотов ──
   const [snapshotPicker, setSnapshotPicker] = useState<CheckpointMeta[] | null>(null)
+  // ── Модалка настроек проекта (открывается из hover-поповера на workdir-бейдже) ──
+  const [settingsModalProject, setSettingsModalProject] = useState<Project | null>(null)
 
   // Хендлеры ниже обёрнуты в useCallback — ChatInput/Sidebar/LiveTodoBar
   // мемоизированы (React.memo), нестабильные ссылки на функции пробивали
@@ -996,76 +1004,90 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [messages.length, isTyping, isLoadingMessages, isCompacting, pinAutoscroll])
 
   const selectChat = useCallback(async (id: string) => {
-    setIsLoadingMessages(true)
     isInitialScrollRef.current = true
     pinAutoscroll()
-    skeletonTimerRef.current = setTimeout(() => setShowSkeleton(true), 120)
     setCurrentChat(id)
     // Сбрасываем unread-бейдж этого чата (пользователь его увидел)
     markChatRead(id)
-    // Гидрируем live-состояние из main — если в чате работает агент,
-    // показываем накопленный прогресс (текст/шаги/thinking), а не пустой пузырь.
-    // hydrateFromMain также подтягивает meta активного запуска для панели очереди.
-    await hydrateFromMain(id)
-    // Race-guard: пока шли await'ы, пользователь мог кликнуть другой чат
-    // или переключить вкладку. Не пишем stale-данные в store.
-    if (useChatStore.getState().currentChatId !== id) return
-    // Подтягиваем очередь ожидающих запросов из main — чтобы бейдж очереди
-    // сразу показал счётчик при возврате в чат с queued-запросами.
-    try {
-      const queue = await window.syntee.chat.getQueue(id) as QueueItemMeta[]
-      if (useChatStore.getState().currentChatId !== id) return
-      useChatStore.getState().setQueue(id, queue)
-    } catch { /* ok — очередь пуста или ещё не загружена */ }
 
-    // ── LRU-кеш окон сообщений ──
-    // Если чат недавно открывался — его окно уже в кеше. Показываем мгновенно
-    // (без IPC + JSON-парсинга всего чата), затем в фоне сверяем хвост: если
-    // пока пользователя не было пришли новые сообщения — заменяем окно на
-    // свежую последнюю страницу и авто-скроллим вниз.
+    // ── Мгновенный показ из LRU-кеша (если есть) ──
+    // Кэш-хит: показываем сообщения сразу, БЕЗ скелетона и БЕЗ ожидания IPC.
+    // hydrateFromMain + getQueue + фоновая сверка хвоста запускаются параллельно
+    // и не блокируют первый рендер. Раньше 2 последовательных IPC-раунда
+    // (getLiveState → getQueue) стояли ДО проверки кеша → скелетон на 120мс+.
     const cached = useChatStore.getState().messagesByChat[id]
     if (cached) {
       setMessagesWindow(id, cached.messages, cached.hasOlder)
-      if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
-      setShowSkeleton(false)
-      setIsLoadingMessages(false)
-      // Фоновая сверка хвоста.
-      void (async () => {
-        try {
-          const res = await window.syntee.chat.getMessagesPage(id, 50) as { messages: Message[]; hasMore: boolean }
+      // Скелетон не показываем — контент уже на экране.
+      // Запускаем 3 фоновых IPC параллельно (не блокируют рендер):
+      void Promise.all([
+        // 1. Гидрируем live-состояние из main — если в чате работает агент,
+        //    показываем накопленный прогресс (текст/шаги/thinking).
+        hydrateFromMain(id),
+        // 2. Очередь ожидающих запросов — для бейджа очереди в сайдбаре.
+        window.syntee.chat.getQueue(id).then((q: unknown) => {
+          if (useChatStore.getState().currentChatId === id) {
+            useChatStore.getState().setQueue(id, q as QueueItemMeta[])
+          }
+        }).catch(() => {}),
+        // 3. Фоновая сверка хвоста: если пришли новые сообщения — заменяем окно.
+        window.syntee.chat.getMessagesPage(id, 50).then((res: unknown) => {
+          const r = res as { messages: Message[]; hasMore: boolean }
           const st = useChatStore.getState()
           const isCurrent = st.currentChatId === id
-          // НЕ отменяем сверку при свитче — обновляем кеш silently.
-          // setMessagesWindow для non-current chatId НЕ трогает s.messages.
           // RACE GUARD: пока стрим активен, checkpoint-таймер main сохраняет
           // partial-сообщение в БД каждые 3с. getMessagesPage может вернуть
           // partial (незаконченный ответ) → попадёт в кэш → раздвоение с
           // live-пузырём. Не трогаем кэш пока liveByChat[chatId].isTyping.
           if (st.liveByChat[id]?.isTyping) return
-          const cached = st.messagesByChat[id]
-          const cachedLastId = cached?.messages.length ? cached.messages[cached.messages.length - 1].id : null
-          const freshLastId = res.messages.length ? res.messages[res.messages.length - 1].id : null
+          const c = st.messagesByChat[id]
+          const cachedLastId = c?.messages.length ? c.messages[c.messages.length - 1].id : null
+          const freshLastId = r.messages.length ? r.messages[r.messages.length - 1].id : null
           if (cachedLastId !== freshLastId) {
-            setMessagesWindow(id, res.messages, res.hasMore)
+            setMessagesWindow(id, r.messages, r.hasMore)
             if (isCurrent) {
               isInitialScrollRef.current = true
               requestAnimationFrame(() => pinAutoscroll(true))
             }
-          } else if (isCurrent && st.hasOlderMessages !== res.hasMore) {
-            setHasOlderMessages(res.hasMore)
+          } else if (isCurrent && st.hasOlderMessages !== r.hasMore) {
+            setHasOlderMessages(r.hasMore)
           }
-        } catch { /* ok — оставляем кеш, не критично */ }
-      })()
+        }).catch(() => {}),
+      ])
       return
     }
 
-    // Cache miss → грузим последнюю страницу (newest 20).
-    const res = await window.syntee.chat.getMessagesPage(id, 50) as { messages: Message[]; hasMore: boolean }
-    if (useChatStore.getState().currentChatId !== id) return
-    setMessagesWindow(id, res.messages, res.hasMore)
-    if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
-    setShowSkeleton(false)
-    setIsLoadingMessages(false)
+    // ── Cache miss: показываем скелетон, грузим последнюю страницу ──
+    setIsLoadingMessages(true)
+    skeletonTimerRef.current = setTimeout(() => setShowSkeleton(true), 120)
+    // hydrateFromMain + getQueue — параллельно с getMessagesPage (не блокируют
+    // первый рендер сообщений). Раньше они шли последовательно ДО getMessagesPage.
+    try {
+      const [res] = await Promise.all([
+        window.syntee.chat.getMessagesPage(id, 50) as Promise<{ messages: Message[]; hasMore: boolean }>,
+        hydrateFromMain(id),
+        window.syntee.chat.getQueue(id).then((q: unknown) => {
+          if (useChatStore.getState().currentChatId === id) {
+            useChatStore.getState().setQueue(id, q as QueueItemMeta[])
+          }
+        }).catch(() => {}),
+      ])
+      // Race-guard: пока шли await'ы, пользователь мог кликнуть другой чат.
+      // cleanup в finally всё равно отработает — isLoadingMessages не залипнет.
+      if (useChatStore.getState().currentChatId === id) {
+        setMessagesWindow(id, res.messages, res.hasMore)
+      }
+    } catch {
+      // getMessagesPage упал — оставляем пустой чат (или stale кэш если есть).
+      // Не показываем ошибку: пользователь увидит empty-state и может повторить.
+    } finally {
+      // Гарантированно сбрасываем loading-флаг и скелетон, даже при ошибке
+      // или race (пользователь кликнул другой чат). Без finally isLoadingMessages
+      // мог залипнуть → ломало автоскролл и показ скелетона поверх сообщений.
+      if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
+      setShowSkeleton(false)
+      setIsLoadingMessages(false)
+    }
     // Deps: все используемые значения — стабильные store-actions/useCallback'и.
   }, [setCurrentChat, markChatRead, setMessagesWindow, setHasOlderMessages, pinAutoscroll])
 
@@ -2030,6 +2052,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onAttachmentsChange={handleAttachmentsChange}
               lastTurnChanges={badgeChanges}
               badgeLive={badgeLive}
+              onOpenProjectSettings={currentWorkdir ? () => {
+                const project = projects.find(p => p.workdir === currentWorkdir)
+                if (project) setSettingsModalProject(project)
+              } : undefined}
             />
           </div>
 
@@ -2071,6 +2097,16 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
           {/* /help модалка — список команд + горячих клавиш */}
           <HelpModal open={showHelp} onClose={() => setShowHelp(false)} customCommands={customCommands} />
+
+          <ProjectSettingsModal
+            open={!!settingsModalProject}
+            project={settingsModalProject}
+            onClose={() => setSettingsModalProject(null)}
+            onSaved={(updated) => {
+              setProjects(projects.map(p => p.id === updated.id ? { ...p, ...updated } : p))
+            }}
+            onInit={() => { void handleSend('/init') }}
+          />
           {personaSuggest && (
             <PersonaSuggestionModal
               personaId={personaSuggest.id}
