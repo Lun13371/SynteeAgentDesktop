@@ -1,6 +1,7 @@
 import { useEffect, useState, lazy, Suspense } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useUIStore, isValidTab, VALID_TABS } from './store/ui.store'
+import { useUIStore, isValidTab, VALID_TABS, type RightPanelTab } from './store/ui.store'
+import { useRightPanelTabsStore } from './store/rightPanelTabs.store'
 import { useSettingsStore } from './store/settings.store'
 import { initExtensionsPushEvents, useExtensionsStore } from './store/extensions.store'
 import { setUiSoundsFlag, setSoundVolume, setSoundAssignmentsFlag } from './utils/sounds'
@@ -479,6 +480,7 @@ export default function App() {
   const mainPage = useNavStore(s => s.mainPage)
   const toggleMainPage = useNavStore(s => s.toggleMainPage)
   const openSettings = useNavStore(s => s.openSettings)
+  const agentPanelExpanded = useUIStore(s => s.agentPanelExpanded)
   // useShallow — подписка только на нужные поля.
   const theme = useUIStore(s => s.theme)
 
@@ -502,6 +504,7 @@ export default function App() {
         const [theme, bgStyle, msgAnim, accentColor, animatedBg,
           avatarStyle, showTime, userMarkdown, uiSounds, sendEffect,
           fontFamily, fontMono, customFontsList, savedPanelWidth, savedPanelOpen, savedPanelTab,
+          savedPanelExpanded,
           glassBlur, density, accentGradient, rainbowAccent, bgImage, bgImageEnabled,
           animatedBgOpacity, animatedBgSpeed, bgStyleParams,
           customThemes, activeCustomThemeId, themeSchedule, recentAccents,
@@ -522,6 +525,7 @@ export default function App() {
           window.syntee.settings.get('agentPanelWidth'),
           window.syntee.settings.get('agentPanelOpen'),
           window.syntee.settings.get('agentPanelTab'),
+          window.syntee.settings.get('agentPanelExpanded'),
           window.syntee.settings.get('glassBlur'),
           window.syntee.settings.get('density'),
           window.syntee.settings.get('accentGradient'),
@@ -556,6 +560,13 @@ export default function App() {
         if (typeof savedPanelWidth === 'number' && savedPanelWidth > 0) st.setAgentPanelWidth(savedPanelWidth)
         if (typeof savedPanelOpen === 'boolean') st.setAgentPanelOpen(savedPanelOpen)
         if (isValidTab(savedPanelTab)) st.setAgentPanelTab(savedPanelTab)
+        if (typeof savedPanelExpanded === 'boolean') st.setAgentPanelExpanded(savedPanelExpanded)
+        // Восстанавливаем открытые панели правой панели
+        window.syntee.settings.get('rpOpenPanels').then((v: unknown) => {
+          if (Array.isArray(v) && v.length > 0) {
+            useRightPanelTabsStore.getState().restorePanels(v as RightPanelTab[])
+          }
+        }).catch(() => {})
         if (typeof glassBlur === 'number') st.setGlassBlur(glassBlur)
         if (density) st.setDensity(density as any)
         if (accentGradient) st.setAccentGradient(accentGradient as any)
@@ -630,15 +641,17 @@ export default function App() {
     return () => clearTimeout(t)
   }, [])
 
-  // При ресайзе окна — ре-клампим ширину панели. Если окно сузили,
-  // сохранённая ширина может превышать новый динамический MAX (70% окна).
-  // settings.set НЕ делаем — сохранение идёт через onResizeEnd в RightPanel
-  // (дебаунс 500мс), здесь только быстрая Zustand-мутация для визуального отклика.
+  // При ресайзе окна — ре-клампим ширину панели. Адаптивный MAX:
+  // маленькие окна (< 900px) → 50%, средние (< 1200px) → 55%, большие → 60%.
+  // RightPanel тоже слушает resize и анимирует widthMV — здесь только store.
   useEffect(() => {
     const onResize = () => {
       const st = useUIStore.getState()
       const current = st.agentPanelWidth
-      const maxW = Math.min(Math.floor(window.innerWidth * 0.7), 1600)
+      const w = window.innerWidth
+      const maxW = w < 900 ? Math.floor(w * 0.5)
+        : w < 1200 ? Math.floor(w * 0.55)
+        : Math.min(Math.floor(w * 0.6), 1600)
       if (current > maxW) {
         st.setAgentPanelWidth(maxW)
       }
@@ -1331,7 +1344,7 @@ export default function App() {
               onUpdateClick={() => setUpdateModalOpen(true)}
             />
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
-              <div style={{ flex: 1, overflow: 'hidden', display: 'flex', position: 'relative' }}>
+              <div className={`rp-chat-area ${agentPanelExpanded ? 'rp-chat-area--hidden' : ''}`}>
                 {/* ChatPage держится всегда смонтированным (keep-alive):
                     сайдбар/virtualizer не ре-инициализируются при переключении
                     вкладок → нет лага при возврате в чат. Скрываем через

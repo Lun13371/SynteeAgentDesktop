@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import type { Attachment } from '../../../../../shared/types'
 import CodePreview from '../CodePreview/CodePreview'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
-import { useNavStore } from '../../../store/nav.store'
+import { useUIStore } from '../../../store/ui.store'
 import { useChatStore } from '../../../store/chat.store'
 import './AttachmentPreviewModal.css'
 
@@ -160,7 +160,8 @@ export default function AttachmentPreviewModal({ attachment, onClose }: Attachme
                 if (!chatId) return
                 const wd = await window.syntee.fs.getWorkdir(chatId)
                 if (!wd) return
-                useNavStore.getState().setMainPage('chat')
+                useUIStore.getState().setAgentPanelOpen(true)
+                window.syntee.settings.set('agentPanelOpen', true)
                 void useFileTabsStore.getState().openFile(attachment.relPath!, wd)
                 onClose()
               }}

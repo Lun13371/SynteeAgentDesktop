@@ -28,7 +28,6 @@ import { ProjectSettingsModal } from '../../components/ui/ProjectSettingsModal/P
 import { detectPersona, isPersonaSuggestionsDisabled, disablePersonaSuggestions } from '../../utils/personaDetect'
 import Logo from '../../components/ui/Logo/Logo'
 import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
-import FileEditorPane from '../../components/ui/FileEditorPane/FileEditorPane'
 import ChatMinimap from '../../components/ui/ChatMinimap/ChatMinimap'
 import { useSettingsStore } from '../../store/settings.store'
 import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.store'
@@ -37,7 +36,6 @@ import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
 import { useUIStore } from '../../store/ui.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
-import { useFileTabsStore } from '../../store/fileTabs.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
@@ -141,18 +139,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // сплит, здесь — страховка от кадра-гонки) и не в архиве.
   const splitChatId = useChatStore(s => s.splitChatId)
   const setSplitChat = useChatStore(s => s.setSplitChat)
-  // ── Файловые табы (просмотр/редактирование файлов как в VSCode) ──
-  // activeFileTab — активный файловый таб (null = показывается чат).
-  // При клике по файловому табу в шапке — показываем FileEditorPane
-  // вместо сообщений чата. Клик по chat-табу — возвращает к чату.
-  // activeFileTab — активный файловый таб. useShallow: раньше .find() в
-  // селекторе возвращал новый объект таба при каждом updateContent (набор
-  // текста в Monaco) → ChatPage (2195 строк) ре-рендерился на каждое нажатие
-  // клавиши. Теперь shallow-сравнение: ре-рендер только если поля таба
-  // действительно изменились (id, relPath, content, isDirty).
-  const activeFileTab = useFileTabsStore(useShallow(s =>
-    s.activeFileTabId ? s.openFileTabs.find(t => t.id === s.activeFileTabId) ?? null : null
-  ))
   // Live-состояние ТОЛЬКО текущего чата. Селектор возвращает ссылку на
   // liveByChat[currentChatId] — она меняется только при setLiveState для
   // ЭТОГО chatId (спред копирует ссылки остальных). Чужой чат стримит —
@@ -976,9 +962,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [])
 
   // Динамический отступ под ChatInput
-  // Зависит от activeFileTab: когда файл открыт — chatInputWrap размонтируется,
-  // при возврате к чату — монтируется заново. Без activeFileTab в deps
-  // ResizeObserver остаётся на старом (удалённом) элементе → --chat-input-h stale.
+  // ChatInput всегда смонтирован (FileEditorPane перенесён в RightPanel),
+  // поэтому deps пустой — ResizeObserver живёт всё время.
   useEffect(() => {
     const holder = chatInputWrapRef.current
     const container = holder?.parentElement
@@ -991,7 +976,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const ro = new ResizeObserver(apply)
     ro.observe(wrap)
     return () => ro.disconnect()
-  }, [activeFileTab])
+  }, [])
 
   // Первый скролл при открытии чата — мгновенно к низу + прилип. Дальнейшее
   // следование за ростом контента (токены, тулы, todo) делает rAF-loop
@@ -1857,14 +1842,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         <main className="chat-main">
           <LiveTodoBar items={overlayTodo} active={overlayActive} />
 
-          {/* ── Режим просмотра/редактирования файла (как в VSCode) ──
-              Когда активен файловый таб — показываем Monaco-редактор
-              вместо сообщений чата. Клик по chat-табу сбрасывает
-              activeFileTabId → возвращаемся к чату. */}
-          {activeFileTab ? (
-            <FileEditorPane key={activeFileTab.id} tab={activeFileTab} />
-          ) : (
-          <>
           <AnimatePresence>
             {showSearch && (
               <motion.div key="search" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
@@ -2187,8 +2164,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               </div>
             </div>,
             document.body,
-          )}
-          </>
           )}
         </main>
 

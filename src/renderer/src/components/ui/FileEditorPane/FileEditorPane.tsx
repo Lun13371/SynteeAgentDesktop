@@ -28,9 +28,11 @@ loader.config({ monaco })
 
 interface FileEditorPaneProps {
   tab: FileTab
+  treeOpen?: boolean
+  onToggleTree?: () => void
 }
 
-export default function FileEditorPane({ tab }: FileEditorPaneProps) {
+export default function FileEditorPane({ tab, treeOpen, onToggleTree }: FileEditorPaneProps) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null)
   const saveFile = useFileTabsStore(s => s.saveFile)
   const refreshTab = useFileTabsStore(s => s.refreshTab)
@@ -113,6 +115,15 @@ export default function FileEditorPane({ tab }: FileEditorPaneProps) {
           )}
         </div>
         <div className="file-editor-pane__actions">
+          {onToggleTree && (
+            <button
+              className={`file-editor-pane__btn ${treeOpen ? 'file-editor-pane__btn--active' : ''}`}
+              onClick={onToggleTree}
+              title={treeOpen ? 'Скрыть дерево' : 'Показать дерево файлов'}
+            >
+              <AppIcon name="folder" size="xs" />
+            </button>
+          )}
           <button
             className={`file-editor-pane__btn ${tab.diffMode ? 'file-editor-pane__btn--active' : ''}`}
             onClick={() => toggleDiffMode(tab.id)}

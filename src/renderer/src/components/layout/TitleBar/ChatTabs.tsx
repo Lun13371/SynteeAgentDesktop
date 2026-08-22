@@ -1,23 +1,18 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Reorder, motion } from 'framer-motion'
 import AppIcon from '../../ui/AppIcon/AppIcon'
-import FileIcon from '../../ui/FileIcon/FileIcon'
 import ChatTabContextMenu from './ChatTabContextMenu'
-import FileTabContextMenu from './FileTabContextMenu'
 import { useChatStore } from '../../../store/chat.store'
 import { useNavStore } from '../../../store/nav.store'
 import { useTabsStore, tabActions } from '../../../store/tabs.store'
-import { useFileTabsStore } from '../../../store/fileTabs.store'
-import { useShallow } from 'zustand/react/shallow'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import type { Chat } from '../../../../../shared/types'
 import { springHover, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny } from '../../../utils/motionPresets'
 
-// ── Единая полоса вкладок в шапке ──────────────────────────────────────
-// Табы чатов и табы файлов — в одной полосе, одинаковым стилем (titlebar-tab).
-// Переключение по клику, drag&drop для перестановки (Reorder из framer-motion),
-// закрытие крестиком или средней кнопкой мыши, контекстное меню по правому клику.
-// Файловые табы идут после «+» — визуально отделены от чатов, но в той же полосе.
+// ── Полоса вкладок чатов в шапке ───────────────────────────────────────
+// Табы чатов — переключение по клику, drag&drop для перестановки,
+// закрытие крестиком или средней кнопкой мыши, контекстное меню.
+// Файловые табы перенесены в правую панель (RightPanel).
 
 export default function ChatTabs() {
   // ── Chat tabs ──
@@ -31,21 +26,10 @@ export default function ChatTabs() {
   const setSplitChat = useChatStore(s => s.setSplitChat)
   const [ctxMenu, setCtxMenu] = useState<{ chat: Chat; pos: MenuPos } | null>(null)
 
-  // ── File tabs (в той же полосе, тот же стиль) ──
-  // useShallow: раньше openFileTabs без shallow → ре-рендер табов на каждый
-  // символ в Monaco (updateContent создаёт новый массив). Теперь shallow.
-  const openFileTabs = useFileTabsStore(useShallow(s => s.openFileTabs))
-  const activeFileTabId = useFileTabsStore(s => s.activeFileTabId)
-  const reorderFileTabs = useFileTabsStore(s => s.reorderFileTabs)
-  const closeFileTab = useFileTabsStore(s => s.closeFileTab)
-  const setActiveFileTab = useFileTabsStore(s => s.setActiveFileTab)
-  const [fileCtxMenu, setFileCtxMenu] = useState<{ tabId: string; pos: MenuPos } | null>(null)
-
   // Значения Reorder.Group должны 1:1 соответствовать Reorder.Item —
   // фильтруем вкладки без живого чата (гонка удаления/переименования).
   const chatById = new Map(chats.map(c => [c.id, c]))
   const tabIds = openTabIds.filter(id => chatById.has(id))
-  const fileTabIds = openFileTabs.map(t => t.id)
 
   const handleClose = (id: string) => {
     const neighbor = closeTab(id)
@@ -55,11 +39,8 @@ export default function ChatTabs() {
     }
   }
 
-  // Клик по вкладке чата — сбрасываем активный файловый таб (возвращаемся к чату).
-  // ВАЖНО: setActiveFileTab(null) ДО проверки id === currentChatId — иначе клик
-  // по тому же чату (когда открыт файл) не закрывает редактор.
+  // Клик по вкладке чата — переключаем чат.
   const handleSelect = (id: string) => {
-    useFileTabsStore.getState().setActiveFileTab(null)
     if (id === currentChatId) return
     useNavStore.getState().setMainPage('chat')
     tabActions.selectChat?.(id)
@@ -74,21 +55,6 @@ export default function ChatTabs() {
     e.preventDefault()
     e.stopPropagation()
     setCtxMenu({ chat, pos: { x: e.clientX, y: e.clientY } })
-  }
-
-  // ── File tab handlers ──
-  const handleFileClose = (id: string) => {
-    closeFileTab(id)
-  }
-  const handleFileSelect = (id: string) => {
-    if (id === activeFileTabId) return
-    useNavStore.getState().setMainPage('chat')
-    setActiveFileTab(id)
-  }
-  const handleFileCtx = (e: React.MouseEvent, tabId: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setFileCtxMenu({ tabId, pos: { x: e.clientX, y: e.clientY } })
   }
 
   const splitChat = splitChatId ? chatById.get(splitChatId) : undefined
@@ -130,7 +96,7 @@ export default function ChatTabs() {
       ro.disconnect()
       mo.disconnect()
     }
-  }, [updateScrollbar, tabIds.length, fileTabIds.length])
+  }, [updateScrollbar, tabIds.length])
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     const el = tabsRef.current
@@ -153,7 +119,7 @@ export default function ChatTabs() {
           const chat = chatById.get(id)!
           const status = runStatusByChat[id]?.status
           const running = status === 'running' || status === 'queued'
-          const active = id === currentChatId && !activeFileTabId
+          const active = id === currentChatId
           return (
             <Reorder.Item
               as="div"
@@ -208,62 +174,6 @@ export default function ChatTabs() {
         <AppIcon name="plus" size="sm" />
       </motion.button>
 
-      {/* ── Табы файлов — в той же полосе, тот же стиль (titlebar-tab) ── */}
-      {fileTabIds.length > 0 && (
-        <Reorder.Group
-          as="div"
-          axis="x"
-          values={fileTabIds}
-          onReorder={reorderFileTabs}
-          className="titlebar-tabs-list"
-        >
-          {openFileTabs.map(tab => {
-            const active = tab.id === activeFileTabId
-            return (
-              <Reorder.Item
-                as="div"
-                key={tab.id}
-                value={tab.id}
-                className={`titlebar-tab no-drag ${active ? 'titlebar-tab--active' : ''}`}
-                onClick={() => handleFileSelect(tab.id)}
-                onContextMenu={e => handleFileCtx(e, tab.id)}
-                onMouseDown={(e: React.MouseEvent) => {
-                  if (e.button === 1) e.preventDefault() // подавить автоскролл
-                }}
-                onAuxClick={(e: React.MouseEvent) => {
-                  e.preventDefault()
-                  if (e.button === 1) handleFileClose(tab.id)
-                }}
-                title={tab.relPath}
-                transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-              >
-                <FileIcon name={tab.name} size={14} />
-                <span className="titlebar-tab-title">{tab.name}</span>
-                {/* Dirty indicator — точка для несохранённых правок */}
-                {tab.dirty && (
-                  <span className="titlebar-tab-dirty" title="Несохранённые изменения" />
-                )}
-                {/* Conflict indicator — жёлтая точка */}
-                {tab.conflict && !tab.dirty && (
-                  <span className="titlebar-tab-conflict" title="Файл изменён внешне" />
-                )}
-                <motion.button
-                  className="titlebar-tab-close"
-                  onPointerDown={e => e.stopPropagation()}
-                  onClick={e => { e.stopPropagation(); handleFileClose(tab.id) }}
-                  title="Закрыть"
-                  whileHover={whileHoverTiny}
-                  whileTap={whileTapTiny}
-                  transition={springHover}
-                >
-                  <AppIcon name="x" size="xs" />
-                </motion.button>
-              </Reorder.Item>
-            )
-          })}
-        </Reorder.Group>
-      )}
-
       {/* Чип сплит-чата: виден пока открыта вторая половина экрана.
           Крестик закрывает сплит (вкладка чата остаётся). */}
       {splitChat && (() => {
@@ -299,12 +209,6 @@ export default function ChatTabs() {
         onSelectChat={handleSelect}
         onCloseTab={handleClose}
         tabsCount={tabIds.length}
-      />
-      <FileTabContextMenu
-        tabId={fileCtxMenu?.tabId ?? null}
-        pos={fileCtxMenu?.pos ?? null}
-        onClose={() => setFileCtxMenu(null)}
-        tabsCount={openFileTabs.length}
       />
 
       {/* Кастомный скроллбар-индикатор (без стрелок, тонкий) — OUTSIDE скролл-контейнера */}
