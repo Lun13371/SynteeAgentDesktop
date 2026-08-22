@@ -12,11 +12,12 @@ import {
   Users, UserPlus, Smile, Ban, Phone, DownloadCloud, AppWindow, Columns2,
   Square, Pause, Bell, CheckCircle2, ShieldAlert, MessageCircle,
   Save, ExternalLink, Upload, ArrowUp, ArrowDown,
+  Waves, Rainbow, Sparkle, Orbit, Mountain, Hexagon, Circle, MoreHorizontal,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
 
-type IconComponent = (props: LucideProps) => JSX.Element
+type IconComponent = React.ComponentType<LucideProps>
 
 const ICONS = {
   bot: Bot, brain: Brain, settings: Settings, user: User, plus: Plus,
@@ -69,6 +70,15 @@ const ICONS = {
   upload: Upload,
   arrowUp: ArrowUp,
   arrowDown: ArrowDown,
+  // Стили фона / аватара в настройках
+  waves: Waves,
+  rainbow: Rainbow,
+  sparkle: Sparkle,
+  orbit: Orbit,
+  mountain: Mountain,
+  hexagon: Hexagon,
+  circle: Circle,
+  moreHorizontal: MoreHorizontal,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS

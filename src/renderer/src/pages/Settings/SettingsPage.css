@@ -159,6 +159,66 @@
   padding: 10px 12px 10px;
 }
 
+/* ── Поиск по разделам настроек ── */
+.settings-nav-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  transition: border-color 0.15s;
+}
+.settings-nav-search:focus-within {
+  border-color: var(--accent);
+}
+.settings-nav-search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 0;
+}
+.settings-nav-search-input::placeholder {
+  color: var(--text-muted);
+}
+.settings-nav-search-clear {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.settings-nav-search-clear:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+/* Подсветка совпавшего текста в пунктах сайдбара */
+.settings-nav-hl {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+.settings-nav-empty {
+  padding: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
 /* Группа разделов в сайдбаре (VS Code / Notion style).
    Между группами — отступ сверху + uppercase-подзаголовок. */
 .settings-nav-group {
@@ -296,6 +356,52 @@
   color: var(--text-primary);
   margin: 0 0 12px;
   padding: 0;
+}
+
+/* ── GroupHeader — единая шапка категории настроек ──
+   Иконка в accent-чипе + uppercase-заголовок + тонкая линия-градиент до
+   края (визуально «закрывает» группу, как в macOS System Settings).
+   Используется в «Внешнем виде» (Тема/Акцент/Типографика/Фон/Сообщения/Звуки)
+   и в хоткеях (Окна/Действия/В приложении). */
+.settings-group-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 28px 0 12px;
+}
+.settings-group-header-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  flex: none;
+}
+.settings-group-header-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.settings-group-header-line {
+  flex: 1;
+  min-width: 16px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border) 0%, transparent 100%);
+}
+.settings-group-header-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.settings-group-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .settings-field {
@@ -798,15 +904,47 @@
   color: var(--text-primary);
 }
 
-.settings-bg-icon {
-  font-size: 18px;
-  line-height: 1;
-}
-
+/* Иконка стиля фона — теперь AppIcon напрямую, класс оставлен
+   для совместимости (не используется). */
 .settings-bg-label {
   font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
+}
+
+/* ── Выбор аватара ассистента: иконка + подпись ── */
+.settings-avatar-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-avatar-letter {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+  width: 14px;
+  text-align: center;
+}
+
+/* ── Кнопка «Сбросить к умолчаниям» — отдельная, не в шапке ──
+   Простая текстовая кнопка с иконкой, стоит между заголовком и контентом. */
+.settings-reset-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  margin: -8px 0 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.settings-reset-link:hover {
+  color: var(--accent);
 }
 
 /* Hotkeys */
@@ -816,23 +954,12 @@
   justify-content: space-between;
   gap: 12px;
 }
-.hk-reset-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
-}
-.hk-reset-btn:hover {
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-  background: var(--bg-elevated, #1e1e1e);
+/* Заголовок внутри hk-header — flex-элемент, по умолчанию сжимается до
+   ширины текста → border-bottom (разделитель) становился коротким.
+   Растягиваем на всё свободное место, кнопка уходит вправо. */
+.hk-header .settings-section-title {
+  flex: 1;
+  min-width: 0;
 }
 
 .hk-conflict-banner {
@@ -847,38 +974,21 @@
   color: #f0ab2b;
   font-size: 12px;
 }
+.hk-conflict-banner strong {
+  font-weight: 600;
+  color: #f5c453;
+}
 
 .hk-group {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 .hk-group:last-child { margin-bottom: 0; }
-.hk-group-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  padding: 0 2px;
-  margin-top: 8px;
-}
-.hk-group:last-child .hk-group-title { margin-top: 0; }
-/* Группа in-app хоткеев — небольшая пометка */
-.hk-group:last-child .hk-group-title::after {
-  content: 'только в приложении';
-  margin-left: auto;
-  font-size: 10px;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--text-muted);
-  opacity: 0.6;
-}
+/* Шапка группы хоткеев — единый GroupHeader, но с tighter-отступами
+   (в хоткеях группы ближе, чем крупные категории «Внешнего вида») */
+.hk-group .settings-group-header { margin: 10px 0 2px; }
 
 .hk-list {
   display: flex;
@@ -905,7 +1015,17 @@
   align-items: center;
   gap: 10px;
 }
-.hk-icon { font-size: 16px; }
+/* Иконка хоткея — чип, как у GroupHeader (раньше был эмодзи с font-size) */
+.hk-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  flex: none;
+}
 .hk-text {
   display: flex;
   flex-direction: column;
