@@ -85,7 +85,7 @@
   gap: 4px;
 }
 
-/* ── Слеш-команда пилюлька ──────────────────────────────────── */
+/* ── Слеш-команда пилюлька — акцент темы ────────────────────── */
 .message-slash-pill {
   display: inline-flex;
   align-items: center;
@@ -93,19 +93,19 @@
   margin-bottom: 6px;
   padding: 3px 8px 3px 6px;
   border-radius: 20px;
-  background: rgba(139, 92, 246, 0.12);
-  border: 1px solid rgba(139, 92, 246, 0.25);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
   font-size: 12px;
   line-height: 1;
 }
 .message-slash-pill-icon {
   font-weight: 700;
-  color: rgba(167, 139, 250, 0.9);
+  color: color-mix(in srgb, var(--accent) 90%, transparent);
   font-size: 13px;
 }
 .message-slash-pill-name {
   font-weight: 600;
-  color: rgba(167, 139, 250, 0.85);
+  color: color-mix(in srgb, var(--accent) 85%, transparent);
 }
 .message-slash-pill-args {
   color: var(--text-muted);
@@ -231,6 +231,8 @@
   font-size: 14px;
   line-height: 1.65;
   color: var(--text-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .message-content p { margin: 0 0 8px; }

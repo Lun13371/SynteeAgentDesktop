@@ -34,10 +34,10 @@ import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.st
 import { computeLiveChanges } from '../../utils/changes'
 import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
-import { useUIStore } from '../../store/ui.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
+import { stripAttachTokens } from '../../../../shared/attachmentMarkdown'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
 import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../../../shared/modes'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
@@ -54,6 +54,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   msg, vItemStart, vItemIndex, measureRef,
   toolOutputMode, onPin, onCopy, onReply, onRewind,
   searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate,
+  workdir,
 }: {
   msg: Message
   vItemStart: number
@@ -70,6 +71,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   isWaiting?: boolean
   rateLimitSec?: number
   shouldAnimate?: boolean
+  workdir?: string
 }) {
   return (
     <div
@@ -91,6 +93,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
         isWaiting={isWaiting}
         rateLimitSec={rateLimitSec}
         shouldAnimate={shouldAnimate}
+        workdir={workdir}
       />
     </div>
   )
@@ -112,7 +115,8 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   prev.isStreaming === next.isStreaming &&
   prev.isWaiting === next.isWaiting &&
   prev.rateLimitSec === next.rateLimitSec &&
-  prev.shouldAnimate === next.shouldAnimate
+  prev.shouldAnimate === next.shouldAnimate &&
+  prev.workdir === next.workdir
 )
 
 function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -472,8 +476,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Ctrl+1 — toggle Ask (режим чтения), Ctrl+2 — toggle Planning.
   // Хоткеи читаются из settings.hotkeys (настраиваются в Настройки → Горячие клавиши).
   // Работают только внутри приложения (не глобальные).
-  // Не перехватываем в полях ввода, вне страницы чата, и когда правая панель
-  // открыта (Ctrl+1..6 заняты переключением табов панели).
+  // Не перехватываем в полях ввода и вне страницы чата.
   useEffect(() => {
     const formatCombo = (e: KeyboardEvent): string => {
       const parts: string[] = []
@@ -488,9 +491,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const handler = (e: KeyboardEvent) => {
       // Только на странице чата
       if (useNavStore.getState().mainPage !== 'chat') return
-      // Если правая панель открыта — Ctrl+1..6 заняты табами, не мешаем
-      const { agentPanelOpen } = useUIStore.getState()
-      if (agentPanelOpen) return
 
       // Fallback к DEFAULT_HOTKEYS: если settings ещё не загружен (load()
       // не завершился или упал), hotkeys будет пустым — используем дефолты,
@@ -1388,8 +1388,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setChats(all)
     }
 
+    // displayContent — с inline-токенами вложений [[attach:id]] (рендер в
+    // чате восстановит чипы на местах). aiContent — чистый текст для модели.
     const displayContent = raw
-    let aiContent: string = raw
+    let aiContent: string = stripAttachTokens(raw)
 
     // ── One-shot параметры для команд ──
     // Поддерживаются и custom (.md) и builtin (personaOverride/skill).
@@ -1960,6 +1962,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       isWaiting={isLive && isTyping}
                       rateLimitSec={isLive ? live.rateLimitSec : undefined}
                       shouldAnimate={shouldAnimate}
+                      workdir={currentWorkdir}
                     />
                   )
                 })}

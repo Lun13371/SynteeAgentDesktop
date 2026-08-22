@@ -1,6 +1,6 @@
 import { useEffect, useState, lazy, Suspense } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useUIStore, isValidTab, VALID_TABS, type RightPanelTab } from './store/ui.store'
+import { useUIStore, isValidTab, type RightPanelTab } from './store/ui.store'
 import { useRightPanelTabsStore } from './store/rightPanelTabs.store'
 import { useSettingsStore } from './store/settings.store'
 import { initExtensionsPushEvents, useExtensionsStore } from './store/extensions.store'
@@ -661,7 +661,7 @@ export default function App() {
   }, [])
 // ── Keyboard shortcuts для правой панели ──────────────────────────────
   // Ctrl+B — toggle правой панели (только на странице чата, не в input/textarea)
-  // Ctrl+1..6 — переключение вкладок панели (только если панель открыта)
+  // Ctrl+1..6 НЕ перехватываем — они принадлежат ChatPage (режимы ask/planning).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.shiftKey || e.altKey) return
@@ -678,18 +678,6 @@ export default function App() {
         useUIStore.getState().setAgentPanelOpen(next)
         window.syntee.settings.set('agentPanelOpen', next)
         return
-      }
-
-      // Ctrl+1..6 — переключение табов (только если панель открыта)
-      if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
-        if (!useUIStore.getState().agentPanelOpen) return
-        e.preventDefault()
-        const idx = parseInt(e.key, 10) - 1
-        if (idx >= 0 && idx < VALID_TABS.length) {
-          const tabId = VALID_TABS[idx]
-          useUIStore.getState().setAgentPanelTab(tabId)
-          window.syntee.settings.set('agentPanelTab', tabId)
-        }
       }
     }
     window.addEventListener('keydown', handler)
