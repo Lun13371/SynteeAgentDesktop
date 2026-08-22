@@ -28,7 +28,7 @@ import { onCompactionTrigger } from '../../core/memory/extractor'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats } from '../../core/memory/graphStore'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
-import { readProjectInstructions } from '../../core/prompts/projectInstructions'
+import { readProjectContextFiles } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
@@ -59,6 +59,7 @@ import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, Attac
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { messageToContextMessages } from './chatContextHelpers'
 import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
+import { getMessagesCached } from './historyCache'
 import {
   confirmCallbacks, questionCallbacks,
   activeRuns, lastActiveChatId, setLastActiveChatId, compactRuns, activeRunMeta,
@@ -574,10 +575,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     workingMemory = withRetrySync('workingMemory', () => chatId ? getWorkingMemory(chatId) : '', '')
     summary = withRetrySync('chatSummary', () => chatId ? getChatSummary(chatId) : '', '')
 
-    // Live-read AGENTS.md/CLAUDE.md/.syntee/instructions.md from workdir.
-    // mtime-cache inside readProjectInstructions — repeated calls are cheap.
-    let projectInstructions: Awaited<ReturnType<typeof readProjectInstructions>> = null
-    projectInstructions = await withRetry('readProjectInstructions', () => readProjectInstructions(workdir), null)
+    // Live-read project instructions: авто-дискавери AGENTS.md/CLAUDE.md +
+    // кастомные .md файлы из настроек проекта. mtime-кэш — повторные вызовы дёшевы.
+    let projectInstructions: Awaited<ReturnType<typeof readProjectContextFiles>> = []
+    projectInstructions = await withRetry('readProjectContextFiles', () => {
+      const found = workdir ? getAllProjects().find(p => p.workdir === workdir) : undefined
+      return readProjectContextFiles(workdir, found?.contextFiles, found?.autoDiscoverInstructions, found?.disabledDiscoveryFiles)
+    }, [])
 
     // Active skills for the chat. In incognito — empty (privacy).
     // projectId is pulled via the projects table by workdir.
@@ -1403,6 +1407,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       imageParts: [] as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>,
       bufferedLiveState: { toolProgress: {}, spawnedAgents: [] },
       streamCheckpointTimer: null,
+      checkpointDirty: false,
     }
 
     // ── UI-батчинг токенов: флеш накопленного перед любыми другими
@@ -1750,6 +1755,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // финальный sendDone перезапишет частичный checkpoint полной версией.
     run.streamCheckpointTimer = setInterval(() => {
       if (run.doneSent) return
+      // Dirty-flag: пропускаем saveMessage если с последнего checkpoint'а
+      // не было новых токенов/шагов/thinking. Без этого каждые 3с таймер
+      // делал buildFinalIters + JSON.stringify всех steps + saveMessage даже
+      // когда воркер ждёт ответа API (bufferedText не растёт) → main
+      // блокировался пустой сериализацией на чатах с тяжёлыми tool-вызовами.
+      if (!run.checkpointDirty) return
       const hasContent = run.bufferedText.trim() || run.bufferedSteps.length > 0 || run.bufferedThinking.trim()
       if (!hasContent) return
       try {
@@ -1773,6 +1784,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           durationMs: Date.now() - run.startedAt,
         }
         if (!params.incognito) saveMessage(checkpointMsg)
+        run.checkpointDirty = false
       } catch (e) {
         log('[streamCheckpoint] failed chatId=%s: %s', params.chatId, (e as Error).message)
       }
@@ -1855,6 +1867,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         case 'token':
           run.bufferedText += (msg.token as string) || ''
           run.pendingTextAfter += (msg.token as string) || ''
+          run.checkpointDirty = true
           // Батчинг: IPC пачкой раз в UI_FLUSH_MS, а не на каждый токен.
           run.uiTokenBuf += (msg.token as string) || ''
           scheduleUiFlush()
@@ -1864,6 +1877,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           const tok = typeof msg.token === 'string' ? msg.token : ''
           run.bufferedThinking += tok
           run.pendingThinking += tok
+          run.checkpointDirty = true
           run.uiThinkingBuf += tok
           scheduleUiFlush()
           break
@@ -1908,6 +1922,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               serverName: rawStep.serverName,
             }
             run.bufferedSteps.push(ts)
+            run.checkpointDirty = true
             // Реконструкция итераций (зеркало ai-worker.ts:282-330):
             // tool_call начинает новую итерацию (захватывая pendingTextAfter/
             // pendingThinking как textBefore/thinking), tool_result дописывается
@@ -2051,6 +2066,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
         case 'todo_update':
           run.bufferedTodo = msg.items as typeof run.bufferedTodo
+          run.checkpointDirty = true
           win?.webContents.send('agent:todo', { msgId: msg.msgId, chatId: msg.chatId, items: msg.items })
           break
 
@@ -3159,7 +3175,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // Загружаем историю (как в chat:send) — для incognito-чатов она пуста.
       // Live-подмножество: сообщения после последнего divider'а (старые
       // summarized не грузятся в модель — их заменяет summary в system prompt).
-      const history = getMessages(chatId)
+      const history = getMessagesCached(chatId)
       const liveMessages = getLiveMessages(history)
       const rawHistory: ChatMessage[] = liveMessages.flatMap(messageToContextMessages)
 
@@ -3293,7 +3309,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       slashCommand: params.slashCommand,
       attachments: attachments.length > 0 ? attachments : undefined,
     }
-    const history = params.incognito ? [] : getMessages(params.chatId)
+    const history = params.incognito ? [] : getMessagesCached(params.chatId)
     const assistantMsgId = uuid()
 
     // Метаданные для UI очереди: preview первых ~80 симв. запроса.
@@ -3634,7 +3650,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       }
       const ctxSettings = getContextSettings(storeData)
 
-      const history = getMessages(chatId)
+      const history = getMessagesCached(chatId)
       // Live-подмножество: сообщения после последнего divider'а (как в chat:send).
       // messageId тегируется для вычисления boundary divider'а.
       const liveMessages = getLiveMessages(history)

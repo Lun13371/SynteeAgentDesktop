@@ -119,8 +119,8 @@ export const MSG_ANIM_VARIANTS: Record<string, {
   },
   rise: {
     label: 'Подъём', desc: 'Снизу с блюром',
-    initial: { opacity: 0, y: 32, filter: 'blur(6px)' },
-    animate: { opacity: 1, y: 0, filter: 'blur(0.01px)' },
+    initial: { opacity: 0, y: 32 },
+    animate: { opacity: 1, y: 0 },
     transition: { duration: 0.28, ease: [0.22, 1, 0.36, 1] },
   },
   none: {
@@ -452,17 +452,66 @@ const parsedRenderCache = new Map<string, React.ReactNode>()
 // мемоизирует парс на [text, allowPlanCard] — ре-парс только если текст
 // реально изменился. Невидимо: вывод идентичный.
 const ParsedContent = memo(function ParsedContent({
-  text, allowPlanCard, remarkPlugins, rehypePlugins, planFilePath,
+  text, allowPlanCard, remarkPlugins, rehypePlugins, planFilePath, isStreaming,
 }: {
   text: string
   allowPlanCard: boolean
   remarkPlugins: readonly unknown[]
   rehypePlugins: readonly unknown[]
   planFilePath?: string
+  isStreaming?: boolean
 }) {
   const segs = useMemo(() => parseContentCached(text, allowPlanCard), [text, allowPlanCard])
-  // Ключ кэша: text + allowPlanCard + идентитеты плагинов (стабильные массивы
-  // из useMemo). planFilePath влияет на PlanCard filePath → включаем.
+
+  // ── Инкрементальный рендер во время стриминга ──
+  // Во время стрима text растёт каждые 50мс. Кэш parsedRenderCache ключуется
+  // по всему тексту → MISS на каждом флеше → O(n) ре-парс.
+  //
+  // Оптимизация: разбиваем text на стабильный префикс + активный хвост.
+  // Стабильный префикс = всё до последней границы блока (\n\n, ```, :::).
+  // Префикс кэшируется в parsedRenderCache → hit на каждом флеше.
+  // Хвост парсится ReactMarkdown → O(|хвост|) вместо O(n).
+  // Полный markdown (таблицы, списки, bold, код) сохраняется во время стрима.
+  if (isStreaming && text) {
+    // Ищем последнюю границу блока — после неё текст может быть неполным
+    const lastFence = text.lastIndexOf('```')
+    const lastPara = text.lastIndexOf('\n\n')
+    const lastAdm = text.lastIndexOf('\n:::')
+    const splitAt = Math.max(lastFence, lastPara, lastAdm)
+    if (splitAt > 100 && splitAt < text.length - 1) {
+      // Есть стабильный префикс — кэшируем его, хвост парсим отдельно
+      const prefix = text.slice(0, splitAt)
+      const tail = text.slice(splitAt)
+      const prefixKey = prefix + '|stream|' + (allowPlanCard ? '1' : '0')
+        + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
+        + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
+      let prefixNode = parsedRenderCache.get(prefixKey)
+      if (!prefixNode) {
+        const prefixSegs = parseContentCached(prefix, allowPlanCard)
+        prefixNode = renderParsedSegments(prefixSegs, remarkPlugins, rehypePlugins, planFilePath)
+        if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
+        parsedRenderCache.set(prefixKey, prefixNode)
+      }
+      // Хвост — короткий, парсим ReactMarkdown каждый флеш (дёшево)
+      const tailSegs = parseContentCached(tail, allowPlanCard)
+      const tailNode = renderParsedSegments(tailSegs, remarkPlugins, rehypePlugins, planFilePath)
+      return <>{prefixNode}{tailNode}</>
+    }
+    // Нет стабильного префикса (начало ответа) — парсим весь text через ReactMarkdown.
+    // remarkGfm (без KaTeX) — дёшево, полный markdown сохраняется.
+    const cacheKey = text + '|stream|' + (allowPlanCard ? '1' : '0')
+      + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
+      + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
+    let node = parsedRenderCache.get(cacheKey)
+    if (!node) {
+      node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath)
+      if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
+      parsedRenderCache.set(cacheKey, node)
+    }
+    return <>{node}</>
+  }
+
+  // Финальный рендер (isStreaming=false) — полный парс с кэшированием
   const cacheKey = text + '|' + (allowPlanCard ? '1' : '0')
     + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
     + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
@@ -479,7 +528,8 @@ const ParsedContent = memo(function ParsedContent({
   prev.allowPlanCard === next.allowPlanCard &&
   prev.remarkPlugins === next.remarkPlugins &&
   prev.rehypePlugins === next.rehypePlugins &&
-  prev.planFilePath === next.planFilePath
+  prev.planFilePath === next.planFilePath &&
+  prev.isStreaming === next.isStreaming
 )
 
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
@@ -860,14 +910,34 @@ const MessageContent = memo(function MessageContent({
   // Вне режима планирования <plan>-теги рендерятся как обычный текст.
   const allowPlanCard = !!message.planData || !!(message as Message & { livePlanningMode?: boolean }).livePlanningMode
 
-  const segments = useMemo(() =>
-    isUser && !userMarkdown
-      ? [{ type: 'plain' as const, content }]
-      : isUser
-        ? [{ type: 'md' as const, content }]
-        : parseContentCached(content, allowPlanCard),
-    [content, isUser, userMarkdown, allowPlanCard]
-  )
+  // ── Мемоизированные карточки spawn_agent (fallback для старых сообщений без iterations) ──
+  // Раньше .filter().map() с вложенным .find() выполнялись на КАЖДОМ рендере.
+  // Для цепочек 50+ шагов это 2500+ сравнений за рендер. Теперь useMemo.
+  // Persisted-итерации рендерят карточки inline (они не ре-рендерятся часто —
+  // только при scroll-mount виртуализатором).
+  const spawnAgentCards = useMemo(() => {
+    if (isUser || !toolSteps || liveIters?.length) return []
+    if ((message as Message & { iterations?: unknown[] }).iterations?.length) return []
+    const cards: Array<{ agentId: string; task: string }> = []
+    for (const s of toolSteps) {
+      if (s.type !== 'tool_call' || s.toolName !== 'spawn_agent') continue
+      const resultStep = toolSteps.find(r =>
+        r.type === 'tool_result' && r.toolName === 'spawn_agent' &&
+        r.timestamp >= s.timestamp
+      )
+      const agentIdMatch = resultStep?.content?.match(/\[AGENT:([^\]]+)\]/)
+      const agentId = agentIdMatch?.[1]
+      if (agentId) cards.push({ agentId, task: (s.toolArgs?.task as string) ?? '' })
+    }
+    return cards
+  }, [isUser, toolSteps, liveIters, message])
+
+  // Изображения из tool steps
+  const toolImages = useMemo(() => {
+    if (isUser || !toolSteps || liveIters?.length) return []
+    if ((message as Message & { iterations?: unknown[] }).iterations?.length) return []
+    return toolSteps.filter(s => s.type === 'tool_result' && s.imageUrl)
+  }, [isUser, toolSteps, liveIters, message])
 
   // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
   const agentCounts = useMemo(() => {
@@ -1004,50 +1074,49 @@ const MessageContent = memo(function MessageContent({
                         />
                       )
                     })}
+                  {/* Сгенерированные изображения внутри persisted-итерации */}
+                  {iter.steps
+                    .filter(s => s.type === 'tool_result' && s.imageUrl)
+                    .map(s => (
+                      <div key={s.id} className="message-image-wrap">
+                        <img
+                          src={`file://${s.imageUrl}`}
+                          alt="Сгенерированное изображение"
+                          className="message-image"
+                          loading="lazy"
+                          decoding="async"
+                          onClick={() => window.open(`file://${s.imageUrl}`, '_blank')}
+                        />
+                      </div>
+                    ))}
                 </div>
               ))}
             </div>
           )
         })()}
 
-        {/* Карточки суб-агентов — fallback для старых сообщений без iterations */}
-        {!isUser && toolSteps && !liveIters?.length && !(message as Message & { iterations?: unknown[] }).iterations?.length && toolSteps
-          .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
-          .map(s => {
-            // Ищем соответствующий tool_result чтобы получить agentId
-            const resultStep = toolSteps.find(r =>
-              r.type === 'tool_result' && r.toolName === 'spawn_agent' &&
-              r.timestamp >= s.timestamp
-            )
-            const agentIdMatch = resultStep?.content?.match(/\[AGENT:([^\]]+)\]/)
-            const agentId = agentIdMatch?.[1]
-            if (!agentId) return null
-            return (
-              <AgentCardLive
-                key={agentId}
-                agentId={agentId}
-                task={(s.toolArgs?.task as string) ?? ''}
-              />
-            )
-          })
-        }
+        {/* Карточки саб-агентов — мемоизированные (spawnAgentCards) */}
+        {!isUser && !liveIters?.length && spawnAgentCards.length > 0 && spawnAgentCards.map(card => (
+          <AgentCardLive
+            key={card.agentId}
+            agentId={card.agentId}
+            task={card.task}
+          />
+        ))}
 
-        {/* Сгенерированные изображения из tool steps — показываем прямо в чате */}
-        {!isUser && toolSteps && !liveIters?.length && toolSteps
-          .filter(s => s.type === 'tool_result' && s.imageUrl)
-          .map(s => (
-            <div key={s.id} className="message-image-wrap">
-              <img
-                src={`file://${s.imageUrl}`}
-                alt="Сгенерированное изображение"
-                className="message-image"
-                loading="lazy"
-                decoding="async"
-                onClick={() => window.open(`file://${s.imageUrl}`, '_blank')}
-              />
-            </div>
-          ))
-        }
+        {/* Сгенерированные изображения из tool steps — мемоизированные */}
+        {!isUser && !liveIters?.length && toolImages.map(s => (
+          <div key={s.id} className="message-image-wrap">
+            <img
+              src={`file://${s.imageUrl}`}
+              alt="Сгенерированное изображение"
+              className="message-image"
+              loading="lazy"
+              decoding="async"
+              onClick={() => window.open(`file://${s.imageUrl}`, '_blank')}
+            />
+          </div>
+        ))}
 
         {/* Сгенерированное изображение */}
         {message.imageUrl && (
@@ -1178,6 +1247,21 @@ const MessageContent = memo(function MessageContent({
                         />
                       )
                     })}
+                  {/* Сгенерированные изображения внутри live-итерации */}
+                  {iter.steps
+                    .filter(s => s.type === 'tool_result' && s.imageUrl)
+                    .map(s => (
+                      <div key={s.id} className="message-image-wrap">
+                        <img
+                          src={`file://${s.imageUrl}`}
+                          alt="Сгенерированное изображение"
+                          className="message-image"
+                          loading="lazy"
+                          decoding="async"
+                          onClick={() => window.open(`file://${s.imageUrl}`, '_blank')}
+                        />
+                      </div>
+                    ))}
                   {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
                   {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && !liveThinking && (
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
@@ -1197,7 +1281,7 @@ const MessageContent = memo(function MessageContent({
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
             {liveTextAfter && (
               <div className="message-content selectable">
-                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
+                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} />
               </div>
             )}
           </div>
@@ -1221,7 +1305,9 @@ const MessageContent = memo(function MessageContent({
                   // Ассистентские сообщения — через ParsedContent с module-level
                   // кэшем: scroll-remount виртуализатора и hover (showActions)
                   // больше не ре-парсят markdown (0.3–0.5с фриз на большом сообщении).
-                  <ParsedContent text={content} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
+                  // isStreaming: для live-пузыря без итераций — лёгкий рендер
+                  // во время стрима, полный парс при done.
+                  <ParsedContent text={content} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} />
                 )}
               </div>
             )

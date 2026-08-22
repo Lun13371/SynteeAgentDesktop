@@ -507,6 +507,7 @@ const synteeAPI = {
     getById: (id: string) => ipcRenderer.invoke('projects:getById', id),
     touch: (id: string) => ipcRenderer.invoke('projects:touch', id),
     setVerificationCommand: (id: string, command: string | null) => ipcRenderer.invoke('projects:setVerificationCommand', id, command),
+    setContextFiles: (id: string, files: string[], autoDiscover: boolean, disabledDiscoveryFiles?: string[]) => ipcRenderer.invoke('projects:setContextFiles', id, files, autoDiscover, disabledDiscoveryFiles),
   },
 
   // Fast Context — статус индекса проекта, реиндекс, live progress
@@ -698,6 +699,8 @@ const synteeAPI = {
       ipcRenderer.invoke('fs:searchFiles', params),
     writeFile: (params: { root: string; relPath: string; content: string }) =>
       ipcRenderer.invoke('fs:writeFile', params),
+    checkFilesExist: (params: { root: string; relPaths: string[] }) =>
+      ipcRenderer.invoke('fs:checkFilesExist', params),
   },
 
   // Git-статус для правой панели

@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, memo, lazy, Suspense } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { useShallow } from 'zustand/react/shallow'
 import { motion, AnimatePresence } from 'framer-motion'
-import Editor, { loader } from '@monaco-editor/react'
-import * as monaco from 'monaco-editor'
 import AppIcon from '../AppIcon/AppIcon'
 import FileIcon from '../FileIcon/FileIcon'
 import { getLanguage } from '../CodePreview/CodePreview'
@@ -12,8 +11,19 @@ import FileTreeContextMenu from './FileTreeContextMenu'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import './FileExplorer.css'
 
-// Офлайн Monaco (уже сконфигурирован в FileEditorPane/GitPanel, повторный вызов безопасен)
-loader.config({ monaco })
+// ── Monaco lazy import — не блокирует первый рендер ──
+// Раньше `import * as monaco from 'monaco-editor'` + `loader.config({ monaco })`
+// выполнялись синхронно при старте приложения (FileExplorer → RightPanel → App).
+// monaco-editor — мегабайты JS, парсинг модуля занимает сотни мс → задержка
+// первого рендера. Теперь: модуль грузится только при первом клике на файл.
+// loader.config вызывается один раз (внутри Suspense-границы).
+const MonacoEditor = lazy(() => import('@monaco-editor/react').then(m => {
+  // Импортируем monaco и конфигурируем loader один раз
+  return import('monaco-editor').then(monaco => {
+    m.loader.config({ monaco })
+    return { default: m.Editor }
+  })
+}))
 
 interface FsEntry {
   name: string
@@ -85,8 +95,14 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
   const [searchResults, setSearchResults] = useState<FsEntry[] | null>(null)
   const [searchLoading, setSearchLoading] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
-  // Подписка на открытые файловые табы — для badge в дереве
-  const openFileRelPaths = useFileTabsStore(s => s.openFileTabs.map(t => t.relPath))
+  // Подписка на открытые файловые табы — для badge в дереве.
+  // useShallow: раньше .map() создавал новый массив на каждый чих store →
+  // FileExplorer ре-рендерился при любом изменении fileTabsStore. Теперь
+  // shallow-сравнение: ре-рендер только если содержимое массива изменилось.
+  // Плюс useMemo для Set — .includes на массиве был O(n) на каждую строку
+  // дерева, Set.has — O(1).
+  const openFileTabs = useFileTabsStore(useShallow(s => s.openFileTabs))
+  const openFileRelPaths = useMemo(() => new Set(openFileTabs.map(t => t.relPath)), [openFileTabs])
   const activeFileTabId = useFileTabsStore(s => s.activeFileTabId)
   // Контекстное меню по ПКМ на файле в дереве
   const [ctxMenu, setCtxMenu] = useState<{ relPath: string; pos: MenuPos } | null>(null)
@@ -338,7 +354,7 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
                     onToggleDir={toggleDir}
                     onOpenFile={openFile}
                     showPath={!!search.trim()}
-                    isOpen={openFileRelPaths.includes(node.relPath)}
+                    isOpen={openFileRelPaths.has(node.relPath)}
                     isActive={activeFileTabId === node.relPath}
                     onContextMenu={(e, relPath) => {
                       e.preventDefault()
@@ -394,7 +410,8 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
                     <p>Бинарный файл</p>
                   </div>
                 ) : previewContent ? (
-                  <Editor
+                  <Suspense fallback={<div className="file-explorer__preview-loading"><AppIcon name="loader" size="sm" animation="spin" /></div>}>
+                  <MonacoEditor
                     key={previewFile.relPath}
                     value={previewContent}
                     language={getLanguage(previewFile.relPath)}
@@ -418,6 +435,7 @@ export default function FileExplorer({ workdir }: FileExplorerProps) {
                       },
                     }}
                   />
+                  </Suspense>
                 ) : null}
               </div>
             </motion.div>

@@ -3,6 +3,14 @@ import { readdir as fsReaddir, stat as fsStat, open as fsOpen, writeFile as fsWr
 import { join, resolve as pathResolve, relative, sep, dirname } from 'path'
 import { getChatWorkdirContext } from '../../core/db'
 
+// Dotfiles, которые нужно показывать несмотря на точку в начале имени.
+// .env и .gitignore — для редактора; .cursorrules/.windsurfrules/.clinerules —
+// AI rules-файлы, которые могут быть интересны в файловом пикере инструкций.
+const VISIBLE_DOTFILES = new Set([
+  '.env', '.gitignore',
+  '.cursorrules', '.windsurfrules', '.clinerules',
+])
+
 const DEFAULT_IGNORE_DIRS = new Set(['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage', '.cache'])
 
 export interface FsEntry {
@@ -56,7 +64,7 @@ export function registerFsIPC(): void {
       for (const d of dirents) {
         if (entries.length >= max) break
         if (DEFAULT_IGNORE_DIRS.has(d.name)) continue
-        if (d.name.startsWith('.') && d.name !== '.env' && d.name !== '.gitignore') continue
+        if (d.name.startsWith('.') && !VISIBLE_DOTFILES.has(d.name)) continue
         const fullPath = join(dirPath, d.name)
         entries.push({
           name: d.name,
@@ -109,7 +117,7 @@ export function registerFsIPC(): void {
       for (const d of dirents) {
         if (results.length >= maxResults) return
         if (DEFAULT_IGNORE_DIRS.has(d.name)) continue
-        if (d.name.startsWith('.') && d.name !== '.env' && d.name !== '.gitignore') continue
+        if (d.name.startsWith('.') && !VISIBLE_DOTFILES.has(d.name)) continue
 
         const fullPath = join(dirPath, d.name)
         const relPath = relative(root, fullPath).split(sep).join('/')
@@ -236,5 +244,23 @@ export function registerFsIPC(): void {
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e) }
     }
+  })
+
+  // ── fs:checkFilesExist — проверка существования файлов по списку путей ──
+  // Принимает root + массив относительных путей, возвращает массив существующих.
+  // Используется ProjectSettingsModal для отображения найденных авто-дискавери файлов.
+  ipcMain.handle('fs:checkFilesExist', async (_e, params: { root: string; relPaths: string[] }) => {
+    const root = params.root
+    if (!root) return { success: false, existing: [], error: 'root is required' }
+    const existing: string[] = []
+    for (const relPath of params.relPaths ?? []) {
+      const filePath = safeJoin(root, relPath)
+      if (!filePath) continue
+      try {
+        const st = await fsStat(filePath)
+        if (st.isFile()) existing.push(relPath)
+      } catch { /* not found */ }
+    }
+    return { success: true, existing }
   })
 }

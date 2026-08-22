@@ -84,6 +84,8 @@ interface ChatInputProps {
   lastTurnChanges?: LastTurnChanges | null
   /** Бейдж в live-режиме — shimmer/glow анимация, нет undo. */
   badgeLive?: boolean
+  /** Колбэк открытия настроек проекта (hover-поповер на workdir-бейдже). */
+  onOpenProjectSettings?: () => void
 }
 
 // memo: ChatPage ре-рендерится ~20×/сек при стриминге и на scroll-range
@@ -119,6 +121,7 @@ function ChatInput({
   maxAttachments = 10,
   lastTurnChanges = null,
   badgeLive = false,
+  onOpenProjectSettings,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
@@ -598,6 +601,7 @@ function ChatInput({
         lang={lang}
         mainModelId={mainModelId}
         onMainModelChange={onMainModelChange}
+        onOpenProjectSettings={onOpenProjectSettings}
       />
 
       {replyTo && replyTo.length > 0 && (

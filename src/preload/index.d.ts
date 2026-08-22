@@ -429,6 +429,7 @@ declare const synteeAPI: {
         getById: (id: string) => Promise<any>;
         touch: (id: string) => Promise<any>;
         setVerificationCommand: (id: string, command: string | null) => Promise<any>;
+        setContextFiles: (id: string, files: string[], autoDiscover: boolean, disabledDiscoveryFiles?: string[]) => Promise<any>;
     };
     fastContext: {
         getStatus: (projectId: string) => Promise<any>;
@@ -575,6 +576,15 @@ declare const synteeAPI: {
             root: string;
             query: string;
             maxResults?: number;
+        }) => Promise<any>;
+        writeFile: (params: {
+            root: string;
+            relPath: string;
+            content: string;
+        }) => Promise<any>;
+        checkFilesExist: (params: {
+            root: string;
+            relPaths: string[];
         }) => Promise<any>;
     };
     git: {
