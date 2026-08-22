@@ -1,7 +1,8 @@
+import * as React from 'react'
 import { useState, useMemo, memo, useCallback, useEffect, useRef } from 'react'
 import { copyToClipboard } from '@renderer/utils/clipboard'
 import { motion, AnimatePresence } from 'framer-motion'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -70,7 +71,6 @@ SyntaxHighlighter.registerLanguage('rb', ruby)
 SyntaxHighlighter.registerLanguage('diff', diffLang)
 import PlanCard from '../PlanCard/PlanCard'
 import Logo from '../Logo/Logo'
-import AttachmentChips from '../AttachmentChips/AttachmentChips'
 import AttachmentProcessingBlock from '../AttachmentProcessingBlock/AttachmentProcessingBlock'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import type { Message, ToolOutputMode, Attachment } from '../../../../../shared/types'
@@ -84,6 +84,15 @@ import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
+import { useFileTabsStore } from '../../../store/fileTabs.store'
+import { resolveFilePath, remarkFilePaths, PATH_RE } from '../../../utils/remarkFilePaths'
+import {
+  attachmentsToMarkdown,
+  splitByAttachTokens,
+  hasAttachTokens,
+  replaceAttachTokensWithLinks,
+} from '../../../../../shared/attachmentMarkdown'
+import '../InlineAttachmentRenderer/InlineAttachmentRenderer.css'
 import 'katex/dist/katex.min.css'
 import './MessageBubble.css'
 import { SystemDivider } from './SystemDivider'
@@ -147,6 +156,9 @@ interface MessageBubbleProps {
    * сообщения; false при scroll-remount того же сообщения виртуализатором,
    * иначе анимация повторяется при каждом скролле → «интерфейс плывёт». */
   shouldAnimate?: boolean
+  /** Рабочая директория чата — для кликабельных путей в сообщениях.
+   *  Относительные пути резолвятся от workdir. undefined = пути не кликабельны. */
+  workdir?: string
 }
 
 const codeStyle = {
@@ -356,15 +368,28 @@ function parseContent(raw: string, allowPlanCard = false): Array<{ type: 'md' | 
   return result
 }
 
+// ── safeUrlTransform: пропускаем внутренние схемы через санитайзер ──────
+// Дефолтный defaultUrlTransform react-markdown вырезает неизвестные протоколы
+// (file-path://, file://) → href=''. Клик по ссылке с пустым href вёл на
+// текущую страницу приложения → setWindowOpenHandler → shell.openExternal(URL
+// самого приложения) → открывалась ВТОРАЯ копия приложения («перезапуск»).
+// Отсюда же «кривая подсветка»: путь получал класс md-link вместо
+// file-path-link. Наши схемы пропускаем как есть, остальное — штатный санитайзер.
+const safeUrlTransform = (url: string): string =>
+  url.startsWith('file-path://') || url.startsWith('file://')
+    ? url
+    : defaultUrlTransform(url)
+
 // ── renderParsedSegments: рендер массива сегментов из parseContent ─────────
 // Переиспользуется в 4 местах (основной рендер, iterations, liveTextAfter).
-// Использует module-level mdComponents (стабилен). plan-сегменты рендерятся
-// в PlanCard (live во время стрима — partial=true, после — с filePath).
+// Принимает per-instance mdComponents (с доступом к workdir для кликабельных путей).
+// plan-сегменты рендерятся в PlanCard (live во время стрима — partial=true, после — с filePath).
 function renderParsedSegments(
   segs: ReturnType<typeof parseContent>,
   remarkPlugins: readonly unknown[],
   rehypePlugins: readonly unknown[],
   planFilePath?: string,
+  mdComponents?: Record<string, unknown>,
 ): React.ReactNode {
   return segs.map((s, i) => {
     if (s.type === 'plan') {
@@ -382,7 +407,14 @@ function renderParsedSegments(
     if (s.type === 'admonition') {
       return (
         <AdmonitionBlock key={`adm-${i}`} kind={s.kind!} title={s.title}>
-          <ReactMarkdown remarkPlugins={remarkPlugins as never} rehypePlugins={rehypePlugins as never}>{s.content}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={remarkPlugins as never}
+            rehypePlugins={rehypePlugins as never}
+            components={mdComponents as never}
+            urlTransform={safeUrlTransform}
+          >
+            {s.content}
+          </ReactMarkdown>
         </AdmonitionBlock>
       )
     }
@@ -392,6 +424,7 @@ function renderParsedSegments(
         remarkPlugins={remarkPlugins as never}
         rehypePlugins={rehypePlugins as never}
         components={mdComponents as never}
+        urlTransform={safeUrlTransform}
       >
         {s.content}
       </ReactMarkdown>
@@ -399,40 +432,148 @@ function renderParsedSegments(
   })
 }
 
-// ── Module-level mdComponents: единый стабильный объект для всех экземпляров
-// MessageContent. Компоненты (CodeHighlighter/MermaidBlock/DiffBlock/CopyButton)
-// module-level и не имеют instance-state → mdComponents можно поднять наверх.
-// Это даёт две выгоды: (1) стабилен навсегда — не пересоздаётся, ре-парс не
-// срабатывает при копировании; (2) позволяет кэшировать ReactNode-дерево
-// ParsedContent по text безопасно (компоненты те же во всех экземплярах).
-const mdComponents: Record<string, unknown> = {
-  code({ className, children }: { className?: string; children?: React.ReactNode }) {
-    const match = /language-(\w+)/.exec(className || '')
-    const raw = String(children).replace(/\n$/, '')
-    const isInline = !match && !raw.includes('\n')
-    if (isInline) return <code className="inline-code">{children}</code>
-    const lang = match?.[1] || 'text'
-    if (lang === 'mermaid') return <MermaidBlock code={raw} />
-    if (lang === 'diff') return <DiffBlock code={raw} />
-    return (
-      <div className="code-block">
-        <div className="code-block-header">
-          <span className="code-lang">{lang.toUpperCase()}</span>
-          <CopyButton raw={raw} />
+// ── createMdComponents: per-instance mdComponents с доступом к workdir ───
+// Раньше был module-level (стабилен, кэшируемый). Теперь — функция, т.к.
+// нужен workdir для кликабельных путей и onOpenFile для code-блоков.
+// Кэш parsedRenderCache ключуется по text+workdir — при смене workdir
+// кэш-промах, но evictOldest ограничивает рост.
+function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string) => void }): Record<string, unknown> {
+  const { workdir, onOpenFile } = opts
+
+  // Обработчик клика на путь файла
+  const handlePathClick = (e: React.MouseEvent, rawPath: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (onOpenFile) {
+      const resolved = resolveFilePath(rawPath, workdir)
+      onOpenFile(resolved)
+    }
+  }
+
+  // Обработчик клика на ссылку — если это file:// путь, открываем в панели
+  const handleLinkClick = (e: React.MouseEvent, href: string) => {
+    // file:// путь → открываем в правой панели.
+    // preventDefault ДО проверки onOpenFile: иначе при отсутствии колбэка
+    // происходила бы дефолтная навигация (открытие второй копии приложения).
+    if (href.startsWith('file://')) {
+      e.preventDefault()
+      if (!onOpenFile) return
+      const fp = href.replace(/^file:\/\//, '')
+      onOpenFile(fp)
+      return
+    }
+    // Относительный путь без протокола (редко, но возможно)
+    if (workdir && onOpenFile && !href.startsWith('http') && !href.startsWith('mailto') && /\.\w{1,10}$/.test(href)) {
+      e.preventDefault()
+      const resolved = resolveFilePath(href, workdir)
+      onOpenFile(resolved)
+      return
+    }
+    // Иначе — обычная ссылка, браузер откроет
+  }
+
+  return {
+    code({ className, children }: { className?: string; children?: React.ReactNode }) {
+      const match = /language-(\w+)/.exec(className || '')
+      const raw = String(children).replace(/\n$/, '')
+      const isInline = !match && !raw.includes('\n')
+      if (isInline) return <code className="inline-code">{children}</code>
+      const lang = match?.[1] || 'text'
+      if (lang === 'mermaid') return <MermaidBlock code={raw} />
+      if (lang === 'diff') return <DiffBlock code={raw} />
+
+      // Парсим info-string на наличие пути: ```ts src/foo.ts
+      // info-string — это className после language-, может содержать путь
+      const fullInfo = className || ''
+      const pathMatch = /\blanguage-(\w+)\s+(.+)/.exec(fullInfo)
+      const codePath = pathMatch?.[2]?.trim()
+
+      return (
+        <div className="code-block">
+          <div
+            className={`code-block-header${codePath && onOpenFile ? ' code-block-header--clickable' : ''}`}
+            onClick={codePath && onOpenFile ? (e) => handlePathClick(e, codePath) : undefined}
+          >
+            <span className="code-lang">{lang.toUpperCase()}{codePath ? ` · ${codePath}` : ''}</span>
+            <div className="code-block-header-actions">
+              {codePath && onOpenFile && (
+                <button
+                  className="code-block-open-file-btn"
+                  onClick={(e) => handlePathClick(e, codePath)}
+                  title="Открыть в редакторе"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                </button>
+              )}
+              <CopyButton raw={raw} />
+            </div>
+          </div>
+          <CodeHighlighter raw={raw} lang={lang} />
         </div>
-        <CodeHighlighter raw={raw} lang={lang} />
-      </div>
-    )
-  },
-  table({ children }: { children?: React.ReactNode }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
-  thead({ children }: { children?: React.ReactNode }) { return <thead className="md-thead">{children}</thead> },
-  tr({ children }: { children?: React.ReactNode }) { return <tr className="md-tr">{children}</tr> },
-  th({ children }: { children?: React.ReactNode }) { return <th className="md-th">{children}</th> },
-  td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
-  blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
-  a({ href, children }: { href?: string; children?: React.ReactNode }) { return <a href={href} className="md-link" target="_blank" rel="noreferrer">{children}</a> },
-  hr() { return <hr className="md-hr" /> },
-  p({ children }: { children?: React.ReactNode }) { return <p>{children}</p> },
+      )
+    },
+    table({ children }: { children?: React.ReactNode }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
+    thead({ children }: { children?: React.ReactNode }) { return <thead className="md-thead">{children}</thead> },
+    tr({ children }: { children?: React.ReactNode }) { return <tr className="md-tr">{children}</tr> },
+    th({ children }: { children?: React.ReactNode }) { return <th className="md-th">{children}</th> },
+    td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
+    blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
+    a({ href, children }: { href?: string; children?: React.ReactNode }) {
+      // file-path:// — кликабельный путь файла из remarkFilePaths плагина
+      if (href?.startsWith('file-path://')) {
+        const rawPath = decodeURIComponent(href.replace(/^file-path:\/\//, ''))
+        return (
+          <a
+            href="#"
+            className="file-path-link"
+            onClick={(e) => {
+              e.preventDefault()
+              handlePathClick(e, rawPath)
+            }}
+          >
+            {children}
+          </a>
+        )
+      }
+      // file:// — путь к файлу на диске, открываем в правой панели
+      if (href?.startsWith('file://')) {
+        return (
+          <a
+            href={href}
+            className="md-link"
+            onClick={(e) => handleLinkClick(e, href)}
+          >
+            {children}
+          </a>
+        )
+      }
+      // Пустой href (санитайзер вырезал протокол) — НЕ кликабельная ссылка:
+      // href='' означал бы переход на текущую страницу приложения.
+      if (!href) {
+        return <span className="md-link">{children}</span>
+      }
+      // Обычная ссылка — открываем в браузере
+      return (
+        <a
+          href={href}
+          className="md-link"
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => handleLinkClick(e, href)}
+        >
+          {children}
+        </a>
+      )
+    },
+    hr() { return <hr className="md-hr" /> },
+    p({ children }: { children?: React.ReactNode }) {
+      return <p>{children}</p>
+    },
+  }
 }
 
 // ── Module-level кэш отрендеренного ReactNode-дерева по text.
@@ -451,7 +592,7 @@ const parsedRenderCache = new Map<string, React.ReactNode>()
 // мемоизирует парс на [text, allowPlanCard] — ре-парс только если текст
 // реально изменился. Невидимо: вывод идентичный.
 const ParsedContent = memo(function ParsedContent({
-  text, allowPlanCard, remarkPlugins, rehypePlugins, planFilePath, isStreaming,
+  text, allowPlanCard, remarkPlugins, rehypePlugins, planFilePath, isStreaming, mdComponents, workdir,
 }: {
   text: string
   allowPlanCard: boolean
@@ -459,8 +600,11 @@ const ParsedContent = memo(function ParsedContent({
   rehypePlugins: readonly unknown[]
   planFilePath?: string
   isStreaming?: boolean
+  mdComponents?: Record<string, unknown>
+  workdir?: string
 }) {
   const segs = useMemo(() => parseContentCached(text, allowPlanCard), [text, allowPlanCard])
+  const wdKey = workdir ?? ''
 
   // ── Инкрементальный рендер во время стриминга ──
   // Во время стрима text растёт каждые 50мс. Кэш parsedRenderCache ключуется
@@ -484,16 +628,17 @@ const ParsedContent = memo(function ParsedContent({
       const prefixKey = prefix + '|stream|' + (allowPlanCard ? '1' : '0')
         + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
         + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
+        + '|' + wdKey
       let prefixNode = parsedRenderCache.get(prefixKey)
       if (!prefixNode) {
         const prefixSegs = parseContentCached(prefix, allowPlanCard)
-        prefixNode = renderParsedSegments(prefixSegs, remarkPlugins, rehypePlugins, planFilePath)
+        prefixNode = renderParsedSegments(prefixSegs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
         if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
         parsedRenderCache.set(prefixKey, prefixNode)
       }
       // Хвост — короткий, парсим ReactMarkdown каждый флеш (дёшево)
       const tailSegs = parseContentCached(tail, allowPlanCard)
-      const tailNode = renderParsedSegments(tailSegs, remarkPlugins, rehypePlugins, planFilePath)
+      const tailNode = renderParsedSegments(tailSegs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
       return <>{prefixNode}{tailNode}</>
     }
     // Нет стабильного префикса (начало ответа) — парсим весь text через ReactMarkdown.
@@ -501,9 +646,10 @@ const ParsedContent = memo(function ParsedContent({
     const cacheKey = text + '|stream|' + (allowPlanCard ? '1' : '0')
       + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
       + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
+      + '|' + wdKey
     let node = parsedRenderCache.get(cacheKey)
     if (!node) {
-      node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath)
+      node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
       if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
       parsedRenderCache.set(cacheKey, node)
     }
@@ -515,9 +661,10 @@ const ParsedContent = memo(function ParsedContent({
     + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
     + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
     + '|' + (planFilePath ?? '')
+    + '|' + wdKey
   let node = parsedRenderCache.get(cacheKey)
   if (!node) {
-    node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath)
+    node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
     if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
     parsedRenderCache.set(cacheKey, node)
   }
@@ -528,7 +675,8 @@ const ParsedContent = memo(function ParsedContent({
   prev.remarkPlugins === next.remarkPlugins &&
   prev.rehypePlugins === next.rehypePlugins &&
   prev.planFilePath === next.planFilePath &&
-  prev.isStreaming === next.isStreaming
+  prev.isStreaming === next.isStreaming &&
+  prev.workdir === next.workdir
 )
 
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
@@ -759,6 +907,78 @@ function extractFastContextResult(steps: Array<{ type: string; toolName?: string
   return null
 }
 
+// ── renderClickablePlainText: кликабельные пути в plain-text user-сообщениях ─
+// Для user-сообщений без markdown (userMarkdown=false) — парсим пути в тексте
+// и делаем их кликабельными. Также обрабатывает inline-вложения через токены.
+// ── renderAttachChip: React-чип вложения (для токенов в user-сообщениях) ──
+function renderAttachChip(
+  att: Attachment | undefined,
+  onPreviewAttachment?: (a: Attachment) => void,
+): React.ReactNode {
+  if (!att) return null
+  return (
+    <span
+      className={`inline-attach inline-attach--${att.kind}${onPreviewAttachment ? ' inline-attach--clickable' : ''}`}
+      onClick={onPreviewAttachment ? (e) => { e.stopPropagation(); onPreviewAttachment(att) } : undefined}
+      title={att.relPath || att.path || att.name}
+    >
+      {att.kind === 'image' && att.dataUrl && <img src={att.dataUrl} alt={att.name} className="inline-attach-thumb" />}
+      {att.kind === 'image' && !att.dataUrl && att.path && <img src={`file://${att.path}`} alt={att.name} className="inline-attach-thumb" />}
+      {att.kind !== 'image' && (
+        <span className="inline-attach-icon">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+        </span>
+      )}
+      <span className="inline-attach-name">{att.name}</span>
+    </span>
+  )
+}
+
+function renderClickablePlainText(
+  text: string,
+  workdir?: string,
+  onOpenFile?: (path: string) => void,
+): React.ReactNode {
+  if (!onOpenFile || (!text.includes('/') && !text.includes('\\'))) {
+    return text
+  }
+  // Regex для путей — тот же PATH_RE что в remarkFilePaths (lookbehind +
+  // кириллица), чтобы подсветка в plain-text и markdown не разъезжалась.
+  const re = new RegExp(PATH_RE.source, 'g')
+  const parts: React.ReactNode[] = []
+  let lastIdx = 0
+  let m: RegExpExecArray | null
+  let key = 0
+  while ((m = re.exec(text)) !== null) {
+    const pathStart = m.index + (m[0].length - m[1].length)
+    if (pathStart > lastIdx) {
+      parts.push(text.slice(lastIdx, pathStart))
+    }
+    const rawPath = m[1]
+    parts.push(
+      <span
+        key={`fp-${key++}`}
+        className="file-path-link"
+        onClick={(e) => {
+          e.stopPropagation()
+          const resolved = resolveFilePath(rawPath, workdir)
+          onOpenFile(resolved)
+        }}
+      >
+        {rawPath}
+      </span>
+    )
+    lastIdx = pathStart + rawPath.length
+  }
+  if (lastIdx < text.length) {
+    parts.push(text.slice(lastIdx))
+  }
+  return <>{parts}</>
+}
+
 // Мемоизированный тяжёлый контент сообщения
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
@@ -767,6 +987,7 @@ const MessageContent = memo(function MessageContent({
   userMarkdown = true, timeEl, agentStatus, toolProgress, retry, lastError,
   spawnedAgents,
   onPreviewAttachment,
+  workdir,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -788,6 +1009,7 @@ const MessageContent = memo(function MessageContent({
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
   spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
   onPreviewAttachment?: (a: Attachment | null) => void
+  workdir?: string
 }) {
   const [statsOpen, setStatsOpen] = useState(false)
   // Если панель статистики не влезает сверху (сообщение в самом верху чата) —
@@ -877,11 +1099,46 @@ const MessageContent = memo(function MessageContent({
   // KaTeX-прохода это заметно дешевле → меньше фризов при быстром скролле.
   const hasMath = useMemo(() => /\$/.test(content), [content])
   const streamingRemark = useMemo(() => [remarkGfm], [])
-  const fullRemark = useMemo(() => hasMath ? [remarkGfm, remarkMath] : [remarkGfm], [hasMath])
+  const fullRemark = useMemo(() => hasMath ? [remarkGfm, remarkMath, remarkFilePaths] : [remarkGfm, remarkFilePaths], [hasMath])
   const emptyRehype = useMemo<readonly unknown[]>(() => [], [])
   const fullRehype = useMemo(() => hasMath ? [rehypeKatex] : emptyRehype, [hasMath, emptyRehype])
   const remarkPlugins = isStreaming ? streamingRemark : fullRemark
   const rehypePlugins = isStreaming ? emptyRehype : fullRehype
+
+  // ── Per-instance mdComponents с кликабельными путями ──
+  // workdir нужен для резолва относительных путей → правая панель.
+  // remarkFilePaths плагин добавляем только в финальном рендере (не стриминг).
+  const onOpenFile = useCallback((fp: string) => {
+    const store = useFileTabsStore.getState()
+    const ui = useUIStore.getState()
+    // Если путь абсолютный — передаём как есть (openFile резолвит от workdir)
+    // Если относительный — резолвим от workdir
+    const wd = workdir || store.workdir || undefined
+    if (!wd) return
+    // Нормализуем: если путь уже абсолютный — берём basename как relPath
+    const isAbs = /^[a-zA-Z]:[\\/]/.test(fp) || fp.startsWith('/') || fp.startsWith('~')
+    if (isAbs) {
+      // Абсолютный путь — конвертируем в относительный от workdir
+      const wdNorm = wd.replace(/\\/g, '/').replace(/\/$/, '')
+      const fpNorm = fp.replace(/\\/g, '/')
+      if (fpNorm.startsWith(wdNorm + '/')) {
+        const rel = fpNorm.slice(wdNorm.length + 1)
+        store.openFile(rel, wd)
+      } else {
+        // Файл вне workdir — открываем по абсолютному пути
+        store.openFile(fp, wd)
+      }
+    } else {
+      store.openFile(fp, wd)
+    }
+    ui.setAgentPanelTab('files')
+    ui.setAgentPanelOpen(true)
+  }, [workdir])
+
+  const mdComponents = useMemo(
+    () => createMdComponents({ workdir, onOpenFile }),
+    [workdir, onOpenFile],
+  )
 
   return (
     <div
@@ -904,19 +1161,6 @@ const MessageContent = memo(function MessageContent({
               <span className="message-slash-pill-args">{message.slashCommand.args}</span>
             )}
           </div>
-        )}
-
-        {/* Чипы прикреплённых файлов/изображений — над текстом user-сообщения.
-            Показываем только для user-роли и когда есть attachments. read-only
-            — это уже отправленное сообщение, кнопка удаления скрыта. */}
-        {isUser && message.attachments && message.attachments.length > 0 && (
-          <AttachmentChips
-            attachments={message.attachments}
-            onRemove={() => {}}
-            max={10}
-            readOnly
-            onPreview={onPreviewAttachment}
-          />
         )}
 
         {(message as Message & { replyTo?: { role: string; content: string } }).replyTo && (
@@ -949,7 +1193,7 @@ const MessageContent = memo(function MessageContent({
                   )}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
+                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
                   )}
                   {iter.steps.length > 0 && (
@@ -1108,7 +1352,7 @@ const MessageContent = memo(function MessageContent({
                   {/* Текст ДО тулчейна */}
                   {iter.textBefore && (
                     <div className="message-content selectable">
-                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} />
+                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
                   )}
                   {/* Тулчейн итерации */}
@@ -1189,7 +1433,7 @@ const MessageContent = memo(function MessageContent({
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
             {liveTextAfter && (
               <div className="message-content selectable">
-                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} />
+                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} mdComponents={mdComponents} workdir={workdir} />
               </div>
             )}
           </div>
@@ -1200,26 +1444,74 @@ const MessageContent = memo(function MessageContent({
             type Iter = { label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }
             const savedIters = (message as Message & { iterations?: Iter[] }).iterations
             if (!isUser && savedIters?.length) return null
+            // ── User-сообщения с inline-токенами вложений [[attach:id]] ──
+            // Чипы восстанавливаются НА СВОИХ МЕСТАХ в потоке текста (как в
+            // инпут-баре). Markdown при наличии токенов игнорируем — чипы
+            // важнее. Старый формат (attachments без токенов) — ветки ниже.
+            if (isUser && hasAttachTokens(content)) {
+              const attMap = new Map((message.attachments ?? []).map(a => [a.id, a] as const))
+              return (
+                <div className="message-content selectable">
+                  <p style={{ whiteSpace: 'pre-wrap' }}>
+                    {splitByAttachTokens(content).map((seg, i) =>
+                      seg.type === 'text' ? (
+                        <React.Fragment key={i}>{renderClickablePlainText(seg.text, workdir, onOpenFile)}</React.Fragment>
+                      ) : (
+                        <React.Fragment key={i}>{renderAttachChip(attMap.get(seg.id), onPreviewAttachment)}</React.Fragment>
+                      ),
+                    )}
+                  </p>
+                </div>
+              )
+            }
             return (
               <div className="message-content selectable">
                 {isUser && !userMarkdown ? (
-                  <p style={{ whiteSpace: 'pre-wrap' }}>{content}</p>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{renderClickablePlainText(content, workdir, onOpenFile)}</p>
                 ) : isUser ? (
                   // User-сообщения с markdown: через ParsedContent (с кэшем)
                   // вместо прямого renderParsedSegments — консистентно с
                   // ассистентскими сообщениями и надёжнее.
-                  <ParsedContent text={content} allowPlanCard={false} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} />
+                  <ParsedContent text={content} allowPlanCard={false} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} workdir={workdir} />
                 ) : (
                   // Ассистентские сообщения — через ParsedContent с module-level
                   // кэшем: scroll-remount виртуализатора и hover (showActions)
                   // больше не ре-парсят markdown (0.3–0.5с фриз на большом сообщении).
                   // isStreaming: для live-пузыря без итераций — лёгкий рендер
                   // во время стрима, полный парс при done.
-                  <ParsedContent text={content} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} />
+                  <ParsedContent text={content} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} mdComponents={mdComponents} workdir={workdir} />
                 )}
               </div>
             )
           })()
+        )}
+
+        {/* Inline-вложения user-сообщения — ПОСЛЕ текста. ТОЛЬКО для старого
+            формата (attachments без токенов в content): новые сообщения
+            рендерят чипы на своих местах внутри текста (ветка выше). */}
+        {isUser && message.attachments && message.attachments.length > 0 && !hasAttachTokens(content) && (
+          <div className="message-inline-attachments">
+            {message.attachments.map(att => (
+              <span
+                key={att.id}
+                className={`inline-attach inline-attach--${att.kind}${onPreviewAttachment ? ' inline-attach--clickable' : ''}`}
+                onClick={onPreviewAttachment ? (e) => { e.stopPropagation(); onPreviewAttachment(att) } : undefined}
+                title={att.relPath || att.path || att.name}
+              >
+                {att.kind === 'image' && att.dataUrl && <img src={att.dataUrl} alt={att.name} className="inline-attach-thumb" />}
+                {att.kind === 'image' && !att.dataUrl && att.path && <img src={`file://${att.path}`} alt={att.name} className="inline-attach-thumb" />}
+                {att.kind !== 'image' && (
+                  <span className="inline-attach-icon">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                  </span>
+                )}
+                <span className="inline-attach-name">{att.name}</span>
+              </span>
+            ))}
+          </div>
         )}
 
         {/* Footer: кнопки действий + время + панель статистики */}
@@ -1344,7 +1636,7 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
 
 
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true,
+  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true, workdir,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -1352,9 +1644,24 @@ const MessageBubble = memo(function MessageBubble({
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
 
   const handleCopy = useCallback(async () => {
-    const ok = await copyToClipboard(message.content)
-    if (ok) onCopy?.(message.content)
-  }, [message.content, onCopy])
+    // Токены вложений → Markdown-ссылки НА СВОИХ МЕСТАХ в тексте
+    let textToCopy = message.attachments?.length
+      ? replaceAttachTokensWithLinks(message.content, message.attachments)
+      : message.content
+    if (message.attachments?.length) {
+      // Старый формат: вложения без токенов в тексте — ссылками в конец
+      const tokenIds = new Set(
+        splitByAttachTokens(message.content).filter(s => s.type === 'attach').map(s => s.id),
+      )
+      const legacy = message.attachments.filter(a => !tokenIds.has(a.id))
+      if (legacy.length) {
+        const md = attachmentsToMarkdown(legacy)
+        if (md) textToCopy = textToCopy + '\n\n' + md
+      }
+    }
+    const ok = await copyToClipboard(textToCopy)
+    if (ok) onCopy?.(textToCopy)
+  }, [message.content, message.attachments, onCopy])
 
   const handleReply = useCallback(() => {
     onReply?.(message)
@@ -1462,6 +1769,7 @@ const MessageBubble = memo(function MessageBubble({
             toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
             spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
             onPreviewAttachment={setPreviewAttachment}
+            workdir={workdir}
           />
         </div>
       ) : (
@@ -1493,6 +1801,7 @@ const MessageBubble = memo(function MessageBubble({
         toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
         spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
         onPreviewAttachment={setPreviewAttachment}
+        workdir={workdir}
       />
       )}
 
