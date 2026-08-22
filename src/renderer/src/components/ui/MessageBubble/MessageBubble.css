@@ -1,7 +1,7 @@
 ﻿.message-wrap {
   display: flex;
   gap: 10px;
-  padding: 4px 16px;
+  padding: 4px 8px;
   position: relative;
   align-items: flex-start;
   /* contain: paint убран — popup-actions и панель статистики могут быть выше
@@ -43,20 +43,16 @@
    потока → bubble расширялся → текст переформатировался. */
 .message-bubble-wrap {
   display: flex;
-  flex-direction: row;
-  gap: 6px;
-  max-width: 75%;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
+  flex: 1;
   position: relative;
-  /* Резерв под popup-actions справа (assistant) — 32px popup + 6px gap. */
-  padding-right: 38px;
 }
 
 .message-wrap--user .message-bubble-wrap {
-  flex-direction: row-reverse;
-  padding-right: 0;
-  /* Резерв под popup слева (user — actions слева от bubble). */
-  padding-left: 38px;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .message-bubble {
@@ -64,7 +60,7 @@
   padding: 10px 14px;
   position: relative;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }
 
 .message-bubble--user {
@@ -78,37 +74,6 @@
   border: none;
   padding-left: 0;
   padding-top: 0;
-}
-
-/* Кнопки действий — absolute, отцентрированы по высоте bubble. Место уже
-   зарезервировано padding на wrap → выпадение в fixed не двигает bubble.
-   JS (MessageContent) переключает в position: fixed когда bubble частично
-   вне viewport, держа popup в центре видимой части. */
-.message-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-  z-index: 10;
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  right: 0;
-}
-
-.message-wrap--user .message-actions {
-  right: auto;
-  left: 0;
-}
-
-.message-actions--fixed {
-  position: fixed;
-  z-index: 1000;
-  width: max-content;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
 }
 
 .message-pinned-badge {
@@ -499,9 +464,36 @@
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 6px;
   margin-top: 4px;
+}
+
+.message-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  z-index: 10;
+  position: relative;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+  margin-right: auto;
+}
+
+.message-actions:hover {
+  opacity: 1;
+}
+
+.message-wrap--user .message-footer {
+  flex-direction: row-reverse;
+}
+
+.message-wrap--user .message-actions {
+  margin-right: 0;
+  margin-left: auto;
 }
 
 .message-stats-btn {
@@ -638,8 +630,8 @@
 
 
 .msg-action-btn {
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -648,10 +640,10 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  transition: background var(--transition), color var(--transition);
+  transition: color 0.12s;
 }
 .msg-action-btn:hover {
-  background: var(--accent-subtle);
+  background: transparent;
   color: var(--text-primary);
 }
 
