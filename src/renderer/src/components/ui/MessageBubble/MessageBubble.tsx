@@ -84,8 +84,9 @@ import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
-import { useFileTabsStore } from '../../../store/fileTabs.store'
-import { resolveFilePath, remarkFilePaths, PATH_RE } from '../../../utils/remarkFilePaths'
+import { remarkFilePaths, PATH_RE, isValidPathMatch } from '../../../utils/remarkFilePaths'
+import { openFilePath } from '../../../utils/openFilePath'
+import FilePathLink from '../FilePathLink/FilePathLink'
 import {
   attachmentsToMarkdown,
   splitByAttachTokens,
@@ -440,33 +441,31 @@ function renderParsedSegments(
 function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string) => void }): Record<string, unknown> {
   const { workdir, onOpenFile } = opts
 
-  // Обработчик клика на путь файла
+  // Обработчик клика на путь файла (code-блоки, заголовки с путём).
+  // openFilePath сам резолвит от workdir, парсит суффикс :42-58 и решает
+  // по stat: файл в проекте → правая панель, папка/вне проекта → Проводник.
   const handlePathClick = (e: React.MouseEvent, rawPath: string) => {
     e.preventDefault()
     e.stopPropagation()
-    if (onOpenFile) {
-      const resolved = resolveFilePath(rawPath, workdir)
-      onOpenFile(resolved)
-    }
+    void openFilePath(rawPath, workdir)
   }
 
   // Обработчик клика на ссылку — если это file:// путь, открываем в панели
   const handleLinkClick = (e: React.MouseEvent, href: string) => {
-    // file:// путь → открываем в правой панели.
+    // file:// путь → открываем через общий флоу (панель/Проводник).
     // preventDefault ДО проверки onOpenFile: иначе при отсутствии колбэка
     // происходила бы дефолтная навигация (открытие второй копии приложения).
     if (href.startsWith('file://')) {
       e.preventDefault()
-      if (!onOpenFile) return
-      const fp = href.replace(/^file:\/\//, '')
-      onOpenFile(fp)
+      // file:///C:/path → C:/path ; file://C:\path → C:\path
+      const fp = decodeURIComponent(href.replace(/^file:\/\/\/?/, ''))
+      void openFilePath(fp, workdir)
       return
     }
     // Относительный путь без протокола (редко, но возможно)
-    if (workdir && onOpenFile && !href.startsWith('http') && !href.startsWith('mailto') && /\.\w{1,10}$/.test(href)) {
+    if (workdir && !href.startsWith('http') && !href.startsWith('mailto') && /\.\w{1,10}$/.test(href)) {
       e.preventDefault()
-      const resolved = resolveFilePath(href, workdir)
-      onOpenFile(resolved)
+      void openFilePath(href, workdir)
       return
     }
     // Иначе — обычная ссылка, браузер откроет
@@ -523,21 +522,12 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
     td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
     blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
     a({ href, children }: { href?: string; children?: React.ReactNode }) {
-      // file-path:// — кликабельный путь файла из remarkFilePaths плагина
+      // file-path:// — кликабельный путь файла из remarkFilePaths плагина.
+      // FilePathLink: чип с иконкой, статусом существования, peek-превью,
+      // контекстным меню; клик → панель/Проводник (openFilePath).
       if (href?.startsWith('file-path://')) {
         const rawPath = decodeURIComponent(href.replace(/^file-path:\/\//, ''))
-        return (
-          <a
-            href="#"
-            className="file-path-link"
-            onClick={(e) => {
-              e.preventDefault()
-              handlePathClick(e, rawPath)
-            }}
-          >
-            {children}
-          </a>
-        )
+        return <FilePathLink raw={rawPath} workdir={workdir} />
       }
       // file:// — путь к файлу на диске, открываем в правой панели
       if (href?.startsWith('file://')) {
@@ -556,13 +546,15 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
       if (!href) {
         return <span className="md-link">{children}</span>
       }
-      // Обычная ссылка — открываем в браузере
+      // Обычная ссылка — открываем в браузере. title показывает полный URL
+      // (полезно для [текст](url) — куда реально ведёт).
       return (
         <a
           href={href}
           className="md-link"
           target="_blank"
           rel="noreferrer"
+          title={href}
           onClick={(e) => handleLinkClick(e, href)}
         >
           {children}
@@ -940,38 +932,29 @@ function renderAttachChip(
 function renderClickablePlainText(
   text: string,
   workdir?: string,
-  onOpenFile?: (path: string) => void,
+  _onOpenFile?: (path: string) => void,
 ): React.ReactNode {
-  if (!onOpenFile || (!text.includes('/') && !text.includes('\\'))) {
+  if (!text.includes('/') && !text.includes('\\')) {
     return text
   }
   // Regex для путей — тот же PATH_RE что в remarkFilePaths (lookbehind +
-  // кириллица), чтобы подсветка в plain-text и markdown не разъезжалась.
+  // кириллица + папки + суффиксы :42-58), чтобы подсветка в plain-text
+  // и markdown не разъезжалась. FilePathLink сам обрабатывает клик.
   const re = new RegExp(PATH_RE.source, 'g')
   const parts: React.ReactNode[] = []
   let lastIdx = 0
   let m: RegExpExecArray | null
   let key = 0
   while ((m = re.exec(text)) !== null) {
+    const full = m[1]
+    // Папка-«проза» (and/or) — пропускаем
+    if (!isValidPathMatch(full)) continue
     const pathStart = m.index + (m[0].length - m[1].length)
     if (pathStart > lastIdx) {
       parts.push(text.slice(lastIdx, pathStart))
     }
-    const rawPath = m[1]
-    parts.push(
-      <span
-        key={`fp-${key++}`}
-        className="file-path-link"
-        onClick={(e) => {
-          e.stopPropagation()
-          const resolved = resolveFilePath(rawPath, workdir)
-          onOpenFile(resolved)
-        }}
-      >
-        {rawPath}
-      </span>
-    )
-    lastIdx = pathStart + rawPath.length
+    parts.push(<FilePathLink key={`fp-${key++}`} raw={full} workdir={workdir} />)
+    lastIdx = pathStart + full.length
   }
   if (lastIdx < text.length) {
     parts.push(text.slice(lastIdx))
@@ -1098,7 +1081,12 @@ const MessageContent = memo(function MessageContent({
   // целиком. Каждый scroll-mount виртуализатора ре-парсит markdown; без
   // KaTeX-прохода это заметно дешевле → меньше фризов при быстром скролле.
   const hasMath = useMemo(() => /\$/.test(content), [content])
-  const streamingRemark = useMemo(() => [remarkGfm], [])
+  // remarkFilePaths — и в стриминге: regex-проход по text-нодам дёшев,
+  // FilePathLink мемоизирован (props raw/workdir стабильны между флешами),
+  // stat-проверки дедуплицированы кэшем pathStatus (один IPC на уникальный
+  // путь за сессию). Частичный путь во время печати → missing → простой
+  // текст; допечатался → чип. Прогрессивное улучшение без шторма ре-рендеров.
+  const streamingRemark = useMemo(() => [remarkGfm, remarkFilePaths], [])
   const fullRemark = useMemo(() => hasMath ? [remarkGfm, remarkMath, remarkFilePaths] : [remarkGfm, remarkFilePaths], [hasMath])
   const emptyRehype = useMemo<readonly unknown[]>(() => [], [])
   const fullRehype = useMemo(() => hasMath ? [rehypeKatex] : emptyRehype, [hasMath, emptyRehype])
@@ -1107,32 +1095,12 @@ const MessageContent = memo(function MessageContent({
 
   // ── Per-instance mdComponents с кликабельными путями ──
   // workdir нужен для резолва относительных путей → правая панель.
-  // remarkFilePaths плагин добавляем только в финальном рендере (не стриминг).
+  // remarkFilePaths работает и в стриминге (см. streamingRemark выше).
+  // Сам open-флоу (stat → файл/папка/Проводник + reveal на строку) — в
+  // openFilePath, колбэк здесь только как маркер «клики разрешены»
+  // (условие в code-блоках) и для внешних потребителей.
   const onOpenFile = useCallback((fp: string) => {
-    const store = useFileTabsStore.getState()
-    const ui = useUIStore.getState()
-    // Если путь абсолютный — передаём как есть (openFile резолвит от workdir)
-    // Если относительный — резолвим от workdir
-    const wd = workdir || store.workdir || undefined
-    if (!wd) return
-    // Нормализуем: если путь уже абсолютный — берём basename как relPath
-    const isAbs = /^[a-zA-Z]:[\\/]/.test(fp) || fp.startsWith('/') || fp.startsWith('~')
-    if (isAbs) {
-      // Абсолютный путь — конвертируем в относительный от workdir
-      const wdNorm = wd.replace(/\\/g, '/').replace(/\/$/, '')
-      const fpNorm = fp.replace(/\\/g, '/')
-      if (fpNorm.startsWith(wdNorm + '/')) {
-        const rel = fpNorm.slice(wdNorm.length + 1)
-        store.openFile(rel, wd)
-      } else {
-        // Файл вне workdir — открываем по абсолютному пути
-        store.openFile(fp, wd)
-      }
-    } else {
-      store.openFile(fp, wd)
-    }
-    ui.setAgentPanelTab('files')
-    ui.setAgentPanelOpen(true)
+    void openFilePath(fp, workdir)
   }, [workdir])
 
   const mdComponents = useMemo(

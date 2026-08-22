@@ -11,6 +11,43 @@ import { useSettingsStore } from '../../../store/settings.store'
 import { useToast } from '../Toast/Toast'
 import './FileEditorPane.css'
 
+// ── Reveal на строку (клик по src/foo.ts:42 в сообщении) ────────────────
+// Скроллит к строке, ставит туда каретку и подсвечивает диапазон (:42-58).
+// Один декорейшен-коллекшен на таб — старая подсветка снимается автоматически.
+let revealDecorations: { editor: unknown; decorations: { dispose(): void } } | null = null
+
+function applyReveal(
+  editor: import('monaco-editor').editor.IStandaloneCodeEditor,
+  line: number,
+  lineEnd?: number,
+): void {
+  const end = lineEnd && lineEnd > line ? lineEnd : line
+  try {
+    editor.revealLineInCenter(line)
+    editor.setPosition({ lineNumber: line, column: 1 })
+    editor.focus()
+  } catch { /* редактор ещё монтируется */ }
+  try {
+    revealDecorations?.decorations.dispose()
+    revealDecorations = {
+      editor,
+      decorations: editor.createDecorationsCollection([
+        {
+          range: new monaco.Range(line, 1, end, 1),
+          options: {
+            isWholeLine: true,
+            className: 'reveal-line-highlight',
+            overviewRuler: {
+              color: '#7c9eff',
+              position: monaco.editor.OverviewRulerLane.Center,
+            },
+          },
+        },
+      ]),
+    }
+  } catch { /* декорации не критичны */ }
+}
+
 // ── Офлайн Monaco: @monaco-editor/react по умолчанию грузит Monaco с CDN
 // (jsdelivr). В Electron (офлайн) это не работает. Конфигурируем loader
 // использовать локальный bundled monaco-editor (через vite-plugin-monaco-editor).
@@ -84,6 +121,17 @@ export default function FileEditorPane({ tab, treeOpen, onToggleTree }: FileEdit
       handleSave()
     })
   }
+
+  // Reveal на строку: после загрузки контента (или сразу, если уже загружен)
+  // и при повторном клике по пути с :строкой в уже открытом табе.
+  const consumeReveal = useFileTabsStore(s => s.consumeReveal)
+  useEffect(() => {
+    if (tab.loading || tab.error || tab.isBinary || !tab.revealLine) return
+    const editor = editorRef.current
+    if (!editor) return
+    applyReveal(editor, tab.revealLine, tab.revealLineEnd)
+    consumeReveal(tab.id)
+  }, [tab.id, tab.loading, tab.error, tab.isBinary, tab.revealLine, tab.revealLineEnd, consumeReveal])
 
   const handleEditorChange = (value: string | undefined) => {
     if (value === undefined) return

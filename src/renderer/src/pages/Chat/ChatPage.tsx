@@ -18,6 +18,7 @@ import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
 import { ChatRemeasureContext } from '../../components/ui/MessageBubble/remeasure'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import LiveTodoBar from '../../components/ui/LiveTodoBar/LiveTodoBar'
+import ChatFilesPopover from '../../components/ui/ChatFilesPopover/ChatFilesPopover'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
@@ -1843,6 +1844,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         />
         <main className="chat-main">
           <LiveTodoBar items={overlayTodo} active={overlayActive} />
+          <ChatFilesPopover messages={messages} workdir={currentWorkdir} />
 
           <AnimatePresence>
             {showSearch && (

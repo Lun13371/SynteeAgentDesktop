@@ -542,6 +542,7 @@ declare const synteeAPI: {
     };
     shell: {
         openPath: (path: string) => Promise<any>;
+        showItemInFolder: (path: string) => Promise<any>;
         getExtensionsPaths: () => Promise<any>;
     };
     pty: {
@@ -586,6 +587,13 @@ declare const synteeAPI: {
             root: string;
             relPaths: string[];
         }) => Promise<any>;
+        statPath: (absPath: string) => Promise<{
+            exists: boolean;
+            isDir: boolean;
+            isFile: boolean;
+            size: number;
+            resolved: string;
+        }>;
     };
     git: {
         status: (workdir: string) => Promise<any>;
