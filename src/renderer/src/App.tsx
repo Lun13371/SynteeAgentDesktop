@@ -509,7 +509,6 @@ export default function App() {
   const mainPage = useNavStore(s => s.mainPage)
   const toggleMainPage = useNavStore(s => s.toggleMainPage)
   const openSettings = useNavStore(s => s.openSettings)
-  const agentPanelExpanded = useUIStore(s => s.agentPanelExpanded)
   // useShallow — подписка только на нужные поля.
   const theme = useUIStore(s => s.theme)
 
@@ -1367,7 +1366,7 @@ export default function App() {
               onUpdateClick={() => setUpdateModalOpen(true)}
             />
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
-              <div className={`rp-chat-area ${agentPanelExpanded ? 'rp-chat-area--hidden' : ''}`}>
+              <div className="rp-chat-area">
                 {/* ChatPage держится всегда смонтированным (keep-alive):
                     сайдбар/virtualizer не ре-инициализируются при переключении
                     вкладок → нет лага при возврате в чат. Скрываем через
@@ -1376,15 +1375,15 @@ export default function App() {
                   <ChatPage embedded />
                 </div>
                 <AnimatePresence>
-                  {mainPage === 'settings' && (
-                    <motion.div
-                      key="settings-page"
-                      className="page-motion-host"
-                      initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
-                      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
-                      exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 }, filter: { type: 'tween', duration: 0.25, ease: 'easeOut' } }}
-                    >
+              {mainPage === 'settings' && (
+                <motion.div
+                  key="settings-page"
+                  className="page-motion-host"
+                  initial={{ opacity: 0, scale: 0.92 }}
+                  animate={{ opacity: 1, scale: 1, pointerEvents: 'auto' }}
+                  exit={{ opacity: 0, scale: 1.05, pointerEvents: 'none' }}
+                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <SettingsPage />
                       </Suspense>
@@ -1394,10 +1393,10 @@ export default function App() {
                     <motion.div
                       key="memory-page"
                       className="page-motion-host"
-                      initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
-                      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
-                      exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 }, filter: { type: 'tween', duration: 0.25, ease: 'easeOut' } }}
+                      initial={{ opacity: 0, scale: 0.92 }}
+                      animate={{ opacity: 1, scale: 1, pointerEvents: 'auto' }}
+                      exit={{ opacity: 0, scale: 1.05, pointerEvents: 'none' }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                     >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <MemoryPage />
@@ -1408,10 +1407,10 @@ export default function App() {
                     <motion.div
                       key="messenger-page"
                       className="page-motion-host"
-                      initial={{ opacity: 0, scale: 0.92, filter: 'blur(12px)' }}
-                      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
-                      exit={{ opacity: 0, scale: 1.08, filter: 'blur(12px)', pointerEvents: 'none' }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 }, filter: { type: 'tween', duration: 0.25, ease: 'easeOut' } }}
+                      initial={{ opacity: 0, scale: 0.92 }}
+                      animate={{ opacity: 1, scale: 1, pointerEvents: 'auto' }}
+                      exit={{ opacity: 0, scale: 1.05, pointerEvents: 'none' }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                     >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <MessengerPage />

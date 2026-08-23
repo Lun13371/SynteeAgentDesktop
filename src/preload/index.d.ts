@@ -114,6 +114,11 @@ declare const synteeAPI: {
         plan: () => Promise<any>;
         openTopup: () => Promise<any>;
     };
+    stats: {
+        overview: (params?: {
+            hours?: number;
+        }) => Promise<any>;
+    };
     messenger: {
         connect: () => Promise<{
             ok: boolean;

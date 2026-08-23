@@ -199,7 +199,7 @@ export function registerProviderIPC(store: Store): void {
     let error: string | null = null
 
     try {
-      const url = provider.baseUrl.replace(/\/$/, '') + '/models'
+      const url = provider.baseUrl.replace(/\/$/, '') + (provider.modelsEndpoint || '/models')
       const res = await fetch(url, {
         headers: {
           // Анонимные провайдеры (opencode-free) шлют apiKey 'public' → Bearer public.

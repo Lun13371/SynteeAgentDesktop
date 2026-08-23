@@ -13,6 +13,7 @@ import {
   Square, Pause, Bell, CheckCircle2, ShieldAlert, MessageCircle,
   Save, ExternalLink, Upload, ArrowUp, ArrowDown,
   Waves, Rainbow, Sparkle, Orbit, Mountain, Hexagon, Circle, MoreHorizontal,
+  BarChart3, Activity, TrendingUp, DollarSign, Gauge,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -79,6 +80,12 @@ const ICONS = {
   hexagon: Hexagon,
   circle: Circle,
   moreHorizontal: MoreHorizontal,
+  // Статистика (Настройки → Статистика)
+  chart: BarChart3,
+  activity: Activity,
+  trendingUp: TrendingUp,
+  dollar: DollarSign,
+  gauge: Gauge,
 } satisfies Record<string, IconComponent>
 
 export type IconName = keyof typeof ICONS

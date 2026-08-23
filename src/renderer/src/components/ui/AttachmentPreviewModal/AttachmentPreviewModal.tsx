@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import type { Attachment } from '../../../../../shared/types'
 import CodePreview from '../CodePreview/CodePreview'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
@@ -122,16 +122,19 @@ export default function AttachmentPreviewModal({ attachment, onClose }: Attachme
 
   const imageSrc = attachment.dataUrl || (attachment.path ? `file://${attachment.path}` : null)
 
+  // ВАЖНО: без AnimatePresence! PresenceContext framer-motion проходит через
+  // createPortal: exit-анимация внутри портала ломала onExitComplete
+  // родительских AnimatePresence (SettingsPage / App) — страница настроек
+  // никогда не удалялась из DOM, и невидимый оверлей блокировал весь UI.
+  // Модалка теперь монтируется/размонтируется синхронно — зомби невозможны.
   return createPortal(
-    <AnimatePresence>
-      <motion.div
-        className="att-preview-overlay"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.2 }}
-        onClick={onClose}
-      >
+    <motion.div
+      className="att-preview-overlay"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.15 }}
+      onClick={onClose}
+    >
         {/* Кнопка закрытия */}
         <button
           className="att-preview-close"
@@ -286,8 +289,7 @@ export default function AttachmentPreviewModal({ attachment, onClose }: Attachme
             </motion.div>
           )}
         </div>
-      </motion.div>
-    </AnimatePresence>,
+    </motion.div>,
     document.body
   )
 }

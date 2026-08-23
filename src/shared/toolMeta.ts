@@ -44,6 +44,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // ── Система и генерация ──
   get_system_info:{ label: 'Система',            icon: 'monitor',     color: '#38bdf8' },
   generate_image: { label: 'Генерация',          icon: 'image',       color: '#fb923c' },
+  analyze_image:  { label: 'Распознавание',      icon: 'eye',         color: '#2dd4bf' },
 
   // ── Агенты ──
   spawn_agent:    { label: 'Суб-агент',          icon: 'gitBranch',   color: '#4ade80' },

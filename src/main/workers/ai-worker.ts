@@ -267,6 +267,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // workdir чата (новые Code-чаты после фичи workdir; undefined для
       // Work-режима и старых чатов — поведение остаётся прежним).
       agent.workdir = (workerData as Record<string, unknown>).workdir as string | undefined
+      agent.userDataPath = (workerData as Record<string, unknown>).userDataPath as string | undefined
       agent.projectId = (workerData as Record<string, unknown>).projectId as string | undefined
       agent.verificationCommand = (workerData as Record<string, unknown>).verificationCommand as string | undefined
       // Gateway JWT для веб-поиска через аккаунт (fallback на локальный Tavily

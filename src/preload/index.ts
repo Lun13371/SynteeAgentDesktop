@@ -134,6 +134,13 @@ const synteeAPI = {
     openTopup: () => ipcRenderer.invoke('billing:openTopup'),
   },
 
+  // Локальная статистика использования (Настройки → Статистика):
+  // сообщения/токены/модели/топ-чаты/вложения/ссылки из локальной БД.
+  stats: {
+    overview: (params?: { hours?: number }) =>
+      ipcRenderer.invoke('stats:overview', params ?? {}),
+  },
+
   // ── Мессенджер (друзья + личные сообщения, фаза 1) ────────────────────
   // WS-соединение живёт в main-процессе (токены не покидают main).
   // connect/disconnect — жизненный цикл. ws:send — отправка envelope в WS.

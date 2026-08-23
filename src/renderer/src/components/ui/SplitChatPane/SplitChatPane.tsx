@@ -367,12 +367,21 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     return () => ro.disconnect()
   }, [])
 
-  // Звук завершения
+  // Звук завершения. RACE GUARD (смена chatId-пропа): при переключении
+  // сплита на другой чат isTyping падает в false не из-за завершения
+  // стрима, а потому что live теперь указывает на другой чат — не играем
+  // звук, только синхронизируем ref.
   const prevIsTypingRef = useRef(false)
+  const prevSoundChatIdRef = useRef(chatId)
   useEffect(() => {
+    if (prevSoundChatIdRef.current !== chatId) {
+      prevSoundChatIdRef.current = chatId
+      prevIsTypingRef.current = isTyping
+      return
+    }
     if (prevIsTypingRef.current && !isTyping) playDoneSound()
     prevIsTypingRef.current = isTyping
-  }, [isTyping])
+  }, [isTyping, chatId])
 
   // ── Контекст-счётчик ──
   const contextInfo = useContextCounter({

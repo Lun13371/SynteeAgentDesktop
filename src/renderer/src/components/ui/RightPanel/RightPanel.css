@@ -1,14 +1,10 @@
-/* ── Chat area (скрывается при expanded) ── */
+/* ── Chat area ── */
 .rp-chat-area {
   flex: 1;
   overflow: hidden;
   display: flex;
   min-width: 0;
   position: relative;
-}
-.rp-chat-area--hidden {
-  display: none !important;
-  flex: 0 !important;
 }
 
 /* ── In-flow панель (Codex-style) ──────────────────────────────────── */
@@ -26,8 +22,8 @@
   opacity: 1;
 }
 
+/* Expanded: ширина управляется widthMV (анимация), тень не нужна */
 .right-panel-wrapper--expanded {
-  flex: 1;
   box-shadow: none;
 }
 

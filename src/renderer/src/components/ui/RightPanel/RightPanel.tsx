@@ -168,15 +168,17 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
   useEffect(() => {
     // Останавливаем предыдущую анимацию
     animCtrlRef.current?.stop()
-    if (open && !expanded) {
+    if (!open) {
+      // Закрытие — всегда схлопываем в 0 (даже если были expanded)
+      animCtrlRef.current = animate(widthMV, 0, { duration: 0.18, ease: [0.4, 0, 1, 1] })
+    } else if (expanded) {
+      // Разворот на весь экран — анимируем ширину, чат плавно сжимается
+      animCtrlRef.current = animate(widthMV, window.innerWidth, { duration: 0.22, ease: [0.4, 0, 0.2, 1] })
+    } else {
       const w = useUIStore.getState().agentPanelWidth
       const maxW = getMaxWidth()
       const clamped = Math.min(w, maxW)
       animCtrlRef.current = animate(widthMV, clamped, { duration: 0.22, ease: [0.4, 0, 0.2, 1] })
-    } else if (expanded) {
-      animCtrlRef.current = animate(widthMV, window.innerWidth, { duration: 0.22, ease: [0.4, 0, 0.2, 1] })
-    } else {
-      animCtrlRef.current = animate(widthMV, 0, { duration: 0.18, ease: [0.4, 0, 1, 1] })
     }
     return () => { animCtrlRef.current?.stop() }
   }, [open, expanded, widthMV, getMaxWidth])
@@ -190,7 +192,12 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
       if (isDraggingRef.current) return
       if (timer) clearTimeout(timer)
       timer = setTimeout(() => {
-        if (!open || expanded) return
+        if (!open) return
+        // В expanded-режиме панель всегда ровно на всю ширину окна
+        if (expanded) {
+          widthMV.set(window.innerWidth)
+          return
+        }
         const current = widthMV.get()
         const maxW = getMaxWidth()
         if (current > maxW) {
@@ -344,7 +351,7 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
   return (
     <motion.div
       className={`right-panel-wrapper ${open ? 'right-panel-wrapper--open' : ''} ${expanded ? 'right-panel-wrapper--expanded' : ''}`}
-      style={expanded ? { flex: 1 } : { width: widthMV }}
+      style={{ width: widthMV }}
     >
       <div className="right-panel-inner">
         {!expanded && <ResizeHandle side="right" onResize={handleResize} onResizeEnd={handleResizeEnd} />}

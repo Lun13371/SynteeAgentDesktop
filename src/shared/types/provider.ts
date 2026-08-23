@@ -21,6 +21,8 @@ export interface Provider {
   iconUrl?: string         // для кастомных провайдеров
   lastModelsFetch?: number // timestamp последнего парсинга
   modelsOverride?: string[]// ручные модели добавленные пользователем
+  /** Кастомный путь к endpoint /models (например '/v1/models'). По умолчанию '/models'. */
+  modelsEndpoint?: string
   /** Провайдер работает без API-ключа (анонимный, шлёт Bearer public). */
   anonymous?: boolean
 }

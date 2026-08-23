@@ -10,6 +10,7 @@ import { AGENT_TOOL_SCHEMAS } from './agent'
 import { PLAN_TOOL_SCHEMAS } from './plan'
 import { MEMORY_TOOL_SCHEMAS } from './memory'
 import { EXTENSIONS_TOOL_SCHEMAS } from './extensions'
+import { VISION_TOOL_SCHEMAS } from './vision'
 
 export const TOOL_SCHEMAS = [
   ...EDIT_TOOL_SCHEMAS,
@@ -20,6 +21,7 @@ export const TOOL_SCHEMAS = [
   ...PLAN_TOOL_SCHEMAS,
   ...MEMORY_TOOL_SCHEMAS,
   ...EXTENSIONS_TOOL_SCHEMAS,
+  ...VISION_TOOL_SCHEMAS,
 ]
 
 // Dynamic tool set — added by mode
@@ -99,6 +101,10 @@ export function getToolSchemas(options: {
     // model decides when to use them.
     'search_web',
     'http_request',
+    // Image analysis (read-only research): the image is passed directly to
+    // a vision-capable main model, or described by the auxiliary vision
+    // model — the same routing as chat attachments.
+    'analyze_image',
     'spawn_agent',
     'get_agent_status',
     'list_extensions',
