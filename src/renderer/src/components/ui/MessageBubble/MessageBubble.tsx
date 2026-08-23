@@ -894,13 +894,24 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many
 }
 
-/** Извлекает результат get_fast_context из steps итерации. */
+/** Извлекает результат get_fast_context из steps итерации.
+ *  Мемоизирован по content-строке: JSON.parse выполняется только при первом
+ *  вызове с данным content, повторные вызовы берут результат из кэша.
+ *  Раньше JSON.parse звался на каждом рендере MessageContent (внутри IIFE
+ *  в liveIters.map и savedIters.map) — лишний CPU на каждый tool step. */
+const _fcResultCache = new Map<string, FastContextResultData>()
 function extractFastContextResult(steps: Array<{ type: string; toolName?: string; content?: string }>): FastContextResultData | null {
   for (const s of steps) {
     if (s.type === 'tool_result' && s.toolName === 'get_fast_context' && s.content) {
+      const cached = _fcResultCache.get(s.content)
+      if (cached) return cached
       try {
         const parsed = JSON.parse(s.content) as FastContextResultData
-        if (parsed && Array.isArray(parsed.files)) return parsed
+        if (parsed && Array.isArray(parsed.files)) {
+          if (_fcResultCache.size > 200) _fcResultCache.clear()
+          _fcResultCache.set(s.content, parsed)
+          return parsed
+        }
       } catch { /* skip */ }
     }
   }
@@ -974,7 +985,7 @@ function renderClickablePlainText(
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
   onPin, onCopy, onReadAloud, onReply, onRewind, message, isPinned, createdAt,
-  liveThinking, isStreaming, isWaiting, liveIters, liveTextAfter, rateLimitSec,
+  liveThinking, isStreaming, isWaiting, liveIters, liveTodo, liveTextAfter, rateLimitSec,
   userMarkdown = true, timeEl, agentStatus, toolProgress, retry, lastError,
   spawnedAgents,
   onPreviewAttachment,
@@ -983,13 +994,14 @@ const MessageContent = memo(function MessageContent({
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
   onPin?: (id: string) => void; onCopy?: () => void
-  onReadAloud?: () => void; onReply?: () => void
+  onReadAloud?: () => void; onReply?: (message: Message) => void
   onRewind?: () => void
   message: Message; isPinned: number; createdAt: number
   liveThinking?: { text?: string; isLive: boolean; ms?: number; storeChatId?: string }
   isStreaming?: boolean
   isWaiting?: boolean
   liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }>
+  liveTodo?: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
   liveTextAfter?: string
   rateLimitSec?: number
   userMarkdown?: boolean
@@ -1283,8 +1295,6 @@ const MessageContent = memo(function MessageContent({
             Для сохранённого сообщения — message.todo (из БД).
             Для live-пузыря — liveTodo (пока стримится, до save). */}
         {!isUser && (() => {
-          type TodoItem = { text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }
-          const liveTodo = (message as Message & { liveTodo?: TodoItem[] }).liveTodo
           const todo = message.todo ?? liveTodo
           return todo && todo.length > 0 ? <TodoChecklist items={todo} /> : null
         })()}
@@ -1338,7 +1348,7 @@ const MessageContent = memo(function MessageContent({
                       steps={iter.steps}
                       mode={toolOutputMode}
                       isRunning={!!isStreaming && isLastIter && !lastStepIsResult}
-                      toolProgress={toolProgress}
+                      toolProgress={isLastIter ? toolProgress : undefined}
                     />
                   )}
                   {/* Fast Context блок — после toolchain, внутри итерации.
@@ -1636,6 +1646,36 @@ const MessageBubble = memo(function MessageBubble({
       ? s.liveByChat[message.chatId]?.text
       : undefined
   ) ?? ''
+  // ── Live-state from store: only for live-bubble ─────────────────────
+  // Раньше эти поля паковались в live-bubble объект через displayMessages
+  // → displayMessages ре-вычислялся на каждый tool step / progress event →
+  // виртуализатор инвалидировал кэш, другие ряды затрагивались. Теперь
+  // MessageBubble сам подписывается на нужные поля store (как уже делал для
+  // live.text). displayMessages стабилен между tool-событиями.
+  const liveItersFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.iters : undefined
+  )
+  const liveTodoFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.todo : undefined
+  )
+  const agentStatusFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.agentStatus : undefined
+  )
+  const toolProgressFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.toolProgress : undefined
+  )
+  const spawnedAgentsFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.spawnedAgents : undefined
+  )
+  const retryFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.retry : undefined
+  )
+  const lastErrorFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.lastError : undefined
+  )
+  const liveStepsFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.steps : undefined
+  )
   const effectiveContent = isLiveBubble ? (liveText || message.content) : message.content
   const effectiveLiveTextAfter = isLiveBubble
     ? liveText
@@ -1750,7 +1790,7 @@ const MessageBubble = memo(function MessageBubble({
             isUser={isUser}
             searchQuery={searchQuery}
             toolOutputMode={toolOutputMode}
-            toolSteps={message.toolSteps}
+            toolSteps={isLiveBubble ? (liveStepsFromStore as Message['toolSteps']) : message.toolSteps}
             onPin={onPin}
             onCopy={handleCopy}
             onReadAloud={handleReadAloud}
@@ -1762,16 +1802,17 @@ const MessageBubble = memo(function MessageBubble({
             liveThinking={liveThinking}
             isStreaming={isStreaming}
             isWaiting={isWaiting}
-            liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
+            liveIters={liveItersFromStore}
+            liveTodo={liveTodoFromStore}
             liveTextAfter={effectiveLiveTextAfter}
             rateLimitSec={rateLimitSec}
             userMarkdown={isUser ? userMarkdown : true}
             timeEl={timeEl}
-            agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
-            retry={(message as Message & { retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null }).retry}
-            lastError={(message as Message & { lastError?: string | null }).lastError}
-            toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
-            spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
+            agentStatus={agentStatusFromStore}
+            retry={retryFromStore}
+            lastError={lastErrorFromStore}
+            toolProgress={toolProgressFromStore}
+            spawnedAgents={spawnedAgentsFromStore}
             onPreviewAttachment={setPreviewAttachment}
             workdir={workdir}
           />
@@ -1782,7 +1823,7 @@ const MessageBubble = memo(function MessageBubble({
         isUser={isUser}
         searchQuery={searchQuery}
         toolOutputMode={toolOutputMode}
-        toolSteps={message.toolSteps}
+        toolSteps={isLiveBubble ? (liveStepsFromStore as Message['toolSteps']) : message.toolSteps}
         onPin={onPin}
         onCopy={handleCopy}
         onReadAloud={handleReadAloud}
@@ -1794,16 +1835,17 @@ const MessageBubble = memo(function MessageBubble({
         liveThinking={liveThinking}
         isStreaming={isStreaming}
         isWaiting={isWaiting}
-        liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
+        liveIters={liveItersFromStore}
+        liveTodo={liveTodoFromStore}
         liveTextAfter={effectiveLiveTextAfter}
         rateLimitSec={rateLimitSec}
         userMarkdown={isUser ? userMarkdown : true}
         timeEl={timeEl}
-        agentStatus={(message as Message & { agentStatus?: string }).agentStatus}
-        retry={(message as Message & { retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null }).retry}
-        lastError={(message as Message & { lastError?: string | null }).lastError}
-        toolProgress={(message as Message & { toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }> }).toolProgress}
-        spawnedAgents={(message as Message & { spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }> }).spawnedAgents}
+        agentStatus={agentStatusFromStore}
+        retry={retryFromStore}
+        lastError={lastErrorFromStore}
+        toolProgress={toolProgressFromStore}
+        spawnedAgents={spawnedAgentsFromStore}
         onPreviewAttachment={setPreviewAttachment}
         workdir={workdir}
       />
