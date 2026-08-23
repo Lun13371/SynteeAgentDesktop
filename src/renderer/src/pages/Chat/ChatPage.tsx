@@ -60,7 +60,6 @@ const EMPTY_STEPS = EMPTY_LIVE.steps
 const EMPTY_ITERS = EMPTY_LIVE.iters
 const EMPTY_TODO = EMPTY_LIVE.todo
 const EMPTY_TOOL_PROGRESS = EMPTY_LIVE.toolProgress
-const EMPTY_SPAWNED_AGENTS = EMPTY_LIVE.spawnedAgents
 
 const VirtualMessageItem = memo(function VirtualMessageItem({
   msg, vItemStart, vItemIndex, measureRef,
@@ -172,11 +171,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const liveTodo = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.todo : undefined) ?? EMPTY_TODO
   const liveMsgId = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.msgId : undefined) ?? null
   const liveToolProgress = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.toolProgress : undefined) ?? EMPTY_TOOL_PROGRESS
-  const liveSpawnedAgents = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.spawnedAgents : undefined) ?? EMPTY_SPAWNED_AGENTS
   const liveRateLimitSec = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.rateLimitSec : 0) ?? 0
-  const liveAgentStatus = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.agentStatus : undefined) ?? null
-  const liveRetry = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.retry : undefined)
-  const liveLastError = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.lastError : undefined)
   // hasLiveText — boolean: true пока live.text непустой. Примитив →
   // Object.is → НЕ ре-рендерит когда текст растёт (true → true).
   // Ре-рендер только при переходе empty→non-empty и обратно.
@@ -1796,20 +1791,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         content: '',
         createdAt: Date.now(),
         isPinned: 0,
-        toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
-        // liveIters/liveTextAfter/liveTodo/agentStatus передаются через
-        // расширение объекта — MessageBubble читает их через cast.
-        // liveTextAfter: undefined — MessageBubble читает live.text из store.
-        liveIters: liveIters,
-        liveTextAfter: undefined,
-        liveTodo: liveTodo,
-        agentStatus: liveAgentStatus,
-        toolProgress: liveToolProgress,
-        spawnedAgents: liveSpawnedAgents,
+        // Live-state (liveIters, liveTodo, agentStatus, toolProgress, spawnedAgents,
+        // rateLimitSec, retry, lastError, toolSteps) читается напрямую из store в
+        // MessageBubble через useChatStore селекторы — displayMessages не ре-вычисляется
+        // на каждый tool step / progress event → виртуализатор стабилен, другие ряды
+        // не затронуты. Только livePlanningMode остаётся здесь (ChatPage useState,
+        // меняется редко) и liveTextAfter=undefined (MessageBubble читает live.text из store).
         livePlanningMode: planningMode,
-        rateLimitSec: liveRateLimitSec > 0 ? liveRateLimitSec : undefined,
-        retry: liveRetry,
-        lastError: liveLastError,
       } as Message & Record<string, unknown>]
     }
     if (isCompacting) {
@@ -1832,7 +1820,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, liveSteps, liveIters, liveTodo, liveMsgId, liveToolProgress, liveSpawnedAgents, liveRateLimitSec, liveAgentStatus, liveRetry, liveLastError, isCompacting, planningMode, compactingSummary])
+  }, [messages, showLiveBubble, liveMsgId, isCompacting, planningMode, compactingSummary])
 
   // getItemKey: привязываем кэш высот к message.id (не к индексу позиции) —
   // иначе при замене массива (compact вставляет divider, окно сдвигается на 1)

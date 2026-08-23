@@ -90,7 +90,6 @@
   );
   background-size: 200% 100%;
   animation: tc2-header-shimmer 5s linear infinite;
-  will-change: background-position, opacity, filter, transform;
   pointer-events: none;
   z-index: 0;
   /* default (не running) — растворённое состояние */
@@ -107,7 +106,6 @@
   opacity: 1;
   filter: blur(0px);
   transform: scale(1) translateY(0) rotate(0deg);
-  will-change: opacity, filter, transform;
   transition:
     opacity 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
     filter 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
@@ -292,6 +290,16 @@
   gap: 10px;
   position: relative;
 }
+/* CSS entrance-анимация вместо framer-motion motion.div.
+   CSS-анимации дешевле (нет JS-side state tracking, нет inline
+   transform после завершения) и не создают постоянный compositing layer. */
+@keyframes tc2-iter-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.tc2-iter--enter {
+  animation: tc2-iter-enter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
 
 /* Вертикальная линия + точка с иконкой */
 .tc2-rail {
@@ -409,7 +417,6 @@
   );
   background-size: 200% 100%;
   animation: tc2-shimmer 2s linear infinite;
-  will-change: background-position;
 }
 @keyframes tc2-shimmer {
   0%   { background-position: 200% 0; }

@@ -282,13 +282,9 @@ const IterationBlock = memo(function IterationBlock({
   const statusColor = failed ? '#f87171' : meta.color
 
   return (
-    <motion.div
-      className="tc2-iter"
-      initial={animateEntrance ? { opacity: 0, y: 6 } : false}
-      animate={{ opacity: 1, y: 0 }}
-      transition={animateEntrance
-        ? { delay: Math.min(index, 10) * 0.04, type: 'spring', stiffness: 420, damping: 32 }
-        : { duration: 0 }}
+    <div
+      className={`tc2-iter${animateEntrance ? ' tc2-iter--enter' : ''}`}
+      style={animateEntrance ? { animationDelay: `${Math.min(index, 10) * 0.04}s` } : undefined}
     >
       <div className="tc2-rail">
         <div
@@ -517,7 +513,7 @@ const IterationBlock = memo(function IterationBlock({
           )}
         </AnimatePresence>
       </div>
-    </motion.div>
+    </div>
   )
 }, (prev, next) => prev.iter === next.iter && prev.isLast === next.isLast &&
   prev.isRunning === next.isRunning && prev.mode === next.mode && prev.defaultOpen === next.defaultOpen &&
@@ -581,13 +577,9 @@ const GroupBlock = memo(function GroupBlock({
   }, 0)
 
   return (
-    <motion.div
-      className="tc2-iter tc2-iter--group"
-      initial={animateEntrance ? { opacity: 0, y: 6 } : false}
-      animate={{ opacity: 1, y: 0 }}
-      transition={animateEntrance
-        ? { delay: Math.min(index, 10) * 0.04, type: 'spring', stiffness: 420, damping: 32 }
-        : { duration: 0 }}
+    <div
+      className={`tc2-iter tc2-iter--group${animateEntrance ? ' tc2-iter--enter' : ''}`}
+      style={animateEntrance ? { animationDelay: `${Math.min(index, 10) * 0.04}s` } : undefined}
     >
       <div className="tc2-rail">
         <div
@@ -639,7 +631,7 @@ const GroupBlock = memo(function GroupBlock({
           )}
         </AnimatePresence>
       </div>
-    </motion.div>
+    </div>
   )
 })
 
