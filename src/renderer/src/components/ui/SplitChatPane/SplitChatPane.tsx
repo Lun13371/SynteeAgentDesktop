@@ -342,8 +342,9 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     setBusy: setIsLoadingOlder,
   })
 
-  // Плавный скролл вниз по клику на floating-кнопку + закрепление.
-  const handleScrollDownClick = () => pinAutoscroll()
+  // Мгновенный скролл вниз по клику на floating-кнопку + закрепление.
+  // instant=true — прыжок без анимации даже во время стрима + «липкий низ».
+  const handleScrollDownClick = () => pinAutoscroll(true)
 
   // Первый скролл при открытии чата — мгновенно к низу + прилип. Дальнейшее
   // следование за ростом контента делает rAF-loop движка автоскролла.
@@ -527,14 +528,47 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     [displayMessages],
   )
 
+  // ── Module-level кэш высот рядов (переживает remount виртуализатора) ──
+  // См. подробное описание в ChatPage.tsx — идентичная логика для сплит-панели.
+  const rowHeightsRef = useRef<Map<string, number>>(new Map())
+
+  const estimateSize = useCallback(
+    (index: number) => {
+      const id = displayMessages[index]?.id
+      if (id) {
+        const cached = rowHeightsRef.current.get(id)
+        if (cached) return cached
+      }
+      return 120
+    },
+    [displayMessages],
+  )
+
+  // Сброс кэша при смене chatId сплит-панели.
+  useEffect(() => {
+    rowHeightsRef.current.clear()
+  }, [chatId])
+
   const virtualizer = useVirtualizer({
     count: displayMessages.length,
     getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 120,
+    estimateSize,
     getItemKey,
     overscan: 5,
     useAnimationFrameWithResizeObserver: true,
   })
+
+  // Обёртка над virtualizer.measureElement (после virtualizer, т.к. зависит от него)
+  const measureRef = useCallback((el: Element | null) => {
+    if (el) {
+      const id = el.getAttribute('data-msg-id')
+      if (id) {
+        const h = (el as HTMLElement).getBoundingClientRect().height
+        if (h > 0) rowHeightsRef.current.set(id, h)
+      }
+    }
+    return virtualizer.measureElement(el)
+  }, [virtualizer])
 
   const requestRemeasure = useCallback(() => {
     const el = scrollContainerRef.current
@@ -689,7 +723,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
                     msg={msg}
                     vItemStart={vItem.start}
                     vItemIndex={vItem.index}
-                    measureRef={virtualizer.measureElement}
+                    measureRef={measureRef}
                     toolOutputMode={toolOutputMode}
                     onPin={handlePin}
                     onCopy={handleCopy}

@@ -82,6 +82,7 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
   animation: tb-shimmer 2s linear infinite;
+  will-change: background-position;
 }
 
 @keyframes tb-shimmer {
@@ -116,10 +117,18 @@
 .tb-chevron--open { transform: rotate(180deg); }
 
 /* ── Тело (раскрытое) ─────────────────────────────────────────── */
-/* Внешний враппер анимируется framer-motion (height 0↔auto, opacity). */
+/* Условный рендер: body создаётся только при open=true (TSX {open && ...}).
+   Раньше framer-motion делал height:0→'auto' (JS-измерения каждый кадр).
+   CSS grid замена сломала это (body всегда в DOM → лаги скролла).
+   Теперь: CSS opacity animation на mount — плавное появление без JS. */
 .tb-body {
   margin-top: 2px;
   overflow: hidden;
+  animation: tb-body-enter 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes tb-body-enter {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* Внутренний скролл-контейнер — фиксированный max-height + border-left.
@@ -129,10 +138,12 @@
    не перемеряет на каждый токен, чат не дёргается. Применяется одинаково
    и для live (стримится), и для persisted (из БД). */
 .tb-body-inner {
+  min-height: 0;
   max-height: 260px;
   overflow-y: auto;
   padding: 6px 0 6px 20px;
   border-left: 2px solid var(--overlay-3);
+  contain: content;
 }
 .tb-body-inner::-webkit-scrollbar { width: 2px; }
 .tb-body-inner::-webkit-scrollbar-track { background: transparent; }
@@ -168,6 +179,7 @@
   -webkit-text-fill-color: transparent;
   color: transparent;
   animation: tb-text-flow 2.6s linear infinite;
+  will-change: background-position;
   transition:
     -webkit-text-fill-color 0.45s ease,
     color 0.45s ease,

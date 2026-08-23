@@ -67,7 +67,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   onReply?: (message: Message) => void
   onRewind?: (userMessageId: string) => void
   searchQuery?: string
-  liveThinking?: { text: string; isLive: boolean; ms?: number }
+  liveThinking?: { isLive: boolean; ms?: number; storeChatId?: string }
   isStreaming?: boolean
   isWaiting?: boolean
   rateLimitSec?: number
@@ -938,8 +938,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     },
   })
 
-  // Плавный скролл вниз по клику на floating-кнопку + закрепление.
-  const handleScrollDownClick = () => pinAutoscroll()
+  // Мгновенный скролл вниз по клику на floating-кнопку + закрепление.
+  // instant=true — прыжок без анимации даже во время стрима (иначе rAF-loop
+  // догона ползёт шагом ≤90px/кадр — в длинном чате секунды) + «липкий низ».
+  const handleScrollDownClick = () => pinAutoscroll(true)
 
   // Компенсация скролла после prepend: визуальная позиция чтения сохраняется.
   // Срабатывает только когда prependingRef выставлен (т.е. после догрузки).
@@ -1011,7 +1013,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   const selectChat = useCallback(async (id: string) => {
     isInitialScrollRef.current = true
-    pinAutoscroll()
+    pinAutoscroll(true)
     setCurrentChat(id)
     // Сбрасываем unread-бейдж этого чата (пользователь его увидел)
     markChatRead(id)
@@ -1639,9 +1641,32 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [currentChatId, setMessages, toast])
 
   // Собираем отображаемые сообщения (включая live-пузырь текущего чата)
-  const hasLiveContent = !!streamingText || !!live.thinking || live.steps.length > 0 ||
+  // live.thinking НЕ читаем — ThinkingBlock подписан на store сам (storeChatId).
+  // isThinkingLive (boolean) вместо !!live.thinking (string) — стабилен
+  // весь стрим, не вызывает ре-рендер ChatPage на каждом 50мс-флаше.
+  const hasLiveContent = !!streamingText || live.isThinkingLive || live.steps.length > 0 ||
     live.iters.length > 0 || !!live.text || Object.keys(live.toolProgress).length > 0
   const showLiveBubble = (hasLiveContent || isTyping) && !!live.msgId
+
+  // ── Стабильный liveThinking для live-пузыря ──────────────────────────
+  // БЕЗ text — ThinkingBlock читает thinking напрямую из store (useChatStore
+  // селектор по storeChatId). Раньше { text: live.thinking, ... } — НОВЫЙ
+  // объект каждые 50мс → VirtualMessageItem memo FAIL → MessageContent
+  // ре-рендер 20×/сек → фриз.
+  //
+  // Условие: isThinkingLive || thinkingMs !== undefined.
+  // Пока thinking не начался — undefined → WaitingIndicator показывается.
+  // Thinking стримится — isThinkingLive=true → ThinkingBlock открыт.
+  // Thinking завершён — thinkingMs задан → блок показывает финальный текст.
+  //
+  // useMemo: deps стабильны между 50мс-флашами (isThinkingLive=true весь
+  // стрим, thinkingMs=undefined до done) → ТУ ЖЕ ссылку → memo проходит.
+  const liveThinking = useMemo(() =>
+    live.isThinkingLive || live.thinkingMs !== undefined
+      ? { isLive: live.isThinkingLive, ms: live.thinkingMs, storeChatId: currentChatId ?? undefined }
+      : undefined
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  , [live.isThinkingLive, live.thinkingMs, currentChatId])
 
   const currentWorkdir = useMemo(() => {
     if (!currentChatId || isIncognito) return undefined
@@ -1796,10 +1821,34 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     [displayMessages],
   )
 
+  // ── Module-level кэш высот рядов (переживает remount виртуализатора) ──
+  // estimateSize: () => 120 даёт 120px для всех рядов при первом рендере.
+  // Большие сообщения реально 2000-8000px → RO перемеряет → прыжки → фриз.
+  // Кэш: Map<msgId, height>. estimateSize читает из кэша → первый paint
+  // без прыжков. При смене чата кэш сбрасывается (все id новые).
+  const rowHeightsRef = useRef<Map<string, number>>(new Map())
+
+  const estimateSize = useCallback(
+    (index: number) => {
+      const id = displayMessages[index]?.id
+      if (id) {
+        const cached = rowHeightsRef.current.get(id)
+        if (cached) return cached
+      }
+      return 120
+    },
+    [displayMessages],
+  )
+
+  // Сброс кэша при смене чата — все id новые, старые высоты бесполезны.
+  useEffect(() => {
+    rowHeightsRef.current.clear()
+  }, [currentChatId])
+
   const virtualizer = useVirtualizer({
     count: displayMessages.length,
     getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 120,
+    estimateSize,
     getItemKey,
     // overscan 5 (вместо 10): вдвое меньше ResizeObservers и активных
     // MessageBubble listeners → меньше CPU в idle. Плавность скролла
@@ -1811,10 +1860,21 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // возникают reflow-бури и рассинхрон кэша высот с реальным DOM. С rAF-батчингом
     // замеры стабильнее → реже «прилипание» сообщений к соседу. Визуально ноль.
     useAnimationFrameWithResizeObserver: true,
-    // measureElement убран — отдаём tanstack дефолтный (ResizeObserver-based,
-    // батчит измерения вместо getBoundingClientRect на каждый вызов, который
-    // форсит synchronous reflow на каждом токене стрима).
   })
+
+  // Обёртка над virtualizer.measureElement (после virtualizer, т.к. зависит от него):
+  // после измерения ряда сохраняем его высоту в кэш. При следующем монтировании
+  // того же msgId estimateSize вернёт сохранённую высоту — без перемера.
+  const measureRef = useCallback((el: Element | null) => {
+    if (el) {
+      const id = el.getAttribute('data-msg-id')
+      if (id) {
+        const h = (el as HTMLElement).getBoundingClientRect().height
+        if (h > 0) rowHeightsRef.current.set(id, h)
+      }
+    }
+    return virtualizer.measureElement(el)
+  }, [virtualizer])
 
   // Принудительный перемер смонтированных рядов: дёргает virtualizer.resizeItem
   // с реальной высотой DOM для каждого видимого ряда. Лечит устаревший кэш высот
@@ -1959,9 +2019,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                   {virtualizer.getVirtualItems().map(vItem => {
                   const msg = displayMessages[vItem.index]
                   const isLive = msg.id === 'live-streaming-bubble'
-                  const liveThinking = isLive && live.thinking
-                    ? { text: live.thinking, isLive: live.isThinkingLive, ms: live.thinkingMs }
-                    : undefined
+                  // liveThinking вычислен на уровне компонента (useMemo выше).
+                  // Передаём только для live-пузыря, иначе undefined.
+                  const msgLiveThinking = isLive ? liveThinking : undefined
                   // Анимируем только первое появление сообщения; при scroll-remount
                   // того же id виртуализатором — shouldAnimate=false (иначе «плывёт»).
                   const shouldAnimate = !animatedMsgIdsRef.current.has(msg.id)
@@ -1972,14 +2032,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       msg={msg}
                       vItemStart={vItem.start}
                       vItemIndex={vItem.index}
-                      measureRef={virtualizer.measureElement}
+                      measureRef={measureRef}
                       toolOutputMode={toolOutputMode}
                       onPin={handlePin}
                       onCopy={handleCopy}
                       onReply={handleReply}
                       onRewind={handleRewind}
                       searchQuery={searchMatchIds.includes(msg.id) ? searchQuery : undefined}
-                      liveThinking={liveThinking}
+                      liveThinking={msgLiveThinking}
                       isStreaming={isLive && isTyping}
                       isWaiting={isLive && isTyping}
                       rateLimitSec={isLive ? live.rateLimitSec : undefined}

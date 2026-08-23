@@ -6,69 +6,76 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
-import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-// PrismLight вместо полного Prism: регистрируем только нужные языки, а не
-// все ~270 грамматик. Подсветка идентична, но бандл меньше и каждый вызов
-// ре-токенизации кода (в т.ч. при стриминге) дешевле.
-import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx'
-import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript'
-import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript'
-import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx'
-import python from 'react-syntax-highlighter/dist/esm/languages/prism/python'
-import json from 'react-syntax-highlighter/dist/esm/languages/prism/json'
-import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
-import shell from 'react-syntax-highlighter/dist/esm/languages/prism/shell-session'
-import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql'
-import go from 'react-syntax-highlighter/dist/esm/languages/prism/go'
-import rust from 'react-syntax-highlighter/dist/esm/languages/prism/rust'
-import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
-import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown'
-import css from 'react-syntax-highlighter/dist/esm/languages/prism/css'
-import html from 'react-syntax-highlighter/dist/esm/languages/prism/markup'
-import java from 'react-syntax-highlighter/dist/esm/languages/prism/java'
-import c from 'react-syntax-highlighter/dist/esm/languages/prism/c'
-import cpp from 'react-syntax-highlighter/dist/esm/languages/prism/cpp'
-import csharp from 'react-syntax-highlighter/dist/esm/languages/prism/csharp'
-import php from 'react-syntax-highlighter/dist/esm/languages/prism/php'
-import ruby from 'react-syntax-highlighter/dist/esm/languages/prism/ruby'
-import diffLang from 'react-syntax-highlighter/dist/esm/languages/prism/diff'
+// ── Быстрый рендер код-блоков через HTML-строку ──────────────────────────
+// Заменяет react-syntax-highlighter (React-дерево из тысяч <span>) на
+// refractor → HAST → HTML-строка → dangerouslySetInnerHTML.
+// Браузер парсит HTML на C++ уровне — в 5-10× быстрее создания React-элементов.
+// Стили oneDark применяются как inline-стили — визуально пиксель-в-пиксель.
+// Языки регистрируются через refractor (тот же инстанс, что использовался
+// внутри react-syntax-highlighter PrismLight).
+import refractor from 'refractor/core'
+import { highlightCodeToHtml } from '../../../utils/codeHighlightHTML'
 
-SyntaxHighlighter.registerLanguage('tsx', tsx)
-SyntaxHighlighter.registerLanguage('typescript', typescript)
-SyntaxHighlighter.registerLanguage('ts', typescript)
-SyntaxHighlighter.registerLanguage('javascript', javascript)
-SyntaxHighlighter.registerLanguage('js', javascript)
-SyntaxHighlighter.registerLanguage('jsx', jsx)
-SyntaxHighlighter.registerLanguage('python', python)
-SyntaxHighlighter.registerLanguage('py', python)
-SyntaxHighlighter.registerLanguage('json', json)
-SyntaxHighlighter.registerLanguage('bash', bash)
-SyntaxHighlighter.registerLanguage('sh', bash)
-SyntaxHighlighter.registerLanguage('shell', shell)
-SyntaxHighlighter.registerLanguage('console', shell)
-SyntaxHighlighter.registerLanguage('sql', sql)
-SyntaxHighlighter.registerLanguage('go', go)
-SyntaxHighlighter.registerLanguage('rust', rust)
-SyntaxHighlighter.registerLanguage('rs', rust)
-SyntaxHighlighter.registerLanguage('yaml', yaml)
-SyntaxHighlighter.registerLanguage('yml', yaml)
-SyntaxHighlighter.registerLanguage('markdown', markdown)
-SyntaxHighlighter.registerLanguage('md', markdown)
-SyntaxHighlighter.registerLanguage('css', css)
-SyntaxHighlighter.registerLanguage('html', html)
-SyntaxHighlighter.registerLanguage('xml', html)
-SyntaxHighlighter.registerLanguage('markup', html)
-SyntaxHighlighter.registerLanguage('java', java)
-SyntaxHighlighter.registerLanguage('c', c)
-SyntaxHighlighter.registerLanguage('cpp', cpp)
-SyntaxHighlighter.registerLanguage('c++', cpp)
-SyntaxHighlighter.registerLanguage('csharp', csharp)
-SyntaxHighlighter.registerLanguage('cs', csharp)
-SyntaxHighlighter.registerLanguage('php', php)
-SyntaxHighlighter.registerLanguage('ruby', ruby)
-SyntaxHighlighter.registerLanguage('rb', ruby)
-SyntaxHighlighter.registerLanguage('diff', diffLang)
+// Регистрируем только нужные языки (~23 вместо ~270 в полном Prism).
+import tsx from 'refractor/lang/tsx'
+import typescript from 'refractor/lang/typescript'
+import javascript from 'refractor/lang/javascript'
+import jsx from 'refractor/lang/jsx'
+import python from 'refractor/lang/python'
+import json from 'refractor/lang/json'
+import bash from 'refractor/lang/bash'
+import shell from 'refractor/lang/shell-session'
+import sql from 'refractor/lang/sql'
+import go from 'refractor/lang/go'
+import rust from 'refractor/lang/rust'
+import yaml from 'refractor/lang/yaml'
+import markdownLang from 'refractor/lang/markdown'
+import cssLang from 'refractor/lang/css'
+import markup from 'refractor/lang/markup'
+import java from 'refractor/lang/java'
+import cLang from 'refractor/lang/c'
+import cpp from 'refractor/lang/cpp'
+import csharp from 'refractor/lang/csharp'
+import php from 'refractor/lang/php'
+import ruby from 'refractor/lang/ruby'
+import diffLang from 'refractor/lang/diff'
+
+refractor.register(tsx)
+refractor.register(typescript)
+refractor.register(javascript)
+refractor.register(jsx)
+refractor.register(python)
+refractor.register(json)
+refractor.register(bash)
+refractor.register(shell)
+refractor.register(sql)
+refractor.register(go)
+refractor.register(rust)
+refractor.register(yaml)
+refractor.register(markdownLang)
+refractor.register(cssLang)
+refractor.register(markup)
+refractor.register(java)
+refractor.register(cLang)
+refractor.register(cpp)
+refractor.register(csharp)
+refractor.register(php)
+refractor.register(ruby)
+refractor.register(diffLang)
+
+// Алиасы языков (как в react-syntax-highlighter registerLanguage)
+refractor.alias('typescript', ['ts'])
+refractor.alias('javascript', ['js'])
+refractor.alias('python', ['py'])
+refractor.alias('bash', ['sh'])
+refractor.alias('shell-session', ['shell', 'console'])
+refractor.alias('rust', ['rs'])
+refractor.alias('yaml', ['yml'])
+refractor.alias('markdown', ['md'])
+refractor.alias('markup', ['html', 'xml'])
+refractor.alias('cpp', ['c++'])
+refractor.alias('csharp', ['cs'])
+refractor.alias('ruby', ['rb'])
 import PlanCard from '../PlanCard/PlanCard'
 import Logo from '../Logo/Logo'
 import AttachmentProcessingBlock from '../AttachmentProcessingBlock/AttachmentProcessingBlock'
@@ -149,7 +156,7 @@ interface MessageBubbleProps {
   onRewind?: (userMessageId: string) => void
   toolOutputMode?: ToolOutputMode
   searchQuery?: string
-  liveThinking?: { text: string; isLive: boolean; ms?: number }
+  liveThinking?: { text?: string; isLive: boolean; ms?: number; storeChatId?: string }
   isStreaming?: boolean
   isWaiting?: boolean
   rateLimitSec?: number
@@ -162,32 +169,25 @@ interface MessageBubbleProps {
   workdir?: string
 }
 
-const codeStyle = {
-  ...oneDark,
-  'pre[class*="language-"]': {
-    ...((oneDark as Record<string, React.CSSProperties>)['pre[class*="language-"]'] || {}),
-    margin: 0, padding: '14px 16px', background: '#0d0d0f',
-    borderRadius: '0 0 8px 8px', fontSize: '13px', lineHeight: '1.6',
-  },
-  'code[class*="language-"]': {
-    ...((oneDark as Record<string, React.CSSProperties>)['code[class*="language-"]'] || {}),
-    background: 'transparent', fontSize: '13px',
-  },
+// Memoized code highlighter — рендерит HTML-строку через dangerouslySetInnerHTML.
+// refractor.highlight() вызывается один раз, результат кэшируется в codeHighlightHTML.
+// При scroll-remount виртуализатора берём готовый HTML из кэша — нулевая стоимость.
+// Стиль на <pre> (внешний контейнер) — как раньше был на <div> внутри SyntaxHighlighter.
+const PRE_STYLE: React.CSSProperties = {
+  margin: 0,
+  padding: '14px 16px',
+  background: '#0d0d0f',
+  borderRadius: '0 0 8px 8px',
+  fontSize: '13px',
+  lineHeight: '20.8px',
+  display: 'flex',
+  alignItems: 'flex-start',
+  overflow: 'auto',
 }
 
-// Memoized code highlighter — не ре-хайлайтит блок при смене copiedBlock или стриминге
 const CodeHighlighter = memo(function CodeHighlighter({ raw, lang }: { raw: string; lang: string }) {
-  return (
-    <SyntaxHighlighter
-      style={codeStyle as Record<string, React.CSSProperties>}
-      language={lang} PreTag="div"
-      showLineNumbers={raw.split('\n').length > 4}
-      lineNumberStyle={{ color: '#4a4a5a', fontSize: '11px', minWidth: '2.5em' }}
-      wrapLongLines={false}
-    >
-      {raw}
-    </SyntaxHighlighter>
-  )
+  const html = useMemo(() => highlightCodeToHtml(raw, lang), [raw, lang])
+  return <pre style={PRE_STYLE} dangerouslySetInnerHTML={{ __html: html }} />
 }, (prev, next) => prev.raw === next.raw && prev.lang === next.lang)
 
 // Кнопка копирования код-блока — владеет своим copied-состоянием локально.
@@ -612,7 +612,14 @@ const ParsedContent = memo(function ParsedContent({
     const lastFence = text.lastIndexOf('```')
     const lastPara = text.lastIndexOf('\n\n')
     const lastAdm = text.lastIndexOf('\n:::')
-    const splitAt = Math.max(lastFence, lastPara, lastAdm)
+    // Если код-блок ОТКРЫТ (нечётное количество ```), последний ``` —
+    // открывающий fence. Границы \n\n/::: ВНУТРИ блока (после lastFence)
+    // разрывают блок на prefix/tail → ReactMarkdown рендерит половину
+    // кода как текст. Не используем их — splitAt = lastFence.
+    const fenceCount = (text.match(/```/g) || []).length
+    const splitAt = (fenceCount % 2 === 1 && lastFence >= 0)
+      ? lastFence
+      : Math.max(lastFence, lastPara, lastAdm)
     if (splitAt > 100 && splitAt < text.length - 1) {
       // Есть стабильный префикс — кэшируем его, хвост парсим отдельно
       const prefix = text.slice(0, splitAt)
@@ -978,7 +985,7 @@ const MessageContent = memo(function MessageContent({
   onReadAloud?: () => void; onReply?: () => void
   onRewind?: () => void
   message: Message; isPinned: number; createdAt: number
-  liveThinking?: { text: string; isLive: boolean; ms?: number }
+  liveThinking?: { text?: string; isLive: boolean; ms?: number; storeChatId?: string }
   isStreaming?: boolean
   isWaiting?: boolean
   liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }>
@@ -1262,6 +1269,7 @@ const MessageContent = memo(function MessageContent({
             liveText={liveThinking?.text}
             thinkingMs={message.thinkingMs ?? liveThinking?.ms}
             isLive={liveThinking?.isLive}
+            storeChatId={liveThinking?.storeChatId}
           />
         )}
 
@@ -1390,12 +1398,16 @@ const MessageContent = memo(function MessageContent({
               )
             })}
             {/* Live thinking — текущий стримящийся блок рассуждения,
-                на позиции после последней итерации, перед текстом ответа */}
-            {liveThinking && (liveThinking.text || liveThinking.isLive) && (
+                на позиции после последней итерации, перед текстом ответа.
+                Условие: isLive (стрим идёт) или ms задан (thinking завершён,
+                текст ещё в store до save). text убран из liveThinking —
+                ThinkingBlock читает его из store через storeChatId. */}
+            {liveThinking && (liveThinking.isLive || liveThinking.ms !== undefined) && (
               <ThinkingBlock
-                liveText={liveThinking.text}
+                liveText={liveThinking?.text}
                 thinkingMs={liveThinking.ms}
                 isLive={liveThinking.isLive}
+                storeChatId={liveThinking.storeChatId}
               />
             )}
             {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}

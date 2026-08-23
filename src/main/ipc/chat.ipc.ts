@@ -2792,6 +2792,9 @@ ${subModeOutro}`,
               cacheWriteTokens: msg.cacheWriteTokens as number | undefined,
             },
           )
+          // Воркер своё отработал — убиваем поток, иначе течёт ~40-120МБ на каждый запрос
+          ;(worker as unknown as { _terminated?: boolean })._terminated = true
+          worker.terminate()
           break
 
         case 'error': {
@@ -2857,6 +2860,9 @@ ${subModeOutro}`,
             chatId: msg.chatId,
             error: msg.error,
           })
+          // Воркер упал — убиваем поток, не течём памятью
+          ;(worker as unknown as { _terminated?: boolean })._terminated = true
+          worker.terminate()
           break
         }
       }
