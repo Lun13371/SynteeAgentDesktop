@@ -45,6 +45,7 @@
   position: relative;
   overflow: hidden;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
+  contain: layout style;
 }
 .tc2-header:hover {
   background: var(--bg-hover, rgba(255,255,255,0.03));
@@ -89,6 +90,7 @@
   );
   background-size: 200% 100%;
   animation: tc2-header-shimmer 5s linear infinite;
+  will-change: background-position, opacity, filter, transform;
   pointer-events: none;
   z-index: 0;
   /* default (не running) — растворённое состояние */
@@ -209,29 +211,20 @@
   flex-shrink: 0;
   position: relative;
 }
-/* CSS-tooltip при hover на чипы — показывает список тулов */
-.tc2-header-chips:hover::after {
-  content: attr(data-tools);
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  background: var(--bg-tertiary, rgba(30,30,35,0.95));
-  border: 1px solid var(--border, rgba(255,255,255,0.1));
+/* CSS-tooltip убран — заменён на React-portal tooltip (.tc2-chips-tooltip)
+   в ToolChain.tsx (createPortal → document.body), чтобы обойти все
+   overflow:hidden родители (.tc2, .chat-body, .chat-scroll). */
+.tc2-chips-tooltip {
+  background: var(--bg-tertiary, rgba(30,30,35,0.97));
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
   padding: 5px 9px;
   border-radius: 6px;
   font-size: 10px;
   color: var(--text-secondary);
   white-space: nowrap;
-  z-index: 20;
   pointer-events: none;
-  opacity: 0;
-  transform: translateY(-3px);
-  animation: tc2-tooltip-in 0.2s ease forwards;
-  animation-delay: 0.15s;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-}
-@keyframes tc2-tooltip-in {
-  to { opacity: 1; transform: translateY(0); }
+  box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  transform: translateX(-100%);  /* прижимаем к правому краю = right:0 как у старого */
 }
 .tc2-mini-chip {
   padding: 2px 5px; border-radius: 4px;
@@ -416,6 +409,7 @@
   );
   background-size: 200% 100%;
   animation: tc2-shimmer 2s linear infinite;
+  will-change: background-position;
 }
 @keyframes tc2-shimmer {
   0%   { background-position: 200% 0; }

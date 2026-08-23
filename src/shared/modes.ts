@@ -55,7 +55,7 @@ export interface Persona {
    * Tool names are the builtin ones (see schemas.ts): read_file, read_files,
    * find_files, search_code, list_directory, think, update_working_memory,
    * update_todo, ask_user, save_memory, recall_memory, search_web,
-   * http_request, analyze_image, spawn_agent, get_agent_status,
+   * fetch_page, search_images, analyze_image, spawn_agent, get_agent_status,
    * list_extensions, get_skill, edit_file, write_file, run_command,
    * get_diagnostics, analyze_project, get_fast_context, generate_image.
    */
@@ -81,7 +81,7 @@ export interface Persona {
 const TOOLS_BASE = [
   'read_file', 'read_files', 'find_files', 'search_code', 'list_directory',
   'think', 'update_working_memory', 'update_todo', 'ask_user',
-  'save_memory', 'recall_memory', 'search_web', 'http_request',
+  'save_memory', 'recall_memory', 'search_web', 'fetch_page', 'search_images',
   'analyze_image',
   'spawn_agent', 'get_agent_status', 'list_extensions', 'get_skill',
 ] as const

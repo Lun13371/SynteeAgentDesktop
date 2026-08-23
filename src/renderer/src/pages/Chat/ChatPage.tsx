@@ -51,6 +51,17 @@ const itemStyle: React.CSSProperties = {
   width: '100%',
 }
 
+// ── Module-level empty константы для узких live-селекторов ──────────────
+// setLiveState делает { ...prev, ...partial } — при text-флаше (50мс)
+// меняется только text, остальные поля сохраняют ссылки. Селекторы
+// возвращают эти ссылки → Object.is → без ре-рендера по неизменным полям.
+// Пустые массивы/объекты — стабильные ссылки на случай undefined.
+const EMPTY_STEPS = EMPTY_LIVE.steps
+const EMPTY_ITERS = EMPTY_LIVE.iters
+const EMPTY_TODO = EMPTY_LIVE.todo
+const EMPTY_TOOL_PROGRESS = EMPTY_LIVE.toolProgress
+const EMPTY_SPAWNED_AGENTS = EMPTY_LIVE.spawnedAgents
+
 const VirtualMessageItem = memo(function VirtualMessageItem({
   msg, vItemStart, vItemIndex, measureRef,
   toolOutputMode, onPin, onCopy, onReply, onRewind,
@@ -144,18 +155,38 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // сплит, здесь — страховка от кадра-гонки) и не в архиве.
   const splitChatId = useChatStore(s => s.splitChatId)
   const setSplitChat = useChatStore(s => s.setSplitChat)
-  // Live-состояние ТОЛЬКО текущего чата. Селектор возвращает ссылку на
-  // liveByChat[currentChatId] — она меняется только при setLiveState для
-  // ЭТОГО chatId (спред копирует ссылки остальных). Чужой чат стримит —
-  // ref текущего не меняется → без ре-рендера.
-  const live = (useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId] : undefined) ?? EMPTY_LIVE)
+  // ── Узкие live-селекторы: подписка на каждое поле отдельно ─────────────
+  // setLiveState делает { ...prev, ...partial } — при text-флаше (каждые
+  // 50мс) меняется только text, остальные поля сохраняют ссылки →
+  // Object.is → ChatPage НЕ ре-рендерится по неизменным полям. Раньше
+  // один широкий селектор возвращал новый объект каждые 50мс → ChatPage
+  // ре-рендерился 20×/сек со всем телом (2279 строк, 17 селекторов, 10
+  // useMemo). Теперь live.text читается только в live-пузыре (MessageBubble
+  // подписан на store сам), ChatPage — только булевы/стабильные поля.
+  const liveIsTyping = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.isTyping : false) ?? false
+  const liveIsAgentRunning = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.isAgentRunning : false) ?? false
+  const liveIsThinkingLive = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.isThinkingLive : false) ?? false
+  const liveThinkingMs = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.thinkingMs : undefined)
+  const liveSteps = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.steps : undefined) ?? EMPTY_STEPS
+  const liveIters = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.iters : undefined) ?? EMPTY_ITERS
+  const liveTodo = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.todo : undefined) ?? EMPTY_TODO
+  const liveMsgId = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.msgId : undefined) ?? null
+  const liveToolProgress = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.toolProgress : undefined) ?? EMPTY_TOOL_PROGRESS
+  const liveSpawnedAgents = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.spawnedAgents : undefined) ?? EMPTY_SPAWNED_AGENTS
+  const liveRateLimitSec = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.rateLimitSec : 0) ?? 0
+  const liveAgentStatus = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.agentStatus : undefined) ?? null
+  const liveRetry = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.retry : undefined)
+  const liveLastError = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.lastError : undefined)
+  // hasLiveText — boolean: true пока live.text непустой. Примитив →
+  // Object.is → НЕ ре-рендерит когда текст растёт (true → true).
+  // Ре-рендер только при переходе empty→non-empty и обратно.
+  const hasLiveText = useChatStore(s => !!(s.currentChatId && s.liveByChat[s.currentChatId]?.text))
   const runStatus = useChatStore(s => s.currentChatId ? s.runStatusByChat[s.currentChatId] : undefined)
   const lastTurnChanges = useChatStore(s => s.currentChatId ? s.lastTurnChangesByChat[s.currentChatId] : null)
-  // Live-изменения: вычисляем из live.steps во время выполнения запроса.
-  // Бейдж показывается сразу при правках файлов, с shimmer/glow анимацией.
-  const liveChanges = useMemo(() => computeLiveChanges(live.steps), [live.steps])
-  const badgeChanges = lastTurnChanges ?? (live.isAgentRunning ? liveChanges : null)
-  const badgeLive = live.isAgentRunning && !!liveChanges && !lastTurnChanges
+  // Live-изменения: вычисляем из liveSteps во время выполнения запроса.
+  const liveChanges = useMemo(() => computeLiveChanges(liveSteps), [liveSteps])
+  const badgeChanges = lastTurnChanges ?? (liveIsAgentRunning ? liveChanges : null)
+  const badgeLive = liveIsAgentRunning && !!liveChanges && !lastTurnChanges
   const { setChats, setCurrentChat, setMessages, setMessagesWindow, prependOlderMessages,
     setIsLoadingOlder, setHasOlderMessages, addMessage, pinMessage,
     setProjects, setActiveProject, markChatRead } = useChatStore(useShallow(s => ({
@@ -165,9 +196,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     addMessage: s.addMessage, pinMessage: s.pinMessage, setProjects: s.setProjects,
     setActiveProject: s.setActiveProject, markChatRead: s.markChatRead,
   })))
-  const isTyping = live.isTyping
-  const isAgentRunning = live.isAgentRunning
-  const streamingText = live.text
+  const isTyping = liveIsTyping
+  const isAgentRunning = liveIsAgentRunning
 
   const { add: toast } = useToast()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -327,9 +357,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
   }, [activeProjectId])
 
-  // rateLimitSec читаем напрямую из live (live.rateLimitSec) — раньше был
-  // зеркальный local state + effect, что добавляло лишний ре-рендер на
-  // каждый тик countdown'а при rate-limit.
+  // rateLimitSec читаем напрямую из узкого селектора (liveRateLimitSec) —
+  // раньше был зеркальный local state + effect, что добавляло лишний
+  // ре-рендер на каждый тик countdown'а при rate-limit.
 
   // Тосты при терминальных статусах запуска (ошибка/отмена) — только для текущего чата.
   // RACE GUARD (смена чата): при переключении на чат, чей последний запуск
@@ -354,9 +384,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [runStatus, toast, currentChatId])
 
   // Звук завершения — при переходе running → done/error для текущего чата.
-  // RACE GUARD (смена чата): при переключении currentChatId селектор live
-  // начинает указывать на ДРУГОЙ чат (или EMPTY_LIVE) — isTyping падает в
-  // false не потому что стрим закончился. Без guard звук «AI ответил»
+  // RACE GUARD (смена чата): при переключении currentChatId узкие селекторы
+  // начинают указывать на ДРУГОЙ чат (или default-значения) — isTyping
+  // падает в false не потому что стрим закончился. Без guard звук «AI ответил»
   // проигрывался при каждом уходе из работающего чата. При смене чата
   // только синхронизируем ref — без звука и без скролла.
   const prevIsTypingRef = useRef(false)
@@ -1644,9 +1674,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // live.thinking НЕ читаем — ThinkingBlock подписан на store сам (storeChatId).
   // isThinkingLive (boolean) вместо !!live.thinking (string) — стабилен
   // весь стрим, не вызывает ре-рендер ChatPage на каждом 50мс-флаше.
-  const hasLiveContent = !!streamingText || live.isThinkingLive || live.steps.length > 0 ||
-    live.iters.length > 0 || !!live.text || Object.keys(live.toolProgress).length > 0
-  const showLiveBubble = (hasLiveContent || isTyping) && !!live.msgId
+  const hasLiveContent = hasLiveText || liveIsThinkingLive || liveSteps.length > 0 ||
+    liveIters.length > 0 || Object.keys(liveToolProgress).length > 0
+  const showLiveBubble = (hasLiveContent || isTyping) && !!liveMsgId
 
   // ── Стабильный liveThinking для live-пузыря ──────────────────────────
   // БЕЗ text — ThinkingBlock читает thinking напрямую из store (useChatStore
@@ -1662,11 +1692,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // useMemo: deps стабильны между 50мс-флашами (isThinkingLive=true весь
   // стрим, thinkingMs=undefined до done) → ТУ ЖЕ ссылку → memo проходит.
   const liveThinking = useMemo(() =>
-    live.isThinkingLive || live.thinkingMs !== undefined
-      ? { isLive: live.isThinkingLive, ms: live.thinkingMs, storeChatId: currentChatId ?? undefined }
+    liveIsThinkingLive || liveThinkingMs !== undefined
+      ? { isLive: liveIsThinkingLive, ms: liveThinkingMs, storeChatId: currentChatId ?? undefined }
       : undefined
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  , [live.isThinkingLive, live.thinkingMs, currentChatId])
+  , [liveIsThinkingLive, liveThinkingMs, currentChatId])
 
   const currentWorkdir = useMemo(() => {
     if (!currentChatId || isIncognito) return undefined
@@ -1716,7 +1746,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   //     продолжал показывать старый незавершённый.
   const overlayTodo = useMemo(() => {
     type TodoItem = { text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }
-    if (live.todo.length > 0) return live.todo as TodoItem[]
+    if (liveTodo.length > 0) return liveTodo as TodoItem[]
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
       if (m.role !== 'assistant' || !m.todo?.length) continue
@@ -1728,7 +1758,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return []
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live.todo, messages])
+  }, [liveTodo, messages])
 
   const overlayActive = isTyping || overlayTodo.length > 0
 
@@ -1760,22 +1790,26 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         id: 'live-streaming-bubble',
         chatId: currentChatId || '',
         role: 'assistant' as const,
-        content: streamingText || '',
+        // content пустой — live.text читается напрямую из store в MessageBubble
+        // (подписка по message.chatId). displayMessages не зависит от text →
+        // стабилен между 50мс-флашами → виртуализатор не инвалидирует кэш.
+        content: '',
         createdAt: Date.now(),
         isPinned: 0,
-        toolSteps: live.steps.length > 0 ? live.steps as Message['toolSteps'] : undefined,
+        toolSteps: liveSteps.length > 0 ? liveSteps as Message['toolSteps'] : undefined,
         // liveIters/liveTextAfter/liveTodo/agentStatus передаются через
         // расширение объекта — MessageBubble читает их через cast.
-        liveIters: live.iters,
-        liveTextAfter: live.text,
-        liveTodo: live.todo,
-        agentStatus: live.agentStatus,
-        toolProgress: live.toolProgress,
-        spawnedAgents: live.spawnedAgents,
+        // liveTextAfter: undefined — MessageBubble читает live.text из store.
+        liveIters: liveIters,
+        liveTextAfter: undefined,
+        liveTodo: liveTodo,
+        agentStatus: liveAgentStatus,
+        toolProgress: liveToolProgress,
+        spawnedAgents: liveSpawnedAgents,
         livePlanningMode: planningMode,
-        rateLimitSec: live.rateLimitSec > 0 ? live.rateLimitSec : undefined,
-        retry: live.retry,
-        lastError: live.lastError,
+        rateLimitSec: liveRateLimitSec > 0 ? liveRateLimitSec : undefined,
+        retry: liveRetry,
+        lastError: liveLastError,
       } as Message & Record<string, unknown>]
     }
     if (isCompacting) {
@@ -1798,7 +1832,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, streamingText, live.steps, live.iters, live.text, live.todo, live.msgId, live.toolProgress, live.spawnedAgents, live.rateLimitSec, isCompacting, planningMode, compactingSummary])
+  }, [messages, showLiveBubble, liveSteps, liveIters, liveTodo, liveMsgId, liveToolProgress, liveSpawnedAgents, liveRateLimitSec, liveAgentStatus, liveRetry, liveLastError, isCompacting, planningMode, compactingSummary])
 
   // getItemKey: привязываем кэш высот к message.id (не к индексу позиции) —
   // иначе при замене массива (compact вставляет divider, окно сдвигается на 1)
@@ -2042,7 +2076,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       liveThinking={msgLiveThinking}
                       isStreaming={isLive && isTyping}
                       isWaiting={isLive && isTyping}
-                      rateLimitSec={isLive ? live.rateLimitSec : undefined}
+                      rateLimitSec={isLive ? liveRateLimitSec : undefined}
                       shouldAnimate={shouldAnimate}
                       workdir={currentWorkdir}
                     />

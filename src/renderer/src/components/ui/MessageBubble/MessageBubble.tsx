@@ -91,6 +91,7 @@ import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
+import { useChatStore } from '../../../store/chat.store'
 import { remarkFilePaths, PATH_RE, isValidPathMatch } from '../../../utils/remarkFilePaths'
 import { openFilePath } from '../../../utils/openFilePath'
 import FilePathLink from '../FilePathLink/FilePathLink'
@@ -1620,18 +1621,38 @@ const MessageBubble = memo(function MessageBubble({
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
+  // ── Live-текст из store: только для live-пузыря ──────────────────────
+  // ChatPage больше не кладёт streamingText в displayMessages → memo
+  // стабилен между 50мс-флашами → виртуализатор не инвалидирует кэш.
+  // MessageBubble сам подписывается на live.text по message.chatId.
+  // Для не-live: селектор возвращает undefined → '' → stable → 0 ре-рендеров.
+  // Для live: селектор возвращает live.text → меняется 20×/сек →
+  // MessageBubble ре-рендерится (только live-пузырь, остальные не затронуты).
+  // Условие isLiveBubble (без isStreaming): после завершения стрима
+  // live.text ещё не сброшен → текст виден до прихода реального сообщения.
+  const isLiveBubble = message.id === 'live-streaming-bubble' || message.id === 'split-live-streaming-bubble'
+  const liveText = useChatStore(s =>
+    isLiveBubble && message.chatId
+      ? s.liveByChat[message.chatId]?.text
+      : undefined
+  ) ?? ''
+  const effectiveContent = isLiveBubble ? (liveText || message.content) : message.content
+  const effectiveLiveTextAfter = isLiveBubble
+    ? liveText
+    : (message as Message & { liveTextAfter?: string }).liveTextAfter
+
   // Превью вложения (модалка-лайтбокс)
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
 
   const handleCopy = useCallback(async () => {
     // Токены вложений → Markdown-ссылки НА СВОИХ МЕСТАХ в тексте
     let textToCopy = message.attachments?.length
-      ? replaceAttachTokensWithLinks(message.content, message.attachments)
-      : message.content
+      ? replaceAttachTokensWithLinks(effectiveContent, message.attachments)
+      : effectiveContent
     if (message.attachments?.length) {
       // Старый формат: вложения без токенов в тексте — ссылками в конец
       const tokenIds = new Set(
-        splitByAttachTokens(message.content).filter(s => s.type === 'attach').map(s => s.id),
+        splitByAttachTokens(effectiveContent).filter(s => s.type === 'attach').map(s => s.id),
       )
       const legacy = message.attachments.filter(a => !tokenIds.has(a.id))
       if (legacy.length) {
@@ -1641,7 +1662,7 @@ const MessageBubble = memo(function MessageBubble({
     }
     const ok = await copyToClipboard(textToCopy)
     if (ok) onCopy?.(textToCopy)
-  }, [message.content, message.attachments, onCopy])
+  }, [effectiveContent, message.attachments, onCopy])
 
   const handleReply = useCallback(() => {
     onReply?.(message)
@@ -1652,8 +1673,8 @@ const MessageBubble = memo(function MessageBubble({
   }, [message.id, onRewind])
 
   const handleReadAloud = useCallback(() => {
-    onReadAloud?.(message.content)
-  }, [message.content, onReadAloud])
+    onReadAloud?.(effectiveContent)
+  }, [effectiveContent, onReadAloud])
 
   // Узкие селекторы вместо useUIStore() — иначе каждый пузырь ре-рендерится
   // при любом UI-изменении (agentPanelWidth, glassBlur, accentColor и т.д.).
@@ -1685,12 +1706,15 @@ const MessageBubble = memo(function MessageBubble({
     if (el) el.style.transform = 'none'
   }, [])
 
-  // Время — always / hover / never
-  const timeEl = showTime !== 'never' ? (
+  // Время — always / hover / never.
+  // useMemo: timeEl стабилен между ре-рендерами (deps — showTime и
+  // createdAt, оба стабильны для не-live) → MessageContent memo
+  // не пробивается новым timeEl-референсом при скролл-ре-рендерах.
+  const timeEl = useMemo(() => showTime !== 'never' ? (
     <span className={`message-time ${showTime === 'hover' ? 'message-time--hover' : ''}`}>
       {new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
     </span>
-  ) : null
+  ) : null, [showTime, message.createdAt])
 
   // System-сообщения (откаты, сжатие контекста, системные уведомления)
   // рендерим как стилизованную разделительную полосу поперёк чата — не
@@ -1722,7 +1746,7 @@ const MessageBubble = memo(function MessageBubble({
       {message.planData ? (
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
           <MessageContent
-            content={message.content}
+            content={effectiveContent}
             isUser={isUser}
             searchQuery={searchQuery}
             toolOutputMode={toolOutputMode}
@@ -1739,7 +1763,7 @@ const MessageBubble = memo(function MessageBubble({
             isStreaming={isStreaming}
             isWaiting={isWaiting}
             liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
-            liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
+            liveTextAfter={effectiveLiveTextAfter}
             rateLimitSec={rateLimitSec}
             userMarkdown={isUser ? userMarkdown : true}
             timeEl={timeEl}
@@ -1754,7 +1778,7 @@ const MessageBubble = memo(function MessageBubble({
         </div>
       ) : (
       <MessageContent
-        content={message.content}
+        content={effectiveContent}
         isUser={isUser}
         searchQuery={searchQuery}
         toolOutputMode={toolOutputMode}
@@ -1771,7 +1795,7 @@ const MessageBubble = memo(function MessageBubble({
         isStreaming={isStreaming}
         isWaiting={isWaiting}
         liveIters={(message as Message & { liveIters?: Array<{ textBefore: string; steps: import('../ToolChain/ToolChain').ToolStep[] }> }).liveIters}
-        liveTextAfter={(message as Message & { liveTextAfter?: string }).liveTextAfter}
+        liveTextAfter={effectiveLiveTextAfter}
         rateLimitSec={rateLimitSec}
         userMarkdown={isUser ? userMarkdown : true}
         timeEl={timeEl}

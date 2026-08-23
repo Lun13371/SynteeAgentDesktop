@@ -38,18 +38,30 @@ export const SEARCH_TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
-      name: 'http_request',
-      description: 'Прямой HTTP-запрос к API или веб-странице. GET/POST/PUT/DELETE/PATCH с заголовками и телом. Возвращает status, headers, body. Быстрее и надёжнее чем curl через run_command — нет проблем с экранированием. Используй для: API-вызовы, вебхуки, скачивание JSON/XML, проверка эндпоинтов. ВАЖНО: success=true означает что запрос выполнился, а не что HTTP-статус успешный — всегда проверяй Status в выводе (404/500 тоже success=true).',
+      name: 'fetch_page',
+      description:
+        'Скачать веб-страницу и получить её содержимое в чистом виде (markdown/текст, без HTML-мусора). Рендерит JavaScript (работает с SPA-сайтами, React/Angular/Vue). Используй ПОСЛЕ search_web для чтения найденных страниц, или сразу для любого URL. НЕ используй для API-эндпоинтов (JSON) — только для веб-страниц.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'Полный URL (http:// или https://)' },
-          method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'], description: 'HTTP-метод (по умолч. GET)' },
-          headers: { type: 'object', description: 'Заголовки запроса. Например: {"Authorization": "Bearer ...", "Content-Type": "application/json"}', additionalProperties: { type: 'string' } },
-          body: { type: 'string', description: 'Тело запроса (для POST/PUT/PATCH). JSON-строка, XML, plain text — что угодно.' },
-          timeout: { type: 'number', description: 'Таймаут в секундах (по умолч. 30)' },
+          url: { type: 'string', description: 'Полный URL страницы (https://...)' },
         },
         required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'search_images',
+      description:
+        'Поиск картинок в интернете по запросу. Возвращает URL изображений, тумбнейлы, размеры и страницы-источники. Используй когда нужны изображения: иллюстрации, скриншоты, фото, референсы. Запрос лучше на английском.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Поисковый запрос (лучше на английском)' },
+        },
+        required: ['query'],
       },
     },
   },

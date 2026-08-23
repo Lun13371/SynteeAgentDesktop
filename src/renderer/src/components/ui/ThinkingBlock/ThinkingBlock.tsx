@@ -112,7 +112,8 @@ const ThinkingHeader = memo(function ThinkingHeader({
 // авто-сворачивается). Стоимость React-консиляции, DOM, layout и paint-
 // слоя шиммера перестаёт расти с длиной reasoning — становится константной.
 // Визуально неотличимо: шиммер, курсор, автоскролл — всё на месте.
-const LIVE_TAIL_CHARS = 8000 // ~80–120 строк
+const LIVE_TAIL_CHARS = 5000 // ~50–75 строк
+const PERSISTED_TAIL_CHARS = 24000 // ~240 строк (cap для длинных persisted)
 
 const ThinkingBlock = memo(function ThinkingBlock({ text, liveText, thinkingMs, isLive, storeChatId }: ThinkingBlockProps) {
   // ── Прямая подписка на store для live-thinking текста ──────────────
@@ -153,13 +154,6 @@ const ThinkingBlock = memo(function ThinkingBlock({ text, liveText, thinkingMs, 
     prevLiveRef.current = !!isLive
   }, [isLive])
 
-  // Автоскролл текста при стриминге
-  useEffect(() => {
-    if (open && isLive && bodyRef.current) {
-      bodyRef.current.scrollTop = bodyRef.current.scrollHeight
-    }
-  }, [liveText, open, isLive])
-
   // displayText: приоритет store (live) > liveText (legacy) > text (persisted).
   // storeThinking читается из Zustand — обновляется каждые 50мс, но
   // ре-рендерит только ThinkingBlock, а не всю цепочку MessageContent.
@@ -167,15 +161,23 @@ const ThinkingBlock = memo(function ThinkingBlock({ text, liveText, thinkingMs, 
     ? storeThinking
     : typeof liveText === 'string' ? liveText : typeof text === 'string' ? text : ''
 
+  // Автоскролл текста при стриминге
+  useEffect(() => {
+    if (open && isLive && bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight
+    }
+  }, [displayText, open, isLive])
+
   // Мемоизируем split — раньше .split('\n').map() на каждом рендере (а рендер
   // происходит на каждом токене стрима — 50мс). Теперь только при смене текста.
   // В live-режиме берём только хвост (~8000 символов) — стоимость перестаёт
   // расти с длиной reasoning. useMemo ДО early return (Rules of Hooks).
   const lines = useMemo(() => {
-    if (!isLive || displayText.length <= LIVE_TAIL_CHARS) {
+    const maxChars = isLive ? LIVE_TAIL_CHARS : PERSISTED_TAIL_CHARS
+    if (displayText.length <= maxChars) {
       return displayText.split('\n')
     }
-    const cut = displayText.lastIndexOf('\n', displayText.length - LIVE_TAIL_CHARS)
+    const cut = displayText.lastIndexOf('\n', displayText.length - maxChars)
     return displayText.slice(cut + 1).split('\n')
   }, [displayText, isLive])
 
@@ -204,7 +206,7 @@ const ThinkingBlock = memo(function ThinkingBlock({ text, liveText, thinkingMs, 
       {open && (
         <div className={`tb-body ${isLive ? 'tb-body--live' : ''}`}>
           <div className="tb-body-inner" ref={bodyRef}>
-            <div className={`tb-text ${isLive ? 'tb-text--shimmer' : ''}`}>
+            <div className="tb-text">
               {lines.map((line, i) => (
                 <p key={i} className={line.trim() === '' ? 'tb-line--empty' : 'tb-line'}>
                   {line || '\u00A0'}

@@ -347,9 +347,14 @@ function renderResult(toolName: string, content: string, args: Record<string, un
     return <KeyValueResult content={content} />
   }
 
-  // http_request → key-value (status line + headers + body)
-  if (toolName === 'http_request') {
-    return <KeyValueResult content={content} />
+  // fetch_page → terminal-стиль (markdown/text контент страницы)
+  if (toolName === 'fetch_page') {
+    return <TerminalResult content={content} initialLines={initialLines} />
+  }
+
+  // search_images → terminal-стиль (список URL картинок)
+  if (toolName === 'search_images') {
+    return <TerminalResult content={content} initialLines={initialLines} />
   }
 
   // list_extensions → key-value (статичный отчёт)

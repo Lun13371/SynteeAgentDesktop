@@ -13,7 +13,7 @@ import {
   findFiles,
   searchWeb, getSystemInfo, generateImage, analyzeImageFile,
   readFiles, searchCode, analyzeProject,
-  httpRequest, getDiagnostics,
+  fetchPage, searchImages, getDiagnostics,
   type ToolResult, editFile,
 } from '../tools'
 import {
@@ -248,14 +248,10 @@ export class ToolDispatcher {
           (args.cwd as string | undefined) ?? this.workdir,
           args.files as string[] | undefined,
         )
-      case 'http_request':
-        return httpRequest({
-          url: args.url as string,
-          method: args.method as string | undefined,
-          headers: args.headers as Record<string, string> | undefined,
-          body: args.body as string | undefined,
-          timeout: args.timeout as number | undefined,
-        })
+      case 'fetch_page':
+        return fetchPage(args.url as string)
+      case 'search_images':
+        return searchImages(args.query as string)
       case 'write_file': {
         const wfResult = await writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir })
         if (wfResult.success && !dryRun) {
