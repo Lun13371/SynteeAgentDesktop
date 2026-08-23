@@ -803,6 +803,11 @@ function Sidebar({
     // cleanPreview (5 regex-проходов) считаем один раз — раньше звучало дважды
     // на строку на каждый рендер Sidebar.
     const preview = chat.lastMessage ? cleanPreview(chat.lastMessage) : ''
+    // V2-плотность: ВСЕ айтемы однострочные — единая высота у всего списка.
+    // (V1 с превью у активного чата давала смесь высоких/низких строк и
+    // прыжки списка при переключении.) Превью доступно через title-tooltip.
+    const tooltip = preview ? `${chat.title}\n${preview}` : chat.title
+    const isActive = currentChatId === chat.id
     return (
     <motion.div
       key={chat.id}
@@ -826,8 +831,9 @@ function Sidebar({
         </div>
       ) : (
         <motion.button
-          className={`sidebar-chat-item ${currentChatId === chat.id ? 'sidebar-chat-item--active' : ''} ${selectedIds.has(chat.id) ? 'sidebar-chat-item--selected' : ''} ${kbIndex >= 0 && visibleChatIds[kbIndex] === chat.id ? 'sidebar-chat-item--kb' : ''}`}
+          className={`sidebar-chat-item ${isActive ? 'sidebar-chat-item--active' : ''} ${selectedIds.has(chat.id) ? 'sidebar-chat-item--selected' : ''} ${kbIndex >= 0 && visibleChatIds[kbIndex] === chat.id ? 'sidebar-chat-item--kb' : ''}`}
           data-chat-id={chat.id}
+          title={tooltip}
           onMouseEnter={() => preloadChatOnHover(chat.id)}
           onClick={(e) => {
             if (e.shiftKey) {
@@ -856,11 +862,6 @@ function Sidebar({
               {!!chat.isPinned && <AppIcon name="pin" size="xs" tone="accent" />}
               <span className="sidebar-chat-title-text">{chat.title}</span>
             </div>
-            {preview && (
-              <div className="sidebar-chat-preview">
-                {preview}
-              </div>
-            )}
           </div>
           <div className="sidebar-chat-meta">
             {/* Индикатор статуса агента: spinner (работает) или бейдж ✓/✗ (завершено, непрочитано) */}
@@ -1472,7 +1473,7 @@ function Sidebar({
                 const color = projectColor(p.id)
                 const isActive = activeProjectId === p.id
                 const count = projectChats(p).length
-                // Точка на плитке: внутри проекта открыт активный чат
+                // Точка на плитке: внутри проекта сейчас открыт активный чат
                 const hasActiveChat = chats.some(c => c.id === currentChatId && (c.projectId ?? null) === p.id)
                 return (
                   <motion.button
@@ -1496,6 +1497,25 @@ function Sidebar({
                   </motion.button>
                 )
               })}
+              {/* Без проекта — плитка с layers-иконкой, нейтральный цвет.
+                  Открывает флайаут с чатами без project_id (тот же механизм). */}
+              {!hiddenProjects.has('__noproject__') && noProjectChats.length > 0 && (
+                <motion.button
+                  className="sidebar-rail-proj sidebar-rail-proj--noproject"
+                  title={`Без проекта — ${noProjectChats.length} чат.`}
+                  onClick={(e) => { openRailFlyout('__noproject__', e.currentTarget, true) }}
+                  onMouseEnter={(e) => { openRailFlyout('__noproject__', e.currentTarget); cancelRailHoverClose() }}
+                  onMouseLeave={() => { scheduleCloseRailFlyout(); scheduleHoverClose() }}
+                  whileHover={{ scale: 1.12 }}
+                  whileTap={{ scale: 0.9 }}
+                  transition={springHover}
+                >
+                  <AppIcon name="layers" size="xs" />
+                  {chats.some(c => c.id === currentChatId && (c.projectId ?? null) === null) && (
+                    <span className="sidebar-rail-proj-live" />
+                  )}
+                </motion.button>
+              )}
             </div>
 
             {/* Аватар профиля: ховер → сбоку панель с юзер-инфо */}
@@ -1508,7 +1528,11 @@ function Sidebar({
           Клик по чату переключает его БЕЗ раскрытия сайдбара. */}
       <RailProjectFlyout
         state={rail ? railFlyout : null}
-        project={projects.find(p => p.id === railFlyout?.projectId) ?? null}
+        project={
+          railFlyout?.projectId === '__noproject__'
+            ? ({ id: '__noproject__', name: 'Без проекта', workdir: '', createdAt: 0, lastUsed: 0 } as Project)
+            : projects.find(p => p.id === railFlyout?.projectId) ?? null
+        }
         chats={chats}
         currentChatId={currentChatId}
         runStatusByChat={runStatusByChat}
@@ -1519,8 +1543,12 @@ function Sidebar({
         }}
         onLeave={() => { scheduleCloseRailFlyout(); scheduleHoverClose() }}
         onOpenChat={(id) => { onSelectChat?.(id); closeRailFlyout() }}
-        onExpand={(id) => { onSelectProject?.(id); setRail(false); setRailFlyout(null); setRailCreateMenu(null) }}
-        onNewChat={(id) => { onNewChat?.(id); closeRailFlyout() }}
+        onExpand={(id) => { onSelectProject?.(id === '__noproject__' ? null : id); setRail(false); setRailFlyout(null); setRailCreateMenu(null) }}
+        onNewChat={(id) => {
+          if (id === '__noproject__') onNewChatWithoutProject?.()
+          else onNewChat?.(id)
+          closeRailFlyout()
+        }}
       />
 
       {/* Меню быстрого создания в rail (клик/ховер по messageSquare): обычный чат,
@@ -1816,12 +1844,17 @@ function RailProjectFlyout({
 }) {
   // Считаем без guard-выхода: AnimatePresence должен оставаться смонтированным,
   // чтобы проигрывать exit-анимацию исчезновения панели.
+  const isNoProject = project?.id === '__noproject__'
   const items = project
     ? chats
-        .filter(c => (c.projectId ?? null) === project.id && !c.isArchived)
+        .filter(c => (isNoProject
+          ? (c.projectId ?? null) === null
+          : (c.projectId ?? null) === project.id) && !c.isArchived)
         .sort((a, b) => b.updatedAt - a.updatedAt)
     : []
-  const color = project ? projectColor(project.id) : 'transparent'
+  const color = project
+    ? (isNoProject ? 'var(--text-muted)' : projectColor(project.id))
+    : 'transparent'
   return createPortal(
     <AnimatePresence>
       {state && project && (
@@ -1842,17 +1875,23 @@ function RailProjectFlyout({
         {items.length > 0 && <span className="srf-count">{items.length}</span>}
         <AppIcon name="chevronRight" size="xs" tone="muted" />
       </button>
-      <div className="srf-workdir" title={project.workdir}>{project.workdir}</div>
+      {!isNoProject && (
+        <div className="srf-workdir" title={project.workdir}>{project.workdir}</div>
+      )}
       <div className="srf-list">
         {items.length === 0 && <div className="srf-empty">Нет чатов</div>}
         {items.map(chat => {
           const status = runStatusByChat[chat.id]?.status
           const unread = unreadStatusByChat[chat.id]
+          // V2-плотность (как в основном списке): однострочные айтемы,
+          // превью — в title-tooltip.
           const preview = chat.lastMessage ? cleanPreview(chat.lastMessage) : ''
+          const tooltip = preview ? `${chat.title}\n${preview}` : chat.title
           return (
             <button
               key={chat.id}
               className={`srf-chat ${currentChatId === chat.id ? 'srf-chat--active' : ''}`}
+              title={tooltip}
               onClick={() => onOpenChat(chat.id)}
             >
               <div className="srf-chat-main">
@@ -1860,7 +1899,6 @@ function RailProjectFlyout({
                   {!!chat.isPinned && <AppIcon name="pin" size="xs" tone="accent" />}
                   <span className="srf-chat-title-text">{chat.title}</span>
                 </div>
-                {preview && <div className="srf-chat-preview">{preview}</div>}
               </div>
               <div className="srf-chat-meta">
                 {(status === 'running' || status === 'queued') && (
@@ -2040,12 +2078,16 @@ function RailSearchFlyout({
             {filtered.map((chat, i) => {
               const status = runStatusByChat[chat.id]?.status
               const unread = unreadStatusByChat[chat.id]
+              // V2-плотность (как в основном списке): однострочные айтемы,
+              // превью — в title-tooltip.
               const preview = chat.lastMessage ? cleanPreview(chat.lastMessage) : ''
+              const tooltip = preview ? `${chat.title}\n${preview}` : chat.title
               return (
                 <button
                   key={chat.id}
                   data-chat-id={chat.id}
                   className={`srf-chat ${currentChatId === chat.id ? 'srf-chat--active' : ''} ${kbIdx === i ? 'srf-chat--kb' : ''}`}
+                  title={tooltip}
                   onClick={() => onOpenChat(chat.id)}
                 >
                   <div className="srf-chat-main">
@@ -2053,7 +2095,6 @@ function RailSearchFlyout({
                       {!!chat.isPinned && <AppIcon name="pin" size="xs" tone="accent" />}
                       <span className="srf-chat-title-text">{chat.title}</span>
                     </div>
-                    {preview && <div className="srf-chat-preview">{preview}</div>}
                   </div>
                   <div className="srf-chat-meta">
                     {(status === 'running' || status === 'queued') && (

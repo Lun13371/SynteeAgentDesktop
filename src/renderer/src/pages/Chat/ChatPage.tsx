@@ -331,10 +331,19 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // зеркальный local state + effect, что добавляло лишний ре-рендер на
   // каждый тик countdown'а при rate-limit.
 
-  // Тосты при терминальных статусах запуска (ошибка/отмена) — только для текущего чата
+  // Тосты при терминальных статусах запуска (ошибка/отмена) — только для текущего чата.
+  // RACE GUARD (смена чата): при переключении на чат, чей последний запуск
+  // упал с error, тост «Ошибка» не должен выстреливать — это СТАРЫЙ статус,
+  // а не свежая ошибка. При смене чата синхронизируем baseline без тоста.
   const prevRunStatusRef = useRef<string | undefined>(undefined)
+  const prevRunStatusChatIdRef = useRef<string | null>(currentChatId)
   useEffect(() => {
     if (!runStatus) return
+    if (prevRunStatusChatIdRef.current !== currentChatId) {
+      prevRunStatusChatIdRef.current = currentChatId
+      prevRunStatusRef.current = runStatus.status
+      return
+    }
     const prev = prevRunStatusRef.current
     // Показываем тост только при переходе в error (не при cancel — это штатная остановка)
     if (runStatus.status === 'error' && prev !== 'error') {
@@ -342,11 +351,22 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       toast('Ошибка: ' + (runStatus.error ?? 'неизвестная'), 'error')
     }
     prevRunStatusRef.current = runStatus.status
-  }, [runStatus, toast])
+  }, [runStatus, toast, currentChatId])
 
-  // Звук завершения — при переходе running → done/error для текущего чата
+  // Звук завершения — при переходе running → done/error для текущего чата.
+  // RACE GUARD (смена чата): при переключении currentChatId селектор live
+  // начинает указывать на ДРУГОЙ чат (или EMPTY_LIVE) — isTyping падает в
+  // false не потому что стрим закончился. Без guard звук «AI ответил»
+  // проигрывался при каждом уходе из работающего чата. При смене чата
+  // только синхронизируем ref — без звука и без скролла.
   const prevIsTypingRef = useRef(false)
+  const prevSoundChatIdRef = useRef<string | null>(currentChatId)
   useEffect(() => {
+    if (prevSoundChatIdRef.current !== currentChatId) {
+      prevSoundChatIdRef.current = currentChatId
+      prevIsTypingRef.current = isTyping
+      return
+    }
     if (prevIsTypingRef.current && !isTyping) {
       playDoneSound()
       // При завершении стрима принудительно скроллим к низу — финальное
@@ -367,7 +387,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // pinAutoscroll объявлен ниже по коду (const), включать в deps нельзя —
     // упадёт с TDZ. Ссылка внутри тела эффекта безопасна (выполняется после рендера).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTyping])
+  }, [isTyping, currentChatId])
 
   // CHAT_COMPACTED — реакция на сжатие контекста в main (как авто-компакция
   // внутри chat:send когда токенов накопилось > rollingTriggerPct, так и

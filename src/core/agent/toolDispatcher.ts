@@ -11,7 +11,7 @@ import { createHash } from 'crypto'
 import {
   runCommand, readFile, writeFile, listDirectory,
   findFiles,
-  searchWeb, getSystemInfo, generateImage,
+  searchWeb, getSystemInfo, generateImage, analyzeImageFile,
   readFiles, searchCode, analyzeProject,
   httpRequest, getDiagnostics,
   type ToolResult, editFile,
@@ -34,6 +34,9 @@ import type { ToolDispatcherContext } from './types'
 export class ToolDispatcher {
   private store: Store
   workdir?: string
+  /** userData path — для fallback-поиска картинок-вложений в draft-attachments,
+   *  когда AI вызывает analyze_image с именем файла-вложения (без полного пути). */
+  userDataPath?: string
   projectId?: string
   chatId?: string
   gatewayToken?: string
@@ -59,6 +62,7 @@ export class ToolDispatcher {
   constructor(ctx: ToolDispatcherContext) {
     this.store = ctx.store
     this.workdir = ctx.workdir
+    this.userDataPath = ctx.userDataPath
     this.projectId = ctx.projectId
     this.chatId = ctx.chatId
     this.gatewayToken = ctx.gatewayToken
@@ -302,6 +306,11 @@ export class ToolDispatcher {
         return getSystemInfo()
       case 'generate_image':
         return generateImage(args as { prompt: string; model?: string; size?: string; quality?: string; style?: string }, this.store)
+      case 'analyze_image':
+        // Распознавание картинки с диска: прямой пас (imageParts) для
+        // vision-способной основной модели, иначе — описание от vision-модели.
+        // userDataPath — для fallback-поиска картинок-вложений в draft-attachments.
+        return analyzeImageFile(args as { path: string; question?: string }, this.store, this.workdir, this.userDataPath)
       case 'read_files': {
         const rfResult = await readFiles(args.paths as string[], this.workdir)
         if (rfResult.success) {

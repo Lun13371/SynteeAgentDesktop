@@ -30,6 +30,7 @@ import { getGraphStats } from '../../core/memory/graphStore'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import { readProjectContextFiles } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
+import { modelSupportsVisionByHeuristic } from '../../core/ai/visionSupport'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
 import { getToolSchemas, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
@@ -45,7 +46,6 @@ import {
   type ChatMessage,
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
-import { getCatalogModel, isCatalogReady } from '../../core/tokens/modelCatalog'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { setFastContextPaths } from '../../core/context/fastContextWatcher'
@@ -836,30 +836,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const modelAssignments = store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
     const mainAssignment = modelAssignments?.find(a => a.role === 'main')
 
-    // Авто-определение vision: НЕ проверяем по провайдеру (провайдер ≠ модель —
-    // gateway/OpenAI/Anthropic могут обслуживать и vision, и text-only модели).
-    // Только по имени модели + каталог models.dev как fallback.
-    function modelSupportsVisionByHeuristic(providerId: string, modelId: string): boolean {
-      const id = modelId.toLowerCase()
-      // Известные vision-модели по имени (БЕЗ провайдера — провайдер не определяет vision)
-      if (id.includes('gpt-4o') || id.includes('gpt-4-turbo') || id.includes('gpt-4-vision')) return true
-      if (id.includes('claude-3') || id.includes('claude-sonnet') || id.includes('claude-opus') || id.includes('claude-haiku')) return true
-      if (id.includes('gemini') && !id.includes('gemini-1.0-pro') && !id.includes('gemini-1.5-pro-text')) return true
-      if (id.includes('grok-2') || id.includes('grok-3') || id.includes('grok-4')) return true
-      // Qwen VL — vision variant (qwen-vl, qwen2-vl, qwen2.5-vl)
-      if (id.includes('qwen') && id.includes('vl')) return true
-      // Llama vision variant
-      if (id.includes('llama') && id.includes('vision')) return true
-      // GLM: только -V варианты (glm-4v, glm-4.5v). glm-4, glm-5, glm-5.2 — text-only!
-      if (id.includes('glm') && (id.includes('-v') || id.includes('4v') || id.includes('vision'))) return true
-      // Fallback: проверяем каталог если он есть
-      if (isCatalogReady()) {
-        const info = getCatalogModel(providerId, modelId)
-        if (info?.capabilities?.includes('vision')) return true
-      }
-      return false
-    }
-
+    // Эвристика vision-способности вынесена в src/core/ai/visionSupport.ts —
+    // общий модуль: используется и здесь (вложения), и в тулe analyze_image
+    // (core/tools/image.ts). Решение «модель видит сама / нужна вспомогательная
+    // vision-модель» всегда принимается одинаково, в одном месте.
     let mainModelSupportsVision = false
     if (mainAssignment) {
       mainModelSupportsVision = modelSupportsVisionByHeuristic(mainAssignment.providerId, mainAssignment.modelId)
@@ -977,6 +957,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           hasErrors = true
         }
       }
+      // Добавляем пути картинок в textBlocks — чтобы AI знал где они лежат
+      // на диске и может вызвать analyze_image с правильным путём, если захочет
+      // уточнить детали позже.
+      if (imageAtts.length > 0) {
+        const pathsList = imageAtts.map(({ att }) => `- ${att.name}: ${att.path}`).join('\n')
+        textBlocks.push(`[Пути прикреплённых изображений для analyze_image:]\n${pathsList}`)
+      }
       processed += imageAtts.length
     } else if (imageAtts.length > 0) {
       const nonImageProcessed = processed
@@ -1030,7 +1017,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             } catch { /* skip fallback read error */ }
           }
 
-          textBlocks.push(`─── Изображение: ${att.name} ───\n${description}\n─── Конец описания: ${att.name} ───`)
+          textBlocks.push(`─── Изображение: ${att.name} (путь: ${att.path}) ───\n${description}\n─── Конец описания: ${att.name} ───`)
           processedFiles[index] = {
             ...processedFiles[index],
             status: 'image_described',
@@ -1734,6 +1721,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         gatewayToken: await getGatewayAuthToken().catch(() => getAccessToken()),
         fileCacheSnapshot: getFileCacheSnapshot(params.chatId),
         workdir: chatWorkdir,
+        // userData path — для fallback-поиска картинок-вложений в
+        // draft-attachments, когда AI вызывает analyze_image с именем
+        // файла-вложения (без полного пути).
+        userDataPath: app.getPath('userData'),
         verificationCommand,
         projectId: fastContextProjectId,
         fastContextDbPath,

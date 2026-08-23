@@ -266,4 +266,7 @@ export interface ToolDispatcherContext {
   gatewayApiUrl?: string
   onUpdateWorkingMemory?: (chatId: string, content: string, mode: 'replace' | 'append') => void
   onGetWorkingMemory?: (chatId: string) => string
+  /** userData path — для fallback-поиска картинок-вложений в draft-attachments,
+   *  когда AI вызывает analyze_image с именем файла-вложения (без полного пути). */
+  userDataPath?: string
 }

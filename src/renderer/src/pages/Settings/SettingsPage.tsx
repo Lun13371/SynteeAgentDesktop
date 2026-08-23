@@ -19,8 +19,13 @@ import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/I
 import ChangelogSettingsTab from '../../components/settings/ChangelogSettingsTab/ChangelogSettingsTab'
 import ProfileSection from '../../components/settings/ProfileSection/ProfileSection'
 import ModelStatusSection from '../../components/settings/ModelStatusSection/ModelStatusSection'
+import StatisticsSection from '../../components/settings/StatisticsSection/StatisticsSection'
 import ApprovalModeSelector from '../../components/ui/ApprovalModeSelector/ApprovalModeSelector'
 import ResetButton from '../../components/ui/ResetButton/ResetButton'
+import Select from '../../components/ui/Select/Select'
+import SegmentedControl from '../../components/ui/SegmentedControl/SegmentedControl'
+import Stepper from '../../components/ui/Stepper/Stepper'
+import { SectionTitle, Field, Group, ConfirmButton, GROUP_TOGGLE_EVENT } from '../../components/settings/SettingsPrimitives'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
 import { playNavigateSound, setSoundVolume as setSoundVolumeModule, setSoundAssignmentsFlag } from '../../utils/sounds'
 import { applyFontToDOM, applyMonoToDOM, injectCustomFonts, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM } from '../../App'
@@ -33,7 +38,7 @@ import './SettingsPage.css'
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
   | 'agent' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
-  | 'changelog' | 'notifications'
+  | 'changelog' | 'notifications' | 'stats'
 
 interface SectionDef { id: Section; label: string; icon: IconName; keywords?: string[] }
 interface SectionGroup { title: string; items: SectionDef[] }
@@ -78,9 +83,105 @@ const SECTION_GROUPS: SectionGroup[] = [
     items: [
       { id: 'integrations', label: 'Интеграции', icon: 'link',          keywords: ['интеграции', 'тавли', 'телеграм', 'github', 'spotify', 'токен'] },
       { id: 'data',         label: 'Данные',     icon: 'database',      keywords: ['данные', 'база', 'экспорт', 'бэкап', 'память'] },
+      { id: 'stats',        label: 'Статистика', icon: 'chart',         keywords: ['статистика', 'токены', 'расходы', 'usage', 'активность', 'ссылки', 'вложения'] },
       { id: 'changelog',    label: 'Обновления', icon: 'downloadCloud', keywords: ['обновления', 'версия', 'changelog'] },
     ],
   },
+]
+
+// Быстрый lookup секции по id (для результатов поиска полей).
+const SECTION_LOOKUP = Object.fromEntries(
+  SECTION_GROUPS.flatMap(g => g.items.map(s => [s.id, { label: s.label, icon: s.icon }]))
+) as Record<Section, { label: string; icon: IconName }>
+
+// ── Индекс полей для глобального поиска по настройкам ──
+// Вводишь «токен» → получаешь конкретное поле «GitHub Token → Интеграции»
+// с переходом в секцию, автоскроллом к полю и вспышкой-подсветкой.
+// id должен совпадать с data-field-id соответствующего <Field>.
+const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: string[] }[] = [
+  // Общие
+  { section: 'general', id: 'userName', label: 'Имя пользователя', keywords: ['имя', 'ник', 'nickname'] },
+  { section: 'general', id: 'autostart', label: 'Запуск с Windows', keywords: ['автозапуск', 'автостарт', 'старт'] },
+  { section: 'general', id: 'language', label: 'Язык интерфейса', keywords: ['язык', 'english', 'русский', 'language'] },
+  { section: 'general', id: 'closeAction', label: 'При закрытии окна', keywords: ['трей', 'закрытие', 'выход', 'quit'] },
+  { section: 'general', id: 'showContextRing', label: 'Счётчик контекста', keywords: ['контекст', 'кольцо', 'ring'] },
+  { section: 'general', id: 'chatMinimap', label: 'Миникарта сообщений', keywords: ['миникарта', 'навигация'] },
+  { section: 'general', id: 'mouseNavEnabled', label: 'Боковые кнопки мыши', keywords: ['мышь', 'x1', 'x2', 'назад'] },
+  // Внешний вид
+  { section: 'appearance', id: 'theme', label: 'Цветовая палитра', keywords: ['тема', 'палитра', 'dark', 'светлая'] },
+  { section: 'appearance', id: 'themeSchedule', label: 'Автосмена темы', keywords: ['автосмена', 'день', 'ночь', 'расписание'] },
+  { section: 'appearance', id: 'accentColor', label: 'Цвет акцента', keywords: ['акцент', 'цвет'] },
+  { section: 'appearance', id: 'rainbowAccent', label: 'Радужный акцент', keywords: ['радуга', 'rainbow'] },
+  { section: 'appearance', id: 'accentGradient', label: 'Градиентный акцент', keywords: ['градиент'] },
+  { section: 'appearance', id: 'fontFamily', label: 'Шрифт интерфейса', keywords: ['шрифт', 'font'] },
+  { section: 'appearance', id: 'fontMono', label: 'Шрифт кода', keywords: ['моно', 'mono', 'код'] },
+  { section: 'appearance', id: 'density', label: 'Плотность интерфейса', keywords: ['плотность', 'компактно', 'просторно'] },
+  { section: 'appearance', id: 'glassBlur', label: 'Стекло (Glass blur)', keywords: ['блюр', 'стекло', 'размытие', 'glass'] },
+  { section: 'appearance', id: 'bgStyle', label: 'Стиль фона', keywords: ['фон', 'частицы', 'матрица', 'анимация'] },
+  { section: 'appearance', id: 'msgAnim', label: 'Анимация сообщений', keywords: ['анимация', 'сообщения'] },
+  { section: 'appearance', id: 'avatarStyle', label: 'Аватар ассистента', keywords: ['аватар'] },
+  { section: 'appearance', id: 'showTime', label: 'Время сообщений', keywords: ['время', 'таймстамп'] },
+  { section: 'appearance', id: 'userMarkdown', label: 'Markdown в своих сообщениях', keywords: ['markdown', 'разметка'] },
+  { section: 'appearance', id: 'sendEffect', label: 'Эффект отправки', keywords: ['эффект', 'ripple'] },
+  // Голос
+  { section: 'voice', id: 'wakeWord', label: 'Wake word', keywords: ['вейк', 'слово', 'активация'] },
+  { section: 'voice', id: 'voiceId', label: 'Голос ассистента', keywords: ['голос', 'tts', 'озвучка'] },
+  { section: 'voice', id: 'sttProvider', label: 'Распознавание речи', keywords: ['stt', 'whisper', 'распознавание', 'микрофон'] },
+  { section: 'voice', id: 'sttModelSize', label: 'Размер модели Whisper', keywords: ['whisper', 'модель', 'tiny', 'base'] },
+  { section: 'voice', id: 'groqApiKey', label: 'Groq API key', keywords: ['groq', 'ключ'] },
+  // Агент
+  { section: 'agent', id: 'approvalMode', label: 'Режим подтверждения действий', keywords: ['подтверждение', 'approval'] },
+  { section: 'agent', id: 'enableThinking', label: 'Режим размышлений', keywords: ['мышление', 'thinking', 'мысли'] },
+  { section: 'agent', id: 'toolOutputMode', label: 'Вывод инструментов', keywords: ['инструменты', 'тул', 'вывод'] },
+  { section: 'agent', id: 'maxParallelSubAgents', label: 'Параллельных суб-агентов', keywords: ['суб-агент', 'параллельно'] },
+  { section: 'agent', id: 'autoMemoryInterval', label: 'Автосохранение рабочей памяти', keywords: ['память', 'автосохранение'] },
+  { section: 'agent', id: 'maxRepeatedToolCalls', label: 'Повтор tool-call', keywords: ['зацикливание', 'повтор'] },
+  { section: 'agent', id: 'maxRepeatedErrors', label: 'Повтор одной ошибки', keywords: ['ошибка', 'повтор'] },
+  { section: 'agent', id: 'confirmDangerous', label: 'Подтверждение опасных действий', keywords: ['опасно', 'удаление'] },
+  { section: 'agent', id: 'forbiddenPaths', label: 'Запрещённые папки', keywords: ['папки', 'запрет', 'пути'] },
+  // Интеграции
+  { section: 'integrations', id: 'tavilyKey', label: 'Tavily API ключ', keywords: ['тавли', 'поиск', 'tavily'] },
+  { section: 'integrations', id: 'telegramToken', label: 'Telegram Bot Token', keywords: ['телеграм', 'бот'] },
+  { section: 'integrations', id: 'githubToken', label: 'GitHub Token', keywords: ['github', 'гитхаб', 'токен'] },
+  { section: 'integrations', id: 'spotifyClientId', label: 'Spotify Client ID', keywords: ['spotify', 'спотифай'] },
+  // Данные
+  { section: 'data', id: 'backupEnabled', label: 'Автобэкап', keywords: ['бэкап', 'копия', 'резервная'] },
+  { section: 'data', id: 'exportHistory', label: 'Экспорт истории', keywords: ['экспорт', 'выгрузка'] },
+  { section: 'data', id: 'clearHistory', label: 'Очистить историю чатов', keywords: ['очистить', 'история', 'удалить'] },
+  { section: 'data', id: 'clearMemory', label: 'Очистить память Syntee', keywords: ['память', 'сброс'] },
+  // Уведомления
+  { section: 'notifications', id: 'notifEnabled', label: 'Показывать уведомления', keywords: ['уведомления', 'нотификации'] },
+  { section: 'notifications', id: 'activityMonitor', label: 'Показывать активность ИИ', keywords: ['активность', 'информер'] },
+  // Хоткеи
+  { section: 'hotkeys', id: 'hk-mainWindow', label: 'Открыть/скрыть окно', keywords: ['окно', 'показать'] },
+  { section: 'hotkeys', id: 'hk-overlay', label: 'Оверлей', keywords: ['оверлей', 'выделение'] },
+  { section: 'hotkeys', id: 'hk-spotlight', label: 'Spotlight', keywords: ['спотлайт', 'поиск'] },
+  { section: 'hotkeys', id: 'hk-voice', label: 'Голосовой режим', keywords: ['голос'] },
+  { section: 'hotkeys', id: 'hk-quickQuestion', label: 'Быстрый вопрос', keywords: ['вопрос'] },
+  { section: 'hotkeys', id: 'hk-chatAskMode', label: 'Режим чтения', keywords: ['чтение', 'read-only'] },
+  { section: 'hotkeys', id: 'hk-chatPlanningMode', label: 'Режим планирования', keywords: ['планирование', 'plan'] },
+  // Контекст
+  { section: 'context', id: 'ctx-toolTrunc', label: 'Обрезка результатов тулов', keywords: ['обрезка', 'truncation', 'лимит', 'символы'] },
+  { section: 'context', id: 'ctx-toolMaxChars', label: 'Макс. символов на тул-результат', keywords: ['обрезка', 'символы', 'тул'] },
+  { section: 'context', id: 'ctx-rolling', label: 'Сжатие истории (Rolling Window)', keywords: ['компакция', 'сжатие', 'rolling', 'резюме'] },
+  { section: 'context', id: 'ctx-rollingTriggerPct', label: 'Триггер сжатия', keywords: ['процент', 'триггер', 'порог'] },
+  { section: 'context', id: 'ctx-rollingKeepFirst', label: 'Сохранять первых сообщений', keywords: ['сообщения', 'история'] },
+  { section: 'context', id: 'ctx-rollingKeepLast', label: 'Сохранять последних сообщений', keywords: ['сообщения', 'история'] },
+  { section: 'context', id: 'ctx-tokenCounter', label: 'Счётчик токенов', keywords: ['токены', 'счётчик', 'кольцо', 'контекст'] },
+  { section: 'context', id: 'ctx-diffJournal', label: 'Diff журнал правок', keywords: ['diff', 'журнал', 'правки'] },
+  { section: 'context', id: 'ctx-fileMap', label: 'File Map', keywords: ['карта', 'файлы'] },
+  { section: 'context', id: 'ctx-readFileCache', label: 'Кэш файлов внутри запроса', keywords: ['кэш', 'файлы'] },
+  // Индексация
+  { section: 'indexing', id: 'idx-enabled', label: 'Индексация проекта', keywords: ['индекс', 'tree-sitter', 'fast context'] },
+  { section: 'indexing', id: 'idx-neural', label: 'Neural embeddings', keywords: ['эмбеддинги', 'minilm', 'семантика', 'onnx'] },
+  { section: 'indexing', id: 'idx-maxFiles', label: 'Макс. файлов в проекте', keywords: ['лимит', 'файлы'] },
+  { section: 'indexing', id: 'idx-maxFileSize', label: 'Макс. размер файла', keywords: ['лимит', 'размер', 'kb'] },
+  { section: 'indexing', id: 'idx-watch', label: 'Фоновый watcher', keywords: ['watcher', 'chokidar', 'мониторинг', 'изменения'] },
+  { section: 'indexing', id: 'idx-debounce', label: 'Debounce watcher', keywords: ['watcher', 'задержка', 'debounce'] },
+  { section: 'indexing', id: 'idx-prewarm', label: 'Pre-warm при старте', keywords: ['prewarm', 'старт', 'прогрев'] },
+  { section: 'indexing', id: 'idx-prewarmDelay', label: 'Задержка pre-warm', keywords: ['prewarm', 'задержка'] },
+  { section: 'indexing', id: 'idx-ignoreDirs', label: 'Игнорируемые директории', keywords: ['ignore', 'директории', 'папки', 'исключить'] },
+  { section: 'indexing', id: 'idx-actions', label: 'Реиндексировать проект', keywords: ['реиндекс', 'действия', 'очистить индекс'] },
 ]
 
 export default function SettingsPage() {
@@ -90,8 +191,78 @@ export default function SettingsPage() {
   const [section, setSection] = useState<Section>(
     (navSection as Section) || 'general'
   )
+  // Синхронизация: при изменении settingsSection извне (openSettings) —
+  // переключаемся. Официальный паттерн «adjust state during render»
+  // (react.dev/learn/you-might-not-need-an-effect) вместо setState в effect.
+  const [lastNavSection, setLastNavSection] = useState(navSection)
+  if (navSection !== lastNavSection) {
+    setLastNavSection(navSection)
+    if (navSection) setSection(navSection as Section)
+  }
   // Поиск по разделам настроек (фильтрует сайдбар, подсвечивает совпадения)
   const [navQuery, setNavQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  // Результаты поиска по конкретным полям (FIELD_INDEX) — «GitHub Token → Интеграции»
+  const fieldResults = useMemo(() => {
+    const q = navQuery.trim().toLowerCase()
+    if (!q) return []
+    return FIELD_INDEX
+      .filter(f =>
+        f.label.toLowerCase().includes(q) ||
+        (f.keywords ?? []).some(k => k.toLowerCase().includes(q))
+      )
+      .slice(0, 8)
+  }, [navQuery])
+  // Переход к конкретному полю: секция + автоскролл + вспышка-подсветка.
+  // pendingField обрабатывается в effect ниже (поле монтируется после
+  // переключения секции — AnimatePresence popLayout).
+  const [pendingField, setPendingField] = useState<string | null>(null)
+  const goToField = (sec: Section, fieldId: string) => {
+    if (sec !== section) handleSectionChange(sec)
+    setNavQuery('')
+    setPendingField(fieldId)
+  }
+  useEffect(() => {
+    if (!pendingField) return
+    let cancelled = false
+    const attempt = (tries: number) => {
+      if (cancelled) return
+      const el = document.querySelector(`[data-field-id="${pendingField}"]`)
+      if (el) {
+        // Если поле внутри свёрнутой карточки — раскрываем её.
+        // Достаточно dispatch события: Group сам удалит id из
+        // collapsedGroups и развернётся (состояние инкапсулировано
+        // в SettingsPrimitives).
+        const card = el.closest('.settings-card') as HTMLElement | null
+        const groupId = card?.dataset.groupId
+        if (groupId && card?.classList.contains('settings-card--collapsed')) {
+          window.dispatchEvent(new CustomEvent(GROUP_TOGGLE_EVENT, { detail: groupId }))
+        }
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('settings-field--flash')
+        setTimeout(() => el.classList.remove('settings-field--flash'), 2400)
+        setPendingField(null)
+      } else if (tries > 0) {
+        setTimeout(() => attempt(tries - 1), 100)
+      } else {
+        setPendingField(null)
+      }
+    }
+    attempt(15)
+    return () => { cancelled = true }
+  }, [pendingField, section])
+  // Ctrl+K / Ctrl+F — фокус в поиск настроек
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'f')) {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const filteredGroups = useMemo(() => {
     const q = navQuery.trim().toLowerCase()
     if (!q) return SECTION_GROUPS
@@ -128,6 +299,18 @@ export default function SettingsPage() {
   const settings = useSettingsStore(s => s.settings)
   const load = useSettingsStore(s => s.load)
   const set = useSettingsStore(s => s.set)
+  // Бейдж конфликта хоткеев в сайдбаре: сколько хоткеев делят занятые комбинации
+  const hotkeyConflictCount = useMemo(() => {
+    const hk = (settings['hotkeys'] as Record<string, string>) || {}
+    const seen = new Map<string, number>()
+    for (const bind of Object.values(hk)) {
+      if (!bind) continue
+      seen.set(bind, (seen.get(bind) || 0) + 1)
+    }
+    let count = 0
+    for (const n of seen.values()) if (n > 1) count += n
+    return count
+  }, [settings])
   const { setTheme, setAccentColor, setBgStyle, setMsgAnim,
     setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect,
     setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
@@ -148,17 +331,14 @@ export default function SettingsPage() {
   })))
   const { add: toast } = useToast()
 
-  // Синхронизация: при изменении settingsSection извне (openSettings) — переключаемся.
-  useEffect(() => {
-    if (navSection && (navSection !== section)) {
-      setSection(navSection as Section)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navSection])
-
   // Обратная синхронизация: локальный выбор юзера пишем в nav store.
+  // БЕЗ AnimatePresence: mode="wait" застревал после визита «Статистики»
+  // (exit-анимация модалки через createPortal не давала onExitComplete
+  // сработать) — новая вкладка не монтировалась, контент пропадал навсегда.
+  // Теперь секции переключаются синхронно: обычный div + CSS-анимация входа.
   const handleSectionChange = (s: Section) => {
-    if (s !== section) playNavigateSound()
+    if (s === section) return
+    playNavigateSound()
     setSection(s)
     setNavSection(s)
   }
@@ -273,10 +453,11 @@ export default function SettingsPage() {
         <div className="settings-nav-search">
           <AppIcon name="search" size="xs" tone="muted" />
           <input
+            ref={searchInputRef}
             className="settings-nav-search-input"
             value={navQuery}
             onChange={e => setNavQuery(e.target.value)}
-            placeholder="Поиск настроек..."
+            placeholder="Поиск настроек... Ctrl+K"
             spellCheck={false}
           />
           {navQuery && (
@@ -290,8 +471,32 @@ export default function SettingsPage() {
             </button>
           )}
         </div>
-        {navQuery.trim() && filteredGroups.length === 0 && (
+        {navQuery.trim() && filteredGroups.length === 0 && fieldResults.length === 0 && (
           <div className="settings-nav-empty">Ничего не найдено</div>
+        )}
+        {/* Результаты поиска по конкретным полям — переход + подсветка */}
+        {navQuery.trim() && fieldResults.length > 0 && (
+          <div className="settings-search-results">
+            <div className="settings-search-results-title">Найдено в настройках</div>
+            {fieldResults.map(f => {
+              const sec = SECTION_LOOKUP[f.section]
+              return (
+                <button
+                  key={`${f.section}-${f.id}`}
+                  type="button"
+                  className="settings-search-result"
+                  onClick={() => goToField(f.section, f.id)}
+                  title={sec?.label}
+                >
+                  <span className="settings-search-result-icon">
+                    <AppIcon name={sec?.icon ?? 'settings'} size="xs" tone="muted" />
+                  </span>
+                  <span className="settings-search-result-label">{f.label}</span>
+                  <span className="settings-search-result-section">{sec?.label}</span>
+                </button>
+              )
+            })}
+          </div>
         )}
         {filteredGroups.map((group, gi) => (
           <motion.div
@@ -324,6 +529,12 @@ export default function SettingsPage() {
                 )}
                 <AppIcon name={s.icon} size="sm" tone={section === s.id ? 'accent' : 'muted'} />
                 <span className="settings-nav-item-label">{highlightLabel(s.label)}</span>
+                {/* Бейдж: количество хоткеев в конфликте (одинаковые комбинации) */}
+                {s.id === 'hotkeys' && hotkeyConflictCount > 0 && (
+                  <span className="settings-nav-badge" title="Конфликтующие комбинации клавиш">
+                    {hotkeyConflictCount}
+                  </span>
+                )}
               </motion.button>
             ))}
           </motion.div>
@@ -332,15 +543,9 @@ export default function SettingsPage() {
 
       {/* Контент */}
       <div className="settings-content">
-        <AnimatePresence mode="popLayout">
-          <motion.div
-            key={section}
-            className="settings-section"
-            initial={{ opacity: 0, x: 16 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -16 }}
-            transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-          >
+        {/* Обычный div с key + CSS-анимацией входа (см. .settings-section--in).
+            Никаких AnimatePresence — застрявший exit больше физически невозможен. */}
+        <div key={section} className="settings-section settings-section--in">
             {section === 'profile' && (
               <ProfileSection />
             )}
@@ -352,6 +557,9 @@ export default function SettingsPage() {
             )}
             {section === 'modelStatus' && (
               <ModelStatusSection />
+            )}
+            {section === 'stats' && (
+              <StatisticsSection />
             )}
             {section === 'context' && (
               <ContextSettingsTab />
@@ -383,86 +591,68 @@ export default function SettingsPage() {
             {section === 'notifications' && (
               <NotificationsSection settings={settings} onSet={handleSet} />
             )}
-          </motion.div>
-        </AnimatePresence>
+        </div>
       </div>
     </div>
   )
 }
 
 // ===== Разделы =====
-
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h2 className="settings-section-title">{children}</h2>
-}
-
-// Единая шапка категории настроек: иконка в accent-чипе + uppercase-заголовок
-// + тонкая линия до края (визуально связывает группу, как в macOS Settings)
-// + опциональная пометка справа.
-function GroupHeader({ icon, title, note, right }: {
-  icon: IconName; title: string; note?: string; right?: React.ReactNode
-}) {
-  return (
-    <div className="settings-group-header">
-      <span className="settings-group-header-icon"><AppIcon name={icon} size="xs" /></span>
-      <span className="settings-group-header-title">{title}</span>
-      <span className="settings-group-header-line" />
-      {note && <span className="settings-group-header-note">{note}</span>}
-      {right && <div className="settings-group-header-right">{right}</div>}
-    </div>
-  )
-}
-
-function Field({ label, description, children, block }: {
-  label: string; description?: string; children: React.ReactNode; block?: boolean
-}) {
-  return (
-    <div className={`settings-field${block ? ' settings-field--block' : ''}`}>
-      <div className="settings-field-label">
-        <span>{label}</span>
-        {description && <p className="settings-field-desc">{description}</p>}
-      </div>
-      <div className="settings-field-control">{children}</div>
-    </div>
-  )
-}
+// Примитивы (SectionTitle, GroupHeader, Field, Group, ConfirmButton) —
+// в components/settings/SettingsPrimitives.tsx, общие с саб-табами.
 
 const GeneralSection = memo(function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
   return (
     <>
-      <SectionTitle>Общие</SectionTitle>
-      <Field label="Имя пользователя" description="Syntee будет обращаться к вам по имени">
-        <input
-          className="settings-input"
-          value={(settings['userName'] as string) || ''}
-          onChange={e => onSet('userName', e.target.value)}
-          placeholder="Введите имя..."
-        />
-      </Field>
-      <Field label="Запуск с Windows">
-        <Toggle value={!!settings['autostart']} onChange={v => onSet('autostart', v)} />
-      </Field>
-      <Field label="Язык интерфейса">
-        <select className="settings-select" value={(settings['language'] as string) || 'ru'} onChange={e => onSet('language', e.target.value)}>
-          <option value="ru">Русский</option>
-          <option value="en">English</option>
-        </select>
-      </Field>
-      <Field label="При закрытии окна">
-        <select className="settings-select" value={(settings['closeAction'] as string) || 'tray'} onChange={e => onSet('closeAction', e.target.value)}>
-          <option value="tray">Убрать в трей</option>
-          <option value="quit">Выйти</option>
-        </select>
-      </Field>
-      <Field label="Счётчик контекста" description="Кружок с заполнением контекста в поле ввода">
-        <Toggle value={(settings['showContextRing'] as boolean) ?? true} onChange={v => onSet('showContextRing', v)} />
-      </Field>
-      <Field label="Миникарта сообщений" description="Точки навигации по сообщениям справа в чате">
-        <Toggle value={(settings['chatMinimap'] as boolean) ?? true} onChange={v => onSet('chatMinimap', v)} />
-      </Field>
-      <Field label="Боковые кнопки мыши" description="X1 — назад, X2 — вперёд между разделами (как в браузере)">
-        <Toggle value={(settings['mouseNavEnabled'] as boolean) ?? true} onChange={v => onSet('mouseNavEnabled', v)} />
-      </Field>
+      <SectionTitle description="Базовые параметры приложения и поведения окна">
+        Общие
+      </SectionTitle>
+
+      <Group id="general-basic" icon="settings" title="Основные">
+        <Field id="userName" label="Имя пользователя" description="Syntee будет обращаться к вам по имени">
+          <input
+            className="settings-input"
+            value={(settings['userName'] as string) || ''}
+            onChange={e => onSet('userName', e.target.value)}
+            placeholder="Введите имя..."
+          />
+        </Field>
+        <Field id="autostart" label="Запуск с Windows">
+          <Toggle value={!!settings['autostart']} onChange={v => onSet('autostart', v)} />
+        </Field>
+        <Field id="language" label="Язык интерфейса">
+          <Select
+            value={(settings['language'] as string) || 'ru'}
+            onChange={v => onSet('language', v)}
+            options={[
+              { value: 'ru', label: 'Русский' },
+              { value: 'en', label: 'English' },
+            ]}
+          />
+        </Field>
+        <Field id="closeAction" label="При закрытии окна">
+          <Select
+            value={(settings['closeAction'] as string) || 'tray'}
+            onChange={v => onSet('closeAction', v)}
+            options={[
+              { value: 'tray', label: 'Убрать в трей' },
+              { value: 'quit', label: 'Выйти' },
+            ]}
+          />
+        </Field>
+      </Group>
+
+      <Group id="general-ui" icon="eye" title="Интерфейс">
+        <Field id="showContextRing" label="Счётчик контекста" description="Кружок с заполнением контекста в поле ввода">
+          <Toggle value={(settings['showContextRing'] as boolean) ?? true} onChange={v => onSet('showContextRing', v)} />
+        </Field>
+        <Field id="chatMinimap" label="Миникарта сообщений" description="Точки навигации по сообщениям справа в чате">
+          <Toggle value={(settings['chatMinimap'] as boolean) ?? true} onChange={v => onSet('chatMinimap', v)} />
+        </Field>
+        <Field id="mouseNavEnabled" label="Боковые кнопки мыши" description="X1 — назад, X2 — вперёд между разделами (как в браузере)">
+          <Toggle value={(settings['mouseNavEnabled'] as boolean) ?? true} onChange={v => onSet('mouseNavEnabled', v)} />
+        </Field>
+      </Group>
     </>
   )
 })
@@ -568,9 +758,6 @@ const ACCENT_PRESETS = [
 // fallback (Inter) в font-stack. Кастомные шрифты добавляются динамически.
 const BUILTIN_UI_FONTS = ['Inter', 'Manrope', 'Unbounded', 'Space Grotesk', 'Onest', 'Sora', 'system']
 const BUILTIN_MONO_FONTS = ['JetBrains Mono', 'Fira Code', 'system mono']
-// Превью-текст для каждого шрифта в dropdown
-const FONT_PREVIEW = 'Aa Бб 123'
-const MONO_PREVIEW = 'fn x = 1'
 
 // ── FontSettingsBlock ──────────────────────────────────────────
 // UI для выбора шрифтов: UI-шрифт, код-шрифт, загрузка кастомных.
@@ -664,19 +851,18 @@ function FontSettingsBlock({ settings, onSet }: { settings: Record<string, unkno
 
   return (
     <>
-      <Field label="Шрифт интерфейса" description="Основной шрифт приложения">
+      <Field id="fontFamily" label="Шрифт интерфейса" description="Основной шрифт приложения">
         <div className="font-picker-row">
-          <select
-            className="settings-select font-picker-select"
+          <Select
+            className="font-picker-select"
             value={currentUiFont}
-            onChange={e => onSet('fontFamily', e.target.value)}
-          >
-            {allUiFonts.map(f => (
-              <option key={f} value={f} style={{ fontFamily: f === 'system' ? undefined : `'${f}', sans-serif` }}>
-                {f}
-              </option>
-            ))}
-          </select>
+            onChange={v => onSet('fontFamily', v)}
+            options={allUiFonts.map(f => ({
+              value: f,
+              label: f,
+              previewStyle: f === 'system' ? undefined : { fontFamily: `'${f}', sans-serif` },
+            }))}
+          />
           {isCustomFont && (
             <motion.button
               className="font-picker-delete"
@@ -692,18 +878,16 @@ function FontSettingsBlock({ settings, onSet }: { settings: Record<string, unkno
         </div>
       </Field>
 
-      <Field label="Шрифт кода" description="Для блоков кода, путей, ID">
-        <select
-          className="settings-select"
+      <Field id="fontMono" label="Шрифт кода" description="Для блоков кода, путей, ID">
+        <Select
           value={currentMonoFont}
-          onChange={e => onSet('fontMono', e.target.value)}
-        >
-          {allMonoFonts.map(f => (
-            <option key={f} value={f} style={{ fontFamily: `'${f}', monospace` }}>
-              {f}
-            </option>
-          ))}
-        </select>
+          onChange={v => onSet('fontMono', v)}
+          options={allMonoFonts.map(f => ({
+            value: f,
+            label: f,
+            previewStyle: { fontFamily: `'${f}', monospace` },
+          }))}
+        />
       </Field>
 
       <Field label="Свой шрифт" description="Загрузить .woff2, .woff, .ttf или .otf">
@@ -854,7 +1038,9 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
 
   return (
     <>
-      <SectionTitle>Внешний вид</SectionTitle>
+      <SectionTitle description="Тема, акцент, шрифты, фон и поведение сообщений">
+        Внешний вид
+      </SectionTitle>
       {appearanceHasCustom && (
         <motion.button
           className="settings-reset-link"
@@ -869,8 +1055,8 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         </motion.button>
       )}
 
-      <GroupHeader icon="palette" title="Тема" />
-      <Field label="Цветовая палитра" description="12 встроенных тем + созданные вами" block>
+      <Group id="appearance-theme" icon="palette" title="Тема">
+      <Field id="theme" label="Цветовая палитра" description="12 встроенных тем + созданные вами" block>
         <div className="settings-theme-cards">
           {allThemes.map(t => {
             const isActive = settings['theme'] === t.id || (t.id === activeCustomThemeId && settings['theme'] === 'custom')
@@ -954,7 +1140,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         )}
       </AnimatePresence>
 
-      <Field label="Автосмена темы" description="День → светлая, ночь → тёмная">
+      <Field id="themeSchedule" label="Автосмена темы" description="День → светлая, ночь → тёмная">
         <Toggle value={!!themeSchedule.enabled} onChange={v => onSet('themeSchedule', { ...themeSchedule, enabled: v })} />
       </Field>
       <AnimatePresence>
@@ -967,16 +1153,24 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
             style={{ overflow: 'hidden' }}
           >
             <Field label="Дневная тема">
-              <select className="settings-select" value={themeSchedule.dayTheme} onChange={e => onSet('themeSchedule', { ...themeSchedule, dayTheme: e.target.value })}>
-                {THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                {customThemes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <Select
+                value={themeSchedule.dayTheme}
+                onChange={v => onSet('themeSchedule', { ...themeSchedule, dayTheme: v })}
+                options={[
+                  ...THEMES.map(t => ({ value: t.id, label: t.label })),
+                  ...customThemes.map(t => ({ value: t.id, label: t.name })),
+                ]}
+              />
             </Field>
             <Field label="Ночная тема">
-              <select className="settings-select" value={themeSchedule.nightTheme} onChange={e => onSet('themeSchedule', { ...themeSchedule, nightTheme: e.target.value })}>
-                {THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                {customThemes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <Select
+                value={themeSchedule.nightTheme}
+                onChange={v => onSet('themeSchedule', { ...themeSchedule, nightTheme: v })}
+                options={[
+                  ...THEMES.map(t => ({ value: t.id, label: t.label })),
+                  ...customThemes.map(t => ({ value: t.id, label: t.name })),
+                ]}
+              />
             </Field>
             <Field label="День начинается в">
               <input type="time" className="settings-input" value={themeSchedule.dayTime} onChange={e => onSet('themeSchedule', { ...themeSchedule, dayTime: e.target.value })} />
@@ -987,9 +1181,10 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
           </motion.div>
         )}
       </AnimatePresence>
+      </Group>
 
-      <GroupHeader icon="sparkles" title="Акцент" />
-      <Field label="Цвет акцента" description="Дополнительный акцент поверх темы">
+      <Group id="appearance-accent" icon="sparkles" title="Акцент">
+      <Field id="accentColor" label="Цвет акцента" description="Дополнительный акцент поверх темы">
         <div className="settings-accent-picker">
           {ACCENT_PRESETS.map(c => {
             const isActive = (settings['accentColor'] as string) === c && !rainbowAccent
@@ -1082,11 +1277,11 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         document.body
       )}
 
-      <Field label="Радужный акцент" description="Accent медленно циклит по всем цветам">
+      <Field id="rainbowAccent" label="Радужный акцент" description="Accent медленно циклит по всем цветам">
         <Toggle value={!!rainbowAccent} onChange={v => onSet('rainbowAccent', v)} />
       </Field>
 
-      <Field label="Градиентный акцент" description="Accent как градиент из двух цветов">
+      <Field id="accentGradient" label="Градиентный акцент" description="Accent как градиент из двух цветов">
         <Toggle value={!!accentGradient.enabled} onChange={v => onSet('accentGradient', { ...accentGradient, enabled: v })} disabled={rainbowAccent} />
       </Field>
       <AnimatePresence>
@@ -1123,30 +1318,26 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
           </motion.div>
         )}
       </AnimatePresence>
+      </Group>
 
-      <GroupHeader icon="fileText" title="Типографика" />
+      <Group id="appearance-typography" icon="fileText" title="Типографика">
       <FontSettingsBlock settings={settings} onSet={onSet} />
 
-      <Field label="Плотность интерфейса" description="Компактный / Комфортный / Просторный">
-        <div className="settings-theme-grid">
-          {[
-            { id: 'compact', label: 'Компактно' },
-            { id: 'comfortable', label: 'Комфорт' },
-            { id: 'spacious', label: 'Просторно' },
-          ].map(d => (
-            <motion.button
-              key={d.id}
-              className={`settings-theme-btn ${(settings['density'] || 'comfortable') === d.id ? 'settings-theme-btn--active' : ''}`}
-              style={{ background: 'var(--bg-tertiary)', fontSize: 12 }}
-              onClick={() => onSet('density', d.id)}
-              whileTap={{ scale: 0.94 }}
-            >{d.label}</motion.button>
-          ))}
-        </div>
+      <Field id="density" label="Плотность интерфейса" description="Отступы и размеры элементов">
+        <SegmentedControl
+          value={(settings['density'] as string) || 'comfortable'}
+          onChange={v => onSet('density', v)}
+          options={[
+            { value: 'compact', label: 'Компактно' },
+            { value: 'comfortable', label: 'Комфорт' },
+            { value: 'spacious', label: 'Просторно' },
+          ]}
+        />
       </Field>
+      </Group>
 
-      <GroupHeader icon="image" title="Фон" />
-      <Field label="Стекло (Glass blur)" description={`${settings['glassBlur'] ?? 20}px — размытие Liquid Glass`}>
+      <Group id="appearance-bg" icon="image" title="Фон">
+      <Field id="glassBlur" label="Стекло (Glass blur)" description={`${settings['glassBlur'] ?? 20}px — размытие Liquid Glass`}>
         <input
           type="range" min={0} max={40} value={(settings['glassBlur'] as number) ?? 20}
           onChange={e => onSet('glassBlur', Number(e.target.value))}
@@ -1154,7 +1345,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         />
       </Field>
 
-      <Field label="Стиль фона" description="Анимация на заднем плане" block>
+      <Field id="bgStyle" label="Стиль фона" description="Анимация на заднем плане" block>
         <div className="settings-bg-grid">
           {BG_STYLES.map(s => (
             <motion.button
@@ -1175,9 +1366,10 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
       <Field label="Фоновое изображение" description="Картинка как фон (под анимацией). Несколько картинок, переключение, параметры." block>
         <BgImageGallery onSet={onSet} />
       </Field>
+      </Group>
 
-      <GroupHeader icon="messageSquare" title="Сообщения" />
-      <Field label="Анимация сообщений" description="Наведи на карточку чтобы увидеть превью" block>
+      <Group id="appearance-messages" icon="messageSquare" title="Сообщения">
+      <Field id="msgAnim" label="Анимация сообщений" description="Наведи на карточку чтобы увидеть превью" block>
         <div className="anim-preview-grid">
           {Object.entries(MSG_ANIM_VARIANTS).map(([id]) => (
             <AnimPreview
@@ -1190,7 +1382,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         </div>
       </Field>
 
-      <Field label="Аватар ассистента" description="Иконка рядом с ответами">
+      <Field id="avatarStyle" label="Аватар ассистента" description="Иконка рядом с ответами">
         <div className="settings-theme-grid">
           {AVATAR_STYLES.map(a => (
             <motion.button
@@ -1211,7 +1403,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         </div>
       </Field>
 
-      <Field label="Время сообщений" description="Когда показывать время рядом с сообщением">
+      <Field id="showTime" label="Время сообщений" description="Когда показывать время рядом с сообщением">
         <div className="settings-theme-grid">
           {[
             { id: 'always', label: 'Всегда'   },
@@ -1229,16 +1421,18 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         </div>
       </Field>
 
-      <Field label="Markdown в своих сообщениях" description="Рендерить жирный, курсив, код в ваших сообщениях">
+      <Field id="userMarkdown" label="Markdown в своих сообщениях" description="Рендерить жирный, курсив, код в ваших сообщениях">
         <Toggle value={!!(settings['userMarkdown'])} onChange={v => onSet('userMarkdown', v)} />
       </Field>
 
-      <Field label="Эффект отправки" description="Ripple-вспышка на кнопке при отправке">
+      <Field id="sendEffect" label="Эффект отправки" description="Ripple-вспышка на кнопке при отправке">
         <Toggle value={settings['sendEffect'] !== false} onChange={v => onSet('sendEffect', v)} />
       </Field>
+      </Group>
 
-      <GroupHeader icon="volume" title="Звуки" />
+      <Group id="appearance-sounds" icon="volume" title="Звуки">
       <SoundsPanel settings={settings} onSet={onSet} />
+      </Group>
     </>
   )
 })
@@ -1350,63 +1544,80 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
 
   return (
     <>
-      <SectionTitle>Голос</SectionTitle>
-      <Field label="Wake word" description="Слово для активации голосового режима">
-        <input className="settings-input" value={(settings['wakeWord'] as string) || 'синти'} onChange={e => onSet('wakeWord', e.target.value)} />
-      </Field>
-      <Field label="Голос ассистента">
-        <select className="settings-select" value={(settings['voiceId'] as string) || 'alloy'} onChange={e => onSet('voiceId', e.target.value)}>
-          {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].map(v => <option key={v} value={v}>{v}</option>)}
-        </select>
-      </Field>
+      <SectionTitle description="Голосовая активация и озвучка ответов">Голос</SectionTitle>
 
-      <SectionTitle>Голосовой ввод в чате</SectionTitle>
-      <Field label="Распознавание речи (STT)" description="Движок для кнопки микрофона в строке ввода">
-        <select className="settings-select" value={sttProvider} onChange={e => onSet('sttProvider', e.target.value)}>
-          <option value="local">Локальный Whisper (оффлайн, без лимитов)</option>
-          <option value="groq">Groq Whisper API (нужен ключ)</option>
-        </select>
-      </Field>
-      {sttProvider === 'local' && (
-        <>
-          <Field label="Размер модели Whisper" description="Меньше — быстрее и экономнее. tiny по умолчанию, base точнее на русском.">
-            <select className="settings-select" value={sttModelSize} onChange={e => onSet('sttModelSize', e.target.value)}>
-              <option value="tiny">tiny (~40MB, быстро — рекомендуется)</option>
-              <option value="base">base (~140MB, точнее на русском)</option>
-            </select>
-          </Field>
-          {/* Блок статуса модели + кнопка скачать */}
-          <div className="voice-model-block">
-            {statusBadge}
-            {!downloading && !(modelStatus?.cached || modelStatus?.status === 'ready') && (
-              <motion.button className="voice-model-download-btn" onClick={handleDownload} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Скачать модель
-              </motion.button>
-            )}
-            {downloading && (
-              <div className="voice-model-progress">
-                <div className="voice-model-progress-bar" style={{ width: `${downloadProgress}%` }} />
-              </div>
-            )}
-            {downloadError && (
-              <div className="voice-model-error-text" title={downloadError}>
-                {downloadError}
-              </div>
-            )}
-          </div>
-          <div className="settings-info-note">
-            Модель кэшируется локально и скачивается один раз. После этого распознавание
-            работает полностью оффлайн. Фоновая загрузка начинается автоматически при старте
-            приложения — здесь можно скачать вручную или проверить статус.
-          </div>
-        </>
-      )}
-      {sttProvider === 'groq' && (
-        <Field label="Groq API key" description="Ключ с console.groq.com/keys. Хранится локально, отправляется только на api.groq.com.">
-          <input className="settings-input" type="password" value={(settings['groqApiKey'] as string) || ''} onChange={e => onSet('groqApiKey', e.target.value)} placeholder="gsk_..." />
+      <Group id="voice-output" icon="volume" title="Голосовой вывод">
+        <Field id="wakeWord" label="Wake word" description="Слово для активации голосового режима">
+          <input className="settings-input" value={(settings['wakeWord'] as string) || 'синти'} onChange={e => onSet('wakeWord', e.target.value)} />
         </Field>
-      )}
+        <Field id="voiceId" label="Голос ассистента">
+          <Select
+            value={(settings['voiceId'] as string) || 'alloy'}
+            onChange={v => onSet('voiceId', v)}
+            options={['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].map(v => ({ value: v, label: v }))}
+          />
+        </Field>
+      </Group>
+
+      <SectionTitle description="Движок для кнопки микрофона в строке ввода">Голосовой ввод в чате</SectionTitle>
+
+      <Group id="voice-stt" icon="mic" title="Распознавание речи">
+        <Field id="sttProvider" label="Провайдер STT">
+          <Select
+            value={sttProvider}
+            onChange={v => onSet('sttProvider', v)}
+            options={[
+              { value: 'local', label: 'Локальный Whisper', hint: 'оффлайн, без лимитов' },
+              { value: 'groq', label: 'Groq Whisper API', hint: 'нужен ключ' },
+            ]}
+          />
+        </Field>
+        {sttProvider === 'local' && (
+          <>
+            <Field id="sttModelSize" label="Размер модели Whisper" description="Меньше — быстрее и экономнее. tiny по умолчанию, base точнее на русском.">
+              <Select
+                value={sttModelSize}
+                onChange={v => onSet('sttModelSize', v)}
+                options={[
+                  { value: 'tiny', label: 'tiny', hint: '~40MB, быстро — рекомендуется' },
+                  { value: 'base', label: 'base', hint: '~140MB, точнее на русском' },
+                ]}
+              />
+            </Field>
+            {/* Блок статуса модели + кнопка скачать */}
+            <div className="voice-model-block">
+              {statusBadge}
+              {!downloading && !(modelStatus?.cached || modelStatus?.status === 'ready') && (
+                <motion.button className="voice-model-download-btn" onClick={handleDownload} whileHover={whileHoverWide} whileTap={whileTapWide} transition={springHover}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Скачать модель
+                </motion.button>
+              )}
+              {downloading && (
+                <div className="voice-model-progress">
+                  <div className="voice-model-progress-bar" style={{ width: `${downloadProgress}%` }} />
+                </div>
+              )}
+              {downloadError && (
+                <div className="voice-model-error-text" title={downloadError}>
+                  {downloadError}
+                </div>
+              )}
+            </div>
+            <div className="settings-info-note">
+              Модель кэшируется локально и скачивается один раз. После этого распознавание
+              работает полностью оффлайн. Фоновая загрузка начинается автоматически при старте
+              приложения — здесь можно скачать вручную или проверить статус.
+            </div>
+          </>
+        )}
+        {sttProvider === 'groq' && (
+          <Field id="groqApiKey" label="Groq API key" description="Ключ с console.groq.com/keys. Хранится локально, отправляется только на api.groq.com.">
+            <input className="settings-input" type="password" value={(settings['groqApiKey'] as string) || ''} onChange={e => onSet('groqApiKey', e.target.value)} placeholder="gsk_..." />
+          </Field>
+        )}
+      </Group>
+
       <div className="settings-info-note">
         Модели TTS (озвучивание ответов) задаются в разделе <strong>ИИ и Модели</strong> → Назначения ролей.
       </div>
@@ -1543,8 +1754,9 @@ const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { setti
   const hotkeys = (settings['hotkeys'] as Record<string, string>) || {}
   // Ref чтобы effect keydown/keyup не ре-подписывался при каждом изменении
   // settings (hotkeys меняется → новый ref → effect teardown+resubscribe).
+  // Обновляем ref в effect после рендера — не во время (react-hooks/refs).
   const hotkeysRef = useRef(hotkeys)
-  hotkeysRef.current = hotkeys
+  useEffect(() => { hotkeysRef.current = hotkeys })
   const [recording, setRecording] = useState<string | null>(null)
   const [pressed, setPressed] = useState<string>('')
 
@@ -1621,7 +1833,9 @@ const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { setti
 
   return (
     <>
-      <SectionTitle>Горячие клавиши</SectionTitle>
+      <SectionTitle description="Глобальные комбинации клавиш и хоткеи в приложении">
+        Горячие клавиши
+      </SectionTitle>
       {hasCustom && (
         <motion.button
           className="settings-reset-link"
@@ -1648,13 +1862,12 @@ const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { setti
       )}
 
       {HK_GROUPS.map(group => (
-        <div key={group.title} className="hk-group">
-          <GroupHeader icon={group.icon} title={group.title} note={group.note} />
+        <Group key={group.title} id={`hotkeys-${group.title}`} icon={group.icon} title={group.title} note={group.note}>
           <div className="hk-list">
             {group.items.map(k => {
               const isConflict = !!conflictMap[k.id]
               return (
-                <div key={k.id} className={`hk-row${isConflict ? ' hk-row--conflict' : ''}`}>
+                <div key={k.id} className={`hk-row${isConflict ? ' hk-row--conflict' : ''}`} data-field-id={`hk-${k.id}`}>
                   <div className="hk-info">
                     <span className="hk-icon"><AppIcon name={k.icon} size="sm" tone="muted" /></span>
                     <div className="hk-text">
@@ -1677,14 +1890,14 @@ const HotkeysSection = memo(function HotkeysSection({ settings, onSet }: { setti
                         : renderBind(hotkeys[k.id] || '')}
                     </motion.button>
                     {hotkeys[k.id] && recording !== k.id && (
-                      <motion.button className="hk-clear" onClick={() => onSet('hotkeys', { ...hotkeys, [k.id]: '' })} title="Очистить" whileHover={whileHoverTiny} whileTap={whileHoverTiny} transition={springHover}><AppIcon name="x" size="xs" /></motion.button>
+                      <motion.button className="hk-clear" onClick={() => onSet('hotkeys', { ...hotkeys, [k.id]: '' })} title="Очистить" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}><AppIcon name="x" size="xs" /></motion.button>
                     )}
                   </div>
                 </div>
               )
             })}
           </div>
-        </div>
+        </Group>
       ))}
 
       {recording && (
@@ -1722,118 +1935,101 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
 
   return (
     <>
-      <SectionTitle>Агент и Безопасность</SectionTitle>
+      <SectionTitle description="Поведение агента, лимиты циклов и защита от опасных действий">
+        Агент и Безопасность
+      </SectionTitle>
 
-      <Field label="Режим подтверждения действий" description="Когда агент запрашивает подтверждение перед выполнением">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <ApprovalModeSelector
-            value={agentSettings.approvalMode as import('../../../../../shared/types').ApprovalMode}
-            onChange={mode => updateAgent({ approvalMode: mode })}
-          />
-          <ResetButton current={agentSettings.approvalMode} defaultValue={DEFAULT_AGENT_SETTINGS.approvalMode} onReset={() => updateAgent({ approvalMode: DEFAULT_AGENT_SETTINGS.approvalMode })} />
-        </div>
-      </Field>
-
-      <Field label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />
-          <ResetButton current={agentSettings.enableThinking} defaultValue={DEFAULT_AGENT_SETTINGS.enableThinking} onReset={() => updateAgent({ enableThinking: DEFAULT_AGENT_SETTINGS.enableThinking })} />
-        </div>
-      </Field>
-
-      <Field label="Вывод инструментов" description="Как отображать цепочку действий агента в чате">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {OUTPUT_MODES.map(m => (
-              <motion.button
-                key={m.value}
-                className={`settings-chip ${agentSettings.toolOutputMode === m.value ? 'settings-chip--active' : ''}`}
-                onClick={() => updateAgent({ toolOutputMode: m.value })}
-                title={m.desc}
-                whileHover={whileHoverSm}
-                whileTap={whileTapSm}
-                transition={springHover}
-              >
-                {m.label}
-              </motion.button>
-            ))}
+      <Group id="agent-behavior" icon="bot" title="Поведение">
+        <Field id="approvalMode" label="Режим подтверждения действий" description="Когда агент запрашивает подтверждение перед выполнением">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <ApprovalModeSelector
+              value={agentSettings.approvalMode as import('../../../../../shared/types').ApprovalMode}
+              onChange={mode => updateAgent({ approvalMode: mode })}
+            />
+            <ResetButton current={agentSettings.approvalMode} defaultValue={DEFAULT_AGENT_SETTINGS.approvalMode} onReset={() => updateAgent({ approvalMode: DEFAULT_AGENT_SETTINGS.approvalMode })} />
           </div>
-          <ResetButton current={agentSettings.toolOutputMode} defaultValue={DEFAULT_AGENT_SETTINGS.toolOutputMode} onReset={() => updateAgent({ toolOutputMode: DEFAULT_AGENT_SETTINGS.toolOutputMode })} />
-        </div>
-      </Field>
+        </Field>
 
-      <Field label="Параллельных суб-агентов" description="Сколько дочерних агентов можно держать активными одновременно">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <select
+        <Field id="enableThinking" label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />
+            <ResetButton current={agentSettings.enableThinking} defaultValue={DEFAULT_AGENT_SETTINGS.enableThinking} onReset={() => updateAgent({ enableThinking: DEFAULT_AGENT_SETTINGS.enableThinking })} />
+          </div>
+        </Field>
+
+        <Field id="toolOutputMode" label="Вывод инструментов" description="Как отображать цепочку действий агента в чате">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <SegmentedControl
+              value={agentSettings.toolOutputMode}
+              onChange={v => updateAgent({ toolOutputMode: v as SharedAgentSettings['toolOutputMode'] })}
+              options={OUTPUT_MODES.map(m => ({ value: m.value, label: m.label }))}
+            />
+            <ResetButton current={agentSettings.toolOutputMode} defaultValue={DEFAULT_AGENT_SETTINGS.toolOutputMode} onReset={() => updateAgent({ toolOutputMode: DEFAULT_AGENT_SETTINGS.toolOutputMode })} />
+          </div>
+        </Field>
+      </Group>
+
+      <Group id="agent-limits" icon="shield" title="Лимиты и защита от циклов">
+        <Field id="maxParallelSubAgents" label="Параллельных суб-агентов" description="Сколько дочерних агентов можно держать активными одновременно">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Stepper
+              value={agentSettings.maxParallelSubAgents}
+              onChange={v => updateAgent({ maxParallelSubAgents: v })}
+              values={[5, 6, 7, 8, 9, 10]}
+            />
+            <ResetButton current={agentSettings.maxParallelSubAgents} defaultValue={DEFAULT_AGENT_SETTINGS.maxParallelSubAgents} onReset={() => updateAgent({ maxParallelSubAgents: DEFAULT_AGENT_SETTINGS.maxParallelSubAgents })} />
+          </div>
+        </Field>
+
+        <Field id="autoMemoryInterval" label="Автосохранение рабочей памяти" description="Через сколько шагов агент обновляет working memory во время длинной сессии">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Stepper
+              value={agentSettings.autoMemoryInterval}
+              onChange={v => updateAgent({ autoMemoryInterval: v })}
+              values={[0, 3, 5, 8, 12]}
+              format={n => (n === 0 ? 'выкл' : `${n} ${n === 3 ? 'шага' : 'шагов'}`)}
+            />
+            <ResetButton current={agentSettings.autoMemoryInterval} defaultValue={DEFAULT_AGENT_SETTINGS.autoMemoryInterval} onReset={() => updateAgent({ autoMemoryInterval: DEFAULT_AGENT_SETTINGS.autoMemoryInterval })} />
+          </div>
+        </Field>
+
+        <Field id="maxRepeatedToolCalls" label="Повтор одного и того же tool-call" description="После этого количества одинаковых вызовов агент получает защиту от зацикливания">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Stepper
+              value={agentSettings.maxRepeatedToolCalls}
+              onChange={v => updateAgent({ maxRepeatedToolCalls: v })}
+              values={[2, 3, 4, 5]}
+            />
+            <ResetButton current={agentSettings.maxRepeatedToolCalls} defaultValue={DEFAULT_AGENT_SETTINGS.maxRepeatedToolCalls} onReset={() => updateAgent({ maxRepeatedToolCalls: DEFAULT_AGENT_SETTINGS.maxRepeatedToolCalls })} />
+          </div>
+        </Field>
+
+        <Field id="maxRepeatedErrors" label="Повтор одной и той же ошибки" description="Если инструмент падает одинаково несколько раз подряд, агенту запрещается тупо повторять вызов">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Stepper
+              value={agentSettings.maxRepeatedErrors}
+              onChange={v => updateAgent({ maxRepeatedErrors: v })}
+              values={[2, 3, 4]}
+            />
+            <ResetButton current={agentSettings.maxRepeatedErrors} defaultValue={DEFAULT_AGENT_SETTINGS.maxRepeatedErrors} onReset={() => updateAgent({ maxRepeatedErrors: DEFAULT_AGENT_SETTINGS.maxRepeatedErrors })} />
+          </div>
+        </Field>
+      </Group>
+
+      <Group id="agent-security" icon="lock" title="Безопасность">
+        <Field id="confirmDangerous" label="Подтверждение опасных действий" description="Удаление файлов, системные команды">
+          <Toggle value={!!perms['confirmDangerous']} onChange={v => onSet('agentPermissions', { ...perms, confirmDangerous: v })} />
+        </Field>
+
+        <Field id="forbiddenPaths" label="Запрещённые папки" description="Через запятую — агент не трогает эти пути">
+          <input
             className="settings-input"
-            value={agentSettings.maxParallelSubAgents}
-            onChange={e => updateAgent({ maxParallelSubAgents: Number(e.target.value) })}
-          >
-            {[5, 6, 7, 8, 9, 10].map(n => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-          <ResetButton current={agentSettings.maxParallelSubAgents} defaultValue={DEFAULT_AGENT_SETTINGS.maxParallelSubAgents} onReset={() => updateAgent({ maxParallelSubAgents: DEFAULT_AGENT_SETTINGS.maxParallelSubAgents })} />
-        </div>
-      </Field>
-
-      <Field label="Автосохранение рабочей памяти" description="Через сколько шагов агент обновляет working memory во время длинной сессии">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <select
-            className="settings-input"
-            value={agentSettings.autoMemoryInterval}
-            onChange={e => updateAgent({ autoMemoryInterval: Number(e.target.value) })}
-          >
-            {[0, 3, 5, 8, 12].map(n => (
-              <option key={n} value={n}>{n === 0 ? 'выкл' : `каждые ${n} шагов`}</option>
-            ))}
-          </select>
-          <ResetButton current={agentSettings.autoMemoryInterval} defaultValue={DEFAULT_AGENT_SETTINGS.autoMemoryInterval} onReset={() => updateAgent({ autoMemoryInterval: DEFAULT_AGENT_SETTINGS.autoMemoryInterval })} />
-        </div>
-      </Field>
-
-      <Field label="Повтор одного и того же tool-call" description="После этого количества одинаковых вызовов агент получает защиту от зацикливания">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <select
-            className="settings-input"
-            value={agentSettings.maxRepeatedToolCalls}
-            onChange={e => updateAgent({ maxRepeatedToolCalls: Number(e.target.value) })}
-          >
-            {[2, 3, 4, 5].map(n => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-          <ResetButton current={agentSettings.maxRepeatedToolCalls} defaultValue={DEFAULT_AGENT_SETTINGS.maxRepeatedToolCalls} onReset={() => updateAgent({ maxRepeatedToolCalls: DEFAULT_AGENT_SETTINGS.maxRepeatedToolCalls })} />
-        </div>
-      </Field>
-
-      <Field label="Повтор одной и той же ошибки" description="Если инструмент падает одинаково несколько раз подряд, агенту запрещается тупо повторять вызов">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <select
-            className="settings-input"
-            value={agentSettings.maxRepeatedErrors}
-            onChange={e => updateAgent({ maxRepeatedErrors: Number(e.target.value) })}
-          >
-            {[2, 3, 4].map(n => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-          <ResetButton current={agentSettings.maxRepeatedErrors} defaultValue={DEFAULT_AGENT_SETTINGS.maxRepeatedErrors} onReset={() => updateAgent({ maxRepeatedErrors: DEFAULT_AGENT_SETTINGS.maxRepeatedErrors })} />
-        </div>
-      </Field>
-
-      <Field label="Подтверждение опасных действий" description="Удаление файлов, системные команды">
-        <Toggle value={!!perms['confirmDangerous']} onChange={v => onSet('agentPermissions', { ...perms, confirmDangerous: v })} />
-      </Field>
-
-      <Field label="Запрещённые папки" description="Через запятую — агент не трогает эти пути">
-        <input
-          className="settings-input"
-          value={((perms['forbiddenPaths'] as string[]) || []).join(', ')}
-          onChange={e => onSet('agentPermissions', { ...perms, forbiddenPaths: e.target.value.split(',').map(s => s.trim()) })}
-          placeholder="C:\Windows, C:\..."
-        />
-      </Field>
+            value={((perms['forbiddenPaths'] as string[]) || []).join(', ')}
+            onChange={e => onSet('agentPermissions', { ...perms, forbiddenPaths: e.target.value.split(',').map(s => s.trim()) })}
+            placeholder="C:\Windows, C:\..."
+          />
+        </Field>
+      </Group>
     </>
   )
 })
@@ -1842,34 +2038,40 @@ const IntegrationsSection = memo(function IntegrationsSection({ settings, onSet 
   const integrations = (settings['integrations'] as Record<string, Record<string, string>>) || {}
   return (
     <>
-      <SectionTitle>Интеграции</SectionTitle>
-      <Field label="Tavily API ключ" description="Для поиска в интернете">
-        <input className="settings-input" type="password"
-          value={integrations['tavily']?.key || ''}
-          onChange={e => onSet('integrations', { ...integrations, tavily: { ...integrations['tavily'], key: e.target.value } })}
-          placeholder="tvly-..."
-        />
-      </Field>
-      <Field label="Telegram Bot Token">
-        <input className="settings-input" type="password"
-          value={integrations['telegram']?.token || ''}
-          onChange={e => onSet('integrations', { ...integrations, telegram: { ...integrations['telegram'], token: e.target.value } })}
-          placeholder="123456:ABC..."
-        />
-      </Field>
-      <Field label="GitHub Token">
-        <input className="settings-input" type="password"
-          value={integrations['github']?.token || ''}
-          onChange={e => onSet('integrations', { ...integrations, github: { ...integrations['github'], token: e.target.value } })}
-          placeholder="ghp_..."
-        />
-      </Field>
-      <Field label="Spotify Client ID">
-        <input className="settings-input"
-          value={integrations['spotify']?.clientId || ''}
-          onChange={e => onSet('integrations', { ...integrations, spotify: { ...integrations['spotify'], clientId: e.target.value } })}
-        />
-      </Field>
+      <SectionTitle description="Ключи внешних сервисов — хранятся локально на вашем ПК">
+        Интеграции
+      </SectionTitle>
+
+      <Group id="integrations-keys" icon="link" title="Ключи и токены">
+        <Field id="tavilyKey" label="Tavily API ключ" description="Для поиска в интернете">
+          <input className="settings-input" type="password"
+            value={integrations['tavily']?.key || ''}
+            onChange={e => onSet('integrations', { ...integrations, tavily: { ...integrations['tavily'], key: e.target.value } })}
+            placeholder="tvly-..."
+          />
+        </Field>
+        <Field id="telegramToken" label="Telegram Bot Token" description="Бот для связи с мессенджером">
+          <input className="settings-input" type="password"
+            value={integrations['telegram']?.token || ''}
+            onChange={e => onSet('integrations', { ...integrations, telegram: { ...integrations['telegram'], token: e.target.value } })}
+            placeholder="123456:ABC..."
+          />
+        </Field>
+        <Field id="githubToken" label="GitHub Token" description="Доступ к репозиториям и API">
+          <input className="settings-input" type="password"
+            value={integrations['github']?.token || ''}
+            onChange={e => onSet('integrations', { ...integrations, github: { ...integrations['github'], token: e.target.value } })}
+            placeholder="ghp_..."
+          />
+        </Field>
+        <Field id="spotifyClientId" label="Spotify Client ID" description="Управление воспроизведением музыки">
+          <input className="settings-input"
+            value={integrations['spotify']?.clientId || ''}
+            onChange={e => onSet('integrations', { ...integrations, spotify: { ...integrations['spotify'], clientId: e.target.value } })}
+            placeholder="Client ID..."
+          />
+        </Field>
+      </Group>
     </>
   )
 })
@@ -1881,32 +2083,40 @@ const DataSection = memo(function DataSection({ settings, onSet, toast }: {
 }) {
   return (
     <>
-      <SectionTitle>Данные и Память</SectionTitle>
-      <Field label="Автобэкап" description="Ежедневная копия базы данных">
-        <Toggle value={!!settings['backupEnabled']} onChange={v => onSet('backupEnabled', v)} />
-      </Field>
-      <Field label="Экспорт истории">
-        <div style={{ display: 'flex', gap: 8 }}>
-          {['JSON', 'Markdown', 'TXT'].map(fmt => (
-            <motion.button key={fmt} className="settings-btn" whileTap={{ scale: 0.95 }}
-              onClick={() => toast(`Экспорт ${fmt} — будет готово в стадии 09`, 'info')}>
-              {fmt}
-            </motion.button>
-          ))}
-        </div>
-      </Field>
-      <Field label="Очистить историю чатов">
-        <motion.button className="settings-btn settings-btn--danger" whileTap={{ scale: 0.95 }}
-          onClick={() => toast('Очистка истории — будет в стадии 09', 'info')}>
-          Очистить
-        </motion.button>
-      </Field>
-      <Field label="Очистить память Syntee">
-        <motion.button className="settings-btn settings-btn--danger" whileTap={{ scale: 0.95 }}
-          onClick={() => toast('Очистка памяти — будет в стадии 07', 'info')}>
-          Сбросить память
-        </motion.button>
-      </Field>
+      <SectionTitle description="База данных, бэкапы и управление историей">
+        Данные и Память
+      </SectionTitle>
+
+      <Group id="data-backup" icon="database" title="Бэкапы и экспорт">
+        <Field id="backupEnabled" label="Автобэкап" description="Ежедневная копия базы данных">
+          <Toggle value={!!settings['backupEnabled']} onChange={v => onSet('backupEnabled', v)} />
+        </Field>
+        <Field id="exportHistory" label="Экспорт истории" description="Выгрузка переписки в файл">
+          <div style={{ display: 'flex', gap: 8 }}>
+            {['JSON', 'Markdown', 'TXT'].map(fmt => (
+              <motion.button key={fmt} className="settings-btn" whileTap={{ scale: 0.95 }}
+                onClick={() => toast(`Экспорт ${fmt} — будет готово в стадии 09`, 'info')}>
+                {fmt}
+              </motion.button>
+            ))}
+          </div>
+        </Field>
+      </Group>
+
+      <Group id="data-danger" icon="alertTriangle" title="Опасная зона" note="действие необратимо">
+        <Field id="clearHistory" label="Очистить историю чатов" description="Удалит все переписки из базы данных">
+          <ConfirmButton
+            label="Очистить"
+            onConfirm={() => toast('Очистка истории — будет в стадии 09', 'info')}
+          />
+        </Field>
+        <Field id="clearMemory" label="Очистить память Syntee" description="Полный сброс долгосрочной памяти ассистента">
+          <ConfirmButton
+            label="Сбросить память"
+            onConfirm={() => toast('Очистка памяти — будет в стадии 07', 'info')}
+          />
+        </Field>
+      </Group>
     </>
   )
 })
@@ -1952,16 +2162,18 @@ const NotificationsSection = memo(function NotificationsSection({ settings, onSe
 
   return (
     <>
-      <h2 className="settings-section-title">Уведомления</h2>
+      <SectionTitle description="Overlay-уведомления и информер активности агента">
+        Уведомления
+      </SectionTitle>
 
-      <Field label="Показывать уведомления" description="Глобальный вкл/выкл overlay-уведомлений">
-        <Toggle value={notifConfig.enabled} onChange={toggleGlobal} />
-      </Field>
+      <Group id="notifications-general" icon="bell" title="Общие">
+        <Field id="notifEnabled" label="Показывать уведомления" description="Глобальный вкл/выкл overlay-уведомлений">
+          <Toggle value={notifConfig.enabled} onChange={toggleGlobal} />
+        </Field>
+      </Group>
 
       {notifConfig.enabled && (
-        <>
-          <div className="settings-divider" />
-
+        <Group id="notifications-types" icon="messageCircle" title="Типы уведомлений" note="что и когда показывать">
           {NOTIF_TYPES.map(({ id, label }) => {
             const typeConfig = notifConfig.types?.[id] ?? { enabled: true, showWhen: 'inactive' }
             return (
@@ -1971,32 +2183,32 @@ const NotificationsSection = memo(function NotificationsSection({ settings, onSe
                     value={typeConfig.enabled}
                     onChange={(v) => updateType(id, 'enabled', v)}
                   />
-                  <select
-                    className="settings-select"
+                  <Select
                     value={typeConfig.showWhen}
-                    onChange={(e) => updateType(id, 'showWhen', e.target.value)}
-                    style={{ fontSize: 12, padding: '6px 10px' }}
-                  >
-                    <option value="inactive">{SHOW_WHEN_LABELS.inactive}</option>
-                    <option value="minimized">{SHOW_WHEN_LABELS.minimized}</option>
-                    <option value="always">{SHOW_WHEN_LABELS.always}</option>
-                  </select>
+                    onChange={(v) => updateType(id, 'showWhen', v)}
+                    options={[
+                      { value: 'inactive', label: SHOW_WHEN_LABELS.inactive },
+                      { value: 'minimized', label: SHOW_WHEN_LABELS.minimized },
+                      { value: 'always', label: SHOW_WHEN_LABELS.always },
+                    ]}
+                    minWidth={200}
+                  />
                 </div>
               </Field>
             )
           })}
-        </>
+        </Group>
       )}
 
-      <div className="settings-divider" />
-
-      <h3 className="settings-subsection-title">Информер активности</h3>
-      <Field
-        label="Показывать активность ИИ"
-        description="Компактный индикатор что делает агент (думает / вызывает тул), пока окно неактивно или свёрнуто"
-      >
-        <Toggle value={activityConfig.enabled} onChange={toggleActivity} />
-      </Field>
+      <Group id="notifications-activity" icon="zap" title="Информер активности">
+        <Field
+          id="activityMonitor"
+          label="Показывать активность ИИ"
+          description="Компактный индикатор что делает агент (думает / вызывает тул), пока окно неактивно или свёрнуто"
+        >
+          <Toggle value={activityConfig.enabled} onChange={toggleActivity} />
+        </Field>
+      </Group>
     </>
   )
 })
