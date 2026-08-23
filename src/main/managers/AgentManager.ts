@@ -645,6 +645,7 @@ ${subModeOutro}`
             record.finishedAt = Date.now()
             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
             this.workers.delete(record.id)
+            worker.terminate()
             this.resolvers.delete(record.id)
             // §изоляция — merge-back worktree в родительский workdir (сериализованно
             // per workdir). Отменённый суб-агент уже discard'нут cancel() — не трогаем.
@@ -683,14 +684,15 @@ ${subModeOutro}`
                mergeFileCache(record.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
              }
              record.status = 'error'
-             record.error = msg.error as string
-             record.finishedAt = Date.now()
-             // Если суб-агент успел накопить текст/шаги до ошибки — отдаём это
-             // родителю как частичный summary вместо пустой строки, иначе
-             // родительский агент теряет весь прогресс суб-агента.
-             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
-             this.workers.delete(record.id)
-             this.resolvers.delete(record.id)
+            record.error = msg.error as string
+            record.finishedAt = Date.now()
+            // Если суб-агент успел накопить текст/шаги до ошибки — отдаём это
+            // родителю как частичный summary вместо пустой строки, иначе
+            // родительский агент теряет весь прогресс суб-агента.
+            record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
+            this.workers.delete(record.id)
+            worker.terminate()
+            this.resolvers.delete(record.id)
              // §изоляция — при ошибке discard worktree (правки суб-агента не нужны).
              if (record.worktreeInfo && record.workdir) {
                ;(async () => {
@@ -714,6 +716,7 @@ ${subModeOutro}`
         record.error = e.message
         record.finishedAt = Date.now()
         this.workers.delete(record.id)
+        worker.terminate()
         // §изоляция — discard worktree при crash worker'а.
         if (record.worktreeInfo && record.workdir) {
           ;(async () => {
