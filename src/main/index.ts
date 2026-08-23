@@ -371,6 +371,10 @@ app.on('before-quit', () => {
   stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
   // Останавливаем file indexer для @mention-пикера.
   shutdownMentions().catch(() => { /* indexer опционален */ })
+  // Уничтожаем пул SPA-renderer BrowserWindow — чтобы не было утечки.
+  import('./tools/spaRenderer')
+    .then(({ destroySpaPool }) => destroySpaPool())
+    .catch(() => { /* spaRenderer опционален */ })
 })
 
 app.on('will-quit', () => {

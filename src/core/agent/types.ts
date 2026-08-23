@@ -57,6 +57,12 @@ export interface AgentCallbacks {
    */
   onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
+  /**
+   * SPA-fallback для fetch_page: рендерит страницу через скрытый BrowserWindow
+   * (встроенный Chromium) в main-процессе. Возвращает HTML после JS-выполнения.
+   * Round-trip worker → main → BrowserWindow → worker.
+   */
+  onRenderPage?: (url: string, opts: { waitSelector?: string; timeoutMs?: number }) => Promise<{ html: string; title?: string; error?: string }>
   /** Начало раунда: tiktoken-оценка того, что уйдёт в запрос (system+history
    *  с tool_calls+current user+tools schemas). breakdown консистентен. */
   onContextCounted?: (info: ContextCountedInfo) => void

@@ -45,6 +45,8 @@ export const SEARCH_TOOL_SCHEMAS = [
         type: 'object',
         properties: {
           url: { type: 'string', description: 'Полный URL страницы (https://...)' },
+          section: { type: 'string', description: 'Извлечь только секцию с этим заголовком (h1-h3). Например "Installation".' },
+          max_chars: { type: 'number', description: 'Макс. символов в выводе (по умолчанию 50000). Увеличь до 80000-100000 для длинных страниц (ченджлоги, документация, длинные статьи).' },
         },
         required: ['url'],
       },
@@ -55,11 +57,17 @@ export const SEARCH_TOOL_SCHEMAS = [
     function: {
       name: 'search_images',
       description:
-        'Поиск картинок в интернете по запросу. Возвращает URL изображений, тумбнейлы, размеры и страницы-источники. Используй когда нужны изображения: иллюстрации, скриншоты, фото, референсы. Запрос лучше на английском.',
+        'Поиск картинок в интернете по запросу. Возвращает URL изображений, тумбнейлы, размеры и страницы-источники. Используй когда нужны изображения: иллюстрации, скриншоты, фото, референсы. Запрос лучше на английском. Чтобы вставить картинку в свой ответ, используй markdown: ![title](image_url).',
       parameters: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Поисковый запрос (лучше на английском)' },
+          size: { type: 'string', enum: ['small', 'medium', 'large', 'wallpaper'], description: 'Минимальный размер изображений' },
+          type: { type: 'string', enum: ['photo', 'illustration', 'clipart', 'transparent'], description: 'Тип изображений' },
+          color: { type: 'string', description: 'Фильтр по цвету: red, blue, green, black, white, orange, yellow, purple, teal, pink' },
+          max_results: { type: 'number', description: 'Кол-во результатов (по умолчанию 10, макс 50)' },
+          download: { type: 'boolean', description: 'Скачать первую картинку локально в AppData/downloads' },
+          download_index: { type: 'number', description: 'Индекс картинки для скачивания (0-based, по умолчанию 0 = первая)' },
         },
         required: ['query'],
       },

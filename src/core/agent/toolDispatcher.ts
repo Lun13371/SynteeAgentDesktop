@@ -14,6 +14,7 @@ import {
   searchWeb, getSystemInfo, generateImage, analyzeImageFile,
   readFiles, searchCode, analyzeProject,
   fetchPage, searchImages, getDiagnostics,
+  type SearchImagesOpts,
   type ToolResult, editFile,
 } from '../tools'
 import {
@@ -249,9 +250,21 @@ export class ToolDispatcher {
           args.files as string[] | undefined,
         )
       case 'fetch_page':
-        return fetchPage(args.url as string)
+        return fetchPage(args.url as string, {
+          section: args.section as string | undefined,
+          maxChars: args.max_chars as number | undefined,
+          onRenderPage: callbacks?.onRenderPage,
+        })
       case 'search_images':
-        return searchImages(args.query as string)
+        return searchImages(args.query as string, {
+          size: args.size as SearchImagesOpts['size'],
+          type: args.type as SearchImagesOpts['type'],
+          color: args.color as string | undefined,
+          maxResults: args.max_results as number | undefined,
+          download: args.download as boolean | undefined,
+          downloadIndex: args.download_index as number | undefined,
+          userDataPath: this.userDataPath,
+        })
       case 'write_file': {
         const wfResult = await writeFile(args.path as string, args.content as string, { dryRun, workdir: this.workdir })
         if (wfResult.success && !dryRun) {
