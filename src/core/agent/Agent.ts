@@ -1043,6 +1043,7 @@ export class Agent {
           const noTruncTool = fn.name === 'search_code' || fn.name === 'get_file_outline'
             || fn.name === 'read_file' || fn.name === 'read_files'
             || fn.name === 'spawn_agent'
+            || fn.name === 'fetch_page'  // своя обрезка по maxChars (default 50000) с сообщением
           const perToolMax = (fn.name === 'search_code' || fn.name === 'get_file_outline')
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars

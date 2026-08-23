@@ -554,6 +554,30 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'shell_exec', chatId, msgId, replyId, command, cwd, timeoutSec })
             })
           },
+          onRenderPage: (url, renderOpts) => {
+            return new Promise((resolve) => {
+              const replyId = `render-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              const timer = setTimeout(() => {
+                replyHandlers.delete(replyId)
+                resolve({ html: '', error: 'render_page timed out' })
+              }, (renderOpts.timeoutMs ?? 25000) + 5000)
+              replyHandlers.set(replyId, (reply) => {
+                clearTimeout(timer)
+                resolve({
+                  html: (reply.html as string) ?? '',
+                  title: (reply.title as string) ?? '',
+                  error: reply.error as string | undefined,
+                })
+              })
+              send({
+                type: 'render_page',
+                chatId, msgId, replyId,
+                url,
+                waitSelector: renderOpts.waitSelector,
+                timeoutMs: renderOpts.timeoutMs,
+              })
+            })
+          },
           onGetAgentStatus: (agentId) => {
             return new Promise((resolve) => {
               const replyId = `get-status-${agentId}-${Date.now()}`

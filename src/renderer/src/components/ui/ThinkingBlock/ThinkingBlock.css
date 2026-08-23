@@ -67,9 +67,9 @@
   overflow: hidden;
 }
 
-/* Live-лейбл — просто цвет, без shimmer (repaint каждый кадр убран) */
+/* Live-лейбл — тот же цвет, что и done (text-muted), без shimmer */
 .tb-label--live {
-  color: var(--text-primary);
+  color: var(--text-muted);
 }
 
 /* Слово с fade */

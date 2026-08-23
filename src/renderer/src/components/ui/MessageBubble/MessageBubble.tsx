@@ -439,8 +439,8 @@ function renderParsedSegments(
 // нужен workdir для кликабельных путей и onOpenFile для code-блоков.
 // Кэш parsedRenderCache ключуется по text+workdir — при смене workdir
 // кэш-промах, но evictOldest ограничивает рост.
-function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string) => void }): Record<string, unknown> {
-  const { workdir, onOpenFile } = opts
+function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string) => void; onPreviewAttachment?: (a: Attachment | null) => void }): Record<string, unknown> {
+  const { workdir, onOpenFile, onPreviewAttachment } = opts
 
   // Обработчик клика на путь файла (code-блоки, заголовки с путём).
   // openFilePath сам резолвит от workdir, парсит суффикс :42-58 и решает
@@ -566,8 +566,159 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
     p({ children }: { children?: React.ReactNode }) {
       return <p>{children}</p>
     },
+    img({ src, alt }: { src?: string; alt?: string }) {
+      if (!src) return null
+      return <ChatImage src={src} alt={alt || ''} onPreviewAttachment={onPreviewAttachment} />
+    },
   }
 }
+
+// ── ChatImage: красивый рендер картинок в чате ──
+// Скелетон пока грузится → клик открывает AttachmentPreviewModal (zoom/pan) →
+// hover показывает кнопки: копировать URL, копировать markdown, открыть в браузере.
+let chatImgCounter = 0
+const ChatImage = memo(function ChatImage({ src, alt, onPreviewAttachment }: {
+  src: string
+  alt: string
+  onPreviewAttachment?: (a: Attachment | null) => void
+}) {
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState(false)
+  const [copied, setCopied] = useState<'url' | 'md' | null>(null)
+
+  // Синтетический Attachment для AttachmentPreviewModal
+  const handleOpenPreview = useCallback(() => {
+    if (!onPreviewAttachment) {
+      // Fallback — открыть в браузере
+      window.open(src, '_blank')
+      return
+    }
+    // Извлекаем имя файла из URL
+    let name = alt || 'image'
+    try {
+      const u = new URL(src)
+      const basename = u.pathname.split('/').pop()
+      if (basename && /\.\w{1,5}$/.test(basename)) name = basename
+    } catch { /* not a URL, use alt */ }
+    onPreviewAttachment({
+      id: `chat-img-${++chatImgCounter}`,
+      kind: 'image',
+      name,
+      dataUrl: src,
+      source: 'paste' as const,
+      attachedAt: Date.now(),
+    })
+  }, [src, alt, onPreviewAttachment])
+
+  const handleCopyUrl = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    void copyToClipboard(src).then((ok) => {
+      if (ok) {
+        setCopied('url')
+        setTimeout(() => setCopied(null), 1500)
+      }
+    })
+  }, [src])
+
+  const handleCopyMd = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    const md = `![${alt || 'image'}](${src})`
+    void copyToClipboard(md).then((ok) => {
+      if (ok) {
+        setCopied('md')
+        setTimeout(() => setCopied(null), 1500)
+      }
+    })
+  }, [src, alt])
+
+  const handleOpenExternal = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    window.open(src, '_blank')
+  }, [src])
+
+  if (error) {
+    return (
+      <div className="chat-img-error" title={`URL: ${src}`}>
+        <svg className="chat-img-error-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+          <circle cx="8.5" cy="8.5" r="1.5"/>
+          <path d="M21 15l-5-5L5 21"/>
+          <line x1="3" y1="14" x2="8" y2="14" />
+        </svg>
+        <span className="chat-img-error-text">
+          {alt || 'Изображение не загрузилось'}
+        </span>
+        <button
+          className="chat-img-error-btn"
+          onClick={(e) => { e.stopPropagation(); window.open(src, '_blank') }}
+          title="Открыть в браузере"
+        >
+          Открыть
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <figure className="chat-img-figure">
+      <div className="chat-img-container" onClick={handleOpenPreview}>
+        {/* Skeleton пока не загружено */}
+        {!loaded && <div className="chat-img-skeleton" />}
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          className={`chat-img${loaded ? ' chat-img--loaded' : ''}`}
+          onLoad={() => setLoaded(true)}
+          onError={() => setError(true)}
+          draggable={false}
+        />
+        {/* Hover actions — top-right */}
+        {loaded && (
+          <div className="chat-img-actions" onClick={(e) => e.stopPropagation()}>
+            <button className="chat-img-action-btn" onClick={handleOpenPreview} title="Открыть в просмотре">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 3h6v6"/><path d="M10 14L21 3"/>
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+              </svg>
+            </button>
+            <button className="chat-img-action-btn" onClick={handleCopyUrl} title="Копировать URL">
+              {copied === 'url' ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              )}
+            </button>
+            <button className="chat-img-action-btn" onClick={handleCopyMd} title="Копировать markdown">
+              {copied === 'md' ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/>
+                </svg>
+              )}
+            </button>
+            <button className="chat-img-action-btn" onClick={handleOpenExternal} title="Открыть в браузере">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
+      {alt && <figcaption className="chat-img-caption">{alt}</figcaption>}
+    </figure>
+  )
+}, (prev, next) => prev.src === next.src && prev.alt === next.alt && prev.onPreviewAttachment === next.onPreviewAttachment)
 
 // ── Module-level кэш отрендеренного ReactNode-дерева по text.
 // Виртуализатор монтирует/демонтирует MessageBubble при скролле; ParsedContent
@@ -1124,8 +1275,8 @@ const MessageContent = memo(function MessageContent({
   }, [workdir])
 
   const mdComponents = useMemo(
-    () => createMdComponents({ workdir, onOpenFile }),
-    [workdir, onOpenFile],
+    () => createMdComponents({ workdir, onOpenFile, onPreviewAttachment }),
+    [workdir, onOpenFile, onPreviewAttachment],
   )
 
   return (

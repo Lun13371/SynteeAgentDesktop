@@ -2273,6 +2273,59 @@ ${subModeOutro}`,
           break
         }
 
+        // ── SPA-рендер через скрытый BrowserWindow (основной путь для SPA) ──
+        // Worker просит main-процесс отрендерить JS-heavy страницу.
+        // Main использует пул hidden BrowserWindow (персистентное окно),
+        // грузит URL, ждёт network idle, извлекает HTML, отправляет обратно.
+        // BrowserWindow доступен только в main-процессе.
+        case 'render_page': {
+          const replyId = msg.replyId as string
+          const renderUrl = msg.url as string
+          const waitSelector = msg.waitSelector as string | undefined
+          const renderTimeoutMs = (msg.timeoutMs as number | undefined) ?? 25000
+          const renderMsgId = msg.msgId as string
+          const renderChatId = msg.chatId as string
+          ;(async () => {
+            try {
+              // Live-прогресс в UI — стадия 'rendering'
+              win?.webContents.send('agent:tool_progress', {
+                msgId: renderMsgId, chatId: renderChatId,
+                toolName: 'fetch_page', stage: 'rendering',
+                detail: `Rendering: ${renderUrl}`,
+                ts: Date.now(),
+              })
+              const { renderSpaPage } = await import('../tools/spaRenderer')
+              const result = await renderSpaPage(renderUrl, { waitSelector, timeoutMs: renderTimeoutMs })
+              win?.webContents.send('agent:tool_progress', {
+                msgId: renderMsgId, chatId: renderChatId,
+                toolName: 'fetch_page', stage: 'done',
+                ts: Date.now(),
+              })
+              worker.postMessage({
+                type: 'render_page_reply',
+                replyId,
+                html: result.html,
+                title: result.title,
+                error: result.error,
+              })
+            } catch (e: unknown) {
+              const errMsg = e instanceof Error ? e.message : String(e)
+              win?.webContents.send('agent:tool_progress', {
+                msgId: renderMsgId, chatId: renderChatId,
+                toolName: 'fetch_page', stage: 'error',
+                ts: Date.now(),
+              })
+              worker.postMessage({
+                type: 'render_page_reply',
+                replyId,
+                html: '',
+                error: errMsg,
+              })
+            }
+          })()
+          break
+        }
+
         case 'get_main_chat_messages': {
           ;(async () => {
             const parentChatId = params.sideChatParentId ?? (msg.chatId as string).replace(/^sidechat:/, '')
