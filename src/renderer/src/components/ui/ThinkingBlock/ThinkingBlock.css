@@ -67,27 +67,9 @@
   overflow: hidden;
 }
 
-/* Переливание слева направо только в live — но текст всегда видимый */
+/* Live-лейбл — просто цвет, без shimmer (repaint каждый кадр убран) */
 .tb-label--live {
-  background: linear-gradient(
-    90deg,
-    var(--text-muted) 0%,
-    var(--text-primary) 30%,
-    var(--text-primary) 50%,
-    var(--text-secondary) 80%,
-    var(--text-secondary) 100%
-  );
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: tb-shimmer 2s linear infinite;
-  will-change: background-position;
-}
-
-@keyframes tb-shimmer {
-  0%   { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
+  color: var(--text-primary);
 }
 
 /* Слово с fade */
@@ -158,36 +140,22 @@
   font-weight: 400;
   word-break: break-word;
   white-space: pre-wrap;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 24px;
 }
-.tb-line--empty { height: 6px; margin: 0; }
+.tb-line--empty {
+  height: 6px;
+  margin: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 6px;
+}
 
-/* ── Шиммер-переливашка на самом тексте размышлений (live) ────── */
+/* ── Текст размышлений ────────────────────────────────────────── */
+/* Shimmer убран — background-position анимация не ускоряется GPU,
+   repaint каждый кадр на 80-120 <p> элементах = просадка FPS.
+   Текст просто цветом, без переливания. */
 .tb-text {
   transition: color 0.45s ease;
-}
-.tb-text--shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--text-muted) 0%,
-    var(--text-primary) 38%,
-    var(--text-secondary) 58%,
-    var(--text-muted) 100%
-  );
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  animation: tb-text-flow 2.6s linear infinite;
-  will-change: background-position;
-  transition:
-    -webkit-text-fill-color 0.45s ease,
-    color 0.45s ease,
-    background 0.45s ease;
-}
-@keyframes tb-text-flow {
-  0%   { background-position: 100% 0; }
-  100% { background-position: -120% 0; }
 }
 
 /* ── Курсор (live) ────────────────────────────────────────────── */

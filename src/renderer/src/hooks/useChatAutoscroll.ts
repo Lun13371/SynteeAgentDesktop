@@ -105,8 +105,15 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
         el.scrollTop = current + step
         lastScrollTopRef.current = el.scrollTop
         lastScrollHeightRef.current = el.scrollHeight
+        // Контент растёт — плавный доскролл на следующем кадре
+        rafRef.current = requestAnimationFrame(() => tickRef.current())
+      } else {
+        // Контент стоит — проверяем реже (100мс вместо 16мс).
+        // 2 forced layouts/100мс = 20/сек вместо 120/сек (6× меньше).
+        rafRef.current = window.setTimeout(
+          () => tickRef.current(), 100
+        ) as unknown as number
       }
-      rafRef.current = requestAnimationFrame(() => tickRef.current())
     }
   }, [scrollContainerRef])
 
@@ -159,10 +166,12 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
     if (isStreaming && pinnedRef.current) {
       ensureLoop()
     } else if (!isStreaming) {
-      // Стрим закончился — убиваем loop. Финальный pin(instant=true)
-      // из ChatPage (при isTyping false→true transition) делает прыжок.
+      // Стрим закончился — убиваем loop. rafRef может содержать либо
+      // requestAnimationFrame id, либо setTimeout id (idle-режим).
+      // cancelAnimationFrame + clearTimeout — оба no-op для чужого типа.
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current)
+        clearTimeout(rafRef.current)
         rafRef.current = null
       }
     }
@@ -173,6 +182,7 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
     return () => {
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current)
+        clearTimeout(rafRef.current)
         rafRef.current = null
       }
       if (stickRafRef.current !== null) {

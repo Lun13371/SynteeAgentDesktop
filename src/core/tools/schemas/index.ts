@@ -97,10 +97,11 @@ export function getToolSchemas(options: {
     'recall_memory',
     // Notes: manage project/chat notes (create/update/delete/list).
     'manage_notes',
-    // Web search, HTTP and sub-agents — always available to the agent, the
-    // model decides when to use them.
+    // Web search, page fetching, image search and sub-agents — always
+    // available to the agent, the model decides when to use them.
     'search_web',
-    'http_request',
+    'fetch_page',
+    'search_images',
     // Image analysis (read-only research): the image is passed directly to
     // a vision-capable main model, or described by the auxiliary vision
     // model — the same routing as chat attachments.
