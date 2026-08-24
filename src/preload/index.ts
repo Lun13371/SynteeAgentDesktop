@@ -20,6 +20,16 @@ const synteeAPI = {
     getAll: () => ipcRenderer.invoke('settings:getAll'),
   },
 
+  // Системная тема Windows (nativeTheme в main-процессе)
+  systemTheme: {
+    isDark: () => ipcRenderer.invoke('systemTheme:isDark') as Promise<boolean>,
+    onChange: (cb: (isDark: boolean) => void) => {
+      const handler = (_e: unknown, isDark: boolean) => cb(isDark)
+      ipcRenderer.on('systemTheme:changed', handler)
+      return () => ipcRenderer.removeListener('systemTheme:changed', handler)
+    },
+  },
+
   // Background image — сохранение/загрузка файлов в userData/bg-images/
   // Папка = библиотека: несколько картинок, переключение, удаление.
   bgImage: {

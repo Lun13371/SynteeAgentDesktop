@@ -28,8 +28,9 @@ import Stepper from '../../components/ui/Stepper/Stepper'
 import { SectionTitle, Field, Group, ConfirmButton, GROUP_TOGGLE_EVENT } from '../../components/settings/SettingsPrimitives'
 import { MSG_ANIM_VARIANTS } from '../../components/ui/MessageBubble/MessageBubble'
 import { playNavigateSound, setSoundVolume as setSoundVolumeModule, setSoundAssignmentsFlag } from '../../utils/sounds'
-import { applyFontToDOM, applyMonoToDOM, injectCustomFonts, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM } from '../../App'
+import { applyFontToDOM, applyMonoToDOM, injectCustomFonts, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM, applyFontSizeToDOM } from '../../App'
 import type { CustomFont } from '../../App'
+import { BUILTIN_THEMES } from '../../utils/builtinThemes'
 import { whileHoverWide, whileTapWide, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../utils/motionPresets'
 import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings, type CustomTheme } from '../../../../shared/types'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
@@ -110,6 +111,9 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   // Внешний вид
   { section: 'appearance', id: 'theme', label: 'Цветовая палитра', keywords: ['тема', 'палитра', 'dark', 'светлая'] },
   { section: 'appearance', id: 'themeSchedule', label: 'Автосмена темы', keywords: ['автосмена', 'день', 'ночь', 'расписание'] },
+  { section: 'appearance', id: 'systemThemeSync', label: 'Тема Windows', keywords: ['системная', 'windows', 'синхронизация', 'система'] },
+  { section: 'appearance', id: 'fontSizeUI', label: 'Размер шрифта интерфейса', keywords: ['шрифт', 'размер', 'масштаб', 'текст'] },
+  { section: 'appearance', id: 'fontSizeChat', label: 'Размер шрифта сообщений', keywords: ['шрифт', 'размер', 'чат', 'сообщения', 'текст'] },
   { section: 'appearance', id: 'accentColor', label: 'Цвет акцента', keywords: ['акцент', 'цвет'] },
   { section: 'appearance', id: 'rainbowAccent', label: 'Радужный акцент', keywords: ['радуга', 'rainbow'] },
   { section: 'appearance', id: 'accentGradient', label: 'Градиентный акцент', keywords: ['градиент'] },
@@ -316,7 +320,9 @@ export default function SettingsPage() {
     setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
     setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed, setBgStyleParams,
     setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
-    setSoundVolume, setSoundAssignments, setMouseNavEnabled } = useUIStore(useShallow(s => ({
+    setSoundVolume, setSoundAssignments, setMouseNavEnabled,
+    setFavoriteThemes, setFontSizeUI, setFontSizeChat,
+    setSystemThemeSync, setSystemSyncDark, setSystemSyncLight } = useUIStore(useShallow(s => ({
     setTheme: s.setTheme, setAccentColor: s.setAccentColor, setBgStyle: s.setBgStyle,
     setMsgAnim: s.setMsgAnim, setAvatarStyle: s.setAvatarStyle, setShowTime: s.setShowTime,
     setUserMarkdown: s.setUserMarkdown, setUiSounds: s.setUiSounds, setSendEffect: s.setSendEffect,
@@ -328,6 +334,9 @@ export default function SettingsPage() {
     setThemeSchedule: s.setThemeSchedule, setRecentAccents: s.setRecentAccents,
     setSoundVolume: s.setSoundVolume, setSoundAssignments: s.setSoundAssignments,
     setMouseNavEnabled: s.setMouseNavEnabled,
+    setFavoriteThemes: s.setFavoriteThemes, setFontSizeUI: s.setFontSizeUI,
+    setFontSizeChat: s.setFontSizeChat, setSystemThemeSync: s.setSystemThemeSync,
+    setSystemSyncDark: s.setSystemSyncDark, setSystemSyncLight: s.setSystemSyncLight,
   })))
   const { add: toast } = useToast()
 
@@ -414,9 +423,21 @@ export default function SettingsPage() {
     if (key === 'recentAccents') setRecentAccents(value as string[])
     if (key === 'fontFamily') applyFontToDOM(value as string)
     if (key === 'fontMono') applyMonoToDOM(value as string)
+    if (key === 'favoriteThemes') setFavoriteThemes(value as string[])
+    if (key === 'fontSizeUI' || key === 'fontSizeChat') {
+      if (key === 'fontSizeUI') setFontSizeUI(value as number)
+      else setFontSizeChat(value as number)
+      const st = useUIStore.getState()
+      applyFontSizeToDOM(st.fontSizeUI, st.fontSizeChat)
+    }
+    if (key === 'systemThemeSync') setSystemThemeSync(value as boolean)
+    if (key === 'systemSyncDark') setSystemSyncDark(value as string)
+    if (key === 'systemSyncLight') setSystemSyncLight(value as string)
   }, [set, setTheme, setAccentColor, setBgStyle, setMsgAnim, setAvatarStyle, setShowTime,
     setUserMarkdown, setUiSounds, setSendEffect, setGlassBlur, setDensity, setAccentGradient,
     setRainbowAccent, setBgImage, setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
+    setFavoriteThemes, setFontSizeUI, setFontSizeChat,
+    setSystemThemeSync, setSystemSyncDark, setSystemSyncLight,
     setBgStyleParams,
     setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
     setSoundVolume, setSoundAssignments, setMouseNavEnabled])
@@ -704,16 +725,17 @@ function AnimPreview({ animId, active, onClick }: { animId: string; active: bool
 
 
 const BG_STYLES: { id: string; label: string; icon: IconName; desc: string }[] = [
-  { id: 'particles',   label: 'Частицы',    icon: 'sparkles', desc: 'Точки с линиями' },
-  { id: 'matrix',      label: 'Матрица',    icon: 'terminal', desc: 'Дождь символов' },
-  { id: 'waves',       label: 'Волны',      icon: 'waves',    desc: 'Плавные волны' },
-  { id: 'aurora',      label: 'Аврора',     icon: 'rainbow',  desc: 'Северное сияние' },
-  { id: 'fireflies',   label: 'Светлячки',  icon: 'sparkle',  desc: 'Мерцающие огни' },
-  { id: 'starfield',   label: 'Звёзды',     icon: 'star',     desc: 'Звёздное поле с параллаксом' },
-  { id: 'nebula',      label: 'Туманность', icon: 'orbit',    desc: 'Облака космоса' },
-  { id: 'topographic', label: 'Топо',       icon: 'mountain', desc: 'Контурные линии' },
-  { id: 'geometric',   label: 'Геометрия',  icon: 'hexagon',  desc: 'Вращающиеся фигуры' },
-  { id: 'none',        label: 'Выкл',       icon: 'x',        desc: 'Без анимации' },
+  { id: 'aurora',  label: 'Сияние',    icon: 'rainbow',  desc: 'Северное сияние со звёздами' },
+  { id: 'silk',    label: 'Шёлк',      icon: 'waves',    desc: 'Переливающиеся волны' },
+  { id: 'warp',    label: 'Варп',      icon: 'zap',      desc: 'Гиперпространство со шлейфами' },
+  { id: 'nebula',  label: 'Туманность', icon: 'orbit',   desc: 'Космические облака + звёзды' },
+  { id: 'plasma',  label: 'Плазма',    icon: 'sparkle',  desc: 'Жидкое иридесцентное свечение' },
+  { id: 'caustics', label: 'Блики',    icon: 'droplets', desc: 'Подводные световые каустики' },
+  { id: 'network',  label: 'Сеть',     icon: 'share2',   desc: 'Точки с линиями возле мыши' },
+  { id: 'vortex',   label: 'Вихрь',    icon: 'aperture', desc: 'Вращающаяся чёрная дыра со спиралями' },
+  { id: 'flow',     label: 'Поток',    icon: 'wind',     desc: 'Текучие линии тока, как ветер' },
+  { id: 'crystal',  label: 'Кристалл', icon: 'gem',      desc: 'Кристаллические ячейки со светящимися гранями' },
+  { id: 'none',    label: 'Выкл',      icon: 'x',        desc: 'Без анимации' },
 ]
 
 // Аватар ассистента: icon=null → показываем букву «S» (сам контент аватара)
@@ -724,22 +746,9 @@ const AVATAR_STYLES: { id: string; label: string; icon: IconName | null }[] = [
   { id: 'emoji',  label: 'Эмодзи', icon: 'bot' },
   { id: 'none',   label: 'Нет',    icon: 'x' },
 ]
-// 9 тем: 4 тёмных + 2 светлых + 3 цветных. Каждая — bg, surface, text,
-// accent цвета для мини-превью интерфейса в selector.
-const THEMES = [
-  { id: 'dark',     label: 'Тёмная',     group: 'dark',  colors: { bg: '#0e0e12', surface: '#1c1c24', text: '#e8e8ec', accent: '#e8e8ec' } },
-  { id: 'midnight', label: 'Полночь',    group: 'dark',  colors: { bg: '#060912', surface: '#0f1525', text: '#e0e8ff', accent: '#4d9fff' } },
-  { id: 'forest',   label: 'Лес',        group: 'dark',  colors: { bg: '#070e09', surface: '#122014', text: '#d4f0d8', accent: '#4caf60' } },
-  { id: 'slate',    label: 'Сталь',      group: 'dark',  colors: { bg: '#0a0d14', surface: '#1a1f2c', text: '#e2e8f0', accent: '#5b8def' } },
-  { id: 'amber',    label: 'Янтарь',     group: 'dark',  colors: { bg: '#100a05', surface: '#26190e', text: '#f5e6d3', accent: '#ff9b3d' } },
-  { id: 'rose',     label: 'Роза',       group: 'dark',  colors: { bg: '#120810', surface: '#2a1620', text: '#fce8ee', accent: '#ff6b9d' } },
-  { id: 'crimson',  label: 'Багровый',   group: 'dark',  colors: { bg: '#100406', surface: '#281012', text: '#ffe8ea', accent: '#ff5a4d' } },
-  { id: 'pitch',    label: 'Антрацит',   group: 'dark',  colors: { bg: '#000000', surface: '#141414', text: '#e0e0e0', accent: '#737373' } },
-  { id: 'ocean',    label: 'Океан',      group: 'dark',  colors: { bg: '#020a0e', surface: '#0a1a22', text: '#d0f0f5', accent: '#22d3ee' } },
-  { id: 'carbon',   label: 'Карбон',     group: 'dark',  colors: { bg: '#0c0c0c', surface: '#1c1c1c', text: '#e0e0e0', accent: '#a3a3a3' } },
-  { id: 'light',    label: 'Светлая',    group: 'light', colors: { bg: '#f4f1ec', surface: '#f3efe8', text: '#2a2620', accent: '#4a3f2f' } },
-  { id: 'paper',    label: 'Бумага',     group: 'light', colors: { bg: '#f6f8fa', surface: '#f0f3f6', text: '#1f2328', accent: '#0969da' } },
-]
+// 27 встроенных тем (19 тёмных + 8 светлых) — данные из builtinThemes.ts
+// (единый источник: карточки здесь, шаблоны редактора тем, проверка isBuiltin).
+const THEMES = BUILTIN_THEMES.map(t => ({ id: t.id, label: t.label, group: t.group, colors: t.card }))
 
 // Preset цвета для accent picker — меняет только --accent, не всю тему.
 const ACCENT_PRESETS = [
@@ -965,12 +974,43 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
   // переписывает CSS-переменные на :root → полная пересчётка стилей 60+ раз/сек.
   const accentRafRef = useRef<number | null>(null)
   const [themeEditorOpen, setThemeEditorOpen] = useState(false)
+  // id темы для редактора: null → создание новой (выбор шаблона), string → правка существующей.
+  const [themeEditorEditId, setThemeEditorEditId] = useState<string | null>(null)
   const customThemes = (settings['customThemes'] as CustomTheme[]) || []
   const activeCustomThemeId = settings['activeCustomThemeId'] as string | null
   const recentAccents = (settings['recentAccents'] as string[]) || []
   const rainbowAccent = settings['rainbowAccent'] as boolean
   const accentGradient = (settings['accentGradient'] as { enabled: boolean; color2: string; angle: number }) || { enabled: false, color2: '#a78bfa', angle: 135 }
   const themeSchedule = (settings['themeSchedule'] as any) || DEFAULT_THEME_SCHEDULE
+  // ── Фильтры/поиск/избранное/случайная тема ──
+  const [themeFilter, setThemeFilter] = useState<'all' | 'dark' | 'light' | 'custom'>('all')
+  const [themeSearch, setThemeSearch] = useState('')
+  // useMemo — стабильная ссылка для deps useCallback/useMemo ниже
+  // (иначе `|| []` создаёт новый массив каждый рендер → exhaustive-deps warning).
+  const favoriteThemes = useMemo(() => (settings['favoriteThemes'] as string[]) || [], [settings])
+  const systemThemeSync = !!settings['systemThemeSync']
+  const systemSyncDark = (settings['systemSyncDark'] as string) || 'dark'
+  const systemSyncLight = (settings['systemSyncLight'] as string) || 'light'
+  const fontSizeUI = (settings['fontSizeUI'] as number) ?? 14
+  const fontSizeChat = (settings['fontSizeChat'] as number) ?? 14
+
+  // Клик по карточке: встроенная → theme=id; кастомная → activeCustomThemeId + theme='custom'.
+  // (Старый код для неактивной кастомной карточки писал uuid в theme — чиним.)
+  const handleThemePick = useCallback((t: { id: string; isCustom?: boolean }) => {
+    if (t.isCustom) {
+      onSet('activeCustomThemeId', t.id)
+      onSet('theme', 'custom')
+    } else {
+      onSet('theme', t.id)
+    }
+  }, [onSet])
+
+  const toggleFavoriteTheme = useCallback((id: string) => {
+    const next = favoriteThemes.includes(id)
+      ? favoriteThemes.filter(x => x !== id)
+      : [...favoriteThemes, id]
+    onSet('favoriteThemes', next)
+  }, [favoriteThemes, onSet])
 
   // ── Сброс внешнего вида к дефолтам ──
   // Дефолты те же, что используются как fallback'и во всём рендере
@@ -1021,20 +1061,46 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
   }, [onSet, recentAccents])
 
   const allThemes = useMemo(() => [
-    ...THEMES,
+    ...THEMES.map(t => ({ ...t, isCustom: false as const })),
     ...customThemes.map(t => ({
       id: t.id,
       label: t.name,
-      group: t.base,
+      group: 'custom' as const,
       colors: {
         bg: t.colors.bodyBg,
         surface: t.colors.bgSecondary,
         text: t.colors.textPrimary,
         accent: t.colors.accent,
       },
-      isCustom: true,
+      isCustom: true as const,
     })),
   ], [customThemes])
+
+  // Фильтр (таб) + поиск + избранное сверху. Поиск — по названию (case-insensitive).
+  const visibleThemes = useMemo(() => {
+    const q = themeSearch.trim().toLowerCase()
+    let list = allThemes
+    if (themeFilter !== 'all') {
+      list = list.filter(t => themeFilter === 'custom' ? t.group === 'custom' : t.group === themeFilter)
+    }
+    if (q) list = list.filter(t => t.label.toLowerCase().includes(q))
+    return [...list].sort((a, b) => {
+      const fa = favoriteThemes.includes(a.id) ? 0 : 1
+      const fb = favoriteThemes.includes(b.id) ? 0 : 1
+      return fa - fb
+    })
+  }, [allThemes, themeFilter, themeSearch, favoriteThemes])
+
+  // Случайная тема — из всех (встроенных + кастомных), кроме текущей.
+  const pickRandomTheme = useCallback(() => {
+    const pool = allThemes.filter(t => {
+      const isActive = settings['theme'] === t.id || (t.id === activeCustomThemeId && settings['theme'] === 'custom')
+      return !isActive
+    })
+    if (pool.length === 0) return
+    const t = pool[Math.floor(Math.random() * pool.length)]
+    handleThemePick(t)
+  }, [allThemes, settings, activeCustomThemeId, handleThemePick])
 
   return (
     <>
@@ -1056,20 +1122,65 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
       )}
 
       <Group id="appearance-theme" icon="palette" title="Тема">
-      <Field id="theme" label="Цветовая палитра" description="12 встроенных тем + созданные вами" block>
-        <div className="settings-theme-cards">
-          {allThemes.map(t => {
-            const isActive = settings['theme'] === t.id || (t.id === activeCustomThemeId && settings['theme'] === 'custom')
-            return (
+      <Field id="theme" label="Цветовая палитра" description="27 встроенных тем + свои. Клик — применить, звёздочка — в избранное." block>
+        {/* .settings-field-control — flex-row, поэтому тулбар и сетку
+            оборачиваем в колонку-панель, иначе тулбар становится левой колонкой */}
+        <div className="settings-theme-panel">
+        {/* Тулбар: фильтры по типу + поиск + случайная тема */}
+        <div className="settings-theme-toolbar">
+          <div className="settings-theme-filters">
+            {([
+              { id: 'all',    label: 'Все' },
+              { id: 'dark',   label: 'Тёмные' },
+              { id: 'light',  label: 'Светлые' },
+              { id: 'custom', label: 'Мои' },
+            ] as const).map(f => (
               <motion.button
-                key={t.id}
+                key={f.id}
                 type="button"
+                className={`settings-theme-filter${themeFilter === f.id ? ' settings-theme-filter--active' : ''}`}
+                onClick={() => setThemeFilter(f.id)}
+                whileTap={{ scale: 0.94 }}
+              >{f.label}</motion.button>
+            ))}
+          </div>
+          <div className="settings-theme-search">
+            <AppIcon name="search" size="xs" tone="muted" />
+            <input
+              type="text"
+              placeholder="Поиск темы..."
+              value={themeSearch}
+              onChange={e => setThemeSearch(e.target.value)}
+            />
+          </div>
+          <motion.button
+            type="button"
+            className="settings-theme-random"
+            onClick={pickRandomTheme}
+            whileTap={{ scale: 0.94 }}
+            whileHover={{ scale: 1.03 }}
+            title="Случайная тема"
+          >
+            <AppIcon name="shuffle" size="xs" />
+            <span>Случайная</span>
+          </motion.button>
+        </div>
+
+        <div className="settings-theme-cards">
+          {visibleThemes.map(t => {
+            const isActive = settings['theme'] === t.id || (t.id === activeCustomThemeId && settings['theme'] === 'custom')
+            const isFav = favoriteThemes.includes(t.id)
+            return (
+              <motion.div
+                key={t.id}
                 className={`settings-theme-card${isActive ? ' settings-theme-card--active' : ''}`}
-                onClick={() => onSet('theme', t.id === activeCustomThemeId ? 'custom' : t.id)}
+                onClick={() => handleThemePick(t)}
                 whileTap={{ scale: 0.96 }}
                 whileHover={{ y: -2 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 25 }}
                 title={t.label}
+                role="button"
+                tabIndex={0}
               >
                 <div
                   className="settings-theme-card__preview"
@@ -1083,6 +1194,28 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
                   <div className="settings-theme-card__dot" style={{ background: t.colors.accent, boxShadow: `0 0 8px ${t.colors.accent}66` }} />
                 </div>
                 <div className="settings-theme-card__label">{t.label}</div>
+                {/* Избранное — звёздочка в углу (stopPropagation, чтобы не применять тему) */}
+                <motion.button
+                  type="button"
+                  className={`settings-theme-card__fav${isFav ? ' settings-theme-card__fav--active' : ''}`}
+                  onClick={(e) => { e.stopPropagation(); toggleFavoriteTheme(t.id) }}
+                  whileTap={{ scale: 0.8 }}
+                  title={isFav ? 'Убрать из избранного' : 'В избранное'}
+                >
+                  <AppIcon name="star" size="xs" />
+                </motion.button>
+                {/* Правка кастомной темы — карандаш рядом со звёздочкой */}
+                {t.isCustom && (
+                  <motion.button
+                    type="button"
+                    className="settings-theme-card__edit"
+                    onClick={(e) => { e.stopPropagation(); setThemeEditorEditId(t.id); setThemeEditorOpen(true) }}
+                    whileTap={{ scale: 0.8 }}
+                    title="Редактировать в редакторе тем"
+                  >
+                    <AppIcon name="edit" size="xs" />
+                  </motion.button>
+                )}
                 {isActive && (
                   <motion.div
                     className="settings-theme-card__check"
@@ -1096,16 +1229,21 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
                     </svg>
                   </motion.div>
                 )}
-              </motion.button>
+              </motion.div>
             )
           })}
+          {visibleThemes.length === 0 && (
+            <div className="settings-theme-empty">
+              {themeSearch ? `Ничего не найдено по запросу «${themeSearch}»` : 'Здесь пусто'}
+            </div>
+          )}
           <motion.button
             type="button"
             className="settings-theme-card settings-theme-card--add"
-            onClick={() => setThemeEditorOpen(v => !v)}
+            onClick={() => { setThemeEditorEditId(null); setThemeEditorOpen(true) }}
             whileTap={{ scale: 0.96 }}
             whileHover={{ y: -2 }}
-            title="Создать кастомную тему"
+            title="Создать свою тему в редакторе"
           >
             <div className="settings-theme-card__preview settings-theme-card__preview--add">
               <span>+</span>
@@ -1113,35 +1251,32 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
             <div className="settings-theme-card__label">Создать</div>
           </motion.button>
         </div>
+        </div>
       </Field>
 
-      <AnimatePresence>
-        {themeEditorOpen && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 32 }}
-            style={{ overflow: 'hidden' }}
-          >
-            <CustomThemeEditor
-              themes={customThemes}
-              activeId={activeCustomThemeId}
-              onChange={(themes, activeId) => {
-                onSet('customThemes', themes)
-                if (activeId !== undefined) onSet('activeCustomThemeId', activeId)
-              }}
-              onApply={(id) => {
-                onSet('activeCustomThemeId', id)
-                onSet('theme', 'custom')
-              }}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Редактор тем — полноэкранная модалка с живым превью */}
+      <CustomThemeEditor
+        open={themeEditorOpen}
+        editId={themeEditorEditId}
+        themes={customThemes}
+        activeId={activeCustomThemeId}
+        onChange={(themes, activeId) => {
+          onSet('customThemes', themes)
+          if (activeId !== undefined) onSet('activeCustomThemeId', activeId)
+        }}
+        onApply={(id) => {
+          onSet('activeCustomThemeId', id)
+          onSet('theme', 'custom')
+        }}
+        onClose={() => setThemeEditorOpen(false)}
+      />
 
       <Field id="themeSchedule" label="Автосмена темы" description="День → светлая, ночь → тёмная">
-        <Toggle value={!!themeSchedule.enabled} onChange={v => onSet('themeSchedule', { ...themeSchedule, enabled: v })} />
+        <Toggle value={!!themeSchedule.enabled} onChange={v => {
+          onSet('themeSchedule', { ...themeSchedule, enabled: v })
+          // Расписание и синхронизация с Windows взаимоисключают друг друга.
+          if (v && systemThemeSync) onSet('systemThemeSync', false)
+        }} />
       </Field>
       <AnimatePresence>
         {themeSchedule.enabled && (
@@ -1177,6 +1312,45 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
             </Field>
             <Field label="Ночь начинается в">
               <input type="time" className="settings-input" value={themeSchedule.nightTime} onChange={e => onSet('themeSchedule', { ...themeSchedule, nightTime: e.target.value })} />
+            </Field>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <Field id="systemThemeSync" label="Тема Windows" description="Следовать системной теме Windows — переключается мгновенно, без перезапуска">
+        <Toggle value={systemThemeSync} onChange={v => {
+          onSet('systemThemeSync', v)
+          if (v && themeSchedule.enabled) onSet('themeSchedule', { ...themeSchedule, enabled: false })
+        }} />
+      </Field>
+      <AnimatePresence>
+        {systemThemeSync && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 32 }}
+            style={{ overflow: 'hidden' }}
+          >
+            <Field label="Когда в Windows тёмная">
+              <Select
+                value={systemSyncDark}
+                onChange={v => onSet('systemSyncDark', v)}
+                options={[
+                  ...THEMES.filter(t => t.group === 'dark').map(t => ({ value: t.id, label: t.label })),
+                  ...customThemes.filter(t => t.base === 'dark').map(t => ({ value: t.id, label: t.name })),
+                ]}
+              />
+            </Field>
+            <Field label="Когда в Windows светлая">
+              <Select
+                value={systemSyncLight}
+                onChange={v => onSet('systemSyncLight', v)}
+                options={[
+                  ...THEMES.filter(t => t.group === 'light').map(t => ({ value: t.id, label: t.label })),
+                  ...customThemes.filter(t => t.base === 'light').map(t => ({ value: t.id, label: t.name })),
+                ]}
+              />
             </Field>
           </motion.div>
         )}
@@ -1323,6 +1497,22 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
       <Group id="appearance-typography" icon="fileText" title="Типографика">
       <FontSettingsBlock settings={settings} onSet={onSet} />
 
+      <Field id="fontSizeUI" label="Размер шрифта интерфейса" description={`${fontSizeUI}px — масштаб всего UI (меню, кнопки, настройки)`}>
+        <input
+          type="range" min={12} max={17} step={0.5} value={fontSizeUI}
+          onChange={e => onSet('fontSizeUI', Number(e.target.value))}
+          className="settings-slider"
+        />
+      </Field>
+
+      <Field id="fontSizeChat" label="Размер шрифта сообщений" description={`${fontSizeChat}px — текст сообщений в чате`}>
+        <input
+          type="range" min={12} max={18} step={0.5} value={fontSizeChat}
+          onChange={e => onSet('fontSizeChat', Number(e.target.value))}
+          className="settings-slider"
+        />
+      </Field>
+
       <Field id="density" label="Плотность интерфейса" description="Отступы и размеры элементов">
         <SegmentedControl
           value={(settings['density'] as string) || 'comfortable'}
@@ -1350,7 +1540,7 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
           {BG_STYLES.map(s => (
             <motion.button
               key={s.id}
-              className={`settings-bg-btn ${(settings['bgStyle'] || 'particles') === s.id ? 'settings-bg-btn--active' : ''}`}
+              className={`settings-bg-btn ${(settings['bgStyle'] || 'aurora') === s.id ? 'settings-bg-btn--active' : ''}`}
               onClick={() => { onSet('bgStyle', s.id); onSet('animatedBackground', s.id !== 'none') }}
               whileTap={{ scale: 0.94 }}
               title={s.desc}
@@ -1361,6 +1551,16 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
           ))}
         </div>
         <AnimatedBgGear settings={settings} onSet={onSet} />
+        {(() => {
+          if (typeof OffscreenCanvas === 'undefined') return null
+          const testCanvas = new OffscreenCanvas(1, 1)
+          const gl2 = testCanvas.getContext('webgl2')
+          return !gl2 ? (
+            <div className="settings-info-note">
+              ⚠️ WebGL2 недоступен — анимированный фон отключён.
+            </div>
+          ) : null
+        })()}
       </Field>
 
       <Field label="Фоновое изображение" description="Картинка как фон (под анимацией). Несколько картинок, переключение, параметры." block>
@@ -1629,21 +1829,33 @@ const VoiceSection = memo(function VoiceSection({ settings, onSet }: { settings:
 const BG_STYLE_PARAMS: Record<string, {
   key: string; label: string; min: number; max: number; step: number; def: number; fmt?: (v: number) => string
 }[]> = {
-  particles: [
-    { key: 'particles.density', label: 'Плотность', min: 15, max: 80, step: 1, def: 45 },
-    { key: 'particles.lineOpacity', label: 'Линии', min: 0, max: 0.2, step: 0.01, def: 0.05, fmt: v => v.toFixed(2) },
+  silk: [
+    { key: 'silk.scale', label: 'Масштаб', min: 2, max: 8, step: 0.5, def: 4, fmt: v => v.toFixed(1) },
   ],
-  matrix: [
-    { key: 'matrix.fallSpeed', label: 'Скорость', min: 1, max: 20, step: 1, def: 8 },
-    { key: 'matrix.colWidth', label: 'Ширина', min: 8, max: 24, step: 1, def: 16 },
+  warp: [
+    { key: 'warp.amount', label: 'Интенсивность', min: 0.5, max: 3, step: 0.1, def: 1.5, fmt: v => v.toFixed(1) },
   ],
-  starfield: [
-    { key: 'starfield.count', label: 'Количество', min: 50, max: 300, step: 10, def: 140 },
-    { key: 'starfield.parallax', label: 'Параллакс', min: 0, max: 1, step: 0.05, def: 0.6, fmt: v => v.toFixed(2) },
+  nebula: [
+    { key: 'nebula.scale', label: 'Масштаб', min: 2, max: 6, step: 0.5, def: 3, fmt: v => v.toFixed(1) },
   ],
-  fireflies: [
-    { key: 'fireflies.count', label: 'Количество', min: 10, max: 60, step: 1, def: 30 },
-    { key: 'fireflies.glowRadius', label: 'Свечение', min: 1, max: 5, step: 0.5, def: 2.5, fmt: v => v.toFixed(1) },
+  plasma: [
+    { key: 'plasma.scale', label: 'Масштаб', min: 3, max: 10, step: 0.5, def: 6, fmt: v => v.toFixed(1) },
+  ],
+  caustics: [
+    { key: 'caustics.scale', label: 'Масштаб', min: 3, max: 10, step: 0.5, def: 5, fmt: v => v.toFixed(1) },
+  ],
+  network: [
+    { key: 'network.count', label: 'Количество', min: 20, max: 100, step: 5, def: 100 },
+    { key: 'network.linkDist', label: 'Радиус связи', min: 0.05, max: 0.30, step: 0.01, def: 0.15, fmt: v => v.toFixed(2) },
+  ],
+  vortex: [
+    { key: 'vortex.scale', label: 'Плотность спиралей', min: 2, max: 8, step: 0.5, def: 4, fmt: v => v.toFixed(1) },
+  ],
+  flow: [
+    { key: 'flow.scale', label: 'Масштаб потока', min: 3, max: 10, step: 0.5, def: 5, fmt: v => v.toFixed(1) },
+  ],
+  crystal: [
+    { key: 'crystal.scale', label: 'Размер ячеек', min: 3, max: 10, step: 0.5, def: 5, fmt: v => v.toFixed(1) },
   ],
 }
 
@@ -1653,7 +1865,7 @@ function AnimatedBgGear({ settings, onSet }: { settings: Record<string, unknown>
   const gearRef = useRef<HTMLButtonElement>(null)
   const opacity = (settings['animatedBgOpacity'] as number) ?? 60
   const speed = (settings['animatedBgSpeed'] as number) ?? 1
-  const bgStyle = (settings['bgStyle'] as string) || 'particles'
+  const bgStyle = (settings['bgStyle'] as string) || 'aurora'
   const params = (settings['bgStyleParams'] as Record<string, number>) || {}
   const [localParams, setLocalParams] = useState<Record<string, number>>({})
   const pendingRef = useRef<Record<string, number>>({})
@@ -1706,7 +1918,7 @@ function AnimatedBgGear({ settings, onSet }: { settings: Record<string, unknown>
           </label>
           <label className="bg-gear-row">
             <span>Скорость: {speed.toFixed(1)}x</span>
-            <input type="range" min={0.2} max={3} step={0.1} value={speed}
+            <input type="range" min={0.05} max={1.5} step={0.05} value={speed}
               onChange={e => onSet('animatedBgSpeed', Number(e.target.value))}
               className="settings-slider" />
           </label>
@@ -1943,7 +2155,7 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
         <Field id="approvalMode" label="Режим подтверждения действий" description="Когда агент запрашивает подтверждение перед выполнением">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <ApprovalModeSelector
-              value={agentSettings.approvalMode as import('../../../../../shared/types').ApprovalMode}
+              value={agentSettings.approvalMode as import('../../../../shared/types').ApprovalMode}
               onChange={mode => updateAgent({ approvalMode: mode })}
             />
             <ResetButton current={agentSettings.approvalMode} defaultValue={DEFAULT_AGENT_SETTINGS.approvalMode} onReset={() => updateAgent({ approvalMode: DEFAULT_AGENT_SETTINGS.approvalMode })} />
@@ -2212,3 +2424,5 @@ const NotificationsSection = memo(function NotificationsSection({ settings, onSe
     </>
   )
 })
+
+

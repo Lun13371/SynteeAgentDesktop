@@ -231,7 +231,9 @@
 }
 
 .message-content {
-  font-size: 14px;
+  /* --chat-font-size выставляется из настроек (Внешний вид → Размер шрифта
+     сообщений) через applyFontSizeToDOM; fallback 14px — прежний дефолт. */
+  font-size: var(--chat-font-size, 14px);
   line-height: 1.65;
   color: var(--text-primary);
   overflow-wrap: anywhere;
