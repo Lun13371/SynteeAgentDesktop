@@ -1,7 +1,12 @@
 import { create } from 'zustand'
 import type { CustomTheme } from '../../../shared/types'
 
-type Theme = 'dark' | 'light' | 'midnight' | 'forest' | 'amber' | 'rose' | 'paper' | 'slate' | 'crimson' | 'pitch' | 'ocean' | 'carbon' | 'custom'
+type Theme =
+  | 'dark' | 'light' | 'midnight' | 'forest' | 'amber' | 'rose' | 'paper' | 'slate'
+  | 'crimson' | 'pitch' | 'ocean' | 'carbon'
+  | 'nord' | 'dracula' | 'gruvbox' | 'tokyonight' | 'mocha' | 'onedark' | 'monokai'
+  | 'everforest' | 'solarized' | 'latte' | 'sepia' | 'dawn' | 'mist' | 'mint' | 'sakura'
+  | 'custom'
 type Page = 'chat' | 'settings' | 'tasks' | 'notes' | 'stats'
 type Density = 'compact' | 'comfortable' | 'spacious'
 
@@ -72,6 +77,15 @@ interface UIStore {
   activeCustomThemeId: string | null
   themeSchedule: ThemeSchedule
   recentAccents: string[]
+  // Избранные темы (id встроенных или кастомных) — закрепляются в начале сетки.
+  favoriteThemes: string[]
+  // Размеры шрифта (px): интерфейс масштабирует --font-size-*, чат — --chat-font-size.
+  fontSizeUI: number
+  fontSizeChat: number
+  // Синхронизация с системной темой Windows: dark/light выбираются юзером.
+  systemThemeSync: boolean
+  systemSyncDark: string
+  systemSyncLight: string
   soundVolume: number
   soundAssignments: Record<string, string | null>
   // Навигация боковыми кнопками мыши (X1 — назад, X2 — вперёд). По умолчанию
@@ -106,6 +120,12 @@ interface UIStore {
   setActiveCustomThemeId: (v: string | null) => void
   setThemeSchedule: (v: ThemeSchedule) => void
   setRecentAccents: (v: string[]) => void
+  setFavoriteThemes: (v: string[]) => void
+  setFontSizeUI: (v: number) => void
+  setFontSizeChat: (v: number) => void
+  setSystemThemeSync: (v: boolean) => void
+  setSystemSyncDark: (v: string) => void
+  setSystemSyncLight: (v: string) => void
   setSoundVolume: (v: number) => void
   setSoundAssignments: (v: Record<string, string | null>) => void
   setMouseNavEnabled: (v: boolean) => void
@@ -132,7 +152,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   agentPanelTab: 'sidechat',
   agentPanelExpanded: false,
   animatedBackground: true,
-  bgStyle: 'particles',
+  bgStyle: 'aurora',
   msgAnim: 'slide',
   avatarStyle: 'hex',
   showTime: 'hover',
@@ -154,6 +174,12 @@ export const useUIStore = create<UIStore>((set, get) => ({
   activeCustomThemeId: null,
   themeSchedule: DEFAULT_THEME_SCHEDULE,
   recentAccents: [],
+  favoriteThemes: [],
+  fontSizeUI: 14,
+  fontSizeChat: 14,
+  systemThemeSync: false,
+  systemSyncDark: 'dark',
+  systemSyncLight: 'light',
   soundVolume: 70,
   soundAssignments: {},
   mouseNavEnabled: true,
@@ -193,6 +219,12 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setActiveCustomThemeId: (activeCustomThemeId) => set({ activeCustomThemeId }),
   setThemeSchedule: (themeSchedule) => set({ themeSchedule }),
   setRecentAccents: (recentAccents) => set({ recentAccents }),
+  setFavoriteThemes: (favoriteThemes) => set({ favoriteThemes }),
+  setFontSizeUI: (fontSizeUI) => set({ fontSizeUI }),
+  setFontSizeChat: (fontSizeChat) => set({ fontSizeChat }),
+  setSystemThemeSync: (systemThemeSync) => set({ systemThemeSync }),
+  setSystemSyncDark: (systemSyncDark) => set({ systemSyncDark }),
+  setSystemSyncLight: (systemSyncLight) => set({ systemSyncLight }),
   setSoundVolume: (soundVolume) => set({ soundVolume }),
   setSoundAssignments: (soundAssignments) => set({ soundAssignments }),
   setMouseNavEnabled: (mouseNavEnabled) => set({ mouseNavEnabled }),

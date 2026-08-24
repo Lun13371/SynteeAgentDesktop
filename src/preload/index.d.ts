@@ -11,6 +11,10 @@ declare const synteeAPI: {
         set: (key: string, value: unknown) => Promise<any>;
         getAll: () => Promise<any>;
     };
+    systemTheme: {
+        isDark: () => Promise<boolean>;
+        onChange: (cb: (isDark: boolean) => void) => () => void;
+    };
     bgImage: {
         save: (data: Uint8Array, ext: string) => Promise<string | null>;
         list: () => Promise<{

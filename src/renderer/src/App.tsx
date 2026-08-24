@@ -216,6 +216,19 @@ export function applyDensityToDOM(density: 'compact' | 'comfortable' | 'spacious
   document.documentElement.setAttribute('data-density', density)
 }
 
+// ── Размеры шрифта ─────────────────────────────────────────────
+// UI: масштабирует все --font-size-* пропорционально базе (md=14).
+// Чат: отдельная переменная --chat-font-size (MessageBubble .message-content).
+const FONT_SIZE_BASE: Record<string, number> = { xs: 11, sm: 12, md: 14, lg: 16, xl: 20, '2xl': 28 }
+export function applyFontSizeToDOM(uiSize: number, chatSize: number) {
+  const root = document.documentElement
+  const k = (uiSize || 14) / FONT_SIZE_BASE.md
+  for (const [key, base] of Object.entries(FONT_SIZE_BASE)) {
+    root.style.setProperty(`--font-size-${key}`, `${Math.round(base * k * 10) / 10}px`)
+  }
+  root.style.setProperty('--chat-font-size', `${chatSize || 14}px`)
+}
+
 export function applyGradientAccentToDOM(enabled: boolean, color2: string, angle: number, color1: string) {
   const root = document.documentElement
   if (!enabled) {
@@ -325,6 +338,29 @@ export function applyCustomThemeToDOM(theme: CustomTheme | null) {
   }
   root.setAttribute('data-custom-theme', theme.id)
   invalidateAccentCache()
+}
+
+// ── Применение темы по id (встроенной или кастомной) ──────────
+// Единая точка для системной синхронизации, «случайной темы» и
+// восстановления после hover-превью. persist=false — только визуально
+// (превью), без записи в electron-store.
+export function applyThemeById(id: string, opts?: { persist?: boolean }) {
+  const st = useUIStore.getState()
+  const ct = st.customThemes.find(t => t.id === id)
+  const persist = opts?.persist !== false
+  if (ct) {
+    st.setActiveCustomThemeId(ct.id)
+    st.setTheme('custom')
+    applyCustomThemeToDOM(ct)
+    if (persist) {
+      window.syntee.settings.set('activeCustomThemeId', ct.id)
+      window.syntee.settings.set('theme', 'custom')
+    }
+  } else {
+    st.setTheme(id as Parameters<typeof st.setTheme>[0])
+    applyCustomThemeToDOM(null)
+    if (persist) window.syntee.settings.set('theme', id)
+  }
 }
 
 // ── Bg image application ──────────────────────────────────────────────
@@ -542,7 +578,9 @@ export default function App() {
           glassBlur, density, accentGradient, rainbowAccent, bgImage, bgImageEnabled,
           animatedBgOpacity, animatedBgSpeed, bgStyleParams,
           customThemes, activeCustomThemeId, themeSchedule, recentAccents,
-          soundVolume, soundAssignments, mouseNavEnabled] = await Promise.all([
+          soundVolume, soundAssignments, mouseNavEnabled,
+          favoriteThemes, fontSizeUI, fontSizeChat,
+          systemThemeSync, systemSyncDark, systemSyncLight] = await Promise.all([
           window.syntee.settings.get('theme'),
           window.syntee.settings.get('bgStyle'),
           window.syntee.settings.get('msgAnim'),
@@ -576,6 +614,12 @@ export default function App() {
           window.syntee.settings.get('soundVolume'),
           window.syntee.settings.get('soundAssignments'),
           window.syntee.settings.get('mouseNavEnabled'),
+          window.syntee.settings.get('favoriteThemes'),
+          window.syntee.settings.get('fontSizeUI'),
+          window.syntee.settings.get('fontSizeChat'),
+          window.syntee.settings.get('systemThemeSync'),
+          window.syntee.settings.get('systemSyncDark'),
+          window.syntee.settings.get('systemSyncLight'),
         ])
         const st = useUIStore.getState()
         if (theme) st.setTheme(theme as any)
@@ -619,6 +663,12 @@ export default function App() {
         // mouseNavEnabled: дефолт true (как в браузере) если ключа в store нет.
         // Запись в electron-store идёт через SettingsPage при toggle.
         st.setMouseNavEnabled(typeof mouseNavEnabled === 'boolean' ? mouseNavEnabled : true)
+        if (Array.isArray(favoriteThemes)) st.setFavoriteThemes(favoriteThemes as string[])
+        if (typeof fontSizeUI === 'number') st.setFontSizeUI(fontSizeUI)
+        if (typeof fontSizeChat === 'number') st.setFontSizeChat(fontSizeChat)
+        if (typeof systemThemeSync === 'boolean') st.setSystemThemeSync(systemThemeSync)
+        if (typeof systemSyncDark === 'string') st.setSystemSyncDark(systemSyncDark)
+        if (typeof systemSyncLight === 'string') st.setSystemSyncLight(systemSyncLight)
 
         // Инжектим кастомные шрифты (если есть) ДО применения fontFamily,
         // чтобы applyFontToDOM нашёл шрифт в customFontStacks.
@@ -627,6 +677,10 @@ export default function App() {
         }
         if (fontFamily) applyFontToDOM(fontFamily as string)
         if (fontMono) applyMonoToDOM(fontMono as string)
+        applyFontSizeToDOM(
+          typeof fontSizeUI === 'number' ? fontSizeUI : 14,
+          typeof fontSizeChat === 'number' ? fontSizeChat : 14,
+        )
 
         const currentTheme = useUIStore.getState().theme
         const themes = useUIStore.getState().customThemes
@@ -908,6 +962,32 @@ export default function App() {
       applyAccentToDOM(useUIStore.getState().accentColor)
     }
   }, [rainbowAccent])
+
+  // ── Размеры шрифта (UI + чат) ──
+  const fontSizeUI = useUIStore(s => s.fontSizeUI)
+  const fontSizeChat = useUIStore(s => s.fontSizeChat)
+  useEffect(() => { applyFontSizeToDOM(fontSizeUI, fontSizeChat) }, [fontSizeUI, fontSizeChat])
+
+  // ── Синхронизация с системной темой Windows ──
+  // Когда включена — следим за nativeTheme через IPC и применяем
+  // выбранные юзером dark/light темы. Взаимоисключается с расписанием
+  // на уровне UI (toggle одного выключает другое).
+  const systemThemeSync = useUIStore(s => s.systemThemeSync)
+  const systemSyncDark = useUIStore(s => s.systemSyncDark)
+  const systemSyncLight = useUIStore(s => s.systemSyncLight)
+  useEffect(() => {
+    if (!systemThemeSync) return
+    let cancelled = false
+    const applyForSystem = (isDark: boolean) => {
+      const st = useUIStore.getState()
+      applyThemeById(isDark ? st.systemSyncDark : st.systemSyncLight)
+    }
+    window.syntee.systemTheme?.isDark()
+      .then((d) => { if (!cancelled) applyForSystem(!!d) })
+      .catch(() => {})
+    const unsub = window.syntee.systemTheme?.onChange((d) => applyForSystem(d))
+    return () => { cancelled = true; unsub?.() }
+  }, [systemThemeSync, systemSyncDark, systemSyncLight])
 
   useEffect(() => {
     return startThemeScheduler(

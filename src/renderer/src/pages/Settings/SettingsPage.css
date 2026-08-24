@@ -643,12 +643,21 @@
   color: var(--text-primary);
 }
 
-/* Theme grid — мини-превью интерфейса в карточках.
-   flex-wrap как у .anim-preview-grid — карточки идут в ряд и
-   переносятся на следующую строку, а не вниз в колонку. */
-.settings-theme-cards {
+/* Панель темы: тулбар сверху, сетка карточек снизу (field-control — flex-row,
+   без этой обёртки тулбар становился левой колонкой с дырой под ним). */
+.settings-theme-panel {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+/* Theme grid — мини-превью интерфейса в карточках.
+   Grid auto-fill: карточки равномерно заполняют строку и тянутся по ширине,
+   без рваного правого края как у flex-wrap с фиксированной шириной. */
+.settings-theme-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: 10px;
 }
 
@@ -663,7 +672,6 @@
   background: var(--bg-secondary);
   cursor: pointer;
   transition: border-color 0.18s, transform 0.18s;
-  width: 92px;
 }
 
 .settings-theme-card:hover {
@@ -677,7 +685,7 @@
 
 .settings-theme-card__preview {
   position: relative;
-  height: 48px;
+  height: 64px;
   border-radius: 7px;
   overflow: hidden;
   border: 1px solid var(--overlay-4);
@@ -750,6 +758,137 @@
   box-shadow: 0 2px 8px rgba(var(--shadow-rgb), 0.3);
   border: 2px solid var(--bg-primary);
 }
+
+/* ── Тулбар тем: фильтры + поиск + случайная ── */
+.settings-theme-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-theme-filters {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.settings-theme-filter {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.settings-theme-filter:hover { color: var(--text-primary); }
+
+.settings-theme-filter--active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.settings-theme-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  flex: 1;
+  min-width: 140px;
+  max-width: 240px;
+  transition: border-color 0.15s;
+}
+
+.settings-theme-search:focus-within { border-color: var(--accent); }
+
+.settings-theme-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-theme-search input::placeholder { color: var(--text-muted); }
+
+.settings-theme-random {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.settings-theme-random:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Пустое состояние поиска/фильтра */
+.settings-theme-empty {
+  padding: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  width: 100%;
+}
+
+/* Звёздочка избранного и карандаш правки — бейджи в левом верхнем углу.
+   По умолчанию полупрозрачные, полностью видны при hover на карточку;
+   активная звёздочка видна всегда. */
+.settings-theme-card__fav,
+.settings-theme-card__edit {
+  position: absolute;
+  top: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary);
+  border: 2px solid var(--bg-primary);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  z-index: 2;
+}
+
+.settings-theme-card__fav { left: -6px; }
+.settings-theme-card__edit { left: 16px; }
+
+.settings-theme-card:hover .settings-theme-card__fav,
+.settings-theme-card:hover .settings-theme-card__edit { opacity: 1; }
+
+.settings-theme-card__fav--active {
+  opacity: 1;
+  color: #facc15;
+}
+
+.settings-theme-card__fav:hover { color: #facc15; }
+.settings-theme-card__edit:hover { color: var(--accent); }
 
 /* Accent color picker */
 .settings-accent-picker {
@@ -878,20 +1017,25 @@
   color: var(--text-secondary);
 }
 
-.settings-theme-card--add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
+/* Карточка «Создать»: НЕ центрируем детей на уровне карточки —
+   align-items:center схлопывал превью в узкую вертикальную пилюлю (баг).
+   Плюс центрирует само превью, которое тянется на всю ширину. */
 .settings-theme-card__preview--add {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
   background: var(--bg-tertiary);
-  font-size: 22px;
+  font-size: 26px;
+  font-weight: 300;
   color: var(--text-muted);
   border-style: dashed;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.settings-theme-card--add:hover .settings-theme-card__preview--add {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .settings-bg-grid {
