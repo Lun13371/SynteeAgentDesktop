@@ -49,13 +49,6 @@ export interface AgentCallbacks {
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none'; role?: string; callId?: string }) => Promise<{ summary: string; error?: string }>
-  /**
-   * Персистентный shell (§1 GAP_ANALYSIS.md) — если задан, run_command
-   * выполняется через живую shell-сессию в main-процессе вместо
-   * одноразового exec(). cd/env переживают между вызовами. Не используется
-   * суб-агентами (короткоживущие — общий shell создал бы гонки).
-   */
-  onShellExec?: (command: string, cwd: string | undefined, timeoutSec: number) => Promise<{ output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   /**
    * SPA-fallback для fetch_page: рендерит страницу через скрытый BrowserWindow

@@ -540,20 +540,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'spawn_agent', chatId, msgId, replyId, ...rest, approval_mode: approvalMode, callId: opts.callId })
             })
           },
-          onShellExec: (command, cwd, timeoutSec) => {
-            return new Promise((resolve) => {
-              const replyId = `shell-exec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              replyHandlers.set(replyId, (reply) => {
-                resolve({
-                  output: (reply.output as string) ?? '',
-                  exitCode: (reply.exitCode as number) ?? 1,
-                  timedOut: reply.timedOut as boolean | undefined,
-                  interrupted: reply.interrupted as boolean | undefined,
-                })
-              })
-              send({ type: 'shell_exec', chatId, msgId, replyId, command, cwd, timeoutSec })
-            })
-          },
           onRenderPage: (url, renderOpts) => {
             return new Promise((resolve) => {
               const replyId = `render-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`

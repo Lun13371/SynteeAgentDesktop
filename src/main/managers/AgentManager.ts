@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 import { Worker } from 'worker_threads'
 import { join } from 'path'
 import type Store from 'electron-store'
@@ -17,6 +17,8 @@ import {
 } from './WorktreeIsolation'
 import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
 import { getSubagentRole } from '../../shared/subagent-roles'
+import { confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
+import { getNotificationManager } from './NotificationManager'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -708,6 +710,142 @@ ${subModeOutro}`
              }
              break
            }
+
+          // ── confirm: суб-агент запрашивает разрешение на dangerous-тул ──
+          // Зеркало chat.ipc.ts:1981-2015. Без этого case worker Promise
+          // висит вечно → суб-агент зависает на await onConfirm.
+          case 'confirm': {
+            const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
+            confirmCallbacks.set(reqId, (approved: boolean) => {
+              worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved })
+            })
+            ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+              const cb = confirmCallbacks.get(reqId)
+              if (cb) { confirmCallbacks.delete(reqId); cb(approved) }
+            })
+            const win = this.windowGetter?.()
+            const target = Array.isArray(win) ? win[0] : win
+            target?.webContents.send('agent:confirm', {
+              reqId, toolName, args,
+              dangerLevel: msg.dangerLevel,
+              dangerReason: msg.dangerReason,
+              previewDiff: msg.previewDiff,
+            })
+            {
+              const nm = getNotificationManager()
+              const dangerLevel = (msg as { dangerLevel?: string }).dangerLevel
+              const toolLabel = toolName === 'run_command' ? 'Команда' : toolName === 'write_file' ? 'Запись файла' : toolName === 'edit_file' ? 'Правка файла' : toolName
+              nm?.push({
+                type: 'permission',
+                title: `Суб-агент: запрос разрешения — ${toolLabel}`,
+                body: (msg as { dangerReason?: string }).dangerReason || `Суб-агент хочет выполнить ${toolName}`,
+                priority: dangerLevel === 'high' ? 'urgent' : 'warning',
+                actions: [
+                  { id: 'approve', label: 'Разрешить' },
+                  { id: 'deny', label: 'Отклонить' },
+                ],
+                reqId,
+                chatId: record.chatId,
+              })
+            }
+            break
+          }
+
+          // ── question: суб-агент вызывает ask_user ──
+          // Зеркало chat.ipc.ts:2018-2050.
+          case 'question': {
+            const reqId = msg.reqId as string
+            const questions = msg.questions as import('../../shared/types').QuestionSpec[]
+            questionCallbacks.set(reqId, (answers: import('../../shared/types').QuestionAnswer[]) => {
+              worker.postMessage({ type: 'question_reply', replyId: `question-reply-${reqId}`, answers })
+            })
+            ipcMain.once(`agent:question:response:${reqId}`, (_e, answers: import('../../shared/types').QuestionAnswer[]) => {
+              const cb = questionCallbacks.get(reqId)
+              if (cb) { questionCallbacks.delete(reqId); cb(answers) }
+            })
+            {
+              const win = this.windowGetter?.()
+              const target = Array.isArray(win) ? win[0] : win
+              target?.webContents.send('agent:question', {
+                reqId, questions, chatId: record.chatId, msgId: msg.msgId,
+              })
+              const nm = getNotificationManager()
+              const firstQ = questions[0]
+              if (firstQ) {
+                nm?.push({
+                  type: 'ask_user',
+                  title: firstQ.header || 'Вопрос от суб-агента',
+                  body: firstQ.question,
+                  priority: 'warning',
+                  actions: [{ id: 'open', label: 'Открыть' }],
+                  reqId,
+                  chatId: record.chatId,
+                })
+              }
+            }
+            break
+          }
+
+          // ── render_page: суб-агент просит отрендерить SPA-страницу ──
+          // Зеркало chat.ipc.ts:2281-2327. BrowserWindow доступен только в main.
+          case 'render_page': {
+            const replyId = msg.replyId as string
+            const renderUrl = msg.url as string
+            const waitSelector = msg.waitSelector as string | undefined
+            const renderTimeoutMs = (msg.timeoutMs as number | undefined) ?? 25000
+            const renderMsgId = msg.msgId as string
+            const renderChatId = record.chatId
+            ;(async () => {
+              try {
+                {
+                  const win = this.windowGetter?.()
+                  const target = Array.isArray(win) ? win[0] : win
+                  target?.webContents.send('agent:tool_progress', {
+                    msgId: renderMsgId, chatId: renderChatId,
+                    toolName: 'fetch_page', stage: 'rendering',
+                    detail: `Rendering: ${renderUrl}`,
+                    ts: Date.now(),
+                  })
+                }
+                const { renderSpaPage } = await import('../tools/spaRenderer')
+                const result = await renderSpaPage(renderUrl, { waitSelector, timeoutMs: renderTimeoutMs })
+                {
+                  const win = this.windowGetter?.()
+                  const target = Array.isArray(win) ? win[0] : win
+                  target?.webContents.send('agent:tool_progress', {
+                    msgId: renderMsgId, chatId: renderChatId,
+                    toolName: 'fetch_page', stage: 'done',
+                    ts: Date.now(),
+                  })
+                }
+                worker.postMessage({
+                  type: 'render_page_reply',
+                  replyId,
+                  html: result.html,
+                  title: result.title,
+                  error: result.error,
+                })
+              } catch (e: unknown) {
+                const errMsg = e instanceof Error ? e.message : String(e)
+                {
+                  const win = this.windowGetter?.()
+                  const target = Array.isArray(win) ? win[0] : win
+                  target?.webContents.send('agent:tool_progress', {
+                    msgId: renderMsgId, chatId: renderChatId,
+                    toolName: 'fetch_page', stage: 'error',
+                    ts: Date.now(),
+                  })
+                }
+                worker.postMessage({
+                  type: 'render_page_reply',
+                  replyId,
+                  html: '',
+                  error: errMsg,
+                })
+              }
+            })()
+            break
+          }
         }
       })
 
