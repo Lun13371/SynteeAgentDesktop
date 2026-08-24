@@ -78,7 +78,6 @@ refractor.alias('csharp', ['cs'])
 refractor.alias('ruby', ['rb'])
 import PlanCard from '../PlanCard/PlanCard'
 import Logo from '../Logo/Logo'
-import AttachmentProcessingBlock from '../AttachmentProcessingBlock/AttachmentProcessingBlock'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import type { Message, ToolOutputMode, Attachment } from '../../../../../shared/types'
 import { extractPlanSegments } from '../../../../../shared/planParser'
@@ -966,13 +965,14 @@ const WAITING_PHRASES = [
   'Формулирую...',
 ]
 
-function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesChanged, commandsRun }: {
+function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesChanged, commandsRun, toolProgress }: {
   rateLimitSec?: number
   agentStatus?: string | null
   retry?: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
   lastError?: string | null
   filesChanged?: number
   commandsRun?: number
+  toolProgress?: Record<string, { stage: string; detail?: string; ts: number }>
 }) {
   const [phraseIdx, setPhraseIdx] = useState(0)
   const [visible, setVisible] = useState(true)
@@ -993,12 +993,15 @@ function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesCh
   }, [agentStatus, rateLimitSec, retry, lastError])
 
   const isRateLimit = rateLimitSec && rateLimitSec > 0
-  // Приоритет: rate-limit (секундный таймер) > retry (структурированный
-  // счётчик «повтор 3/5») > lastError (причина без счётчика) > agentStatus
-  // (свободный текст) > generic фраза.
+  // Приоритет: vision_recognition (распознание изображений) > rate-limit >
+  // retry > lastError > agentStatus > generic фраза.
+  const visionProg = toolProgress?.['vision_recognition']
   let text: string
   let cls: string
-  if (isRateLimit) {
+  if (visionProg && visionProg.stage === 'analyzing') {
+    text = visionProg.detail ?? 'Распознаю изображения...'
+    cls = ' msg-waiting-shimmer--status'
+  } else if (isRateLimit) {
     text = `Rate limit — жду ${rateLimitSec}с...`
     cls = ' msg-waiting-shimmer--rl'
   } else if (retry) {
@@ -1439,7 +1442,7 @@ const MessageContent = memo(function MessageContent({
 
         {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
         {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && !liveIters?.length && (
-                    <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
+                    <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} toolProgress={toolProgress} />
         )}
 
         {/* §4.3 — видимый чек-лист плана (todo list).
@@ -1448,31 +1451,6 @@ const MessageContent = memo(function MessageContent({
         {!isUser && (() => {
           const todo = message.todo ?? liveTodo
           return todo && todo.length > 0 ? <TodoChecklist items={todo} /> : null
-        })()}
-
-        {/* AttachmentProcessingBlock — блок обработки вложений.
-            Live: toolProgress['process_attachments'] — стрим идёт из
-            processAttachmentsAndStream (main) ДО старта воркера и во время
-            стриминга токенов. Показывает stages roadmap + прогресс-бар.
-            Пока stage !== 'done' — активная обработка (spinner + shimmer).
-            Когда stage === 'done' — обработка завершена, но стрим токенов
-            может ещё идти — показываем roadmap "всё готово" (без file list).
-            Persisted: message.attachmentResult (сохранено в БД на assistant-
-            сообщении) — финальный список файлов с описаниями. */}
-        {!isUser && (() => {
-          const liveAp = toolProgress?.['process_attachments']
-          if (liveAp) {
-            return (
-              <AttachmentProcessingBlock
-                result={message.attachmentResult ?? { files: [], totalProcessed: 0, totalErrors: 0, totalImages: 0, ms: 0, hasErrors: false }}
-                liveProgress={liveAp}
-              />
-            )
-          }
-          if (message.attachmentResult) {
-            return <AttachmentProcessingBlock result={message.attachmentResult} />
-          }
-          return null
         })()}
 
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
