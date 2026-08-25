@@ -31,7 +31,7 @@ export default function AISettingsTab() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [allModels, setAllModels] = useState<ModelMeta[]>([])
   const [assignments, setAssignments] = useState<ModelAssignment[]>([])
-  const [params, setParams] = useState<ModelParams>({ systemPrompt: '', streaming: true })
+  const [params, setParams] = useState<ModelParams>({ systemPrompt: '', streaming: true, anonymousUserAgent: false })
   const [configuring, setConfiguring] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<Partial<Provider>>({})
   const [editKeys, setEditKeys] = useState<string[]>([''])
@@ -674,6 +674,22 @@ export default function AISettingsTab() {
             <motion.button
               className={`ai-param-toggle ${params.streaming ? 'ai-param-toggle--on' : ''}`}
               onClick={() => updateParams({ streaming: !params.streaming })}
+              whileHover={whileHoverSm}
+              whileTap={whileTapSm}
+              transition={springHover}
+            >
+              <motion.div className="ai-param-toggle-thumb" layout="position" transition={{ type: 'spring', stiffness: 500, damping: 30 }} />
+            </motion.button>
+          </div>
+
+          <div className="ai-param-row ai-param-row--toggle">
+            <label className="ai-param-label">
+              Анонимный User-Agent
+              <span className="ai-param-hint">Скрывать кастомный заголовок Syntee — SDK отправляет стандартный User-Agent как у обычной библиотеки OpenAI</span>
+            </label>
+            <motion.button
+              className={`ai-param-toggle ${params.anonymousUserAgent ? 'ai-param-toggle--on' : ''}`}
+              onClick={() => updateParams({ anonymousUserAgent: !params.anonymousUserAgent })}
               whileHover={whileHoverSm}
               whileTap={whileTapSm}
               transition={springHover}

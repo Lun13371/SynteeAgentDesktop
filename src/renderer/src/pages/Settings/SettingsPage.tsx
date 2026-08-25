@@ -735,6 +735,14 @@ const BG_STYLES: { id: string; label: string; icon: IconName; desc: string }[] =
   { id: 'vortex',   label: 'Вихрь',    icon: 'aperture', desc: 'Вращающаяся чёрная дыра со спиралями' },
   { id: 'flow',     label: 'Поток',    icon: 'wind',     desc: 'Текучие линии тока, как ветер' },
   { id: 'crystal',  label: 'Кристалл', icon: 'gem',      desc: 'Кристаллические ячейки со светящимися гранями' },
+  { id: 'magma',    label: 'Магма',    icon: 'flame',    desc: 'Жидкие капли, сливаются друг с другом + мышь' },
+  { id: 'interference', label: 'Рябь', icon: 'radio',   desc: 'Интерференция волн + мышь' },
+  { id: 'hexgrid',  label: 'Энергосетка', icon: 'hexagon', desc: 'Кристаллическая решётка с бегущими импульсами + мышь' },
+  { id: 'oil',      label: 'Нефть',    icon: 'paintBucket', desc: 'Радужная плёнка на воде' },
+  { id: 'solar',    label: 'Солнце',   icon: 'sun',       desc: 'Кипящая поверхность и корона' },
+  { id: 'dream',    label: 'Мечта',    icon: 'moonStar',  desc: 'Мягкие пастельные градиенты' },
+  { id: 'smoke',    label: 'Дым',      icon: 'cloudFog',  desc: 'Стелющиеся объёмные клубы' },
+  { id: 'tide',     label: 'Прилив',   icon: 'shell',     desc: 'Биолюминесцентные волны с пеной' },
   { id: 'none',    label: 'Выкл',      icon: 'x',        desc: 'Без анимации' },
 ]
 
@@ -1856,6 +1864,30 @@ const BG_STYLE_PARAMS: Record<string, {
   ],
   crystal: [
     { key: 'crystal.scale', label: 'Размер ячеек', min: 3, max: 10, step: 0.5, def: 5, fmt: v => v.toFixed(1) },
+  ],
+  magma: [
+    { key: 'magma.size', label: 'Размер капель', min: 3, max: 8, step: 0.5, def: 5, fmt: v => v.toFixed(1) },
+  ],
+  interference: [
+    { key: 'interference.scale', label: 'Длина волны', min: 5, max: 20, step: 0.5, def: 10, fmt: v => v.toFixed(1) },
+  ],
+  hexgrid: [
+    { key: 'hexgrid.scale', label: 'Размер сот', min: 2, max: 8, step: 0.5, def: 4, fmt: v => v.toFixed(1) },
+  ],
+  oil: [
+    { key: 'oil.scale', label: 'Масштаб', min: 2, max: 6, step: 0.5, def: 3.5, fmt: v => v.toFixed(1) },
+  ],
+  solar: [
+    { key: 'solar.scale', label: 'Размер гранул', min: 2, max: 8, step: 0.5, def: 4, fmt: v => v.toFixed(1) },
+  ],
+  dream: [
+    { key: 'dream.scale', label: 'Масштаб', min: 1, max: 4, step: 0.5, def: 2, fmt: v => v.toFixed(1) },
+  ],
+  smoke: [
+    { key: 'smoke.scale', label: 'Плотность', min: 2, max: 8, step: 0.5, def: 4, fmt: v => v.toFixed(1) },
+  ],
+  tide: [
+    { key: 'tide.waves', label: 'Волны', min: 2, max: 6, step: 1, def: 3 },
   ],
 }
 
