@@ -436,7 +436,361 @@ void main(){
 }`)
 
 // ══════════════════════════════════════════════════════════════════════
-//  10. NETWORK — vertex-based: CPU particles + GL_POINTS + GL_LINES.
+//  10. MAGMA — метаболы: жидкие капли, сливающиеся и разрывающиеся.
+//  Мышь — седьмая капля: водишь по экрану — капли обтекают и сливаются.
+// ══════════════════════════════════════════════════════════════════════
+const MAGMA_FRAG = makeFrag(`
+void main(){
+  vec2 uv = v_uv;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.3;
+  float size = u_param; // 3..8
+
+  // Поле метаболов: 6 капель на орбитах + мышь
+  float field = 0.0;
+  for(int i = 0; i < 6; i++){
+    float fi = float(i);
+    float a = t * (0.4 + fi * 0.06) + fi * 1.047;
+    vec2 c = vec2(
+      0.5 * asp + cos(a + fi * 0.7) * (0.28 + 0.10 * sin(t * 0.6 + fi)),
+      0.5 + sin(a * 1.13 + fi * 1.9) * (0.24 + 0.08 * cos(t * 0.5 + fi * 2.0))
+    );
+    float r = (0.09 + 0.04 * sin(t * 0.9 + fi * 1.7)) * size * 0.2;
+    vec2 dv = uv - c;
+    field += r * r / (dot(dv, dv) + 1e-5);
+  }
+  // Мышь — седьмая капля
+  if(u_mouse.x >= 0.0 && u_mouse.x <= 1.0 && u_mouse.y >= 0.0 && u_mouse.y <= 1.0){
+    vec2 m = vec2(u_mouse.x * asp, u_mouse.y);
+    vec2 dm = uv - m;
+    field += 0.018 / (dot(dm, dm) + 1e-5);
+  }
+
+  // Тело / кромка / ореол
+  float body = smoothstep(1.0, 1.25, field);
+  float rim  = smoothstep(0.75, 1.0, field) - body;
+  float halo = smoothstep(0.25, 0.9, field) * 0.4;
+
+  // Чем глубже внутри — тем горячее
+  vec3 hot = vec3(1.0, 0.9, 0.7);
+  vec3 col = mix(u_color, hot, smoothstep(1.3, 2.4, field));
+
+  float alpha = (body * 0.55 + rim * 0.8 + halo) * u_opacity * u_intensity;
+  fragColor = vec4(col * (0.6 + body * 0.4 + rim * 0.6), alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  11. INTERFERENCE — интерференция волн от нескольких источников.
+//  Круговые волны от 3 точек + мышь = 4-й источник. Красивые полосы.
+// ══════════════════════════════════════════════════════════════════════
+const INTERFERENCE_FRAG = makeFrag(`
+void main(){
+  vec2 uv = v_uv;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.5;
+  float scale = u_param; // 5..20 (длина волны)
+
+  // 3 фиксированных источника
+  vec2 s1 = vec2(0.25 * asp, 0.35);
+  vec2 s2 = vec2(0.75 * asp, 0.30);
+  vec2 s3 = vec2(0.50 * asp, 0.80);
+
+  float d1 = length(uv - s1) * scale;
+  float d2 = length(uv - s2) * scale;
+  float d3 = length(uv - s3) * scale;
+
+  // sin(d - ωt) / d → круговая волна, затухающая от центра
+  float wave = 0.0;
+  wave += sin(d1 - t * 2.0) / max(d1, 1.0);
+  wave += sin(d2 - t * 2.0) / max(d2, 1.0);
+  wave += sin(d3 - t * 2.0) / max(d3, 1.0);
+
+  // Мышь — 4-й источник (усиленный)
+  if(u_mouse.x >= 0.0 && u_mouse.x <= 1.0){
+    vec2 ms = vec2(u_mouse.x * asp, u_mouse.y);
+    float dm = length(uv - ms) * scale;
+    wave += sin(dm - t * 3.0) / max(dm, 1.0) * 1.5;
+  }
+
+  // Нормализация
+  wave = wave * 0.25 + 0.5;
+  wave = smoothstep(0.15, 0.85, wave);
+
+  // Цвет: акцент с интерференционными полосами
+  vec3 col = mix(u_color * 0.25, u_color, wave);
+
+  // Яркие линии интерференции
+  float lines = smoothstep(0.6, 0.85, wave) - smoothstep(0.85, 1.0, wave);
+  col += lines * u_color * 2.0;
+
+  float alpha = wave * u_opacity * u_intensity * 0.55;
+  fragColor = vec4(col, alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  12. HEXGRID — кристаллическая энергосетка: сотовая решётка со
+//  светящимися гранями, по сотам бегут импульсы, мышь подсвечивает соты.
+// ══════════════════════════════════════════════════════════════════════
+const HEXGRID_FRAG = makeFrag(`
+// Расстояние до центра гекса (в гекс-метрике)
+float HexDist(vec2 p){
+  p = abs(p);
+  return max(dot(p, vec2(0.5, 0.8660254)), p.x);
+}
+
+// Гекс-тайлинг: возвращает (локальные координаты, id ячейки)
+vec4 HexCoords(vec2 uv){
+  vec2 r = vec2(1.0, 1.7320508);
+  vec2 h = r * 0.5;
+  vec2 a = mod(uv, r) - h;
+  vec2 b = mod(uv - h, r) - h;
+  vec2 gv = dot(a, a) < dot(b, b) ? a : b;
+  return vec4(gv, uv - gv);
+}
+
+void main(){
+  vec2 uv = v_uv;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.35;
+  float scale = u_param; // 2..8
+
+  vec2 p = uv * scale * 6.0;
+  vec4 hc = HexCoords(p);
+  vec2 gv = hc.xy;   // локальные координаты внутри гекса
+  vec2 id = hc.zw;   // id ячейки (угол решётки)
+
+  // Расстояние до грани гекса
+  float d = 0.5 - HexDist(gv);
+  float edge  = smoothstep(0.06, 0.0, d);  // сама грань
+  float inner = smoothstep(0.0, 0.5, d);   // к центру ячейки
+
+  // 4 импульса бегут вдоль направлений решётки, освещая соты
+  float pulse = 0.0;
+  for(int i = 0; i < 4; i++){
+    float fi = float(i);
+    float ang = fi * 1.0472 + 0.5236;   // направления гекс-решётки
+    vec2 dir = vec2(cos(ang), sin(ang));
+    float phase = fract(t * 0.13 + fi * 0.37);
+    vec2 pos = dir * phase * 14.0 + vec2(-5.0 + fi * 3.5, -4.0 + fi * 2.0);
+    float dd = length(id - pos);
+    pulse += exp(-dd * dd * 0.55) * (1.0 - phase * 0.5);
+  }
+
+  // Мышь подсвечивает соты вокруг курсора
+  float mg = 0.0;
+  if(u_mouse.x >= 0.0 && u_mouse.x <= 1.0 && u_mouse.y >= 0.0 && u_mouse.y <= 1.0){
+    vec2 m = vec2(u_mouse.x * asp, u_mouse.y) * scale * 6.0;
+    mg = exp(-dot(id - m, id - m) * 0.5);
+  }
+
+  // Иридесцентный оттенок по ячейке
+  float cid = id.x * 0.17 + id.y * 0.31;
+  vec3 cellCol = 0.5 + 0.5 * cos(6.28318 * (cid + vec3(0.0, 0.33, 0.67)));
+  cellCol = mix(cellCol, u_color, 0.45);
+
+  float lit = clamp(pulse + mg, 0.0, 1.5);
+
+  vec3 col = cellCol * (0.15 + lit * 0.85);
+  col += u_color * edge * (0.35 + lit * 1.2);
+
+  float alpha = (inner * (0.10 + lit * 0.35) + edge * (0.3 + lit * 0.7))
+              * u_opacity * u_intensity;
+  fragColor = vec4(col, alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  13. OIL — нефтяная плёнка на воде: тонкоплёночная интерференция,
+//  радужные разводы бензина, медленно плывущие по тёмной воде
+// ══════════════════════════════════════════════════════════════════════
+const OIL_FRAG = makeFrag(`
+void main(){
+  vec2 uv = v_uv;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.06;
+  float scale = u_param; // 2..6
+
+  vec2 p = uv * scale;
+  vec2 q = vec2(fbm(p + t), fbm(p + vec2(4.7, 2.1) - t * 0.5));
+  vec2 r = vec2(fbm(p + q * 2.2 + vec2(1.7, 9.2) + t * 0.3),
+                fbm(p + q * 2.2 + vec2(8.3, 2.8) - t * 0.4));
+  float f = fbm(p + r * 1.8);
+
+  // Плёнка есть только там, где f высок
+  float film = smoothstep(0.25, 0.55, f);
+
+  // Толщина плёнки → интерференционные радужные полосы
+  float thick = (f - 0.25) * 6.0 + r.x * 2.0;
+  vec3 iri = 0.5 + 0.5 * cos(6.28318 * (thick + vec3(0.0, 0.33, 0.67)));
+  iri = mix(iri, u_color, 0.22);
+
+  // Тёмная вода под плёнкой
+  vec3 col = mix(vec3(0.02, 0.03, 0.05), iri, film);
+
+  // Блик на плёнке
+  float sheen = smoothstep(0.6, 0.85, f) * 0.35;
+  col += sheen;
+
+  float alpha = (film * 0.6 + sheen) * u_opacity * u_intensity;
+  fragColor = vec4(col, alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  14. SOLAR — солнце: кипящая грануляция поверхности в полярных
+//  координатах + мерцающая корона вокруг диска
+// ══════════════════════════════════════════════════════════════════════
+const SOLAR_FRAG = makeFrag(`
+void main(){
+  vec2 uv = v_uv - 0.5;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.25;
+  float scale = u_param; // 2..8 — размер гранул
+
+  float r = length(uv);
+  float a = atan(uv.y, uv.x);
+
+  // Грануляция: острые кипящие зёрна в полярных координатах
+  vec2 gp = vec2(a * 2.0, r * scale * 3.0) + vec2(t * 0.15, -t * 0.4);
+  float g = fbm(gp);
+  g = smoothstep(0.35, 0.75, g);
+
+  // Диск солнца с мягкой кромкой
+  float disc = smoothstep(0.32, 0.30, r);
+  float limb = exp(-abs(r - 0.30) * 25.0) * 0.6;  // светящийся край
+
+  // Температура: горячие пятна → белее
+  vec3 hot  = vec3(1.0, 0.95, 0.8);
+  vec3 mid  = u_color * 1.2;
+  vec3 deep = u_color * 0.4;
+  vec3 col = mix(deep, mid, g);
+  col = mix(col, hot, smoothstep(0.7, 0.95, g));
+
+  // Корона: угловое мерцание вокруг диска
+  float cor = fbm(vec2(a * 3.0 + t * 0.2, r * 4.0 - t * 0.5));
+  float corona = exp(-r * 4.5) * (0.5 + cor);
+
+  col = mix(col, u_color * 0.8, corona * 0.6);
+  col += hot * (corona * 0.3 + limb * 0.5);
+
+  float alpha = (disc * (0.35 + g * 0.5) + corona * 0.55 + limb * 0.4)
+              * u_opacity * u_intensity;
+  fragColor = vec4(col, alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  15. DREAM — мечта: мягкие пастельные морфящиеся градиенты,
+//  как живые обои. Никаких резких границ, только плавные переливы
+// ══════════════════════════════════════════════════════════════════════
+const DREAM_FRAG = makeFrag(`
+void main(){
+  vec2 uv = v_uv;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.05;
+  float scale = u_param; // 1..4
+
+  vec2 p = uv * scale;
+
+  // Очень плавный низкочастотный warp
+  vec2 q = vec2(fbm4(p * 0.6 + t), fbm4(p * 0.6 + vec2(8.3, 2.8) - t * 0.7));
+  float f = fbm4(p * 0.8 + q * 1.6);
+
+  // Пастельная палитра вокруг акцента: холодный и тёплый сдвиги
+  vec3 c1 = u_color;
+  vec3 c2 = u_color * vec3(0.7, 0.85, 1.3);
+  vec3 c3 = u_color * vec3(1.3, 0.9, 0.8);
+  vec3 col = mix(c1, c2, smoothstep(0.2, 0.8, f));
+  col = mix(col, c3, smoothstep(0.4, 1.0, q.x));
+
+  // Мягкое свечение — никаких резких границ
+  col *= 0.35 + f * 0.5;
+  col += u_color * 0.12;
+
+  float alpha = (0.25 + f * 0.4) * u_opacity * u_intensity;
+  fragColor = vec4(col, alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  16. SMOKE — объёмный дым: стелется вверх, тонкие волокна-клубы,
+//  боковой дрейф от шума, мягкое свечение изнутри
+// ══════════════════════════════════════════════════════════════════════
+const SMOKE_FRAG = makeFrag(`
+void main(){
+  vec2 uv = v_uv;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.1;
+  float scale = u_param; // 2..8
+
+  // Вертикальное сжатие + адвекция вверх
+  vec2 p = vec2(uv.x * scale * 1.2, uv.y * scale * 0.45 - t);
+
+  // Боковой дрейф от шума
+  float drift = fbm4(vec2(uv.y * scale * 0.8 - t, 7.7)) - 0.5;
+  p.x += drift * 1.5;
+
+  vec2 q = vec2(fbm4(p + t * 0.3), fbm4(p + vec2(3.1, 5.7) - t * 0.2));
+  float f = fbm(p + q * 1.5);
+
+  // Клубы: ridged-шум — тонкие волокна дыма
+  float wisp = 1.0 - abs(2.0 * f - 1.0);
+  wisp = pow(wisp, 2.5);
+
+  // Затухание к низу и верху
+  float vfade = smoothstep(0.0, 0.25, uv.y) * smoothstep(1.05, 0.55, uv.y);
+
+  vec3 col = mix(u_color * 0.5, u_color, wisp);
+  col += u_color * 0.15;
+
+  float alpha = wisp * vfade * u_opacity * u_intensity * 0.8;
+  fragColor = vec4(col, alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  17. TIDE — прилив: биолюминесцентные волны накатывают снизу,
+//  светящиеся гребни с искрящейся пеной
+// ══════════════════════════════════════════════════════════════════════
+const TIDE_FRAG = makeFrag(`
+void main(){
+  vec2 uv = v_uv;
+  float asp = u_res.x / u_res.y;
+  uv.x *= asp;
+  float t = u_time * u_speed * 0.3;
+  float waves = u_param; // 2..6
+
+  float glow = 0.0;
+  for(int i = 0; i < 6; i++){
+    if(float(i) >= waves) break;
+    float fi = float(i);
+    // Волна накатывает снизу вверх, своя фаза и скорость
+    float base = 0.10 + fi * (0.75 / waves);
+    float ph = fract(t * 0.13 + fi * 0.37);
+    float y = base + ph * (0.85 / waves);
+    // Рельеф гребня — каждый волнистый по-своему
+    float xw = fbm4(vec2(uv.x * 3.0 + fi * 17.0, fi * 7.7)) - 0.5;
+    y += xw * 0.08;
+    // Гребень светится, гаснет по мере движения
+    float d = uv.y - y;
+    float crest = exp(-abs(d) * 55.0) * (1.0 - ph * 0.6);
+    // Пена — искры на гребне
+    float foam = exp(-abs(d) * 90.0) * step(0.86, hash21(floor(uv * vec2(220.0, 90.0))));
+    glow += crest + foam * 0.9;
+  }
+
+  // Биолюминесцентный цвет: бирюза + акцент
+  vec3 lum = mix(vec3(0.2, 0.9, 0.8), u_color, 0.5);
+  vec3 col = lum * glow;
+
+  float alpha = glow * u_opacity * u_intensity;
+  fragColor = vec4(col, alpha);
+}`)
+
+// ══════════════════════════════════════════════════════════════════════
+//  18. NETWORK — vertex-based: CPU particles + GL_POINTS + GL_LINES.
 //  Точь-в-точь как в чит-меню Rich: 100 частиц дрейфуют по экрану,
 //  БЕЛЫЕ точки с Гаусс-свечением, ЛИНИИ (alpha 0.8) только между
 //  частицами рядом с мышью. Полное разрешение, нулевая нагрузка на GPU.
@@ -674,6 +1028,14 @@ const FRAG: Record<string, string> = {
   vortex: VORTEX_FRAG,
   flow: FLOW_FRAG,
   crystal: CRYSTAL_FRAG,
+  magma: MAGMA_FRAG,
+  interference: INTERFERENCE_FRAG,
+  hexgrid: HEXGRID_FRAG,
+  oil: OIL_FRAG,
+  solar: SOLAR_FRAG,
+  dream: DREAM_FRAG,
+  smoke: SMOKE_FRAG,
+  tide: TIDE_FRAG,
   // network — vertex-based (GL_POINTS + GL_LINES), не fullscreen fragment shader
 }
 
@@ -769,6 +1131,14 @@ function defaultParam(style: BgStyle): number {
     case 'vortex': return p['vortex.scale'] ?? 4.0
     case 'flow': return p['flow.scale'] ?? 5.0
     case 'crystal': return p['crystal.scale'] ?? 5.0
+    case 'magma': return p['magma.size'] ?? 5.0
+    case 'interference': return p['interference.scale'] ?? 10.0
+    case 'hexgrid': return p['hexgrid.scale'] ?? 4.0
+    case 'oil': return p['oil.scale'] ?? 3.5
+    case 'solar': return p['solar.scale'] ?? 4.0
+    case 'dream': return p['dream.scale'] ?? 2.0
+    case 'smoke': return p['smoke.scale'] ?? 4.0
+    case 'tide': return p['tide.waves'] ?? 3.0
     case 'network': return p['network.linkDist'] ?? 0.15
     default: return 1.0 // aurora — без параметра
   }

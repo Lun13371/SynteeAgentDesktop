@@ -17,6 +17,9 @@ import {
 Droplets,
   Share2,
   Aperture, Wind, Gem,
+  Radio,
+  Flame,
+  PaintBucket, Sun, MoonStar, CloudFog, Shell,
   type LucideProps,
 } from 'lucide-react'
 import './AppIcon.css'
@@ -88,6 +91,13 @@ const ICONS = {
   aperture: Aperture,
   wind: Wind,
   gem: Gem,
+  radio: Radio,
+  flame: Flame,
+  paintBucket: PaintBucket,
+  sun: Sun,
+  moonStar: MoonStar,
+  cloudFog: CloudFog,
+  shell: Shell,
   // Статистика (Настройки → Статистика)
   chart: BarChart3,
   activity: Activity,

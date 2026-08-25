@@ -9,6 +9,14 @@ export type BgStyle =
   | 'vortex'
   | 'flow'
   | 'crystal'
+  | 'magma'
+  | 'interference'
+  | 'hexgrid'
+  | 'oil'
+  | 'solar'
+  | 'dream'
+  | 'smoke'
+  | 'tide'
   | 'none'
 
 export type BgMessage =
@@ -41,7 +49,7 @@ export const FALLBACK_RGB: [number, number, number] = [1, 1, 1]
 export const BASE_INTENSITY = 0.55
 
 /** Список валидных стилей (для нормализации legacy-значений из стора). */
-export const BG_STYLES_LIST: BgStyle[] = ['aurora', 'silk', 'warp', 'nebula', 'plasma', 'caustics', 'network', 'vortex', 'flow', 'crystal']
+export const BG_STYLES_LIST: BgStyle[] = ['aurora', 'silk', 'warp', 'nebula', 'plasma', 'caustics', 'network', 'vortex', 'flow', 'crystal', 'magma', 'interference', 'hexgrid', 'oil', 'solar', 'dream', 'smoke', 'tide']
 
 /** Старые/неизвестные стили (частицы, матрица и т.д.) → aurora. */
 export function normalizeBgStyle(raw: string | null | undefined): BgStyle {

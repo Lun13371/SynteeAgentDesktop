@@ -4,6 +4,7 @@ import type { Provider, ModelMeta, ModelAssignment, ModelParams } from '../../sh
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import { getCatalogModel, inferSpeed, getCatalogStatus, type CatalogModelInfo } from '../../core/tokens/modelCatalog'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
+import { getOpencodeZenHeaders, isOpencodeProvider } from '../../shared/constants'
 
 // ── Кэш моделей Syntee-Gateway ─────────────────────────────────────────────
 // Переехал в core/tokens/gatewayModelsCache.ts: его теперь читает и core-код
@@ -37,6 +38,7 @@ function getCatalogModelCached(providerId: string, modelId: string): CatalogMode
 const DEFAULT_PARAMS: ModelParams = {
   systemPrompt: '',
   streaming: true,
+  anonymousUserAgent: false,
 }
 
 /**
@@ -182,6 +184,8 @@ export function registerProviderIPC(store: Store): void {
         headers: {
           'Authorization': `Bearer ${provider.apiKey}`,
           'x-api-key': provider.apiKey,
+          // Zen-провайдерам — cli-заголовки (иначе анонимные rate-лимиты)
+          ...(isOpencodeProvider(provider.id, provider.type) ? getOpencodeZenHeaders() : {}),
         },
       })
       return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` }
@@ -206,6 +210,8 @@ export function registerProviderIPC(store: Store): void {
           // Если apiKey пуст — fallback на 'public' (как делает opencode CLI).
           'Authorization': `Bearer ${provider.apiKey || 'public'}`,
           'Content-Type': 'application/json',
+          // Zen-провайдерам — cli-заголовки (иначе анонимные rate-лимиты)
+          ...(isOpencodeProvider(provider.id, provider.type) ? getOpencodeZenHeaders() : {}),
         },
       })
       if (!res.ok) {

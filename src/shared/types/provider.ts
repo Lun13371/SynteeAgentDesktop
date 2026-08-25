@@ -65,6 +65,8 @@ export interface ModelAssignment {
 export interface ModelParams {
   systemPrompt: string     // глобальная доп. инструкция (аппендится, не перезаписывает)
   streaming: boolean
+  /** Скрывать кастомный User-Agent — SDK шлёт свой стандартный (как обычная openai-либа). */
+  anonymousUserAgent?: boolean
 }
 
 export type ApprovalMode = 'ask' | 'auto' | 'full'
