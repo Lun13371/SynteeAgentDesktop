@@ -59,7 +59,11 @@ export async function generateImage(
   // Стандартный OpenAI-совместимый путь для всех провайдеров
   try {
     const modelParams = store.get('modelParams') as ModelParams | undefined
-    const client = new OpenAI({ apiKey, baseURL: provider.baseUrl, defaultHeaders: getIdentityHeaders(modelParams?.anonymousUserAgent ?? false) })
+    const client = new OpenAI({
+      apiKey,
+      baseURL: provider.baseUrl,
+      defaultHeaders: getIdentityHeaders(modelParams?.anonymousUserAgent ?? false),
+    })
     const model = args.model || imageModelId
     const size = (args.size || store.get('imageDefaultSize', '1024x1024') as string) as Parameters<typeof client.images.generate>[0]['size']
     const quality = (args.quality || store.get('imageDefaultQuality', 'standard') as string) as Parameters<typeof client.images.generate>[0]['quality']

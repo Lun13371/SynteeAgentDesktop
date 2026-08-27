@@ -44,7 +44,7 @@ export function registerImageIPC(store: Store, _mainWindow: { getWindow: () => B
 
     try {
       const modelParams = store.get('modelParams') as ModelParams | undefined
-      const client = new OpenAI({ apiKey, baseURL, defaultHeaders: getIdentityHeaders(modelParams?.anonymousUserAgent ?? false) })
+      const client = new OpenAI({ apiKey, baseURL, defaultHeaders: modelParams?.anonymousUserAgent ? {} : getIdentityHeaders(modelParams?.anonymousUserAgent ?? false) })
       const size = (params.size || '1024x1024') as Parameters<typeof client.images.generate>[0]['size']
 
       const response = await client.images.generate({
