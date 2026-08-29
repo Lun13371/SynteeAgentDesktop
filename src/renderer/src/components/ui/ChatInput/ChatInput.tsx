@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, memo, useCallback, KeyboardEvent } from 'r
 import { motion, AnimatePresence } from 'framer-motion'
 import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
-import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
@@ -621,6 +620,8 @@ function ChatInput({
         lang={lang}
         mainModelId={mainModelId}
         onMainModelChange={onMainModelChange}
+        reasoningValue={reasoningValue}
+        onReasoningChange={onReasoningChange}
         onOpenProjectSettings={onOpenProjectSettings}
       />
 
@@ -722,10 +723,6 @@ function ChatInput({
 
           {!isIncognito && (
             <ApprovalModeSelector value={approvalMode} onChange={handleApprovalChange} compact />
-          )}
-
-          {!isIncognito && mainModelId && onReasoningChange && (
-            <ReasoningSelector modelId={mainModelId} value={reasoningValue} onChange={onReasoningChange} />
           )}
 
           {showContextRing && !isIncognito && (

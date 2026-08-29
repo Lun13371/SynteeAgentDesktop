@@ -166,6 +166,40 @@ const REASONING_TABLE: Array<{ pattern: RegExp; config: ModelReasoningConfig }> 
   },
 ]
 
+// ── Фоллбек-конфиги для моделей без записи в таблице ────────────────────────
+
+/** Generic reasoning_effort — когда каталог (models.dev) помечает модель как
+ *  reasoning, но точных уровней мы не знаем (не gateway, нет в таблице). */
+export const GENERIC_EFFORT_FALLBACK: ModelReasoningConfig = {
+  paramType: 'reasoning_effort',
+  apiParam: 'reasoning_effort',
+  options: [
+    { label: 'off',    value: ''       },
+    { label: 'low',    value: 'low'    },
+    { label: 'medium', value: 'medium' },
+    { label: 'high',   value: 'high'   },
+  ],
+  default: '',
+  hint: 'Режим мышления (models.dev)',
+}
+
+/** Anthropic extended thinking — для claude-моделей, которых нет в таблице
+ *  (например claude-opus-5 у стороннего провайдера). */
+export const CLAUDE_THINKING_FALLBACK: ModelReasoningConfig = {
+  paramType: 'thinking_budget',
+  apiParam: 'thinking',
+  options: [
+    { label: 'off', value: ''      },
+    { label: '1k',  value: '1024'  },
+    { label: '5k',  value: '5000'  },
+    { label: '10k', value: '10000' },
+    { label: '16k', value: '16000' },
+    { label: '32k', value: '32000' },
+  ],
+  default: '',
+  hint: 'budget_tokens для extended thinking (Anthropic)',
+}
+
 // ── Публичные функции ────────────────────────────────────────────────────────
 
 /** Возвращает конфиг reasoning для модели или null. */
@@ -176,11 +210,27 @@ export function getReasoningConfig(modelId: string): ModelReasoningConfig | null
   return null
 }
 
-/** Строит extra-параметры для API запроса. */
+/**
+ * Строит extra-параметры для API запроса.
+ *
+ * meta — ModelMeta модели: если Syntee-Gateway отдал reasoning-уровни в
+ * /v1/models (meta.reasoning.supported), они приоритетнее статической таблицы —
+ * шлём reasoning_effort как есть (gateway сам транслирует в native-формат).
+ */
 export function buildReasoningParams(
   modelId: string,
-  selectedValue: string
+  selectedValue: string,
+  meta?: { reasoning?: { supported: boolean; levels: string[] } } | null
 ): Record<string, unknown> {
+  // Пустое значение / 'off' — мышление выключено, параметр не шлём вовсе
+  // (gateway без reasoning_effort → thinking отключён, проверено тестами).
+  if (!selectedValue || selectedValue === 'off') return {}
+
+  // 1) Gateway-модель: уровни из /v1/models — authoritative.
+  if (meta?.reasoning?.supported) {
+    return { reasoning_effort: selectedValue }
+  }
+
   const config = getReasoningConfig(modelId)
   if (!config || config.paramType === 'always_on') return {}
 

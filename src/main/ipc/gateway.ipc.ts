@@ -31,6 +31,8 @@ export interface GatewayModel {
   supports_tools?: boolean
   supports_vision?: boolean
   max_tokens?: number
+  /** Режимы мышления из конфига группы (уровни reasoning_effort). */
+  reasoning?: { supported: boolean; levels: string[] }
   pricing?: {
     input_price: number
     output_price: number
@@ -105,6 +107,7 @@ function toModelMeta(m: GatewayModel): ModelMeta {
     speed,
     capabilities: caps,
     description: m.description ?? (m.routing_mode ? `Маршрут: ${m.routing_mode}` : undefined),
+    reasoning: m.reasoning,
   }
 }
 
