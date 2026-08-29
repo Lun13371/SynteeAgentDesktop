@@ -6,6 +6,7 @@ import type Store from 'electron-store'
 // "A dynamic import callback was not specified"). require — безопасен.
 import { isMainThread, workerData } from 'worker_threads'
 import { buildReasoningParams } from '../../shared/reasoningModels'
+import { getGatewayModelsCache } from '../tokens/gatewayModelsCache'
 import { getNextApiKey } from '../../shared/roundRobin'
 import { getIdentityHeaders, getOpencodeZenHeaders, isOpencodeProvider } from '../../shared/constants'
 import type { Provider, ModelParams } from '../../shared/types'
@@ -262,9 +263,11 @@ export class AIClient {
       } catch { /* ok — tiktoken не критичен */ }
     }
 
-    // Берём reasoning параметры из store (выбраны пользователем в UI)
+    // Берём reasoning параметры из store (выбраны пользователем в UI).
+    // Для gateway-моделей уровни мышления приходят из /v1/models (meta.reasoning).
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
-    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue) : {}
+    const gwMeta = getGatewayModelsCache().find(m => m.id === model)
+    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue, gwMeta) : {}
 
     let attempt = 0
     let retried401 = false
@@ -579,7 +582,8 @@ export class AIClient {
     const temperature = DEFAULT_TEMPERATURE
     const maxTokensRaw = DEFAULT_MAX_TOKENS
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
-    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue) : {}
+    const gwMeta = getGatewayModelsCache().find(m => m.id === model)
+    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue, gwMeta) : {}
 
     // Для Anthropic extended thinking: max_tokens ВКЛЮЧАЕТ reasoning токены.
     // Если budget_tokens > max_tokens, API обрежет на max_tokens и ответ будет пустой.

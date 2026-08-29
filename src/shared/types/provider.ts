@@ -42,6 +42,8 @@ export interface ModelMeta {
   capabilities: ModelCapability[]
   description?: string
   isCustom?: boolean       // добавлена пользователем вручную
+  /** Режимы мышления (reasoning_effort) — из /v1/models Syntee-Gateway. */
+  reasoning?: { supported: boolean; levels: string[] }
 }
 
 export type ModelRole =

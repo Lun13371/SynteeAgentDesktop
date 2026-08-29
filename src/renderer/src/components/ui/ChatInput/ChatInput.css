@@ -528,6 +528,22 @@
   margin-bottom: 4px;
 }
 
+/* Правая группа status-row: селектор мышления + селектор модели.
+   Прижата к правому краю; мышление всегда слева от модели. Когда
+   у модели нет мышления — ReasoningSelector не рендерится и модель
+   остаётся прижатой справа (margin-left:auto живёт на группе). */
+.chat-input-status-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+/* Внутри правой группы авто-отступ модели не нужен — группа уже прижата */
+.chat-input-status-right .model-selector {
+  margin-left: 0;
+}
+
 /* Workdir-бейдж — индикатор рабочей директории чата (как cwd-indicator
    в Codex CLI). Не интерактивный, только информационный. */
 .chat-input-workdir-badge {
