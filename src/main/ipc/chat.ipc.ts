@@ -56,6 +56,7 @@ import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
 import { getMcpManager } from '../../core/mcp/McpManager'
+import { getPluginManager } from '../../core/plugins/pluginManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult } from '../../shared/types'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { messageToContextMessages } from './chatContextHelpers'
@@ -624,6 +625,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }, [])
     }
 
+    // Active plugins for a brief note in the system prompt.
+    // In incognito — empty (privacy).
+    let activePlugins: import('../../core/prompts/buildSystemPrompt').PluginPromptInfo[] = []
+    if (!isIncognito) {
+      activePlugins = withRetrySync('activePlugins', () => {
+        let pluginProjectId: string | undefined
+        if (workdir) {
+          pluginProjectId = getAllProjects().find(p => p.workdir === workdir)?.id
+        }
+        return getPluginManager().getActivePluginsForChat({
+          projectWorkdir: workdir,
+          projectId: pluginProjectId,
+          isIncognito,
+        })
+      }, [])
+    }
+
     const mergedWorkingMemory = summary
       ? `${workingMemory ? workingMemory + '\n\n' : ''}## Summary of previous conversation context\n(Summary of earlier messages. Use this for context — tasks, decisions, files, and state from before compaction. Continue from where the conversation left off.)\n${summary}`
       : workingMemory
@@ -654,6 +672,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Absolute path to the global skills folder — for the install reference in the prompt.
     let globalSkillsDir = ''
     try { globalSkillsDir = path.join(app.getPath('userData'), 'skills') } catch { /* app may be unavailable */ }
+    // Absolute path to the global plugins folder — same purpose.
+    let globalPluginsDir = ''
+    try { globalPluginsDir = path.join(app.getPath('userData'), 'plugins') } catch { /* app may be unavailable */ }
 
     // Project notes — agent sees note titles in the system prompt.
     // In incognito — skip (privacy). Only project notes, not chat notes.
@@ -662,7 +683,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       notesInfo = withRetrySync('notesInfo', () => getProjectNotesInfo(promptProjectId!), undefined)
     }
 
-    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents })
+    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents })
 
   }
 
@@ -750,6 +771,45 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       const msg = (e as Error).message
       log('[list_extensions] Skills error:', msg)
       lines.push(`Ошибка загрузки скиллов: ${msg}`)
+    }
+
+    // Plugins
+    lines.push('')
+    lines.push('## Плагины')
+    lines.push('Плагины — локальные расширения с кодом (utilityProcess). Их тулы имеют формат plugin__{pluginId}__{toolName} и вызываются как обычные тулы.')
+    try {
+      const wctx = (() => {
+        try { return getChatWorkdirContext(chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
+      })()
+      const workdir = wctx.workdir
+      let pluginProjectId: string | undefined
+      if (workdir) {
+        pluginProjectId = getAllProjects().find(p => p.workdir === workdir)?.id
+      }
+      const allPlugins = getPluginManager().getAllWithState({
+        projectWorkdir: workdir,
+        projectId: pluginProjectId,
+      })
+      if (allPlugins.length === 0) {
+        lines.push('Плагины не установлены. Папка плагина: plugin.json + entry (см. секцию Where to install extensions).')
+      } else {
+        for (const p of allPlugins) {
+          const statusIcon = p.status === 'running' ? '✓' : p.status === 'error' ? '✗' : '○'
+          lines.push(`- ${statusIcon} **${p.manifest.name}** (id: ${p.id}, v${p.manifest.version}, ${p.status})${p.state.enabled ? '' : ' [отключён]'}${p.source === 'global' ? '' : ' [проект]'}`)
+          if (p.error) lines.push(`  Ошибка: ${p.error.slice(0, 200)}`)
+          if (p.manifest.description) lines.push(`  ${p.manifest.description}`)
+          if (p.tools.length > 0) {
+            lines.push(`  Тулы: ${p.tools.map(t => t.shortName).join(', ')}`)
+          }
+          if (p.manifest.permissions?.length) {
+            lines.push(`  Права: ${p.manifest.permissions.join(', ')}`)
+          }
+        }
+      }
+    } catch (e) {
+      const msg = (e as Error).message
+      log('[list_extensions] Plugins error:', msg)
+      lines.push(`Ошибка загрузки плагинов: ${msg}`)
     }
 
     return lines.join('\n')
@@ -1557,6 +1617,22 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       console.error('[chat:send] MCP load failed:', (e as Error).message)
     }
 
+    // Plugins: сбор тулов запущенных плагинов для агента. Синхронно —
+    // getActiveToolsForChat возвращает только тулы уже запущенных процессов.
+    let pluginTools: Array<{ name: string; shortName: string; description: string; inputSchema: Record<string, unknown>; pluginId: string }> = []
+    try {
+      pluginTools = getPluginManager().getActiveToolsForChat({
+        projectWorkdir: chatWorkdir,
+        projectId: (() => {
+          if (!chatWorkdir) return undefined
+          return getAllProjects().find(p => p.workdir === chatWorkdir)?.id
+        })(),
+        isIncognito: isIncognitoRun,
+      })
+    } catch (e) {
+      console.error('[chat:send] plugins load failed:', (e as Error).message)
+    }
+
     // projectId для fast context indexing (tree-sitter индекс привязан к проекту)
     let fastContextProjectId: string | undefined
     if (chatWorkdir) {
@@ -1609,11 +1685,20 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         fastContextWasmDir,
         mcpTools,
         mcpApprovalMap,
+        pluginTools,
       },
       env: process.env,
     })
     run.worker = worker
     activeRuns.set(params.chatId, run)
+
+    // Plugins: хук chat:message — fire-and-forget, не блокирует чат.
+    // Инкогнито-чаты не отправляются плагинам (приватность).
+    if (!isIncognitoRun) {
+      try {
+        getPluginManager().emitChatMessage(params.chatId, params.content ?? '')
+      } catch { /* плагины недоступны — не роняем чат */ }
+    }
 
     // ── Периодический checkpoint стриминга в БД (каждые 3 сек) ──
     // При жёстком краше процесса (SIGSEGV, kill -9, OOM, BSOD) ни before-quit,
@@ -2212,6 +2297,44 @@ ${subModeOutro}`,
           break
         }
 
+        case 'plugin_call': {
+          ;(async () => {
+            try {
+              // Событие tool:call для плагинов (fire-and-forget).
+              try { getPluginManager().emitToolCall(msg.toolName as string, (msg.args as Record<string, unknown>) ?? {}) } catch { /* ignore */ }
+              const result = await getPluginManager().callToolByName(
+                msg.toolName as string,
+                (msg.args as Record<string, unknown>) ?? {},
+              )
+              worker.postMessage({
+                type: 'plugin_call_reply',
+                replyId: msg.replyId,
+                success: result.success,
+                output: result.output,
+                error: result.error,
+              })
+            } catch (e) {
+              worker.postMessage({
+                type: 'plugin_call_reply',
+                replyId: msg.replyId,
+                success: false,
+                output: '',
+                error: (e as Error).message,
+              })
+            }
+          })()
+          break
+        }
+
+        case 'tool_call_event': {
+          // Любой тул агента вызван (worker → main) → событие tool:call
+          // всем запущенным плагинам. Fire-and-forget.
+          try {
+            getPluginManager().emitToolCall(msg.toolName as string, (msg.args as Record<string, unknown>) ?? {})
+          } catch { /* ignore */ }
+          break
+        }
+
         case 'list_extensions': {
           ;(async () => {
             try {
@@ -2772,6 +2895,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
       mode: chatMode,
       mcpTools: params.incognito ? undefined : mcpTools,
+      pluginTools: params.incognito ? undefined : pluginTools,
     })
     if (params.sideChatParentId) {
       // Side-чат (доп-чат) — read-only набор: только чтение файлов/поиск +

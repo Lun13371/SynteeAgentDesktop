@@ -76,6 +76,16 @@ export interface AgentCallbacks {
    */
   onMcpRequiresApproval?: (fullToolName: string) => boolean
   /**
+   * Вызов тула плагина (round-trip в main-процесс, где живёт PluginManager).
+   * fullToolName = plugin__{pluginId}__{toolName}.
+   */
+  onPluginCall?: (fullToolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; output: string; error?: string }>
+  /**
+   * Уведомление о вызове ЛЮБОГО тула (fire-and-forget, для события
+   * tool:call у плагинов). Не влияет на выполнение.
+   */
+  onToolCall?: (name: string, args: Record<string, unknown>) => void
+  /**
    * Запрос списка установленных расширений (MCP-серверы + skills).
    * Round-trip в main-процесс, где есть доступ к McpManager и SkillManager.
    * Возвращает текстовый отчёт для агента.

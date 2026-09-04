@@ -36,7 +36,7 @@ import { computeLiveChanges } from '../../utils/changes'
 import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
-import { parseSlashCommandWithCustom } from '../../../../shared/slashCommands'
+import { parseSlashCommandWithCustom, hydrateCommands } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import { stripAttachTokens } from '../../../../shared/attachmentMarkdown'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
@@ -1225,6 +1225,28 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // rAF-loop), работает даже если предыдущий стрим ещё не завершился.
     pinAutoscroll(true)
 
+    // ── Команда плагина (registerCommand) — перехватываем ДО агента ──
+    // RPC в процесс плагина, результат сохраняется в БД как пара
+    // user+assistant сообщений (переживает перезагрузку).
+    if (slash?.command.plugin) {
+      if (!currentChatId) { toast('Создай чат перед командой плагина', 'info'); return }
+      try {
+        const res = await window.syntee.plugins.executeCommand({
+          chatId: currentChatId,
+          pluginId: slash.command.plugin.pluginId,
+          name: slash.command.plugin.name,
+          args: slash.args,
+          text: raw,
+        }) as { ok: boolean; error?: string; userMsg?: Message; assistantMsg?: Message }
+        if (res.error && !res.assistantMsg) { toast(res.error, 'error'); return }
+        if (res.userMsg) addMessage(res.userMsg)
+        if (res.assistantMsg) addMessage(res.assistantMsg)
+      } catch (e) {
+        toast('Ошибка команды плагина: ' + String((e as Error)?.message ?? e), 'error')
+      }
+      return
+    }
+
     if (slash?.command.name === 'clear') {
       if (currentChatId) { setMessages([]); toast('Чат очищен', 'info') }
       return
@@ -1534,6 +1556,28 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     setReplyTo([])
 
+    // ── beforeSend-хук плагинов (permission 'chat') ──
+    // Плагин может отклонить отправку (allowed:false) или изменить контент.
+    // Только для обычных пользовательских сообщений (slash-команды плагинов
+    // перехватываются выше и не должны гейтиться модерацией).
+    let contentToSend = aiContent
+    if (!slash) {
+      try {
+        const hook = await window.syntee.plugins.beforeSend({ chatId, content: contentToSend }) as { allowed?: boolean; content?: string; reason?: string }
+        if (hook && hook.allowed === false) {
+          // Восстанавливаем текст в инпуте (ChatInput очистил его при onSend).
+          handleDraftChange(raw)
+          toast(hook.reason ? `Отправка отклонена плагином: ${hook.reason}` : 'Отправка отклонена плагином', 'error')
+          return
+        }
+        if (hook && typeof hook.content === 'string' && hook.content !== contentToSend) {
+          contentToSend = hook.content
+        }
+      } catch {
+        // Ошибка IPC-хука — отправляем как обычно, не блокируем пользователя.
+      }
+    }
+
     // Копия вложений для отправки — очистим draft до await, чтобы UI сразу
     // обновился (чипы пропадут из инпута). main-процесс получит их в params.
     const attachmentsToSend = [...draftAttachmentsRef.current]
@@ -1552,7 +1596,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // порядок будет нормальным: user1 → assistant1 → user2 → assistant2.
     const result = await window.syntee.chat.send({
       chatId,
-      content: aiContent,
+      content: contentToSend,
       displayContent: displayContent !== aiContent ? displayContent : undefined,
       slashCommand: slash ? { name: slash.command.name, args: slash.args } : undefined,
       userMsgId: userMsg.id,
@@ -1619,7 +1663,36 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // Deps: refs и store-actions стабильны; меняются только редкие
     // data-значения (режимы, replyTo, customCommands) — во время стриминга
     // ссылка handleSend стабильна, memo ChatInput не пробивается.
-  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, persona, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll])
+  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, persona, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll, handleDraftChange])
+
+  // ── plugins:chat-action — действия из плагинов в текущем чате ──
+  //   send:   отправить сообщение от имени пользователя (silent — вставить в инпут)
+  //   reply:  сохранить ответ плагина как assistant-сообщение (saveReply)
+  useEffect(() => {
+    const off = window.syntee.on('plugins:chat-action', (data: unknown) => {
+      const d = data as { action: 'send' | 'reply'; text: string; silent?: boolean }
+      if (!d || typeof d.text !== 'string') return
+      if (d.action === 'send') {
+        if (d.silent) {
+          const prev = draftRef.current ?? ''
+          const sep = prev === '' ? '' : (prev.endsWith(' ') || prev.endsWith('\n') ? '' : ' ')
+          handleDraftChange(prev + sep + d.text)
+        } else {
+          void handleSend(d.text)
+        }
+        return
+      }
+      // reply → сохранить как сообщение ассистента в текущем чате.
+      const chatId = useChatStore.getState().currentChatId
+      if (!chatId) return
+      void window.syntee.plugins.saveReply({ chatId, text: d.text })
+        .then((res: { ok?: boolean; message?: Message }) => {
+          if (res?.ok && res.message) addMessage(res.message)
+        })
+        .catch(() => {})
+    })
+    return () => { off?.() }
+  }, [handleSend, handleDraftChange, addMessage])
 
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
@@ -1705,7 +1778,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     let cancelled = false
     const load = async () => {
       try {
-        const cmds = await window.syntee.commands.list({ projectWorkdir: currentWorkdir }) as SlashCommand[]
+        // hydrateCommands: IPC приносит команды без функции systemPrompt
+        // (structured clone не переносит функции) — восстанавливаем из
+        // promptTemplate. Без этого /name кастомной команды падало бы
+        // на slash.command.systemPrompt(args) ниже в handleSend.
+        const cmds = hydrateCommands(await window.syntee.commands.list({ projectWorkdir: currentWorkdir, chatId: currentChatId ?? undefined }) as SlashCommand[])
         if (!cancelled) setCustomCommands(cmds)
       } catch (e) {
         console.error('[ChatPage] commands.list failed', e)
@@ -1713,7 +1790,19 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     load()
     return () => { cancelled = true }
-  }, [currentWorkdir])
+  }, [currentWorkdir, currentChatId])
+
+  // Команды плагинов: перезагружаем список при изменении плагинов
+  // (запуск/остановка/reload регистрирует/снимает команды).
+  useEffect(() => {
+    const off = window.syntee.on('plugins:changed', () => {
+      window.syntee.commands.list({
+        projectWorkdir: currentWorkdir,
+        chatId: currentChatId ?? undefined,
+      }).then((cmds: unknown) => setCustomCommands(hydrateCommands(cmds as SlashCommand[]))).catch(() => {})
+    })
+    return () => { off?.() }
+  }, [currentWorkdir, currentChatId])
 
   // ── File indexer для @mention-пикера ──
   // Раньше запускали chokidar+scanDir(10k stat) в main-процессе на маунте —

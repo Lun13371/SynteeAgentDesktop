@@ -22,6 +22,7 @@ import { copyToClipboard } from '@renderer/utils/clipboard'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import AppIcon from '../AppIcon/AppIcon'
+import PluginsTab from './PluginsTab'
 import { useExtensionsStore } from '../../../store/extensions.store'
 import { CURATED_MCP_SERVERS, getCuratedCommand, type CuratedMcpServer, type CuratedMcpCategory } from '../../../../../core/marketplace/curatedMcp'
 import { CURATED_SKILL_REPOS, type CuratedSkillRepo } from '../../../../../core/marketplace/curatedSkills'
@@ -32,7 +33,7 @@ import type {
 } from '../../../../../shared/types'
 import './ExtensionsPopover.css'
 
-type Tab = 'mcp' | 'skills'
+type Tab = 'mcp' | 'skills' | 'plugins'
 
 /** Хук: живой таймер пока loading=true. Возвращает elapsedMs (обновляется каждую секунду). */
 function useSearchTimer(loading: boolean): number {
@@ -102,16 +103,19 @@ export default function ExtensionsPopover({ open, projectId, onClose, onInstalle
 
   const skills = useExtensionsStore(s => s.skills)
   const mcpServers = useExtensionsStore(s => s.mcpServers)
+  const plugins = useExtensionsStore(s => s.plugins)
   const loadSkills = useExtensionsStore(s => s.loadSkills)
   const loadMcpServers = useExtensionsStore(s => s.loadMcpServers)
+  const loadPlugins = useExtensionsStore(s => s.loadPlugins)
 
   // Загружаем данные при открытии
   useEffect(() => {
     if (!open) return
     loadSkills(projectId)
     loadMcpServers(projectId)
+    loadPlugins(projectId)
     window.syntee.projects.getAll().then((all: Project[]) => setProjects(all ?? []))
-  }, [open, loadSkills, loadMcpServers, projectId])
+  }, [open, loadSkills, loadMcpServers, loadPlugins, projectId])
 
   // Закрытие по ESC (но не когда открыт диалог выбора scope — тот сам обрабатывает Escape)
   useEffect(() => {
@@ -123,6 +127,7 @@ export default function ExtensionsPopover({ open, projectId, onClose, onInstalle
 
   const enabledSkills = skills.filter(s => s.state.enabled).length
   const enabledMcp = mcpServers.filter(s => s.enabled).length
+  const enabledPlugins = plugins.filter(p => p.state.enabled).length
 
   const handleInstalled = (chatId: string, installedProjectId: string | undefined, userMsg: Message) => {
     setPendingInstall(null)
@@ -159,7 +164,7 @@ export default function ExtensionsPopover({ open, projectId, onClose, onInstalle
                 <AppIcon name="puzzle" size="md" tone="accent" />
                 <div>
                   <div className="ext-modal-title">Расширения</div>
-                  <div className="ext-modal-subtitle">MCP-серверы и Skills для агента</div>
+                  <div className="ext-modal-subtitle">MCP-серверы, Skills и плагины для агента</div>
                 </div>
               </div>
               <button className="ext-modal-close" onClick={onClose} title="Закрыть" aria-label="Закрыть">
@@ -184,11 +189,21 @@ export default function ExtensionsPopover({ open, projectId, onClose, onInstalle
                 Skills
                 <span className="ext-tab-count">{enabledSkills}</span>
               </button>
+              <button
+                className={`ext-tab${tab === 'plugins' ? ' ext-tab--active' : ''}`}
+                onClick={() => setTab('plugins')}
+              >
+                <AppIcon name="layers" size="sm" />
+                Плагины
+                <span className="ext-tab-count">{enabledPlugins}</span>
+              </button>
             </div>
 
             <div className="ext-body">
               {tab === 'skills' ? (
                 <SkillsTab projectId={projectId} projects={projects} onInstallRequest={skill => setPendingInstall({ kind: 'skill', skill })} onInstalled={handleInstalled} />
+              ) : tab === 'plugins' ? (
+                <PluginsTab projectId={projectId} projects={projects} />
               ) : (
                 <McpTab
                   projectId={projectId}
@@ -202,7 +217,7 @@ export default function ExtensionsPopover({ open, projectId, onClose, onInstalle
 
             <div className="ext-footer">
               <span>
-                {enabledSkills} скиллов активно · {enabledMcp} MCP-серверов активно
+                {enabledSkills} скиллов активно · {enabledMcp} MCP-серверов активно · {enabledPlugins} плагинов активно
               </span>
               <div className="ext-footer-actions">
                 <button
@@ -229,9 +244,21 @@ export default function ExtensionsPopover({ open, projectId, onClose, onInstalle
                 </button>
                 <button
                   className="ext-action-btn ext-action-btn--xs"
+                  onClick={async () => {
+                    const paths = await window.syntee.plugins.getPaths() as { globalPluginsDir: string }
+                    window.syntee.shell.openPath(paths.globalPluginsDir)
+                  }}
+                  title="Открыть папку плагинов (userData/plugins)"
+                >
+                  <AppIcon name="folder" size="xs" />
+                  Папка плагинов
+                </button>
+                <button
+                  className="ext-action-btn ext-action-btn--xs"
                   onClick={() => {
                     useExtensionsStore.getState().reloadSkills()
                     loadMcpServers(projectId)
+                    loadPlugins(projectId)
                   }}
                   title="Перечитать с диска"
                 >
