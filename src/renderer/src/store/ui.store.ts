@@ -35,11 +35,35 @@ export const AGENT_PANEL_WIDTH_DEFAULT = 420
 
 // RightPanelTab определён здесь (а не импортируется из RightPanel.tsx),
 // чтобы избежать circular import: ui.store → RightPanel → ui.store.
-export type RightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal' | 'notes'
-const VALID_TABS: RightPanelTab[] = ['sidechat', 'agents', 'files', 'git', 'session', 'terminal', 'notes']
+//
+// Табы плагинов имеют вид 'plugin:{pluginId}:{panelId}' — набор динамический,
+// поэтому union расширяется через (string & {}) (тип-эскейп для паттерна
+// «открытый union»). Builtin-список остаётся строгим для статических панелей.
+export type BuiltinRightPanelTab = 'agents' | 'files' | 'git' | 'session' | 'sidechat' | 'terminal' | 'notes'
+export type RightPanelTab = BuiltinRightPanelTab | (string & {})
+
+/** Префикс табов плагинов в правой панели. */
+export const PLUGIN_TAB_PREFIX = 'plugin:'
+
+/** Собрать id таба плагина: plugin:{pluginId}:{panelId}. */
+export function buildPluginTabId(pluginId: string, panelId: string): string {
+  return `${PLUGIN_TAB_PREFIX}${pluginId}:${panelId}`
+}
+
+/** Разобрать id таба плагина; для не-plugin табов — null. */
+export function parsePluginTabId(tabId: string): { pluginId: string; panelId: string } | null {
+  if (!tabId.startsWith(PLUGIN_TAB_PREFIX)) return null
+  const rest = tabId.slice(PLUGIN_TAB_PREFIX.length)
+  const idx = rest.indexOf(':')
+  if (idx <= 0 || idx === rest.length - 1) return null
+  return { pluginId: rest.slice(0, idx), panelId: rest.slice(idx + 1) }
+}
+
+const VALID_TABS: BuiltinRightPanelTab[] = ['sidechat', 'agents', 'files', 'git', 'session', 'terminal', 'notes']
 export { VALID_TABS }
 export function isValidTab(v: unknown): v is RightPanelTab {
-  return typeof v === 'string' && (VALID_TABS as string[]).includes(v)
+  return typeof v === 'string'
+    && ((VALID_TABS as string[]).includes(v) || v.startsWith(PLUGIN_TAB_PREFIX))
 }
 
 export function getAgentPanelWidthMax(): number {

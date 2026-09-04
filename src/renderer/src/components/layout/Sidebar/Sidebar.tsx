@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Chat, Project, Message } from '../../../../../shared/types'
 import AppIcon from '../../ui/AppIcon/AppIcon'
+import PluginSidebarSlots from '../../ui/PluginSlot/PluginSidebarSlots'
 import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
 import ExtensionsPopover from '../../ui/ExtensionsPopover/ExtensionsPopover'
@@ -1043,9 +1044,13 @@ function Sidebar({
           <AppIcon name="puzzle" size="sm" />
         </span>
         <span className="sidebar-extensions-btn-label">Расширения</span>
-        <span className="sidebar-extensions-btn-sub">MCP и Skills</span>
+        <span className="sidebar-extensions-btn-sub">MCP, Skills и плагины</span>
         <AppIcon name="chevronRight" size="xs" className="sidebar-extensions-btn-chevron" />
       </motion.button>
+
+      {/* UI-вклады плагинов (registerUi slot='sidebar') — кнопки/панели
+          из запущенных включённых плагинов. */}
+      <PluginSidebarSlots />
 
       {/* Поиск + кнопка-фильтр */}
       <div className="sidebar-search">

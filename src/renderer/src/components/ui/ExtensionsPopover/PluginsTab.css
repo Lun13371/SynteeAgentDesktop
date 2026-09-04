@@ -1,0 +1,222 @@
+/**
+ * PluginsTab — стили вкладки «Плагины» в ExtensionsPopover.
+ * Базовые карточки/кнопки берутся из ExtensionsPopover.css (ext-card,
+ * ext-toggle, ext-action-btn, ext-logs-box, ...) — здесь только
+ * специфичные для плагинов элементы.
+ */
+
+/* Статус-бейдж в заголовке карточки (● запущен / ● ошибка) */
+.plugin-status-badge {
+  font-size: 10px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+/* Строка ошибки под описанием */
+.plugin-error-line {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--danger, #f87171);
+  word-break: break-word;
+}
+
+/* Версия плагина */
+.ext-card-version {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* Ряд выбора области применения */
+.plugin-scope-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Бейджи прав */
+.plugin-perms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.plugin-perm-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--warning, #f59e0b) 14%, transparent);
+  color: var(--warning, #f59e0b);
+  border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, transparent);
+}
+
+/* Бейджи тулов */
+.plugin-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.plugin-tool-badge {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #22d3ee 12%, transparent);
+  color: #22d3ee;
+  border: 1px solid color-mix(in srgb, #22d3ee 28%, transparent);
+}
+
+/* Бейджи команд */
+.plugin-cmd-badge {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent, #a78bfa) 12%, transparent);
+  color: var(--accent, #a78bfa);
+  border: 1px solid color-mix(in srgb, var(--accent, #a78bfa) 28%, transparent);
+}
+
+/* UI-вклады (кликабельные) */
+.plugin-ui-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #4ade80 12%, transparent);
+  color: #4ade80;
+  border: 1px solid color-mix(in srgb, #4ade80 28%, transparent);
+  cursor: pointer;
+}
+
+/* ── Consent-диалог ── */
+.plugin-consent {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(440px, 92vw);
+  padding: 20px;
+  background: var(--bg-secondary, #1a1a1e);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+.plugin-consent-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.plugin-consent-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.plugin-consent-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.plugin-consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ── Форма настроек ── */
+.plugin-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 6px 0 2px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border);
+}
+
+.plugin-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plugin-config-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.plugin-config-input {
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary, rgba(0, 0, 0, 0.2));
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.plugin-config-input:focus {
+  border-color: var(--accent, #a78bfa);
+}
+
+.plugin-config-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Полное описание (markdown) */
+.plugin-readme {
+  margin: 6px 0 2px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.plugin-readme h1,
+.plugin-readme h2,
+.plugin-readme h3 {
+  font-size: 13px;
+  margin: 10px 0 6px;
+}
+
+.plugin-readme p {
+  margin: 6px 0;
+}
+
+.plugin-readme code {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.plugin-readme pre {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.plugin-readme pre code {
+  background: none;
+  padding: 0;
+}

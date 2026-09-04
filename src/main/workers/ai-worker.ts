@@ -15,7 +15,7 @@ import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
-import type { ModelMeta } from '../../shared/types'
+import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
@@ -616,6 +616,23 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             const map = ((workerData as Record<string, unknown>).mcpApprovalMap as Record<string, boolean> | undefined) ?? {}
             return map[fullToolName] ?? true
           },
+          onPluginCall: (fullToolName, args) => {
+            return new Promise((resolve) => {
+              const replyId = `plugin-call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve({
+                  success: (reply.success as boolean) ?? false,
+                  output: (reply.output as string) ?? '',
+                  error: reply.error as string | undefined,
+                })
+              })
+              send({ type: 'plugin_call', chatId, msgId, replyId, toolName: fullToolName, args })
+            })
+          },
+          onToolCall: (name, args) => {
+            // Fire-and-forget: событие tool:call для плагинов (main рассылает).
+            send({ type: 'tool_call_event', chatId, msgId, toolName: name, args })
+          },
           onListExtensions: () => {
             return new Promise((resolve) => {
               const replyId = `list-ext-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -720,7 +737,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           planningMode,
           askMode,
           mode: workerMode,
-          mcpTools: ((workerData as Record<string, unknown>).mcpTools as Parameters<typeof getToolSchemas>[0]['mcpTools']) ?? [],
+          mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
+          pluginTools: ((workerData as Record<string, unknown>).pluginTools as PluginToolRuntime[] | undefined) ?? [],
         }),        {
           autoMemoryInterval: incognito ? 0 : (agentSettings.autoMemoryInterval ?? 5),
           readFileCache: agentSettings.readFileCache !== false,

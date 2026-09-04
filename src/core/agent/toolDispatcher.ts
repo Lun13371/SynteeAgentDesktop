@@ -114,6 +114,10 @@ export class ToolDispatcher {
     dryRun?: boolean,
     callId?: string
   ): Promise<ToolResult> {
+    // Уведомление о вызове любого тула (событие tool:call у плагинов).
+    if (!dryRun) {
+      try { callbacks?.onToolCall?.(name, args) } catch { /* ignore */ }
+    }
     switch (name) {
       case 'run_command': {
         const cmd = (args.command ?? args.cmd ?? args.shell ?? args.script) as string | undefined
@@ -625,6 +629,10 @@ export class ToolDispatcher {
       default:
         if (name.startsWith('mcp__') && callbacks?.onMcpCall) {
           const result = await callbacks.onMcpCall(name, args)
+          return result
+        }
+        if (name.startsWith('plugin__') && callbacks?.onPluginCall) {
+          const result = await callbacks.onPluginCall(name, args)
           return result
         }
         return { success: false, output: '', error: `Unknown tool: ${name}` }

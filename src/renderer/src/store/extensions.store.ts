@@ -13,8 +13,10 @@
  * в реальном времени — подписка устанавливается в initExtensionsPushEvents().
  */
 import { create } from 'zustand'
-import type { Skill, SkillState, McpServerRuntime, MarketplaceMcpServer, MarketplaceSkill } from '../../../../../shared/types'
+import type { Skill, SkillState, McpServerRuntime, MarketplaceMcpServer, MarketplaceSkill, PluginRuntime } from '../../../../../shared/types'
 import { useChatStore } from './chat.store'
+import { usePluginPanelStore } from './pluginPanel.store'
+import { buildPluginTabId } from './ui.store'
 
 /**
  * Текущий chatId для push-обработчиков (mcp:servers-changed / skills:updated).
@@ -48,6 +50,10 @@ interface ExtensionsStore {
   mcpServers: McpServerRuntime[]
   mcpLoading: boolean
 
+  // ── Plugins ──
+  plugins: PluginRuntime[]
+  pluginsLoading: boolean
+
   // ── Активные для текущего чата (для бейджа) ──
   activeSkillIds: string[]
   activeMcpServerIds: string[]
@@ -77,6 +83,7 @@ interface ExtensionsStore {
   // ── Actions ──
   loadSkills: (projectId?: string) => Promise<void>
   loadMcpServers: (projectId?: string) => Promise<void>
+  loadPlugins: (projectId?: string) => Promise<void>
   setSkillState: (skillId: string, state: SkillState, source: 'builtin' | 'user' | 'project') => Promise<void>
   reloadSkills: () => Promise<void>
   loadActiveForChat: (chatId: string, isIncognito?: boolean) => Promise<void>
@@ -100,6 +107,8 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
   skillsLoading: false,
   mcpServers: [],
   mcpLoading: false,
+  plugins: [],
+  pluginsLoading: false,
   activeSkillIds: [],
   activeMcpServerIds: [],
 
@@ -143,6 +152,17 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
       set({ mcpServers: list ?? [], mcpLoading: false })
     } catch {
       set({ mcpLoading: false })
+    }
+  },
+
+  loadPlugins: async (projectId?: string) => {
+    set({ pluginsLoading: true })
+    try {
+      const chatId = useChatStore.getState().currentChatId ?? undefined
+      const list = await window.syntee.plugins.getAll({ projectId, chatId }) as PluginRuntime[]
+      set({ plugins: list ?? [], pluginsLoading: false })
+    } catch {
+      set({ pluginsLoading: false })
     }
   },
 
@@ -297,6 +317,10 @@ export function initExtensionsPushEvents(): () => void {
   if (pushInitialized) return () => {}
   pushInitialized = true
 
+  // Плагины грузим сразу на старте renderer — UI-вклады (сайдбар-кнопки)
+  // должны появляться без открытия popover. Дальше список живёт на push-ах.
+  useExtensionsStore.getState().loadPlugins(useChatStore.getState().activeProjectId ?? undefined)
+
   const offStatus = window.syntee.on('mcp:status', (data: unknown) => {
     const d = data as { serverId: string; status: string; error?: string; connectStartedAt?: number; logs?: McpServerRuntime['logs'] }
     useExtensionsStore.setState(s => ({
@@ -358,12 +382,61 @@ export function initExtensionsPushEvents(): () => void {
       useExtensionsStore.getState().loadActiveForChat(_currentChatId)
     }
   })
+  // plugins:changed — статус/тулы/список плагинов изменились в main
+  // (запуск, остановка, крах, регистрация тулов). Перезагружаем список.
+  const offPluginsChanged = window.syntee.on('plugins:changed', () => {
+    const pid = useChatStore.getState().activeProjectId ?? undefined
+    useExtensionsStore.getState().loadPlugins(pid)
+  })
+
+  // plugins:logs — живой журнал конкретного плагина (не перегружаем весь список).
+  const offPluginsLogs = window.syntee.on('plugins:logs', (data: unknown) => {
+    const d = data as { pluginId: string; logs: PluginRuntime['logs'] }
+    useExtensionsStore.setState(s => ({
+      plugins: s.plugins.map(p =>
+        p.id === d.pluginId ? { ...p, logs: d.logs } : p,
+      ),
+    }))
+  })
+
+  // plugins:panel-action — плагин просит открыть/закрыть свой right-таб.
+  const offPluginPanelAction = window.syntee.on('plugins:panel-action', (data: unknown) => {
+    const d = data as { pluginId: string; action: 'open' | 'close'; panelId: string }
+    if (!d || !d.pluginId || !d.panelId) return
+    const st = usePluginPanelStore.getState()
+    if (d.action === 'close') st.closePluginTab(d.pluginId, d.panelId)
+    else st.openPluginTab(d.pluginId, d.panelId)
+  })
+
+  // plugins:badge — бейдж-счётчик на right-табе плагина.
+  const offPluginBadge = window.syntee.on('plugins:badge', (data: unknown) => {
+    const d = data as { pluginId: string; panelId: string; badge: number | null }
+    if (!d || !d.pluginId || !d.panelId) return
+    const badge = typeof d.badge === 'number' ? d.badge : null
+    usePluginPanelStore.getState().setBadge(buildPluginTabId(d.pluginId, d.panelId), badge)
+  })
+
+  // plugins:toast — плагин просит показать тост. useToast из .tsx тянет CSS/звуки —
+  // импортируем динамически, чтобы не создавать цикл store → компонент.
+  const offPluginToast = window.syntee.on('plugins:toast', (data: unknown) => {
+    const d = data as { text: string; kind?: 'info' | 'success' | 'error' }
+    if (!d || typeof d.text !== 'string') return
+    void import('../components/ui/Toast/Toast').then(m =>
+      m.useToast.getState().add(d.text.slice(0, 300), d.kind ?? 'info'),
+    ).catch(() => {})
+  })
+
   return () => {
     offStatus?.()
     offTools?.()
     offLogs?.()
     offSkillsUpdated?.()
     offServersChanged?.()
+    offPluginsChanged?.()
+    offPluginsLogs?.()
+    offPluginPanelAction?.()
+    offPluginBadge?.()
+    offPluginToast?.()
     pushInitialized = false
   }
 }

@@ -9,12 +9,13 @@
  */
 
 import type { ProjectInstructions } from './projectInstructions'
-import type { Skill } from '../../shared/types'
+import type { Skill, PluginPromptInfo } from '../../shared/types'
 import {
   buildCodeModeBlock,
   buildSkillsBlock,
   buildOneShotSkillBlock,
   buildMcpBlock,
+  buildPluginsBlock,
   buildInstallPathsBlock,
   buildMemoryStatsBlock,
   buildGraphStatsBlock,
@@ -25,7 +26,7 @@ import {
 } from './sections'
 import type { McpPromptInfo } from './sections'
 
-export type { McpPromptInfo }
+export type { McpPromptInfo, PluginPromptInfo }
 
 export function buildSystemPrompt(params: {
   userName?: string
@@ -52,6 +53,8 @@ export function buildSystemPrompt(params: {
   activeSkills?: Skill[]
   /** Active MCP servers with their tools — for a brief note in the prompt. */
   activeMcpServers?: McpPromptInfo[]
+  /** Active plugins — brief note (promptDescription + tool names). */
+  activePlugins?: PluginPromptInfo[]
   /**
     * One-shot skill — instructions are temporarily injected for this run
     * (without persisting to skillsState). Used by commands like /review →
@@ -61,6 +64,8 @@ export function buildSystemPrompt(params: {
   oneShotSkill?: { name: string; instructions: string }
   /** Absolute path to the global skills folder ({userData}/skills). */
   globalSkillsDir?: string
+  /** Absolute path to the global plugins folder ({userData}/plugins). */
+  globalPluginsDir?: string
   /**
     * Planning mode: read-only research + answer in a <plan> tag.
     * Injects buildPlanningInjection() as a separate section at the very
@@ -88,14 +93,15 @@ export function buildSystemPrompt(params: {
   /** Max parallel sub-agents — injected into the spawn_agent section. */
   maxParallelSubAgents?: number
 }): string {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, oneShotSkill, globalSkillsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
   const skillsBlock = buildSkillsBlock(activeSkills)
   const oneShotSkillBlock = buildOneShotSkillBlock(oneShotSkill)
   const mcpBlock = buildMcpBlock(activeMcpServers)
-  const installPathsBlock = buildInstallPathsBlock(workdir, globalSkillsDir)
+  const pluginsBlock = buildPluginsBlock(activePlugins)
+  const installPathsBlock = buildInstallPathsBlock(workdir, globalSkillsDir, globalPluginsDir)
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)
   const notesBlock = buildNotesBlock(notesInfo)
@@ -117,6 +123,7 @@ ${memoryContext ? '\n' + memoryContext : ''}
 ${workingMemory ? `\n## Working memory (what was done in this chat)\n${workingMemory}\n` : ''}
 ${customSystemPrompt ? `\n## Custom instruction\n${customSystemPrompt}\n` : ''}
 ${mcpBlock}
+${pluginsBlock}
 ${installPathsBlock}
 ${skillsBlock}
 ${oneShotSkillBlock}

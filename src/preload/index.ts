@@ -792,7 +792,7 @@ const synteeAPI = {
   // добавляет их сам через filterCommands). projectWorkdir — для проектных.
   // reload — сбросить кэш и перечитать .md с диска (после правки файлов).
   commands: {
-    list: (params?: { projectWorkdir?: string }) => ipcRenderer.invoke('commands:list', params),
+    list: (params?: { projectWorkdir?: string; chatId?: string }) => ipcRenderer.invoke('commands:list', params),
     reload: () => ipcRenderer.invoke('commands:reload'),
   },
 
@@ -830,6 +830,48 @@ const synteeAPI = {
       env?: Record<string, string>
       args?: string[]
     }) => ipcRenderer.invoke('mcp:updateServer', params),
+  },
+
+  // Plugins — локальные расширения приложения (тулы + логика в
+  // utilityProcess). getAll — все плагины с состоянием/runtime для popover;
+  // setState — enabled/scope (вкл = запуск процесса); reload — hot reload;
+  // installFromFolder — нативный диалог + копирование в plugins dir.
+  plugins: {
+    getAll: (params?: { projectId?: string; chatId?: string }) =>
+      ipcRenderer.invoke('plugins:getAll', params),
+    setState: (params: { pluginId: string; enabled?: boolean; scope?: unknown; consented?: boolean }) =>
+      ipcRenderer.invoke('plugins:setState', params),
+    reload: (pluginId: string) => ipcRenderer.invoke('plugins:reload', pluginId),
+    uninstall: (params: { pluginId: string; source: 'global' | 'project'; dir?: string }) =>
+      ipcRenderer.invoke('plugins:uninstall', params),
+    installFromFolder: (params?: { scope?: 'global' | { workdir: string } }) =>
+      ipcRenderer.invoke('plugins:installFromFolder', params),
+    getPaths: () => ipcRenderer.invoke('plugins:getPaths'),
+    // Выполнение слэш-команды плагина. Возвращает { ok, error?, userMsg, assistantMsg }
+    // — сообщения уже сохранены в БД, renderer добавляет их в стор.
+    executeCommand: (params: { chatId: string; pluginId: string; name: string; args: string; text: string }) =>
+      ipcRenderer.invoke('plugins:executeCommand', params),
+    // Мост iframe-панель → процесс плагина.
+    uiMessage: (params: { pluginId: string; data: unknown }) =>
+      ipcRenderer.invoke('plugins:uiMessage', params),
+    // RPC-мост: synteeBridge.call(method, args) из iframe → ui.handle плагина.
+    uiCall: (params: { pluginId: string; method: string; args?: Record<string, unknown> }) =>
+      ipcRenderer.invoke('plugins:uiCall', params),
+    // Хук chat:before-send — спросить плагины перед отправкой сообщения.
+    // Возвращает { allowed, content, reason? }.
+    beforeSend: (params: { chatId: string; content: string }) =>
+      ipcRenderer.invoke('plugins:beforeSend', params),
+    // Тема сменилась → main рассылает theme:changed в процессы плагинов.
+    themeChanged: (params: { theme: string; accentColor: string }) =>
+      ipcRenderer.invoke('plugins:themeChanged', params),
+    // DevTools (отладка iframe-панелей плагинов).
+    openDevTools: () => ipcRenderer.invoke('plugins:openDevTools'),
+    // Сохранить ответ плагина (chat.reply) в текущий чат.
+    saveReply: (params: { chatId: string; text: string }) =>
+      ipcRenderer.invoke('plugins:saveReply', params),
+    // Сохранить значения настроек плагина (форма в карточке).
+    setConfig: (params: { pluginId: string; values: Record<string, unknown> }) =>
+      ipcRenderer.invoke('plugins:setConfig', params),
   },
 
   // Marketplace — каталог MCP-серверов (официальный registry) и Skills

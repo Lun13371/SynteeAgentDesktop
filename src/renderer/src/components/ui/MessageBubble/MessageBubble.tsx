@@ -6,6 +6,8 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import type { PluginUiWidgetPayload } from '@shared/types/plugin'
+import PluginIframe from '../PluginSlot/PluginIframe'
 // ── Быстрый рендер код-блоков через HTML-строку ──────────────────────────
 // Заменяет react-syntax-highlighter (React-дерево из тысяч <span>) на
 // refractor → HAST → HTML-строка → dangerouslySetInnerHTML.
@@ -381,6 +383,37 @@ const safeUrlTransform = (url: string): string =>
     ? url
     : defaultUrlTransform(url)
 
+// ── Инлайн-виджет плагина ────────────────────────────────────────────────
+// Тул плагина может вернуть JSON-маркер вместо текста:
+// {"__plugin_ui__":true,"pluginId":"...","entry":"ui/chart.html","data":...,"height":260}
+// → рендерим iframe-карточку (PluginIframe) вместо markdown.
+function tryParsePluginWidget(content: string): PluginUiWidgetPayload | null {
+  const t = content.trim()
+  if (!t.startsWith('{"__plugin_ui__"')) return null
+  try {
+    const obj = JSON.parse(t) as PluginUiWidgetPayload
+    if (!obj || obj.__plugin_ui__ !== true) return null
+    if (typeof obj.pluginId !== 'string' || typeof obj.entry !== 'string') return null
+    return obj
+  } catch {
+    return null
+  }
+}
+
+function PluginInlineWidget({ widget }: { widget: PluginUiWidgetPayload }) {
+  const height = typeof widget.height === 'number' ? widget.height : 260
+  return (
+    <div className="plugin-inline-widget" style={{ height }}>
+      <PluginIframe
+        pluginId={widget.pluginId}
+        entry={widget.entry}
+        widgetData={widget.data}
+        className="plugin-inline-widget-frame"
+      />
+    </div>
+  )
+}
+
 // ── renderParsedSegments: рендер массива сегментов из parseContent ─────────
 // Переиспользуется в 4 местах (основной рендер, iterations, liveTextAfter).
 // Принимает per-instance mdComponents (с доступом к workdir для кликабельных путей).
@@ -418,6 +451,12 @@ function renderParsedSegments(
           </ReactMarkdown>
         </AdmonitionBlock>
       )
+    }
+    // Инлайн-виджет плагина: если md-сегмент целиком — JSON-маркер виджета,
+    // рендерим PluginIframe вместо markdown.
+    const widget = tryParsePluginWidget(s.content)
+    if (widget) {
+      return <PluginInlineWidget key={`widget-${i}`} widget={widget} />
     }
     return (
       <ReactMarkdown

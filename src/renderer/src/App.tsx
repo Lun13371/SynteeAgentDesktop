@@ -76,6 +76,7 @@ import BootScreen from './components/ui/BootScreen/BootScreen'
 import './components/ui/BootScreen/BootScreen.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
+import PluginPanel from './components/ui/PluginPanel/PluginPanel'
 import AnimatedBackground, { invalidateAccentCache } from './components/ui/AnimatedBackground/AnimatedBackground'
 import RightPanelHost from './components/ui/RightPanel/RightPanelHost'
 import AgentConfirmDialog from './components/ui/AgentConfirmDialog/AgentConfirmDialog'
@@ -1507,6 +1508,7 @@ export default function App() {
             </div>
             <BottomDock />
             <ToastContainer />
+            <PluginPanel />
             <AgentConfirmDialog />
             <QuestionPanel />
             <UpdateAvailableModal open={updateModalOpen} onClose={() => setUpdateModalOpen(false)} />
