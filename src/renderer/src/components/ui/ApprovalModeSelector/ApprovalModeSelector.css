@@ -8,8 +8,8 @@
   color: var(--text-muted); font-size: 11px; font-weight: 500;
   cursor: pointer; transition: border-color 0.15s, color 0.15s, background 0.15s;
   white-space: nowrap;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* Без backdrop-filter — чип на инпут-баре с glass-фоном (см. ReasoningSelector) */
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
 }
 .approval-btn:hover {
   color: var(--text-primary);

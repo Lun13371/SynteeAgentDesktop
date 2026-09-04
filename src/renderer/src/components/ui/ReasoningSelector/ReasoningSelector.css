@@ -6,7 +6,9 @@
   padding: 3px 8px;
   border-radius: 20px;
   border: 1px solid color-mix(in srgb, var(--text-secondary) 25%, transparent);
-  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  /* Без backdrop-filter: чип лежит на инпут-баре с собственным glass-фоном,
+     свой блюл только грузил композитор при каждом кадре анимированного фона. */
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 500;
@@ -14,8 +16,6 @@
   transition: background 0.15s, border-color 0.15s, color 0.15s;
   white-space: nowrap;
   flex-shrink: 0;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 .rs-btn:hover {
   background: rgba(167,139,250,0.1);
@@ -88,15 +88,13 @@
   padding: 3px 8px;
   border-radius: 20px;
   border: 1px solid rgba(167,139,250,0.12);
-  background: rgba(167,139,250,0.05);
+  background: rgba(167,139,250,0.08);
   color: rgba(167,139,250,0.5);
   font-size: 11px;
   cursor: default;
   user-select: none;
   white-space: nowrap;
   flex-shrink: 0;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 
 /* ── Тултип ───────────────────────────────────────────────────── */

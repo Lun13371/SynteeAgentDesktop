@@ -552,8 +552,10 @@ function ChatInput({
   // Логика кнопки (Send/Stop/Mic) вынесена в ChatInputActionButton.
   // Здесь остаётся только micBusy (для бейджа статус-строки) и lang.
   const voiceActive = voice.state === 'recording' || voice.state === 'transcribing' || voice.state === 'requesting'
-  // Пока модель качается в фоне (преварм при старте) — на кнопке mic крутится
-  // спиннер, но запись можно начать (инференс подождёт готовности модели).
+  // Пока модель качается в фоне (первая загрузка после клика на mic) — на
+  // кнопке mic крутится спиннер, но запись можно начать (инференс подождёт
+  // готовности модели). Преварма при старте НЕТ — воркер спавнится только
+  // по факту использования голоса (см. voice.ipc.ts).
   const micBusy = voice.modelLoading && !voiceActive && !value.trim() && !isGenerating
   // language — 'ru' (default) | 'en'. Selects persona name/description variant.
   const lang = useSettingsStore(s => (s.settings['language'] as 'ru' | 'en') ?? 'ru')

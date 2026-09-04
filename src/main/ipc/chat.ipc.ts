@@ -18,6 +18,7 @@ import {
   getAllProjects,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
   getCheckpoints, pruneOldCheckpoints, deleteMessageById,
+  saveStreamingBuffer, deleteStreamingBuffer,
   logAgentAction,
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
@@ -59,7 +60,7 @@ import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, Attac
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { messageToContextMessages } from './chatContextHelpers'
 import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
-import { getMessagesCached } from './historyCache'
+import { getMessagesCached, recoverStreamingBuffersForChat } from './historyCache'
 import {
   confirmCallbacks, questionCallbacks,
   activeRuns, lastActiveChatId, setLastActiveChatId, compactRuns, activeRunMeta,
@@ -1391,6 +1392,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
 
       if (!params.incognito) saveMessage(assistantMsg)
+      // Буфер стриминга отработал: финальная полная версия записана в messages.
+      // Удаляем, чтобы краш-рекавери (historyCache) при следующей загрузке чата
+      // не восстановил устаревшую частичную копию поверх финальной.
+      deleteStreamingBuffer(assistantMsgId)
       if (!params.incognito) {
         // Fast-path: regex-извлечение для явного «запомни X» / «меня зовут X»
         // (мгновенно, без LLM). Фаза 3 добавляет LLM-extract на idle/compaction.
@@ -1615,11 +1620,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // ни worker.on('exit'), ни uncaughtException не гарантированно срабатывают.
     // Без этого таймера весь накопленный bufferedText/steps/thinking живёт
     // только в RAM и теряется безвозвратно. С таймером максимум потерь = 3с.
-    // saveMessage использует INSERT OR REPLACE (UPSERT) — идемпотентен,
-    // финальный sendDone перезапишет частичный checkpoint полной версией.
+    // Пишем в streaming_buffers (БЕЗ FTS-триггеров): INSERT OR REPLACE в
+    // messages пересобирал messages_fts на каждый чекпоинт (синхронная
+    // переиндексация всего content) → фризы main на слабых машинах.
+    // Финальный sendDone пишет полную версию в messages и удаляет буфер;
+    // после краша буфер переносится в messages при загрузке чата (краш-рекавери).
     run.streamCheckpointTimer = setInterval(() => {
       if (run.doneSent) return
-      // Dirty-flag: пропускаем saveMessage если с последнего checkpoint'а
+      // Dirty-flag: пропускаем запись если с последнего checkpoint'а
       // не было новых токенов/шагов/thinking. Без этого каждые 3с таймер
       // делал buildFinalIters + JSON.stringify всех steps + saveMessage даже
       // когда воркер ждёт ответа API (bufferedText не растёт) → main
@@ -1647,7 +1655,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           attachmentResult: run.attachmentResult ?? undefined,
           durationMs: Date.now() - run.startedAt,
         }
-        if (!params.incognito) saveMessage(checkpointMsg)
+        // Только в буфер, не в messages: чекпоинты не должны дёргать
+        // FTS5-триггеры каждые 3с. Incognito не пишем вообще.
+        if (!params.incognito) saveStreamingBuffer(assistantMsgId, params.chatId, JSON.stringify(checkpointMsg))
         run.checkpointDirty = false
       } catch (e) {
         log('[streamCheckpoint] failed chatId=%s: %s', params.chatId, (e as Error).message)
@@ -2926,11 +2936,23 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // ВНИМАНИЕ: в renderer сообщения уходят ТОЛЬКО через slimMessagesForUI —
   // полные tool-пейлоады (тела файлов, diff'ы, выводы) остаются в БД для
   // AI-контекста (messageToContextMessages), UI показывает урезанную копию.
-  ipcMain.handle('chat:getMessages', (_, chatId: string) => slimMessagesForUI(getMessages(chatId)))
+  ipcMain.handle('chat:getMessages', (_, chatId: string) => {
+    // Краш-рекавери: частичный ответ из streaming_buffers → messages
+    // (см. historyCache). Делаем ДО чтения, чтобы восстановленное сообщение
+    // попало в выдачу. Пропускаем при активном стриминге этого чата — там
+    // буфер пишется чекпоинт-таймером, а восстановление дёрнуло бы FTS
+    // (saveMessage) на каждый скролл/обновление. Буфер удаляется внутри
+    // recovery — повторные вызовы после краша дешёвые.
+    if (!activeRuns.has(chatId)) recoverStreamingBuffersForChat(chatId)
+    return slimMessagesForUI(getMessages(chatId))
+  })
   // Окно сообщений для пагинации (reverse-infinite scroll). Возвращает
   // { messages, hasMore } — последние `limit` сообщений либо старее курсора
   // (beforeCreatedAt, beforeId). См. db/messages.ts getMessagesPage.
   ipcMain.handle('chat:getMessagesPage', (_, chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) => {
+    // Краш-рекавери — основной путь загрузки истории при открытии чата
+    // (renderer грузит первую страницу через getMessagesPage, не getMessages).
+    if (!activeRuns.has(chatId)) recoverStreamingBuffersForChat(chatId)
     const res = getMessagesPage(chatId, limit ?? 20, beforeCreatedAt, beforeId)
     return { ...res, messages: slimMessagesForUI(res.messages) }
   })

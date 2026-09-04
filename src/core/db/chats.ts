@@ -4,6 +4,7 @@ import { getDB } from './handle'
 import { stripPlanTags } from '../../shared/planParser'
 import { getMessages, saveMessage } from './messages'
 import { getWorkingMemory, getChatSummary, setWorkingMemory, setChatSummary } from './memory'
+import { deleteStreamingBuffersForChat } from './streamingBuffers'
 
 // === CHATS ===
 
@@ -148,6 +149,9 @@ export function deleteChat(id: string): void {
     // 6. Удаляем сам чат — ON DELETE CASCADE заботится об:
     //    messages (→ messages_fts через триггер), pinned_messages, chat_summaries,
     //    agent_logs, checkpoints, file_snapshots, context_snapshots, rewind_history.
+    //    streaming_buffers не имеет FK на chats (см. миграцию) — чистим вручную,
+    //    чтобы краш-рекавери не воскресил сообщения удалённого чата.
+    deleteStreamingBuffersForChat(id)
     db.prepare('DELETE FROM chats WHERE id = ?').run(id)
   })()
 }

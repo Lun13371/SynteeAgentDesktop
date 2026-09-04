@@ -92,8 +92,12 @@
   width: 100%;
   background: var(--glass-bg, rgba(18,18,28,0.97));
   border: 1px solid var(--border);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  /* blur(12px) вместо 20px: инпут-бар постоянно висит над анимированным
+     фоном — каждый кадр фона заставляет композитор пересчитывать блюр.
+     Стоимость блюра падает нелинейно с радиусом, 12px достаточно для
+     «стекла» (фон и так приглушён --glass-bg). */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   box-shadow: 0 8px 32px rgba(0,0,0,0.4);
 }
 
@@ -551,7 +555,7 @@
   align-items: center;
   gap: 5px;
   padding: 3px 10px 3px 8px;
-  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--text-secondary) 25%, transparent);
   border-radius: 20px;
   font-size: 11px;
@@ -560,7 +564,6 @@
   white-space: nowrap;
   max-width: 280px;
   overflow: hidden;
-  backdrop-filter: blur(8px);
 }
 .chat-input-workdir-badge--interactive {
   cursor: pointer;
