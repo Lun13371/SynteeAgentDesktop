@@ -75,10 +75,22 @@ export default function AnimatedBackground() {
   // Вкл/выкл фона без перемонтирования canvas: worker живёт, просто
   // останавливаем/запускаем рендер. Смена стиля на 'none' = disable,
   // обратно на эффект = enable + setStyle.
+  // Пауза при скрытом окне (document.hidden) — свёрнутое/перекрытое окно
+  // не рендерит фон в стол.
+  // ВАЖНО: на маунте шлём enable БЕЗ проверки document.hidden. Главное окно
+  // создаётся с show:false и документ грузится СКРЫТЫМ (MainWindow.ts:78,
+  // показ по ready-to-show). В Electron visibilitychange из такого
+  // состояния может не прийти (visibilityState остаётся 'hidden') — тогда
+  // disable на старте убивал фон навсегда. Худший случай теперь: пара
+  // секунд рендера в скрытое окно — дёшево.
   const visible = animatedBackground && style !== 'none'
   useEffect(() => {
     send({ type: visible ? 'enable' : 'disable' } as BgMessage)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const onVis = () => {
+      send({ type: visible && !document.hidden ? 'enable' : 'disable' } as BgMessage)
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
   }, [visible])
 
   // Реактор-эффекты: при изменении любого значения отправляем в worker.
@@ -97,6 +109,7 @@ export default function AnimatedBackground() {
     const onResize = () => {
       const c = canvasRef.current
       if (!c) return
+      rectCache = null // сброс кэша — пересчитаем на следующем mousemove
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       send({
         type: 'resize',
@@ -114,26 +127,45 @@ export default function AnimatedBackground() {
 
     // Мышь: canvas имеет pointer-events:none, события идут через window.
     // Переводим client-координаты в UV (0-1), Y флипаем для WebGL.
-    // Троттлинг через rAF — mousemove летит 60+ раз/сек, postMessage
-    // каждый раз = флуд в worker. Ограничиваем одним сообщением за кадр.
+    //
+    // Оптимизация CPU: мышь шлёт 125–1000 событий/сек. Раньше на КАЖДОЕ
+    // событие звался getBoundingClientRect() (forced layout read — главный
+    // пожиратель CPU при движении мыши) и rAF-троттлинг на 144Hz пропускал
+    // до 144 postMessage/сек. Теперь:
+    //  - rect кэшируется и обновляется не чаще раза в секунду (+ на resize);
+    //  - игнорируем микродвижения (< ~0.15% экрана);
+    //  - отправка не чаще ~60/сек И не чаще одной за кадр.
+    let rectCache: DOMRect | null = null
+    let rectTs = 0
+    let lastSendTs = 0
     let mousePending = false
     let mx = -100, my = -100
-    const onMouseMove = (e: MouseEvent) => {
+    const refreshRect = () => {
       const c = canvasRef.current
       if (!c) return
-      const rect = c.getBoundingClientRect()
-      if (rect.width === 0 || rect.height === 0) return
-      mx = (e.clientX - rect.left) / rect.width
-      my = 1.0 - (e.clientY - rect.top) / rect.height
-      if (!mousePending) {
+      rectCache = c.getBoundingClientRect()
+      rectTs = performance.now()
+    }
+    const onMouseMove = (e: MouseEvent) => {
+      const now = performance.now()
+      if (!rectCache || now - rectTs > 1000) refreshRect()
+      const r = rectCache
+      if (!r || r.width === 0 || r.height === 0) return
+      const nx = (e.clientX - r.left) / r.width
+      const ny = 1.0 - (e.clientY - r.top) / r.height
+      if (Math.abs(nx - mx) < 0.0015 && Math.abs(ny - my) < 0.0015) return
+      mx = nx
+      my = ny
+      if (!mousePending && now - lastSendTs >= 15) {
         mousePending = true
         requestAnimationFrame(() => {
           send({ type: 'setMouse', x: mx, y: my })
           mousePending = false
+          lastSendTs = performance.now()
         })
       }
     }
-    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mousemove', onMouseMove, { passive: true })
 
     return () => {
       ro?.disconnect()

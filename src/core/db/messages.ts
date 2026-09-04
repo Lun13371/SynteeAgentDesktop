@@ -1,6 +1,7 @@
 import type { Message } from '../../shared/types'
 import { getDB } from './handle'
 import { touchChat } from './chats'
+import { deleteStreamingBuffer, deleteStreamingBuffersForChat } from './streamingBuffers'
 
 // === MESSAGES ===
 
@@ -145,6 +146,9 @@ export function deleteMessageById(messageId: string): void {
   // Берём chatId до удаления для инвалидации кэша
   const row = getDB().prepare('SELECT chat_id as chatId FROM messages WHERE id = ?').get(messageId) as { chatId: string } | undefined
   getDB().prepare(`DELETE FROM messages WHERE id = ?`).run(messageId)
+  // Чистим streaming-буфер этого сообщения, чтобы краш-рекавери (historyCache)
+  // не воскресил удалённое сообщение из чекпоинта стриминга.
+  deleteStreamingBuffer(messageId)
   if (row?.chatId) _onMessageSaved?.(row.chatId)
 }
 
@@ -154,6 +158,9 @@ export function deleteMessageById(messageId: string): void {
  */
 export function deleteMessagesAfter(chatId: string, createdAt: number): number {
   const info = getDB().prepare(`DELETE FROM messages WHERE chat_id = ? AND created_at > ?`).run(chatId, createdAt)
+  // Удаляем и streaming-буферы чата: чекпоинты откатнутых (будущих) сообщений
+  // не должны быть восстановлены краш-рекавери при следующей загрузке чата.
+  deleteStreamingBuffersForChat(chatId)
   _onMessageSaved?.(chatId)
   return info.changes
 }

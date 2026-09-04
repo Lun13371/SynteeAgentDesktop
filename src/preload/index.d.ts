@@ -13,7 +13,7 @@ declare const synteeAPI: {
     };
     systemTheme: {
         isDark: () => Promise<boolean>;
-        onChange: (cb: (isDark: boolean) => void) => () => void;
+        onChange: (cb: (isDark: boolean) => void) => () => Electron.IpcRenderer;
     };
     bgImage: {
         save: (data: Uint8Array, ext: string) => Promise<string | null>;
@@ -388,7 +388,7 @@ declare const synteeAPI: {
             rewindMessageId: string;
             createdAt: number;
         } | null>;
-        compact: (chatId: string) => Promise<any>;
+        compact: (chatId: string, mode?: string) => Promise<any>;
         compactCancel: (chatId: string) => Promise<any>;
         fork: (chatId: string, title?: string) => Promise<any>;
         snapshotCreate: (chatId: string, name: string) => Promise<any>;
@@ -434,7 +434,7 @@ declare const synteeAPI: {
         create: (workdir: string) => Promise<any>;
         getAll: () => Promise<any>;
         rename: (id: string, name: string) => Promise<any>;
-        delete: (id: string) => Promise<any>;
+        delete: (id: string, deleteChats: boolean) => Promise<any>;
         getById: (id: string) => Promise<any>;
         touch: (id: string) => Promise<any>;
         setVerificationCommand: (id: string, command: string | null) => Promise<any>;
@@ -639,6 +639,57 @@ declare const synteeAPI: {
             workdir: string;
             file?: string;
             staged?: boolean;
+        }) => Promise<any>;
+        commit: (params: {
+            workdir: string;
+            message: string;
+            amend?: boolean;
+        }) => Promise<any>;
+        push: (params: {
+            workdir: string;
+            remote?: string;
+            branch?: string;
+        }) => Promise<any>;
+        pull: (params: {
+            workdir: string;
+            remote?: string;
+            branch?: string;
+        }) => Promise<any>;
+        fetch: (params: {
+            workdir: string;
+            remote?: string;
+        }) => Promise<any>;
+        fileVersions: (params: {
+            workdir: string;
+            file: string;
+            ref?: string;
+        }) => Promise<any>;
+        showFiles: (params: {
+            workdir: string;
+            hash: string;
+        }) => Promise<any>;
+        branchList: (workdir: string) => Promise<any>;
+        checkout: (params: {
+            workdir: string;
+            branch: string;
+        }) => Promise<any>;
+        branchCreate: (params: {
+            workdir: string;
+            branch: string;
+            checkout?: boolean;
+        }) => Promise<any>;
+        stash: (params: {
+            workdir: string;
+            message?: string;
+        }) => Promise<any>;
+        stashPop: (params: {
+            workdir: string;
+        }) => Promise<any>;
+        stashList: (workdir: string) => Promise<any>;
+        logFile: (params: {
+            workdir: string;
+            file: string;
+            limit?: number;
         }) => Promise<any>;
     };
     skills: {

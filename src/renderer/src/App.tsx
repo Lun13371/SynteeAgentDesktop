@@ -509,11 +509,15 @@ export function applyRainbowAccentToDOM(enabled: boolean) {
   }
   if (!enabled) return
   let hue = 0
+  // 250мс вместо 60мс: 60мс-таймер = ~17 обновлений CSS-переменных/сек —
+  // постоянная фоновая нагрузка на renderer+GPU (заметно на слабом железе).
+  // 4 обновления/сек визуально почти неотличимы (шаг hue 8° вместо 2°),
+  // нагрузка падает в ~4 раза.
   rainbowTimer = window.setInterval(() => {
-    hue = (hue + 2) % 360
+    hue = (hue + 8) % 360
     const c = hslToHex(hue, 75, 58)
     applyAccentToDOM(c)
-  }, 60)
+  }, 250)
 }
 
 export default function App() {

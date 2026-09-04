@@ -16,10 +16,9 @@
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* Без backdrop-filter — чип на инпут-баре с glass-фоном (см. ReasoningSelector) */
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
   transition: background 0.15s, border-color 0.15s;
 }
