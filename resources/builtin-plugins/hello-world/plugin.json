@@ -1,7 +1,7 @@
 {
   "id": "hello-world",
   "name": "Hello World",
-  "version": "6.0.0",
+  "version": "6.0.1",
   "author": "SynteeHelper",
   "description": "Демо-плагин v6: всё API плагинов — тулы, виджеты (iframe + diff), панели, RPC, тема, statusbar, tray, планировщик, шорткаты, ai.chat/vision/embed/generateImage, agent.useTool + agent.run, MCP-мост, secrets, git, webhook, context provider, хуки, markdown-рендерер, поиск Spotlight, autocomplete, контекстное меню + кнопки-декорации сообщений, кнопки над инпутом, chats.open, вложения, sound.play, темы/фоны, chat-память, rich-уведомления с panel-кнопками. Шаблон для своих плагинов.",
   "promptDescription": "Demo plugin: hello greets, count_calls counts, show_chart renders inline widget, show_diff renders a diff card, ask_ai answers via host LLM (can stream), search_memory searches app memory, git_status shows repo status, use_host_tool calls host read-only tools.",
@@ -27,7 +27,8 @@
     "secrets",
     "git",
     "webhook",
-    "notifications"
+    "notifications",
+    "hooks"
   ],
   "config": [
     {

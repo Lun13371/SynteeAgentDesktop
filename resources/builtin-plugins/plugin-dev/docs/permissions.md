@@ -28,7 +28,8 @@
 | `git` | `git.status/diff/log/commit/branches` |
 | `mcp` | `mcp.listTools` / `mcp.call` (тулы MCP-серверов приложения) |
 | `webhook` | `net.listen` / `net.close` (локальный HTTP-сервер) |
-| `agent` | `agent.useTool` (host-туры), `agent.run` (субагент) |
+| `agent` | `agent.useTool` (host-туры), `agent.run` (субагент; пишущие тулы — дополнительно `fs:write:any`) |
+| `hooks` | Подписка на события контента: `chat:message`, `chat:before-send`, `chat:completed`, `message:delta`, `tool:call`, `tool:result`, `prompt:before-build` (чтение/изменение переписки и промпта) |
 
 ## Принципы
 

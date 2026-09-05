@@ -274,9 +274,30 @@ export const IPC_EVENTS = {
   // Плагин просит открыть/закрыть модальную iframe-панель:
   // { pluginId, action: 'open'|'close', entry?, title?, width?, height? }
   PLUGINS_MODAL_ACTION: 'plugins:modal-action',
+  // Chat overlay: iframe-оверлей плагина ПОВЕРХ области чата в главном окне:
+  // { pluginId, action: 'show'|'hide', entry?, title?, width?, height?, position? }
+  PLUGINS_CHAT_OVERLAY: 'plugins:chat-overlay',
   // ── Notification overlay ──
   // main → renderer: отправить данные уведомления в overlay-окно
   NOTIFICATION_PUSH: 'notification:push',
   // renderer → main: пользователь кликнул action на уведомлении
   NOTIFICATION_ACTION: 'notification:action',
 }
+
+// ── Plugins: iframe-мост ─────────────────────────────────────────────────
+/** Прямые host-методы, доступные iframe-панелям плагинов через
+ *  synteeBridge.call БЕЗ хопа через ui.handle процесса плагина.
+ *  ЕДИНЫЙ источник истины для main (plugins:iframeCall — валидация)
+ *  и renderer (PluginIframe — роутинг iframeCall vs uiCall).
+ *  Права проверяются в main по манифесту (METHOD_PERMS в plugins.ipc.ts). */
+export const IFRAME_HOST_METHODS: readonly string[] = [
+  'fs.readFile', 'fs.listDir', 'fs.stat',
+  'config.get', 'config.getAll',
+  'ui.getTheme',
+  'clipboard.readText', 'clipboard.writeText',
+  'storage.get', 'storage.set', 'storage.delete',
+  'chats.list', 'chats.get',
+  'projects.list', 'projects.current',
+  'memory.search',
+  'ai.listModels',
+]

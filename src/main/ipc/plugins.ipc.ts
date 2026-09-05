@@ -23,6 +23,7 @@ import { v4 as uuid } from 'uuid'
 import { getPluginManager } from '../../core/plugins/pluginManager'
 import { getProjectById, getChatWorkdirContext, getAllProjects } from '../../core/db'
 import { saveMessage } from '../../core/db/messages'
+import { IFRAME_HOST_METHODS } from '../../shared/constants'
 import type { ExtensionScope, Message } from '../../shared/types'
 
 export function registerPluginsIPC(store: Store, getWindow: () => BrowserWindow | null): void {
@@ -294,26 +295,28 @@ export function registerPluginsIPC(store: Store, getWindow: () => BrowserWindow 
     return { ok: true }
   })
 
+  // Панель плагина открыта/закрыта (renderer) → событие 'panel:opened'/
+  // 'panel:closed' в процесс плагина (если подписан).
+  ipcMain.handle('plugins:panelLifecycle', (_e, params: {
+    pluginId: string
+    panelId: string
+    action: 'opened' | 'closed'
+  }) => {
+    mgr().emitPanelLifecycle(params.pluginId, params.action, params.panelId)
+    return { ok: true }
+  })
+
   // Прямые host-методы для iframe-панелей (synteeBridge.call с method из
   // белого списка — без хопа через ui.handle плагина). Права проверяются
-  // по манифесту плагина в handleHostRequest.
-  const IFRAME_HOST_METHODS = new Set([
-    'fs.readFile', 'fs.listDir', 'fs.stat',
-    'config.get', 'config.getAll',
-    'ui.getTheme',
-    'clipboard.readText', 'clipboard.writeText',
-    'storage.get', 'storage.set', 'storage.delete',
-    'chats.list', 'chats.get',
-    'projects.list', 'projects.current',
-    'memory.search',
-    'ai.listModels',
-  ])
+  // по манифесту плагина в handleHostRequest. Список — shared/constants
+  // (единый источник для main и renderer/PluginIframe).
+  const IFRAME_METHODS = new Set(IFRAME_HOST_METHODS)
   ipcMain.handle('plugins:iframeCall', async (_e, params: {
     pluginId: string
     method: string
     args?: Record<string, unknown>
   }) => {
-    if (!IFRAME_HOST_METHODS.has(params.method)) {
+    if (!IFRAME_METHODS.has(params.method)) {
       return { ok: false, error: `Метод "${params.method}" недоступен из iframe-панели` }
     }
     // Права по манифесту: маппинг метод → permission (как в pluginHost).

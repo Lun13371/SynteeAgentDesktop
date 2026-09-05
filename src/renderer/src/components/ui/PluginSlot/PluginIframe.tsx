@@ -17,6 +17,7 @@
  */
 import { useEffect, useMemo, useRef } from 'react'
 import { useUIStore } from '../../../store/ui.store'
+import { IFRAME_HOST_METHODS as IFRAME_HOST_METHODS_SHARED } from '@shared/constants'
 import './PluginIframe.css'
 
 // Светлые темы — для флага dark в theme-сообщении.
@@ -24,18 +25,8 @@ const LIGHT_THEMES = new Set(['light', 'paper', 'latte', 'sepia', 'dawn', 'mist'
 
 // Прямые host-методы для iframe-панелей (plugins:iframeCall в main,
 // белый список + проверка прав по манифесту). Всё остальное — RPC в
-// процесс плагина (ui.handle).
-const IFRAME_HOST_METHODS = new Set([
-  'fs.readFile', 'fs.listDir', 'fs.stat',
-  'config.get', 'config.getAll',
-  'ui.getTheme',
-  'clipboard.readText', 'clipboard.writeText',
-  'storage.get', 'storage.set', 'storage.delete',
-  'chats.list', 'chats.get',
-  'projects.list', 'projects.current',
-  'memory.search',
-  'ai.listModels',
-])
+// процесс плагина (ui.handle). Единый источник — shared/constants.
+const IFRAME_HOST_METHODS = new Set(IFRAME_HOST_METHODS_SHARED)
 
 export interface PluginIframeProps {
   pluginId: string
@@ -143,6 +134,11 @@ export default function PluginIframe({ pluginId, entry, className, title, widget
       ref={iframeRef}
       src={iframeSrc}
       title={title}
+      // sandbox без allow-same-origin: DOM приложения недоступен.
+      // Навигация на внешние URL заблокирована CSP главного окна
+      // (frame-src 'self' syntee-plugin:) — frame-src действует и на
+      // повторные навигации iframe; вложенные iframe запрещены CSP
+      // самой страницы плагина (main/index.ts handlePluginProtocol).
       sandbox="allow-scripts allow-forms"
       className={className ?? 'plugin-iframe'}
       onLoad={handleLoad}

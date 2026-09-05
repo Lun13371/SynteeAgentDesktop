@@ -183,6 +183,8 @@ export class PluginManager {
   // ── Инфраструктура новых API (все ключуются по pluginId, чистятся в stop) ──
   /** Планировщик: pluginId → (jobId → job). */
   private schedulerJobs = new Map<string, Map<string, SchedulerJob>>()
+  /** Hot reload: pluginId → вотчеры entry/plugin.json (разработка плагинов). */
+  private hotReloadWatchers = new Map<string, { watchers: FSWatcher[]; timer: NodeJS.Timeout | null }>()
   /** Общий минутный тикер для cron-джоб (создаётся лениво). */
   private cronTicker: NodeJS.Timeout | null = null
   /** Глобальные шорткаты: pluginId → Set<accelerator>. */
@@ -425,6 +427,14 @@ export class PluginManager {
         run.inputActions.set(action.id, action)
         this.emitChanged()
       },
+      onUnregistered: (kind, name) => {
+        if (kind === 'tool') run.tools.delete(name)
+        else if (kind === 'command') run.commands.delete(name)
+        else if (kind === 'panel') {
+          run.ui = run.ui.filter(u => u.panelId !== name)
+        }
+        this.emitChanged()
+      },
       onThemeRegistered: theme => {
         run.themes = run.themes.filter(t => t.name !== theme.name)
         run.themes.push(theme)
@@ -450,6 +460,10 @@ export class PluginManager {
         // Процесс умер (краш или stop уже обработан — stop удаляет из running).
         if (this.running.get(pluginId)?.proc === proc) {
           this.running.delete(pluginId)
+          // Краш ≠ stop: инфраструктура (globalShortcut, cron, вотчеры,
+          // webhook-серверы, tray, statusbar) остаётся в main и утекает —
+          // чистим её и здесь, иначе шорткаты живут до перезапуска приложения.
+          this.cleanupPluginInfrastructure(pluginId)
           if (code !== 0) {
             this.errors.set(pluginId, `Процесс плагина завершился (code ${code})`)
           }
@@ -464,12 +478,67 @@ export class PluginManager {
       await proc.start()
       this.running.set(pluginId, run)
       this.pushLog(pluginId, run, 'info', `Плагин запущен (${plugin.manifest.name} v${plugin.manifest.version})`)
+      this.setupHotReloadWatcher(pluginId, plugin.dir, plugin.manifest.main)
     } catch (e) {
       this.errors.set(pluginId, (e as Error).message)
       this.emitChanged()
       throw e
     }
     this.emitChanged()
+  }
+
+  /** Hot reload для разработчиков: следим за ИСХОДНИКАМИ запущенного
+   *  плагина (папки dist/ и ui/ рекурсивно + plugin.json); при изменении
+   *  (дебаунс 800 мс) — reload. Правка ЛЮБОГО файла кода/UI подхватывается
+   *  автоматически. Данные плагина (storage, кэш вне dist/ui) не смотрим —
+   *  их запись не должна вызывать перезапуск. */
+  private setupHotReloadWatcher(pluginId: string, pluginDir: string, mainEntry: string): void {
+    this.closeHotReloadWatcher(pluginId)
+    // Код лежит в папке entry (обычно dist/) — следим за ней целиком +
+    // ui/ + манифест. Если entry в корне (одиночный index.js) — следим
+    // только за ним и plugin.json.
+    const entryDir = dirname(join(pluginDir, mainEntry))
+    const watchTargets: Array<{ target: string; recursive: boolean; label: string }> = []
+    if (entryDir !== pluginDir) {
+      watchTargets.push({ target: entryDir, recursive: true, label: mainEntry + ' (папка)' })
+    } else {
+      watchTargets.push({ target: join(pluginDir, mainEntry), recursive: false, label: mainEntry })
+    }
+    watchTargets.push({ target: join(pluginDir, 'ui'), recursive: true, label: 'ui/' })
+    watchTargets.push({ target: join(pluginDir, 'plugin.json'), recursive: false, label: 'plugin.json' })
+
+    const watchers: FSWatcher[] = []
+    let timer: NodeJS.Timeout | null = null
+    const fire = (label: string) => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        // Перезагружаем только если плагин всё ещё включён (reload()
+        // поднимет и упавший — удобнее для разработки).
+        if (this.getState(pluginId).enabled === false) return
+        console.log(`[plugins] hot reload: ${pluginId} (изменён ${label})`)
+        void this.reload(pluginId).catch(err => {
+          console.warn(`[plugins] hot reload ${pluginId} не удался:`, (err as Error).message)
+        })
+      }, 800)
+    }
+    for (const t of watchTargets) {
+      try {
+        const w = watch(t.target, { persistent: false, recursive: t.recursive }, () => fire(t.label))
+        watchers.push(w)
+      } catch { /* файл/папка может не существовать — пропускаем */ }
+    }
+    this.hotReloadWatchers.set(pluginId, { watchers, timer: null })
+  }
+
+  private closeHotReloadWatcher(pluginId: string): void {
+    const entry = this.hotReloadWatchers.get(pluginId)
+    if (entry) {
+      for (const w of entry.watchers) {
+        try { w.close() } catch { /* ignore */ }
+      }
+      this.hotReloadWatchers.delete(pluginId)
+    }
   }
 
   /** Останавливает процесс плагина. */
@@ -483,8 +552,11 @@ export class PluginManager {
   }
 
   /** Очистка всей инфраструктуры плагина (таймеры, шорткаты, вотчеры,
-   *  сокеты, statusbar, tray). Вызывается в stop() ДО завершения процесса. */
+   *  сокеты, statusbar, tray). Вызывается в stop() ДО завершения процесса
+   *  и в onExit при краше. */
   private cleanupPluginInfrastructure(pluginId: string): void {
+    // Hot reload-вотчеры.
+    this.closeHotReloadWatcher(pluginId)
     // Планировщик.
     const jobs = this.schedulerJobs.get(pluginId)
     if (jobs) {
@@ -652,6 +724,22 @@ export class PluginManager {
       } catch (e) {
         console.warn(`[plugins] emitChatMessage → ${pluginId} failed:`, (e as Error).message)
       }
+    }
+  }
+
+  /** Жизненный цикл панелей: renderer сообщает об открытии/закрытии панели
+   *  плагина → событие 'panel:opened'/'panel:closed' в процесс (если
+   *  подписан). Плагин может лениво грузить данные только когда панель
+   *  реально видна. */
+  emitPanelLifecycle(pluginId: string, action: 'opened' | 'closed', panelId: string): void {
+    const run = this.running.get(pluginId)
+    if (!run) return
+    const event = action === 'opened' ? 'panel:opened' : 'panel:closed'
+    if (!run.subscribedEvents.has(event)) return
+    try {
+      run.proc.sendEvent(event, { panelId })
+    } catch (e) {
+      console.warn(`[plugins] emitPanelLifecycle → ${pluginId} failed:`, (e as Error).message)
     }
   }
 
@@ -1356,6 +1444,20 @@ export class PluginManager {
           })
           const headers: Record<string, string> = {}
           resp.headers.forEach((v, k) => { headers[k] = v })
+          // binary: true → bodyBase64 (картинки, архивы и т.п.; текст ломался
+          // при декодировании). Лимит тот же 1 МБ.
+          const binary = params.binary === true
+          if (binary) {
+            let b64 = ''
+            if (resp.body) {
+              const buf = await resp.arrayBuffer()
+              const bytes = buf.byteLength > NET_FETCH_MAX_BYTES
+                ? buf.slice(0, NET_FETCH_MAX_BYTES)
+                : buf
+              b64 = Buffer.from(bytes).toString('base64')
+            }
+            return { ok: true, result: { status: resp.status, headers, bodyBase64: b64 } }
+          }
           let bodyText = ''
           if (resp.body) {
             const buf = await resp.arrayBuffer()
@@ -1375,13 +1477,22 @@ export class PluginManager {
           if (st.size > FS_READ_MAX_BYTES) {
             return { ok: false, error: `fs.readFile: файл больше ${FS_READ_MAX_BYTES} байт` }
           }
+          // encoding: 'base64' → бинарное содержимое (картинки и т.п.)
+          if (params.encoding === 'base64') {
+            return { ok: true, result: readFileSync(p).toString('base64') }
+          }
           return { ok: true, result: readFileSync(p, 'utf-8') }
         }
         case 'fs.writeFile': {
           const p = String(params.path ?? '')
           if (!p) return { ok: false, error: 'fs.writeFile: path обязателен' }
           const content = String(params.content ?? '')
-          if (Buffer.byteLength(content, 'utf-8') > FS_WRITE_MAX_BYTES) {
+          // encoding: 'base64' → content — base64 бинарных данных.
+          const isBase64 = params.encoding === 'base64'
+          const byteLen = isBase64
+            ? Buffer.byteLength(Buffer.from(content, 'base64'))
+            : Buffer.byteLength(content, 'utf-8')
+          if (byteLen > FS_WRITE_MAX_BYTES) {
             return { ok: false, error: `fs.writeFile: контент больше ${FS_WRITE_MAX_BYTES} байт` }
           }
           // Права проверены в pluginHost (fs:write внутри папки плагина /
@@ -1389,7 +1500,11 @@ export class PluginManager {
           // поэтому это consent-гейт, а не жёсткая песочница.
           const resolved = resolvePath(p)
           mkdirSync(dirname(resolved), { recursive: true })
-          writeFileSync(resolved, content, 'utf-8')
+          if (isBase64) {
+            writeFileSync(resolved, Buffer.from(content, 'base64'))
+          } else {
+            writeFileSync(resolved, content, 'utf-8')
+          }
           return { ok: true }
         }
         case 'fs.stat': {
@@ -2021,6 +2136,27 @@ export class PluginManager {
         }
         case 'ui.closeModal': {
           this.win?.webContents.send(IPC_EVENTS.PLUGINS_MODAL_ACTION, { pluginId, action: 'close' })
+          return { ok: true }
+        }
+        // ── Chat overlay: iframe-оверлей ПОВЕРХ области чата в главном
+        //    окне (в отличие от overlay.show — отдельного окна). Плагин
+        //    может показывать плавающую панель/виджет рядом с перепиской.
+        case 'ui.showChatOverlay': {
+          const entry = params.entry ? String(params.entry) : this.getPluginUiEntry(pluginId)
+          if (!entry) return { ok: false, error: 'ui.showChatOverlay: entry не задан (и нет manifest.ui)' }
+          this.win?.webContents.send(IPC_EVENTS.PLUGINS_CHAT_OVERLAY, {
+            pluginId,
+            action: 'show',
+            entry,
+            title: params.title ? String(params.title) : undefined,
+            width: params.width ? Number(params.width) : undefined,
+            height: params.height ? Number(params.height) : undefined,
+            position: params.position === 'left' ? 'left' : (params.position === 'center' ? 'center' : 'right'),
+          })
+          return { ok: true }
+        }
+        case 'ui.hideChatOverlay': {
+          this.win?.webContents.send(IPC_EVENTS.PLUGINS_CHAT_OVERLAY, { pluginId, action: 'hide' })
           return { ok: true }
         }
         // ── AI: стриминг, vision, embeddings ──

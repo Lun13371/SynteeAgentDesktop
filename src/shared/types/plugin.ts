@@ -36,6 +36,9 @@ export type PluginPermission =
   | 'mcp'            // вызов тулов MCP-серверов приложения (syntee.mcp)
   | 'webhook'        // локальный HTTP-сервер — приём внешних запросов (net.listen)
   | 'agent'          // вызов host-тулов агента (syntee.agent.useTool)
+  | 'hooks'          // подписка на хуки/события контента: chat:message,
+                    // chat:before-send, chat:completed, message:delta,
+                    // tool:call, tool:result, prompt:before-build
 
 /** Поле настроек плагина — декларативная схема в манифесте,
  *  автоматически рендерится формой в карточке плагина. */
@@ -76,6 +79,10 @@ export interface PluginManifest {
   configUi?: string
   /** Права, запрашиваемые плагином. */
   permissions?: PluginPermission[]
+  /** Версия plugin API, под которую написан плагин ('1' — текущая).
+   *  При мажорных изменениях API хост предупредит в журнале, если
+   *  плагин рассчитан на другую версию. */
+  apiVersion?: string
   /** Схема настроек — форма в карточке плагина, значения через syntee.config. */
   config?: PluginConfigField[]
   /**
@@ -320,14 +327,20 @@ export interface PluginUiWidgetPayload {
   /** Высота карточки в px (по умолчанию 260). */
   height?: number
   /** 'diff' — нативный diff-виджет хоста (без iframe): поля diff/title/
-   *  language обязательны, entry игнорируется. */
-  kind?: 'iframe' | 'diff'
+   *  language обязательны, entry игнорируется.
+   *  'badge' — инлайн-бейдж (пилюля) в тексте сообщения: поля text
+   *  обязательны, entry игнорируется. */
+  kind?: 'iframe' | 'diff' | 'badge'
   /** Для kind='diff': unified diff-текст. */
   diff?: string
   /** Для kind='diff': заголовок карточки (имя файла и т.п.). */
   title?: string
   /** Для kind='diff': язык подсветки. */
   language?: string
+  /** Для kind='badge': текст бейджа. */
+  text?: string
+  /** Для kind='badge': цвет (CSS-цвет; по умолчанию акцент темы). */
+  color?: string
 }
 
 /** Полное состояние плагина для UI. */

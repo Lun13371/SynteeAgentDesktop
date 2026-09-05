@@ -2,6 +2,8 @@
 
 Подписка на события хоста. Fire-and-forget события — просто колбэк; **хуки** — колбэк с ответом (`return { action: 'modify' | 'reject', … }`), хост ждёт результат (таймаут 1.5 с).
 
+> **Permission `hooks`**: события контента (`chat:message`, `chat:before-send`, `chat:completed`, `message:delta`, `tool:call`, `tool:result`, `prompt:before-build`) требуют permission `"hooks"` в манифесте — без него плагин не может читать/менять переписку и промпт. Остальные события доступны без прав.
+
 ## Хуки (могут менять поведение)
 
 ### chat:before-send — перехват отправки сообщения
@@ -43,22 +45,31 @@ syntee.on('prompt:before-build', (p) => {
 
 | Событие | Payload | Когда |
 |---|---|---|
-| `chat:message` | `{ chatId, content }` | сообщение пользователя отправлено |
-| `chat:completed` | `{ chatId }` | агент закончил ответ |
+| `chat:message` | `{ chatId, content }` | сообщение пользователя отправлено (permission `hooks`) |
+| `chat:completed` | `{ chatId }` | агент закончил ответ (permission `hooks`) |
 | `chat:switched` | `{ chatId }` | пользователь переключил активный чат |
-| `message:delta` | `{ chatId, delta }` | стриминг ответа (троттлинг 250 мс) |
+| `message:delta` | `{ chatId, delta }` | стриминг ответа (троттлинг 250 мс; permission `hooks`) |
 | `agent:status` | `{ chatId, status, toolName? }` | `started` / `finished` / `error` |
-| `tool:call` | `{ toolName, args }` | любой тул вызван (fire-and-forget) |
+| `tool:call` | `{ toolName, args }` | любой тул вызван (fire-and-forget; permission `hooks`) |
 | `theme:changed` | `{ theme, accentColor, dark }` | смена темы приложения |
 | `app:focus` | `{}` | главное окно получило фокус |
 | `input-action` | `{ id }` | клик по кнопке над инпутом (registerInputAction без command) |
-| `fs:change` | `{ id, event, file }` | сработал fs.watch |
-| `ws:open` / `ws:message` / `ws:close` / `ws:error` | `{ id, … }` | WebSocket |
-| `scheduler:tick` | `{ id }` | задача планировщика (используется内部 scheduler API) |
-| `shortcut` | `{ accelerator }` | глобальный шорткат |
-| `tray:action` | `{ label }` | пункт трея без command |
-| `webhook:request` | `{ port, method, path, body }` | запрос на net.listen |
+| `panel:opened` | `{ panelId }` | панель плагина открыта (right/page/bottom/modal) |
+| `panel:closed` | `{ panelId }` | панель плагина закрыта |
 | `bus:<name>` | `{ data, from }` | шина между плагинами (syntee.bus.emit) |
+
+## События со спец-каналом (НЕ подписываются через on())
+
+Эти события доставляются колбэками соответствующих API — `syntee.on('fs:change')` и т.п. **не сработает**:
+
+| Событие | Как подписаться | Payload |
+|---|---|---|
+| `fs:change` | `syntee.fs.watch(path, cb)` | `{ event, file }` |
+| `scheduler:tick` | `syntee.scheduler.every/cron/at(cb)` | — (сам колбэк) |
+| `shortcut` | `syntee.registerShortcut(acc, cb)` | — (сам колбэк) |
+| `tray:action` | `syntee.tray.setMenu(items)` — item без command | `{ label }` |
+| `webhook:request` | `syntee.net.listen(port, handler)` | `{ method, path, body }` |
+| `ws:open/message/close/error` | `syntee.net.ws.connect(url, handlers)` | `{ id, … }` |
 
 ## Подписка и short-circuit
 

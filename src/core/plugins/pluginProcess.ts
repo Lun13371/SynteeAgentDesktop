@@ -74,6 +74,8 @@ export interface PluginProcessCallbacks {
   onThemeRegistered: (theme: PluginThemeContribution) => void
   /** Фон плагина зарегистрирован. */
   onBackgroundRegistered: (background: PluginBackgroundContribution) => void
+  /** Плагин снял регистрацию тула/команды/панели в рантайме. */
+  onUnregistered: (kind: 'tool' | 'command' | 'panel', name: string) => void
   /** Плагин отправил сообщение в свои iframe-панели. */
   onUiPostMessage: (data: unknown) => void
   /** Плагин подписался на события (список всех событий с хендлерами). */
@@ -328,6 +330,18 @@ export class PluginProcess {
           panelId: msg.panelId,
           entry: msg.entry,
         })
+        break
+      }
+      case 'unregisterTool': {
+        this.callbacks.onUnregistered('tool', msg.name)
+        break
+      }
+      case 'unregisterCommand': {
+        this.callbacks.onUnregistered('command', msg.name)
+        break
+      }
+      case 'unregisterPanel': {
+        this.callbacks.onUnregistered('panel', msg.name)
         break
       }
       case 'subscribeEvents': {

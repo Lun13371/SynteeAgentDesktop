@@ -33,7 +33,9 @@ syntee.registerTool({
 
 ## Инлайн-виджеты (rich-результат)
 
-Тул может вернуть не текст, а JSON-маркер — тогда в чат рендерится **iframe-виджет** вместо текста:
+Тул может вернуть не текст, а JSON-маркер — тогда в чат рендерится **виджет** вместо текста. Два вида:
+
+**1. iframe-виджет** — своя HTML-страница в карточке сообщения:
 
 ```js
 syntee.ui.registerWidget({ name: 'chart', entry: 'ui/chart.html', height: 260 })
@@ -41,12 +43,49 @@ syntee.ui.registerWidget({ name: 'chart', entry: 'ui/chart.html', height: 260 })
 // в handler-е тула:
 return JSON.stringify({
   __plugin_ui__: true,
-  widget: 'chart',                    // имя из registerWidget
-  data: { labels: [...], values: [...] },  // попадёт в виджет
+  pluginId: 'my-plugin',            // СВОЙ id из манифеста (обязательно!)
+  entry: 'ui/chart.html',           // HTML-файл виджета (обязательно для iframe)
+  data: { labels: [...], values: [...] },  // попадёт в виджет (widgetData)
+  height: 260,                      // высота карточки, px
 })
 ```
 
-Виджет (ui/chart.html) получает `data` через мост — см. секцию **ui**.
+Виджет (ui/chart.html) получает `data` через мост — см. секцию **ui**. `registerWidget(name)` — декларация для system prompt (модель узнаёт, что тул умеет рендерить виджет); сам маркер должен содержать `pluginId` и `entry`.
+
+**2. Нативный diff-виджет** — без iframe, рендерит unified diff в стиле кодоблоков:
+
+```js
+return JSON.stringify({
+  __plugin_ui__: true,
+  pluginId: 'my-plugin',
+  kind: 'diff',                     // нативный рендер (entry не нужен)
+  title: 'src/app.ts',              // заголовок карточки
+  language: 'ts',                   // подсветка синтаксиса
+  diff: '--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,2 +1,2 @@\n-old\n+new',
+})
+```
+
+**3. Инлайн-бейдж** (`kind:'badge'`) — декорация без iframe: компактная пилюля-статус в сообщении:
+
+```js
+return JSON.stringify({
+  __plugin_ui__: true,
+  pluginId: 'my-plugin',
+  kind: 'badge',
+  text: '✓ Тесты пройдены (42)',
+  color: '#22c55e',                 // опционально: CSS-цвет (дефолт — акцент темы)
+})
+```
+
+Без `pluginId` (+ `entry` или `kind:'diff'` + `diff` / `kind:'badge'` + `text`) маркер НЕ распарсится — сообщение отрендерится как обычный текст.
+
+## Динамические тулы и unregister
+
+`registerTool` можно звать в любой момент (не только в activate). Снять регистрацию в рантайме:
+
+```js
+syntee.unregisterTool('get_weather')   // тул исчезает из схемы агента
+```
 
 ## Динамические тулы
 

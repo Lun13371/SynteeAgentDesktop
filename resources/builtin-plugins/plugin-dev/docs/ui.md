@@ -25,7 +25,17 @@ syntee.ui.closeModal()
 syntee.ui.setBadge('main', 3)
 ```
 
-Слоты `registerPanel`: `'right'` (таб правой панели), `'modal'`, `'sidebar'`. Entry — путь относительно папки плагина; по умолчанию `manifest.ui`.
+Слоты `registerPanel`:
+
+| Слот | Где рендерится |
+|---|---|
+| `'right'` | таб в правой панели приложения (keep-alive, бейджи через `ui.setBadge`) |
+| `'sidebar'` | кнопка/панель в сайдбаре |
+| `'bottom'` | таб в нижнем доке (горизонтальная панель под чатом) |
+| `'page'` | полноэкранный оверлей в области чата (свой «экран» поверх сообщений) |
+| `'modal'` | модальное окно (обычно через `ui.openModal`, без registerPanel) |
+
+Entry — путь относительно папки плагина; по умолчанию `manifest.ui`.
 
 Требуется permission `'ui'`.
 
@@ -42,11 +52,23 @@ const synteeBridge = (() => {
   window.addEventListener('message', (e) => {
     const d = e.data
     if (!d || d.source !== 'syntee-plugin-host') return
+    // RPC-ответ
     if (d.rpc && pending.has(d.id)) {
       const p = pending.get(d.id); pending.delete(d.id)
       d.ok ? p.resolve(d.result) : p.reject(new Error(d.error || 'RPC error'))
-    } else if (d.data !== undefined) {
-      ;(handlers.get(d.method || '*') || []).forEach(cb => { try { cb(d.data) } catch (err) { console.error(err) } })
+      return
+    }
+    // Тема (при загрузке iframe и при смене)
+    if (d.theme) { /* { theme, accentColor, dark } */ return }
+    // Push от плагина: syntee.ui.emit(method, data) приходит обёрнутым
+    // в { __rpc__: true, method, data } внутри d.data
+    if (d.data && d.data.__rpc__) {
+      ;(handlers.get(d.data.method) || []).forEach(cb => { try { cb(d.data.data) } catch (err) { console.error(err) } })
+      return
+    }
+    // Legacy push (syntee.ui.postMessage)
+    if (d.data !== undefined) {
+      ;(handlers.get('*') || []).forEach(cb => { try { cb(d.data) } catch (err) { console.error(err) } })
     }
   })
   return {
@@ -61,6 +83,7 @@ const synteeBridge = (() => {
       if (!handlers.has(method)) handlers.set(method, [])
       handlers.get(method).push(cb)
     },
+    _handlers: handlers,
   }
 })()
 </script>
@@ -101,6 +124,32 @@ syntee.on('theme:changed', (p) => { /* { theme, accentColor, dark } */ })
 ## Кастомный UI настроек — configUi
 
 `manifest.configUi: 'ui/settings.html'` — iframe в карточке плагина вместо декларативной формы `config`. Панель читает/пишет настройки через `synteeBridge.call('…')` → свои `ui.handle`-хендлеры (например, хранит в `storage` или `secrets`).
+
+## Chat overlay — плавающая панель поверх чата (`ui`)
+
+В отличие от `overlay.show` (отдельное окно поверх всего) и `openModal` (модалка с затемнением) — компактный iframe, висящий над областью переписки в главном окне. Живые данные — через `ui.emit` + `synteeBridge.on`:
+
+```js
+syntee.ui.showChatOverlay({ entry: 'ui/live.html', title: 'Live', width: 360, height: 300, position: 'right' })
+syntee.ui.hideChatOverlay()
+```
+
+## События жизненного цикла панелей
+
+Плагин узнаёт, что его панель реально открыли/закрыли (ленивая загрузка данных):
+
+```js
+syntee.on('panel:opened', (p) => { /* p: { panelId } */ })
+syntee.on('panel:closed', (p) => { /* p: { panelId } */ })
+```
+
+Работает для right-табов, page, bottom, modal. Прав не требует.
+
+## unregister — снять регистрацию панели
+
+```js
+syntee.unregisterPanel('main')   // панель закрывается у пользователя
+```
 
 ## Ограничения iframe
 

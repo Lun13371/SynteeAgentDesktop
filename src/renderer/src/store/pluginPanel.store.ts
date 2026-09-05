@@ -29,6 +29,17 @@ export interface PluginModalState {
   height?: number
 }
 
+/** Chat overlay — плавающий iframe-оверлей плагина поверх области чата
+ *  (PLUGINS_CHAT_OVERLAY, ui.showChatOverlay). */
+export interface PluginChatOverlayState {
+  pluginId: string
+  title?: string
+  entry: string
+  width?: number
+  height?: number
+  position?: 'left' | 'right' | 'center'
+}
+
 /** Полноэкранная страница плагина (slot 'page'). */
 export interface PluginPageState {
   pluginId: string
@@ -46,6 +57,8 @@ interface PluginPanelStore {
   open: { pluginId: string; title: string } | null
   /** Современная модальная панель (PluginModalHost) — одна одновременно. */
   modal: PluginModalState | null
+  /** Chat overlay плагина (PluginChatOverlayHost) — один одновременно. */
+  chatOverlay: PluginChatOverlayState | null
   /** Активная полноэкранная страница плагина (null = закрыта). */
   activePage: PluginPageState | null
   /** Открытые табы нижнего дока плагинов. */
@@ -61,6 +74,8 @@ interface PluginPanelStore {
   closePanel: () => void
   openPluginModal: (m: PluginModalState) => void
   closePluginModal: () => void
+  openChatOverlay: (o: PluginChatOverlayState) => void
+  closeChatOverlay: () => void
   openPluginPage: (pluginId: string, panelId: string) => void
   closePluginPage: () => void
   openPluginBottomTab: (pluginId: string, panelId: string) => void
@@ -77,6 +92,7 @@ const emptyStatusbar: PluginStatusbarItem[] = []
 export const usePluginPanelStore = create<PluginPanelStore>((set) => ({
   open: null,
   modal: null,
+  chatOverlay: null,
   activePage: null,
   bottomTabs: [],
   activeBottomTab: null,
@@ -86,11 +102,22 @@ export const usePluginPanelStore = create<PluginPanelStore>((set) => ({
   openPanel: (pluginId, title) => set({ open: { pluginId, title } }),
   closePanel: () => set({ open: null }),
 
-  openPluginModal: (m) => set({ modal: m, open: null }),
-  closePluginModal: () => set({ modal: null }),
+  openPluginModal: (m) => { set({ modal: m, open: null }); notifyPanelLifecycle(m.pluginId, 'modal', 'opened') },
+  closePluginModal: () => {
+    const prev = usePluginPanelStore.getState().modal
+    set({ modal: null })
+    if (prev) notifyPanelLifecycle(prev.pluginId, 'modal', 'closed')
+  },
 
-  openPluginPage: (pluginId, panelId) => set({ activePage: { pluginId, panelId } }),
-  closePluginPage: () => set({ activePage: null }),
+  openChatOverlay: (o) => set({ chatOverlay: o }),
+  closeChatOverlay: () => set({ chatOverlay: null }),
+
+  openPluginPage: (pluginId, panelId) => { set({ activePage: { pluginId, panelId } }); notifyPanelLifecycle(pluginId, panelId, 'opened') },
+  closePluginPage: () => {
+    const prev = usePluginPanelStore.getState().activePage
+    set({ activePage: null })
+    if (prev) notifyPanelLifecycle(prev.pluginId, prev.panelId, 'closed')
+  },
 
   openPluginBottomTab: (pluginId, panelId) => set(s => {
     const key = (t: PluginBottomTabRef) => t.pluginId === pluginId && t.panelId === panelId
@@ -135,6 +162,7 @@ export const usePluginPanelStore = create<PluginPanelStore>((set) => ({
     useUIStore.getState().setAgentPanelOpen(true)
     // Активный файловый таб перекрывает контент панелей — сбрасываем его.
     useFileTabsStore.getState().setActiveFileTab(null)
+    notifyPanelLifecycle(pluginId, panelId, 'opened')
   },
   closePluginTab: (pluginId, panelId) => {
     const tabId = buildPluginTabId(pluginId, panelId)
@@ -150,8 +178,17 @@ export const usePluginPanelStore = create<PluginPanelStore>((set) => ({
         ui.setAgentPanelTab('sidechat')
       }
     }
+    notifyPanelLifecycle(pluginId, panelId, 'closed')
   },
 }))
+
+/** Сообщает main (→ процесс плагина) об открытии/закрытии панели —
+ *  событие 'panel:opened'/'panel:closed' в плагине, если он подписан. */
+function notifyPanelLifecycle(pluginId: string, panelId: string, action: 'opened' | 'closed'): void {
+  try {
+    void window.syntee.plugins.panelLifecycle({ pluginId, panelId, action }).catch(() => {})
+  } catch { /* preload ещё не готов — ок */ }
+}
 
 /** Уплощённый список элементов status bar (по одному на pluginId+id). */
 export function selectStatusbarItems(s: PluginPanelStore): PluginStatusbarItem[] {
