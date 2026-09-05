@@ -683,7 +683,26 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       notesInfo = withRetrySync('notesInfo', () => getProjectNotesInfo(promptProjectId!), undefined)
     }
 
-    return buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents })
+    // Context providers плагинов: живой контекст в system prompt.
+    // Инкогнито — пропуск (приватность). Таймауты внутри collectContext.
+    let pluginContext: Array<{ name: string; content: string }> = []
+    if (!isIncognito) {
+      try {
+        pluginContext = await getPluginManager().collectContext(chatId)
+      } catch { /* плагины не должны ломать промпт */ }
+    }
+
+    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext })
+
+    // Хук prompt:before-build — последняя точка вмешательства плагинов
+    // в system prompt (modify → новый текст).
+    if (!isIncognito) {
+      try {
+        systemPrompt = await getPluginManager().runPromptHook(chatId, systemPrompt)
+      } catch { /* ignore */ }
+    }
+
+    return systemPrompt
 
   }
 
@@ -850,7 +869,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     // require вместо await import для builtin: нативный import() не работает в V8-байткоде.
     // (относительные import() ниже rollup компилирует в require — они безопасны)
-    const { readFile: fsReadFile, stat: fsStat } = require('fs/promises')
+    const { readFile: fsReadFile, stat: fsStat, readdir: fsReaddir } = require('fs/promises')
     const { readFileSync } = require('fs')
     const { isTextMime, isImageMime } = await import('../../shared/mentions')
 
@@ -903,8 +922,31 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       try {
         const st = await fsStat(att.path)
         if (st.isDirectory()) {
-          textBlocks.push(`[Директория: ${att.name}]`)
-          processedFiles.push({ name: att.name, kind: att.kind, status: 'binary_path', size: 0, detail: 'Директория' })
+          // Листинг содержимого: агент видит, что внутри, и может читать
+          // файлы по пути (read_file) без дополнительных запросов к юзеру.
+          let listing = ''
+          let total = 0
+          const dirPath = String(att.path ?? '')
+          try {
+            const entries = await fsReaddir(dirPath, { withFileTypes: true })
+            const visible = entries.filter((e: { name: string }) =>
+              !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'dist' && e.name !== 'out')
+            total = visible.length
+            const shown = visible.slice(0, 100)
+            const { statSync, join: pathJoin } = require('path') as typeof import('path') & { statSync: (p: string) => { size: number } }
+            const lines = shown.map((e: { name: string; isDirectory: () => boolean }) => {
+              if (e.isDirectory()) return `- ${e.name}/`
+              try {
+                const sz = statSync(pathJoin(dirPath, e.name)).size
+                return `- ${e.name} (${(sz / 1024).toFixed(1)} KB)`
+              } catch { return `- ${e.name}` }
+            })
+            listing = lines.length > 0
+              ? `\n${lines.join('\n')}${total > 100 ? `\n…и ещё ${total - 100} записей` : ''}`
+              : '\n(пусто)'
+          } catch { /* нет доступа — просто путь */ }
+          textBlocks.push(`[Директория: ${att.name}] (путь: ${att.path}, записей: ${total})${listing}\nЧитай нужные файлы из директории по полному пути.`)
+          processedFiles.push({ name: att.name, kind: att.kind, status: 'binary_path', size: 0, detail: `Директория (${total} записей, листинг в контексте)` })
         } else if (att.kind === 'image' || isImageMime(att.mime)) {
           // Картинку откладываем для параллельной обработки во втором проходе.
           const idx = processedFiles.length
@@ -1338,10 +1380,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const flushUiTokens = () => {
       if (run.uiFlushTimer) { clearTimeout(run.uiFlushTimer); run.uiFlushTimer = null }
       if (run.uiTokenBuf) {
+        const text = run.uiTokenBuf
         win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
-          chatId: run.chatId, msgId: run.msgId, token: run.uiTokenBuf,
+          chatId: run.chatId, msgId: run.msgId, token: text,
         })
         run.uiTokenBuf = ''
+        // Plugins: message:delta (троттлинг 250мс внутри менеджера,
+        // подписавшимся плагинам). Инкогнито не утекает.
+        if (!isIncognitoRun) {
+          try { getPluginManager().emitMessageDelta(run.chatId, text) } catch { /* ignore */ }
+        }
       }
       if (run.uiThinkingBuf) {
         win?.webContents.send(IPC_EVENTS.CHAT_STREAM_TOKEN, {
@@ -1538,6 +1586,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Эмитим терминальный статус для сайдбара (бейдж ✓).
       emitRunStatus(win, params.chatId, 'done', assistantMsgId)
 
+      // Plugins: agent:status 'finished' + chat:completed (подписавшимся).
+      if (!params.incognito) {
+        try {
+          getPluginManager().emitAgentStatus(params.chatId, 'finished')
+          getPluginManager().emitChatCompleted(params.chatId)
+        } catch { /* ignore */ }
+      }
+
       // ── Notification overlay ──
       // Не показываем уведомление для incognito-чатов (приватность).
       // Agent_done показываем только если были toolCalls (агентный режим),
@@ -1697,6 +1753,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     if (!isIncognitoRun) {
       try {
         getPluginManager().emitChatMessage(params.chatId, params.content ?? '')
+        // agent:status 'started' — подписавшимся плагинам.
+        getPluginManager().emitAgentStatus(params.chatId, 'started')
       } catch { /* плагины недоступны — не роняем чат */ }
     }
 
@@ -2306,11 +2364,21 @@ ${subModeOutro}`,
                 msg.toolName as string,
                 (msg.args as Record<string, unknown>) ?? {},
               )
+              // Хук tool:result — плагины могут модифицировать результат
+              // до того, как его увидит модель.
+              let output = result.output
+              try {
+                output = await getPluginManager().runToolResultHook(
+                  msg.toolName as string,
+                  (msg.args as Record<string, unknown>) ?? {},
+                  output,
+                )
+              } catch { /* хук не должен ломать вызов */ }
               worker.postMessage({
                 type: 'plugin_call_reply',
                 replyId: msg.replyId,
                 success: result.success,
-                output: result.output,
+                output,
                 error: result.error,
               })
             } catch (e) {
@@ -2830,6 +2898,13 @@ ${subModeOutro}`,
               msgId: assistantMsgId,
               message: errorAssistantMsg,
             })
+            // Plugins: agent:status 'error' + chat:completed (подписавшимся).
+            if (!params.incognito) {
+              try {
+                getPluginManager().emitAgentStatus(params.chatId, 'error')
+                getPluginManager().emitChatCompleted(params.chatId)
+              } catch { /* ignore */ }
+            }
             drainQueue(win, params.chatId)
           }
           emitRunStatus(win, params.chatId, 'error', assistantMsgId, msg.error as string)
@@ -3055,6 +3130,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // знать, в какой чат отправить быстрый запрос вместо создания нового.
   ipcMain.handle('chat:setActive', (_, chatId: string | null) => {
     setLastActiveChatId(chatId ?? null)
+    // Плагинам: подписчики 'chat:switched' узнают о смене активного чата.
+    try { getPluginManager().emitChatSwitched(chatId ?? null) } catch { /* plugins не должны ломать чат */ }
   })
   ipcMain.handle('chat:getActive', () => lastActiveChatId)
   // ВНИМАНИЕ: в renderer сообщения уходят ТОЛЬКО через slimMessagesForUI —

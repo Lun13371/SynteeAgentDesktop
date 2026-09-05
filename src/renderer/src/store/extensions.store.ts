@@ -14,6 +14,7 @@
  */
 import { create } from 'zustand'
 import type { Skill, SkillState, McpServerRuntime, MarketplaceMcpServer, MarketplaceSkill, PluginRuntime } from '../../../../../shared/types'
+import type { PluginStatusbarItem, PluginUiContribution } from '@shared/types/plugin'
 import { useChatStore } from './chat.store'
 import { usePluginPanelStore } from './pluginPanel.store'
 import { buildPluginTabId } from './ui.store'
@@ -307,6 +308,14 @@ export function selectActiveExtensionsCount(state: ExtensionsStore): number {
   return state.activeSkillIds.length + state.activeMcpServerIds.length
 }
 
+/** Найти ui-вклад (по panelId) у запущенного включённого плагина. */
+function findRunningUiContribution(pluginId: string, panelId: string): PluginUiContribution | null {
+  const plugins = useExtensionsStore.getState().plugins
+  const p = plugins.find(x => x.id === pluginId && x.state.enabled && x.status === 'running')
+  if (!p) return null
+  return p.ui.find(u => u.panelId === panelId) ?? null
+}
+
 /**
  * Подписка на push-события MCP (статус подключения, обновление тулов).
  * Вызывается один раз при старте renderer (например, в App.tsx).
@@ -399,13 +408,48 @@ export function initExtensionsPushEvents(): () => void {
     }))
   })
 
-  // plugins:panel-action — плагин просит открыть/закрыть свой right-таб.
+  // plugins:panel-action — плагин просит открыть/закрыть свою панель. Слот
+  // определяем по ui-вкладу плагина: 'right' — таб правой панели, 'page' —
+  // полноэкранная страница, 'bottom' — таб нижнего дока, 'modal'/'sidebar' —
+  // модальная панель. Fallback (плагины ещё не загружены) — right-таб.
   const offPluginPanelAction = window.syntee.on('plugins:panel-action', (data: unknown) => {
     const d = data as { pluginId: string; action: 'open' | 'close'; panelId: string }
     if (!d || !d.pluginId || !d.panelId) return
     const st = usePluginPanelStore.getState()
-    if (d.action === 'close') st.closePluginTab(d.pluginId, d.panelId)
-    else st.openPluginTab(d.pluginId, d.panelId)
+    const contrib = findRunningUiContribution(d.pluginId, d.panelId)
+    const slot = contrib?.slot
+    if (d.action === 'close') {
+      if (slot === 'page') { st.closePluginPage(); return }
+      if (slot === 'bottom') { st.closePluginBottomTab(d.pluginId, d.panelId); return }
+      st.closePluginTab(d.pluginId, d.panelId)
+      return
+    }
+    if (slot === 'page') { st.openPluginPage(d.pluginId, d.panelId); return }
+    if (slot === 'bottom') { st.openPluginBottomTab(d.pluginId, d.panelId); return }
+    if (slot === 'modal' || slot === 'sidebar') {
+      st.openPluginModal({ pluginId: d.pluginId, title: contrib?.label ?? d.panelId, entry: contrib?.entry })
+      return
+    }
+    st.openPluginTab(d.pluginId, d.panelId)
+  })
+
+  // plugins:modal-action — плагин просит открыть/закрыть модальную
+  // iframe-панель (entry/title/width/height из payload). Один модал
+  // одновременно — новый open заменяет предыдущий.
+  const offPluginModalAction = window.syntee.on('plugins:modal-action', (data: unknown) => {
+    const d = data as { pluginId: string; action: 'open' | 'close'; entry?: string; title?: string; width?: number; height?: number }
+    if (!d || typeof d.pluginId !== 'string') return
+    const st = usePluginPanelStore.getState()
+    if (d.action === 'close') st.closePluginModal()
+    else st.openPluginModal({ pluginId: d.pluginId, title: d.title || d.pluginId, entry: d.entry, width: d.width, height: d.height })
+  })
+
+  // plugins:statusbar — снапшот элементов status bar плагина.
+  // Пустой items = плагин убрал все свои элементы.
+  const offPluginStatusbar = window.syntee.on('plugins:statusbar', (data: unknown) => {
+    const d = data as { pluginId: string; items: PluginStatusbarItem[] }
+    if (!d || typeof d.pluginId !== 'string') return
+    usePluginPanelStore.getState().setStatusbarItems(d.pluginId, Array.isArray(d.items) ? d.items : [])
   })
 
   // plugins:badge — бейдж-счётчик на right-табе плагина.
@@ -435,6 +479,8 @@ export function initExtensionsPushEvents(): () => void {
     offPluginsChanged?.()
     offPluginsLogs?.()
     offPluginPanelAction?.()
+    offPluginModalAction?.()
+    offPluginStatusbar?.()
     offPluginBadge?.()
     offPluginToast?.()
     pushInitialized = false

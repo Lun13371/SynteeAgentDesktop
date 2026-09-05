@@ -40,6 +40,18 @@ import { parseSlashCommandWithCustom, hydrateCommands } from '../../../../shared
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import { stripAttachTokens } from '../../../../shared/attachmentMarkdown'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment } from '../../../../shared/types'
+
+// ── Самолечение draft-вложений с битым path ────────────────────────────────
+// Одним IPC-вызовом: main проверяет существование файлов и ищет копии в
+// папке черновика чата (fs недоступен в renderer — browser-external).
+async function repairDraftAttachments(chatId: string, atts: Attachment[]): Promise<Attachment[]> {
+  try {
+    const fixed = await window.syntee.attachments.repairDraft({ chatId, attachments: atts })
+    return Array.isArray(fixed) ? (fixed as Attachment[]) : atts
+  } catch {
+    return atts
+  }
+}
 import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../../../shared/modes'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
 import './ChatPage.css'
@@ -722,6 +734,16 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       const atts = Array.isArray(attachments) ? attachments : []
       setDraftAttachments(atts)
       draftAttachmentsRef.current = atts
+      // Самолечение чипов-заглушек: битый path → поиск копии в draft-папке.
+      void repairDraftAttachments(currentChatId, atts).then(fixed => {
+        if (cancelled || currentChatId !== prevChatIdRef.current) return
+        const changed = fixed.some((a, i) => a.path !== atts[i]?.path)
+        if (changed) {
+          setDraftAttachments(fixed)
+          draftAttachmentsRef.current = fixed
+          window.syntee.draft.setAttachments(currentChatId, fixed).catch(() => {})
+        }
+      }).catch(() => {})
       // Дедупликация подряд идущих дубликатов + reverse → DESC (свежий первым)
       const raw = Array.isArray(history) ? history : []
       const dedup: string[] = []
@@ -1585,6 +1607,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setDraftAttachments([])
       draftAttachmentsRef.current = []
       window.syntee.draft.clearAttachments(chatId).catch(() => {})
+      // Осиротевшие копии черновика: main сам сверит файлы папки с путями
+      // всех сообщений чата (БД) и удалит только никому не нужные — файлы
+      // отправленных сообщений не пострадают.
+      window.syntee.attachments.cleanupOrphans({ chatId }).catch(() => {})
     }
 
     // Отправляем запрос. Если в чате уже идёт генерация — main поставит
@@ -1666,13 +1692,42 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, persona, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll, handleDraftChange])
 
   // ── plugins:chat-action — действия из плагинов в текущем чате ──
-  //   send:   отправить сообщение от имени пользователя (silent — вставить в инпут)
+  //   send:   отправить сообщение от имени пользователя (silent — вставить в инпут;
+  //           attachments — файлы плагина, добавляются к отправке)
   //   reply:  сохранить ответ плагина как assistant-сообщение (saveReply)
+  //   open:   открыть чат пользователю (chats.open из плагина)
   useEffect(() => {
     const off = window.syntee.on('plugins:chat-action', (data: unknown) => {
-      const d = data as { action: 'send' | 'reply'; text: string; silent?: boolean }
-      if (!d || typeof d.text !== 'string') return
+      const d = data as {
+        action: 'send' | 'reply' | 'open'
+        text: string
+        silent?: boolean
+        chatId?: string
+        attachments?: Array<{ path: string; name?: string; kind?: string }>
+      }
+      if (!d) return
+      // open — переключить активный чат (chats.open из плагина).
+      if (d.action === 'open') {
+        if (d.chatId) setCurrentChat(d.chatId)
+        return
+      }
+      if (typeof d.text !== 'string') return
       if (d.action === 'send') {
+        // Вложения плагина → достраиваем Attachment и подмешиваем в draft
+        // (handleSend возьмёт их из draftAttachmentsRef и передаст в chat.send).
+        if (Array.isArray(d.attachments) && d.attachments.length > 0) {
+          const extra: Attachment[] = d.attachments.slice(0, 10).map(a => ({
+            id: uuid(),
+            kind: a.kind === 'image' ? 'image' : 'file',
+            name: a.name || a.path.split(/[\\/]/).pop() || 'file',
+            path: a.path,
+            source: 'dialog' as const,
+            attachedAt: Date.now(),
+          }))
+          const merged = [...draftAttachmentsRef.current, ...extra]
+          setDraftAttachments(merged)
+          draftAttachmentsRef.current = merged
+        }
         if (d.silent) {
           const prev = draftRef.current ?? ''
           const sep = prev === '' ? '' : (prev.endsWith(' ') || prev.endsWith('\n') ? '' : ' ')
@@ -1692,7 +1747,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         .catch(() => {})
     })
     return () => { off?.() }
-  }, [handleSend, handleDraftChange, addMessage])
+  }, [handleSend, handleDraftChange, addMessage, setCurrentChat])
 
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)

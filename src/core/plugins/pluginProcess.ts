@@ -22,12 +22,21 @@ import type {
   PluginMsgShutdown,
   PluginMsgUiCall,
   PluginMsgHook,
+  PluginMsgCallHandler,
 } from './pluginProtocol'
 import type {
   PluginLogEntry,
   PluginToolRuntime,
   PluginCommandRuntime,
   PluginUiContribution,
+  PluginContextProviderRuntime,
+  PluginMarkdownRendererRuntime,
+  PluginSearchProviderRuntime,
+  PluginAutocompleteRuntime,
+  PluginContextMenuRuntime,
+  PluginInputActionRuntime,
+  PluginThemeContribution,
+  PluginBackgroundContribution,
 } from '../../shared/types'
 
 /** Таймаут RPC-вызова в процесс плагина (init/callTool/callCommand/shutdown). */
@@ -49,6 +58,22 @@ export interface PluginProcessCallbacks {
   onCommandRegistered: (command: PluginCommandRuntime) => void
   /** UI-вклад зарегистрирован плагином. */
   onUiRegistered: (contribution: PluginUiContribution) => void
+  /** Context provider зарегистрирован (registerContextProvider). */
+  onContextProviderRegistered: (provider: PluginContextProviderRuntime) => void
+  /** Рендерер markdown-кодоблоков зарегистрирован. */
+  onMarkdownRendererRegistered: (renderer: PluginMarkdownRendererRuntime) => void
+  /** Search provider (Spotlight) зарегистрирован. */
+  onSearchProviderRegistered: (provider: PluginSearchProviderRuntime) => void
+  /** Autocomplete-провайдер инпута зарегистрирован. */
+  onAutocompleteRegistered: (provider: PluginAutocompleteRuntime) => void
+  /** Пункт контекстного меню сообщений зарегистрирован. */
+  onContextMenuRegistered: (item: PluginContextMenuRuntime) => void
+  /** Кнопка над полем ввода чата зарегистрирована. */
+  onInputActionRegistered: (action: PluginInputActionRuntime) => void
+  /** Тема плагина зарегистрирована. */
+  onThemeRegistered: (theme: PluginThemeContribution) => void
+  /** Фон плагина зарегистрирован. */
+  onBackgroundRegistered: (background: PluginBackgroundContribution) => void
   /** Плагин отправил сообщение в свои iframe-панели. */
   onUiPostMessage: (data: unknown) => void
   /** Плагин подписался на события (список всех событий с хендлерами). */
@@ -57,8 +82,9 @@ export interface PluginProcessCallbacks {
   onLog: (entry: PluginLogEntry) => void
   /** Процесс завершился (сам или по kill). */
   onExit: (code: number) => void
-  /** Запрос плагина к host-API. Возвращает { ok, result?, error? }. */
-  onHostRequest: (method: string, params: Record<string, unknown>) => Promise<{ ok: boolean; result?: unknown; error?: string }>
+  /** Запрос плагина к host-API. Возвращает { ok, result?, error? }.
+   *  requestId — идентификатор RPC (нужен для стриминга ai.chatStream). */
+  onHostRequest: (method: string, params: Record<string, unknown>, requestId: string) => Promise<{ ok: boolean; result?: unknown; error?: string }>
 }
 
 export class PluginProcess {
@@ -158,18 +184,35 @@ export class PluginProcess {
     return this.request('uiCall', { type: 'uiCall', method, args })
   }
 
-  /** Хук с ответом (chat:before-send). Возвращает { action, content? }. */
-  async callHook(event: string, payload: Record<string, unknown>): Promise<{ action: 'allow' | 'modify' | 'reject'; content?: string; reason?: string }> {
+  /** Хук с ответом (chat:before-send, tool:result, prompt:before-build).
+   *  Возвращает { action, content? }. */
+  async callHook(event: string, payload: Record<string, unknown>, timeoutMs = HOOK_TIMEOUT_MS): Promise<{ action: 'allow' | 'modify' | 'reject'; content?: string; reason?: string }> {
     if (!this.child || this.exited) {
       return { action: 'allow' }
     }
-    const r = await this.request('hook', { type: 'hook', event, payload }, HOOK_TIMEOUT_MS)
+    const r = await this.request('hook', { type: 'hook', event, payload }, timeoutMs)
     const res = r as { ok?: boolean; result?: { action?: string; content?: string; error?: string }; error?: string }
     const out = res.result as { action?: 'allow' | 'modify' | 'reject'; content?: string; error?: string } | undefined
     if (out && (out.action === 'modify' || out.action === 'reject')) {
       return { action: out.action, content: out.content, reason: out.error }
     }
     return { action: 'allow' }
+  }
+
+  /** Вызов зарегистрированного провайдера/хендлера плагина
+   *  (context provider / search / autocomplete / context menu). */
+  async callHandler(
+    kind: 'context' | 'search' | 'autocomplete' | 'menu',
+    name: string,
+    payload: Record<string, unknown>,
+    timeoutMs = 3_000,
+  ): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+    if (!this.child || this.exited) {
+      return { ok: false, error: 'Процесс плагина не запущен' }
+    }
+    const r = await this.request('callHandler', { type: 'callHandler', kind, name, payload } as Omit<PluginMsgCallHandler, 'requestId'>, timeoutMs)
+    const res = r as { ok?: boolean; result?: unknown; error?: string }
+    return { ok: res.ok !== false, result: res.result, error: res.error }
   }
 
   /** Graceful shutdown: deactivate() в плагине → kill. */
@@ -200,8 +243,8 @@ export class PluginProcess {
   // ── Внутреннее ──────────────────────────────────────────────────────────
 
   private request(
-    kind: 'init' | 'callTool' | 'callCommand' | 'shutdown' | 'uiCall' | 'hook',
-    msg: Omit<PluginMsgInit, 'requestId'> | Omit<PluginMsgCallTool, 'requestId'> | Omit<PluginMsgCallCommand, 'requestId'> | Omit<PluginMsgShutdown, 'requestId'> | Omit<PluginMsgUiCall, 'requestId'> | Omit<PluginMsgHook, 'requestId'>,
+    kind: 'init' | 'callTool' | 'callCommand' | 'shutdown' | 'uiCall' | 'hook' | 'callHandler',
+    msg: Omit<PluginMsgInit, 'requestId'> | Omit<PluginMsgCallTool, 'requestId'> | Omit<PluginMsgCallCommand, 'requestId'> | Omit<PluginMsgShutdown, 'requestId'> | Omit<PluginMsgUiCall, 'requestId'> | Omit<PluginMsgHook, 'requestId'> | Omit<PluginMsgCallHandler, 'requestId'>,
     timeoutMs = RPC_TIMEOUT_MS,
   ): Promise<{ ok: boolean; output?: string; error?: string; result?: unknown }> {
     return new Promise((resolve, reject) => {
@@ -212,8 +255,8 @@ export class PluginProcess {
       const requestId = this.rpcId(kind)
       const timer = setTimeout(() => {
         this.waiters.delete(requestId)
-        if (kind === 'shutdown' || kind === 'hook') {
-          // shutdown/hook не должны вешать вызывающего — резолвим «мягко».
+        if (kind === 'shutdown' || kind === 'hook' || kind === 'callHandler') {
+          // shutdown/hook/callHandler не должны вешать вызывающего — резолвим «мягко».
           resolve(kind === 'hook'
             ? { ok: true, result: { action: 'allow' } }
             : { ok: false, error: 'timeout' })
@@ -313,6 +356,88 @@ export class PluginProcess {
         }
         break
       }
+      case 'callHandlerResult': {
+        const w = this.waiters.get(msg.requestId)
+        if (w) {
+          clearTimeout(w.timer)
+          this.waiters.delete(msg.requestId)
+          w.resolve({ ok: msg.ok, result: msg.result, error: msg.error })
+        }
+        break
+      }
+      case 'registerContextProvider': {
+        this.callbacks.onContextProviderRegistered({
+          pluginId: this.pluginId,
+          name: msg.name,
+          description: msg.description,
+        })
+        break
+      }
+      case 'registerMarkdownRenderer': {
+        this.callbacks.onMarkdownRendererRegistered({
+          pluginId: this.pluginId,
+          language: msg.language,
+          entry: msg.entry,
+          height: msg.height,
+        })
+        break
+      }
+      case 'registerSearchProvider': {
+        this.callbacks.onSearchProviderRegistered({
+          pluginId: this.pluginId,
+          id: msg.id,
+          label: msg.label,
+        })
+        break
+      }
+      case 'registerAutocomplete': {
+        this.callbacks.onAutocompleteRegistered({
+          pluginId: this.pluginId,
+          trigger: msg.trigger,
+        })
+        break
+      }
+      case 'registerContextMenu': {
+        this.callbacks.onContextMenuRegistered({
+          pluginId: this.pluginId,
+          id: msg.id,
+          label: msg.label,
+          icon: msg.icon,
+          scope: msg.scope === 'selection' ? 'selection' : 'message',
+          button: msg.button === true,
+        })
+        break
+      }
+      case 'registerInputAction': {
+        this.callbacks.onInputActionRegistered({
+          pluginId: this.pluginId,
+          id: msg.id,
+          label: msg.label,
+          icon: msg.icon,
+          tooltip: msg.tooltip,
+          command: msg.command,
+        })
+        break
+      }
+      case 'registerTheme': {
+        this.callbacks.onThemeRegistered({
+          pluginId: this.pluginId,
+          name: msg.name,
+          dark: msg.dark !== false,
+          colors: msg.colors ?? {},
+        })
+        break
+      }
+      case 'registerBackground': {
+        this.callbacks.onBackgroundRegistered({
+          pluginId: this.pluginId,
+          id: msg.id,
+          name: msg.name,
+          kind: msg.kind === 'video' ? 'video' : (msg.kind === 'image' ? 'image' : 'shader'),
+          src: msg.src,
+        })
+        break
+      }
       case 'uiPostMessage': {
         this.callbacks.onUiPostMessage(msg.data)
         break
@@ -336,7 +461,7 @@ export class PluginProcess {
             error: `Таймаут hostRequest: ${msg.method}`,
           } satisfies PluginMsgHostToPlugin)
         }, HOST_REQUEST_TIMEOUT_MS)
-        this.callbacks.onHostRequest(msg.method, msg.params)
+        this.callbacks.onHostRequest(msg.method, msg.params, msg.requestId)
           .then(resp => {
             clearTimeout(timer)
             this.child?.postMessage({

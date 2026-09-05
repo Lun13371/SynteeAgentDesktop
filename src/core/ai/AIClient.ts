@@ -465,9 +465,10 @@ export class AIClient {
   async complete(
     messages: ChatMessage[],
     modelType: 'main' | 'fast' | 'fastContext' | 'summary' | 'router' | 'emotion' = 'fast',
-    systemPrompt?: string
+    systemPrompt?: string,
+    opts?: { model?: string; maxTokens?: number },
   ): Promise<string> {
-    const model = this.getModel(modelType)
+    const model = opts?.model || this.getModel(modelType)
     let client = await this.getClientForRoleAsync(modelType)
     const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
@@ -480,7 +481,7 @@ export class AIClient {
       try {
         const res = await client.chat.completions.create({
           model, messages: allMessages, stream: false,
-          temperature: 0.3, max_tokens: 1024,
+          temperature: 0.3, max_tokens: opts?.maxTokens ?? 1024,
         })
         return res.choices[0]?.message?.content || ''
       } catch (err: unknown) {

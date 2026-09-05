@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hello Page — полноэкранная страница плагина</title>
+<style>
+  :root { color-scheme: dark; --text: #e2e2e8; --muted: #8b8b96; --accent: #22d3ee; --card: rgba(255,255,255,0.06); --border: rgba(255,255,255,0.1); }
+  body.light { --text: #1a1a22; --muted: #6b6b76; --card: rgba(0,0,0,0.04); --border: rgba(0,0,0,0.1); }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: transparent; color: var(--text); height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { max-width: 520px; text-align: center; padding: 40px; }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  h1 span { color: var(--accent); }
+  p { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 24px; }
+  .box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; font-size: 12px; color: var(--muted); text-align: left; }
+  .box b { color: var(--text); }
+  button { margin-top: 16px; padding: 10px 22px; border: 1px solid var(--accent); border-radius: 10px; background: transparent; color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; }
+  button:hover { background: rgba(34,211,238,0.12); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Hello <span>Page</span> 🎉</h1>
+    <p>Это полноэкранная страница плагина (registerPanel с slot: 'page').<br>
+       Плагины могут быть целыми «приложениями внутри приложения» — kanban, трекеры, дашборды.</p>
+    <div class="box">
+      <b>Как это работает:</b><br>
+      registerPanel({ id: 'hwpage', slot: 'page', entry: 'ui/page.html' }) →
+      вкладка в навигации приложения → iframe syntee-plugin://hello-world/ui/page.html.
+    </div>
+    <button id="ping">Проверить RPC-мост</button>
+    <div id="out" style="margin-top:12px;font-size:12px;color:var(--muted)"></div>
+  </div>
+<script>
+  const synteeBridge = {
+    _seq: 0, _pending: new Map(), _handlers: new Map(),
+    call(method, args) {
+      return new Promise((resolve, reject) => {
+        const id = 'b' + (++this._seq)
+        this._pending.set(id, { resolve, reject })
+        window.parent.postMessage({ source: 'syntee-plugin', rpc: true, id, method, args: args || {} }, '*')
+      })
+    },
+    on(method, cb) { if (!this._handlers.has(method)) this._handlers.set(method, []); this._handlers.get(method).push(cb) },
+  }
+  window.addEventListener('message', (e) => {
+    const d = e.data
+    if (!d || d.source !== 'syntee-plugin-host') return
+    if (d.rpc && d.id) {
+      const p = synteeBridge._pending.get(d.id)
+      if (p) { synteeBridge._pending.delete(d.id); d.ok ? p.resolve(d.result) : p.reject(new Error(d.error || 'RPC error')) }
+      return
+    }
+    if (d.theme) {
+      document.body.classList.toggle('light', !d.theme.dark)
+      document.documentElement.style.setProperty('--accent', d.theme.accentColor || '#22d3ee')
+    }
+  })
+  document.getElementById('ping').onclick = async () => {
+    try {
+      const s = await synteeBridge.call('getStats')
+      document.getElementById('out').textContent = `RPC работает ✓ — тулов вызвано: ${s.toolsSeen}, сообщений: ${s.messagesSeen}`
+    } catch (e) {
+      document.getElementById('out').textContent = 'ERR ' + e.message
+    }
+  }
+  synteeBridge.call('getTheme').then(t => {
+    document.body.classList.toggle('light', !t.dark)
+    document.documentElement.style.setProperty('--accent', t.accentColor || '#22d3ee')
+  }).catch(() => {})
+</script>
+</body>
+</html>

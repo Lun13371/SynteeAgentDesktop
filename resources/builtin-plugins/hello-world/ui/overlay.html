@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Hello Overlay</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: rgba(20, 20, 26, 0.92);
+    color: #e2e2e8;
+    height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border-radius: 14px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.12);
+  }
+  h2 { font-size: 16px; margin-bottom: 6px; }
+  p { font-size: 12px; color: #8b8b96; }
+  .accent { color: #22d3ee; }
+</style>
+</head>
+<body>
+  <h2>🖥 <span class="accent">Overlay</span> от плагина</h2>
+  <p id="text">…</p>
+<script>
+  // data приходит через query-параметр ?data=<json> (см. overlay.show).
+  try {
+    const m = new URLSearchParams(location.search).get('data')
+    if (m) {
+      const d = JSON.parse(m)
+      document.getElementById('text').textContent = d.text || JSON.stringify(d)
+    }
+  } catch (e) { /* ignore */ }
+</script>
+</body>
+</html>

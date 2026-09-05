@@ -266,6 +266,14 @@ export const IPC_EVENTS = {
   // 'send' — отправить сообщение от пользователя (запускает агент),
   // 'reply' — вставить ответ от имени плагина.
   PLUGINS_CHAT_ACTION: 'plugins:chat-action',
+  // Плагин просит проиграть звук приложения: { soundId } (renderer → Web Audio).
+  PLUGINS_PLAY_SOUND: 'plugins:play-sound',
+  // Элементы status bar от плагина (снапшот): { pluginId, items: PluginStatusbarItem[] }.
+  // Пустой items = плагин убрал все свои элементы.
+  PLUGINS_STATUSBAR: 'plugins:statusbar',
+  // Плагин просит открыть/закрыть модальную iframe-панель:
+  // { pluginId, action: 'open'|'close', entry?, title?, width?, height? }
+  PLUGINS_MODAL_ACTION: 'plugins:modal-action',
   // ── Notification overlay ──
   // main → renderer: отправить данные уведомления в overlay-окно
   NOTIFICATION_PUSH: 'notification:push',

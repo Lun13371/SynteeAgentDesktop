@@ -83,6 +83,15 @@ export function getMessages(chatId: string): Message[] {
   return rows.map(parseMessageRow)
 }
 
+/** Одно сообщение по id (для плагинов: chats.getAttachments и др.). */
+export function getMessageById(messageId: string): Message | undefined {
+  const row = getDB().prepare(`
+    ${MESSAGE_SELECT_COLS}
+    FROM messages WHERE id = ?
+  `).get(messageId) as MessageRow | undefined
+  return row ? parseMessageRow(row) : undefined
+}
+
 /**
  * Окно сообщений для пагинации (reverse-infinite scroll).
  *
@@ -127,6 +136,19 @@ export function getMessagesPage(
   // rows — DESC (новейшие первыми). Разворачиваем в ASC для рендера.
   rows.reverse()
   return { messages: rows.map(parseMessageRow), hasMore }
+}
+
+/** Правка содержимого сообщения (для плагинов: chats.editMessage). */
+export function editMessageContent(messageId: string, content: string): boolean {
+  const db = getDB()
+  const row = db.prepare('SELECT chat_id as chatId FROM messages WHERE id = ?').get(messageId) as { chatId: string } | undefined
+  const info = db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, messageId)
+  if (info.changes > 0 && row) {
+    touchChat(row.chatId)
+    _onMessageSaved?.(row.chatId)
+    return true
+  }
+  return false
 }
 
 export function pinMessage(id: string): void {

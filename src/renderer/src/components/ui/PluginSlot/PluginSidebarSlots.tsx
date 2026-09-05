@@ -21,13 +21,25 @@ export default function PluginSidebarSlots(): JSX.Element | null {
   const plugins = useExtensionsStore(s => s.plugins)
   const openPanel = usePluginPanelStore(s => s.openPanel)
   const openPluginTab = usePluginPanelStore(s => s.openPluginTab)
+  const openPluginPage = usePluginPanelStore(s => s.openPluginPage)
+  const closePluginPage = usePluginPanelStore(s => s.closePluginPage)
+  const openPluginBottomTab = usePluginPanelStore(s => s.openPluginBottomTab)
+  const closePluginBottomTab = usePluginPanelStore(s => s.closePluginBottomTab)
+  const openPluginModal = usePluginPanelStore(s => s.openPluginModal)
+  const closePluginModal = usePluginPanelStore(s => s.closePluginModal)
+  const bottomTabs = usePluginPanelStore(s => s.bottomTabs)
+  const activePage = usePluginPanelStore(s => s.activePage)
   const toast = useToast(s => s.add)
 
   // Собираем UI-вклады из запущенных включённых плагинов. В одном ряду
-  // показываем sidebar-, right- и modal-кнопки; различие только в обработчике:
-  //   right + panel → таб правой панели (openPluginTab)
-  //   modal/sidebar + panel → модальная панель (openPanel)
-  //   button → выполнить команду плагина
+  // показываем sidebar-, right-, page-, bottom- и modal-кнопки; различие
+  // только в обработчике:
+  //   right + panel   → таб правой панели (openPluginTab)
+  //   page + panel    → полноэкранная страница (openPluginPage)
+  //   bottom + panel  → таб нижнего дока (openPluginBottomTab)
+  //   modal + panel   → модальная панель (openPluginModal)
+  //   sidebar + panel → legacy модальная панель (openPanel)
+  //   button          → выполнить команду плагина
   const contributions = plugins
     .filter(p => p.state.enabled && p.status === 'running')
     .flatMap(p => p.ui.map(u => ({ ...u, pluginName: p.manifest.name })))
@@ -38,9 +50,28 @@ export default function PluginSidebarSlots(): JSX.Element | null {
     if (c.type === 'panel') {
       if (c.slot === 'right' && c.panelId) {
         openPluginTab(c.pluginId, c.panelId, c.label)
-      } else {
-        openPanel(c.pluginId, `${c.label} · ${c.pluginName}`)
+        return
       }
+      if (c.slot === 'page' && c.panelId) {
+        const isOpen = activePage?.pluginId === c.pluginId && activePage?.panelId === c.panelId
+        if (isOpen) closePluginPage()
+        else openPluginPage(c.pluginId, c.panelId)
+        return
+      }
+      if (c.slot === 'bottom' && c.panelId) {
+        const isOpen = bottomTabs.some(t => t.pluginId === c.pluginId && t.panelId === c.panelId)
+        if (isOpen) closePluginBottomTab(c.pluginId, c.panelId)
+        else openPluginBottomTab(c.pluginId, c.panelId)
+        return
+      }
+      if (c.slot === 'modal' && c.panelId) {
+        const modal = usePluginPanelStore.getState().modal
+        const isOpen = modal?.pluginId === c.pluginId
+        if (isOpen) closePluginModal()
+        else openPluginModal({ pluginId: c.pluginId, title: `${c.label} · ${c.pluginName}`, entry: c.entry })
+        return
+      }
+      openPanel(c.pluginId, `${c.label} · ${c.pluginName}`)
       return
     }
     // button → выполняем команду плагина, результат — тостом

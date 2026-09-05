@@ -68,8 +68,13 @@ export interface PluginMsgUiCall {
   args: Record<string, unknown>
 }
 
-/** main → plugin: хук с ответом (chat:before-send). Плагин отвечает
- *  hookResult { action: 'allow' | 'modify' | 'reject', content? }. */
+/** main → plugin: хук с ответом (chat:before-send, tool:result,
+ *  prompt:before-build). Плагин отвечает hookResult
+ *  { action: 'allow' | 'modify' | 'reject', content? }.
+ *  tool:result: payload { toolName, args, result } — content = новый
+ *  результат тула (модификация до того, как его увидит модель).
+ *  prompt:before-build: payload { chatId, prompt } — content = новый
+ *  system prompt (последняя точка вмешательства). */
 export interface PluginMsgHook {
   type: 'hook'
   requestId: string
@@ -115,12 +120,12 @@ export interface PluginMsgRegisterCommand {
 /** plugin → main: зарегистрировать UI-вклад (кнопка/панель/таб в слоте). */
 export interface PluginMsgRegisterUi {
   type: 'registerUi'
-  slot: 'sidebar' | 'right' | 'modal'
+  slot: 'sidebar' | 'right' | 'modal' | 'page' | 'bottom'
   uiType: 'button' | 'panel'
   label: string
   icon?: string
   command?: string
-  /** Для right/modal — уникальный id панели. */
+  /** Для right/modal/page/bottom — уникальный id панели. */
   panelId?: string
   /** HTML-файл панели (по умолчанию — manifest.ui). */
   entry?: string
@@ -173,6 +178,100 @@ export interface PluginMsgRegisterTool {
   inputSchema: Record<string, unknown>
 }
 
+/** plugin → main: зарегистрировать context provider — динамический
+ *  markdown, попадающий в system prompt перед каждым запросом агента. */
+export interface PluginMsgRegisterContextProvider {
+  type: 'registerContextProvider'
+  name: string
+  description?: string
+}
+
+/** plugin → main: зарегистрировать рендерер markdown-кодоблоков. */
+export interface PluginMsgRegisterMarkdownRenderer {
+  type: 'registerMarkdownRenderer'
+  language: string
+  entry: string
+  height?: number
+}
+
+/** plugin → main: зарегистрировать search provider (Spotlight). */
+export interface PluginMsgRegisterSearchProvider {
+  type: 'registerSearchProvider'
+  id: string
+  label: string
+}
+
+/** plugin → main: зарегистрировать autocomplete-провайдер инпута. */
+export interface PluginMsgRegisterAutocomplete {
+  type: 'registerAutocomplete'
+  trigger: string
+}
+
+/** plugin → main: зарегистрировать пункт контекстного меню сообщений. */
+export interface PluginMsgRegisterContextMenu {
+  type: 'registerContextMenu'
+  id: string
+  label: string
+  icon?: string
+  scope: 'message' | 'selection'
+  /** true — кнопка в ряду действий сообщения (не в меню «⋯»). */
+  button?: boolean
+}
+
+/** plugin → main: зарегистрировать кнопку над полем ввода чата. */
+export interface PluginMsgRegisterInputAction {
+  type: 'registerInputAction'
+  id: string
+  label: string
+  icon?: string
+  tooltip?: string
+  command?: string
+}
+
+/** plugin → main: зарегистрировать тему (CSS-переменные → ThemePicker). */
+export interface PluginMsgRegisterTheme {
+  type: 'registerTheme'
+  name: string
+  dark: boolean
+  colors: Record<string, string>
+}
+
+/** plugin → main: зарегистрировать фон (AnimatedBackground picker). */
+export interface PluginMsgRegisterBackground {
+  type: 'registerBackground'
+  id: string
+  name: string
+  kind: 'shader' | 'video' | 'image'
+  src: string
+}
+
+/** main → plugin: вызов зарегистрированного провайдера/хендлера
+ *  (context provider, search, autocomplete, context menu).
+ *  kind: 'context' — name = имя провайдера, payload { chatId };
+ *        'search'  — name = id провайдера, payload { query };
+ *        'autocomplete' — name = trigger, payload { query };
+ *        'menu'    — name = id пункта, payload { messageId?, selection?, chatId? }. */
+export interface PluginMsgCallHandler {
+  type: 'callHandler'
+  requestId: string
+  kind: 'context' | 'search' | 'autocomplete' | 'menu'
+  name: string
+  payload: Record<string, unknown>
+}
+
+/** plugin → main: ответ на callHandler.
+ *  context: result — markdown-строка;
+ *  search: result — Array<{ id, label, sub?, icon? }>;
+ *  autocomplete: result — Array<{ label, insertText?, command? }>;
+ *  menu: result — игнорируется (побочные эффекты). */
+export interface PluginMsgCallHandlerResult {
+  type: 'callHandlerResult'
+  requestId: string
+  ok: boolean
+  result?: unknown
+  error?: string
+}
+
 /** plugin → main: лог (уходит в кольцевой буфер + UI). */
 export interface PluginMsgLog {
   type: 'log'
@@ -181,7 +280,9 @@ export interface PluginMsgLog {
 }
 
 /** plugin → main: запрос к host-API (storage, clipboard, notifications, net,
- *  fs, config, ui.*, chat.*, chats.*, projects.*, memory.*, window.*). */
+ *  fs, config, ui.*, chat.*, chats.*, projects.*, memory.*, window.*,
+ *  ai.*, bus, scheduler.*, shortcut.*, process.exec, overlay.*, statusbar.*,
+ *  tray.*). */
 export interface PluginMsgHostRequest {
   type: 'hostRequest'
   requestId: string
@@ -189,14 +290,42 @@ export interface PluginMsgHostRequest {
     | 'clipboard.readText' | 'clipboard.writeText'
     | 'notification.show'
     | 'net.fetch'
-    | 'fs.readFile' | 'fs.writeFile' | 'fs.listDir'
+    | 'net.ws.connect' | 'net.ws.send' | 'net.ws.close'
+    | 'fs.readFile' | 'fs.writeFile' | 'fs.listDir' | 'fs.watch' | 'fs.unwatch'
+    | 'fs.mkdir' | 'fs.delete' | 'fs.rename' | 'fs.copy' | 'fs.stat' | 'fs.writeFiles'
     | 'config.get' | 'config.getAll'
     | 'ui.openPanel' | 'ui.closePanel' | 'ui.setBadge' | 'ui.getTheme'
+    | 'ui.openModal' | 'ui.closeModal' | 'ui.registerWidget'
     | 'chat.send' | 'chat.reply'
     | 'chats.list' | 'chats.get'
-    | 'projects.list'
+    | 'chats.create' | 'chats.rename' | 'chats.delete'
+    | 'chats.appendMessage' | 'chats.editMessage' | 'chats.deleteMessage'
+    | 'chats.open' | 'chats.getAttachments'
+    | 'projects.list' | 'projects.current' | 'projects.create'
     | 'memory.search' | 'memory.save'
     | 'window.toast' | 'window.dialog'
+    | 'ai.chat'
+    | 'bus.emit'
+    | 'scheduler.every' | 'scheduler.cron' | 'scheduler.at' | 'scheduler.cancel'
+    | 'shortcut.register' | 'shortcut.unregister'
+    | 'process.exec'
+    | 'overlay.show' | 'overlay.hide'
+    | 'statusbar.set' | 'statusbar.clear'
+    | 'tray.setMenu' | 'tray.clearMenu'
+    | 'ai.chatStream'
+    | 'ai.embed'
+    | 'ai.listModels'
+    | 'ai.generateImage'
+    | 'agent.run'
+    | 'sound.play'
+    | 'shell.openExternal'
+    | 'agent.useTool'
+    | 'mcp.listTools' | 'mcp.call'
+    | 'secrets.get' | 'secrets.set' | 'secrets.delete'
+    | 'net.listen' | 'net.close'
+    | 'git.status' | 'git.diff' | 'git.log' | 'git.commit' | 'git.branches'
+    | 'fs.pickFile' | 'fs.pickDir'
+    | 'memory.chat.get' | 'memory.chat.set' | 'memory.chat.delete'
   params: Record<string, unknown>
 }
 
@@ -219,6 +348,7 @@ export type PluginMsgHostToPlugin =
   | PluginMsgUiCall
   | PluginMsgHook
   | PluginMsgHostResponse
+  | PluginMsgCallHandler
 
 export type PluginMsgPluginToHost =
   | PluginMsgInitResult
@@ -234,3 +364,12 @@ export type PluginMsgPluginToHost =
   | PluginMsgLog
   | PluginMsgHostRequest
   | PluginMsgUiPostMessage
+  | PluginMsgRegisterContextProvider
+  | PluginMsgRegisterMarkdownRenderer
+  | PluginMsgRegisterSearchProvider
+  | PluginMsgRegisterAutocomplete
+  | PluginMsgRegisterContextMenu
+  | PluginMsgRegisterInputAction
+  | PluginMsgRegisterTheme
+  | PluginMsgRegisterBackground
+  | PluginMsgCallHandlerResult

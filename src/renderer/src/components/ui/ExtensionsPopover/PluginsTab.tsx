@@ -15,6 +15,7 @@ import ReactMarkdown from 'react-markdown'
 import AppIcon from '../AppIcon/AppIcon'
 import { useExtensionsStore } from '../../../store/extensions.store'
 import { usePluginPanelStore } from '../../../store/pluginPanel.store'
+import PluginIframe from '../PluginSlot/PluginIframe'
 import type { PluginRuntime, ExtensionScope } from '../../../../../shared/types'
 import './PluginsTab.css'
 
@@ -177,6 +178,14 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                   <span className={`ext-card-source ext-card-source--${p.source === 'global' ? 'user' : 'project'}`}>
                     {p.source === 'global' ? 'глобальный' : 'проект'}
                   </span>
+                  {p.manifest.builtin && (
+                    <span
+                      className="ext-card-source ext-card-source--project"
+                      title="Поставляется вместе с приложением, обновляется автоматически. Удалить нельзя — только выключить."
+                    >
+                      встроенный
+                    </span>
+                  )}
                   {p.state.scope.type === 'projects' && (
                     <span className="ext-card-source ext-card-source--project" title="Область применения">
                       {pluginScopeLabel(p.state.scope)}
@@ -291,10 +300,25 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                     </div>
                   )}
 
-                  {/* Настройки (config из манифеста) */}
-                  {p.manifest.config && p.manifest.config.length > 0 && (
+                  {/* Настройки: кастомный UI плагина (configUi) или
+                      декларативная форма из манифеста config. */}
+                  {p.manifest.configUi ? (
+                    <>
+                      <div className="ext-card-row ext-card-row--start">
+                        <span className="ext-card-row-label">Настройки</span>
+                      </div>
+                      <div className="plugin-config-iframe">
+                        <PluginIframe
+                          pluginId={p.id}
+                          entry={p.manifest.configUi}
+                          title={`Настройки ${p.manifest.name}`}
+                          className="plugin-iframe"
+                        />
+                      </div>
+                    </>
+                  ) : p.manifest.config && p.manifest.config.length > 0 ? (
                     <PluginConfigForm plugin={p} onSaved={() => useExtensionsStore.getState().loadPlugins(projectId)} />
-                  )}
+                  ) : null}
 
                   {/* Полное описание */}
                   {p.readmeContent && (
@@ -348,14 +372,16 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                 <AppIcon name="refreshCw" size="xs" />
                 Перезагрузить
               </button>
-              <button
-                className="ext-action-btn ext-action-btn--danger"
-                onClick={() => uninstall(p)}
-                disabled={busy === p.id}
-              >
-                <AppIcon name="trash" size="xs" />
-                Удалить
-              </button>
+              {!p.manifest.builtin && (
+                <button
+                  className="ext-action-btn ext-action-btn--danger"
+                  onClick={() => uninstall(p)}
+                  disabled={busy === p.id}
+                >
+                  <AppIcon name="trash" size="xs" />
+                  Удалить
+                </button>
+              )}
             </div>
           </div>
         )
@@ -412,12 +438,31 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
 
 /** Человекочитаемые названия прав. */
 const PERMISSION_LABELS: Record<string, string> = {
-  'net': 'сеть (HTTP-запросы)',
+  'net': 'сеть (HTTP-запросы, внешние ссылки)',
   'fs:read': 'чтение файлов',
   'fs:write': 'запись файлов (в папке плагина)',
+  'fs:write:any': 'запись/удаление файлов в любых путях',
   'clipboard': 'буфер обмена',
   'notifications': 'уведомления',
   'ui': 'элементы интерфейса',
+  'chat': 'действия в чате',
+  'chats:read': 'чтение чатов',
+  'chats:write': 'изменение чатов и сообщений',
+  'projects:read': 'чтение проектов',
+  'projects:write': 'создание проектов',
+  'memory': 'долговременная память',
+  'ai': 'доступ к LLM (модели приложения)',
+  'scheduler': 'планировщик задач',
+  'shortcuts': 'глобальные горячие клавиши',
+  'process:exec': 'запуск shell-команд',
+  'overlay': 'overlay-окно',
+  'tray': 'меню в трее',
+  'context': 'динамический контекст в промпте',
+  'secrets': 'шифрованное хранилище секретов',
+  'git': 'git-операции',
+  'mcp': 'вызов тулов MCP',
+  'webhook': 'локальный HTTP-сервер',
+  'agent': 'вызов тулов и субагентов хоста',
 }
 
 /** Форма настроек плагина (манифест config → поля, значения → pluginsConfig). */

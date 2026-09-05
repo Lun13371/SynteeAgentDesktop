@@ -31,6 +31,8 @@ import { playNavigateSound, setSoundVolume as setSoundVolumeModule, setSoundAssi
 import { applyFontToDOM, applyMonoToDOM, injectCustomFonts, applyAccentToDOM, applyGlassToDOM, applyDensityToDOM, applyGradientAccentToDOM, applyCustomThemeToDOM, applyBgImageToDOM, applyRainbowAccentToDOM, applyFontSizeToDOM } from '../../App'
 import type { CustomFont } from '../../App'
 import { BUILTIN_THEMES } from '../../utils/builtinThemes'
+import { applyPluginThemeToDOM, isPluginThemeKey } from '../../utils/pluginTheme'
+import { collectPluginBackgrounds, collectPluginThemes } from '../../utils/pluginExtApi'
 import { whileHoverWide, whileTapWide, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../utils/motionPresets'
 import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings, type CustomTheme } from '../../../../shared/types'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
@@ -357,12 +359,24 @@ export default function SettingsPage() {
   const handleSet = useCallback(async (key: string, value: unknown) => {
     await set(key, value)
     if (key === 'theme') {
-      setTheme(value as any)
-      if (value === 'custom') {
-        const ct = useUIStore.getState().customThemes.find(t => t.id === useUIStore.getState().activeCustomThemeId)
-        if (ct) applyCustomThemeToDOM(ct)
+      // Темы плагинов (registerTheme): value = 'plugin:{pluginId}:{name}'.
+      if (isPluginThemeKey(value as string)) {
+        const ok = applyPluginThemeToDOM(value as string)
+        if (!ok) {
+          // Плагин выключен — откатываем сохранённое значение на дефолт.
+          setTheme('dark' as any)
+          applyPluginThemeToDOM(null)
+          void set('theme', 'dark')
+        }
       } else {
-        applyCustomThemeToDOM(null)
+        applyPluginThemeToDOM(null)
+        setTheme(value as any)
+        if (value === 'custom') {
+          const ct = useUIStore.getState().customThemes.find(t => t.id === useUIStore.getState().activeCustomThemeId)
+          if (ct) applyCustomThemeToDOM(ct)
+        } else {
+          applyCustomThemeToDOM(null)
+        }
       }
     }
     if (key === 'accentColor') {
@@ -1082,6 +1096,24 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
       },
       isCustom: true as const,
     })),
+    // Темы от плагинов (registerTheme) — ключ plugin:{pluginId}:{name}.
+    ...collectPluginThemes().map(t => {
+      const c = t.colors ?? {}
+      const fallback = t.dark ? { bg: '#12121a', surface: '#1d1d27', text: '#e8e8ec', accent: '#e8e8ec' } : { bg: '#f4f1ec', surface: '#f3efe8', text: '#2a2620', accent: '#4a3f2f' }
+      return {
+        id: t.key,
+        label: t.name,
+        group: (t.dark ? 'dark' : 'light') as 'dark' | 'light',
+        colors: {
+          bg: c['--body-bg'] || c['--bg'] || c['bg'] || fallback.bg,
+          surface: c['--bg-secondary'] || c['--surface'] || c['surface'] || fallback.surface,
+          text: c['--text-primary'] || c['--text'] || c['text'] || fallback.text,
+          accent: c['--accent'] || c['accent'] || fallback.accent,
+        },
+        isCustom: false as const,
+        isPlugin: true as const,
+      }
+    }),
   ], [customThemes])
 
   // Фильтр (таб) + поиск + избранное сверху. Поиск — по названию (case-insensitive).
@@ -1555,6 +1587,19 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
             >
               <AppIcon name={s.icon} size="sm" />
               <span className="settings-bg-label">{s.label}</span>
+            </motion.button>
+          ))}
+          {/* Фоны от плагинов (registerBackground) */}
+          {collectPluginBackgrounds().map(b => (
+            <motion.button
+              key={b.key}
+              className={`settings-bg-btn settings-bg-btn--plugin ${(settings['bgStyle']) === b.key ? 'settings-bg-btn--active' : ''}`}
+              onClick={() => { onSet('bgStyle', b.key); onSet('animatedBackground', true) }}
+              whileTap={{ scale: 0.94 }}
+              title={`Фон плагина: ${b.pluginId} (${b.kind})`}
+            >
+              <AppIcon name={(({ shader: 'sparkle', video: 'image', image: 'image' })[b.kind] as Parameters<typeof AppIcon>[0]['name']) || 'image'} size="sm" />
+              <span className="settings-bg-label">{b.name}</span>
             </motion.button>
           ))}
         </div>

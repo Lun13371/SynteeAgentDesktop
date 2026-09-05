@@ -1110,3 +1110,132 @@
 .chat-img-error-btn:hover {
   background: var(--overlay-3);
 }
+
+/* ── Инлайн-виджет плагина ────────────────────────────────────────────────
+   Тул плагина вернул JSON-маркер {"__plugin_ui__":true,...} → PluginInlineWidget
+   рендерит iframe-карточку (syntee-plugin://{pluginId}/{entry}) вместо md. */
+.plugin-inline-widget {
+  position: relative;
+  width: 100%;
+  margin: 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+
+.plugin-inline-widget-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  background: transparent;
+}
+
+/* ── Diff-виджет плагина (kind:'diff') ─────────────────────────────────────
+   Нативная карточка без iframe: заголовок + язык + unified diff. */
+.plugin-diff-widget {
+  overflow: hidden;
+}
+.plugin-diff-widget-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.plugin-diff-widget-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plugin-diff-widget-lang {
+  margin-left: auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.plugin-diff-widget-body {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+}
+
+/* ── Кастомный рендерер кодоблока от плагина (registerMarkdownRenderer) ──
+   ```language, где language зарегистрирован плагином → iframe-панель. */
+.plugin-md-renderer {
+  margin: 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  display: flex;
+  flex-direction: column;
+}
+.plugin-md-renderer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.plugin-md-renderer-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  padding: 1px 8px;
+}
+.plugin-md-renderer-frame {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border: none;
+  display: block;
+  background: transparent;
+}
+
+/* ── Меню «⋯» с пунктами плагинов для сообщения (registerContextMenu) ── */
+.plugin-msg-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 300px;
+  padding: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+}
+.plugin-msg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.plugin-msg-menu-item:hover {
+  background: var(--bg-tertiary);
+}
+.plugin-msg-menu-btn--open {
+  color: var(--accent);
+}

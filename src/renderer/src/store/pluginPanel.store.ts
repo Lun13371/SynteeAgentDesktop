@@ -1,39 +1,133 @@
 /**
  * pluginPanel store — состояние iframe-панелей плагинов.
  *
- * Две модели:
- *  - modal: одна открытая модальная панель (PluginPanel), legacy v1;
+ * Модели:
+ *  - modal: одна открытая модальная панель (PluginModalHost). Состояние
+ *    приходит из push-события 'plugins:modal-action' (main) — { action,
+ *    entry, title, width, height } — или из кнопок сайдбара (slot 'modal').
+ *  - page: активная полноэкранная страница плагина (slot 'page').
+ *  - bottom: открытые табы нижнего дока (slot 'bottom') + активный.
  *  - right-табы: полноценные табы правой панели (plugin:{pluginId}:{panelId})
  *    с бейджами — открываются/закрываются из push-событий main
  *    (plugins:panel-action), сайдбар-кнопок и меню правой панели.
+ *  - legacy open: модальная панель v1 (registerUi type='panel', слот sidebar).
+ *  - statusbar: элементы status bar от плагинов (снапшот на плагин).
  */
 import { create } from 'zustand'
+import type { PluginStatusbarItem } from '@shared/types/plugin'
 import { useRightPanelTabsStore } from './rightPanelTabs.store'
 import { useUIStore, buildPluginTabId } from './ui.store'
 import { useFileTabsStore } from './fileTabs.store'
 
+/** Модальная iframe-панель (PLUGINS_MODAL_ACTION / slot 'modal'). */
+export interface PluginModalState {
+  pluginId: string
+  title: string
+  /** HTML-файл панели; если нет — берётся manifest.ui плагина. */
+  entry?: string
+  width?: number
+  height?: number
+}
+
+/** Полноэкранная страница плагина (slot 'page'). */
+export interface PluginPageState {
+  pluginId: string
+  panelId: string
+}
+
+/** Таб нижнего дока плагина (slot 'bottom'). */
+export interface PluginBottomTabRef {
+  pluginId: string
+  panelId: string
+}
+
 interface PluginPanelStore {
   /** Открытая modal-панель: pluginId + заголовок (legacy registerUi type='panel'). */
   open: { pluginId: string; title: string } | null
+  /** Современная модальная панель (PluginModalHost) — одна одновременно. */
+  modal: PluginModalState | null
+  /** Активная полноэкранная страница плагина (null = закрыта). */
+  activePage: PluginPageState | null
+  /** Открытые табы нижнего дока плагинов. */
+  bottomTabs: PluginBottomTabRef[]
+  /** Активный таб нижнего дока. */
+  activeBottomTab: PluginBottomTabRef | null
+  /** Элементы status bar по плагинам (снапшот; пустой массив = плагин их убрал). */
+  statusbarByPlugin: Record<string, PluginStatusbarItem[]>
   /** Бейджи табов правой панели: ключ — полный id таба plugin:{pluginId}:{panelId}. */
   badges: Record<string, number | null>
+
   openPanel: (pluginId: string, title: string) => void
   closePanel: () => void
+  openPluginModal: (m: PluginModalState) => void
+  closePluginModal: () => void
+  openPluginPage: (pluginId: string, panelId: string) => void
+  closePluginPage: () => void
+  openPluginBottomTab: (pluginId: string, panelId: string) => void
+  closePluginBottomTab: (pluginId: string, panelId: string) => void
+  setActivePluginBottomTab: (pluginId: string, panelId: string) => void
+  setStatusbarItems: (pluginId: string, items: PluginStatusbarItem[]) => void
   setBadge: (tabId: string, badge: number | null) => void
   openPluginTab: (pluginId: string, panelId: string, _title?: string) => void
   closePluginTab: (pluginId: string, panelId: string) => void
 }
 
+const emptyStatusbar: PluginStatusbarItem[] = []
+
 export const usePluginPanelStore = create<PluginPanelStore>((set) => ({
   open: null,
+  modal: null,
+  activePage: null,
+  bottomTabs: [],
+  activeBottomTab: null,
+  statusbarByPlugin: {},
   badges: {},
+
   openPanel: (pluginId, title) => set({ open: { pluginId, title } }),
   closePanel: () => set({ open: null }),
+
+  openPluginModal: (m) => set({ modal: m, open: null }),
+  closePluginModal: () => set({ modal: null }),
+
+  openPluginPage: (pluginId, panelId) => set({ activePage: { pluginId, panelId } }),
+  closePluginPage: () => set({ activePage: null }),
+
+  openPluginBottomTab: (pluginId, panelId) => set(s => {
+    const key = (t: PluginBottomTabRef) => t.pluginId === pluginId && t.panelId === panelId
+    if (s.bottomTabs.some(key)) {
+      return { activeBottomTab: { pluginId, panelId } }
+    }
+    return {
+      bottomTabs: [...s.bottomTabs, { pluginId, panelId }],
+      activeBottomTab: { pluginId, panelId },
+    }
+  }),
+
+  closePluginBottomTab: (pluginId, panelId) => set(s => {
+    const remaining = s.bottomTabs.filter(t => !(t.pluginId === pluginId && t.panelId === panelId))
+    let active = s.activeBottomTab
+    if (active && active.pluginId === pluginId && active.panelId === panelId) {
+      active = remaining.length > 0 ? remaining[remaining.length - 1] : null
+    }
+    return { bottomTabs: remaining, activeBottomTab: active }
+  }),
+
+  setActivePluginBottomTab: (pluginId, panelId) => set({ activeBottomTab: { pluginId, panelId } }),
+
+  setStatusbarItems: (pluginId, items) => set(s => {
+    const list = Array.isArray(items) ? items.filter(i => i && typeof i.id === 'string') : emptyStatusbar
+    const next = { ...s.statusbarByPlugin }
+    if (list.length === 0) delete next[pluginId]
+    else next[pluginId] = list
+    return { statusbarByPlugin: next }
+  }),
+
   setBadge: (tabId, badge) => set(s => ({
     badges: badge == null
       ? (() => { const next = { ...s.badges }; delete next[tabId]; return next })()
       : { ...s.badges, [tabId]: badge },
   })),
+
   openPluginTab: (pluginId, panelId, _title) => {
     const tabId = buildPluginTabId(pluginId, panelId)
     useRightPanelTabsStore.getState().openPanel(tabId)
@@ -58,3 +152,24 @@ export const usePluginPanelStore = create<PluginPanelStore>((set) => ({
     }
   },
 }))
+
+/** Уплощённый список элементов status bar (по одному на pluginId+id). */
+export function selectStatusbarItems(s: PluginPanelStore): PluginStatusbarItem[] {
+  const items: PluginStatusbarItem[] = []
+  for (const [pluginId, list] of Object.entries(s.statusbarByPlugin)) {
+    for (const it of list) {
+      items.push(it.pluginId ? it : { ...it, pluginId })
+    }
+  }
+  return items
+}
+
+/** Элементы статус-бара конкретного плагина. */
+export function pluginStatusbarItems(s: PluginPanelStore, pluginId: string): PluginStatusbarItem[] {
+  return s.statusbarByPlugin[pluginId] ?? emptyStatusbar
+}
+
+/** Найти элемент статус-бара по pluginId+id (для обновления после клика). */
+export function findStatusbarItem(s: PluginPanelStore, pluginId: string, id: string): PluginStatusbarItem | undefined {
+  return (s.statusbarByPlugin[pluginId] ?? emptyStatusbar).find(i => i.id === id)
+}

@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Plugin Dev</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: var(--font-main, 'Segoe UI', system-ui, sans-serif);
+    margin: 0; padding: 0; background: transparent;
+    color: var(--text, #e6e6e6); font-size: 13px;
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border, #333); flex-shrink: 0;
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  header .spacer { flex: 1; }
+  .tabbtn {
+    background: none; border: 1px solid var(--border, #333); color: var(--text, #ccc);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px;
+  }
+  .tabbtn.active { border-color: var(--accent, #7aa2f7); color: var(--accent, #7aa2f7); }
+  main { flex: 1; display: flex; min-height: 0; }
+  /* ── Docs browser ── */
+  #docs { display: flex; flex: 1; min-height: 0; }
+  #doclist {
+    width: 200px; flex-shrink: 0; overflow-y: auto; padding: 8px;
+    border-right: 1px solid var(--border, #333);
+  }
+  #doclist button {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    color: var(--text, #ccc); padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; margin-bottom: 2px;
+  }
+  #doclist button:hover { background: var(--bg-hover, rgba(255,255,255,.06)); }
+  #doclist button.active { background: var(--accent-dim, rgba(122,162,247,.15)); color: var(--accent, #7aa2f7); }
+  #doccontent { flex: 1; overflow-y: auto; padding: 14px 18px; line-height: 1.55; }
+  #doccontent h1 { font-size: 17px; margin: 0 0 12px; }
+  #doccontent h2 { font-size: 14px; margin: 18px 0 8px; }
+  #doccontent h3 { font-size: 13px; margin: 14px 0 6px; }
+  #doccontent pre {
+    background: var(--bg-code, rgba(0,0,0,.35)); padding: 10px 12px; border-radius: 8px;
+    overflow-x: auto; font-size: 12px; line-height: 1.45;
+  }
+  #doccontent code { font-family: Consolas, monospace; font-size: 12px; }
+  #doccontent table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #doccontent th, #doccontent td { border: 1px solid var(--border, #333); padding: 5px 8px; text-align: left; }
+  #doccontent blockquote { border-left: 3px solid var(--accent, #7aa2f7); margin: 8px 0; padding: 2px 12px; opacity: .85; }
+  /* ── Wizard ── */
+  #wizard { display: none; flex: 1; overflow-y: auto; padding: 16px 18px; }
+  #wizard label { display: block; margin: 10px 0 4px; font-size: 12px; opacity: .85; }
+  #wizard input, #wizard textarea, #wizard select {
+    width: 100%; background: var(--bg-input, rgba(0,0,0,.3)); color: var(--text, #eee);
+    border: 1px solid var(--border, #333); border-radius: 6px; padding: 7px 9px;
+    font-size: 12px; font-family: inherit;
+  }
+  #wizard textarea { font-family: Consolas, monospace; resize: vertical; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .go {
+    margin-top: 16px; background: var(--accent, #7aa2f7); color: #fff; border: none;
+    border-radius: 8px; padding: 9px 18px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .go:disabled { opacity: .5; cursor: default; }
+  .hint { font-size: 11px; opacity: .6; margin-top: 3px; }
+  #result {
+    margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 12px;
+    display: none; white-space: pre-wrap; font-family: Consolas, monospace;
+  }
+  #result.ok { display: block; background: rgba(80,200,120,.12); color: #7ee2a8; }
+  #result.err { display: block; background: rgba(240,90,90,.12); color: #f8a0a0; }
+  /* ── Plugins list ── */
+  #plugins { display: none; flex: 1; overflow-y: auto; padding: 14px 18px; }
+  .plg {
+    border: 1px solid var(--border, #333); border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 8px; cursor: pointer;
+  }
+  .plg:hover { border-color: var(--accent, #7aa2f7); }
+  .plg .t { font-weight: 600; font-size: 13px; }
+  .plg .d { font-size: 11px; opacity: .7; margin-top: 3px; }
+  .plg .b {
+    display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 10px;
+    background: var(--accent-dim, rgba(122,162,247,.15)); color: var(--accent, #7aa2f7);
+    margin-left: 6px; vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🧩 Plugin Dev</h1>
+    <div class="spacer"></div>
+    <button class="tabbtn active" id="tab-docs">Доки</button>
+    <button class="tabbtn" id="tab-create">Создать</button>
+    <button class="tabbtn" id="tab-plugins">Плагины</button>
+  </header>
+
+  <main>
+    <!-- ── Документация ── -->
+    <div id="docs">
+      <nav id="doclist"></nav>
+      <article id="doccontent">Загрузка…</article>
+    </div>
+
+    <!-- ── Мастер создания ── -->
+    <form id="wizard" onsubmit="return false">
+      <div class="row">
+        <div>
+          <label>id (имя папки) *</label>
+          <input id="f-id" placeholder="my-plugin" pattern="[a-zA-Z][a-zA-Z0-9_-]*" required>
+        </div>
+        <div>
+          <label>Имя</label>
+          <input id="f-name" placeholder="My Plugin">
+        </div>
+      </div>
+      <label>Описание</label>
+      <input id="f-desc" placeholder="Что делает плагин">
+      <label>promptDescription (~200 симв., для system prompt)</label>
+      <input id="f-prompt" placeholder="Tool my_tool does …">
+      <label>Права (через запятую)</label>
+      <input id="f-perms" placeholder="fs:read, net, ui">
+      <div class="hint">Полный список — вкладка «Доки» → permissions</div>
+      <label>Тулы (JSON: [{"name":"my_tool","description":"…"}])</label>
+      <textarea id="f-tools" rows="3" placeholder='[{"name":"my_tool","description":"Does the thing"}]'></textarea>
+      <label>Команды (JSON: [{"name":"mycmd","description":"…"}])</label>
+      <textarea id="f-cmds" rows="2" placeholder='[{"name":"mycmd","description":"Quick action"}]'></textarea>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
+        <input type="checkbox" id="f-ui" style="width:auto"> Сгенерировать UI-панель (ui/panel.html + registerPanel)
+      </label>
+      <button class="go" id="f-go">Создать плагин</button>
+      <div id="result"></div>
+    </form>
+
+    <!-- ── Список плагинов ── -->
+    <div id="plugins"></div>
+  </main>
+
+<script>
+  // ── Мост synteeBridge (postMessage-протокол SynteeHelper) ──
+  const synteeBridge = (() => {
+    let seq = 0
+    const pending = new Map()
+    const handlers = new Map()
+    window.addEventListener('message', (e) => {
+      const d = e.data
+      if (!d || d.source !== 'syntee-plugin-host') return
+      if (d.rpc && pending.has(d.id)) {
+        const p = pending.get(d.id); pending.delete(d.id)
+        d.ok ? p.resolve(d.result) : p.reject(new Error(d.error || 'RPC error'))
+      } else if (d.data !== undefined) {
+        ;(handlers.get(d.method || '*') || []).forEach(cb => { try { cb(d.data) } catch (err) { console.error(err) } })
+      }
+    })
+    return {
+      call(method, args) {
+        const id = 'rpc-' + (++seq)
+        return new Promise((resolve, reject) => {
+          pending.set(id, { resolve, reject })
+          parent.postMessage({ source: 'syntee-plugin', rpc: true, id, method, args }, '*')
+        })
+      },
+      on(method, cb) {
+        if (!handlers.has(method)) handlers.set(method, [])
+        handlers.get(method).push(cb)
+      },
+    }
+  })()
+
+  // ── Табы ──
+  const tabs = { docs: document.getElementById('docs'), wizard: document.getElementById('wizard'), plugins: document.getElementById('plugins') }
+  const btns = { docs: document.getElementById('tab-docs'), wizard: document.getElementById('tab-create'), plugins: document.getElementById('tab-plugins') }
+  function show(name) {
+    for (const k of Object.keys(tabs)) {
+      tabs[k].style.display = k === name ? (k === 'docs' ? 'flex' : 'block') : 'none'
+      btns[k].classList.toggle('active', k === name)
+    }
+    if (name === 'plugins') loadPlugins()
+  }
+  for (const k of Object.keys(btns)) btns[k].onclick = () => show(k)
+
+  // ── Доки: минимальный markdown-рендер ──
+  function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
+  function md(src) {
+    const blocks = []
+    src = src.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      blocks.push('<pre><code>' + esc(code) + '</code></pre>')
+      return '\u0000B' + (blocks.length - 1) + '\u0000'
+    })
+    src = esc(src)
+      .replace(/^###### (.*)$/gm, '<h3>$1</h3>').replace(/^##### (.*)$/gm, '<h3>$1</h3>')
+      .replace(/^#### (.*)$/gm, '<h3>$1</h3>').replace(/^### (.*)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h1>$1</h1>')
+      .replace(/^&gt; (.*)$/gm, '<blockquote>$1</blockquote>')
+      .replace(/^\s*[-*] \[x\] (.*)$/gm, '<div>☑ $1</div>').replace(/^\s*[-*] \[ \] (.*)$/gm, '<div>☐ $1</div>')
+      .replace(/^\s*[-*] (.*)$/gm, '<div>• $1</div>')
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // таблицы
+    src = src.replace(/((?:^\|.*\|\n)+)/gm, (m) => {
+      const rows = m.trim().split('\n').map(r => r.slice(1, -1).split('|').map(c => c.trim()))
+      if (rows.length > 1 && /^[-: ]+$/.test(rows[1].join(''))) rows.splice(1, 1)
+      let html = '<table>'
+      rows.forEach((r, i) => {
+        html += '<tr>' + r.map(c => '<' + (i === 0 ? 'th' : 'td') + '>' + c + '</' + (i === 0 ? 'th' : 'td') + '>').join('') + '</tr>'
+      })
+      return html + '</table>'
+    })
+    src = src.split(/\n{2,}/).map(p => /^<(h\d|div|table|pre|blockquote)/.test(p.trim()) ? p : '<p>' + p.replace(/\n/g, '<br>') + '</p>').join('')
+    src = src.replace(/\u0000B(\d+)\u0000/g, (_, i) => blocks[Number(i)])
+    return src
+  }
+
+  let docSections = []
+  async function loadDocs() {
+    try { docSections = await synteeBridge.call('listDocs') || [] } catch (e) { docSections = [] }
+    const nav = document.getElementById('doclist')
+    nav.innerHTML = ''
+    for (const s of docSections) {
+      const b = document.createElement('button')
+      b.textContent = s.title
+      b.onclick = () => openDoc(s.id, b)
+      nav.appendChild(b)
+    }
+    if (docSections.length) openDoc('index', nav.firstChild)
+  }
+  async function openDoc(id, btn) {
+    document.querySelectorAll('#doclist button').forEach(b => b.classList.remove('active'))
+    if (btn) btn.classList.add('active')
+    const el = document.getElementById('doccontent')
+    el.textContent = 'Загрузка…'
+    try { el.innerHTML = md(await synteeBridge.call('getDoc', { section: id })) }
+    catch (e) { el.textContent = 'Ошибка: ' + e.message }
+  }
+
+  // ── Мастер ──
+  document.getElementById('f-go').onclick = async () => {
+    const out = document.getElementById('result')
+    out.className = ''; out.style.display = 'none'
+    const parseJson = (v, what) => {
+      v = String(v || '').trim()
+      if (!v) return []
+      try { const a = JSON.parse(v); return Array.isArray(a) ? a : [a] }
+      catch { throw new Error(what + ': неверный JSON') }
+    }
+    try {
+      const spec = {
+        id: document.getElementById('f-id').value.trim(),
+        name: document.getElementById('f-name').value.trim(),
+        description: document.getElementById('f-desc').value.trim(),
+        promptDescription: document.getElementById('f-prompt').value.trim(),
+        permissions: document.getElementById('f-perms').value.split(',').map(s => s.trim()).filter(Boolean),
+        tools: parseJson(document.getElementById('f-tools').value, 'Тулы'),
+        commands: parseJson(document.getElementById('f-cmds').value, 'Команды'),
+        withUi: document.getElementById('f-ui').checked,
+      }
+      if (!spec.id) throw new Error('id обязателен')
+      const res = await synteeBridge.call('createPlugin', spec)
+      out.className = 'ok'
+      out.textContent = '✅ Создан: ' + res.dir + '\n\n' + res.next
+    } catch (e) {
+      out.className = 'err'
+      out.textContent = '❌ ' + e.message
+    }
+  }
+
+  // ── Список плагинов ──
+  async function loadPlugins() {
+    const el = document.getElementById('plugins')
+    el.textContent = 'Загрузка…'
+    try {
+      const list = await synteeBridge.call('listPlugins') || []
+      el.innerHTML = ''
+      for (const p of list) {
+        const d = document.createElement('div')
+        d.className = 'plg'
+        d.innerHTML = '<span class="t">' + esc(p.name) + ' <small>v' + esc(p.version || '?') + '</small></span>'
+          + (p.builtin ? '<span class="b">встроенный</span>' : '')
+          + '<div class="d">' + esc(p.id) + (p.description ? ' — ' + esc(p.description) : '') + '</div>'
+        d.onclick = async () => {
+          const m = await synteeBridge.call('readPlugin', { id: p.id })
+          if (m) {
+            const w = document.createElement('div')
+            w.className = 'plg'
+            w.innerHTML = '<pre><code>' + esc(m) + '</code></pre>'
+            d.replaceWith(w)
+          }
+        }
+        el.appendChild(d)
+      }
+      if (!list.length) el.textContent = 'Плагины не найдены.'
+    } catch (e) { el.textContent = 'Ошибка: ' + e.message }
+  }
+
+  loadDocs()
+</script>
+</body>
+</html>
