@@ -181,6 +181,12 @@ export function registerPluginsIPC(store: Store, getWindow: () => BrowserWindow 
 
   ipcMain.handle('plugins:uninstall', async (_e, params: { pluginId: string; source: 'global' | 'project'; dir?: string }) => {
     const m = mgr()
+    // Встроенные плагины нельзя удалить — они восстанавливаются при каждом
+    // запуске (syncBuiltinPlugins), поэтому удаление бессмысленно.
+    const target = m.getAllWithState().find(p => p.id === params.pluginId)
+    if (target?.manifest.builtin) {
+      return { ok: false, error: 'Встроенный плагин нельзя удалить — он поставляется вместе с приложением. Его можно только выключить.' }
+    }
     await m.stop(params.pluginId)
     // Чистим состояние.
     const stateMap = (store.get('pluginsState') as Record<string, unknown> | undefined) ?? {}
@@ -234,4 +240,98 @@ export function registerPluginsIPC(store: Store, getWindow: () => BrowserWindow 
   ipcMain.handle('plugins:getPaths', () => ({
     globalPluginsDir: mgr().globalPluginsDir,
   }))
+
+  // ── Провайдеры плагинов (renderer → plugin process) ─────────────────────
+
+  // Поиск по всем search-провайдерам плагинов (Spotlight).
+  ipcMain.handle('plugins:search', async (_e, params: { query: string }) => {
+    try {
+      return await mgr().searchAll(String(params.query ?? ''))
+    } catch {
+      return []
+    }
+  })
+
+  // Клик по результату поиска плагина → хендлер провайдера.
+  ipcMain.handle('plugins:searchClick', async (_e, params: {
+    pluginId: string
+    providerId: string
+    item: { id: string; label: string; sub?: string; icon?: string }
+  }) => {
+    await mgr().searchClick(params.pluginId, params.providerId, params.item ?? {})
+    return { ok: true }
+  })
+
+  // Autocomplete: текст поля → подсказки провайдера (null — триггера нет).
+  ipcMain.handle('plugins:autocomplete', async (_e, params: { text: string }) => {
+    try {
+      return await mgr().autocompleteSuggest(String(params.text ?? ''))
+    } catch {
+      return null
+    }
+  })
+
+  // Клик по пункту контекстного меню сообщений → хендлер плагина.
+  ipcMain.handle('plugins:contextMenuClick', async (_e, params: {
+    pluginId: string
+    itemId: string
+    payload: { messageId: string; chatId: string; content: string; selection?: string }
+  }) => {
+    await mgr().contextMenuAction(params.pluginId, params.itemId, params.payload ?? {})
+    return { ok: true }
+  })
+
+  // Клик по кнопке rich-уведомления плагина → выполнить его слэш-команду.
+  ipcMain.handle('plugins:notificationAction', async (_e, params: { pluginId: string; command: string }) => {
+    const r = await mgr().executeCommand(params.pluginId, params.command, '')
+    return r
+  })
+
+  // Клик по кнопке плагина над инпутом (registerInputAction без command)
+  // → событие 'input-action' в процесс плагина.
+  ipcMain.handle('plugins:inputAction', (_e, params: { pluginId: string; actionId: string }) => {
+    mgr().emitInputAction(params.pluginId, params.actionId)
+    return { ok: true }
+  })
+
+  // Прямые host-методы для iframe-панелей (synteeBridge.call с method из
+  // белого списка — без хопа через ui.handle плагина). Права проверяются
+  // по манифесту плагина в handleHostRequest.
+  const IFRAME_HOST_METHODS = new Set([
+    'fs.readFile', 'fs.listDir', 'fs.stat',
+    'config.get', 'config.getAll',
+    'ui.getTheme',
+    'clipboard.readText', 'clipboard.writeText',
+    'storage.get', 'storage.set', 'storage.delete',
+    'chats.list', 'chats.get',
+    'projects.list', 'projects.current',
+    'memory.search',
+    'ai.listModels',
+  ])
+  ipcMain.handle('plugins:iframeCall', async (_e, params: {
+    pluginId: string
+    method: string
+    args?: Record<string, unknown>
+  }) => {
+    if (!IFRAME_HOST_METHODS.has(params.method)) {
+      return { ok: false, error: `Метод "${params.method}" недоступен из iframe-панели` }
+    }
+    // Права по манифесту: маппинг метод → permission (как в pluginHost).
+    const METHOD_PERMS: Record<string, string> = {
+      'fs.readFile': 'fs:read', 'fs.listDir': 'fs:read', 'fs.stat': 'fs:read',
+      'clipboard.readText': 'clipboard', 'clipboard.writeText': 'clipboard',
+      'chats.list': 'chats:read', 'chats.get': 'chats:read',
+      'projects.list': 'projects:read', 'projects.current': 'projects:read',
+      'memory.search': 'memory',
+      'ai.listModels': 'ai',
+    }
+    const perm = METHOD_PERMS[params.method]
+    if (perm) {
+      const plugin = mgr().getAllWithState().find(p => p.id === params.pluginId)
+      if (plugin && !(plugin.manifest.permissions ?? []).includes(perm as never)) {
+        return { ok: false, error: `Permission denied: ${params.method} требует "${perm}"` }
+      }
+    }
+    return mgr().handleHostRequestForIframe(params.pluginId, params.method, params.args ?? {})
+  })
 }

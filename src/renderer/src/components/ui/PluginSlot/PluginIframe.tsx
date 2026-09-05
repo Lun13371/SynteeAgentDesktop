@@ -22,6 +22,21 @@ import './PluginIframe.css'
 // Светлые темы — для флага dark в theme-сообщении.
 const LIGHT_THEMES = new Set(['light', 'paper', 'latte', 'sepia', 'dawn', 'mist', 'solarized'])
 
+// Прямые host-методы для iframe-панелей (plugins:iframeCall в main,
+// белый список + проверка прав по манифесту). Всё остальное — RPC в
+// процесс плагина (ui.handle).
+const IFRAME_HOST_METHODS = new Set([
+  'fs.readFile', 'fs.listDir', 'fs.stat',
+  'config.get', 'config.getAll',
+  'ui.getTheme',
+  'clipboard.readText', 'clipboard.writeText',
+  'storage.get', 'storage.set', 'storage.delete',
+  'chats.list', 'chats.get',
+  'projects.list', 'projects.current',
+  'memory.search',
+  'ai.listModels',
+])
+
 export interface PluginIframeProps {
   pluginId: string
   /** HTML-файл относительно папки плагина (entry нормализуется, fallback 'index.html'). */
@@ -61,7 +76,12 @@ export default function PluginIframe({ pluginId, entry, className, title, widget
       if (d.rpc === true) {
         const method = typeof d.method === 'string' ? d.method : ''
         const id = typeof d.id === 'string' ? d.id : ''
-        void window.syntee.plugins.uiCall({ pluginId, method, args: d.args as Record<string, unknown> | undefined }).then((res: { ok: boolean; result?: unknown; error?: unknown }) => {
+        // Прямой host-метод (read-only белый список) — без хопа через
+        // процесс плагина. Иначе — RPC в ui.handle плагина.
+        const callPromise = IFRAME_HOST_METHODS.has(method)
+          ? window.syntee.plugins.iframeCall({ pluginId, method, args: d.args as Record<string, unknown> | undefined })
+          : window.syntee.plugins.uiCall({ pluginId, method, args: d.args as Record<string, unknown> | undefined })
+        void callPromise.then((res: { ok: boolean; result?: unknown; error?: unknown }) => {
           const target = (e.source as Window | null)
           target?.postMessage(
             { source: 'syntee-plugin-host', rpc: true, id, ok: res?.ok ?? false, result: res?.result, error: res?.error },

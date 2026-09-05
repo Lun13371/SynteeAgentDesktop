@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hello Stats — панель плагина</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14141a;
+    --card: rgba(255,255,255,0.06);
+    --border: rgba(255,255,255,0.1);
+    --text: #e2e2e8;
+    --muted: #8b8b96;
+    --accent: #22d3ee;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    transition: background 0.2s, color 0.2s;
+  }
+  body.light { --bg: #f7f7f9; --card: rgba(0,0,0,0.04); --border: rgba(0,0,0,0.1); --text: #1a1a22; --muted: #6b6b76; }
+  /* Внутренние табы панели */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); padding: 6px 8px 0; flex-shrink: 0; }
+  .tab {
+    padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--muted);
+    border: none; background: none; cursor: pointer; border-radius: 8px 8px 0 0;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .content { flex: 1; overflow-y: auto; padding: 16px; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 8px; text-align: center; }
+  .stat-value { font-size: 22px; font-weight: 700; color: var(--accent); }
+  .stat-label { font-size: 10px; color: var(--muted); margin-top: 4px; }
+  button.act {
+    width: 100%; padding: 9px; margin-bottom: 8px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--card); color: var(--text);
+    font-size: 12px; font-weight: 600; cursor: pointer; text-align: left;
+  }
+  button.act:hover { border-color: var(--accent); color: var(--accent); }
+  button.act small { display: block; font-weight: 400; color: var(--muted); font-size: 10px; margin-top: 2px; }
+  .note { font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 10px; }
+  .row { display: flex; gap: 8px; }
+  .row input {
+    flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card); color: var(--text); font-size: 12px; outline: none;
+  }
+  .row input:focus { border-color: var(--accent); }
+  .theme-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .theme-box .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; margin-right: 6px; vertical-align: -2px; }
+  .kv { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .kv b { color: var(--text); font-weight: 600; }
+  ul.list { list-style: none; }
+  ul.list li { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; font-size: 12px; background: var(--card); }
+  #log { font-size: 11px; color: var(--muted); font-family: Consolas, monospace; white-space: pre-wrap; margin-top: 8px; max-height: 120px; overflow-y: auto; }
+</style>
+</head>
+<body>
+  <div class="tabs">
+    <button class="tab active" data-page="p-stats">📊 Статистика</button>
+    <button class="tab" data-page="p-chat">💬 Чат</button>
+    <button class="tab" data-page="p-v4">⚡ API v4</button>
+    <button class="tab" data-page="p-theme">🎨 Тема</button>
+    <button class="tab" data-page="p-data">🗂 Данные</button>
+  </div>
+
+  <div class="content">
+    <div class="page active" id="p-stats">
+      <div class="stats">
+        <div class="stat"><div class="stat-value" id="calls">—</div><div class="stat-label">count_calls</div></div>
+        <div class="stat"><div class="stat-value" id="messages">—</div><div class="stat-label">сообщений</div></div>
+        <div class="stat"><div class="stat-value" id="tools">—</div><div class="stat-label">вызовов тулов</div></div>
+      </div>
+      <button class="act" id="bump">Увеличить счётчик + бейдж<small>storage.set + ui.setBadge + ui.emit</small></button>
+      <button class="act" id="clear">Сбросить бейдж<small>ui.setBadge(null)</small></button>
+      <button class="act" id="toast">Показать тост<small>window.toast</small></button>
+      <div class="note">Таб правой панели приложения. Панель общается с процессом плагина через RPC-мост synteeBridge.call → syntee.ui.handle.</div>
+      <div id="log"></div>
+    </div>
+
+    <div class="page" id="p-chat">
+      <div class="row">
+        <input id="chat-text" placeholder="Сообщение агенту…" />
+        <button class="act" style="width:auto; margin:0" id="send">↩</button>
+      </div>
+      <button class="act" id="reply" style="margin-top:8px">Ответить от имени плагина<small>chat.reply</small></button>
+      <button class="act" id="ask">Спросить «что ты умеешь?»<small>chat.send</small></button>
+      <div class="note">Хук chat:before-send: отправь в чат «!caps hello» — плагин перепишет в КАПС. «!deny» — отклонит отправку.</div>
+    </div>
+
+    <div class="page" id="p-v4">
+      <div class="stats" style="grid-template-columns: 1fr 1fr">
+        <div class="stat"><div class="stat-value" id="agent-runs">—</div><div class="stat-label">запусков агента</div></div>
+        <div class="stat"><div class="stat-value" id="deltas">—</div><div class="stat-label">дельт стрима</div></div>
+        <div class="stat"><div class="stat-value" id="completed">—</div><div class="stat-label">завершённых чатов</div></div>
+        <div class="stat"><div class="stat-value" id="sched">—</div><div class="stat-label">тиков планировщика</div></div>
+      </div>
+      <button class="act" id="ai">🤖 Спросить LLM хоста<small>ai.chat — one-off completion</small></button>
+      <button class="act" id="overlay">🖥 Показать overlay<small>overlay.show (ui/overlay.html, 6 сек)</small></button>
+      <button class="act" id="modal">🔲 Программная модалка<small>ui.openModal</small></button>
+      <button class="act" id="ws">🔌 WebSocket echo<small>net.ws.connect → wss://echo.websocket.org</small></button>
+      <button class="act" id="exec">⌨️ Выполнить команду<small>process.exec «node --version»</small></button>
+      <button class="act" id="bus">📡 bus:ping → pong<small>шина между плагинами</small></button>
+      <button class="act" id="newchat">➕ Создать чат<small>chats.create (chats:write)</small></button>
+      <div class="note">Ещё работает: планировщик (statusbar «⏱ N» каждую минуту), шорткат Ctrl+Alt+H, fs.watch своей папки (лог плагина), tray-меню, страница «Hello Page» в навигации, нижний док.</div>
+      <div id="log2" style="font-size:11px;color:var(--muted);font-family:Consolas,monospace;white-space:pre-wrap;margin-top:8px;max-height:100px;overflow-y:auto"></div>
+    </div>
+
+    <div class="page" id="p-theme">
+      <div class="theme-box">
+        <span class="swatch" id="accent-swatch"></span><b id="theme-name">—</b>
+        <div class="kv">accent: <b id="accent-hex">—</b></div>
+        <div class="kv">dark: <b id="theme-dark">—</b></div>
+      </div>
+      <div class="note">Тема приходит при загрузке и при смене (событие theme:changed → ui.emit). Смени тему в настройках — панель перекрасится.</div>
+    </div>
+
+    <div class="page" id="p-data">
+      <button class="act" id="chats">Загрузить список чатов<small>chats.list (permission chats:read)</small></button>
+      <ul class="list" id="chat-list"></ul>
+      <div class="note">Плагин может читать чаты, проекты и память приложения — по permissions из манифеста.</div>
+    </div>
+  </div>
+
+<script>
+  // ── synteeBridge — клиентская библиотека моста (копируй в свой плагин) ──
+  const synteeBridge = {
+    _seq: 0,
+    _pending: new Map(),
+    _handlers: new Map(),
+    /** RPC-вызов в процесс плагина (syntee.ui.handle(method, handler)). */
+    call(method, args) {
+      return new Promise((resolve, reject) => {
+        const id = 'b' + (++this._seq)
+        this._pending.set(id, { resolve, reject })
+        window.parent.postMessage({ source: 'syntee-plugin', rpc: true, id, method, args: args || {} }, '*')
+      })
+    },
+    /** Подписка на push из плагина (syntee.ui.emit(method, data)). */
+    on(method, cb) {
+      if (!this._handlers.has(method)) this._handlers.set(method, [])
+      this._handlers.get(method).push(cb)
+    },
+    /** Legacy-канал (syntee.ui.onMessage в плагине). */
+    send(data) { window.parent.postMessage({ source: 'syntee-plugin', data }, '*') },
+  }
+
+  window.addEventListener('message', (e) => {
+    const d = e.data
+    if (!d || d.source !== 'syntee-plugin-host') return
+    // RPC-ответ
+    if (d.rpc && d.id) {
+      const p = synteeBridge._pending.get(d.id)
+      if (p) {
+        synteeBridge._pending.delete(d.id)
+        d.ok ? p.resolve(d.result) : p.reject(new Error(d.error || 'RPC error'))
+      }
+      return
+    }
+    // Тема (при загрузке iframe и при смене)
+    if (d.theme) { applyTheme(d.theme); return }
+    // Push от плагина (ui.emit)
+    if (d.data && d.data.__rpc__) {
+      const hs = synteeBridge._handlers.get(d.data.method) || []
+      hs.forEach(cb => { try { cb(d.data.data) } catch (err) { console.error(err) } })
+      return
+    }
+    // Legacy push (ui.postMessage)
+    if (d.data !== undefined) {
+      const hs = synteeBridge._handlers.get('*') || []
+      hs.forEach(cb => { try { cb(d.data) } catch (err) { console.error(err) } })
+    }
+  })
+
+  // ── Тема ──────────────────────────────────────────────────────────────
+  function applyTheme(t) {
+    if (!t) return
+    document.body.classList.toggle('light', !t.dark)
+    document.documentElement.style.setProperty('--accent', t.accentColor || '#22d3ee')
+    document.documentElement.style.colorScheme = t.dark ? 'dark' : 'light'
+    const el = (id) => document.getElementById(id)
+    el('theme-name').textContent = t.theme
+    el('accent-hex').textContent = t.accentColor
+    el('theme-dark').textContent = String(!!t.dark)
+    el('accent-swatch').style.background = t.accentColor
+  }
+
+  // ── Табы ──────────────────────────────────────────────────────────────
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'))
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'))
+      btn.classList.add('active')
+      document.getElementById(btn.dataset.page).classList.add('active')
+    })
+  })
+
+  // ── Статистика ────────────────────────────────────────────────────────
+  function renderStats(s) {
+    if (!s) return
+    document.getElementById('calls').textContent = s.calls
+    document.getElementById('messages').textContent = s.messagesSeen
+    document.getElementById('tools').textContent = s.toolsSeen
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v }
+    set('agent-runs', s.agentRuns ?? '—')
+    set('deltas', s.deltasSeen ?? '—')
+    set('completed', s.completedSeen ?? '—')
+    set('sched', s.schedTicks ?? '—')
+  }
+  function log(msg) {
+    const el = document.getElementById('log')
+    el.textContent = new Date().toLocaleTimeString() + ' ' + msg + '\n' + el.textContent
+  }
+  function log2(msg) {
+    const el = document.getElementById('log2')
+    if (!el) return
+    el.textContent = new Date().toLocaleTimeString() + ' ' + msg + '\n' + el.textContent
+  }
+
+  synteeBridge.on('stats', renderStats)
+  synteeBridge.on('theme', applyTheme)
+
+  document.getElementById('bump').onclick = async () => { try { renderStats(await synteeBridge.call('bumpBadge')) } catch (e) { log('ERR ' + e.message) } }
+  document.getElementById('clear').onclick = async () => { try { renderStats(await synteeBridge.call('clearBadge')) } catch (e) { log('ERR ' + e.message) } }
+  document.getElementById('toast').onclick = () => synteeBridge.call('toast', { text: 'Привет из панели плагина!' }).catch(e => log('ERR ' + e.message))
+
+  // ── Чат ───────────────────────────────────────────────────────────────
+  document.getElementById('send').onclick = () => {
+    const text = document.getElementById('chat-text').value.trim()
+    if (text) synteeBridge.call('sendChat', { text }).catch(e => log('ERR ' + e.message))
+  }
+  document.getElementById('reply').onclick = () => {
+    const text = document.getElementById('chat-text').value.trim() || 'Ответ плагина без текста'
+    synteeBridge.call('replyChat', { text }).catch(e => log('ERR ' + e.message))
+  }
+  document.getElementById('ask').onclick = () => synteeBridge.call('sendChat', { text: 'Что ты умеешь?' }).catch(e => log('ERR ' + e.message))
+
+  // ── Данные ────────────────────────────────────────────────────────────
+  document.getElementById('chats').onclick = async () => {
+    try {
+      const chats = await synteeBridge.call('listChats')
+      const ul = document.getElementById('chat-list')
+      ul.innerHTML = ''
+      chats.forEach(c => {
+        const li = document.createElement('li')
+        li.textContent = c.title || c.id
+        ul.appendChild(li)
+      })
+    } catch (e) { log('ERR ' + e.message) }
+  }
+
+  // ── API v4 ────────────────────────────────────────────────────────────
+  document.getElementById('ai').onclick = async () => {
+    try { const r = await synteeBridge.call('aiChat', { question: 'Скажи одну короткую вдохновляющую фразу' }); log2('AI: ' + r.answer) }
+    catch (e) { log2('ERR ' + e.message) }
+  }
+  document.getElementById('overlay').onclick = () => synteeBridge.call('showOverlay').then(() => log2('overlay показан (6 сек)')).catch(e => log2('ERR ' + e.message))
+  document.getElementById('modal').onclick = () => synteeBridge.call('openModalDemo').catch(e => log2('ERR ' + e.message))
+  document.getElementById('ws').onclick = () => synteeBridge.call('wsEcho', { text: 'hello from plugin!' }).then(r => log2('ws отправлено: ' + r.sent)).catch(e => log2('ERR ' + e.message))
+  document.getElementById('exec').onclick = async () => {
+    try { const r = await synteeBridge.call('execCmd', { command: 'node --version' }); log2(`exec: node ${String(r.stdout).trim()} (code ${r.code})`) }
+    catch (e) { log2('ERR ' + e.message) }
+  }
+  document.getElementById('bus').onclick = () => synteeBridge.call('busPing').then(() => log2('bus:ping отправлен — смотри лог плагина')).catch(e => log2('ERR ' + e.message))
+  document.getElementById('newchat').onclick = async () => {
+    try { const r = await synteeBridge.call('createChat', { title: 'Чат от Hello World' }); log2('чат создан: ' + r.id) }
+    catch (e) { log2('ERR ' + e.message) }
+  }
+
+  synteeBridge.on('ws', (p) => log2('ws: ' + (p.data || p.error || 'event')))
+  synteeBridge.on('fswatch', (p) => log2('fs: ' + p.event + ' ' + p.file))
+
+  // Первичная загрузка: статистика + тема
+  synteeBridge.call('getStats').then(renderStats).catch(() => {})
+  synteeBridge.call('getTheme').then(applyTheme).catch(() => {})
+</script>
+</body>
+</html>

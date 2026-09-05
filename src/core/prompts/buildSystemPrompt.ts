@@ -92,15 +92,18 @@ export function buildSystemPrompt(params: {
   notesInfo?: { notes: Array<{ id: string; title: string }>; count: number }
   /** Max parallel sub-agents — injected into the spawn_agent section. */
   maxParallelSubAgents?: number
+  /** Контент context providers плагинов (registerContextProvider) —
+   *  собирается перед запросом, попадает в plugins block. */
+  pluginContext?: Array<{ name: string; content: string }>
 }): string {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
   const skillsBlock = buildSkillsBlock(activeSkills)
   const oneShotSkillBlock = buildOneShotSkillBlock(oneShotSkill)
   const mcpBlock = buildMcpBlock(activeMcpServers)
-  const pluginsBlock = buildPluginsBlock(activePlugins)
+  const pluginsBlock = buildPluginsBlock(activePlugins, pluginContext)
   const installPathsBlock = buildInstallPathsBlock(workdir, globalSkillsDir, globalPluginsDir)
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)

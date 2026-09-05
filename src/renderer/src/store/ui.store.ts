@@ -99,6 +99,9 @@ interface UIStore {
   bgStyleParams: Record<string, number>
   customThemes: CustomTheme[]
   activeCustomThemeId: string | null
+  // Активная тема плагина: ключ `plugin:{pluginId}:{name}` (persist в 'theme'),
+  // либо null. Нужен чтобы не затирать CSS-переменные плагина при смене base.
+  pluginTheme: string | null
   themeSchedule: ThemeSchedule
   recentAccents: string[]
   // Избранные темы (id встроенных или кастомных) — закрепляются в начале сетки.
@@ -142,6 +145,7 @@ interface UIStore {
   setBgStyleParams: (v: Record<string, number>) => void
   setCustomThemes: (v: CustomTheme[]) => void
   setActiveCustomThemeId: (v: string | null) => void
+  setPluginTheme: (v: string | null) => void
   setThemeSchedule: (v: ThemeSchedule) => void
   setRecentAccents: (v: string[]) => void
   setFavoriteThemes: (v: string[]) => void
@@ -196,6 +200,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   bgStyleParams: {},
   customThemes: [],
   activeCustomThemeId: null,
+  pluginTheme: null,
   themeSchedule: DEFAULT_THEME_SCHEDULE,
   recentAccents: [],
   favoriteThemes: [],
@@ -241,6 +246,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   setBgStyleParams: (bgStyleParams) => set({ bgStyleParams }),
   setCustomThemes: (customThemes) => set({ customThemes }),
   setActiveCustomThemeId: (activeCustomThemeId) => set({ activeCustomThemeId }),
+  setPluginTheme: (pluginTheme) => set({ pluginTheme }),
   setThemeSchedule: (themeSchedule) => set({ themeSchedule }),
   setRecentAccents: (recentAccents) => set({ recentAccents }),
   setFavoriteThemes: (favoriteThemes) => set({ favoriteThemes }),

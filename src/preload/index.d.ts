@@ -309,6 +309,19 @@ declare const synteeAPI: {
         getMeta: () => Promise<{
             version: string;
         }>;
+        getPluginItems?: () => Promise<Array<{
+            pluginId: string;
+            label: string;
+            command?: string;
+            type: "item" | "separator";
+        }>>;
+        onPluginItemsChanged?: (cb: (items: Array<{
+            pluginId: string;
+            label: string;
+            command?: string;
+            type: "item" | "separator";
+        }>) => void) => () => void;
+        pluginAction?: (pluginId: string, label: string, command?: string) => Promise<any>;
     };
     chat: {
         create: (incognito?: boolean, mode?: "code" | "work", projectId?: string) => Promise<any>;

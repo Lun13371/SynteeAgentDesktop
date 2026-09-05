@@ -373,6 +373,17 @@ const synteeAPI = {
     hide: () => ipcRenderer.invoke('tray-menu:hide'),
     action: (actionId: string) => ipcRenderer.invoke('tray-menu:action', actionId),
     getMeta: () => ipcRenderer.invoke('tray-menu:getMeta') as Promise<{ version: string }>,
+    // Plugins: пункты меню от плагинов (снапшот при показе + push при изменении).
+    getPluginItems: () => ipcRenderer.invoke('tray-menu:getPluginItems') as Promise<
+      Array<{ pluginId: string; label: string; command?: string; type: 'item' | 'separator' }>
+    >,
+    onPluginItemsChanged: (cb: (items: Array<{ pluginId: string; label: string; command?: string; type: 'item' | 'separator' }>) => void) => {
+      const listener = (_e: unknown, items: Array<{ pluginId: string; label: string; command?: string; type: 'item' | 'separator' }>) => cb(items)
+      ipcRenderer.on('tray-menu:plugins-changed', listener)
+      return () => ipcRenderer.removeListener('tray-menu:plugins-changed', listener)
+    },
+    pluginAction: (pluginId: string, label: string, command?: string) =>
+      ipcRenderer.invoke('tray-menu:pluginAction', pluginId, label, command),
   },
 
   // Чат
@@ -872,6 +883,44 @@ const synteeAPI = {
     // Сохранить значения настроек плагина (форма в карточке).
     setConfig: (params: { pluginId: string; values: Record<string, unknown> }) =>
       ipcRenderer.invoke('plugins:setConfig', params),
+    // Поиск по провайдерам плагинов (Spotlight): секции результатов.
+    search: (params: { query: string }) =>
+      ipcRenderer.invoke('plugins:search', params) as Promise<Array<{
+        pluginId: string
+        providerId: string
+        label: string
+        items: Array<{ id: string; label: string; sub?: string; icon?: string }>
+      }>>,
+    // Клик по результату поиска плагина → хендлер провайдера.
+    searchClick: (params: {
+      pluginId: string
+      providerId: string
+      item: { id: string; label: string; sub?: string; icon?: string }
+    }) =>
+      ipcRenderer.invoke('plugins:searchClick', params),
+    // Autocomplete-провайдеры: текст поля → подсказки (null — триггера нет).
+    autocomplete: (params: { text: string }) =>
+      ipcRenderer.invoke('plugins:autocomplete', params) as Promise<{
+        pluginId: string
+        trigger: string
+        suggestions: Array<{ label: string; insertText?: string; command?: string }>
+      } | null>,
+    // Клик по пункту контекстного меню сообщений плагина.
+    contextMenuClick: (params: {
+      pluginId: string
+      itemId: string
+      payload: { messageId: string; chatId: string; content: string; selection?: string }
+    }) =>
+      ipcRenderer.invoke('plugins:contextMenuClick', params),
+    // Клик по кнопке rich-уведомления плагина → выполнить его команду.
+    notificationAction: (params: { pluginId: string; command: string }) =>
+      ipcRenderer.invoke('plugins:notificationAction', params),
+    // Клик по кнопке плагина над инпутом (без command) → событие плагину.
+    inputAction: (params: { pluginId: string; actionId: string }) =>
+      ipcRenderer.invoke('plugins:inputAction', params),
+    // Прямой host-метод из iframe-панели (белый список read-only методов).
+    iframeCall: (params: { pluginId: string; method: string; args?: Record<string, unknown> }) =>
+      ipcRenderer.invoke('plugins:iframeCall', params) as Promise<{ ok: boolean; result?: unknown; error?: string }>,
   },
 
   // Marketplace — каталог MCP-серверов (официальный registry) и Skills
@@ -922,6 +971,18 @@ const synteeAPI = {
       ipcRenderer.invoke('attachments:deleteFile', params),
     pickFile: () =>
       ipcRenderer.invoke('attachments:pickFile'),
+    // Резолв прямого пути drag&drop файла, когда webUtils.getPathForFile
+    // не сработал: { name, dir? } → { ok, path?, name, mime, size, foundName? }.
+    resolveDropPath: (params: { name: string; dir?: string }) =>
+      ipcRenderer.invoke('attachments:resolveDropPath', params),
+    // Поиск файлов черновика чата по имени (для восстановления чипа-заглушки):
+    // { chatId, name } → { ok, matches: string[] }.
+    repairDraft: (params: { chatId: string; attachments: unknown[] }) =>
+      ipcRenderer.invoke('attachments:repairDraft', params),
+    // Удаление осиротевших файлов черновика (не упомянутых ни в одном
+    // сообщении чата — main сверяет с БД): { chatId } → { ok, removed }.
+    cleanupOrphans: (params: { chatId: string }) =>
+      ipcRenderer.invoke('attachments:cleanupOrphans', params),
     // В Electron 32+ File.path удалён (contextIsolation + nodeIntegration:false).
     // webUtils.getPathForFile — официальный replacement, доступен в preload
     // при sandbox:false. Принимает File из renderer (drag&drop/paste) и

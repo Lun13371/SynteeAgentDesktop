@@ -235,6 +235,8 @@ app.whenReady().then(async () => {
 
   // Plugins-менеджер (локальные расширения: тулы + логика в utilityProcess).
   const pluginManager = initPluginManager(store)
+  // Пункты трея от плагинов изменились → пушим в живое окно трей-меню.
+  pluginManager.onTrayItemsChanged = () => trayMenuWindow.pushPluginItems()
 
   // ── IPC (ДО загрузки URL в окна) ──────────────────────────────────
   // Регистрируем ВСЕ хендлеры до .create(), чтобы рендереры при монтировании
@@ -352,6 +354,8 @@ app.whenReady().then(async () => {
   // глобальных плагинов в фоне (не блокируем старт приложения).
   pluginManager.setWindow(mainWindow.getWindow())
   pluginManager.scan()
+  // Плагинам: событие 'app:focus' при фокусе главного окна.
+  mainWindow.getWindow()?.on('focus', () => pluginManager.emitAppFocus())
   for (const p of pluginManager.getAllWithState({})) {
     if (p.state.enabled && p.source === 'global') {
       pluginManager.start(p.id).catch(e => {

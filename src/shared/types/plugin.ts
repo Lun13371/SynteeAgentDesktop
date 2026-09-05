@@ -10,16 +10,32 @@
 
 /** Права плагина. Каждое гейтит соответствующую область host-API. */
 export type PluginPermission =
-  | 'net'            // исходящие HTTP-запросы (host fetch)
-  | 'fs:read'        // чтение файлов (любые пути)
+  | 'net'            // исходящие HTTP- и WebSocket-запросы (host fetch / ws) + shell.openExternal
+  | 'fs:read'        // чтение файлов (любые пути) + fs.watch + fs.stat
   | 'fs:write'       // запись файлов (только внутри папки плагина)
+  | 'fs:write:any'   // запись/создание/удаление файлов и папок в ЛЮБЫХ путях
+                    // (mkdir/delete/rename/copy/writeFiles вне песочницы плагина)
   | 'clipboard'      // буфер обмена
   | 'notifications'  // showNotification
-  | 'ui'             // registerUi/registerPanel (кнопки/панели/табы в приложении)
+  | 'ui'             // registerUi/registerPanel/виджеты/модалки/statusbar (UI приложения)
   | 'chat'           // chat.send / chat.reply (действия в чате от имени плагина)
   | 'chats:read'     // чтение списка чатов и их сообщений
-  | 'projects:read'  // чтение списка проектов
+  | 'chats:write'    // создание/переименование/удаление чатов, запись/правка сообщений
+  | 'projects:read'  // чтение списка проектов + projects.current
+  | 'projects:write' // создание проектов (projects.create)
   | 'memory'         // поиск/сохранение в долгосрочную память приложения
+  | 'ai'             // доступ к LLM через хост (syntee.ai.chat)
+  | 'scheduler'      // планировщик (scheduler.every/cron/at)
+  | 'shortcuts'      // глобальные горячие клавиши (registerShortcut)
+  | 'process:exec'   // запуск shell-команд через хост (process.exec)
+  | 'overlay'        // показ контента в overlay-окне приложения
+  | 'tray'           // пункты меню в трее
+  | 'context'        // registerContextProvider — динамический контекст в system prompt
+  | 'secrets'        // шифрованное хранилище секретов (syntee.secrets, safeStorage)
+  | 'git'            // git-операции по workdir (syntee.git)
+  | 'mcp'            // вызов тулов MCP-серверов приложения (syntee.mcp)
+  | 'webhook'        // локальный HTTP-сервер — приём внешних запросов (net.listen)
+  | 'agent'          // вызов host-тулов агента (syntee.agent.useTool)
 
 /** Поле настроек плагина — декларативная схема в манифесте,
  *  автоматически рендерится формой в карточке плагина. */
@@ -54,6 +70,10 @@ export interface PluginManifest {
   ui?: string
   /** Относительный путь до полного описания (markdown) для карточки UI. */
   readme?: string
+  /** Кастомный UI настроек (HTML-файл, рендерится iframe в карточке плагина
+   *  ВМЕСТО декларативной формы config). Панель общается с плагином через
+   *  synteeBridge.call → ui.handle, сохраняет через свой хендлер. */
+  configUi?: string
   /** Права, запрашиваемые плагином. */
   permissions?: PluginPermission[]
   /** Схема настроек — форма в карточке плагина, значения через syntee.config. */
@@ -63,6 +83,13 @@ export interface PluginManifest {
    * Задел на будущее: 'onLoad' | 'chat:message' | 'command:<name>'.
    */
   activation?: string[]
+  /**
+   * Встроенный плагин (поставляется с приложением из resources/builtin-plugins).
+   * Синхронизируется в {userData}/plugins при каждом запуске (обновляется
+   * вместе с приложением), не удаляется через UI. Пользователь может
+   * только включить/выключить его.
+   */
+  builtin?: boolean
 }
 
 /** Загруженный плагин (манифест + метаданные расположения). */
@@ -123,18 +150,48 @@ export interface PluginCommandRuntime {
 /** UI-вклад плагина (registerUi/registerPanel) — кнопка/панель/таб в слоте. */
 export interface PluginUiContribution {
   pluginId: string
-  /** Слот: 'sidebar' — низ сайдбара; 'right' — таб правой панели; 'modal' — модальная панель. */
-  slot: 'sidebar' | 'right' | 'modal'
+  /** Слот: 'sidebar' — низ сайдбара; 'right' — таб правой панели;
+   *  'modal' — модальная iframe-панель; 'page' — полноэкранная страница
+   *  (вкладка в навигации приложения); 'bottom' — таб нижнего дока. */
+  slot: 'sidebar' | 'right' | 'modal' | 'page' | 'bottom'
   /** 'button' — выполняет command плагина; 'panel' — открывает iframe-панель/таб. */
   type: 'button' | 'panel'
   label: string
   icon?: string
   /** Для type='button' — имя команды плагина (без слэша). */
   command?: string
-  /** Уникальный id панели (для right/modal: openPanel/closePanel/setBadge). */
+  /** Уникальный id панели (для right/modal/page/bottom: openPanel/closePanel/setBadge). */
   panelId?: string
   /** HTML-файл панели (относительный путь; по умолчанию — manifest.ui). */
   entry?: string
+}
+
+/** Инлайн-виджет плагина (registerWidget) — iframe-карточка в сообщении чата.
+ *  Тул плагина возвращает JSON PluginUiWidgetPayload → renderer рендерит
+ *  iframe с entry виджета и передаёт data. */
+export interface PluginWidgetRuntime {
+  pluginId: string
+  /** Короткое имя виджета ([a-zA-Z][a-zA-Z0-9_-]*). */
+  name: string
+  /** HTML-файл виджета (относительный путь в папке плагина). */
+  entry: string
+  /** Высота карточки по умолчанию (px). */
+  height?: number
+  /** Описание для AI — когда и зачем вставлять этот виджет. */
+  description?: string
+}
+
+/** Элемент status bar от плагина (низ окна, как в VS Code). */
+export interface PluginStatusbarItem {
+  pluginId: string
+  /** Уникальный id элемента (в рамках плагина). */
+  id: string
+  /** Текст (короткий, 1-2 слова + значение). */
+  text: string
+  /** Тултип при наведении. */
+  tooltip?: string
+  /** Имя команды плагина — клик по элементу выполняет её (без слэша). */
+  command?: string
 }
 
 /** Информация о теме для UI плагина (ui.getTheme / событие theme:changed). */
@@ -145,6 +202,110 @@ export interface PluginThemeInfo {
   accentColor: string
   /** true для тёмных тем. */
   dark: boolean
+}
+
+/** Context provider плагина (registerContextProvider) — поставляет
+ *  динамический markdown-контент, который попадает в system prompt
+ *  перед КАЖДЫМ запросом агента (с таймаутом). */
+export interface PluginContextProviderRuntime {
+  pluginId: string
+  /** Уникальное имя провайдера ([a-zA-Z][a-zA-Z0-9_-]*). */
+  name: string
+  /** Короткое описание — что этот контекст содержит. */
+  description?: string
+}
+
+/** Кастомный рендерер markdown-кодоблоков (registerMarkdownRenderer):
+ *  кодоблок ```language в сообщении рендерится iframe-панелью плагина
+ *  (как mermaid), код передаётся в data. */
+export interface PluginMarkdownRendererRuntime {
+  pluginId: string
+  /** Язык кодоблока (регистронезависимо: 'plantuml', 'kroki', ...). */
+  language: string
+  /** HTML-файл рендерера (относительный путь в папке плагина). */
+  entry: string
+  /** Высота iframe по умолчанию (px). */
+  height?: number
+}
+
+/** Search provider плагина (registerSearchProvider) — результаты
+ *  в глобальном поиске (Spotlight). */
+export interface PluginSearchProviderRuntime {
+  pluginId: string
+  /** Уникальный id провайдера. */
+  id: string
+  /** Отображаемое имя секции результатов. */
+  label: string
+}
+
+/** Autocomplete-провайдер плагина (registerAutocomplete) — подсказки
+ *  в поле ввода чата при вводе триггер-слова. */
+export interface PluginAutocompleteRuntime {
+  pluginId: string
+  /** Триггер-слово (без пробела в конце): 'jira', 'todo', ... — подсказки
+ *  показываются после ввода "jira " до конца слова. */
+  trigger: string
+}
+
+/** Пункт контекстного меню сообщений (registerContextMenu). */
+export interface PluginContextMenuRuntime {
+  pluginId: string
+  /** Уникальный id пункта. */
+  id: string
+  /** Подпись пункта меню. */
+  label: string
+  /** Имя иконки AppIcon (опционально). */
+  icon?: string
+  /** 'message' — пункт в меню сообщения; 'selection' — для выделенного
+   *  текста (payload.selection). */
+  scope: 'message' | 'selection'
+  /** true — рендерится НЕ в меню «⋯», а отдельной кнопкой в ряду действий
+   *  сообщения (copy/pin/reply). Клик — тот же callHandler 'menu'. */
+  button?: boolean
+}
+
+/** Кнопка плагина над полем ввода чата (registerInputAction) —
+ *  ряд быстрых действий рядом с «+». Клик: command → слэш-команда
+ *  плагина, без command — событие 'input-action' в процесс плагина. */
+export interface PluginInputActionRuntime {
+  pluginId: string
+  /** Уникальный id действия. */
+  id: string
+  /** Подпись (короткая, 1-2 слова). */
+  label: string
+  /** Имя иконки AppIcon. */
+  icon?: string
+  /** Тултип. */
+  tooltip?: string
+  /** Имя слэш-команды плагина (без слэша) — клик выполняет её. */
+  command?: string
+}
+
+/** Тема от плагина (registerTheme) — набор CSS-переменных, появляется
+ *  в ThemePicker наравне со встроенными. */
+export interface PluginThemeContribution {
+  pluginId: string
+  /** Отображаемое имя темы. */
+  name: string
+  dark: boolean
+  /** CSS-переменные: { '--bg': '#1e1e2e', '--accent': '#89b4fa', ... }. */
+  colors: Record<string, string>
+}
+
+/** Фон от плагина (registerBackground) — появляется в пикере фонов
+ *  AnimatedBackground. */
+export interface PluginBackgroundContribution {
+  pluginId: string
+  /** Уникальный id фона. */
+  id: string
+  /** Отображаемое имя. */
+  name: string
+  /** 'shader' — GLSL-файл (src — .frag путь); 'video' — видеофайл;
+   *  'image' — картинка. Все пути относительные, отдаются через
+   *  syntee-plugin:// протокол. */
+  kind: 'shader' | 'video' | 'image'
+  /** Файл ресурса (относительный путь в папке плагина). */
+  src: string
 }
 
 /** Маркер инлайн-виджета: тул плагина возвращает JSON этого вида —
@@ -158,6 +319,15 @@ export interface PluginUiWidgetPayload {
   data?: unknown
   /** Высота карточки в px (по умолчанию 260). */
   height?: number
+  /** 'diff' — нативный diff-виджет хоста (без iframe): поля diff/title/
+   *  language обязательны, entry игнорируется. */
+  kind?: 'iframe' | 'diff'
+  /** Для kind='diff': unified diff-текст. */
+  diff?: string
+  /** Для kind='diff': заголовок карточки (имя файла и т.п.). */
+  title?: string
+  /** Для kind='diff': язык подсветки. */
+  language?: string
 }
 
 /** Полное состояние плагина для UI. */
@@ -168,6 +338,24 @@ export interface PluginRuntime extends Plugin {
   tools: PluginToolRuntime[]
   commands: PluginCommandRuntime[]
   ui: PluginUiContribution[]
+  /** Зарегистрированные инлайн-виджеты (registerWidget). */
+  widgets: PluginWidgetRuntime[]
+  /** Context providers (registerContextProvider). */
+  contextProviders: PluginContextProviderRuntime[]
+  /** Кастомные рендереры кодоблоков (registerMarkdownRenderer). */
+  markdownRenderers: PluginMarkdownRendererRuntime[]
+  /** Search providers для Spotlight (registerSearchProvider). */
+  searchProviders: PluginSearchProviderRuntime[]
+  /** Autocomplete-провайдеры для инпута (registerAutocomplete). */
+  autocomplete: PluginAutocompleteRuntime[]
+  /** Пункты контекстного меню сообщений (registerContextMenu). */
+  contextMenu: PluginContextMenuRuntime[]
+  /** Кнопки над полем ввода (registerInputAction). */
+  inputActions: PluginInputActionRuntime[]
+  /** Темы от плагина (registerTheme). */
+  themes: PluginThemeContribution[]
+  /** Фоны от плагина (registerBackground). */
+  backgrounds: PluginBackgroundContribution[]
   /** Текущие значения настроек (config из манифеста + сохранённые). */
   configValues: Record<string, unknown>
   logs: PluginLogEntry[]
@@ -179,4 +367,9 @@ export interface PluginPromptInfo {
   name: string
   promptDescription?: string
   tools: string[]
+  /** Инлайн-виджеты: AI может попросить тул плагина вернуть виджет-карточку. */
+  widgets?: Array<{ name: string; description?: string }>
+  /** Context providers — их контент уже включён в промпт отдельным блоком;
+   *  здесь только имена, чтобы AI знал источник. */
+  contextProviders?: string[]
 }

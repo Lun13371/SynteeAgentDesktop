@@ -1,8 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useUIStore } from '../../../store/ui.store'
+import { useExtensionsStore } from '../../../store/extensions.store'
 import type { BgMessage, BgStyle } from './bg-types'
 import { FALLBACK_RGB, normalizeBgStyle } from './bg-types'
+import { collectPluginBackgrounds, parsePluginBgKey } from '../../../utils/pluginExtApi'
+import PluginBackgroundLayer from './PluginBackgroundLayer'
+import type { PluginBackgroundContribution } from '../../../../../shared/types/plugin'
 import './AnimatedBackground.css'
 
 export type { BgStyle }
@@ -41,6 +45,19 @@ export default function AnimatedBackground() {
   })))
   const style: BgStyle = normalizeBgStyle(bgStyle as string)
   const send = (msg: BgMessage) => workerRef.current?.postMessage(msg)
+
+  // Фон плагина (registerBackground): bgStyle = 'plugin:{pluginId}:{id}'.
+  // Активен только когда плагин запущен — иначе деградируем на дефолтный
+  // стиль (normalizeBgStyle вернёт aurora для неизвестных значений).
+  const pluginList = useExtensionsStore(s => s.plugins)
+  const pluginBg: PluginBackgroundContribution | null = useMemo(() => {
+    if (typeof bgStyle !== 'string' || !bgStyle.startsWith('plugin:')) return null
+    const parsed = parsePluginBgKey(bgStyle)
+    if (!parsed) return null
+    return collectPluginBackgrounds().find(b => b.pluginId === parsed.pluginId && b.id === parsed.id) ?? null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgStyle, pluginList])
+  const hasPluginBg = !!pluginBg
 
   // Жизненный цикл worker'а и OffscreenCanvas:
   //  - worker + transferControlToOffscreen делаем ОДИН раз на mount.
@@ -83,7 +100,7 @@ export default function AnimatedBackground() {
   // состояния может не прийти (visibilityState остаётся 'hidden') — тогда
   // disable на старте убивал фон навсегда. Худший случай теперь: пара
   // секунд рендера в скрытое окно — дёшево.
-  const visible = animatedBackground && style !== 'none'
+  const visible = animatedBackground && !hasPluginBg && style !== 'none'
   useEffect(() => {
     send({ type: visible ? 'enable' : 'disable' } as BgMessage)
     const onVis = () => {
@@ -190,11 +207,14 @@ export default function AnimatedBackground() {
   // Выключение = worker остаётся, но running=false, canvas скрыт через
   // visibility (НЕ display — иначе offsetWidth=0 и resize сломается).
   return (
-    <canvas
-      ref={canvasRef}
-      className="animated-bg"
-      style={{ visibility: visible ? 'visible' : 'hidden' }}
-    />
+    <>
+      {pluginBg && animatedBackground && <PluginBackgroundLayer bg={pluginBg} />}
+      <canvas
+        ref={canvasRef}
+        className="animated-bg"
+        style={{ visibility: visible ? 'visible' : 'hidden' }}
+      />
+    </>
   )
 }
 

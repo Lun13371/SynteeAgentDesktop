@@ -20,6 +20,8 @@ import { ChatInputPlusMenu } from './ChatInputPlusMenu'
 import { ChatInputActionButton } from './ChatInputActionButton'
 import { ChatInputEditor, type EditorApi } from './ChatInputEditor'
 import { ChatInputMenus } from './ChatInputMenus'
+import { PluginInputActions } from './PluginInputActions'
+import { getPluginsExt, type PluginAutoResult } from '../../../utils/pluginExtApi'
 import { ATTACH_TOKEN_RE, stripAttachTokens } from '../../../../../shared/attachmentMarkdown'
 import './ChatInput.css'
 
@@ -144,6 +146,10 @@ function ChatInput({
   const [mentionIdx, setMentionIdx] = useState(0)
   const mentionTokenRef = useRef<{ start: number; end: number; query: string } | null>(null)
   const mentionFetchIdRef = useRef(0) // race-condition guard для асинхронных fetchей
+  // ── Autocomplete-провайдеры плагинов (registerAutocomplete) ──
+  // pluginAuto — открытое меню: ответ провайдера + выбранный индекс.
+  const [pluginAuto, setPluginAuto] = useState<{ data: PluginAutoResult; idx: number } | null>(null)
+  const pluginAutoReqRef = useRef(0)
   const [sendBurst, setSendBurst] = useState(false)
   const uiSounds = useUIStore(s => s.uiSounds)
   const sendEffect = useUIStore(s => s.sendEffect)
@@ -285,6 +291,10 @@ function ChatInput({
     const token = findMentionTokenAtCaret(text, caretPos)
     mentionTokenRef.current = token
     if (token) {
+      // Активное @mention-меню — закрываем autocomplete-провайдер плагинов
+      // (не показываем два меню одновременно).
+      pluginAutoReqRef.current++
+      setPluginAuto(null)
       // Асинхронный fetch с race-guard — если юзер быстро печатает, оставляем только последний
       const fetchId = ++mentionFetchIdRef.current
       window.syntee.mentions.search({ workdir, query: token.query, limit: 30 })
@@ -382,6 +392,8 @@ function ChatInput({
     // (рендер в чате восстановит чипы на местах), а в AI уйдёт чистый текст.
     onSend(value.trim())
     historyIdxRef.current = null
+    pluginAutoReqRef.current++
+    setPluginAuto(null)
     onChangeValue('')
     setSlashCmds([])
     setMentionItems([])
@@ -392,6 +404,81 @@ function ChatInput({
     if (uiSounds) playSendSound()
     if (sendEffect) { setSendBurst(true); setTimeout(() => setSendBurst(false), 400) }
   }
+
+  // Отправка текста без «живого» значения value (для command-подсказки).
+  const handleSendText = (text: string) => {
+    if (!text.trim()) return
+    onSend(text.trim())
+    historyIdxRef.current = null
+    setSlashCmds([])
+    setMentionItems([])
+    mentionTokenRef.current = null
+    if (uiSounds) playSendSound()
+  }
+
+  // ── Autocomplete-провайдеры плагинов: выбор подсказки ──
+  // insertText — заменяет текущий текст целиком (триггер+query, как задумал
+  // провайдер). command — выполняется как слэш-команда плагина (/name args,
+  // остаток текста после trigger-слова уходит аргументами). Иначе вставляем label.
+  const selectPluginAuto = (idx: number) => {
+    const st = pluginAuto
+    if (!st) return
+    const s = st.data.suggestions[idx]
+    if (!s) return
+    historyIdxRef.current = null
+    pluginAutoReqRef.current++
+    setPluginAuto(null)
+    if (s.command) {
+      const parts = value.trim().split(/\s+/)
+      parts.shift() // trigger-слово провайдера
+      const args = parts.join(' ')
+      const text = ('/' + s.command + (args ? ' ' + args : '')).trim()
+      onChangeValue('')
+      handleSendText(text)
+      return
+    }
+    const insert = s.insertText !== undefined ? s.insertText : s.label
+    onChangeValue(insert)
+    setTimeout(() => editorApiRef.current?.focus(), 0)
+  }
+
+  // ── Autocomplete-провайдеры плагинов: debounced запрос при вводе ──
+  // Показываем меню, только если текст НЕ начинается со '/' (слеш-меню имеет
+  // приоритет) и первое слово совпадает с trigger провайдера.
+  useEffect(() => {
+    const text = value.trim()
+    const ext = getPluginsExt()
+    if (!ext.autocomplete) return
+    if (!text || text.startsWith('/') || argPickerCmd) { setPluginAuto(null); return }
+    const reqId = ++pluginAutoReqRef.current
+    const timer = setTimeout(async () => {
+      try {
+        const res = await ext.autocomplete?.({ text })
+        if (reqId !== pluginAutoReqRef.current) return
+        if (!res || !Array.isArray(res.suggestions) || res.suggestions.length === 0) {
+          setPluginAuto(null)
+          return
+        }
+        const firstWord = text.split(/\s+/)[0]?.toLowerCase() ?? ''
+        const trigger = (res.trigger || '').toLowerCase()
+        if (!trigger || firstWord !== trigger || !text.includes(' ')) {
+          setPluginAuto(null)
+          return
+        }
+        setPluginAuto({ data: res, idx: 0 })
+      } catch {
+        if (reqId === pluginAutoReqRef.current) setPluginAuto(null)
+      }
+    }, 250)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
+
+  // Смена чата/очистка поля — закрываем меню.
+  useEffect(() => {
+    pluginAutoReqRef.current++
+    setPluginAuto(null)
+  }, [chatId])
 
   // ── @mention: выбор элемента из дропдауна ──
   // Заменяем @токен в тексте на ЧИП с токеном [[attach:id]] — как все
@@ -448,6 +535,30 @@ function ChatInput({
       }
       if (e.key === 'Escape') {
         closeArgPicker()
+        return
+      }
+    }
+    // Autocomplete-провайдер плагинов — навигация. Активен только когда
+    // слеш/@mention меню закрыты (приоритет у штатных меню).
+    if (pluginAuto && slashCmds.length === 0 && mentionItems.length === 0 && !value.startsWith('/')) {
+      const n = pluginAuto.data.suggestions.length
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setPluginAuto(st => (st ? { ...st, idx: (st.idx - 1 + n) % n } : st))
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setPluginAuto(st => (st ? { ...st, idx: (st.idx + 1) % n } : st))
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault()
+        selectPluginAuto(pluginAuto.idx)
+        return
+      }
+      if (e.key === 'Escape') {
+        setPluginAuto(null)
         return
       }
     }
@@ -598,6 +709,10 @@ function ChatInput({
           onCloseMention={() => { setMentionItems([]); mentionTokenRef.current = null }}
           onSelectArgChoice={selectArgChoice}
           onCloseArgPicker={closeArgPicker}
+          pluginAuto={pluginAuto ? pluginAuto.data : null}
+          pluginAutoIdx={pluginAuto?.idx ?? 0}
+          onSelectPluginAuto={selectPluginAuto}
+          onClosePluginAuto={() => { pluginAutoReqRef.current++; setPluginAuto(null) }}
         />
 
       {/* Строка статуса над инпутом: workdir-бейдж + planning/image-бейджи + бейджи голоса/очереди/расширений/изменений + селектор модели. */}
@@ -697,6 +812,15 @@ function ChatInput({
             persona={persona}
             onPersonaChange={onPersonaChange}
             lang={lang}
+          />
+
+          {/* Кнопки плагинов над инпутом (registerInputAction) */}
+          <PluginInputActions
+            onInsertCommand={(text) => {
+              historyIdxRef.current = null
+              onChangeValue(text)
+              setTimeout(() => editorApiRef.current?.focus(), 0)
+            }}
           />
 
           <ChatInputEditor

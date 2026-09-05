@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Chart — инлайн-виджет</title>
+<style>
+  :root { color-scheme: dark; --text: #e2e2e8; --muted: #8b8b96; --accent: #22d3ee; --card: rgba(255,255,255,0.06); --border: rgba(255,255,255,0.1); }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; color: var(--text); padding: 14px; }
+  body.light { --text: #1a1a22; --muted: #6b6b76; --card: rgba(0,0,0,0.04); --border: rgba(0,0,0,0.1); }
+  h3 { font-size: 13px; margin-bottom: 10px; }
+  .chart { display: flex; align-items: flex-end; gap: 8px; height: 140px; }
+  .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; }
+  .bar { width: 100%; border-radius: 6px 6px 2px 2px; background: linear-gradient(180deg, var(--accent), transparent 160%); min-height: 4px; transition: height 0.4s ease; }
+  .bar-val { font-size: 10px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <h3 id="title">График</h3>
+  <div class="chart" id="chart"></div>
+<script>
+  // Инлайн-виджет в ленте чата: данные приходят как widgetData после загрузки.
+  window.addEventListener('message', (e) => {
+    const d = e.data
+    if (!d || d.source !== 'syntee-plugin-host') return
+    if (d.theme) {
+      document.body.classList.toggle('light', !d.theme.dark)
+      document.documentElement.style.setProperty('--accent', d.theme.accentColor)
+      return
+    }
+    if (d.widgetData !== undefined) render(d.widgetData)
+  })
+
+  function render(data) {
+    if (!data) return
+    document.getElementById('title').textContent = data.title || 'График'
+    const chart = document.getElementById('chart')
+    chart.innerHTML = ''
+    const points = data.points || []
+    const max = Math.max(...points, 1)
+    points.forEach(v => {
+      const wrap = document.createElement('div')
+      wrap.className = 'bar-wrap'
+      const bar = document.createElement('div')
+      bar.className = 'bar'
+      bar.style.height = Math.round((v / max) * 100) + '%'
+      const val = document.createElement('div')
+      val.className = 'bar-val'
+      val.textContent = v
+      wrap.appendChild(bar)
+      wrap.appendChild(val)
+      chart.appendChild(wrap)
+    })
+  }
+</script>
+</body>
+</html>

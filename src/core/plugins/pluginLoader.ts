@@ -14,7 +14,15 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import type { Plugin, PluginManifest, PluginPermission } from '../../shared/types'
 
-const VALID_PERMISSIONS: PluginPermission[] = ['net', 'fs:read', 'fs:write', 'clipboard', 'notifications', 'ui']
+// Должен покрывать ВСЕ значения PluginPermission (shared/types/plugin.ts).
+// Если список и тип расходятся — лоадер молча вырезает права из манифеста,
+// и плагин падает с "Permission denied" при вызове API (баг от 05.09.2026).
+const VALID_PERMISSIONS: PluginPermission[] = [
+  'net', 'fs:read', 'fs:write', 'fs:write:any', 'clipboard', 'notifications', 'ui',
+  'chat', 'chats:read', 'chats:write', 'projects:read', 'projects:write', 'memory',
+  'ai', 'scheduler', 'shortcuts', 'process:exec', 'overlay', 'tray',
+  'context', 'secrets', 'git', 'mcp', 'webhook', 'agent',
+]
 
 /** Читает один плагин из папки. Возвращает null если папка — не плагин. */
 export function loadPluginDir(dir: string, source: 'global' | 'project', projectId?: string): Plugin | null {
@@ -22,7 +30,8 @@ export function loadPluginDir(dir: string, source: 'global' | 'project', project
   if (!existsSync(manifestPath)) return null
   let manifest: PluginManifest
   try {
-    manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as PluginManifest
+    // \uFEFF: UTF-8 BOM (его любит дописывать PowerShell Out-File) ломает JSON.parse.
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf-8').replace(/^\uFEFF/, '')) as PluginManifest
   } catch {
     console.warn(`[plugins] невалидный plugin.json: ${dir}`)
     return null

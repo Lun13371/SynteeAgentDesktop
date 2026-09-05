@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useState, useMemo, memo, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { copyToClipboard } from '@renderer/utils/clipboard'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
@@ -8,6 +9,8 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import type { PluginUiWidgetPayload } from '@shared/types/plugin'
 import PluginIframe from '../PluginSlot/PluginIframe'
+import { collectMarkdownRenderers, collectMessageContextMenu, getPluginsExt } from '../../../utils/pluginExtApi'
+import { useExtensionsStore } from '../../../store/extensions.store'
 // ── Быстрый рендер код-блоков через HTML-строку ──────────────────────────
 // Заменяет react-syntax-highlighter (React-дерево из тысяч <span>) на
 // refractor → HAST → HTML-строка → dangerouslySetInnerHTML.
@@ -228,6 +231,39 @@ const DiffBlock = memo(function DiffBlock({ code }: { code: string }) {
   )
 })
 
+// ── Кастомный рендерер кодоблока от плагина (registerMarkdownRenderer) ──
+// ```language в сообщении, где language совпал с плагинным рендерером
+// (регистронезависимо), рендерится iframe-панелью плагина — как mermaid.
+// Код передаётся в iframe через widgetData при загрузке.
+function PluginMarkdownBlock({ pluginId, entry, height, raw, lang }: {
+  pluginId: string
+  entry: string
+  height: number
+  raw: string
+  lang: string
+}) {
+  return (
+    <div className="plugin-md-renderer" style={{ height }}>
+      <div className="plugin-md-renderer-header">
+        <span className="code-lang">{lang.toUpperCase()}</span>
+        <span className="plugin-md-renderer-badge" title={`Рендерер плагина ${pluginId}`}>plugin</span>
+      </div>
+      <PluginIframe
+        pluginId={pluginId}
+        entry={entry}
+        widgetData={{ code: raw, language: lang }}
+        className="plugin-md-renderer-frame"
+      />
+    </div>
+  )
+}
+
+/** Поиск плагинного markdown-рендерера по language кодоблока. */
+function findPluginMdRenderer(lang: string) {
+  const l = lang.toLowerCase()
+  return collectMarkdownRenderers().find(r => r.language.toLowerCase() === l) ?? null
+}
+
 // Admonition блок
 const ADMONITION_META: Record<string, { icon: string; label: string; cls: string }> = {
   note:    { icon: '📝', label: 'Заметка',    cls: 'adm--note' },
@@ -393,14 +429,50 @@ function tryParsePluginWidget(content: string): PluginUiWidgetPayload | null {
   try {
     const obj = JSON.parse(t) as PluginUiWidgetPayload
     if (!obj || obj.__plugin_ui__ !== true) return null
-    if (typeof obj.pluginId !== 'string' || typeof obj.entry !== 'string') return null
+    if (typeof obj.pluginId !== 'string') return null
+    // kind='diff' — нативный виджет без iframe: entry не обязателен.
+    const kind = obj.kind ?? 'iframe'
+    if (kind === 'iframe' && typeof obj.entry !== 'string') return null
+    if (kind === 'diff' && typeof obj.diff !== 'string') return null
     return obj
   } catch {
     return null
   }
 }
 
+function PluginDiffWidget({ widget }: { widget: PluginUiWidgetPayload }) {
+  // Нативный diff-виджет: title/language сверху, unified diff построчно
+  // (те же классы, что у DiffBlock кодоблока в markdown).
+  const diffText = widget.diff ?? ''
+  return (
+    <div className="plugin-inline-widget plugin-diff-widget">
+      {(widget.title || widget.language) && (
+        <div className="plugin-diff-widget-header">
+          {widget.title && <span className="plugin-diff-widget-title">{widget.title}</span>}
+          {widget.language && <span className="plugin-diff-widget-lang">{widget.language}</span>}
+        </div>
+      )}
+      <div className="plugin-diff-widget-body diff-block">
+        {diffText.split('\n').map((line, i) => {
+          const cls = line.startsWith('+') ? 'diff-add'
+            : line.startsWith('-') ? 'diff-del'
+            : line.startsWith('@@') ? 'diff-hunk'
+            : 'diff-ctx'
+          return (
+            <div key={i} className={`diff-line ${cls}`}>
+              <span className="diff-line-content">{line || '\u00A0'}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function PluginInlineWidget({ widget }: { widget: PluginUiWidgetPayload }) {
+  const kind = widget.kind ?? 'iframe'
+  // kind='diff' — нативный diff-виджет хоста (iframe не грузим).
+  if (kind === 'diff') return <PluginDiffWidget widget={widget} />
   const height = typeof widget.height === 'number' ? widget.height : 260
   return (
     <div className="plugin-inline-widget" style={{ height }}>
@@ -411,6 +483,158 @@ function PluginInlineWidget({ widget }: { widget: PluginUiWidgetPayload }) {
         className="plugin-inline-widget-frame"
       />
     </div>
+  )
+}
+
+// ── Контекстные пункты плагинов для сообщения (registerContextMenu) ─────
+// Кнопка «⋯» появляется в message-actions рядом с copy/pin/reply, если хоть
+// один запущенный плагин зарегистрировал пункты scope:'message'. При открытии
+// подмешиваются пункты scope:'selection' (если в документе есть выделение).
+// Пункты с button:true рендерятся ОТДЕЛЬНЫМИ кнопками в ряду действий
+// (PluginMessageButtons ниже), а в меню «⋯» не попадают.
+function PluginMessageCtxMenu({ message }: { message: Message }) {
+  const pluginsList = useExtensionsStore(s => s.plugins)
+  const chatId = message.chatId || useChatStore.getState().currentChatId || ''
+  const items = useMemo(() => collectMessageContextMenu(), [pluginsList])
+  // button-пункты рендерятся отдельными кнопками (PluginMessageButtons) —
+  // в меню «⋯» попадают только обычные пункты.
+  const messageItems = useMemo(() => items.filter(i => i.scope === 'message' && !i.button), [items])
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef<HTMLButtonElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const [pos, setPos] = useState<{ x: number; y: number; up: boolean } | null>(null)
+  const [visibleItems, setVisibleItems] = useState<typeof items>([])
+
+  // Закрытие: клик вне меню/кнопки или Escape.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node)) return
+      if (btnRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (messageItems.length === 0) return null
+
+  const toggleMenu = () => {
+    const rect = btnRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const selection = (window.getSelection()?.toString() ?? '').trim()
+    const selItems = selection ? items.filter(i => i.scope === 'selection') : []
+    const shown = [...messageItems, ...selItems]
+    setVisibleItems(shown)
+    // Оценка высоты — чтобы открывать вверх у нижнего края окна.
+    const estH = shown.length * 34 + 16
+    const up = rect.bottom + 8 + estH > window.innerHeight
+    setPos({ x: Math.max(8, Math.min(rect.right, window.innerWidth - 220)), y: up ? rect.top - 8 : rect.bottom + 8, up })
+    setOpen(v => !v)
+  }
+
+  const runItem = (pluginId: string, item: { id: string; label: string; sub?: string; icon?: string }, selection: string) => {
+    setOpen(false)
+    const ext = getPluginsExt()
+    if (!ext.contextMenuClick) return
+    void ext.contextMenuClick({
+      pluginId,
+      itemId: item.id,
+      payload: { messageId: message.id, chatId, content: message.content ?? '', selection: selection || undefined },
+    }).catch(() => {})
+  }
+
+  return (
+    <>
+      <motion.button
+        type="button"
+        className={`icon-button msg-action-btn plugin-msg-menu-btn${open ? ' plugin-msg-menu-btn--open' : ''}`}
+        ref={btnRef}
+        onClick={toggleMenu}
+        title="Действия плагинов"
+        aria-label="Действия плагинов"
+        whileHover={{ scale: 1.04 }}
+        whileTap={{ scale: 0.92 }}
+      >
+        <AppIcon name="moreHorizontal" size="sm" />
+      </motion.button>
+      {open && pos && visibleItems.length > 0 && createPortal(
+        <motion.div
+          ref={menuRef}
+          className="plugin-msg-menu"
+          style={{ position: 'fixed', left: pos.x, top: pos.y, zIndex: 9990 }}
+          initial={{ opacity: 0, scale: 0.96, y: pos.up ? 4 : -4 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 32 }}
+        >
+          {visibleItems.map((it) => {
+            const sel = (window.getSelection()?.toString() ?? '').trim()
+            const isSelection = it.scope === 'selection'
+            return (
+              <button
+                key={`${it.pluginId}-${it.id}`}
+                type="button"
+                className="plugin-msg-menu-item"
+                onMouseDown={(e) => { e.preventDefault(); runItem(it.pluginId, { id: it.id, label: it.label, icon: it.icon }, isSelection ? sel : '') }}
+              >
+                <AppIcon name={(it.icon as Parameters<typeof AppIcon>[0]['name']) || 'moreHorizontal'} size="sm" tone="muted" />
+                <span>{it.label}</span>
+              </button>
+            )
+          })}
+        </motion.div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+// ── Кнопки-декорации сообщений от плагинов (registerContextMenu button) ──
+// Пункты с button:true — отдельные кнопки в ряду действий сообщения
+// (copy/pin/reply), не в меню «⋯». Клик — тот же callHandler 'menu'.
+function PluginMessageButtons({ message }: { message: Message }) {
+  const pluginsList = useExtensionsStore(s => s.plugins)
+  const chatId = message.chatId || useChatStore.getState().currentChatId || ''
+  const buttons = useMemo(
+    () => collectMessageContextMenu().filter(i => i.button && i.scope === 'message'),
+    [pluginsList],
+  )
+
+  if (buttons.length === 0) return null
+
+  const runItem = (pluginId: string, itemId: string) => {
+    const ext = getPluginsExt()
+    if (!ext.contextMenuClick) return
+    void ext.contextMenuClick({
+      pluginId,
+      itemId,
+      payload: { messageId: message.id, chatId, content: message.content ?? '' },
+    }).catch(() => {})
+  }
+
+  return (
+    <>
+      {buttons.map(it => (
+        <motion.button
+          key={`${it.pluginId}-${it.id}`}
+          type="button"
+          className="icon-button msg-action-btn plugin-msg-action-btn"
+          title={it.label}
+          aria-label={it.label}
+          whileHover={{ scale: 1.04 }}
+          whileTap={{ scale: 0.92 }}
+          onClick={() => runItem(it.pluginId, it.id)}
+        >
+          <AppIcon name={(it.icon as Parameters<typeof AppIcon>[0]['name']) || 'puzzle'} size="sm" />
+        </motion.button>
+      ))}
+    </>
   )
 }
 
@@ -519,6 +743,21 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
       const lang = match?.[1] || 'text'
       if (lang === 'mermaid') return <MermaidBlock code={raw} />
       if (lang === 'diff') return <DiffBlock code={raw} />
+      // Кастомный рендерер кодоблока от плагина (registerMarkdownRenderer):
+      // если плагин зарегистрировал рендерер для этого языка — грузим его
+      // iframe с кодом в widgetData; иначе — обычный код-блок.
+      const pluginMd = findPluginMdRenderer(lang)
+      if (pluginMd) {
+        return (
+          <PluginMarkdownBlock
+            pluginId={pluginMd.pluginId}
+            entry={pluginMd.entry}
+            height={pluginMd.height ?? 300}
+            raw={raw}
+            lang={lang}
+          />
+        )
+      }
 
       // Парсим info-string на наличие пути: ```ts src/foo.ts
       // info-string — это className после language-, может содержать путь
@@ -1681,6 +1920,10 @@ const MessageContent = memo(function MessageContent({
             {onReply && <IconButton icon="reply" label="Ответить" className="msg-action-btn" onClick={onReply} />}
             {isUser && onRewind && <IconButton icon="rewind" label="Откатить к этому сообщению" className="msg-action-btn" onClick={onRewind} />}
             {!isUser && <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={onReadAloud} />}
+            {/* Пункты контекстного меню от плагинов (registerContextMenu) */}
+            <PluginMessageCtxMenu message={message} />
+            {/* Кнопки-декорации от плагинов (registerContextMenu button) */}
+            <PluginMessageButtons message={message} />
           </div>
           {(() => {
             const hasStats = !isUser && (

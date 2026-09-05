@@ -53,16 +53,43 @@ type EventHandler = (payload: Record<string, unknown>) => void | Record<string, 
 type UiMessageHandler = (data: unknown) => void
 type UiRpcHandler = (args: Record<string, unknown>) => unknown
 
+type ContextProviderHandler = (ctx: { chatId: string }) => string | Promise<string>
+type SearchProviderHandler = (q: { query: string } | { click: Record<string, unknown> }) => unknown | Promise<unknown>
+type AutocompleteHandler = (q: { query: string }) => unknown | Promise<unknown>
+type ContextMenuHandler = (payload: { messageId?: string; chatId?: string; content?: string; selection?: string }) => void | Promise<void>
+type WebhookHandler = (req: { method: string; path: string; body: string }) => void
+
 const tools = new Map<string, RegisteredTool>()
 const commands = new Map<string, RegisteredCommand>()
 const eventHandlers = new Map<string, Set<EventHandler>>()
 const uiMessageHandlers = new Set<UiMessageHandler>()
 const uiRpcHandlers = new Map<string, UiRpcHandler>()
+/** scheduler: jobId → handler (тик приходит событием 'scheduler:tick' {id}). */
+const schedulerHandlers = new Map<string, () => void | Promise<void>>()
+/** shortcut: accelerator → handler (событие 'shortcut' {accelerator}). */
+const shortcutHandlers = new Map<string, () => void>()
+/** fs.watch: watchId → handler (событие 'fs:change' {id, event, file}). */
+const fsWatchHandlers = new Map<string, (p: { event: string; file: string }) => void>()
+/** context providers: name → handler (вызов через callHandler kind 'context'). */
+const contextProviders = new Map<string, ContextProviderHandler>()
+/** search providers: id → handler (callHandler kind 'search'). */
+const searchProviders = new Map<string, SearchProviderHandler>()
+/** autocomplete: trigger → handler (callHandler kind 'autocomplete'). */
+const autocompleteHandlers = new Map<string, AutocompleteHandler>()
+/** context menu: itemId → handler (callHandler kind 'menu'). */
+const contextMenuHandlers = new Map<string, ContextMenuHandler>()
+/** webhook: port → handler (событие 'webhook:request' {port, method, path, body}). */
+const webhookHandlers = new Map<number, WebhookHandler>()
+/** ai:delta: requestId → onDelta (событие 'ai:delta' {requestId, delta}). */
+const aiDeltaWaiters = new Map<string, (delta: string) => void>()
 let deactivateFn: (() => void | Promise<void>) | null = null
 let active = false
 let permissions: Set<string> = new Set()
 let pluginDir = ''
 let hostVersion = ''
+let idCounter = 0
+
+const nextId = (prefix: string): string => `${prefix}-${++idCounter}-${Date.now().toString(36)}`
 
 const send = (msg: PluginMsgPluginToHost): void => {
   try { port.postMessage(msg) } catch { /* процесс умирает — ок */ }
@@ -136,14 +163,90 @@ export interface SynteePluginApi {
     icon?: string
     entry?: string
   }): void
+  /** Зарегистрировать context provider (permission 'context') —
+   *  динамический markdown, попадающий в system prompt перед каждым
+   *  запросом агента. handler получает { chatId }. */
+  registerContextProvider(def: {
+    name: string
+    description?: string
+    handler: ContextProviderHandler
+  }): void
+  /** Зарегистрировать рендерер markdown-кодоблоков (permission 'ui'):
+   *  кодоблок ```language рендерится iframe с entry, код — в data. */
+  registerMarkdownRenderer(def: { language: string; entry: string; height?: number }): void
+  /** Зарегистрировать search provider (permission 'ui') — результаты
+   *  в глобальном поиске (Spotlight). handler: { query } → items[]
+   *  или { click: item } при клике по результату. */
+  registerSearchProvider(def: {
+    id: string
+    label: string
+    handler: SearchProviderHandler
+  }): void
+  /** Зарегистрировать autocomplete-провайдер (permission 'ui'):
+   *  подсказки в поле ввода после ввода триггер-слова. */
+  registerAutocomplete(def: {
+    trigger: string
+    handler: AutocompleteHandler
+  }): void
+  /** Зарегистрировать пункт контекстного меню сообщений (permission 'ui').
+   *  button: true — рендерится отдельной кнопкой в ряду действий сообщения
+   *  (copy/pin/reply), а не в меню «⋯». */
+  registerContextMenu(def: {
+    id: string
+    label: string
+    icon?: string
+    scope: 'message' | 'selection'
+    button?: boolean
+    handler: ContextMenuHandler
+  }): void
+  /** Зарегистрировать кнопку над полем ввода чата (permission 'ui') —
+   *  ряд быстрых действий рядом с «+». Клик: command → слэш-команда
+   *  плагина, без command — событие 'input-action' { id }. */
+  registerInputAction(def: {
+    id: string
+    label: string
+    icon?: string
+    tooltip?: string
+    command?: string
+  }): void
+  /** Зарегистрировать тему (permission 'ui') — CSS-переменные,
+   *  появляется в ThemePicker. */
+  registerTheme(def: { name: string; dark: boolean; colors: Record<string, string> }): void
+  /** Зарегистрировать фон (permission 'ui') — появляется в пикере фонов. */
+  registerBackground(def: {
+    id: string
+    name: string
+    kind: 'shader' | 'video' | 'image'
+    src: string
+  }): void
   /** Подписаться на событие хоста:
    *   'chat:message'     — { chatId, content }, fire-and-forget;
    *   'chat:before-send' — { chatId, content }, хук с ответом: вернуть
    *                        undefined/'allow' | { action:'modify', content }
    *                        | { action:'reject', reason? };
    *   'tool:call'        — { toolName, args }, fire-and-forget;
-   *   'theme:changed'    — { theme, accentColor, dark }. */
-  on(event: 'chat:message' | 'chat:before-send' | 'tool:call' | 'theme:changed',
+   *   'tool:result'      — { toolName, args, result }, хук с ответом
+   *                        (modify → content = новый результат тула);
+   *   'prompt:before-build' — { chatId, prompt }, хук с ответом
+   *                        (modify → content = новый system prompt);
+   *   'theme:changed'    — { theme, accentColor, dark };
+   *   'agent:status'     — { chatId, status: 'started'|'finished'|'error', toolName? };
+   *   'message:delta'    — { chatId, delta } (троттлинг 250мс);
+   *   'chat:completed'   — { chatId };
+   *   'chat:switched'    — { chatId } (пользователь переключил активный чат);
+   *   'app:focus'        — {} (главное окно получило фокус);
+   *   'input-action'     — { id } (клик по кнопке плагина над инпутом без command);
+   *   'fs:change'        — { id, event, file } (fs.watch);
+   *   'ws:open'/'ws:message'/'ws:close'/'ws:error' — { id, ... } (net.ws);
+   *   'scheduler:tick'   — { id } (scheduler);
+   *   'shortcut'         — { accelerator } (registerShortcut);
+   *   'tray:action'      — { label } (клик по пункту трея без command);
+   *   'webhook:request'  — { port, method, path, body } (net.listen);
+   *   'bus:<name>'       — { data, from } (шина между плагинами). */
+  on(event: 'chat:message' | 'chat:before-send' | 'tool:call' | 'tool:result' | 'prompt:before-build' | 'theme:changed'
+    | 'agent:status' | 'message:delta' | 'chat:completed' | 'chat:switched' | 'app:focus' | 'input-action'
+    | 'fs:change' | 'ws:open' | 'ws:message' | 'ws:close' | 'ws:error'
+    | 'scheduler:tick' | 'shortcut' | 'tray:action' | 'webhook:request' | `bus:${string}`,
      handler: (payload: Record<string, unknown>) => void | Record<string, unknown> | undefined | Promise<Record<string, unknown> | void | undefined>): void
   /** Лог в журнал плагина (виден в UI вкладки Плагины). */
   log(...args: unknown[]): void
@@ -159,26 +262,157 @@ export interface SynteePluginApi {
     get<T = unknown>(key: string): Promise<T | undefined>
     getAll(): Promise<Record<string, unknown>>
   }
-  /** Файлы. readFile/listDir — любые пути (permission 'fs:read');
-   *  writeFile — только внутри папки плагина (permission 'fs:write'). */
+  /** Файлы. readFile/listDir/stat — любые пути (permission 'fs:read');
+   *  запись (writeFile/mkdir/delete/rename/copy/writeFiles) внутри папки
+   *  плагина — permission 'fs:write', ВНЕ папки — 'fs:write:any';
+   *  watch — наблюдение за файлом/папкой, события через колбэк
+   *  (permission 'fs:read'); возвращает cancel-функцию. */
   fs: {
     readFile(path: string): Promise<string>
     writeFile(path: string, content: string): Promise<void>
     listDir(path: string): Promise<string[]>
+    /** Метаданные пути: { exists, isFile, isDir, size, mtime }. */
+    stat(path: string): Promise<{ exists: boolean; isFile: boolean; isDir: boolean; size: number; mtime: number }>
+    /** Создать папку (recursive по умолчанию). */
+    mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>
+    /** Удалить файл или папку (папку — рекурсивно). */
+    delete(path: string): Promise<void>
+    /** Переместить/переименовать файл или папку. */
+    rename(from: string, to: string): Promise<void>
+    /** Копировать файл (папку — рекурсивно). */
+    copy(from: string, to: string): Promise<void>
+    /** Батч-запись для скаффолдинга: { 'src/index.ts': '...', ... }.
+     *  baseDir — общий префикс путей (родительские папки создаются сами). */
+    writeFiles(files: Record<string, string>, opts?: { baseDir?: string }): Promise<void>
+    watch(path: string, handler: (p: { event: string; file: string }) => void, opts?: { recursive?: boolean }): () => void
+    /** Нативный диалог выбора файла (permission 'ui'). null — отмена. */
+    pickFile(opts?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null>
+    /** Нативный диалог выбора папки (permission 'ui'). null — отмена. */
+    pickDir(opts?: { title?: string }): Promise<string | null>
   }
   /** Буфер обмена (требует permission 'clipboard'). */
   clipboard: {
     readText(): Promise<string>
     writeText(text: string): Promise<void>
   }
-  /** Уведомление (требует permission 'notifications'). */
+  /** Уведомление (требует permission 'notifications'). actions — кнопки:
+   *  клик выполняет слэш-команду плагина (command) или открывает его
+   *  панель (panel — id из registerPanel). */
   notifications: {
-    show(title: string, body: string): Promise<void>
+    show(title: string, body: string, opts?: { actions?: Array<{ label: string; command?: string; panel?: string }> }): Promise<void>
   }
   /** HTTP-запрос через main (требует permission 'net'). Возвращает
-   *  { status, headers, body } — body это текст (до 1 МБ). */
+   *  { status, headers, body } — body это текст (до 1 МБ).
+   *  ws — WebSocket через main: connect/send/close, данные приходят
+   *  событиями 'ws:open'/'ws:message'/'ws:close'/'ws:error' (поле id).
+   *  listen — локальный HTTP-сервер (permission 'webhook'): запросы
+   *  приходят хендлером (событие 'webhook:request'). */
   net: {
     fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; headers: Record<string, string>; body: string }>
+    ws: {
+      connect(id: string, url: string): Promise<void>
+      send(id: string, data: string): void
+      close(id: string): void
+    }
+    listen(port: number, handler: WebhookHandler): Promise<void>
+    close(port: number): Promise<void>
+  }
+  /** LLM через хост (permission 'ai') — модель/провайдер приложения,
+   *  биллинг централизован. prompt — строка или массив сообщений
+   *  (vision: { type:'image', path|url|base64 }). stream: true —
+   *  дельты в opts.onDelta, промис резолвится полным текстом.
+   *  embed — вектор текста (хостовый эмбеддер). */
+  ai: {
+    chat(prompt: string | Array<{ type: 'text'; text: string } | { type: 'image'; path?: string; url?: string; base64?: string }>, opts?: {
+      system?: string
+      model?: string
+      maxTokens?: number
+      stream?: boolean
+      onDelta?: (delta: string) => void
+    }): Promise<string>
+    embed(text: string): Promise<number[]>
+    /** Доступные модели приложения: [{ id, providerId, name, contextWindow }]. */
+    listModels(): Promise<Array<{ id: string; providerId: string; name: string; contextWindow: number }>>
+    /** Сгенерировать изображение через image-провайдер приложения.
+     *  Возвращает markdown ![...](url) с временной ссылкой. */
+    generateImage(prompt: string, opts?: { model?: string; size?: string; quality?: string; style?: string }): Promise<string>
+  }
+  /** Открыть ссылку в системном браузере (permission 'net'). */
+  shell: {
+    openExternal(url: string): Promise<void>
+  }
+  /** Звуки приложения (permission 'ui'). soundId — id из BUILTIN_SOUNDS
+   *  ('synth.send', 'synth.done', 'synth.confirm', ...) или путь к
+   *  кастомному звуку в папке плагина. */
+  sound: {
+    play(soundId: string): Promise<void>
+  }
+  /** Вызов host-тулов агента (permission 'agent'): read_file,
+   *  search_code, list_directory, find_files, search_web — read-only;
+   *  write_file / edit_file — запись (дополнительно требует 'fs:write:any'). */
+  agent: {
+    useTool(tool: string, args: Record<string, unknown>): Promise<unknown>
+    /** Запустить полноценный субагента хоста (воркер + тулы + планировщик).
+     *  Возвращает { agentId, summary } по завершении. Пишущие тулы —
+     *  дополнительно требует 'fs:write:any'. */
+    run(task: string, opts?: { model?: string; workdir?: string }): Promise<{ agentId: string; summary: string }>
+  }
+  /** Доступ к тулам MCP-серверов приложения (permission 'mcp'). */
+  mcp: {
+    listTools(): Promise<Array<{ server: string; name: string; description?: string }>>
+    call(server: string, tool: string, args: Record<string, unknown>): Promise<unknown>
+  }
+  /** Шифрованное хранилище секретов (permission 'secrets') — API-ключи
+   *  и токены плагина, не светятся в plugin.json/storage. */
+  secrets: {
+    get(key: string): Promise<string | undefined>
+    set(key: string, value: string): Promise<void>
+    delete(key: string): Promise<void>
+  }
+  /** Git-операции по workdir (permission 'git'). */
+  git: {
+    status(workdir: string): Promise<{ branch: string | null; ahead: number; behind: number; clean: boolean; files: Array<{ path: string; status: string }> }>
+    diff(workdir: string, opts?: { staged?: boolean; file?: string }): Promise<string>
+    log(workdir: string, limit?: number): Promise<Array<{ hash: string; author: string; date: string; message: string }>>
+    commit(workdir: string, message: string, opts?: { add?: boolean; addAll?: boolean }): Promise<string>
+    branches(workdir: string): Promise<Array<{ name: string; current: boolean }>>
+  }
+  /** Запуск shell-команд через main (permission 'process:exec'). */
+  process: {
+    exec(command: string, opts?: { cwd?: string; timeoutMs?: number }): Promise<{ stdout: string; stderr: string; code: number }>
+  }
+  /** Шина событий между плагинами: emit — всем запущенным (включая
+   *  отправителя, поле from), on — подписка (события 'bus:<name>'). */
+  bus: {
+    emit(event: string, data?: unknown): void
+    on(event: string, handler: (data: unknown) => void): void
+  }
+  /** Планировщик (permission 'scheduler'). Возвращает cancel-функцию. */
+  scheduler: {
+    every(intervalMs: number, handler: () => void | Promise<void>): () => void
+    cron(expr: string, handler: () => void | Promise<void>): () => void
+    at(delayMs: number, handler: () => void | Promise<void>): () => void
+  }
+  /** Глобальная горячая клавиша (permission 'shortcuts'), формат Electron:
+   *  'Ctrl+Shift+P', 'Alt+1' и т.д. Срабатывание — handler. */
+  registerShortcut(accelerator: string, handler: () => void): void
+  unregisterShortcut(accelerator: string): void
+  /** Overlay-окно приложения (permission 'overlay'): показать HTML
+   *  плагина поверх всего (frameless, always-on-top). */
+  overlay: {
+    show(opts: { entry: string; data?: unknown; width?: number; height?: number; timeoutMs?: number }): Promise<void>
+    hide(): Promise<void>
+  }
+  /** Status bar — полоса внизу главного окна (permission 'ui'). */
+  statusbar: {
+    set(id: string, text: string, opts?: { tooltip?: string; command?: string }): void
+    clear(id: string): void
+  }
+  /** Пункты в меню трея (permission 'tray'). Клик по пункту с command
+   *  выполняет слэш-команду плагина, без command — событие 'tray:action'. */
+  tray: {
+    setMenu(items: Array<{ label: string; command?: string; type?: 'item' | 'separator' }>): void
+    clearMenu(): void
   }
   /** Мост к iframe-панелям плагина. Каналы:
    *   - legacy postMessage: панель → onMessage, postMessage → все панели;
@@ -193,28 +427,62 @@ export interface SynteePluginApi {
     emit(method: string, data?: unknown): void
     /** Тема приложения (для стилизации панели). */
     getTheme(): Promise<{ theme: string; accentColor: string; dark: boolean }>
+    /** Инлайн-виджет: iframe-карточка в сообщении чата. Тул плагина
+     *  возвращает JSON {"__plugin_ui__":true,...} — renderer подставит
+     *  entry и data этого виджета. */
+    registerWidget(def: { name: string; entry: string; height?: number; description?: string }): void
+    /** Открыть модальную iframe-панель (entry по умолчанию — manifest.ui). */
+    openModal(def?: { entry?: string; title?: string; width?: number; height?: number }): void
+    /** Закрыть модальную панель плагина. */
+    closeModal(): void
+    /** Бейдж на панели (slot 'right'): число или null — сбросить. */
+    setBadge(panelId: string, badge: number | null): void
   }
   /** Действия в чате (permission 'chat'). */
   chat: {
     /** Отправить сообщение от имени пользователя (запускает агент).
-     *  opts.silent — только вставить текст в инпут, не отправлять. */
-    send(text: string, opts?: { silent?: boolean }): Promise<void>
+     *  opts.silent — только вставить текст в инпут, не отправлять.
+     *  opts.attachments — файлы к сообщению (пути), обрабатываются
+     *  движком вложений (текст инлайном, картинки → vision). */
+    send(text: string, opts?: { silent?: boolean; attachments?: Array<{ path: string; name?: string; kind?: 'file' | 'image' }> }): Promise<void>
     /** Вставить ответ от имени плагина в текущий чат. */
     reply(text: string): Promise<void>
   }
-  /** Чтение чатов приложения (permission 'chats:read'). */
+  /** Чтение/изменение чатов приложения. list/get — 'chats:read';
+   *  create/rename/delete/appendMessage/editMessage/deleteMessage — 'chats:write'. */
   chats: {
     list(): Promise<Array<{ id: string; title: string; createdAt: number; updatedAt: number }>>
     get(chatId: string): Promise<{ chat: Record<string, unknown>; messages: Array<Record<string, unknown>> } | null>
+    create(title?: string, projectId?: string): Promise<{ id: string }>
+    rename(chatId: string, title: string): Promise<void>
+    delete(chatId: string): Promise<void>
+    appendMessage(chatId: string, role: 'user' | 'assistant', content: string): Promise<{ id: string }>
+    editMessage(messageId: string, content: string): Promise<void>
+    deleteMessage(messageId: string): Promise<void>
+    /** Открыть чат пользователю (переключить активный чат в UI). */
+    open(chatId: string): Promise<void>
+    /** Вложения сообщения (файлы/картинки): [{ id, kind, name, path, mime, size }]. */
+    getAttachments(messageId: string): Promise<Array<Record<string, unknown>>>
   }
-  /** Чтение проектов (permission 'projects:read'). */
+  /** Проекты приложения. list/current — 'projects:read'; create — 'projects:write'. */
   projects: {
     list(): Promise<Array<{ id: string; name: string; workdir: string }>>
+    /** Активный чат и его проект: { chatId, projectId?, projectName?, workdir? }. */
+    current(): Promise<{ chatId: string | null; projectId?: string; projectName?: string; workdir?: string }>
+    /** Создать проект по workdir (папка должна существовать). */
+    create(workdir: string, opts?: { name?: string; projectContext?: string }): Promise<{ id: string; name: string; workdir: string }>
   }
-  /** Долговременная память приложения (permission 'memory'). */
+  /** Долговременная память приложения (permission 'memory').
+   *  chat — заметки плагина, привязанные к чату (попадают в контекст
+   *  при наличии context provider у плагина). */
   memory: {
     search(query: string): Promise<Array<Record<string, unknown>>>
     save(key: string, value: string, category?: string): Promise<void>
+    chat: {
+      get<T = unknown>(chatId: string, key: string): Promise<T | undefined>
+      set(chatId: string, key: string, value: unknown): Promise<void>
+      delete(chatId: string, key: string): Promise<void>
+    }
   }
   /** Окно приложения: тосты и диалоги (permission 'ui'). */
   window: {
@@ -228,6 +496,19 @@ function requirePermission(perm: string, what: string): void {
   if (!permissions.has(perm)) {
     throw new Error(`Permission denied: ${what} требует "${perm}" — добавьте его в permissions в plugin.json`)
   }
+}
+
+/** Запись файлов: внутри папки плагина — permission 'fs:write',
+ *  любой путь вне её — 'fs:write:any' (согласуется пользователем отдельно). */
+function requireWritePermission(what: string, ...paths: string[]): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const pathMod = require('path') as typeof import('path')
+  const base = pluginDir ? pathMod.resolve(pluginDir) : ''
+  const inside = base !== '' && paths.every(p => {
+    const r = pathMod.resolve(String(p ?? ''))
+    return r === base || r.startsWith(base + pathMod.sep)
+  })
+  requirePermission(inside ? 'fs:write' : 'fs:write:any', what)
 }
 
 function buildApi(): SynteePluginApi {
@@ -288,6 +569,22 @@ function buildApi(): SynteePluginApi {
         command: def.command,
       })
     },
+    registerShortcut(accelerator: string, handler: () => void) {
+      requirePermission('shortcuts', 'registerShortcut')
+      if (typeof accelerator !== 'string' || !accelerator) {
+        throw new Error('registerShortcut: accelerator обязателен (например "Ctrl+Shift+P")')
+      }
+      if (typeof handler !== 'function') {
+        throw new Error('registerShortcut: handler обязателен')
+      }
+      shortcutHandlers.set(accelerator, handler)
+      send({ type: 'hostRequest', requestId: nextId('sc'), method: 'shortcut.register', params: { accelerator } })
+    },
+    unregisterShortcut(accelerator: string) {
+      requirePermission('shortcuts', 'unregisterShortcut')
+      shortcutHandlers.delete(accelerator)
+      send({ type: 'hostRequest', requestId: nextId('sc'), method: 'shortcut.unregister', params: { accelerator } })
+    },
     registerPanel(def) {
       requirePermission('ui', 'registerPanel')
       if (!def || typeof def.id !== 'string' || !def.id) {
@@ -305,6 +602,105 @@ function buildApi(): SynteePluginApi {
         icon: def.icon,
         panelId: def.id,
         entry: def.entry,
+      })
+    },
+    registerContextProvider(def) {
+      requirePermission('context', 'registerContextProvider')
+      if (!def || typeof def.name !== 'string' || !def.name) {
+        throw new Error('registerContextProvider: name обязателен')
+      }
+      if (typeof def.handler !== 'function') {
+        throw new Error(`registerContextProvider(${def.name}): handler обязателен`)
+      }
+      contextProviders.set(def.name, def.handler)
+      send({ type: 'registerContextProvider', name: def.name, description: def.description })
+    },
+    registerMarkdownRenderer(def) {
+      requirePermission('ui', 'registerMarkdownRenderer')
+      if (!def || typeof def.language !== 'string' || !def.language) {
+        throw new Error('registerMarkdownRenderer: language обязателен')
+      }
+      if (typeof def.entry !== 'string' || !def.entry) {
+        throw new Error('registerMarkdownRenderer: entry обязателен (HTML-файл относительно папки плагина)')
+      }
+      send({ type: 'registerMarkdownRenderer', language: def.language, entry: def.entry, height: def.height })
+    },
+    registerSearchProvider(def) {
+      requirePermission('ui', 'registerSearchProvider')
+      if (!def || typeof def.id !== 'string' || !def.id) {
+        throw new Error('registerSearchProvider: id обязателен')
+      }
+      if (typeof def.handler !== 'function') {
+        throw new Error(`registerSearchProvider(${def.id}): handler обязателен`)
+      }
+      searchProviders.set(def.id, def.handler)
+      send({ type: 'registerSearchProvider', id: def.id, label: def.label || def.id })
+    },
+    registerAutocomplete(def) {
+      requirePermission('ui', 'registerAutocomplete')
+      if (!def || typeof def.trigger !== 'string' || !def.trigger) {
+        throw new Error('registerAutocomplete: trigger обязателен')
+      }
+      if (typeof def.handler !== 'function') {
+        throw new Error(`registerAutocomplete(${def.trigger}): handler обязателен`)
+      }
+      autocompleteHandlers.set(def.trigger, def.handler)
+      send({ type: 'registerAutocomplete', trigger: def.trigger })
+    },
+    registerContextMenu(def) {
+      requirePermission('ui', 'registerContextMenu')
+      if (!def || typeof def.id !== 'string' || !def.id) {
+        throw new Error('registerContextMenu: id обязателен')
+      }
+      if (typeof def.handler !== 'function') {
+        throw new Error(`registerContextMenu(${def.id}): handler обязателен`)
+      }
+      contextMenuHandlers.set(def.id, def.handler)
+      send({
+        type: 'registerContextMenu',
+        id: def.id,
+        label: def.label || def.id,
+        icon: def.icon,
+        scope: def.scope === 'selection' ? 'selection' : 'message',
+        button: def.button === true,
+      })
+    },
+    registerInputAction(def) {
+      requirePermission('ui', 'registerInputAction')
+      if (!def || typeof def.id !== 'string' || !def.id) {
+        throw new Error('registerInputAction: id обязателен')
+      }
+      if (!def.label) throw new Error('registerInputAction: label обязателен')
+      send({
+        type: 'registerInputAction',
+        id: def.id,
+        label: def.label,
+        icon: def.icon,
+        tooltip: def.tooltip,
+        command: def.command,
+      })
+    },
+    registerTheme(def) {
+      requirePermission('ui', 'registerTheme')
+      if (!def || typeof def.name !== 'string' || !def.name) {
+        throw new Error('registerTheme: name обязателен')
+      }
+      send({ type: 'registerTheme', name: def.name, dark: def.dark !== false, colors: def.colors ?? {} })
+    },
+    registerBackground(def) {
+      requirePermission('ui', 'registerBackground')
+      if (!def || typeof def.id !== 'string' || !def.id) {
+        throw new Error('registerBackground: id обязателен')
+      }
+      if (typeof def.src !== 'string' || !def.src) {
+        throw new Error('registerBackground: src обязателен (файл относительно папки плагина)')
+      }
+      send({
+        type: 'registerBackground',
+        id: def.id,
+        name: def.name || def.id,
+        kind: def.kind === 'video' ? 'video' : (def.kind === 'image' ? 'image' : 'shader'),
+        src: def.src,
       })
     },
     on(event, handler) {
@@ -346,9 +742,16 @@ function buildApi(): SynteePluginApi {
       },
     },
     notifications: {
-      async show(title: string, body: string) {
+      async show(title: string, body: string, opts?: { actions?: Array<{ label: string; command?: string; panel?: string }> }) {
         requirePermission('notifications', 'notifications.show')
-        const r = await hostRequest('notification.show', { title, body })
+        const r = await hostRequest('notification.show', {
+          title, body,
+          actions: opts?.actions?.map(a => ({
+            label: String(a.label ?? ''),
+            command: a.command ? String(a.command) : undefined,
+            panel: a.panel ? String(a.panel) : undefined,
+          })) ?? [],
+        })
         if (!r.ok) throw new Error(r.error || 'notification.show failed')
       },
     },
@@ -358,6 +761,306 @@ function buildApi(): SynteePluginApi {
         const r = await hostRequest('net.fetch', { url, init: init ?? {} })
         if (!r.ok) throw new Error(r.error || 'net.fetch failed')
         return r.result as { status: number; headers: Record<string, string>; body: string }
+      },
+      ws: {
+        async connect(id: string, url: string): Promise<void> {
+          requirePermission('net', 'net.ws.connect')
+          const r = await hostRequest('net.ws.connect', { id, url })
+          if (!r.ok) throw new Error(r.error || 'net.ws.connect failed')
+        },
+        send(id: string, data: string): void {
+          requirePermission('net', 'net.ws.send')
+          send({ type: 'hostRequest', requestId: nextId('ws'), method: 'net.ws.send', params: { id, data } })
+        },
+        close(id: string): void {
+          requirePermission('net', 'net.ws.close')
+          send({ type: 'hostRequest', requestId: nextId('ws'), method: 'net.ws.close', params: { id } })
+        },
+      },
+      async listen(port: number, handler: WebhookHandler): Promise<void> {
+        requirePermission('webhook', 'net.listen')
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          throw new Error('net.listen: port должен быть 1..65535')
+        }
+        if (typeof handler !== 'function') {
+          throw new Error('net.listen: handler обязателен')
+        }
+        webhookHandlers.set(port, handler)
+        const r = await hostRequest('net.listen', { port })
+        if (!r.ok) {
+          webhookHandlers.delete(port)
+          throw new Error(r.error || 'net.listen failed')
+        }
+      },
+      async close(port: number): Promise<void> {
+        requirePermission('webhook', 'net.close')
+        webhookHandlers.delete(port)
+        const r = await hostRequest('net.close', { port })
+        if (!r.ok) throw new Error(r.error || 'net.close failed')
+      },
+    },
+    ai: {
+      async chat(
+        prompt: string | Array<{ type: 'text'; text: string } | { type: 'image'; path?: string; url?: string; base64?: string }>,
+        opts?: { system?: string; model?: string; maxTokens?: number; stream?: boolean; onDelta?: (delta: string) => void },
+      ): Promise<string> {
+        requirePermission('ai', 'ai.chat')
+        const params: Record<string, unknown> = {
+          system: opts?.system,
+          model: opts?.model,
+          maxTokens: opts?.maxTokens,
+        }
+        if (Array.isArray(prompt)) {
+          params.messages = prompt
+        } else {
+          params.prompt = prompt
+        }
+        if (opts?.stream) {
+          // Стриминг: дельты приходят событием 'ai:delta' { requestId, delta },
+          // финальный hostResponse несёт полный текст.
+          const requestId = nextId('ais')
+          if (typeof opts.onDelta === 'function') {
+            aiDeltaWaiters.set(requestId, opts.onDelta)
+          }
+          const r = await new Promise<{ ok: boolean; result?: unknown; error?: string }>(resolve => {
+            hostWaiters.set(requestId, resolve)
+            send({ type: 'hostRequest', requestId, method: 'ai.chatStream', params })
+            setTimeout(() => {
+              const w = hostWaiters.get(requestId)
+              if (w) {
+                hostWaiters.delete(requestId)
+                aiDeltaWaiters.delete(requestId)
+                w({ ok: false, error: 'hostRequest timeout: ai.chatStream' })
+              }
+            }, 120_000)
+          })
+          aiDeltaWaiters.delete(requestId)
+          if (!r.ok) throw new Error(r.error || 'ai.chat failed')
+          return String(r.result ?? '')
+        }
+        const r = await hostRequest('ai.chat', params)
+        if (!r.ok) throw new Error(r.error || 'ai.chat failed')
+        return String(r.result ?? '')
+      },
+      async embed(text: string): Promise<number[]> {
+        requirePermission('ai', 'ai.embed')
+        const r = await hostRequest('ai.embed', { text })
+        if (!r.ok) throw new Error(r.error || 'ai.embed failed')
+        return (r.result as number[]) ?? []
+      },
+      async listModels(): Promise<Array<{ id: string; providerId: string; name: string; contextWindow: number }>> {
+        requirePermission('ai', 'ai.listModels')
+        const r = await hostRequest('ai.listModels', {})
+        if (!r.ok) throw new Error(r.error || 'ai.listModels failed')
+        return (r.result as Array<{ id: string; providerId: string; name: string; contextWindow: number }>) ?? []
+      },
+      async generateImage(prompt: string, opts?: { model?: string; size?: string; quality?: string; style?: string }): Promise<string> {
+        requirePermission('ai', 'ai.generateImage')
+        const r = await hostRequest('ai.generateImage', {
+          prompt,
+          model: opts?.model,
+          size: opts?.size,
+          quality: opts?.quality,
+          style: opts?.style,
+        })
+        if (!r.ok) throw new Error(r.error || 'ai.generateImage failed')
+        return String(r.result ?? '')
+      },
+    },
+    shell: {
+      async openExternal(url: string): Promise<void> {
+        requirePermission('net', 'shell.openExternal')
+        const r = await hostRequest('shell.openExternal', { url })
+        if (!r.ok) throw new Error(r.error || 'shell.openExternal failed')
+      },
+    },
+    sound: {
+      async play(soundId: string): Promise<void> {
+        requirePermission('ui', 'sound.play')
+        const r = await hostRequest('sound.play', { soundId })
+        if (!r.ok) throw new Error(r.error || 'sound.play failed')
+      },
+    },
+    agent: {
+      async useTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
+        requirePermission('agent', 'agent.useTool')
+        // write_file/edit_file пишут в файловую систему — двойной гейт.
+        if (tool === 'write_file' || tool === 'edit_file') {
+          requirePermission('fs:write:any', `agent.useTool(${tool})`)
+        }
+        const r = await hostRequest('agent.useTool', { tool, args: args ?? {} })
+        if (!r.ok) throw new Error(r.error || 'agent.useTool failed')
+        return r.result
+      },
+      async run(task: string, opts?: { model?: string; workdir?: string }): Promise<{ agentId: string; summary: string }> {
+        requirePermission('agent', 'agent.run')
+        // Субагент получает пишущие тулы — двойной гейт (как useTool write).
+        requirePermission('fs:write:any', 'agent.run')
+        const r = await hostRequest('agent.run', { task, model: opts?.model, workdir: opts?.workdir })
+        if (!r.ok) throw new Error(r.error || 'agent.run failed')
+        return (r.result as { agentId: string; summary: string }) ?? { agentId: '', summary: '' }
+      },
+    },
+    mcp: {
+      async listTools(): Promise<Array<{ server: string; name: string; description?: string }>> {
+        requirePermission('mcp', 'mcp.listTools')
+        const r = await hostRequest('mcp.listTools', {})
+        if (!r.ok) throw new Error(r.error || 'mcp.listTools failed')
+        return (r.result as Array<{ server: string; name: string; description?: string }>) ?? []
+      },
+      async call(server: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
+        requirePermission('mcp', 'mcp.call')
+        const r = await hostRequest('mcp.call', { server, tool, args: args ?? {} })
+        if (!r.ok) throw new Error(r.error || 'mcp.call failed')
+        return r.result
+      },
+    },
+    secrets: {
+      async get(key: string): Promise<string | undefined> {
+        requirePermission('secrets', 'secrets.get')
+        const r = await hostRequest('secrets.get', { key })
+        if (!r.ok) throw new Error(r.error || 'secrets.get failed')
+        return r.result as string | undefined
+      },
+      async set(key: string, value: string): Promise<void> {
+        requirePermission('secrets', 'secrets.set')
+        const r = await hostRequest('secrets.set', { key, value })
+        if (!r.ok) throw new Error(r.error || 'secrets.set failed')
+      },
+      async delete(key: string): Promise<void> {
+        requirePermission('secrets', 'secrets.delete')
+        const r = await hostRequest('secrets.delete', { key })
+        if (!r.ok) throw new Error(r.error || 'secrets.delete failed')
+      },
+    },
+    git: {
+      async status(workdir: string) {
+        requirePermission('git', 'git.status')
+        const r = await hostRequest('git.status', { workdir })
+        if (!r.ok) throw new Error(r.error || 'git.status failed')
+        return r.result as { branch: string | null; ahead: number; behind: number; clean: boolean; files: Array<{ path: string; status: string }> }
+      },
+      async diff(workdir: string, opts?: { staged?: boolean; file?: string }) {
+        requirePermission('git', 'git.diff')
+        const r = await hostRequest('git.diff', { workdir, staged: opts?.staged, file: opts?.file })
+        if (!r.ok) throw new Error(r.error || 'git.diff failed')
+        return String(r.result ?? '')
+      },
+      async log(workdir: string, limit?: number) {
+        requirePermission('git', 'git.log')
+        const r = await hostRequest('git.log', { workdir, limit })
+        if (!r.ok) throw new Error(r.error || 'git.log failed')
+        return (r.result as Array<{ hash: string; author: string; date: string; message: string }>) ?? []
+      },
+      async commit(workdir: string, message: string, opts?: { add?: boolean; addAll?: boolean }) {
+        requirePermission('git', 'git.commit')
+        const r = await hostRequest('git.commit', { workdir, message, add: opts?.add, addAll: opts?.addAll })
+        if (!r.ok) throw new Error(r.error || 'git.commit failed')
+        return String(r.result ?? '')
+      },
+      async branches(workdir: string) {
+        requirePermission('git', 'git.branches')
+        const r = await hostRequest('git.branches', { workdir })
+        if (!r.ok) throw new Error(r.error || 'git.branches failed')
+        return (r.result as Array<{ name: string; current: boolean }>) ?? []
+      },
+    },
+    process: {
+      async exec(command: string, opts?: { cwd?: string; timeoutMs?: number }): Promise<{ stdout: string; stderr: string; code: number }> {
+        requirePermission('process:exec', 'process.exec')
+        const r = await hostRequest('process.exec', { command, cwd: opts?.cwd, timeoutMs: opts?.timeoutMs })
+        if (!r.ok) throw new Error(r.error || 'process.exec failed')
+        return (r.result as { stdout: string; stderr: string; code: number }) ?? { stdout: '', stderr: '', code: -1 }
+      },
+    },
+    bus: {
+      emit(event: string, data?: unknown): void {
+        if (typeof event !== 'string' || !event) throw new Error('bus.emit: event обязателен')
+        send({ type: 'hostRequest', requestId: nextId('bus'), method: 'bus.emit', params: { event, data } })
+      },
+      on(event: string, handler: (data: unknown) => void): void {
+        if (typeof event !== 'string' || !event) throw new Error('bus.on: event обязателен')
+        if (typeof handler !== 'function') return
+        const key = `bus:${event}`
+        if (!eventHandlers.has(key)) eventHandlers.set(key, new Set())
+        eventHandlers.get(key)!.add(handler as EventHandler)
+        send({ type: 'subscribeEvents', events: [...eventHandlers.keys()] })
+      },
+    },
+    scheduler: {
+      every(intervalMs: number, handler: () => void | Promise<void>): () => void {
+        requirePermission('scheduler', 'scheduler.every')
+        if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
+          throw new Error('scheduler.every: intervalMs должен быть >= 1000')
+        }
+        const id = nextId('sch')
+        schedulerHandlers.set(id, handler)
+        send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.every', params: { id, intervalMs } })
+        return () => {
+          schedulerHandlers.delete(id)
+          send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cancel', params: { id } })
+        }
+      },
+      cron(expr: string, handler: () => void | Promise<void>): () => void {
+        requirePermission('scheduler', 'scheduler.cron')
+        if (typeof expr !== 'string' || expr.trim().split(/\s+/).length !== 5) {
+          throw new Error('scheduler.cron: expr должен быть из 5 полей (min hour dom month dow)')
+        }
+        const id = nextId('sch')
+        schedulerHandlers.set(id, handler)
+        send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cron', params: { id, expr } })
+        return () => {
+          schedulerHandlers.delete(id)
+          send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cancel', params: { id } })
+        }
+      },
+      at(delayMs: number, handler: () => void | Promise<void>): () => void {
+        requirePermission('scheduler', 'scheduler.at')
+        if (!Number.isFinite(delayMs) || delayMs < 0) {
+          throw new Error('scheduler.at: delayMs должен быть >= 0')
+        }
+        const id = nextId('sch')
+        schedulerHandlers.set(id, handler)
+        send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.at', params: { id, delayMs } })
+        return () => {
+          schedulerHandlers.delete(id)
+          send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cancel', params: { id } })
+        }
+      },
+    },
+    overlay: {
+      async show(opts: { entry: string; data?: unknown; width?: number; height?: number; timeoutMs?: number }): Promise<void> {
+        requirePermission('overlay', 'overlay.show')
+        const r = await hostRequest('overlay.show', {
+          entry: opts?.entry, data: opts?.data,
+          width: opts?.width, height: opts?.height, timeoutMs: opts?.timeoutMs,
+        })
+        if (!r.ok) throw new Error(r.error || 'overlay.show failed')
+      },
+      async hide(): Promise<void> {
+        requirePermission('overlay', 'overlay.hide')
+        const r = await hostRequest('overlay.hide', {})
+        if (!r.ok) throw new Error(r.error || 'overlay.hide failed')
+      },
+    },
+    statusbar: {
+      set(id: string, text: string, opts?: { tooltip?: string; command?: string }): void {
+        requirePermission('ui', 'statusbar.set')
+        send({ type: 'hostRequest', requestId: nextId('sb'), method: 'statusbar.set', params: { id, text, tooltip: opts?.tooltip, command: opts?.command } })
+      },
+      clear(id: string): void {
+        requirePermission('ui', 'statusbar.clear')
+        send({ type: 'hostRequest', requestId: nextId('sb'), method: 'statusbar.clear', params: { id } })
+      },
+    },
+    tray: {
+      setMenu(items: Array<{ label: string; command?: string; type?: 'item' | 'separator' }>): void {
+        requirePermission('tray', 'tray.setMenu')
+        send({ type: 'hostRequest', requestId: nextId('tr'), method: 'tray.setMenu', params: { items: items ?? [] } })
+      },
+      clearMenu(): void {
+        requirePermission('tray', 'tray.clearMenu')
+        send({ type: 'hostRequest', requestId: nextId('tr'), method: 'tray.clearMenu', params: {} })
       },
     },
     config: {
@@ -380,15 +1083,78 @@ function buildApi(): SynteePluginApi {
         return (r.result as string) ?? ''
       },
       async writeFile(path: string, content: string): Promise<void> {
-        requirePermission('fs:write', 'fs.writeFile')
+        requireWritePermission('fs.writeFile', path)
         const r = await hostRequest('fs.writeFile', { path, content })
         if (!r.ok) throw new Error(r.error || 'fs.writeFile failed')
+      },
+      async stat(path: string): Promise<{ exists: boolean; isFile: boolean; isDir: boolean; size: number; mtime: number }> {
+        requirePermission('fs:read', 'fs.stat')
+        const r = await hostRequest('fs.stat', { path })
+        if (!r.ok) throw new Error(r.error || 'fs.stat failed')
+        return (r.result as { exists: boolean; isFile: boolean; isDir: boolean; size: number; mtime: number })
+          ?? { exists: false, isFile: false, isDir: false, size: 0, mtime: 0 }
+      },
+      async mkdir(path: string, opts?: { recursive?: boolean }): Promise<void> {
+        requireWritePermission('fs.mkdir', path)
+        const r = await hostRequest('fs.mkdir', { path, recursive: opts?.recursive !== false })
+        if (!r.ok) throw new Error(r.error || 'fs.mkdir failed')
+      },
+      async delete(path: string): Promise<void> {
+        requireWritePermission('fs.delete', path)
+        const r = await hostRequest('fs.delete', { path })
+        if (!r.ok) throw new Error(r.error || 'fs.delete failed')
+      },
+      async rename(from: string, to: string): Promise<void> {
+        requireWritePermission('fs.rename', from, to)
+        const r = await hostRequest('fs.rename', { from, to })
+        if (!r.ok) throw new Error(r.error || 'fs.rename failed')
+      },
+      async copy(from: string, to: string): Promise<void> {
+        requireWritePermission('fs.copy', from, to)
+        const r = await hostRequest('fs.copy', { from, to })
+        if (!r.ok) throw new Error(r.error || 'fs.copy failed')
+      },
+      async writeFiles(files: Record<string, string>, opts?: { baseDir?: string }): Promise<void> {
+        if (!files || typeof files !== 'object') throw new Error('fs.writeFiles: files обязателен')
+        const baseDir = opts?.baseDir
+        const paths = Object.keys(files).map(p => (baseDir ? `${baseDir}/${p}` : p))
+        requireWritePermission('fs.writeFiles', ...paths)
+        const r = await hostRequest('fs.writeFiles', { files, baseDir })
+        if (!r.ok) throw new Error(r.error || 'fs.writeFiles failed')
       },
       async listDir(path: string): Promise<string[]> {
         requirePermission('fs:read', 'fs.listDir')
         const r = await hostRequest('fs.listDir', { path })
         if (!r.ok) throw new Error(r.error || 'fs.listDir failed')
         return (r.result as string[]) ?? []
+      },
+      watch(path: string, handler: (p: { event: string; file: string }) => void, opts?: { recursive?: boolean }): () => void {
+        requirePermission('fs:read', 'fs.watch')
+        if (typeof path !== 'string' || !path) {
+          throw new Error('fs.watch: path обязателен')
+        }
+        if (typeof handler !== 'function') {
+          throw new Error('fs.watch: handler обязателен')
+        }
+        const id = nextId('fsw')
+        fsWatchHandlers.set(id, handler)
+        send({ type: 'hostRequest', requestId: nextId('fsw'), method: 'fs.watch', params: { id, path, recursive: opts?.recursive ?? false } })
+        return () => {
+          fsWatchHandlers.delete(id)
+          send({ type: 'hostRequest', requestId: nextId('fsw'), method: 'fs.unwatch', params: { id } })
+        }
+      },
+      async pickFile(opts?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null> {
+        requirePermission('ui', 'fs.pickFile')
+        const r = await hostRequest('fs.pickFile', { title: opts?.title, filters: opts?.filters })
+        if (!r.ok) throw new Error(r.error || 'fs.pickFile failed')
+        return (r.result as string | null) ?? null
+      },
+      async pickDir(opts?: { title?: string }): Promise<string | null> {
+        requirePermission('ui', 'fs.pickDir')
+        const r = await hostRequest('fs.pickDir', { title: opts?.title })
+        if (!r.ok) throw new Error(r.error || 'fs.pickDir failed')
+        return (r.result as string | null) ?? null
       },
     },
     ui: {
@@ -409,11 +1175,40 @@ function buildApi(): SynteePluginApi {
         if (!r.ok) throw new Error(r.error || 'ui.getTheme failed')
         return (r.result as { theme: string; accentColor: string; dark: boolean }) ?? { theme: 'dark', accentColor: '#22d3ee', dark: true }
       },
+      registerWidget(def: { name: string; entry: string; height?: number; description?: string }): void {
+        requirePermission('ui', 'registerWidget')
+        if (!def || typeof def.name !== 'string' || !def.name) {
+          throw new Error('registerWidget: name обязателен')
+        }
+        if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(def.name)) {
+          throw new Error(`registerWidget: имя "${def.name}" должно быть [a-zA-Z][a-zA-Z0-9_-]*`)
+        }
+        if (typeof def.entry !== 'string' || !def.entry) {
+          throw new Error('registerWidget: entry обязателен (HTML-файл относительно папки плагина)')
+        }
+        send({ type: 'hostRequest', requestId: nextId('wdg'), method: 'ui.registerWidget', params: { name: def.name, entry: def.entry, height: def.height, description: def.description } })
+      },
+      openModal(def?: { entry?: string; title?: string; width?: number; height?: number }): void {
+        requirePermission('ui', 'openModal')
+        send({ type: 'hostRequest', requestId: nextId('md'), method: 'ui.openModal', params: { entry: def?.entry, title: def?.title, width: def?.width, height: def?.height } })
+      },
+      closeModal(): void {
+        requirePermission('ui', 'closeModal')
+        send({ type: 'hostRequest', requestId: nextId('md'), method: 'ui.closeModal', params: {} })
+      },
+      setBadge(panelId: string, badge: number | null): void {
+        requirePermission('ui', 'setBadge')
+        send({ type: 'hostRequest', requestId: nextId('bdg'), method: 'ui.setBadge', params: { panelId, badge } })
+      },
     },
     chat: {
-      async send(text: string, opts?: { silent?: boolean }) {
+      async send(text: string, opts?: { silent?: boolean; attachments?: Array<{ path: string; name?: string; kind?: 'file' | 'image' }> }) {
         requirePermission('chat', 'chat.send')
-        const r = await hostRequest('chat.send', { text, silent: opts?.silent ?? false })
+        const r = await hostRequest('chat.send', {
+          text,
+          silent: opts?.silent ?? false,
+          attachments: opts?.attachments,
+        })
         if (!r.ok) throw new Error(r.error || 'chat.send failed')
       },
       async reply(text: string) {
@@ -435,6 +1230,49 @@ function buildApi(): SynteePluginApi {
         if (!r.ok) throw new Error(r.error || 'chats.get failed')
         return r.result as { chat: Record<string, unknown>; messages: Array<Record<string, unknown>> } | null
       },
+      async create(title?: string, projectId?: string) {
+        requirePermission('chats:write', 'chats.create')
+        const r = await hostRequest('chats.create', { title, projectId })
+        if (!r.ok) throw new Error(r.error || 'chats.create failed')
+        return (r.result as { id: string }) ?? { id: '' }
+      },
+      async rename(chatId: string, title: string) {
+        requirePermission('chats:write', 'chats.rename')
+        const r = await hostRequest('chats.rename', { chatId, title })
+        if (!r.ok) throw new Error(r.error || 'chats.rename failed')
+      },
+      async delete(chatId: string) {
+        requirePermission('chats:write', 'chats.delete')
+        const r = await hostRequest('chats.delete', { chatId })
+        if (!r.ok) throw new Error(r.error || 'chats.delete failed')
+      },
+      async appendMessage(chatId: string, role: 'user' | 'assistant', content: string) {
+        requirePermission('chats:write', 'chats.appendMessage')
+        const r = await hostRequest('chats.appendMessage', { chatId, role, content })
+        if (!r.ok) throw new Error(r.error || 'chats.appendMessage failed')
+        return (r.result as { id: string }) ?? { id: '' }
+      },
+      async editMessage(messageId: string, content: string) {
+        requirePermission('chats:write', 'chats.editMessage')
+        const r = await hostRequest('chats.editMessage', { messageId, content })
+        if (!r.ok) throw new Error(r.error || 'chats.editMessage failed')
+      },
+      async deleteMessage(messageId: string) {
+        requirePermission('chats:write', 'chats.deleteMessage')
+        const r = await hostRequest('chats.deleteMessage', { messageId })
+        if (!r.ok) throw new Error(r.error || 'chats.deleteMessage failed')
+      },
+      async open(chatId: string) {
+        requirePermission('chats:read', 'chats.open')
+        const r = await hostRequest('chats.open', { chatId })
+        if (!r.ok) throw new Error(r.error || 'chats.open failed')
+      },
+      async getAttachments(messageId: string) {
+        requirePermission('chats:read', 'chats.getAttachments')
+        const r = await hostRequest('chats.getAttachments', { messageId })
+        if (!r.ok) throw new Error(r.error || 'chats.getAttachments failed')
+        return (r.result as Array<Record<string, unknown>>) ?? []
+      },
     },
     projects: {
       async list() {
@@ -442,6 +1280,19 @@ function buildApi(): SynteePluginApi {
         const r = await hostRequest('projects.list', {})
         if (!r.ok) throw new Error(r.error || 'projects.list failed')
         return (r.result as Array<{ id: string; name: string; workdir: string }>) ?? []
+      },
+      async current() {
+        requirePermission('projects:read', 'projects.current')
+        const r = await hostRequest('projects.current', {})
+        if (!r.ok) throw new Error(r.error || 'projects.current failed')
+        return (r.result as { chatId: string | null; projectId?: string; projectName?: string; workdir?: string })
+          ?? { chatId: null }
+      },
+      async create(workdir: string, opts?: { name?: string; projectContext?: string }) {
+        requirePermission('projects:write', 'projects.create')
+        const r = await hostRequest('projects.create', { workdir, name: opts?.name, projectContext: opts?.projectContext })
+        if (!r.ok) throw new Error(r.error || 'projects.create failed')
+        return (r.result as { id: string; name: string; workdir: string }) ?? { id: '', name: '', workdir }
       },
     },
     memory: {
@@ -455,6 +1306,24 @@ function buildApi(): SynteePluginApi {
         requirePermission('memory', 'memory.save')
         const r = await hostRequest('memory.save', { key, value, category })
         if (!r.ok) throw new Error(r.error || 'memory.save failed')
+      },
+      chat: {
+        async get<T>(chatId: string, key: string): Promise<T | undefined> {
+          requirePermission('memory', 'memory.chat.get')
+          const r = await hostRequest('memory.chat.get', { chatId, key })
+          if (!r.ok) throw new Error(r.error || 'memory.chat.get failed')
+          return r.result as T | undefined
+        },
+        async set(chatId: string, key: string, value: unknown): Promise<void> {
+          requirePermission('memory', 'memory.chat.set')
+          const r = await hostRequest('memory.chat.set', { chatId, key, value })
+          if (!r.ok) throw new Error(r.error || 'memory.chat.set failed')
+        },
+        async delete(chatId: string, key: string): Promise<void> {
+          requirePermission('memory', 'memory.chat.delete')
+          const r = await hostRequest('memory.chat.delete', { chatId, key })
+          if (!r.ok) throw new Error(r.error || 'memory.chat.delete failed')
+        },
       },
     },
     window: {
@@ -532,6 +1401,68 @@ port.on('message', (e) => {
     }
     case 'event': {
       // Fire-and-forget: хост не ждёт ответа. Ошибки хендлеров — в лог.
+      // Спец-события с колбэками (scheduler/shortcut/fs.watch/ai:delta/
+      // webhook) диспетчеризуются в свои Map, остальные — в eventHandlers
+      // (syntee.on).
+      if (msg.event === 'scheduler:tick') {
+        const h = schedulerHandlers.get(String(msg.payload?.id ?? ''))
+        if (h) {
+          try {
+            const r = h() as unknown
+            if (r && typeof (r as Promise<void>).catch === 'function') {
+              ;(r as Promise<void>).catch(e => {
+                send({ type: 'log', level: 'error', message: `scheduler handler error: ${(e as Error).message}` })
+              })
+            }
+          } catch (e) {
+            send({ type: 'log', level: 'error', message: `scheduler handler error: ${(e as Error).message}` })
+          }
+        }
+        break
+      }
+      if (msg.event === 'shortcut') {
+        const h = shortcutHandlers.get(String(msg.payload?.accelerator ?? ''))
+        if (h) {
+          try { h() } catch (e) {
+            send({ type: 'log', level: 'error', message: `shortcut handler error: ${(e as Error).message}` })
+          }
+        }
+        break
+      }
+      if (msg.event === 'fs:change') {
+        const h = fsWatchHandlers.get(String(msg.payload?.id ?? ''))
+        if (h) {
+          try { h({ event: String(msg.payload?.event ?? ''), file: String(msg.payload?.file ?? '') }) } catch (e) {
+            send({ type: 'log', level: 'error', message: `fs.watch handler error: ${(e as Error).message}` })
+          }
+        }
+        break
+      }
+      if (msg.event === 'ai:delta') {
+        // Дельта стриминга ai.chat: маршрутизируем по requestId.
+        const rid = String(msg.payload?.requestId ?? '')
+        const h = aiDeltaWaiters.get(rid)
+        if (h) {
+          try { h(String(msg.payload?.delta ?? '')) } catch { /* ignore */ }
+        }
+        break
+      }
+      if (msg.event === 'webhook:request') {
+        const port = Number(msg.payload?.port ?? 0)
+        const h = webhookHandlers.get(port)
+        if (h) {
+          try {
+            h({
+              method: String(msg.payload?.method ?? 'GET'),
+              path: String(msg.payload?.path ?? '/'),
+              body: String(msg.payload?.body ?? ''),
+            })
+          } catch (e) {
+            send({ type: 'log', level: 'error', message: `webhook handler error: ${(e as Error).message}` })
+          }
+        }
+        break
+      }
       const handlers = eventHandlers.get(msg.event)
       if (handlers) {
         for (const h of handlers) {
@@ -620,6 +1551,37 @@ port.on('message', (e) => {
           send({ type: 'callToolResult', requestId: msg.requestId, ok: true, output })
         } catch (err) {
           send({ type: 'callToolResult', requestId: msg.requestId, ok: false, error: (err as Error).message })
+        }
+      })()
+      break
+    }
+    case 'callHandler': {
+      ;(async () => {
+        try {
+          if (!active) throw new Error('Плагин не активен')
+          let result: unknown
+          if (msg.kind === 'context') {
+            const h = contextProviders.get(msg.name)
+            if (!h) throw new Error(`Context provider не зарегистрирован: ${msg.name}`)
+            result = await h(msg.payload as { chatId: string })
+          } else if (msg.kind === 'search') {
+            const h = searchProviders.get(msg.name)
+            if (!h) throw new Error(`Search provider не зарегистрирован: ${msg.name}`)
+            result = await h(msg.payload as { query: string } | { click: Record<string, unknown> })
+          } else if (msg.kind === 'autocomplete') {
+            const h = autocompleteHandlers.get(msg.name)
+            if (!h) throw new Error(`Autocomplete-провайдер не зарегистрирован: ${msg.name}`)
+            result = await h(msg.payload as { query: string })
+          } else if (msg.kind === 'menu') {
+            const h = contextMenuHandlers.get(msg.name)
+            if (!h) throw new Error(`Пункт меню не зарегистрирован: ${msg.name}`)
+            await h(msg.payload as { messageId?: string; chatId?: string; content?: string; selection?: string })
+          } else {
+            throw new Error(`Неизвестный kind: ${msg.kind}`)
+          }
+          send({ type: 'callHandlerResult', requestId: msg.requestId, ok: true, result: result === undefined ? null : result })
+        } catch (err) {
+          send({ type: 'callHandlerResult', requestId: msg.requestId, ok: false, error: (err as Error).message })
         }
       })()
       break
