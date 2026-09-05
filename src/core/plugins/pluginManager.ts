@@ -33,7 +33,7 @@ import { v4 as uuid } from 'uuid'
 import { scanPluginsDir } from './pluginLoader'
 import { PluginProcess } from './pluginProcess'
 import { PluginStorage } from './pluginStorage'
-import { DEFAULT_ENABLED_BUILTINS, syncBuiltinPlugins } from './builtinPlugins'
+import { DEFAULT_ENABLED_BUILTINS, getBuiltinPluginsDir, syncBuiltinPlugins, syncBuiltinPluginDir } from './builtinPlugins'
 import {
   depsInstalled, detectPython, installRequirements, syncPythonSdk,
   type PythonInfo,
@@ -552,7 +552,21 @@ export class PluginManager {
       await proc.start()
       this.running.set(pluginId, run)
       this.pushLog(pluginId, run, 'info', `Плагин запущен (${plugin.manifest.name} v${plugin.manifest.version})`)
-      this.setupHotReloadWatcher(pluginId, plugin.dir, plugin.manifest.main)
+      // Dev-режим + builtin-плагин: следим ещё и за ИСХОДНИКОМ в репозитории
+      // (resources/builtin-plugins/{id}) — правка там → перезаливка копии в
+      // {userData} → reload с новым кодом. Правишь плагин в гите — он сам
+      // обновляется, копировать руками не нужно.
+      let builtinSrcDir: string | undefined
+      if (plugin.manifest.builtin && !app.isPackaged) {
+        const src = join(getBuiltinPluginsDir(), pluginId)
+        if (existsSync(src)) builtinSrcDir = src
+      }
+      this.setupHotReloadWatcher(pluginId, plugin.dir, plugin.manifest.main, {
+        extraWatchDir: builtinSrcDir,
+        onBeforeReload: builtinSrcDir
+          ? () => { syncBuiltinPluginDir(builtinSrcDir!, plugin.dir) }
+          : undefined,
+      })
     } catch (e) {
       this.errors.set(pluginId, (e as Error).message)
       this.emitChanged()
@@ -574,7 +588,18 @@ export class PluginManager {
    *   - временные файлы редакторов (~, .tmp, .swp, .lock…) игнорируются;
    *   - сверяем mtime файла с последним известным: не изменился — не
    *     перезагружаем (реальная правка всегда меняет mtime). */
-  private setupHotReloadWatcher(pluginId: string, pluginDir: string, mainEntry: string): void {
+  private setupHotReloadWatcher(
+    pluginId: string,
+    pluginDir: string,
+    mainEntry: string,
+    opts?: {
+      /** Дополнительная папка для наблюдения (dev: исходник builtin-плагина
+       *  в resources/builtin-plugins — правка там дёргает тот же reload). */
+      extraWatchDir?: string
+      /** Вызывается перед reload (dev: перезаливка builtin-копии из репо). */
+      onBeforeReload?: () => void
+    },
+  ): void {
     this.closeHotReloadWatcher(pluginId)
     // Код лежит в папке entry (обычно dist/) — следим за ней целиком +
     // ui/ + манифест. Если entry в корне (одиночный index.js) — следим
@@ -588,9 +613,15 @@ export class PluginManager {
     }
     watchTargets.push({ target: join(pluginDir, 'ui'), recursive: true, label: 'ui/' })
     watchTargets.push({ target: join(pluginDir, 'plugin.json'), recursive: false, label: 'plugin.json' })
+    if (opts?.extraWatchDir) {
+      watchTargets.push({ target: opts.extraWatchDir, recursive: true, label: 'builtin-src/' })
+    }
 
-    const watchers: FSWatcher[] = []
-    let timer: NodeJS.Timeout | null = null
+    // Entry создаём ЗАРАНЕЕ и таймер дебаунса храним в нём: иначе
+    // closeHotReloadWatcher не сможет отменить висящий setTimeout →
+    // отложенный reload срабатывал уже после закрытия вотчера.
+    const entry: { watchers: FSWatcher[]; timer: NodeJS.Timeout | null } = { watchers: [], timer: null }
+    this.hotReloadWatchers.set(pluginId, entry)
     /** Последний известный mtime файла → защита от ложных событий. */
     const mtimes = new Map<string, number>()
     /** Снапшот mtime всех файлов наблюдаемых путей на момент установки
@@ -618,13 +649,17 @@ export class PluginManager {
       } catch { /* путь не существует — вотчер его и не создаст */ }
     }
     const fire = (label: string) => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => {
-        timer = null
+      if (entry.timer) clearTimeout(entry.timer)
+      entry.timer = setTimeout(() => {
+        entry.timer = null
         // Перезагружаем только если плагин всё ещё включён (reload()
         // поднимет и упавший — удобнее для разработки).
         if (this.getState(pluginId).enabled === false) return
         console.log(`[plugins] hot reload: ${pluginId} (изменён ${label})`)
+        // Dev/builtin: перезаливаем копию из репозитория ДО reload —
+        // reload загрузит уже новый код. (События от перезаливки самой
+        // копии в {userData} отменяются вместе с этим вотчером в stop().)
+        try { opts?.onBeforeReload?.() } catch { /* ignore */ }
         void this.reload(pluginId).catch(err => {
           console.warn(`[plugins] hot reload ${pluginId} не удался:`, (err as Error).message)
         })
@@ -648,22 +683,25 @@ export class PluginManager {
       // Файла не было в снапшоте (новый файл) → изменение. Был и mtime
       // совпадает → ложное событие (антивирус/индексатор тронул файл
       // без правки) — игнорируем. Реальная правка всегда меняет mtime.
-      if (prev !== undefined && prev === mtime) return
+      // Сравнение с допуском: на Windows mtimeMs одного и того же
+      // нетронутого файла «гуляет» на ~0.1 мс между stat-вызовами
+      // (округление float), строгое равенство даёт ложные reload.
+      if (prev !== undefined && Math.abs(prev - mtime) < 2) return
       fire(`${name} [${target.label}]`)
     }
     for (const t of watchTargets) {
       try {
         const w = watch(t.target, { persistent: false, recursive: t.recursive }, (_event, filename) =>
           onFsEvent(t, filename ?? null))
-        watchers.push(w)
+        entry.watchers.push(w)
       } catch { /* файл/папка может не существовать — пропускаем */ }
     }
-    this.hotReloadWatchers.set(pluginId, { watchers, timer: null })
   }
 
   private closeHotReloadWatcher(pluginId: string): void {
     const entry = this.hotReloadWatchers.get(pluginId)
     if (entry) {
+      if (entry.timer) clearTimeout(entry.timer)
       for (const w of entry.watchers) {
         try { w.close() } catch { /* ignore */ }
       }

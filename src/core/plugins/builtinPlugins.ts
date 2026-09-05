@@ -9,10 +9,17 @@
  * При каждом запуске приложения syncBuiltinPlugins() синхронизирует их
  * в {userData}/plugins/{id}/ — оттуда их подхватывает обычный loader:
  *   - папки нет            → копируем (установка);
- *   - папка есть и в ней plugin.json с builtin:true и версией ≠ нашей
- *                           → заменяем (обновление вместе с приложением);
+ *   - папка есть и в ней plugin.json с builtin:true:
+ *       dev-режим  → заменяем при каждом запуске (репо — истина);
+ *       packaged   → заменяем только при смене версии (обновление app);
  *   - папка есть, но это НЕ builtin (пользовательский плагин с тем же id)
  *                           → не трогаем (пользовательское имеет приоритет).
+ *
+ * Dev-цикл разработки builtin-плагина: правишь исходник прямо в
+ * resources/builtin-plugins/{id}/ (он в гите) → hot reload менеджера
+ * перезаливает копию и перезапускает плагин (см. pluginManager
+ * setupHotReloadWatcher + syncBuiltinPluginDir). Редактировать копию в
+ * {userData} не нужно — она рантайм-кэш и перезаписывается синком.
  *
  * Удалить встроенный плагин через UI нельзя (guard в plugins:uninstall);
  * ручное удаление папки откатывается синхронизацией при следующем запуске.
@@ -55,6 +62,21 @@ function compareVersions(a: string, b: string): number {
     if (d !== 0) return d
   }
   return 0
+}
+
+/** Перезаливает один builtin-плагин из репозитория в {userData}/plugins.
+ * Используется dev-режимом hot reload: правка исходника в
+ * resources/builtin-plugins → синк → перезапуск плагина с новым кодом.
+ * Данные плагина не страдают — storage лежит в plugins-data/. */
+export function syncBuiltinPluginDir(srcDir: string, targetDir: string): boolean {
+  try {
+    rmSync(targetDir, { recursive: true, force: true })
+    cpSync(srcDir, targetDir, { recursive: true })
+    return true
+  } catch (e) {
+    console.warn(`[plugins] builtin resync failed: ${srcDir}:`, (e as Error).message)
+    return false
+  }
 }
 
 function readManifest(dir: string): PluginManifest | null {
@@ -122,7 +144,11 @@ export function syncBuiltinPlugins(globalPluginsDir: string): BuiltinSyncResult 
     // Папка существует: обновляем только наши builtin-копии.
     const dstManifest = readManifest(targetDir)
     if (!dstManifest?.builtin) continue // пользовательский плагин — не трогаем
-    if (compareVersions(dstManifest.version ?? '0', srcManifest.version ?? '0') === 0) continue
+    // Dev-режим: репозиторий — источник истины, обновляем при каждом
+    // запуске БЕЗ гейта по версии (иначе правка dist/index.js без бампа
+    // версии в plugin.json никогда не доезжает до работающей копии).
+    // Packaged: обновляем только при смене версии (обновление приложения).
+    if (app.isPackaged && compareVersions(dstManifest.version ?? '0', srcManifest.version ?? '0') === 0) continue
 
     try {
       rmSync(targetDir, { recursive: true, force: true })
