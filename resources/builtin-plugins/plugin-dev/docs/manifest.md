@@ -45,6 +45,7 @@
 | `runtime` | string | | `"node"` (по умолчанию) или `"python"` — рантайм логики. Python: sidecar-процесс, SDK `from syntee import syntee` (см. секцию runtimes) |
 | `runtimePath` | string | | Явный путь до интерпретатора Python (override авто-детекта; можно venv). Только при `runtime:"python"` |
 | `requirements` | string[] | | pip-зависимости Python-плагина (`"requests"`, `"rich>=13"`). Ставятся автоматически при первом запуске + кнопка в карточке UI |
+| `dependencies` | string[] | | npm-зависимости Node-плагина (`"lodash"`, `"dayjs@1.11"`). Ставятся автоматически (`npm install --omit=dev` в папку плагина) + кнопка в карточке UI. Только CJS-совместимые пакеты; нативные модули не гарантированы |
 | `builtin` | boolean | | Только для встроенных плагинов (ставится приложением). Не указывай в своих |
 
 ## Корневые поля объекта syntee (в activate)

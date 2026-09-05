@@ -38,6 +38,7 @@ import {
   depsInstalled, detectPython, installRequirements, syncPythonSdk,
   type PythonInfo,
 } from './pythonRuntime'
+import { installNpmDependencies, npmDepsInstalled } from './npmRuntime'
 import { AIClient } from '../ai/AIClient'
 import { getMcpManager } from '../mcp/McpManager'
 import { getNotificationManager } from '../../main/managers/NotificationManager'
@@ -367,7 +368,14 @@ export class PluginManager {
               installed: depsInstalled(p.dir, p.manifest.requirements ?? []),
             },
           }
-          : {}),
+          : p.manifest.dependencies?.length
+            ? {
+              deps: {
+                required: p.manifest.dependencies,
+                installed: npmDepsInstalled(p.dir, p.manifest.dependencies),
+              },
+            }
+            : {}),
         logs: run ? run.logs : [],
       }
     })
@@ -390,13 +398,22 @@ export class PluginManager {
     return info ? { found: true, exe: info.exe, version: info.version } : { found: false }
   }
 
-  /** Установка Python-зависимостей плагина по кнопке в карточке UI. */
+  /** Установка зависимостей плагина (python: pip, node: npm) по кнопке
+   *  в карточке UI. */
   async installPluginDeps(pluginId: string): Promise<{ ok: boolean; error?: string; output?: string }> {
     const plugin = this.lastScan.find(p => p.id === pluginId)
       ?? this.scan().find(p => p.id === pluginId)
     if (!plugin) return { ok: false, error: `Плагин не найден: ${pluginId}` }
+    // Node-плагин: npm-зависимости.
+    const npmDeps = plugin.manifest.runtime !== 'python' ? (plugin.manifest.dependencies ?? []) : []
+    if (npmDeps.length) {
+      const res = await installNpmDependencies(plugin.dir, npmDeps)
+      this.emitChanged()
+      return res
+    }
+    // Python-плагин: pip-зависимости.
     if (plugin.manifest.runtime !== 'python') {
-      return { ok: false, error: 'Не Python-плагин (зависимости не требуются)' }
+      return { ok: true, output: 'Зависимости не объявлены' }
     }
     const requirements = plugin.manifest.requirements ?? []
     if (!requirements.length) return { ok: true, output: 'Зависимости не объявлены' }
@@ -430,6 +447,25 @@ export class PluginManager {
       backgrounds: [],
       logs: [],
       subscribedEvents: new Set(),
+    }
+    // Node-рантайм: при объявленных npm-зависимостях и отсутствии маркера —
+    // ставим их в папку плагина (node_modules резолвится из utilityProcess).
+    if (plugin.manifest.runtime !== 'python' && plugin.manifest.dependencies?.length) {
+      const npmDeps = plugin.manifest.dependencies
+      if (!npmDepsInstalled(plugin.dir, npmDeps)) {
+        this.pushLog(pluginId, run, 'info', `Установка npm-зависимостей: ${npmDeps.join(', ')}`)
+        const res = await installNpmDependencies(plugin.dir, npmDeps, line => {
+          this.pushLog(pluginId, run, 'info', `[npm] ${line}`)
+        })
+        if (!res.ok) {
+          const err = `Не удалось установить npm-зависимости (${res.error}). Установите вручную: npm install ${npmDeps.join(' ')} (в папке плагина)`
+          this.errors.set(pluginId, err)
+          this.pushLog(pluginId, run, 'error', err)
+          this.emitChanged()
+          throw new Error(err)
+        }
+        this.pushLog(pluginId, run, 'info', 'npm-зависимости установлены')
+      }
     }
     // Python-рантайм: резолвим интерпретатор, при необходимости ставим
     // зависимости (pip) — логи идут в журнал плагина (виден в карточке).

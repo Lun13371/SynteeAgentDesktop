@@ -892,6 +892,11 @@ module.exports.activate = function (syntee) {
         ? spec.requirements.filter(r => typeof r === 'string' && r.trim()).map(r => r.trim())
         : []
       if (reqs.length) manifest.requirements = reqs
+    } else {
+      const npmDeps = Array.isArray(spec.dependencies)
+        ? spec.dependencies.filter(r => typeof r === 'string' && r.trim()).map(r => r.trim())
+        : []
+      if (npmDeps.length) manifest.dependencies = npmDeps
     }
     if (spec.withUi && runtime !== 'python') manifest.ui = 'ui/panel.html'
     if (Array.isArray(spec.config) && spec.config.length) manifest.config = spec.config
@@ -913,6 +918,10 @@ module.exports.activate = function (syntee) {
             ? '- dist/index.js — wiring (подключение модулей)\n- dist/tools.js — тулы для AI\n- dist/commands.js — слэш-команды\n- dist/state.js — общее состояние' +
               (spec.withUi ? '\n- dist/ui.js — панель + RPC-хендлеры\n- ui/panel.html + css/ + js/ — UI (мост в js/bridge.js)' : '')
             : '- dist/index.js — вся логика',
+        '',
+        ...(manifest.dependencies
+          ? ['- npm-зависимости: ' + manifest.dependencies.join(', ') + ' (ставятся автоматически при первом запуске, node_modules в папке плагина)', '']
+          : []),
         '',
         '## Тулы',
         ...(Array.isArray(spec.tools) && spec.tools.length
@@ -953,6 +962,11 @@ module.exports.activate = function (syntee) {
           : 'Зависимости не объявлены; добавь requirements: [...] в plugin.json при необходимости.',
         'UI-панели (withUi) для Python-плагинов пока не генерируются — логика в dist/main.py.',
       )
+    } else if (manifest.dependencies) {
+      nextLines.push(
+        'npm-зависимости (' + manifest.dependencies.join(', ') + ') установятся автоматически при первом включении (npm install в папку плагина); статус и кнопка установки — в карточке плагина.',
+        'Важно: пакеты должны быть CJS-совместимыми (require); ESM-only пакеты и нативные .node-модули не поддерживаются — такие бандлить заранее (esbuild).',
+      )
     }
     return {
       ok: true,
@@ -969,7 +983,7 @@ module.exports.activate = function (syntee) {
       'runtime:"node" (по умолчанию): structure:"multi" (рекомендуется для всего кроме тривиальных) — многофайловая архитектура dist/index.js + tools.js + commands.js + state.js (+ ui.js и ui/ при withUi); structure:"single" — всё в одном index.js. ' +
       'runtime:"python" — логика на Python (dist/main.py, SDK from syntee import syntee; нужен Python 3.8+, зависимости из requirements ставятся автоматически). ' +
       'Параметры: id (обязательно, [a-zA-Z][a-zA-Z0-9_-]*), runtime ("node"|"python"), structure ("single"|"multi", только для node), name, description, promptDescription (~200 символов), permissions (массив из секции permissions доков), ' +
-      'tools: [{name, description, parameters(JSON Schema)}], commands: [{name, description}], requirements: [pip-спецификации, только python], withUi: bool, uiStyle ("app"|"glass" — стиль панели: нативный приложения или glass с градиентами/свечением), config: [{key,label,type,default,options,min,max,step}], overwrite: bool. ' +
+      'tools: [{name, description, parameters(JSON Schema)}], commands: [{name, description}], requirements: [pip-спецификации, только python], dependencies: [npm-спецификации, только node — ставятся автоматически в папку плагина], withUi: bool, uiStyle ("app"|"glass" — стиль панели: нативный приложения или glass с градиентами/свечением), config: [{key,label,type,default,options,min,max,step}], overwrite: bool. ' +
       'Перед созданием сложного плагина прочитай plugin_docs(section=architecture), для Python — section=runtimes.',
     parameters: {
       type: 'object',
@@ -993,6 +1007,11 @@ module.exports.activate = function (syntee) {
           type: 'array',
           items: { type: 'string' },
           description: 'Python-зависимости (pip-спецификации: "requests", "rich>=13"). Только при runtime:"python"; ставятся автоматически при первом запуске',
+        },
+        dependencies: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'npm-зависимости node-плагина ("lodash", "dayjs@1.11"). Только при runtime:"node"; ставятся автоматически (npm install) в папку плагина при первом запуске. Пакеты должны быть CJS-совместимыми',
         },
         tools: {
           type: 'array',

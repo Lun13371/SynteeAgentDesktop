@@ -130,5 +130,5 @@ module.exports = { registerTools }
 ## Ограничения
 
 - **Только CJS** (`require` / `module.exports`), не ESM-импорты.
-- **Нет npm-пакетов**: `node_modules` не резолвится из utilityProcess. Зависимости пиши сами в `lib/` или бандль заранее.
+- **npm-пакеты поддерживаются** через `dependencies` в манифесте (см. runtimes): ставятся автоматически в `node_modules` папки плагина и резолвятся из utilityProcess. Нюансы: пакеты должны быть CJS-совместимыми, нативные `.node`-модули не гарантированы, ESM-only — бандлить заранее (esbuild).
 - Hot reload следит за `dist/`, `ui/` и `plugin.json` — правка любого файла перезапускает плагин (дебаунс 800 мс). Данные в storage/своих папках вне dist/ui не триггерят reload.

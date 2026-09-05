@@ -139,6 +139,14 @@ export interface PluginManifest {
    * в карточке UI; статус показывается в карточке.
    */
   requirements?: string[]
+  /**
+   * npm-зависимости Node-плагина ('lodash', 'dayjs@1.11'). Устанавливаются
+   * через `npm install` в папку плагина (node_modules резолвится из
+   * utilityProcess стандартным алгоритмом Node) автоматически при первом
+   * запуске и кнопкой в карточке UI. Ограничения: пакеты должны быть
+   * CJS-совместимыми (require), нативные .node-модули не гарантированы.
+   */
+  dependencies?: string[]
 }
 
 /** Загруженный плагин (манифест + метаданные расположения). */
@@ -413,9 +421,9 @@ export interface PluginRuntime extends Plugin {
   backgrounds: PluginBackgroundContribution[]
   /** Текущие значения настроек (config из манифеста + сохранённые). */
   configValues: Record<string, unknown>
-  /** Статус зависимостей Python-плагина (runtime:'python' с requirements). */
+  /** Статус зависимостей плагина (python: requirements, node: dependencies). */
   deps?: {
-    /** pip-спецификации из манифеста. */
+    /** Спецификации из манифеста (pip или npm). */
     required: string[]
     /** Установлены ли (маркер в папке плагина совпадает с текущим списком). */
     installed: boolean
