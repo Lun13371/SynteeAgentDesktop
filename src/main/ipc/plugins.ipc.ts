@@ -53,6 +53,13 @@ export function registerPluginsIPC(store: Store, getWindow: () => BrowserWindow 
     return mgr().getAllWithState({ projectWorkdir, projectId })
   })
 
+  // Статус Python-интерпретатора (для карточек python-плагинов).
+  ipcMain.handle('plugins:checkPython', () => mgr().checkPython())
+
+  // Установка Python-зависимостей плагина (кнопка в карточке UI).
+  ipcMain.handle('plugins:installDeps', (_e, params: { pluginId: string }) =>
+    mgr().installPluginDeps(params.pluginId))
+
   ipcMain.handle('plugins:setState', async (_e, params: {
     pluginId: string
     enabled?: boolean

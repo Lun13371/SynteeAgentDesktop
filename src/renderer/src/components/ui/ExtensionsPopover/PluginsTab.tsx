@@ -92,6 +92,18 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
     }
   }
 
+  /** Установка Python-зависимостей плагина (кнопка в карточке). */
+  const installDeps = async (p: PluginRuntime) => {
+    setBusy(`deps:${p.id}`)
+    try {
+      const res = await window.syntee.plugins.installDeps({ pluginId: p.id }) as { ok: boolean; error?: string }
+      if (!res.ok && res.error) window.alert(`Установка зависимостей не удалась:\n${res.error}`)
+      await useExtensionsStore.getState().loadPlugins(projectId)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const uninstall = async (p: PluginRuntime) => {
     if (!window.confirm(`Удалить плагин «${p.manifest.name}»? Папка плагина будет удалена с диска.`)) return
     setBusy(p.id)
@@ -186,6 +198,14 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                       встроенный
                     </span>
                   )}
+                  {p.manifest.runtime === 'python' && (
+                    <span
+                      className="plugin-runtime-badge"
+                      title="Логика на Python — исполняется в sidecar-процессе (нужен установленный Python 3.8+)"
+                    >
+                      Python
+                    </span>
+                  )}
                   {p.state.scope.type === 'projects' && (
                     <span className="ext-card-source ext-card-source--project" title="Область применения">
                       {pluginScopeLabel(p.state.scope)}
@@ -194,6 +214,28 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                 </div>
                 {p.manifest.description && <div className="ext-card-desc">{p.manifest.description}</div>}
                 {p.error && <div className="plugin-error-line">{p.error}</div>}
+                {/* Python-зависимости: статус + быстрая установка. */}
+                {p.manifest.runtime === 'python' && p.deps && p.deps.required.length > 0 && (
+                  p.deps.installed ? (
+                    <div className="plugin-deps-line plugin-deps-line--ok" title={p.deps.required.join(', ')}>
+                      ✓ зависимости установлены ({p.deps.required.length})
+                    </div>
+                  ) : (
+                    <div className="plugin-deps-line plugin-deps-line--warn">
+                      <span title={p.deps.required.join(', ')}>
+                        ⚠ требуются зависимости: {p.deps.required.slice(0, 3).join(', ')}
+                        {p.deps.required.length > 3 ? ` +${p.deps.required.length - 3}` : ''}
+                      </span>
+                      <button
+                        className="ext-action-btn ext-action-btn--primary plugin-deps-btn"
+                        onClick={() => installDeps(p)}
+                        disabled={busy === `deps:${p.id}`}
+                      >
+                        {busy === `deps:${p.id}` ? 'Установка…' : 'Установить'}
+                      </button>
+                    </div>
+                  )
+                )}
               </div>
               <button
                 className={`ext-toggle${enabled ? ' ext-toggle--on' : ''}`}
@@ -417,6 +459,12 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                   <span key={perm} className="plugin-perm-badge">{PERMISSION_LABELS[perm] ?? perm}</span>
                 ))}
               </div>
+              {pendingConsent.manifest.runtime === 'python' && (pendingConsent.manifest.requirements?.length ?? 0) > 0 && (
+                <div className="plugin-consent-note">
+                  Плагин использует <b>Python</b> и при первом запуске установит зависимости через pip:
+                  {' '}{pendingConsent.manifest.requirements?.join(', ')}.
+                </div>
+              )}
               <div className="plugin-consent-note">
                 Отключить плагин можно в любой момент тумблером. Права гейтят доступ к API хоста
                 (сеть, буфер обмена, уведомления, файлы).
@@ -463,6 +511,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'mcp': 'вызов тулов MCP',
   'webhook': 'локальный HTTP-сервер',
   'agent': 'вызов тулов и субагентов хоста',
+  'hooks': 'хуки контента (сообщения, тулы, промпт)',
 }
 
 /** Форма настроек плагина (манифест config → поля, значения → pluginsConfig). */

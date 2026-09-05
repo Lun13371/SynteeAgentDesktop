@@ -23,6 +23,38 @@
   word-break: break-word;
 }
 
+/* Бейдж рантайма Python в заголовке карточки */
+.plugin-runtime-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent, #22d3ee) 14%, transparent);
+  color: var(--accent, #22d3ee);
+  border: 1px solid color-mix(in srgb, var(--accent, #22d3ee) 30%, transparent);
+  white-space: nowrap;
+}
+
+/* Строка статуса Python-зависимостей (под описанием) */
+.plugin-deps-line {
+  margin-top: 4px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plugin-deps-line--ok {
+  color: var(--success, #4ade80);
+}
+.plugin-deps-line--warn {
+  color: var(--warning, #f59e0b);
+}
+.plugin-deps-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+
 /* Версия плагина */
 .ext-card-version {
   font-size: 10px;

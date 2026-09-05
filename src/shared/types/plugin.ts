@@ -97,6 +97,25 @@ export interface PluginManifest {
    * только включить/выключить его.
    */
   builtin?: boolean
+  /**
+   * Рантайм основной логики. 'node' (по умолчанию — CJS require в
+   * utilityProcess) или 'python' — логика на Python: хост спавнит
+   * sidecar-процесс `python {main}` и проксирует те же JSON-сообщения
+   * протокола через stdin/stdout. Python-плагин импортирует SDK:
+   * `from syntee import syntee` (SDK кладётся в PYTHONPATH хостом).
+   */
+  runtime?: 'node' | 'python'
+  /**
+   * Явный путь до интерпретатора Python для runtime:'python'
+   * (override авто-детекта python → python3 → py). Может быть venv.
+   */
+  runtimePath?: string
+  /**
+   * Python-зависимости (pip-спецификации: 'requests', 'rich>=13').
+   * Устанавливаются автоматически при первом запуске плагина и кнопкой
+   * в карточке UI; статус показывается в карточке.
+   */
+  requirements?: string[]
 }
 
 /** Загруженный плагин (манифест + метаданные расположения). */
@@ -371,6 +390,13 @@ export interface PluginRuntime extends Plugin {
   backgrounds: PluginBackgroundContribution[]
   /** Текущие значения настроек (config из манифеста + сохранённые). */
   configValues: Record<string, unknown>
+  /** Статус зависимостей Python-плагина (runtime:'python' с requirements). */
+  deps?: {
+    /** pip-спецификации из манифеста. */
+    required: string[]
+    /** Установлены ли (маркер в папке плагина совпадает с текущим списком). */
+    installed: boolean
+  }
   logs: PluginLogEntry[]
 }
 

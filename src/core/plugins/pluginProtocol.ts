@@ -21,6 +21,12 @@ export interface PluginMsgInit {
     appVersion: string
     locale: string
   }
+  /** Для runtime:'python' — интерпретатор и папка SDK (PYTHONPATH),
+   *  уже отрезолвленные main-процессом. */
+  python?: {
+    exe: string
+    sdkDir: string
+  }
 }
 
 /** main → plugin: RPC-вызов тула. */

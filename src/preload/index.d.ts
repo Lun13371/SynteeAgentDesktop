@@ -309,19 +309,19 @@ declare const synteeAPI: {
         getMeta: () => Promise<{
             version: string;
         }>;
-        getPluginItems?: () => Promise<Array<{
+        getPluginItems: () => Promise<Array<{
             pluginId: string;
             label: string;
             command?: string;
             type: "item" | "separator";
         }>>;
-        onPluginItemsChanged?: (cb: (items: Array<{
+        onPluginItemsChanged: (cb: (items: Array<{
             pluginId: string;
             label: string;
             command?: string;
             type: "item" | "separator";
-        }>) => void) => () => void;
-        pluginAction?: (pluginId: string, label: string, command?: string) => Promise<any>;
+        }>) => void) => () => Electron.IpcRenderer;
+        pluginAction: (pluginId: string, label: string, command?: string) => Promise<any>;
     };
     chat: {
         create: (incognito?: boolean, mode?: "code" | "work", projectId?: string) => Promise<any>;
@@ -729,6 +729,7 @@ declare const synteeAPI: {
     commands: {
         list: (params?: {
             projectWorkdir?: string;
+            chatId?: string;
         }) => Promise<any>;
         reload: () => Promise<any>;
     };
@@ -772,6 +773,141 @@ declare const synteeAPI: {
             env?: Record<string, string>;
             args?: string[];
         }) => Promise<any>;
+    };
+    plugins: {
+        getAll: (params?: {
+            projectId?: string;
+            chatId?: string;
+        }) => Promise<any>;
+        checkPython: () => Promise<{
+            found: boolean;
+            exe?: string;
+            version?: string;
+        }>;
+        installDeps: (params: {
+            pluginId: string;
+        }) => Promise<{
+            ok: boolean;
+            error?: string;
+            output?: string;
+        }>;
+        setState: (params: {
+            pluginId: string;
+            enabled?: boolean;
+            scope?: unknown;
+            consented?: boolean;
+        }) => Promise<any>;
+        reload: (pluginId: string) => Promise<any>;
+        uninstall: (params: {
+            pluginId: string;
+            source: "global" | "project";
+            dir?: string;
+        }) => Promise<any>;
+        installFromFolder: (params?: {
+            scope?: "global" | {
+                workdir: string;
+            };
+        }) => Promise<any>;
+        getPaths: () => Promise<any>;
+        executeCommand: (params: {
+            chatId: string;
+            pluginId: string;
+            name: string;
+            args: string;
+            text: string;
+        }) => Promise<any>;
+        uiMessage: (params: {
+            pluginId: string;
+            data: unknown;
+        }) => Promise<any>;
+        uiCall: (params: {
+            pluginId: string;
+            method: string;
+            args?: Record<string, unknown>;
+        }) => Promise<any>;
+        beforeSend: (params: {
+            chatId: string;
+            content: string;
+        }) => Promise<any>;
+        panelLifecycle: (params: {
+            pluginId: string;
+            panelId: string;
+            action: "opened" | "closed";
+        }) => Promise<any>;
+        themeChanged: (params: {
+            theme: string;
+            accentColor: string;
+        }) => Promise<any>;
+        openDevTools: () => Promise<any>;
+        saveReply: (params: {
+            chatId: string;
+            text: string;
+        }) => Promise<any>;
+        setConfig: (params: {
+            pluginId: string;
+            values: Record<string, unknown>;
+        }) => Promise<any>;
+        search: (params: {
+            query: string;
+        }) => Promise<Array<{
+            pluginId: string;
+            providerId: string;
+            label: string;
+            items: Array<{
+                id: string;
+                label: string;
+                sub?: string;
+                icon?: string;
+            }>;
+        }>>;
+        searchClick: (params: {
+            pluginId: string;
+            providerId: string;
+            item: {
+                id: string;
+                label: string;
+                sub?: string;
+                icon?: string;
+            };
+        }) => Promise<any>;
+        autocomplete: (params: {
+            text: string;
+        }) => Promise<{
+            pluginId: string;
+            trigger: string;
+            suggestions: Array<{
+                label: string;
+                insertText?: string;
+                command?: string;
+            }>;
+        } | null>;
+        contextMenuClick: (params: {
+            pluginId: string;
+            itemId: string;
+            payload: {
+                messageId: string;
+                chatId: string;
+                content: string;
+                selection?: string;
+            };
+        }) => Promise<any>;
+        notificationAction: (params: {
+            pluginId: string;
+            command: string;
+        }) => Promise<any>;
+        inputAction: (params: {
+            pluginId: string;
+            actionId: string;
+        }) => Promise<any>;
+        iframeCall: (params: {
+            pluginId: string;
+            method: string;
+            args?: Record<string, unknown>;
+        }) => Promise<{
+            ok: boolean;
+            result?: unknown;
+            error?: string;
+        }>;
     };
     marketplace: {
         searchMcp: (params: {
@@ -825,6 +961,17 @@ declare const synteeAPI: {
             path: string;
         }) => Promise<any>;
         pickFile: () => Promise<any>;
+        resolveDropPath: (params: {
+            name: string;
+            dir?: string;
+        }) => Promise<any>;
+        repairDraft: (params: {
+            chatId: string;
+            attachments: unknown[];
+        }) => Promise<any>;
+        cleanupOrphans: (params: {
+            chatId: string;
+        }) => Promise<any>;
         getPathForFile: (file: File) => string;
     };
     draft: {

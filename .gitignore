@@ -49,3 +49,7 @@ agent_diff.txt
 
 # MCP tool runtime artifacts (console logs + page snapshots)
 .playwright-mcp/
+
+# Python bytecode cache (resources/python-sdk)
+__pycache__/
+*.pyc
