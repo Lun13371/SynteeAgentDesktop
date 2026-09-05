@@ -263,8 +263,10 @@ module.exports.activate = function (syntee) {
     const uiReg = withUi
       ? "\n  // Панель в правой части приложения (ui/panel.html).\n" +
         "  syntee.registerPanel({ id: '" + spec.id + "-panel', slot: 'right', title: " + JSON.stringify(spec.name) + ", entry: 'ui/panel.html' })\n" +
-        "  // RPC из панели: synteeBridge.call('ping', {...}) → хендлер ниже.\n" +
-        "  syntee.ui.handle('ping', async (args) => ({ pong: true, args }))\n"
+        "  // RPC из панели: synteeBridge.call('ping', {...}) → хендлеры ниже.\n" +
+        "  syntee.ui.handle('ping', async (args) => ({ pong: true, args }))\n" +
+        "  syntee.ui.handle('getData', async () => ({ items: ['пример 1', 'пример 2'], ts: Date.now() }))\n" +
+        "  // Push в панель: syntee.ui.emit('update', {...}) → synteeBridge.on('update', cb)\n"
       : ''
 
     return (
@@ -453,6 +455,7 @@ module.exports.activate = function (syntee) {
         'function registerHandlers(syntee) {',
         "  // RPC из панели: synteeBridge.call('ping', {...}) → хендлеры ниже.",
         "  syntee.ui.handle('ping', async (args) => ({ pong: true, args }))",
+        "  syntee.ui.handle('getData', async () => ({ items: ['пример 1', 'пример 2'], ts: Date.now() }))",
         "  // Push в панель: syntee.ui.emit('update', {...}) → synteeBridge.on('update', cb)",
         '}',
         '',
@@ -468,36 +471,15 @@ module.exports.activate = function (syntee) {
         '<link rel="stylesheet" href="css/panel.css">',
         '</head>',
         '<body>',
-        '  <h3>' + name + '</h3>',
-        '  <p>Панель плагина. RPC — через мост (js/bridge.js).</p>',
-        '  <pre id="out">…</pre>',
-        '  <button id="ping">ping → syntee.ui.handle</button>',
+        panelBodyHtml(spec),
         '  <script src="js/bridge.js"><\/script>',
         '  <script src="js/panel.js"><\/script>',
         '</body>',
         '</html>',
       ].join('\n')
-      files['ui/css/panel.css'] = [
-        '/* Стиль панели. CSS-переменные темы приходят от хоста. */',
-        'body { font-family: var(--font-main, system-ui); margin: 0; padding: 12px; background: transparent; color: var(--text, #eee); }',
-        'button { cursor: pointer; }',
-        'pre { white-space: pre-wrap; word-break: break-all; }',
-        '',
-      ].join('\n')
+      files['ui/css/panel.css'] = panelCss(spec.uiStyle)
       files['ui/js/bridge.js'] = buildBridgeJs()
-      files['ui/js/panel.js'] = [
-        '// Логика панели. Мост — js/bridge.js (synteeBridge.call / .on).',
-        "document.getElementById('ping').onclick = async () => {",
-        "  try { document.getElementById('out').textContent = JSON.stringify(await synteeBridge.call('ping', { hi: 1 })) }",
-        "  catch (e) { document.getElementById('out').textContent = 'ERR ' + e.message }",
-        '}',
-        '',
-        '// Push из плагина: syntee.ui.emit(\'update\', data)',
-        "synteeBridge.on('update', (data) => {",
-        "  document.getElementById('out').textContent = JSON.stringify(data)",
-        '})',
-        '',
-      ].join('\n')
+      files['ui/js/panel.js'] = panelLogicJs()
     }
 
     return files
@@ -548,57 +530,260 @@ module.exports.activate = function (syntee) {
     ].join('\n')
   }
 
+  // ── UI-шаблоны панелей (withUi) ─────────────────────────────────────────
+  // Два стиля (uiStyle): 'app' — нативный вид приложения (тема хоста,
+  // спокойные карточки); 'glass' — градиенты, свечение, стеклянные карточки.
+  // Оба: шим темы (CSS-переменные из postMessage хоста — iframe изолирован
+  // и не наследует переменные приложения), inline SVG-иконки, stat-карточки,
+  // демо-RPC (ping/getData) и push (update).
+
+  /** Inline SVG-иконки (stroke, как AppIcon приложения). */
+  function svgIcon(name, size) {
+    var s = size || 16
+    var paths = {
+      bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
+      activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
+      database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+      refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
+      play: '<polygon points="6 4 20 12 6 20 6 4"/>',
+      list: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+    }
+    return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (paths[name] || paths.bolt) + '</svg>'
+  }
+
+  /** Шим темы: сообщение хоста {theme:{accentColor,dark}} → CSS-переменные. */
+  function themeShimJs() {
+    return [
+      '// ── Тема хоста → CSS-переменные документа ──',
+      '// iframe изолирован (sandbox): переменные приложения НЕ наследуются,',
+      '// хост присылает тему postMessage-сообщением при загрузке и смене.',
+      'function applyTheme(t) {',
+      '  var s = document.documentElement.style',
+      '  s.setProperty("--accent", t.accentColor || "#22d3ee")',
+      '  s.setProperty("--text",   t.dark ? "#e6e6ec" : "#1c1c22")',
+      '  s.setProperty("--text-2", t.dark ? "#9aa0ae" : "#5b616e")',
+      '  s.setProperty("--bg",     t.dark ? "#141418" : "#f7f7f9")',
+      '  s.setProperty("--bg-2",   t.dark ? "#1d1d23" : "#ffffff")',
+      '  s.setProperty("--border", t.dark ? "rgba(255,255,255,.09)" : "rgba(0,0,0,.10)")',
+      '}',
+      'window.addEventListener("message", function (e) {',
+      '  var d = e.data',
+      '  if (d && d.source === "syntee-plugin-host" && d.theme) applyTheme(d.theme)',
+      '})',
+    ].join('\n')
+  }
+
+  /** Разметка панели (общая для обоих стилей и структур). */
+  function panelBodyHtml(spec) {
+    var name = spec.name || spec.id
+    var ver = spec.version || '0.1.0'
+    return [
+      '  <header class="ph">',
+      '    <div class="ph-ico">' + svgIcon('bolt', 18) + '</div>',
+      '    <div class="ph-txt">',
+      '      <div class="ph-title">' + name + '</div>',
+      '      <div class="ph-sub">v' + ver + ' · панель плагина</div>',
+      '    </div>',
+      '    <span class="ph-dot" id="dot" title="статус моста"></span>',
+      '  </header>',
+      '',
+      '  <section class="stats">',
+      '    <div class="stat"><span class="stat-ico">' + svgIcon('activity') + '</span><span><span class="stat-v" id="st-calls">—</span><span class="stat-l">вызовов</span></span></div>',
+      '    <div class="stat"><span class="stat-ico">' + svgIcon('clock') + '</span><span><span class="stat-v" id="st-time">—</span><span class="stat-l">обновлено</span></span></div>',
+      '    <div class="stat"><span class="stat-ico">' + svgIcon('database') + '</span><span><span class="stat-v" id="st-items">—</span><span class="stat-l">записей</span></span></div>',
+      '  </section>',
+      '',
+      '  <section class="acts">',
+      '    <button class="btn btn-a" id="btn-ping">' + svgIcon('play') + 'Пинг</button>',
+      '    <button class="btn" id="btn-data">' + svgIcon('refresh') + 'Данные</button>',
+      '  </section>',
+      '',
+      '  <section class="card">',
+      '    <div class="card-h">' + svgIcon('list') + 'Журнал</div>',
+      '    <div class="log" id="log" data-empty="1"><div class="log-empty">Нажми «Пинг» — ответ плагина появится здесь.</div></div>',
+      '  </section>',
+      '',
+      '  <footer class="foot">RPC: <code>synteeBridge.call(...)</code> · push: <code>synteeBridge.on(\'update\', cb)</code></footer>',
+    ].join('\n')
+  }
+
+  /** Стили панели: 'app' (нативный) или 'glass' (градиенты/свечение). */
+  function panelCss(style) {
+    var lines = [
+      '/* Стиль панели. Переменные темы ставит шим (panel.js / theme-сообщение хоста). */',
+      ':root { --accent:#22d3ee; --text:#e6e6ec; --text-2:#9aa0ae; --bg:#141418; --bg-2:#1d1d23; --border:rgba(255,255,255,.09); }',
+      '* { box-sizing: border-box; }',
+      'html, body { height: 100%; }',
+      'body {',
+      '  margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 13px;',
+      '  color: var(--text); background: var(--bg);',
+      '  display: flex; flex-direction: column; min-height: 100vh;',
+      '}',
+      '',
+      '/* Шапка */',
+      '.ph { display: flex; align-items: center; gap: 10px; padding: 14px 14px 10px; }',
+      '.ph-ico {',
+      '  width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;',
+      '  display: flex; align-items: center; justify-content: center;',
+      '  background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);',
+      '}',
+      '.ph-title { font-weight: 700; font-size: 14px; line-height: 1.2; }',
+      '.ph-sub { font-size: 11px; color: var(--text-2); }',
+      '.ph-dot { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text-2); opacity: .45; }',
+      '.ph-dot.on { background: #4ade80; opacity: 1; box-shadow: 0 0 8px rgba(74, 222, 128, .55); }',
+      '',
+      '/* Stat-карточки */',
+      '.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 0 14px; }',
+      '.stat {',
+      '  background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px;',
+      '  display: flex; gap: 8px; align-items: center; min-width: 0;',
+      '}',
+      '.stat-ico { color: var(--accent); display: flex; flex-shrink: 0; }',
+      '.stat-v { display: block; font-weight: 700; font-size: 14px; line-height: 1.15; }',
+      '.stat-l { display: block; font-size: 10px; color: var(--text-2); }',
+      '',
+      '/* Кнопки */',
+      '.acts { display: flex; gap: 8px; padding: 12px 14px 0; }',
+      '.btn {',
+      '  flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px;',
+      '  padding: 9px 12px; border-radius: 8px; cursor: pointer;',
+      '  border: 1px solid var(--border); background: var(--bg-2); color: var(--text);',
+      '  font: 600 12px system-ui, sans-serif;',
+      '  transition: filter .15s ease, border-color .15s ease, transform .1s ease;',
+      '}',
+      '.btn:hover { filter: brightness(1.15); }',
+      '.btn:active { transform: scale(.98); }',
+      '.btn-a { background: var(--accent); border-color: transparent; color: #0b0b0e; }',
+      '',
+      '/* Карточка журнала */',
+      '.card {',
+      '  margin: 12px 14px; background: var(--bg-2); border: 1px solid var(--border);',
+      '  border-radius: 10px; overflow: hidden; flex: 1; display: flex; flex-direction: column; min-height: 110px;',
+      '}',
+      '.card-h {',
+      '  display: flex; align-items: center; gap: 7px; padding: 9px 12px;',
+      '  font-size: 10px; font-weight: 700; color: var(--text-2);',
+      '  text-transform: uppercase; letter-spacing: .6px; border-bottom: 1px solid var(--border);',
+      '}',
+      '.card-h svg { color: var(--accent); }',
+      '.log { padding: 8px 12px; overflow-y: auto; flex: 1; font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 11px; }',
+      '.log-empty { color: var(--text-2); }',
+      '.log-row { padding: 3px 0; display: flex; gap: 8px; word-break: break-word; }',
+      '.log-t { color: var(--text-2); flex-shrink: 0; }',
+      '.log-row--err { color: #f87171; }',
+      '',
+      '/* Подвал */',
+      '.foot { padding: 6px 14px 12px; font-size: 10px; color: var(--text-2); }',
+      '.foot code { font-family: ui-monospace, monospace; background: rgba(127, 127, 127, .16); padding: 1px 4px; border-radius: 3px; }',
+    ]
+    if (style === 'glass') {
+      lines = lines.concat([
+        '',
+        '/* ── glass: градиенты, свечение, стеклянные карточки ── */',
+        'body {',
+        '  background:',
+        '    radial-gradient(900px 380px at 85% -10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent),',
+        '    radial-gradient(600px 300px at -10% 110%, color-mix(in srgb, var(--accent) 10%, transparent), transparent),',
+        '    var(--bg);',
+        '}',
+        '.ph-ico {',
+        '  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 45%, #a78bfa));',
+        '  color: #fff; box-shadow: 0 4px 18px color-mix(in srgb, var(--accent) 45%, transparent);',
+        '}',
+        '.ph-title {',
+        '  background: linear-gradient(90deg, var(--text), var(--accent));',
+        '  -webkit-background-clip: text; background-clip: text; color: transparent;',
+        '}',
+        '.stat, .card {',
+        '  background: color-mix(in srgb, var(--bg-2) 72%, transparent);',
+        '  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);',
+        '  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));',
+        '}',
+        '.btn-a {',
+        '  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #a78bfa));',
+        '  box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 35%, transparent);',
+        '}',
+        '.ph-dot.on { box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 70%, #4ade80); }',
+      ])
+    }
+    return lines.join('\n') + '\n'
+  }
+
+  /** Логика панели: тема + демо-RPC (ping/getData) + push (update). */
+  function panelLogicJs() {
+    return [
+      '// Логика панели. Мост — bridge.js (synteeBridge.call / .on).',
+      themeShimJs(),
+      '',
+      '// ── Демо: RPC в процесс плагина ──',
+      'var $ = function (id) { return document.getElementById(id) }',
+      'var calls = 0',
+      '',
+      'function log(msg, err) {',
+      '  var el = $("log")',
+      '  if (el.getAttribute("data-empty")) { el.textContent = ""; el.removeAttribute("data-empty") }',
+      '  var row = document.createElement("div")',
+      '  row.className = "log-row" + (err ? " log-row--err" : "")',
+      '  var t = document.createElement("span")',
+      '  t.className = "log-t"',
+      '  t.textContent = new Date().toLocaleTimeString("ru")',
+      '  row.appendChild(t)',
+      '  row.appendChild(document.createTextNode(msg))',
+      '  el.appendChild(row)',
+      '  el.scrollTop = el.scrollHeight',
+      '}',
+      '',
+      'function bridgeOk() { $("dot").classList.add("on") }',
+      '',
+      '$("btn-ping").onclick = async function () {',
+      '  try {',
+      '    var res = await synteeBridge.call("ping", { hi: 1 })',
+      '    bridgeOk()',
+      '    calls++',
+      '    $("st-calls").textContent = String(calls)',
+      '    log("ping → " + JSON.stringify(res))',
+      '  } catch (e) { log("ping: " + e.message, true) }',
+      '}',
+      '',
+      '$("btn-data").onclick = async function () {',
+      '  try {',
+      '    var res = await synteeBridge.call("getData", {})',
+      '    bridgeOk()',
+      '    calls++',
+      '    $("st-calls").textContent = String(calls)',
+      '    $("st-items").textContent = String((res && res.items ? res.items.length : 0))',
+      '    $("st-time").textContent = new Date().toLocaleTimeString("ru")',
+      '    log("getData → " + JSON.stringify(res))',
+      '  } catch (e) { log("getData: " + e.message, true) }',
+      '}',
+      '',
+      '// ── Push из плагина: syntee.ui.emit(\'update\', data) ──',
+      'synteeBridge.on("update", function (data) {',
+      '  log("update ← " + JSON.stringify(data))',
+      '  $("st-time").textContent = new Date().toLocaleTimeString("ru")',
+      '})',
+      '',
+    ].join('\n')
+  }
+
+  /** Панель для single-структуры: один self-contained HTML. */
   function buildPanelHtml(spec) {
     return [
       '<!DOCTYPE html>',
       '<html lang="ru">',
       '<head>',
       '<meta charset="UTF-8">',
-      '<title>' + spec.name + '</title>',
+      '<title>' + (spec.name || spec.id) + '</title>',
       '<style>',
-      '  body { font-family: var(--font-main, system-ui); margin: 0; padding: 12px; background: transparent; color: var(--text, #eee); }',
-      '  button { cursor: pointer; }',
+      panelCss(spec.uiStyle),
       '</style>',
       '</head>',
       '<body>',
-      '  <h3>' + spec.name + '</h3>',
-      '  <p>Панель плагина. Общение с процессом плагина — через RPC-мост:</p>',
-      '  <pre id="out">…</pre>',
-      '  <button id="ping">ping → syntee.ui.handle</button>',
+      panelBodyHtml(spec),
       '  <script>',
-      '    // ── Мост synteeBridge (postMessage-протокол) ──',
-      '    const synteeBridge = (() => {',
-      '      let seq = 0',
-      '      const pending = new Map()',
-      '      const handlers = new Map()',
-      '      window.addEventListener("message", (e) => {',
-      '        const d = e.data',
-      '        if (!d || d.source !== "syntee-plugin-host") return',
-      '        if (d.rpc && pending.has(d.id)) {',
-      '          const p = pending.get(d.id); pending.delete(d.id)',
-      '          d.ok ? p.resolve(d.result) : p.reject(new Error(d.error || "RPC error"))',
-      '        } else if (d.data !== undefined) {',
-      '          ;(handlers.get(d.method || "*") || []).forEach(cb => { try { cb(d.data) } catch (err) { console.error(err) } })',
-      '        }',
-      '      })',
-      '      return {',
-      '        call(method, args) {',
-      '          const id = "rpc-" + (++seq)',
-      '          return new Promise((resolve, reject) => {',
-      '            pending.set(id, { resolve, reject })',
-      '            parent.postMessage({ source: "syntee-plugin", rpc: true, id, method, args }, "*")',
-      '          })',
-      '        },',
-      '        on(method, cb) {',
-      '          if (!handlers.has(method)) handlers.set(method, [])',
-      '          handlers.get(method).push(cb)',
-      '        },',
-      '      }',
-      '    })()',
-      '    document.getElementById("ping").onclick = async () => {',
-      '      try { document.getElementById("out").textContent = JSON.stringify(await synteeBridge.call("ping", { hi: 1 })) }',
-      '      catch (e) { document.getElementById("out").textContent = "ERR " + e.message }',
-      '    }',
+      buildBridgeJs(),
+      panelLogicJs(),
       '  <\/script>',
       '</body>',
       '</html>',
@@ -784,7 +969,7 @@ module.exports.activate = function (syntee) {
       'runtime:"node" (по умолчанию): structure:"multi" (рекомендуется для всего кроме тривиальных) — многофайловая архитектура dist/index.js + tools.js + commands.js + state.js (+ ui.js и ui/ при withUi); structure:"single" — всё в одном index.js. ' +
       'runtime:"python" — логика на Python (dist/main.py, SDK from syntee import syntee; нужен Python 3.8+, зависимости из requirements ставятся автоматически). ' +
       'Параметры: id (обязательно, [a-zA-Z][a-zA-Z0-9_-]*), runtime ("node"|"python"), structure ("single"|"multi", только для node), name, description, promptDescription (~200 символов), permissions (массив из секции permissions доков), ' +
-      'tools: [{name, description, parameters(JSON Schema)}], commands: [{name, description}], requirements: [pip-спецификации, только python], withUi: bool, config: [{key,label,type,default}], overwrite: bool. ' +
+      'tools: [{name, description, parameters(JSON Schema)}], commands: [{name, description}], requirements: [pip-спецификации, только python], withUi: bool, uiStyle ("app"|"glass" — стиль панели: нативный приложения или glass с градиентами/свечением), config: [{key,label,type,default,options,min,max,step}], overwrite: bool. ' +
       'Перед созданием сложного плагина прочитай plugin_docs(section=architecture), для Python — section=runtimes.',
     parameters: {
       type: 'object',
@@ -831,7 +1016,12 @@ module.exports.activate = function (syntee) {
             required: ['name'],
           },
         },
-        withUi: { type: 'boolean', description: 'Сгенерировать UI-панель (ui/panel.html + registerPanel)' },
+        withUi: { type: 'boolean', description: 'Сгенерировать UI-панель (ui/panel.html + registerPanel): готовый дизайн с темой приложения, SVG-иконками, stat-карточками и демо-RPC' },
+        uiStyle: {
+          type: 'string',
+          enum: ['app', 'glass'],
+          description: 'Стиль UI-панели (только с withUi): "app" — нативный вид приложения (тема хоста, спокойные карточки); "glass" — градиенты, свечение, стеклянные карточки. По умолчанию "app"',
+        },
         config: { type: 'array', 'description': 'Схема настроек (форма в карточке плагина)' },
         overwrite: { type: 'boolean', description: 'Заменить существующий плагин с этим id' },
         version: { type: 'string' },

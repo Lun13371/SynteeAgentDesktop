@@ -12,11 +12,12 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import AppIcon from '../AppIcon/AppIcon'
 import { useExtensionsStore } from '../../../store/extensions.store'
 import { usePluginPanelStore } from '../../../store/pluginPanel.store'
 import PluginIframe from '../PluginSlot/PluginIframe'
-import type { PluginRuntime, ExtensionScope } from '../../../../../shared/types'
+import type { PluginRuntime, ExtensionScope, PluginConfigField } from '../../../../../shared/types'
 import './PluginsTab.css'
 
 /** Текстовая подпись области применения (локальная копия scopeLabel). */
@@ -369,7 +370,7 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                         <span className="ext-card-row-label">Описание</span>
                       </div>
                       <div className="plugin-readme">
-                        <ReactMarkdown>{p.readmeContent}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{p.readmeContent}</ReactMarkdown>
                       </div>
                     </>
                   )}
@@ -514,12 +515,32 @@ const PERMISSION_LABELS: Record<string, string> = {
   'hooks': 'хуки контента (сообщения, тулы, промпт)',
 }
 
-/** Форма настроек плагина (манифест config → поля, значения → pluginsConfig). */
+/** Нормализация options поля: строки или {value,label} → {value,label}[]. */
+function configOptions(f: PluginConfigField): Array<{ value: string; label: string }> {
+  return (f.options ?? []).map(o => (typeof o === 'string' ? { value: o, label: o } : o))
+}
+
+/** Форма настроек плагина (манифест config → поля, значения → pluginsConfig).
+ *
+ *  Типы контролов: string/password/number/boolean (тумблер)/select (список)/
+ *  multiselect (чипы, значение string[])/textarea/color. Кнопка «По умолчанию»
+ *  сбрасывает значения к default из схемы.
+ */
 function PluginConfigForm({ plugin, onSaved }: { plugin: PluginRuntime; onSaved: () => void }) {
   const fields = plugin.manifest.config ?? []
-  const [values, setValues] = useState<Record<string, unknown>>(() => ({ ...plugin.configValues }))
+  const defaults = Object.fromEntries(fields.map(f => [f.key, f.default ?? (f.type === 'multiselect' ? [] : '')]))
+  const [values, setValues] = useState<Record<string, unknown>>(() => ({ ...defaults, ...plugin.configValues }))
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+
+  const dirty = fields.some(f => JSON.stringify(values[f.key]) !== JSON.stringify(plugin.configValues[f.key]))
+
+  const set = (key: string, v: unknown) => setValues(prev => ({ ...prev, [key]: v }))
+
+  const toggleMulti = (f: PluginConfigField, value: string) => {
+    const cur = Array.isArray(values[f.key]) ? (values[f.key] as string[]) : []
+    set(f.key, cur.includes(value) ? cur.filter(v => v !== value) : [...cur, value])
+  }
 
   const save = async () => {
     setSaving(true)
@@ -539,34 +560,112 @@ function PluginConfigForm({ plugin, onSaved }: { plugin: PluginRuntime; onSaved:
         <span className="ext-card-row-label">Настройки</span>
       </div>
       <div className="plugin-config-form">
-        {fields.map(f => (
-          <div key={f.key} className="plugin-config-field">
-            <label className="plugin-config-label" title={f.description}>{f.label}</label>
-            {f.type === 'boolean' ? (
-              <button
-                className={`ext-toggle${values[f.key] ? ' ext-toggle--on' : ''}`}
-                onClick={() => setValues(v => ({ ...v, [f.key]: !v[f.key] }))}
-                aria-label={f.label}
-              />
-            ) : (
-              <input
-                className="plugin-config-input"
-                type={f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}
-                value={String(values[f.key] ?? '')}
-                placeholder={f.placeholder}
-                onChange={e => setValues(v => ({
-                  ...v,
-                  [f.key]: f.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value,
-                }))}
-              />
-            )}
-            {f.description && <div className="plugin-config-hint">{f.description}</div>}
-          </div>
-        ))}
-        <button className="ext-action-btn ext-action-btn--primary" onClick={save} disabled={saving}>
-          <AppIcon name={saved ? 'check' : 'save'} size="xs" />
-          {saved ? 'Сохранено' : saving ? 'Сохранение…' : 'Сохранить'}
-        </button>
+        {fields.map(f => {
+          const opts = configOptions(f)
+          // boolean — компактный ряд: подпись слева, тумблер справа.
+          if (f.type === 'boolean') {
+            return (
+              <div key={f.key} className="plugin-config-field plugin-config-field--bool">
+                <div className="plugin-config-bool-row" title={f.description}>
+                  <span className="plugin-config-label">
+                    {f.label}
+                    {values[f.key] ? <span className="plugin-config-bool-on">вкл</span> : null}
+                  </span>
+                  <button
+                    className={`ext-toggle${values[f.key] ? ' ext-toggle--on' : ''}`}
+                    onClick={() => set(f.key, !values[f.key])}
+                    aria-label={f.label}
+                  />
+                </div>
+                {f.description && <div className="plugin-config-hint">{f.description}</div>}
+              </div>
+            )
+          }
+          return (
+            <div key={f.key} className="plugin-config-field">
+              <label className="plugin-config-label" title={f.description}>{f.label}</label>
+
+              {f.type === 'select' ? (
+                <select
+                  className="plugin-config-input plugin-config-select"
+                  value={String(values[f.key] ?? '')}
+                  onChange={e => set(f.key, e.target.value)}
+                >
+                  {!opts.some(o => o.value === String(values[f.key] ?? '')) && <option value="">{f.placeholder || '— выбрать —'}</option>}
+                  {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              ) : f.type === 'multiselect' ? (
+                <div className="plugin-config-chips">
+                  {opts.length > 0 ? opts.map(o => {
+                    const cur = Array.isArray(values[f.key]) ? (values[f.key] as string[]) : []
+                    return (
+                      <button
+                        key={o.value}
+                        className={`plugin-config-chip${cur.includes(o.value) ? ' plugin-config-chip--on' : ''}`}
+                        onClick={() => toggleMulti(f, o.value)}
+                      >{o.label}</button>
+                    )
+                  }) : <span className="plugin-config-hint">options не заданы</span>}
+                </div>
+              ) : f.type === 'textarea' ? (
+                <textarea
+                  className="plugin-config-input plugin-config-textarea"
+                  rows={3}
+                  value={String(values[f.key] ?? '')}
+                  placeholder={f.placeholder}
+                  onChange={e => set(f.key, e.target.value)}
+                />
+              ) : f.type === 'color' ? (
+                <div className="plugin-config-color">
+                  <input
+                    type="color"
+                    className="plugin-config-color-picker"
+                    value={/^#[0-9a-fA-F]{6}$/.test(String(values[f.key] ?? '')) ? String(values[f.key]) : '#22d3ee'}
+                    onChange={e => set(f.key, e.target.value)}
+                  />
+                  <input
+                    className="plugin-config-input plugin-config-color-hex"
+                    type="text"
+                    value={String(values[f.key] ?? '')}
+                    placeholder="#rrggbb"
+                    onChange={e => set(f.key, e.target.value)}
+                  />
+                </div>
+              ) : (
+                <input
+                  className="plugin-config-input"
+                  type={f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}
+                  value={String(values[f.key] ?? '')}
+                  placeholder={f.placeholder}
+                  min={f.min}
+                  max={f.max}
+                  step={f.step}
+                  onChange={e => setValues(v => ({
+                    ...v,
+                    [f.key]: f.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value,
+                  }))}
+                />
+              )}
+
+              {f.description && <div className="plugin-config-hint">{f.description}</div>}
+            </div>
+          )
+        })}
+        <div className="plugin-config-actions">
+          <button
+            className="ext-action-btn"
+            onClick={() => setValues({ ...defaults })}
+            disabled={!dirty}
+            title="Вернуть значения по умолчанию из схемы"
+          >
+            <AppIcon name="refreshCw" size="xs" />
+            По умолчанию
+          </button>
+          <button className="ext-action-btn ext-action-btn--primary" onClick={save} disabled={saving || !dirty}>
+            <AppIcon name={saved ? 'check' : 'save'} size="xs" />
+            {saved ? 'Сохранено' : saving ? 'Сохранение…' : 'Сохранить'}
+          </button>
+        </div>
       </div>
     </>
   )
