@@ -61,9 +61,32 @@ module.exports.activate = (syntee) => {
 
 ## Config-поля
 
-`{ key, label, type: 'string' | 'password' | 'number' | 'boolean', default?, placeholder?, description? }`
+Декларативная схема настроек — хост сам рисует форму в карточке плагина (вкладка «Плагины» → «Подробнее»). Пользователь редактирует значения в UI, плагин читает их через `syntee.config.get(key)` / `getAll()`.
 
-Значения редактирует пользователь в UI; плагин читает их через `syntee.config.get(key)` / `getAll()`.
+```jsonc
+"config": [
+  { "key": "apiKey",   "label": "API-ключ",       "type": "password", "default": "",  "placeholder": "sk-…", "description": "Ключ сервиса" },
+  { "key": "limit",    "label": "Лимит",           "type": "number",   "default": 10, "min": 1, "max": 100, "step": 1 },
+  { "key": "verbose",  "label": "Подробный лог",   "type": "boolean",  "default": false },
+  { "key": "mode",     "label": "Режим",           "type": "select",   "default": "auto",
+    "options": ["auto", "fast", "precise"] },
+  { "key": "sources",  "label": "Источники",       "type": "multiselect", "default": ["github"],
+    "options": [{ "value": "github", "label": "GitHub" }, { "value": "gitlab", "label": "GitLab" }] },
+  { "key": "prompt",   "label": "Промпт",          "type": "textarea", "placeholder": "Текст…" },
+  { "key": "accent",   "label": "Акцент",          "type": "color",    "default": "#22d3ee" }
+]
+```
+
+| Поле | Типы | Описание |
+|---|---|---|
+| `type` | `string` \| `password` \| `number` \| `boolean` \| `select` \| `multiselect` \| `textarea` \| `color` | Тип контрола: текст / скрытый текст / число / тумблер / выпадающий список / чипы (несколько сразу) / многострочный текст / цвет |
+| `default` | `string` \| `number` \| `boolean` \| `string[]` | Значение по умолчанию (для `multiselect` — массив). Кнопка «По умолчанию» в форме сбрасывает к нему |
+| `placeholder` | `string` | Подсказка в поле |
+| `description` | `string` | Подсказка под полем (и tooltip) |
+| `options` | `(string \| {value,label})[]` | Варианты для `select` / `multiselect` |
+| `min`, `max`, `step` | `number` | Границы и шаг для `type:'number'` |
+
+Для сложных настроек (зависимые поля, валидация, свой layout) — см. `configUi` выше: свой HTML вместо декларативной формы.
 
 ## Правила entry (main)
 

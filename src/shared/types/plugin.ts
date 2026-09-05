@@ -40,15 +40,38 @@ export type PluginPermission =
                     // chat:before-send, chat:completed, message:delta,
                     // tool:call, tool:result, prompt:before-build
 
+/** Вариант выбора для select/multiselect-полей настроек. */
+export interface PluginConfigOption {
+  value: string
+  label: string
+}
+
 /** Поле настроек плагина — декларативная схема в манифесте,
  *  автоматически рендерится формой в карточке плагина. */
 export interface PluginConfigField {
   key: string
   label: string
-  type: 'string' | 'password' | 'number' | 'boolean'
-  default?: string | number | boolean
+  /**
+   * Тип контрола формы:
+   *  - 'string'      — однострочный текст
+   *  - 'password'    — текст со скрытием (API-ключи, токены)
+   *  - 'number'      — число (min/max/step)
+   *  - 'boolean'     — тумблер
+   *  - 'select'      — выпадающий список (options)
+   *  - 'multiselect' — несколько вариантов сразу (чипы; значение — string[])
+   *  - 'textarea'    — многострочный текст
+   *  - 'color'       — цвет (#rrggbb)
+   */
+  type: 'string' | 'password' | 'number' | 'boolean' | 'select' | 'multiselect' | 'textarea' | 'color'
+  default?: string | number | boolean | string[]
   placeholder?: string
   description?: string
+  /** Варианты для select/multiselect (строки или {value,label}). */
+  options?: Array<string | PluginConfigOption>
+  /** Границы и шаг для type:'number'. */
+  min?: number
+  max?: number
+  step?: number
 }
 
 /** Манифест плагина — plugin.json в корне папки плагина. */

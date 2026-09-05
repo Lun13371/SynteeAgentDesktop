@@ -119,7 +119,46 @@ const { theme, accentColor, dark } = await syntee.ui.getTheme()
 syntee.on('theme:changed', (p) => { /* { theme, accentColor, dark } */ })
 ```
 
-При загрузке и смене темы хост сам шлёт в iframe `{source:'syntee-plugin-host', theme:{…}}` — шим выше можно расширить. Используй CSS-переменные (`--text`, `--bg`, `--accent`…) для нативного вида.
+⚠️ **Важно:** iframe изолирован (sandbox без `allow-same-origin`) — CSS-переменные приложения (`--bg`, `--text`, `--accent`…) **не наследуются** в документ плагина. Хост присылает тему сообщением `{source:'syntee-plugin-host', theme:{theme, accentColor, dark}}` при загрузке iframe и при каждой смене темы/акцента. Чтобы выглядеть «как в проге» — применяй её к `:root` сам:
+
+```js
+// шим темы: сообщение хоста → CSS-переменные документа
+function applyTheme(t) {
+  const s = document.documentElement.style
+  s.setProperty('--accent', t.accentColor)
+  s.setProperty('--text',   t.dark ? '#e6e6ec' : '#1c1c22')
+  s.setProperty('--text-2', t.dark ? '#9aa0ae' : '#5b616e')
+  s.setProperty('--bg',     t.dark ? '#141418' : '#f7f7f9')
+  s.setProperty('--bg-2',   t.dark ? '#1c1c22' : '#ffffff')
+  s.setProperty('--border', t.dark ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.10)')
+}
+window.addEventListener('message', (e) => {
+  const d = e.data
+  if (d && d.source === 'syntee-plugin-host' && d.theme) applyTheme(d.theme)
+})
+```
+
+Дальше в CSS — `color: var(--text)`, `border: 1px solid var(--border)`, `background: var(--accent)` и т.д. Панель будет перекрашиваться вместе с приложением (27 тем + кастомный акцент).
+
+## Дизайн панелей: как выглядеть нативно
+
+Шаблоны `create_plugin` (withUi) уже содержат готовый каркас — мост, тему, SVG-иконки, демо-RPC. Правила хорошего тона:
+
+- **Цвета — только через CSS-переменные** из шима темы выше. Не хардкодь тёмные цвета — панель должна работать и в светлых темах.
+- **Шрифт** — `system-ui, -apple-system, 'Segoe UI', sans-serif` (как у приложения).
+- **Радиусы** — 8–12px у карточек, 6–8px у кнопок/инпутов.
+- **Иконки — inline SVG** (stroke, `stroke-width: 1.75`, размер 16–18px). Внешние icon-пакеты не грузить — CSP разрешает только свою папку:
+
+```html
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+     stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>  <!-- молния -->
+</svg>
+```
+
+- **Layout**: шапка (иконка + название), сетка stat-карточек, ряд action-кнопок, список. Скролл — `overflow-y: auto` у контента, шапка фиксирована.
+- **Состояния**: hover у кнопок (`filter: brightness(1.1)`), loading (спиннер или «…»), ошибки — красным + текст, не alert.
+- **Данные** — только через `synteeBridge.call(...)`; рендер после ответа, до ответа — skeleton/placeholder.
 
 ## Кастомный UI настроек — configUi
 
