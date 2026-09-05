@@ -27,6 +27,11 @@ const all = await syntee.config.getAll()              // { apiKey: '…', limit:
 
 ```js
 const txt = await syntee.fs.readFile('C:/data/notes.txt')        // строка (utf-8)
+
+// Бинарные файлы (картинки и т.п.) — base64:
+const b64 = await syntee.fs.readFile('C:/pic.png', { encoding: 'base64' })
+await syntee.fs.writeFile(out + '/copy.png', b64, { encoding: 'base64' })
+
 await syntee.fs.writeFile(syntee.pluginDir + '/cache.json', '{}')
 const entries = await syntee.fs.listDir('C:/Projects')           // string[] имён
 const st = await syntee.fs.stat(path)                            // { exists, isFile, isDir, size, mtime }
@@ -93,8 +98,29 @@ syntee.bus.emit('my-event', { data: 1 })        // всем запущенным
 syntee.bus.on('my-event', (data) => { /* … */ })  // = syntee.on('bus:my-event', …)
 ```
 
+## log — журнал плагина
+
+Журнал виден в карточке плагина (вкладка Плагины). Вызов как функции = info:
+
+```js
+syntee.log('обычная запись')            // level: info
+syntee.log.info('информация')
+syntee.log.warn('warning: лимит почти исчерпан')
+syntee.log.error('ошибка: API недоступен')
+```
+
+Ошибки fire-and-forget API (занятый шорткат, недоступный порт и т.п.) автоматически попадают в журнал с level `error`.
+
 ## shell (`net`)
 
 ```js
 await syntee.shell.openExternal('https://example.com')   // в системном браузере
+```
+
+## net.fetch — бинарные ответы (`net`)
+
+```js
+// Картинка/архив: binary → bodyBase64 (лимит 1 МБ):
+const r = await syntee.net.fetch('https://example.com/avatar.png', { binary: true })
+const b64 = r.bodyBase64   // base64 бинарных данных
 ```

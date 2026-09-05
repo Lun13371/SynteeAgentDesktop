@@ -40,7 +40,21 @@
 | `configUi` | string | | Кастомный UI настроек (HTML-iframe ВМЕСТО декларативной формы `config`). Общается через `synteeBridge.call` → `syntee.ui.handle`, сохраняет через свой хендлер |
 | `permissions` | string[] | | Права (см. секцию permissions). Неизвестные права молча вырезаются лоадером |
 | `config` | Field[] | | Декларативная схема настроек — форма в карточке плагина. Значения читаются через `syntee.config.get(key)` |
+| `activation` | string[] | | События активации (пока информационные; дефолт `onLoad`). Задел: `'onLoad'`, `'chat:message'`, `'command:<name>'` |
+| `apiVersion` | string | | Версия plugin API, под которую написан плагин (`'1'` — текущая). При мажорных изменениях API хост предупредит в журнале |
 | `builtin` | boolean | | Только для встроенных плагинов (ставится приложением). Не указывай в своих |
+
+## Корневые поля объекта syntee (в activate)
+
+Кроме методов API, объект `syntee` несёт метаданные:
+
+```js
+module.exports.activate = (syntee) => {
+  syntee.pluginDir     // абсолютный путь до папки плагина (свои ресурсы/файлы)
+  syntee.permissions   // string[] — права, реально выданные плагину (после consent)
+  syntee.version       // версия хоста (приложения) — для совместимости API
+}
+```
 
 ## Config-поля
 

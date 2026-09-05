@@ -430,14 +430,30 @@ function tryParsePluginWidget(content: string): PluginUiWidgetPayload | null {
     const obj = JSON.parse(t) as PluginUiWidgetPayload
     if (!obj || obj.__plugin_ui__ !== true) return null
     if (typeof obj.pluginId !== 'string') return null
-    // kind='diff' — нативный виджет без iframe: entry не обязателен.
+    // kind='diff' — нативный diff-виджет без iframe: entry не обязателен.
+    // kind='badge' — инлайн-бейдж (пилюля): нужен text, entry не нужен.
     const kind = obj.kind ?? 'iframe'
     if (kind === 'iframe' && typeof obj.entry !== 'string') return null
     if (kind === 'diff' && typeof obj.diff !== 'string') return null
+    if (kind === 'badge' && typeof obj.text !== 'string') return null
     return obj
   } catch {
     return null
   }
+}
+
+/** Инлайн-бейдж плагина (kind='badge'): компактная пилюля в сообщении —
+ *  статус/результат без отдельного iframe-виджета. */
+function PluginBadgeWidget({ widget }: { widget: PluginUiWidgetPayload }) {
+  return (
+    <span
+      className="plugin-inline-badge"
+      style={widget.color ? { borderColor: widget.color, color: widget.color } : undefined}
+      title={widget.pluginId}
+    >
+      {widget.text}
+    </span>
+  )
 }
 
 function PluginDiffWidget({ widget }: { widget: PluginUiWidgetPayload }) {
@@ -473,6 +489,8 @@ function PluginInlineWidget({ widget }: { widget: PluginUiWidgetPayload }) {
   const kind = widget.kind ?? 'iframe'
   // kind='diff' — нативный diff-виджет хоста (iframe не грузим).
   if (kind === 'diff') return <PluginDiffWidget widget={widget} />
+  // kind='badge' — инлайн-пилюля (декорация сообщения без iframe).
+  if (kind === 'badge') return <PluginBadgeWidget widget={widget} />
   const height = typeof widget.height === 'number' ? widget.height : 260
   return (
     <div className="plugin-inline-widget" style={{ height }}>

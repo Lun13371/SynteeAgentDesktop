@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { join } from 'path'
+import { join, relative, isAbsolute } from 'path'
 
 // ── ВАЖНО: setPath ДО любых импортов которые создают electron-store ──
 // electron-store при создании читает app.getPath('userData'). Если запустить
@@ -95,7 +95,11 @@ function handlePluginProtocol(request: Request): Response {
       return new Response('Plugin not found', { status: 404 })
     }
     const filePath = join(pluginDir, relPath)
-    if (!filePath.startsWith(pluginDir)) {
+    // Path traversal: путь обязан оставаться ВНУТРИ pluginDir.
+    // Префиксной проверки startsWith(pluginDir) недостаточно (...\pluginsX
+    // начинается с ...\plugins) — проверяем через relative().
+    const relToDir = relative(pluginDir, filePath)
+    if (relToDir.startsWith('..') || isAbsolute(relToDir)) {
       return new Response('Forbidden', { status: 403 })
     }
     const st = statSync(filePath)
@@ -103,8 +107,25 @@ function handlePluginProtocol(request: Request): Response {
       return new Response('Not found', { status: 404 })
     }
     const mime = PLUGIN_UI_MIME[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+    // Defense-in-depth: CSP запрещает загрузку УДАЛЁННЫХ скриптов/объектов/
+    // вложенных iframe со страниц плагинов (инъекция удалённого кода в UI
+    // плагина). Инлайн-скрипты разрешены — HTML плагинов одностраничные.
+    // Картинки/медиа с https разрешены (легитимный кейс: иконки из API).
+    const csp = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' https: data: blob:",
+      "media-src 'self' https: data: blob:",
+      "connect-src 'self' https: ws: wss:",
+      "font-src 'self' data:",
+      "object-src 'none'",
+      "frame-src 'none'",
+      "base-uri 'none'",
+      "form-action 'self'",
+    ].join('; ')
     return new Response(readFileSync(filePath), {
-      headers: { 'Content-Type': mime },
+      headers: { 'Content-Type': mime, 'Content-Security-Policy': csp },
     })
   } catch {
     return new Response('Not found', { status: 404 })

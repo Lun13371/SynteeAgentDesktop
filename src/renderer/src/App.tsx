@@ -79,6 +79,7 @@ import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
 import PluginPanel from './components/ui/PluginPanel/PluginPanel'
 import PluginModalHost from './components/ui/PluginModalHost/PluginModalHost'
+import PluginChatOverlayHost from './components/ui/PluginChatOverlayHost/PluginChatOverlayHost'
 import PluginPageHost from './components/ui/PluginPageHost/PluginPageHost'
 import PluginBottomHost from './components/ui/PluginBottomHost/PluginBottomHost'
 import PluginStatusBar from './components/ui/PluginStatusBar/PluginStatusBar'
@@ -1601,6 +1602,7 @@ export default function App() {
             <ToastContainer />
             <PluginPanel />
             <PluginModalHost />
+            <PluginChatOverlayHost />
             <AgentConfirmDialog />
             <QuestionPanel />
             <UpdateAvailableModal open={updateModalOpen} onClose={() => setUpdateModalOpen(false)} />

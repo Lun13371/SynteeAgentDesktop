@@ -872,6 +872,9 @@ const synteeAPI = {
     // Возвращает { allowed, content, reason? }.
     beforeSend: (params: { chatId: string; content: string }) =>
       ipcRenderer.invoke('plugins:beforeSend', params),
+    // Панель плагина открыта/закрыта → событие panel:opened/closed в процесс.
+    panelLifecycle: (params: { pluginId: string; panelId: string; action: 'opened' | 'closed' }) =>
+      ipcRenderer.invoke('plugins:panelLifecycle', params),
     // Тема сменилась → main рассылает theme:changed в процессы плагинов.
     themeChanged: (params: { theme: string; accentColor: string }) =>
       ipcRenderer.invoke('plugins:themeChanged', params),

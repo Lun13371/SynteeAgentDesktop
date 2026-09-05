@@ -70,6 +70,7 @@ module.exports.deactivate = function () {}
 ```
 create_plugin({
   id: "my-plugin",
+  structure: "multi",        // многофайловая архитектура — дефолт для всего кроме тривиального
   name: "My Plugin",
   description: "…",
   promptDescription: "…",
@@ -80,12 +81,13 @@ create_plugin({
 })
 ```
 
-Он сгенерирует корректный скаффолд (манифест + entry-шаблон + readme + ui/panel.html). Дальше правь `dist/index.js` — hot-reload подхватит.
+Он сгенерирует корректный скаффолд. `structure: "multi"` — модульную структуру (index.js-вiring + tools/commands/state/ui + ui/css/js), `structure: "single"` — всё в одном `dist/index.js` (только для мелких). **Перед созданием объёмного плагина прочитай секцию architecture.** Дальше правь файлы — hot-reload следит за `dist/` и `ui/` целиком и перезапускает плагин сам.
 
 ## Карта документации
 
+- **architecture** — как строить объёмные плагины: модули, state, cleanup, когда multi
 - **manifest** — все поля plugin.json
-- **permissions** — все 25 прав и что каждое гейтит
+- **permissions** — все права и что каждое гейтит
 - **tools** — registerTool: тулы для AI
 - **commands** — слэш-команды
 - **ui** — панели, iframe, протокол syntee-plugin://, мост synteeBridge

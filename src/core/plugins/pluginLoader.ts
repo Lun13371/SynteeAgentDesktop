@@ -21,7 +21,7 @@ const VALID_PERMISSIONS: PluginPermission[] = [
   'net', 'fs:read', 'fs:write', 'fs:write:any', 'clipboard', 'notifications', 'ui',
   'chat', 'chats:read', 'chats:write', 'projects:read', 'projects:write', 'memory',
   'ai', 'scheduler', 'shortcuts', 'process:exec', 'overlay', 'tray',
-  'context', 'secrets', 'git', 'mcp', 'webhook', 'agent',
+  'context', 'secrets', 'git', 'mcp', 'webhook', 'agent', 'hooks',
 ]
 
 /** Читает один плагин из папки. Возвращает null если папка — не плагин. */

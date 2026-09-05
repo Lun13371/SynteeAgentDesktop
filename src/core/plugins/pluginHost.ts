@@ -116,6 +116,21 @@ function hostRequest(method: PluginMsgHostRequest['method'], params: Record<stri
   })
 }
 
+/** Fire-and-forget hostRequest для синхронных API (registerShortcut,
+ *  scheduler, statusbar, tray, ui.openModal…): ошибка НЕ бросается в код
+ *  плагина, но логируется в его журнал (level 'error') — иначе занятый
+ *  accelerator/порт/лимит молча терялись и разработчик не понимал,
+ *  почему ничего не работает. */
+function fireAndForget(method: PluginMsgHostRequest['method'], params: Record<string, unknown>, what: string): void {
+  const requestId = nextId('ff')
+  hostWaiters.set(requestId, resp => {
+    if (!resp.ok) {
+      send({ type: 'log', level: 'error', message: `${what}: ${resp.error || 'ошибка'}` })
+    }
+  })
+  send({ type: 'hostRequest', requestId, method, params })
+}
+
 // ── PluginHostApi — то, что получает плагин в activate(syntee) ─────────────
 
 export interface SynteePluginApi {
@@ -163,6 +178,11 @@ export interface SynteePluginApi {
     icon?: string
     entry?: string
   }): void
+  /** Снять регистрацию в рантайме. Тул/команда исчезают из списка,
+   *  панель закрывается у пользователя. */
+  unregisterTool(name: string): void
+  unregisterCommand(name: string): void
+  unregisterPanel(panelId: string): void
   /** Зарегистрировать context provider (permission 'context') —
    *  динамический markdown, попадающий в system prompt перед каждым
    *  запросом агента. handler получает { chatId }. */
@@ -245,11 +265,18 @@ export interface SynteePluginApi {
    *   'bus:<name>'       — { data, from } (шина между плагинами). */
   on(event: 'chat:message' | 'chat:before-send' | 'tool:call' | 'tool:result' | 'prompt:before-build' | 'theme:changed'
     | 'agent:status' | 'message:delta' | 'chat:completed' | 'chat:switched' | 'app:focus' | 'input-action'
+    | 'panel:opened' | 'panel:closed'
     | 'fs:change' | 'ws:open' | 'ws:message' | 'ws:close' | 'ws:error'
     | 'scheduler:tick' | 'shortcut' | 'tray:action' | 'webhook:request' | `bus:${string}`,
      handler: (payload: Record<string, unknown>) => void | Record<string, unknown> | undefined | Promise<Record<string, unknown> | void | undefined>): void
-  /** Лог в журнал плагина (виден в UI вкладки Плагины). */
-  log(...args: unknown[]): void
+  /** Лог в журнал плагина (виден в UI вкладки Плагины). Вызов как функции
+   *  = info; уровни: log.info / log.warn / log.error. */
+  log: {
+    (...args: unknown[]): void
+    info(...args: unknown[]): void
+    warn(...args: unknown[]): void
+    error(...args: unknown[]): void
+  }
   /** Per-plugin KV-хранилище (персистится в main, изолировано по pluginId). */
   storage: {
     get<T = unknown>(key: string): Promise<T | undefined>
@@ -268,8 +295,10 @@ export interface SynteePluginApi {
    *  watch — наблюдение за файлом/папкой, события через колбэк
    *  (permission 'fs:read'); возвращает cancel-функцию. */
   fs: {
-    readFile(path: string): Promise<string>
-    writeFile(path: string, content: string): Promise<void>
+    /** encoding: 'base64' → бинарное содержимое (картинки и т.п.) как base64. */
+    readFile(path: string, opts?: { encoding?: 'utf-8' | 'base64' }): Promise<string>
+    /** encoding: 'base64' → content — base64 бинарных данных. */
+    writeFile(path: string, content: string, opts?: { encoding?: 'utf-8' | 'base64' }): Promise<void>
     listDir(path: string): Promise<string[]>
     /** Метаданные пути: { exists, isFile, isDir, size, mtime }. */
     stat(path: string): Promise<{ exists: boolean; isFile: boolean; isDir: boolean; size: number; mtime: number }>
@@ -308,7 +337,9 @@ export interface SynteePluginApi {
    *  listen — локальный HTTP-сервер (permission 'webhook'): запросы
    *  приходят хендлером (событие 'webhook:request'). */
   net: {
-    fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; headers: Record<string, string>; body: string }>
+    /** binary: true → ответ с bodyBase64 (бинарные данные: картинки,
+     *  архивы). Иначе body — текст (utf-8, лимит 1 МБ). */
+    fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string; binary?: boolean }): Promise<{ status: number; headers: Record<string, string>; body: string; bodyBase64?: string }>
     ws: {
       connect(id: string, url: string): Promise<void>
       send(id: string, data: string): void
@@ -437,6 +468,12 @@ export interface SynteePluginApi {
     closeModal(): void
     /** Бейдж на панели (slot 'right'): число или null — сбросить. */
     setBadge(panelId: string, badge: number | null): void
+    /** Chat overlay: плавающий iframe-оверлей ПОВЕРХ области чата в
+     *  главном окне (не отдельное окно, как overlay.show). position:
+     *  'right' (по умолчанию) | 'left' | 'center'. */
+    showChatOverlay(def: { entry?: string; title?: string; width?: number; height?: number; position?: 'left' | 'right' | 'center' }): void
+    /** Скрыть chat overlay плагина. */
+    hideChatOverlay(): void
   }
   /** Действия в чате (permission 'chat'). */
   chat: {
@@ -534,6 +571,19 @@ function buildApi(): SynteePluginApi {
       })
       send({ type: 'registerTool', name: def.name, description: def.description || '', inputSchema: def.parameters ?? { type: 'object', properties: {} } })
     },
+    unregisterTool(name: string) {
+      if (tools.delete(name)) {
+        send({ type: 'unregisterTool', name })
+      }
+    },
+    unregisterCommand(name: string) {
+      if (commands.delete(name)) {
+        send({ type: 'unregisterCommand', name })
+      }
+    },
+    unregisterPanel(panelId: string) {
+      send({ type: 'unregisterPanel', name: panelId })
+    },
     registerCommand(def) {
       if (!def || typeof def.name !== 'string' || !def.name) {
         throw new Error('registerCommand: name обязателен')
@@ -578,12 +628,12 @@ function buildApi(): SynteePluginApi {
         throw new Error('registerShortcut: handler обязателен')
       }
       shortcutHandlers.set(accelerator, handler)
-      send({ type: 'hostRequest', requestId: nextId('sc'), method: 'shortcut.register', params: { accelerator } })
+      fireAndForget('shortcut.register', { accelerator }, 'shortcut.register')
     },
     unregisterShortcut(accelerator: string) {
       requirePermission('shortcuts', 'unregisterShortcut')
       shortcutHandlers.delete(accelerator)
-      send({ type: 'hostRequest', requestId: nextId('sc'), method: 'shortcut.unregister', params: { accelerator } })
+      fireAndForget('shortcut.unregister', { accelerator }, 'shortcut.unregister')
     },
     registerPanel(def) {
       requirePermission('ui', 'registerPanel')
@@ -705,14 +755,31 @@ function buildApi(): SynteePluginApi {
     },
     on(event, handler) {
       if (typeof handler !== 'function') return
+      // События контента (текст чата, вызовы тулов, system prompt) —
+      // отдельный permission 'hooks': без него плагин с 0 прав не может
+      // читать/менять переписку и промпт.
+      const HOOK_EVENTS = new Set([
+        'chat:message', 'chat:before-send', 'chat:completed', 'message:delta',
+        'tool:call', 'tool:result', 'prompt:before-build',
+      ])
+      if (HOOK_EVENTS.has(event)) {
+        requirePermission('hooks', `on('${event}')`)
+      }
       if (!eventHandlers.has(event)) eventHandlers.set(event, new Set())
       eventHandlers.get(event)!.add(handler)
       // Сообщаем main, на какие события есть подписчики (short-circuit хуков).
       send({ type: 'subscribeEvents', events: [...eventHandlers.keys()] })
     },
-    log(...args: unknown[]) {
-      send({ type: 'log', level: 'info', message: args.map(a => (typeof a === 'string' ? a : safeStringify(a))).join(' ') })
-    },
+    log: (() => {
+      const sendLog = (level: 'info' | 'warn' | 'error', args: unknown[]) => {
+        send({ type: 'log', level, message: args.map(a => (typeof a === 'string' ? a : safeStringify(a))).join(' ') })
+      }
+      const fn = (...args: unknown[]) => sendLog('info', args)
+      fn.info = (...args: unknown[]) => sendLog('info', args)
+      fn.warn = (...args: unknown[]) => sendLog('warn', args)
+      fn.error = (...args: unknown[]) => sendLog('error', args)
+      return fn
+    })(),
     storage: {
       async get<T>(key: string): Promise<T | undefined> {
         const r = await hostRequest('storage.get', { key })
@@ -756,11 +823,11 @@ function buildApi(): SynteePluginApi {
       },
     },
     net: {
-      async fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) {
+      async fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string; binary?: boolean }) {
         requirePermission('net', 'net.fetch')
-        const r = await hostRequest('net.fetch', { url, init: init ?? {} })
+        const r = await hostRequest('net.fetch', { url, init: init ?? {}, binary: init?.binary === true })
         if (!r.ok) throw new Error(r.error || 'net.fetch failed')
-        return r.result as { status: number; headers: Record<string, string>; body: string }
+        return r.result as { status: number; headers: Record<string, string>; body: string; bodyBase64?: string }
       },
       ws: {
         async connect(id: string, url: string): Promise<void> {
@@ -770,11 +837,11 @@ function buildApi(): SynteePluginApi {
         },
         send(id: string, data: string): void {
           requirePermission('net', 'net.ws.send')
-          send({ type: 'hostRequest', requestId: nextId('ws'), method: 'net.ws.send', params: { id, data } })
+          fireAndForget('net.ws.send', { id, data }, 'net.ws.send')
         },
         close(id: string): void {
           requirePermission('net', 'net.ws.close')
-          send({ type: 'hostRequest', requestId: nextId('ws'), method: 'net.ws.close', params: { id } })
+          fireAndForget('net.ws.close', { id }, 'net.ws.close')
         },
       },
       async listen(port: number, handler: WebhookHandler): Promise<void> {
@@ -976,7 +1043,7 @@ function buildApi(): SynteePluginApi {
     bus: {
       emit(event: string, data?: unknown): void {
         if (typeof event !== 'string' || !event) throw new Error('bus.emit: event обязателен')
-        send({ type: 'hostRequest', requestId: nextId('bus'), method: 'bus.emit', params: { event, data } })
+        fireAndForget('bus.emit', { event, data }, 'bus.emit')
       },
       on(event: string, handler: (data: unknown) => void): void {
         if (typeof event !== 'string' || !event) throw new Error('bus.on: event обязателен')
@@ -995,10 +1062,10 @@ function buildApi(): SynteePluginApi {
         }
         const id = nextId('sch')
         schedulerHandlers.set(id, handler)
-        send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.every', params: { id, intervalMs } })
+        fireAndForget('scheduler.every', { id, intervalMs }, 'scheduler.every')
         return () => {
           schedulerHandlers.delete(id)
-          send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cancel', params: { id } })
+          fireAndForget('scheduler.cancel', { id }, 'scheduler.cancel')
         }
       },
       cron(expr: string, handler: () => void | Promise<void>): () => void {
@@ -1008,10 +1075,10 @@ function buildApi(): SynteePluginApi {
         }
         const id = nextId('sch')
         schedulerHandlers.set(id, handler)
-        send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cron', params: { id, expr } })
+        fireAndForget('scheduler.cron', { id, expr }, 'scheduler.cron')
         return () => {
           schedulerHandlers.delete(id)
-          send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cancel', params: { id } })
+          fireAndForget('scheduler.cancel', { id }, 'scheduler.cancel')
         }
       },
       at(delayMs: number, handler: () => void | Promise<void>): () => void {
@@ -1021,10 +1088,10 @@ function buildApi(): SynteePluginApi {
         }
         const id = nextId('sch')
         schedulerHandlers.set(id, handler)
-        send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.at', params: { id, delayMs } })
+        fireAndForget('scheduler.at', { id, delayMs }, 'scheduler.at')
         return () => {
           schedulerHandlers.delete(id)
-          send({ type: 'hostRequest', requestId: nextId('sch'), method: 'scheduler.cancel', params: { id } })
+          fireAndForget('scheduler.cancel', { id }, 'scheduler.cancel')
         }
       },
     },
@@ -1046,21 +1113,21 @@ function buildApi(): SynteePluginApi {
     statusbar: {
       set(id: string, text: string, opts?: { tooltip?: string; command?: string }): void {
         requirePermission('ui', 'statusbar.set')
-        send({ type: 'hostRequest', requestId: nextId('sb'), method: 'statusbar.set', params: { id, text, tooltip: opts?.tooltip, command: opts?.command } })
+        fireAndForget('statusbar.set', { id, text, tooltip: opts?.tooltip, command: opts?.command }, 'statusbar.set')
       },
       clear(id: string): void {
         requirePermission('ui', 'statusbar.clear')
-        send({ type: 'hostRequest', requestId: nextId('sb'), method: 'statusbar.clear', params: { id } })
+        fireAndForget('statusbar.clear', { id }, 'statusbar.clear')
       },
     },
     tray: {
       setMenu(items: Array<{ label: string; command?: string; type?: 'item' | 'separator' }>): void {
         requirePermission('tray', 'tray.setMenu')
-        send({ type: 'hostRequest', requestId: nextId('tr'), method: 'tray.setMenu', params: { items: items ?? [] } })
+        fireAndForget('tray.setMenu', { items: items ?? [] }, 'tray.setMenu')
       },
       clearMenu(): void {
         requirePermission('tray', 'tray.clearMenu')
-        send({ type: 'hostRequest', requestId: nextId('tr'), method: 'tray.clearMenu', params: {} })
+        fireAndForget('tray.clearMenu', {}, 'tray.clearMenu')
       },
     },
     config: {
@@ -1076,15 +1143,15 @@ function buildApi(): SynteePluginApi {
       },
     },
     fs: {
-      async readFile(path: string): Promise<string> {
+      async readFile(path: string, opts?: { encoding?: 'utf-8' | 'base64' }): Promise<string> {
         requirePermission('fs:read', 'fs.readFile')
-        const r = await hostRequest('fs.readFile', { path })
+        const r = await hostRequest('fs.readFile', { path, encoding: opts?.encoding })
         if (!r.ok) throw new Error(r.error || 'fs.readFile failed')
         return (r.result as string) ?? ''
       },
-      async writeFile(path: string, content: string): Promise<void> {
+      async writeFile(path: string, content: string, opts?: { encoding?: 'utf-8' | 'base64' }): Promise<void> {
         requireWritePermission('fs.writeFile', path)
-        const r = await hostRequest('fs.writeFile', { path, content })
+        const r = await hostRequest('fs.writeFile', { path, content, encoding: opts?.encoding })
         if (!r.ok) throw new Error(r.error || 'fs.writeFile failed')
       },
       async stat(path: string): Promise<{ exists: boolean; isFile: boolean; isDir: boolean; size: number; mtime: number }> {
@@ -1138,10 +1205,10 @@ function buildApi(): SynteePluginApi {
         }
         const id = nextId('fsw')
         fsWatchHandlers.set(id, handler)
-        send({ type: 'hostRequest', requestId: nextId('fsw'), method: 'fs.watch', params: { id, path, recursive: opts?.recursive ?? false } })
+        fireAndForget('fs.watch', { id, path, recursive: opts?.recursive ?? false }, 'fs.watch')
         return () => {
           fsWatchHandlers.delete(id)
-          send({ type: 'hostRequest', requestId: nextId('fsw'), method: 'fs.unwatch', params: { id } })
+          fireAndForget('fs.unwatch', { id }, 'fs.unwatch')
         }
       },
       async pickFile(opts?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null> {
@@ -1186,19 +1253,33 @@ function buildApi(): SynteePluginApi {
         if (typeof def.entry !== 'string' || !def.entry) {
           throw new Error('registerWidget: entry обязателен (HTML-файл относительно папки плагина)')
         }
-        send({ type: 'hostRequest', requestId: nextId('wdg'), method: 'ui.registerWidget', params: { name: def.name, entry: def.entry, height: def.height, description: def.description } })
+        fireAndForget('ui.registerWidget', { name: def.name, entry: def.entry, height: def.height, description: def.description }, 'ui.registerWidget')
       },
       openModal(def?: { entry?: string; title?: string; width?: number; height?: number }): void {
         requirePermission('ui', 'openModal')
-        send({ type: 'hostRequest', requestId: nextId('md'), method: 'ui.openModal', params: { entry: def?.entry, title: def?.title, width: def?.width, height: def?.height } })
+        fireAndForget('ui.openModal', { entry: def?.entry, title: def?.title, width: def?.width, height: def?.height }, 'ui.openModal')
       },
       closeModal(): void {
         requirePermission('ui', 'closeModal')
-        send({ type: 'hostRequest', requestId: nextId('md'), method: 'ui.closeModal', params: {} })
+        fireAndForget('ui.closeModal', {}, 'ui.closeModal')
       },
       setBadge(panelId: string, badge: number | null): void {
         requirePermission('ui', 'setBadge')
-        send({ type: 'hostRequest', requestId: nextId('bdg'), method: 'ui.setBadge', params: { panelId, badge } })
+        fireAndForget('ui.setBadge', { panelId, badge }, 'ui.setBadge')
+      },
+      showChatOverlay(def: { entry?: string; title?: string; width?: number; height?: number; position?: 'left' | 'right' | 'center' }): void {
+        requirePermission('ui', 'showChatOverlay')
+        fireAndForget('ui.showChatOverlay', {
+          entry: def?.entry,
+          title: def?.title,
+          width: def?.width,
+          height: def?.height,
+          position: def?.position,
+        }, 'ui.showChatOverlay')
+      },
+      hideChatOverlay(): void {
+        requirePermission('ui', 'hideChatOverlay')
+        fireAndForget('ui.hideChatOverlay', {}, 'ui.hideChatOverlay')
       },
     },
     chat: {

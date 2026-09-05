@@ -1137,6 +1137,24 @@
 .plugin-diff-widget {
   overflow: hidden;
 }
+
+/* ── Инлайн-бейдж плагина (kind:'badge') ───────────────────────────────────
+   Декорация сообщения: компактная пилюля-статус без iframe. */
+.plugin-inline-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, #8b5cf6);
+  color: var(--accent, #8b5cf6);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 10%, transparent);
+  vertical-align: middle;
+  white-space: nowrap;
+}
 .plugin-diff-widget-header {
   display: flex;
   align-items: center;

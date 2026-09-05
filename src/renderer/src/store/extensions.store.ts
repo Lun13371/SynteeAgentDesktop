@@ -444,6 +444,26 @@ export function initExtensionsPushEvents(): () => void {
     else st.openPluginModal({ pluginId: d.pluginId, title: d.title || d.pluginId, entry: d.entry, width: d.width, height: d.height })
   })
 
+  // plugins:chat-overlay — плавающий iframe-оверлей плагина поверх области
+  // чата (ui.showChatOverlay / ui.hideChatOverlay). Один одновременно.
+  const offPluginChatOverlay = window.syntee.on('plugins:chat-overlay', (data: unknown) => {
+    const d = data as {
+      pluginId: string; action: 'show' | 'hide'; entry?: string; title?: string
+      width?: number; height?: number; position?: 'left' | 'right' | 'center'
+    }
+    if (!d || typeof d.pluginId !== 'string') return
+    const st = usePluginPanelStore.getState()
+    if (d.action === 'hide' || !d.entry) { st.closeChatOverlay(); return }
+    st.openChatOverlay({
+      pluginId: d.pluginId,
+      title: d.title,
+      entry: d.entry,
+      width: d.width,
+      height: d.height,
+      position: d.position,
+    })
+  })
+
   // plugins:statusbar — снапшот элементов status bar плагина.
   // Пустой items = плагин убрал все свои элементы.
   const offPluginStatusbar = window.syntee.on('plugins:statusbar', (data: unknown) => {
@@ -480,6 +500,7 @@ export function initExtensionsPushEvents(): () => void {
     offPluginsLogs?.()
     offPluginPanelAction?.()
     offPluginModalAction?.()
+    offPluginChatOverlay?.()
     offPluginStatusbar?.()
     offPluginBadge?.()
     offPluginToast?.()

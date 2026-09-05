@@ -117,6 +117,14 @@ export interface PluginMsgRegisterCommand {
   icon?: string
 }
 
+/** plugin → main: снять регистрацию в рантайме (unregisterTool /
+ *  unregisterCommand / unregisterPanel). */
+export interface PluginMsgUnregister {
+  type: 'unregisterTool' | 'unregisterCommand' | 'unregisterPanel'
+  /** Имя тула / команды или id панели. */
+  name: string
+}
+
 /** plugin → main: зарегистрировать UI-вклад (кнопка/панель/таб в слоте). */
 export interface PluginMsgRegisterUi {
   type: 'registerUi'
@@ -296,6 +304,7 @@ export interface PluginMsgHostRequest {
     | 'config.get' | 'config.getAll'
     | 'ui.openPanel' | 'ui.closePanel' | 'ui.setBadge' | 'ui.getTheme'
     | 'ui.openModal' | 'ui.closeModal' | 'ui.registerWidget'
+    | 'ui.showChatOverlay' | 'ui.hideChatOverlay'
     | 'chat.send' | 'chat.reply'
     | 'chats.list' | 'chats.get'
     | 'chats.create' | 'chats.rename' | 'chats.delete'
@@ -372,4 +381,5 @@ export type PluginMsgPluginToHost =
   | PluginMsgRegisterInputAction
   | PluginMsgRegisterTheme
   | PluginMsgRegisterBackground
+  | PluginMsgUnregister
   | PluginMsgCallHandlerResult
