@@ -185,7 +185,7 @@ export class Agent {
         // текст). Иначе — обычный строковый content (возможно с текстовым
         // описанием картинок от vision-модели).
         content: options?.imageParts && options.imageParts.length > 0
-          ? [...options.imageParts, { type: 'text' as const, text: userMessage }]
+          ? [...options.imageParts, { type: 'text' as const, text: userMessage.trim() || 'Проанализируй прикреплённые изображения.' }]
           : userMessage,
       },
     ]
@@ -1044,6 +1044,15 @@ export class Agent {
             || fn.name === 'read_file' || fn.name === 'read_files'
             || fn.name === 'spawn_agent'
             || fn.name === 'fetch_page'  // своя обрезка по maxChars (default 50000) с сообщением
+            // Плагинные и MCP-тулы — НЕ обрезаем вообще: автор тула сам
+            // отвечает за размер вывода (plugin_docs отдаёт секции доков
+            // целиком ~10k симв., read_plugin сам лимитирует до 40k).
+            // truncateToolResult резал середину без подсказки — модель
+            // не могла дочитать потерянный кусок (у plugin_docs нет
+            // offset/частей) и теряла API-документацию. Предохранитель
+            // от переполнения контекста — rolling-компакция.
+            || fn.name.startsWith('plugin__')
+            || fn.name.startsWith('mcp__')
           const perToolMax = (fn.name === 'search_code' || fn.name === 'get_file_outline')
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars
