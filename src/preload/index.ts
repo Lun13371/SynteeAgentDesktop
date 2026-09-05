@@ -850,6 +850,15 @@ const synteeAPI = {
   plugins: {
     getAll: (params?: { projectId?: string; chatId?: string }) =>
       ipcRenderer.invoke('plugins:getAll', params),
+    // Статус Python-интерпретатора (runtime:'python' плагины).
+    checkPython: () => ipcRenderer.invoke('plugins:checkPython') as Promise<
+      { found: boolean; exe?: string; version?: string }
+    >,
+    // Установка Python-зависимостей плагина (кнопка в карточке).
+    installDeps: (params: { pluginId: string }) =>
+      ipcRenderer.invoke('plugins:installDeps', params) as Promise<
+        { ok: boolean; error?: string; output?: string }
+      >,
     setState: (params: { pluginId: string; enabled?: boolean; scope?: unknown; consented?: boolean }) =>
       ipcRenderer.invoke('plugins:setState', params),
     reload: (pluginId: string) => ipcRenderer.invoke('plugins:reload', pluginId),

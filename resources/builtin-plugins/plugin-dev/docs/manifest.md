@@ -42,6 +42,9 @@
 | `config` | Field[] | | Декларативная схема настроек — форма в карточке плагина. Значения читаются через `syntee.config.get(key)` |
 | `activation` | string[] | | События активации (пока информационные; дефолт `onLoad`). Задел: `'onLoad'`, `'chat:message'`, `'command:<name>'` |
 | `apiVersion` | string | | Версия plugin API, под которую написан плагин (`'1'` — текущая). При мажорных изменениях API хост предупредит в журнале |
+| `runtime` | string | | `"node"` (по умолчанию) или `"python"` — рантайм логики. Python: sidecar-процесс, SDK `from syntee import syntee` (см. секцию runtimes) |
+| `runtimePath` | string | | Явный путь до интерпретатора Python (override авто-детекта; можно venv). Только при `runtime:"python"` |
+| `requirements` | string[] | | pip-зависимости Python-плагина (`"requests"`, `"rich>=13"`). Ставятся автоматически при первом запуске + кнопка в карточке UI |
 | `builtin` | boolean | | Только для встроенных плагинов (ставится приложением). Не указывай в своих |
 
 ## Корневые поля объекта syntee (в activate)

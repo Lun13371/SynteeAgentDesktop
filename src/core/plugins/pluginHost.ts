@@ -33,6 +33,120 @@ import type {
   PluginMsgHostRequest,
 } from './pluginProtocol'
 
+// ── Python sidecar (runtime:'python') ──────────────────────────────────────
+//
+// Для Python-плагинов utilityProcess становится чистым мостом:
+//   MessagePort (main) ⇄ stdin/stdout child-процесса `python {main}`.
+// Сообщения протокола ходят 1:1 (JSON Lines). Локальные Maps (tools,
+// commands, …) не используются — Python-SDK регистрирует всё сам в main.
+
+interface ChildProcessLike {
+  stdin: { write(s: string): void } | null
+  stdout: { on(ev: 'data', fn: (d: Buffer) => void): void } | null
+  stderr: { on(ev: 'data', fn: (d: Buffer) => void): void } | null
+  on(ev: 'close' | 'exit' | 'error', fn: (arg: unknown) => void): void
+  kill(): void
+}
+let pyChild: ChildProcessLike | null = null
+/** initResult ещё не ушёл — краш python-процесса = ошибка активации. */
+let pyInitDone = false
+/** Хвост stderr для диагностики краша (трейсбек и т.п.). */
+let pyStderrTail = ''
+
+function forwardToPython(msg: PluginMsgHostToPlugin): void {
+  if (!pyChild?.stdin) return
+  try {
+    pyChild.stdin.write(JSON.stringify(msg) + '\n')
+  } catch {
+    // Процесс умер — сообщение теряется, exit-хендлер разберётся.
+  }
+}
+
+/** Спавнит python-процесс и подключает мост. Бросает при ошибке spawn. */
+function startPythonBridge(
+  entryAbs: string,
+  python: { exe: string; sdkDir: string },
+  pluginDirLocal: string,
+  initRequestId: string,
+): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const cp = require('child_process') as typeof import('child_process')
+  const child = cp.spawn(python.exe, [entryAbs], {
+    cwd: pluginDirLocal,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: {
+      ...process.env,
+      // Критично для JSON Lines: без буферизации сообщения застревают в pipe.
+      PYTHONUNBUFFERED: '1',
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONPATH: python.sdkDir,
+    },
+  })
+  pyChild = child as ChildProcessLike
+  pyStderrTail = ''
+
+  // stdout → main: JSON Lines, каждая строка — сообщение протокола.
+  let buf = ''
+  child.stdout?.on('data', (d: Buffer) => {
+    buf += d.toString('utf-8')
+    let idx: number
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).trim()
+      buf = buf.slice(idx + 1)
+      if (!line) continue
+      try {
+        const msg = JSON.parse(line) as PluginMsgPluginToHost
+        if (msg.type === 'initResult' && msg.ok) pyInitDone = true
+        send(msg)
+      } catch {
+        send({ type: 'log', level: 'error', message: `[python] не-JSON в stdout: ${line.slice(0, 300)}` })
+      }
+    }
+  })
+
+  // stderr → журнал плагина (трейсбеки, предупреждения библиотек).
+  child.stderr?.on('data', (d: Buffer) => {
+    const text = d.toString('utf-8')
+    pyStderrTail = (pyStderrTail + text).slice(-4000)
+    for (const line of text.split(/\r?\n/)) {
+      const l = line.trim()
+      if (l) send({ type: 'log', level: 'warn', message: `[python] ${l}` })
+    }
+  })
+
+  child.on('error', (err: unknown) => {
+    const message = (err as NodeJS.ErrnoException).message ?? String(err)
+    if (pyInitDone) {
+      send({ type: 'log', level: 'error', message: `[python] ошибка процесса: ${message}` })
+      setTimeout(() => process.exit(1), 100)
+    } else {
+      send({ type: 'initResult', requestId: initRequestId, ok: false, error: `Не удалось запустить Python (${python.exe}): ${message}` })
+      setTimeout(() => process.exit(1), 100)
+    }
+  })
+
+  child.on('close', (code: number | null) => {
+    if (pyInitDone) {
+      // Живой плагин умер (краш или shutdown). При graceful shutdown
+      // (код 0) просто выходим; при краше — код 1, чтобы main пометил
+      // плагин ошибкой.
+      send({ type: 'log', level: code === 0 ? 'info' : 'error', message: `[python] процесс завершён (code ${code ?? '?'})` })
+      setTimeout(() => process.exit(code === 0 ? 0 : 1), 100)
+    } else {
+      // Умер до initResult — это ошибка активации (синтаксис, import и т.п.).
+      const tail = pyStderrTail.trim().split(/\r?\n/).slice(-12).join('\n')
+      send({
+        type: 'initResult',
+        requestId: initRequestId,
+        ok: false,
+        error: tail || `Python-процесс завершился до активации (code ${code ?? '?'})`,
+      })
+      setTimeout(() => process.exit(1), 100)
+    }
+  })
+}
+
 // ── Состояние хоста ────────────────────────────────────────────────────────
 
 interface RegisteredTool {
@@ -1431,6 +1545,13 @@ function safeStringify(v: unknown): string {
 
 port.on('message', (e) => {
   const msg = e.data as PluginMsgHostToPlugin
+  // Python sidecar: ВСЕ сообщения main уходят в python-процесс 1:1,
+  // ответы приходят обратно через stdout-мост. Локальная диспетчеризация
+  // (tools/commands Maps) не используется.
+  if (pyChild) {
+    forwardToPython(msg)
+    return
+  }
   switch (msg.type) {
     case 'init': {
       ;(async () => {
@@ -1441,10 +1562,22 @@ port.on('message', (e) => {
           // Динамическая загрузка кода плагина — только через require в рантайме
           // (путь приходит из манифеста, статический импорт невозможен).
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const manifest = require(`${pluginDir}/plugin.json`) as { main?: string }
+          const manifest = require(`${pluginDir}/plugin.json`) as {
+            main?: string
+            runtime?: 'node' | 'python'
+          }
           const entryRel = manifest.main || 'dist/index.js'
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const entry = require('path').join(pluginDir, entryRel)
+          if (manifest.runtime === 'python') {
+            // Python-плагин: спавним sidecar и становимся мостом.
+            if (!msg.python?.exe) {
+              throw new Error('runtime:"python", но main не передал интерпретатор (устаревший host?)')
+            }
+            startPythonBridge(entry, msg.python, pluginDir, msg.requestId)
+            // initResult придёт от python-SDK через stdout-мост.
+            return
+          }
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const mod = require(entry) as {
             activate?: (api: SynteePluginApi) => void | Promise<void>

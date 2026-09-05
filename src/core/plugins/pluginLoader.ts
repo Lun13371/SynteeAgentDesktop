@@ -66,6 +66,17 @@ export function loadPluginDir(dir: string, source: 'global' | 'project', project
   if (manifest.permissions) {
     manifest.permissions = manifest.permissions.filter(p => VALID_PERMISSIONS.includes(p))
   }
+  // Рантайм: неизвестное значение → node (обратная совместимость).
+  if (manifest.runtime !== undefined && manifest.runtime !== 'node' && manifest.runtime !== 'python') {
+    console.warn(`[plugins] неизвестный runtime "${manifest.runtime}" (ожидался node|python) → node: ${dir}`)
+    manifest.runtime = 'node'
+  }
+  // Python-зависимости: только массив pip-спецификаций-строк.
+  if (manifest.requirements !== undefined) {
+    manifest.requirements = Array.isArray(manifest.requirements)
+      ? manifest.requirements.filter(r => typeof r === 'string' && r.trim()).map(r => r.trim())
+      : []
+  }
 
   const plugin: Plugin = {
     id: manifest.id,

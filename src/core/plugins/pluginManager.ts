@@ -34,6 +34,10 @@ import { scanPluginsDir } from './pluginLoader'
 import { PluginProcess } from './pluginProcess'
 import { PluginStorage } from './pluginStorage'
 import { DEFAULT_ENABLED_BUILTINS, syncBuiltinPlugins } from './builtinPlugins'
+import {
+  depsInstalled, detectPython, installRequirements, syncPythonSdk,
+  type PythonInfo,
+} from './pythonRuntime'
 import { AIClient } from '../ai/AIClient'
 import { getMcpManager } from '../mcp/McpManager'
 import { getNotificationManager } from '../../main/managers/NotificationManager'
@@ -204,6 +208,8 @@ export class PluginManager {
   private deltaBuffers = new Map<string, { buffer: string; timer: NodeJS.Timeout | null }>()
   /** Webhook-серверы плагинов: pluginId → (port → server). */
   private webhookServers = new Map<string, Map<number, http.Server>>()
+  /** Папка Python SDK (синхронизируется в конструкторе). */
+  private pythonSdkDir = ''
 
   constructor(store: Store) {
     this.store = store
@@ -226,6 +232,9 @@ export class PluginManager {
     } catch (e) {
       console.warn('[plugins] builtin sync failed:', (e as Error).message)
     }
+    // Python SDK (resources/python-sdk → {userData}/python-sdk) — реальный
+    // путь на диске для PYTHONPATH sidecar-процессов (asar не читается).
+    this.pythonSdkDir = syncPythonSdk(app.getPath('userData'))
   }
 
   setWindow(win: BrowserWindow | null): void {
@@ -286,22 +295,19 @@ export class PluginManager {
     }
   }
 
-  /** Изменение в папке плагинов: определяем pluginId и перезагружаем
-   *  запущенный плагин. Не запущенные трогаем только push-событием. */
+  /** Изменение в папке плагинов: обновляем список (манифест/readme могли
+   *  измениться) push-событием в renderer. НЕ перезагружаем запущенные
+   *  плагины отсюда — за hot-reload кода отвечает per-plugin вотчер
+   *  (setupHotReloadWatcher: dist/ + ui/ + plugin.json). Иначе запись
+   *  плагином данных/кэша/.deps.json в свою папку перезапускала его же
+   *  (баг: «плагин сам по себе перезапускается»). */
   private handleFsChange(relPath: string): void {
     const pluginId = relPath.split(/[\\/]/)[0]
     if (!pluginId) return
-    const run = this.running.get(pluginId)
-    if (run) {
-      console.log(`[plugins] hot-reload: ${pluginId} (${relPath})`)
-      this.reload(pluginId).catch(e => {
-        console.warn(`[plugins] hot-reload failed: ${pluginId}:`, (e as Error).message)
-      })
-    } else {
-      // Не запущен — но список/манифест могли измениться: пуш в renderer.
-      this.lastScan = []
-      this.emitChanged()
-    }
+    // Сбрасываем кэш скана — при следующем getAll манифест/readme
+    // перечитаются с диска.
+    this.lastScan = []
+    this.emitChanged()
   }
 
   /** Остановить все watcher-ы (при выходе). */
@@ -354,12 +360,52 @@ export class PluginManager {
         themes: run ? run.themes : [],
         backgrounds: run ? run.backgrounds : [],
         configValues: this.getConfigValues(p.id, p.manifest.config),
+        ...(p.manifest.runtime === 'python'
+          ? {
+            deps: {
+              required: p.manifest.requirements ?? [],
+              installed: depsInstalled(p.dir, p.manifest.requirements ?? []),
+            },
+          }
+          : {}),
         logs: run ? run.logs : [],
       }
     })
   }
 
   // ── Жизненный цикл процессов ───────────────────────────────────────────
+
+  /** Резолвит интерпретатор Python для плагина: runtimePath манифеста →
+   *  переменная SYNTEE_PYTHON → авто-детект (python/python3/py). */
+  private async resolvePython(manifest: { runtimePath?: string }): Promise<PythonInfo | null> {
+    if (manifest.runtimePath && existsSync(manifest.runtimePath)) {
+      return { exe: manifest.runtimePath, version: 'runtimePath' }
+    }
+    return detectPython()
+  }
+
+  /** Статус Python для UI (карточки python-плагинов, диагностика). */
+  async checkPython(): Promise<{ found: boolean; exe?: string; version?: string }> {
+    const info = await detectPython()
+    return info ? { found: true, exe: info.exe, version: info.version } : { found: false }
+  }
+
+  /** Установка Python-зависимостей плагина по кнопке в карточке UI. */
+  async installPluginDeps(pluginId: string): Promise<{ ok: boolean; error?: string; output?: string }> {
+    const plugin = this.lastScan.find(p => p.id === pluginId)
+      ?? this.scan().find(p => p.id === pluginId)
+    if (!plugin) return { ok: false, error: `Плагин не найден: ${pluginId}` }
+    if (plugin.manifest.runtime !== 'python') {
+      return { ok: false, error: 'Не Python-плагин (зависимости не требуются)' }
+    }
+    const requirements = plugin.manifest.requirements ?? []
+    if (!requirements.length) return { ok: true, output: 'Зависимости не объявлены' }
+    const info = await this.resolvePython(plugin.manifest)
+    if (!info) return { ok: false, error: 'Python не найден — установите Python 3.8+ с python.org' }
+    const res = await installRequirements(info.exe, plugin.dir, requirements)
+    this.emitChanged()
+    return res
+  }
 
   /** Запускает процесс плагина (по id из последнего скана). */
   async start(pluginId: string): Promise<void> {
@@ -384,6 +430,34 @@ export class PluginManager {
       backgrounds: [],
       logs: [],
       subscribedEvents: new Set(),
+    }
+    // Python-рантайм: резолвим интерпретатор, при необходимости ставим
+    // зависимости (pip) — логи идут в журнал плагина (виден в карточке).
+    let python: { exe: string; sdkDir: string } | undefined
+    if (plugin.manifest.runtime === 'python') {
+      const info = await this.resolvePython(plugin.manifest)
+      if (!info) {
+        const err = 'Python не найден. Установите Python 3.8+ с python.org (или задайте путь в runtimePath манифеста / переменной SYNTEE_PYTHON) и включите плагин снова.'
+        this.errors.set(pluginId, err)
+        this.emitChanged()
+        throw new Error(err)
+      }
+      const requirements = plugin.manifest.requirements ?? []
+      if (requirements.length && !depsInstalled(plugin.dir, requirements)) {
+        this.pushLog(pluginId, run, 'info', `Установка Python-зависимостей: ${requirements.join(', ')}`)
+        const res = await installRequirements(info.exe, plugin.dir, requirements, line => {
+          this.pushLog(pluginId, run, 'info', `[pip] ${line}`)
+        })
+        if (!res.ok) {
+          const err = `Не удалось установить зависимости (${res.error}). Установите вручную: ${info.exe} -m pip install ${requirements.join(' ')}`
+          this.errors.set(pluginId, err)
+          this.pushLog(pluginId, run, 'error', err)
+          this.emitChanged()
+          throw new Error(err)
+        }
+        this.pushLog(pluginId, run, 'info', 'Зависимости установлены')
+      }
+      python = { exe: info.exe, sdkDir: this.pythonSdkDir }
     }
     const proc = new PluginProcess(plugin.id, plugin.dir, plugin.manifest.permissions ?? [], {
       onToolRegistered: tool => {
@@ -471,7 +545,7 @@ export class PluginManager {
         }
       },
       onHostRequest: (method, params) => this.handleHostRequest(pluginId, method, params),
-    })
+    }, { python })
     run.proc = proc
     this.errors.delete(pluginId)
     try {
@@ -491,7 +565,15 @@ export class PluginManager {
    *  плагина (папки dist/ и ui/ рекурсивно + plugin.json); при изменении
    *  (дебаунс 800 мс) — reload. Правка ЛЮБОГО файла кода/UI подхватывается
    *  автоматически. Данные плагина (storage, кэш вне dist/ui) не смотрим —
-   *  их запись не должна вызывать перезапуск. */
+   *  их запись не должна вызывать перезапуск.
+   *
+   *  Защита от ложных срабатываний (Windows: антивирус, индексатор поиска,
+   *  бэкап-софт трогают файлы БЕЗ изменения содержимого — fs.watch при
+   *  этом всё равно шлёт события):
+   *   - события без filename игнорируются;
+   *   - временные файлы редакторов (~, .tmp, .swp, .lock…) игнорируются;
+   *   - сверяем mtime файла с последним известным: не изменился — не
+   *     перезагружаем (реальная правка всегда меняет mtime). */
   private setupHotReloadWatcher(pluginId: string, pluginDir: string, mainEntry: string): void {
     this.closeHotReloadWatcher(pluginId)
     // Код лежит в папке entry (обычно dist/) — следим за ней целиком +
@@ -509,6 +591,32 @@ export class PluginManager {
 
     const watchers: FSWatcher[] = []
     let timer: NodeJS.Timeout | null = null
+    /** Последний известный mtime файла → защита от ложных событий. */
+    const mtimes = new Map<string, number>()
+    /** Снапшот mtime всех файлов наблюдаемых путей на момент установки
+     *  вотчера — чтобы ПЕРВОЕ же событие по файлу (например, ложное
+     *  касание антивирусом) сравнивалось с реальным состоянием, а не
+     *  считалось изменением. */
+    const snapshotMtimes = (dir: string, depth = 0): void => {
+      if (depth > 6) return
+      let entries: string[]
+      try { entries = readdirSync(dir) } catch { return }
+      for (const name of entries) {
+        const full = join(dir, name)
+        try {
+          const st = statSync(full)
+          if (st.isDirectory()) snapshotMtimes(full, depth + 1)
+          else mtimes.set(full, st.mtimeMs)
+        } catch { /* файл исчез между readdir и stat — ок */ }
+      }
+    }
+    for (const t of watchTargets) {
+      try {
+        const st = statSync(t.target)
+        if (st.isDirectory()) snapshotMtimes(t.target)
+        else mtimes.set(t.target, st.mtimeMs)
+      } catch { /* путь не существует — вотчер его и не создаст */ }
+    }
     const fire = (label: string) => {
       if (timer) clearTimeout(timer)
       timer = setTimeout(() => {
@@ -522,9 +630,31 @@ export class PluginManager {
         })
       }, 800)
     }
+    /** Событие вотчера: проверяем, что файл реально изменился. */
+    const onFsEvent = (target: { target: string; recursive: boolean; label: string }, filename: string | null) => {
+      if (!filename) return // событие без имени файла — не знаем, что менять
+      const name = String(filename)
+      // Временные файлы редакторов/сборщиков — не код.
+      if (/(^|[\\/])~|\.(tmp|crdownload|lock|swp|bak|log)$/.test(name)) return
+      // Абсолютный путь: filename относителен к наблюдаемой папке
+      // (recursive-режим) или совпадает с именем наблюдаемого файла.
+      const abs = target.recursive
+        ? join(target.target, name)
+        : (mtimes.has(target.target) ? target.target : join(target.target, name))
+      let mtime = 0
+      try { mtime = statSync(abs).mtimeMs } catch { /* файл удалён — реальное изменение */ }
+      const prev = mtimes.get(abs)
+      mtimes.set(abs, mtime)
+      // Файла не было в снапшоте (новый файл) → изменение. Был и mtime
+      // совпадает → ложное событие (антивирус/индексатор тронул файл
+      // без правки) — игнорируем. Реальная правка всегда меняет mtime.
+      if (prev !== undefined && prev === mtime) return
+      fire(`${name} [${target.label}]`)
+    }
     for (const t of watchTargets) {
       try {
-        const w = watch(t.target, { persistent: false, recursive: t.recursive }, () => fire(t.label))
+        const w = watch(t.target, { persistent: false, recursive: t.recursive }, (_event, filename) =>
+          onFsEvent(t, filename ?? null))
         watchers.push(w)
       } catch { /* файл/папка может не существовать — пропускаем */ }
     }

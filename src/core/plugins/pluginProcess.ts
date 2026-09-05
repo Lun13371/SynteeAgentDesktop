@@ -100,6 +100,8 @@ export class PluginProcess {
     private readonly pluginDir: string,
     private readonly permissions: string[],
     private readonly callbacks: PluginProcessCallbacks,
+    /** Опции запуска: python-рантайм (интерпретатор + SDK для PYTHONPATH). */
+    private readonly options: { python?: { exe: string; sdkDir: string } } = {},
   ) {}
 
   private get hostPath(): string {
@@ -141,6 +143,7 @@ export class PluginProcess {
         appVersion: process.versions.electron,
         locale: process.env.LANG ?? 'en',
       },
+      python: this.options.python,
     })
     if (!initResult.ok) {
       // initResult содержит error? — типизировано как { ok: false; error?: string }
