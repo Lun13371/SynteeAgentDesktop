@@ -215,8 +215,8 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                 </div>
                 {p.manifest.description && <div className="ext-card-desc">{p.manifest.description}</div>}
                 {p.error && <div className="plugin-error-line">{p.error}</div>}
-                {/* Python-зависимости: статус + быстрая установка. */}
-                {p.manifest.runtime === 'python' && p.deps && p.deps.required.length > 0 && (
+                {/* Зависимости (python: pip, node: npm): статус + быстрая установка. */}
+                {p.deps && p.deps.required.length > 0 && (
                   p.deps.installed ? (
                     <div className="plugin-deps-line plugin-deps-line--ok" title={p.deps.required.join(', ')}>
                       ✓ зависимости установлены ({p.deps.required.length})
