@@ -139,22 +139,27 @@ export async function analyzeImageFile(
   }
 
   const question = args.question?.trim()
-  const focus = question ? ` Ответь на вопрос пользователя: "${question.slice(0, 500)}"` : ''
 
   // ── Ветка 1: основная модель видит сама → прямой пас ──
+  // Никаких правил форматирования — только факт «картинка приложена» +
+  // вопрос юзера если есть. Модель отвечает, отталкиваясь от запроса.
   if (mainModelSupportsVision(store)) {
     return {
       success: true,
-      output: `Изображение «${args.path}» приложено к этому результату. Проанализируй его напрямую: тип, весь видимый текст (OCR), визуальные детали.${focus}`,
+      output: question
+        ? `Изображение «${args.path}» приложено к этому результату. Ответь на вопрос пользователя: "${question.slice(0, 500)}"`
+        : `Изображение «${args.path}» приложено к этому результату.`,
       imageParts: [{ type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: 'high' } }],
     }
   }
 
-  // ── Ветка 2: text-only основная модель → описание от vision-модели ──
-  // Тот же структурированный промпт, что и в attachment-flow.
+  // ── Ветка 2: text-only основная модель → vision-модель ──
+  // Промпт = вопрос юзера как есть. Без вопроса — нейтральная просьба
+  // описать, БЕЗ жёсткой структуры TYPE/TEXT/VISUAL/CONTEXT: модель сама
+  // выбирает формат ответа по картинке и вопросу.
   const prompt = question
-    ? `Analyze the image and provide a structured description:\n\n1. TYPE: What is depicted (screenshot, photo, diagram, schema, code, document)\n2. TEXT: All visible text in the image (exactly, without distortion)\n3. VISUAL: Colors, element layout, UI components, icons\n4. CONTEXT: Relative to the question: "${question.slice(0, 1000)}"\n\nAnswer in Russian. Be precise and concise.`
-    : `Analyze the image and provide a structured description:\n\n1. TYPE: What is depicted (screenshot, photo, diagram, schema, code, document)\n2. TEXT: All visible text in the image (exactly, without distortion)\n3. VISUAL: Colors, element layout, UI components, icons\n4. CONTEXT: General context that may be useful for the answer\n\nAnswer in Russian. Be precise and concise.`
+    ? question.slice(0, 1000)
+    : 'Опиши, что изображено на этой картинке.'
 
   const aiClient = new AIClient(store)
   const description = await new Promise<string>((resolve) => {

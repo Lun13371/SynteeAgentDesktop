@@ -1041,10 +1041,18 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
     }
 
-    // Собираем augmented content
+    // Собираем augmented content.
+    // Если пользователь отправил ТОЛЬКО вложение (без текста) — content пустой,
+    // и модель получала бы голый блок «[Прикреплённые изображения...]» без
+    // задачи → часто отвечала «не вижу вложения». Подставляем дефолтную
+    // инструкцию, чтобы у модели был явный повод обработать вложение
+    // (analyze_image для картинок / ответ по содержимому файла).
+    const baseContent = content.trim()
+      ? content
+      : 'Проанализируй прикреплённые вложения: опиши содержимое и дай ответ.'
     const augmentedContent = textBlocks.length > 0
-      ? `${content}\n\n${textBlocks.join('\n\n')}`
-      : content
+      ? `${baseContent}\n\n${textBlocks.join('\n\n')}`
+      : baseContent
 
     // Структурированный результат для сохранения в message
     const result: AttachmentProcessingResult = {
