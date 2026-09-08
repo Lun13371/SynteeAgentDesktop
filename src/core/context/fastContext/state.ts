@@ -90,7 +90,13 @@ export function localUpsert(
       size = excluded.size,
       content_hash = excluded.content_hash,
       ranked_score = excluded.ranked_score,
-      embedding = COALESCE(excluded.embedding, fast_context_index.embedding),
+      embedding = CASE
+        -- Контент изменился → старый embedding невалиден, сбрасываем
+        -- (пересчитается лениво при следующем get_fast_context).
+        -- Иначе поиск по «изменившемуся» файлу матчился по устаревшему вектору.
+        WHEN excluded.content_hash != fast_context_index.content_hash THEN NULL
+        ELSE COALESCE(excluded.embedding, fast_context_index.embedding)
+      END,
       updated_at = excluded.updated_at
   `).run(projectId, filePath, lang, symbolsJson, mtime, size, contentHash ?? 0, rankedScore, embedding ?? null, Date.now())
 }
