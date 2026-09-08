@@ -353,15 +353,17 @@ export function registerProviderIPC(store: Store): void {
     // models:getAll синхронным и не блокировать UI на сетевой запрос.
     // Enrichment: gateway отдаёт max_tokens (часто output-лимит), каталог
     // models.dev знает честный contextWindow. Берём max(gateway, catalog) —
-    // contextWindow не может быть меньше max_output.
+    // contextWindow не может быть меньше max_output. Capabilities всегда
+    // объединяем (раньше — только при большем contextWindow у каталога,
+    // из-за чего фильтры UI теряли vision/tools/reasoning у части моделей).
     const gatewayModels = getGatewayModelsCache()
     for (const m of gatewayModels) {
       if (!all.find(x => x.id === m.id && x.providerId === m.providerId)) {
         const fromCatalog = getCatalogModelCached(m.providerId, m.id)
-        if (fromCatalog && fromCatalog.contextWindow > (m.contextWindow ?? 0)) {
+        if (fromCatalog) {
           all.push({
             ...m,
-            contextWindow: fromCatalog.contextWindow,
+            contextWindow: Math.max(m.contextWindow ?? 0, fromCatalog.contextWindow),
             // Цена — только если каталог реально отдал cost; своя цена приоритетнее.
             inputPrice: m.inputPrice ?? (fromCatalog.hasPricing ? fromCatalog.inputPricePerM / 100 : undefined),
             outputPrice: m.outputPrice ?? (fromCatalog.hasPricing ? fromCatalog.outputPricePerM / 100 : undefined),
@@ -371,6 +373,18 @@ export function registerProviderIPC(store: Store): void {
         } else {
           all.push(m)
         }
+      }
+    }
+
+    // ── Reasoning-спеки из models.dev для всех моделей ─────────────────────
+    // reasoning_options — единственный источник уровней мышления для
+    // не-gateway моделей (builtin/cached/custom/override/gateway). Без этого
+    // ReasoningSelector не видит реальные контролы модели.
+    for (let i = 0; i < all.length; i++) {
+      if (all[i].reasoningOptions) continue
+      const cat = getCatalogModelCached(all[i].providerId, all[i].id)
+      if (cat?.reasoningOptions) {
+        all[i] = { ...all[i], reasoningOptions: cat.reasoningOptions }
       }
     }
 

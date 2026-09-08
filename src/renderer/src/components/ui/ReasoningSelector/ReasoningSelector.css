@@ -1,9 +1,11 @@
-﻿/* ── Основная кнопка — в стиле model-selector-badge (status-row) ── */
+/* ── Основная кнопка — нейтральный чип, ВЫСОТА КАК У model-selector-badge
+   (padding 3px + контент 14px + border = ~22px). Цвет уровня живёт в
+   иконке-чипе (rs-btn-ico), сам чип остаётся нейтральным. */
 .rs-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  padding: 3px 8px 3px 3px;
   border-radius: 20px;
   border: 1px solid color-mix(in srgb, var(--text-secondary) 25%, transparent);
   /* Без backdrop-filter: чип лежит на инпут-баре с собственным glass-фоном,
@@ -13,66 +15,48 @@
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
   white-space: nowrap;
   flex-shrink: 0;
 }
-.rs-btn:hover {
-  background: rgba(167,139,250,0.1);
-  border-color: rgba(167,139,250,0.25);
-  color: rgba(167,139,250,0.9);
-}
 .rs-btn--active {
-  background: rgba(167,139,250,0.12);
-  border-color: rgba(167,139,250,0.35);
-  color: rgba(167,139,250,1);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-/* ── Цветовая градация уровней: off → нейтральный, low → голубой,
-   medium → янтарный, high → фиолетово-розовый градиент ────────── */
-.rs-btn--low {
-  border-color: rgba(56,189,248,0.35);
-  background: rgba(56,189,248,0.08);
-  color: #7dd3fc;
-}
-.rs-btn--low:hover,
-.rs-btn--low.rs-btn--active {
-  background: rgba(56,189,248,0.16);
-  border-color: rgba(56,189,248,0.55);
-  color: #bae6fd;
-}
-.rs-btn--medium {
-  border-color: rgba(251,191,36,0.35);
-  background: rgba(251,191,36,0.08);
-  color: #fcd34d;
-}
-.rs-btn--medium:hover,
-.rs-btn--medium.rs-btn--active {
-  background: rgba(251,191,36,0.16);
-  border-color: rgba(251,191,36,0.55);
-  color: #fde68a;
-}
-.rs-btn--high {
-  border-color: rgba(167,139,250,0.45);
-  background: linear-gradient(90deg, rgba(167,139,250,0.16), rgba(244,114,182,0.16));
-  color: #d8b4fe;
-}
-.rs-btn--high:hover,
-.rs-btn--high.rs-btn--active {
-  background: linear-gradient(90deg, rgba(167,139,250,0.26), rgba(244,114,182,0.26));
-  border-color: rgba(167,139,250,0.65);
-  color: #e9d5ff;
-}
-
-.rs-btn-icon {
-  color: inherit;
+/* ── Иконка-чип: цветовой код уровня мышления ─────────────────────
+   off → нейтральный, low → голубой, medium → янтарный,
+   high → фиолетово-розовый градиент с мягким свечением. */
+.rs-btn-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
   flex-shrink: 0;
-  opacity: 0.8;
+  background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s, box-shadow 0.25s;
 }
+.rs-btn-ico--low {
+  background: rgba(56,189,248,0.16);
+  color: #38bdf8;
+}
+.rs-btn-ico--medium {
+  background: rgba(251,191,36,0.16);
+  color: #fbbf24;
+}
+.rs-btn-ico--high {
+  background: linear-gradient(135deg, rgba(167,139,250,0.28), rgba(244,114,182,0.28));
+  color: #c4b5fd;
+  box-shadow: 0 0 9px rgba(167,139,250,0.35);
+}
+
 .rs-btn-val {
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 .rs-btn-chevron {
   width: 7px; height: 5px;
@@ -80,37 +64,38 @@
   flex-shrink: 0;
 }
 
-/* ── Бейдж always_on ──────────────────────────────────────────── */
+/* ── Бейдж always_on — иконка с мягкой пульсацией, высота как у rs-btn ── */
 .rs-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  padding: 3px 8px 3px 3px;
   border-radius: 20px;
-  border: 1px solid rgba(167,139,250,0.12);
-  background: rgba(167,139,250,0.08);
-  color: rgba(167,139,250,0.5);
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 25%, transparent);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+  color: var(--text-secondary);
   font-size: 11px;
+  font-weight: 500;
   cursor: default;
   user-select: none;
   white-space: nowrap;
   flex-shrink: 0;
 }
-
-/* ── Тултип ───────────────────────────────────────────────────── */
-.rs-tooltip {
-  position: fixed;
-  z-index: 99998;
-  transform: translateX(-50%);
-  background: rgba(15,15,20,0.95);
-  border: 1px solid var(--overlay-4);
-  border-radius: 7px;
-  padding: 5px 10px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  pointer-events: none;
-  box-shadow: 0 4px 16px rgba(var(--shadow-rgb), 0.4);
+.rs-badge-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, rgba(167,139,250,0.24), rgba(244,114,182,0.24));
+  color: #c4b5fd;
+  animation: rs-pulse 2.6s ease-in-out infinite;
+}
+@keyframes rs-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(167,139,250,0.30); }
+  50%      { box-shadow: 0 0 9px 2px rgba(167,139,250,0.14); }
 }
 
 /* ── Панель-дропдаун — в стиле .model-selector-dropdown ────────── */
@@ -129,118 +114,109 @@
   -webkit-backdrop-filter: blur(20px);
 }
 
-/* Заголовок панели: назначение + имя API-параметра */
+/* Заголовок панели */
 .rs-panel-head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 12px 7px;
+  align-items: center;
+  padding: 7px 12px 8px;
   border-bottom: 1px solid var(--overlay-3);
   margin-bottom: 3px;
 }
-.rs-panel-hint {
+.rs-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 10px;
-  color: var(--text-muted);
-  letter-spacing: 0.05em;
+  font-weight: 600;
   text-transform: uppercase;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
   white-space: nowrap;
 }
-.rs-panel-param {
-  font-size: 10px;
-  color: var(--accent);
-  opacity: 0.65;
-  font-family: var(--font-mono);
-  flex-shrink: 0;
-}
 
-/* ── Опции — в стиле .model-selector-item ─────────────────────── */
-.rs-panel-options {
+/* ── Вертикальный список режимов — в стиле ModelSelector items ──
+   Ряд: цветная иконка-квадратик + лейбл + описание в строку.
+   Hover-эффекты убраны по просьбе юзера — подсвечен только активный. */
+.rs-list {
   display: flex;
   flex-direction: column;
+  padding: 3px 4px 5px;
 }
-.rs-option {
+.rs-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
-  padding: 6px 12px;
+  padding: 5px 8px;
+  border-radius: 9px;
   border: none;
-  border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
   text-align: left;
 }
-.rs-option:hover {
-  background: var(--accent-subtle);
+.rs-row--active {
+  background: rgba(167,139,250,0.10);
+  box-shadow: inset 0 0 0 1px rgba(167,139,250,0.30);
   color: var(--text-primary);
-}
-.rs-option--active {
-  color: var(--accent);
-  background: var(--accent-subtle);
 }
 
-/* ── Цветовая градация опций: off → приглушённый, low → голубой,
-   medium → янтарный, high → фиолетово-розовый градиентный текст ── */
-.rs-option--off .rs-option-icon,
-.rs-option--off .rs-option-val {
-  color: var(--text-muted);
-}
-.rs-option--low .rs-option-icon { color: #38bdf8; }
-.rs-option--low .rs-option-val { color: #7dd3fc; }
-.rs-option--medium .rs-option-icon { color: #fbbf24; }
-.rs-option--medium .rs-option-val { color: #fcd34d; }
-.rs-option--high .rs-option-icon { color: #c084fc; }
-.rs-option--high .rs-option-val {
-  background: linear-gradient(90deg, #c4b5fd, #f9a8d4);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-/* Hover перекрашивает в нейтральный (специфичность выше цветных правил) */
-.rs-option:hover .rs-option-icon,
-.rs-option:hover .rs-option-val {
-  color: var(--text-primary);
-  -webkit-text-fill-color: currentColor;
-  background: none;
-}
-.rs-option-icon {
-  display: flex;
+/* Иконка-квадратик с цветом уровня */
+.rs-row-ico {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   flex-shrink: 0;
-  opacity: 0.9;
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-muted);
+  transition: background 0.13s, color 0.13s, box-shadow 0.2s;
 }
-.rs-option-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1;
-  min-width: 0;
+.rs-row--low .rs-row-ico {
+  background: rgba(56,189,248,0.14);
+  color: #38bdf8;
 }
-.rs-option-val {
+.rs-row--medium .rs-row-ico {
+  background: rgba(251,191,36,0.14);
+  color: #fbbf24;
+}
+.rs-row--high .rs-row-ico {
+  background: linear-gradient(135deg, rgba(167,139,250,0.22), rgba(244,114,182,0.22));
+  color: #c4b5fd;
+}
+.rs-row--active.rs-row--high .rs-row-ico {
+  box-shadow: 0 0 10px rgba(167,139,250,0.3);
+}
+
+.rs-row-label {
   font-size: 12.5px;
   font-weight: 500;
   font-family: var(--font-mono);
   letter-spacing: 0.02em;
+  text-transform: uppercase;
+  flex-shrink: 0;
 }
-.rs-option-desc {
+.rs-row--active.rs-row--low .rs-row-label { color: #7dd3fc; }
+.rs-row--active.rs-row--medium .rs-row-label { color: #fcd34d; }
+.rs-row--active.rs-row--high .rs-row-label { color: #d8b4fe; }
+
+.rs-row-desc {
+  flex: 1;
+  min-width: 0;
   font-size: 10.5px;
   color: var(--text-muted);
+  text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rs-option--active .rs-option-desc {
+.rs-row--active .rs-row-desc {
   color: var(--accent);
-  opacity: 0.75;
+  opacity: 0.7;
 }
-.rs-option-check {
+.rs-row-check {
   color: var(--accent);
   flex-shrink: 0;
 }

@@ -7,9 +7,10 @@ import type Store from 'electron-store'
 import { isMainThread, workerData } from 'worker_threads'
 import { buildReasoningParams } from '../../shared/reasoningModels'
 import { getGatewayModelsCache } from '../tokens/gatewayModelsCache'
+import { getCatalogModel } from '../tokens/modelCatalog'
 import { getNextApiKey } from '../../shared/roundRobin'
 import { getIdentityHeaders, getOpencodeZenHeaders, isOpencodeProvider } from '../../shared/constants'
-import type { Provider, ModelParams } from '../../shared/types'
+import type { Provider, ModelParams, ReasoningOptionSpec } from '../../shared/types'
 import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
 import { chatWithToolsAnthropic } from './anthropicNative'
@@ -195,6 +196,25 @@ export class AIClient {
   }
 
   /**
+   * Meta для buildReasoningParams: если модель принадлежит Syntee-Gateway —
+   * кэш /v1/models (authoritative: reasoning.supported + levels группы).
+   * Иначе — каталог models.dev (reasoning_options: effort/toggle/budget).
+   * Работает и в main, и в worker (каталог в worker инициализируется из
+   * кэш-файла через workerData.catalogCachePath).
+   */
+  private getReasoningMeta(
+    model: string,
+    role: string,
+  ): { reasoning?: { supported: boolean; levels: string[] }; reasoningOptions?: ReasoningOptionSpec[] } | null {
+    const gw = getGatewayModelsCache().find(m => m.id === model)
+    if (gw) return gw
+    const providerId = this.getProviderInfoForRole(role)?.provider.id
+    if (!providerId) return null
+    const cat = getCatalogModel(providerId, model)
+    return cat?.reasoningOptions ? { reasoningOptions: cat.reasoningOptions } : null
+  }
+
+  /**
    * Асинхронная версия getClientForRole — для syntee-gateway получает JWT
    * через getGatewayAuthToken() (с авто-refresh). Для остальных провайдеров
    * работает синхронно как getClientForRole.
@@ -264,10 +284,12 @@ export class AIClient {
     }
 
     // Берём reasoning параметры из store (выбраны пользователем в UI).
-    // Для gateway-моделей уровни мышления приходят из /v1/models (meta.reasoning).
+    // Для gateway-моделей уровни мышления приходят из /v1/models (meta.reasoning),
+    // для остальных — спеки models.dev (reasoning_options).
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
-    const gwMeta = getGatewayModelsCache().find(m => m.id === model)
-    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue, gwMeta) : {}
+    const reasoningExtra = reasoningValue
+      ? buildReasoningParams(reasoningValue, this.getReasoningMeta(model, modelType))
+      : {}
 
     let attempt = 0
     let retried401 = false
@@ -583,8 +605,9 @@ export class AIClient {
     const temperature = DEFAULT_TEMPERATURE
     const maxTokensRaw = DEFAULT_MAX_TOKENS
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
-    const gwMeta = getGatewayModelsCache().find(m => m.id === model)
-    const reasoningExtra = reasoningValue ? buildReasoningParams(model, reasoningValue, gwMeta) : {}
+    const reasoningExtra = reasoningValue
+      ? buildReasoningParams(reasoningValue, this.getReasoningMeta(model, resolvedRole))
+      : {}
 
     // Для Anthropic extended thinking: max_tokens ВКЛЮЧАЕТ reasoning токены.
     // Если budget_tokens > max_tokens, API обрежет на max_tokens и ответ будет пустой.
@@ -595,6 +618,12 @@ export class AIClient {
       if (budget && budget > 0) {
         maxTokens = budget + maxTokensRaw
       }
+    }
+    // Adaptive thinking (Claude 4.6+/5 — effort-модели по models.dev): мысли
+    // берутся из max_tokens; без запаса длинное мышление обрежет ответ.
+    // Бампим только для нативного Anthropic-пути (gateway делает то же сам).
+    if (reasoningExtra.reasoning_effort && providerInfo && isAnthropicProvider(providerInfo.provider)) {
+      maxTokens = Math.max(maxTokens, 64000)
     }
 
     // Считаем реальный контекст через tiktoken перед каждым раундом агента.

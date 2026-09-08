@@ -31,6 +31,7 @@ interface TopFile {
 interface IndexStatus {
   fileCount: number
   lastUpdated: number | null
+  lastScanAt: number | null
   watcherActive: boolean
   indexingInProgress: boolean
   queued: boolean
@@ -251,7 +252,13 @@ export function ProjectIndexModal({ open, projectId, projectName, onClose }: Pro
                       <div className="pim-stat-label">Файлов в индексе</div>
                       <div className="pim-stat-value">{status.fileCount.toLocaleString('ru-RU')}</div>
                     </div>
-                    <div className="pim-stat-card">
+                    <div className="pim-stat-card" title="Когда фоновая проверка (safety net / prewarm) последний раз сканировала проект. Тихий прогон без изменений не трогает индекс.">
+                      <div className="pim-stat-label">Последняя проверка</div>
+                      <div className="pim-stat-value pim-stat-time">
+                        {status.lastScanAt ? formatTime(status.lastScanAt) : '—'}
+                      </div>
+                    </div>
+                    <div className="pim-stat-card" title="Когда последний раз реально менялось содержимое файлов и индекс обновил записи">
                       <div className="pim-stat-label">Последнее обновление</div>
                       <div className="pim-stat-value pim-stat-time">{formatTime(status.lastUpdated)}</div>
                     </div>

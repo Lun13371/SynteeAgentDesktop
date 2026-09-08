@@ -135,8 +135,9 @@ export type ProgressCallback = (p: IndexProgress) => void
 
 /**
  * Строит/обновляет индекс символов проекта. Incremental: для каждого файла
- * проверяет mtime+size, пере-парсит только изменившиеся. Возвращает общее
- * количество файлов в индексе.
+ * проверяет content hash, пере-парсит только изменившиеся.
+ * Возвращает количество РЕАЛЬНО переиндексированных (изменённых) файлов —
+ * не общее число в индексе (общее считает localGetIndexCount / COUNT(*)).
  */
 export async function buildOrUpdateIndex(
   projectId: string,
@@ -220,7 +221,7 @@ export async function buildOrUpdateIndex(
     // один транзиентный сбой FS стирал весь индекс в ноль.
     if (files.length === 0 && existingEntries.size > 0) {
       console.warn(`[fastContext] walk returned 0 files but index has ${existingEntries.size} — skipping (workdir unavailable?)`)
-      return existingEntries.size
+      return 0 // ничего не изменилось
     }
     if (files.length === 0) {
       console.warn(`[fastContext] walkProjectFiles returned 0 files for workdir=${workdir}`)
@@ -356,7 +357,7 @@ export async function buildOrUpdateIndex(
     localUpdateScores(projectId, scores)
   }
 
-  return localGetEntries(projectId).length
+  return filesReIndexed
 }
 
 // ─── Graph ranking (PageRank-style как в Aider) ─────────────────────────────

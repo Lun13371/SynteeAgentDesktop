@@ -211,6 +211,7 @@ async function doSafetyNetScan(
 ): Promise<void> {
   const jobId = `safety-${++_watchJobCounter}`
   const startedAt = Date.now()
+  let changedCount = 0
   try {
     // Быстрый walk: только readdir + stat, без tree-sitter parse
     const { files, hitCap } = await walkProjectFiles(workdir, { ignoreDirs, maxFiles: settings.maxFilesPerProject })
@@ -242,6 +243,7 @@ async function doSafetyNetScan(
         if (!seen.has(path)) changed.push(path)
       }
     }
+    changedCount = changed.length
 
     // Обновляем backoff-счётчик: тихий прогон → +1, изменения → сброс.
     const st = _watchStates.get(projectId)
@@ -276,6 +278,11 @@ async function doSafetyNetScan(
     }
   } catch (e) {
     postMessage({ type: 'log', jobId, message: `[safety-net] failed: ${e instanceof Error ? e.message : String(e)}` })
+  } finally {
+    // Сообщаем main о факте прогона ВСЕГДА (даже тихий, 0 изменений) —
+    // watcher пишет lastScanAt → модалка показывает «Последняя проверка».
+    // Иначе тихие прогоны не оставляли следов и казалось, что фон не работает.
+    postMessage({ type: 'scanCompleted', projectId, changed: changedCount })
   }
 }
 

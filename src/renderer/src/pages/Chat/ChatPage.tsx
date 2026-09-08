@@ -1607,10 +1607,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setDraftAttachments([])
       draftAttachmentsRef.current = []
       window.syntee.draft.clearAttachments(chatId).catch(() => {})
-      // Осиротевшие копии черновика: main сам сверит файлы папки с путями
-      // всех сообщений чата (БД) и удалит только никому не нужные — файлы
-      // отправленных сообщений не пострадают.
-      window.syntee.attachments.cleanupOrphans({ chatId }).catch(() => {})
+      // ВНИМАНИЕ: cleanupOrphans здесь вызывать НЕЛЬЗЯ. IPC из renderer
+      // обрабатываются в main строго по порядку (FIFO) — очистка выполнится
+      // ДО того, как chat:send сохранит user-сообщение с путями вложений в
+      // БД, и свежие файлы будут удалены как «сироты». Очистка выполняется
+      // в main (runChatSend) сразу после saveMessage(userMsg).
     }
 
     // Отправляем запрос. Если в чате уже идёт генерация — main поставит
