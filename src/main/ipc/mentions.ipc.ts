@@ -46,6 +46,62 @@ function draftDir(chatId: string): string {
   return join(app.getPath('userData'), 'draft-attachments', chatId)
 }
 
+/**
+ * Удаление осиротевших файлов черновика чата (общая логика).
+ *
+ * Отправленные сообщения ссылаются на файлы в draft-attachments/{chatId}/
+ * (message.attachments хранит пути копий) — удалять «все не из текущей
+ * отправки» НЕЛЬЗЯ, сломаются превью старых сообщений. Поэтому: собираем
+ * пути из attachments ВСЕХ сообщений чата (БД) + extraKeepPaths (пути
+ * вложений отправок, которые ещё стоят в очереди — их user-сообщения
+ * ещё не сохранены в БД) и удаляем только файлы черновика, на которые
+ * никто не ссылается.
+ *
+ * Вызывается из IPC-хендлера attachments:cleanupOrphans и из runChatSend
+ * (chat.ipc.ts) — СТРОГО ПОСЛЕ saveMessage(userMsg), чтобы пути текущей
+ * отправки уже были в БД и не попали под удаление.
+ *
+ * Защитный пояс: файлы младше 2 минут не трогаем — страховка от любых
+ * рассинхронов БД/диска (файл мог быть прикреплён к сообщению, которое
+ * ещё обрабатывается). Такие файлы подчистит следующая очистка.
+ */
+export function cleanupOrphanDraftFiles(
+  chatId: string,
+  extraKeepPaths: string[] = [],
+): { ok: boolean; removed: number } {
+  chatId = String(chatId ?? '')
+  if (!chatId) return { ok: false, removed: 0 }
+  const dir = draftDir(chatId)
+  if (!existsSync(dir)) return { ok: true, removed: 0 }
+  // Пути, на которые ссылаются сообщения чата + явные keep-пути.
+  const keep = new Set<string>()
+  for (const p of extraKeepPaths) {
+    if (p) keep.add(pathResolve(p).toLowerCase())
+  }
+  try {
+    for (const m of getMessages(chatId)) {
+      for (const a of (m.attachments ?? []) as Attachment[]) {
+        if (a?.path) keep.add(pathResolve(a.path).toLowerCase())
+      }
+    }
+  } catch { /* БД недоступна — ничего не удаляем (безопаснее) */ return { ok: true, removed: 0 } }
+  let removed = 0
+  try {
+    for (const f of readdirSync(dir)) {
+      const full = join(dir, f)
+      try {
+        if (!statSync(full).isFile()) continue
+        if (keep.has(pathResolve(full).toLowerCase())) continue
+        // Свежие файлы не трогаем (см. защитный пояс в доке функции).
+        if (Date.now() - statSync(full).mtimeMs < 120_000) continue
+        unlinkSync(full)
+        removed++
+      } catch { /* занят/пропал — оставляем */ }
+    }
+  } catch { /* ignore */ }
+  return { ok: true, removed }
+}
+
 /** Собирает скиллы + команды в плоский MentionItem[] для @пикера. */
 function collectInternalItems(workdir?: string): MentionItem[] {
   const items: MentionItem[] = []
@@ -340,39 +396,13 @@ export function registerMentionsIPC(): void {
   })
 
   // ── attachments:cleanupOrphans — удаление осиротевших черновиков ──────────
-  // Отправленные сообщения ссылаются на файлы в draft-attachments/{chatId}/
-  // (message.attachments хранит пути копий) — удалять «все не из текущей
-  // отправки» НЕЛЬЗЯ, сломаются превью старых сообщений. Поэтому: собираем
-  // пути из attachments ВСЕХ сообщений чата (БД) и удаляем только файлы
-  // черновика, на которые не ссылается ни одно сообщение (осиротели после
-  // удаления чипа Backspace'ом и т.п.).
+  // Логика в cleanupOrphanDraftFiles (общая с runChatSend в chat.ipc.ts):
+  // keep-сет из attachments всех сообщений чата (БД), удаляем только файлы
+  // черновика, на которые не ссылается ни одно сообщение. ВАЖНО: из renderer
+  // при отправке этот хендлер больше НЕ вызывается (удалял свежие вложения
+  // до их сохранения в БД) — очистка выполняется в main после saveMessage.
   ipcMain.handle('attachments:cleanupOrphans', (_e, params: { chatId: string }) => {
-    const chatId = String(params?.chatId ?? '')
-    if (!chatId) return { ok: false as const, error: 'chatId required', removed: 0 }
-    const dir = draftDir(chatId)
-    if (!existsSync(dir)) return { ok: true as const, removed: 0 }
-    // Пути, на которые ссылаются сообщения чата.
-    const keep = new Set<string>()
-    try {
-      for (const m of getMessages(chatId)) {
-        for (const a of (m.attachments ?? []) as Attachment[]) {
-          if (a?.path) keep.add(pathResolve(a.path).toLowerCase())
-        }
-      }
-    } catch { /* БД недоступна — ничего не удаляем (безопаснее) */ return { ok: true as const, removed: 0 } }
-    let removed = 0
-    try {
-      for (const f of readdirSync(dir)) {
-        const full = join(dir, f)
-        try {
-          if (!statSync(full).isFile()) continue
-          if (keep.has(pathResolve(full).toLowerCase())) continue
-          unlinkSync(full)
-          removed++
-        } catch { /* занят/пропал — оставляем */ }
-      }
-    } catch { /* ignore */ }
-    return { ok: true as const, removed }
+    return cleanupOrphanDraftFiles(params?.chatId)
   })
 
   // ── draft:getAttachments — вложения черновика чата ────────────────────────

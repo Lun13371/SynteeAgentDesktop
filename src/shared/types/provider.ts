@@ -29,6 +29,22 @@ export interface Provider {
 
 export type ModelCapability = 'vision' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt' | 'image_gen'
 
+/**
+ * Спека режима мышления из каталога models.dev (поле reasoning_options).
+ * Для каждой reasoning-модели каталог отдаёт массив контролов её API:
+ *   [{ type: 'effort', values: ['low','medium','high','max'] }]
+ *   [{ type: 'toggle' }, { type: 'budget_tokens', min: 1024 }]
+ *   [] — модель размышляет всегда, управлять нельзя (always-on)
+ */
+export interface ReasoningOptionSpec {
+  type: 'effort' | 'toggle' | 'budget_tokens'
+  /** effort: допустимые уровни ('none' = выключено). */
+  values?: string[]
+  /** budget_tokens: границы бюджета в токенах. */
+  min?: number
+  max?: number
+}
+
 export type ModelSpeed = 'fast' | 'medium' | 'slow'
 
 export interface ModelMeta {
@@ -44,6 +60,8 @@ export interface ModelMeta {
   isCustom?: boolean       // добавлена пользователем вручную
   /** Режимы мышления (reasoning_effort) — из /v1/models Syntee-Gateway. */
   reasoning?: { supported: boolean; levels: string[] }
+  /** Спеки режимов мышления из каталога models.dev (reasoning_options). */
+  reasoningOptions?: ReasoningOptionSpec[]
 }
 
 export type ModelRole =

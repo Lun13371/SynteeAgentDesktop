@@ -71,6 +71,19 @@ import {
 import { registerProjectsIPC } from './projects.ipc'
 import { registerCheckpointIPC } from './chatCheckpoint.ipc'
 import { registerForkIPC } from './chatFork.ipc'
+import { cleanupOrphanDraftFiles } from './mentions.ipc'
+
+// ── Pending attachment paths ─────────────────────────────────────────────────
+// Пути вложений отправок, чьи user-сообщения ещё НЕ сохранены в БД:
+// - текущая отправка (runChatSend сохраняет userMsg только после обработки
+//   вложений);
+// - queued-отправки (могут стартовать спустя минуты).
+// cleanupOrphanDraftFiles получает их как extraKeepPaths и не удаляет.
+// Заполняется в chat:send, очищается в runChatSend после saveMessage(userMsg).
+// Записи старше 30 минут считаются протухшими (runChatSend упал до saveMessage)
+// и отбрасываются — чтобы файлы-сироты не «спасались» вечно.
+const PENDING_ATTACH_TTL_MS = 30 * 60_000
+const pendingAttachmentPaths = new Map<string, Map<string, number>>()
 
 // ── Auto-recall helpers ─────────────────────────────────────────────────────
 
@@ -1126,6 +1139,31 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // диалога сломается при перезаходе в чат.
     userMsg.createdAt = Date.now()
     if (!params.incognito) saveMessage(userMsg)
+
+    // ── Очистка осиротевших файлов черновика ──────────────────────────────
+    // СТРОГО после saveMessage(userMsg): пути вложений этой отправки уже в
+    // БД → не попадут под удаление. Пути вложений queued-отправок (userMsg
+    // ещё не в БД) передаём как extraKeepPaths. Раньше очистку вызывал
+    // renderer ДО chat:send — из-за FIFO в IPC файл свежей отправки
+    // удалялся до сохранения сообщения, и вложения «не доходили» до модели.
+    if (!params.incognito) {
+      const pending = pendingAttachmentPaths.get(params.chatId)
+      if (pending) {
+        for (const a of (params.attachments ?? [])) {
+          if (a?.path) pending.delete(path.resolve(a.path).toLowerCase())
+        }
+        // Отбрасываем протухшие записи (runChatSend упал до saveMessage).
+        const ttlCutoff = Date.now() - PENDING_ATTACH_TTL_MS
+        for (const [p, ts] of pending) {
+          if (ts < ttlCutoff) pending.delete(p)
+        }
+        const extraKeep = [...pending.keys()]
+        if (pending.size === 0) pendingAttachmentPaths.delete(params.chatId)
+        try { cleanupOrphanDraftFiles(params.chatId, extraKeep) } catch { /* ignore */ }
+      } else {
+        try { cleanupOrphanDraftFiles(params.chatId) } catch { /* ignore */ }
+      }
+    }
 
     // ── Режимные флаги текущего прогона ──────────────────────────────────────
     // Объявляем ДО первого использования в getSystemPrompt (token estimation,
@@ -3383,6 +3421,19 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     }
     const history = params.incognito ? [] : getMessagesCached(params.chatId)
     const assistantMsgId = uuid()
+
+    // Регистрируем пути вложений этой отправки как pending — защита от
+    // cleanupOrphanDraftFiles: пока userMsg не сохранён в БД (для queued-
+    // отправок это может случиться спустя минуты), файлы не считаются
+    // сиротами. Снимается в runChatSend сразу после saveMessage(userMsg).
+    if (!params.incognito && attachments.length > 0) {
+      const pending = pendingAttachmentPaths.get(params.chatId) ?? new Map<string, number>()
+      const now = Date.now()
+      for (const a of attachments) {
+        if (a?.path) pending.set(path.resolve(a.path).toLowerCase(), now)
+      }
+      pendingAttachmentPaths.set(params.chatId, pending)
+    }
 
     // Метаданные для UI очереди: preview первых ~80 симв. запроса.
     const previewSrc = params.displayContent ?? params.content ?? ''

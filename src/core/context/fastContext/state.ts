@@ -105,6 +105,14 @@ export function localDelete(projectId: string, filePath: string): void {
   getDb().prepare(`DELETE FROM fast_context_index WHERE project_id = ? AND file_path = ?`).run(projectId, filePath)
 }
 
+/** Общее число файлов в индексе проекта — COUNT(*), без чтения записей.
+ *  Используется там, где нужно только число (orchestrator: «Поиск по N файлам»),
+ *  вместо чтения всех entries. */
+export function localGetIndexCount(projectId: string): number {
+  const r = getDb().prepare(`SELECT COUNT(*) as n FROM fast_context_index WHERE project_id = ?`).get(projectId) as { n: number }
+  return r.n
+}
+
 export function localUpdateScores(projectId: string, scores: Array<{ filePath: string; rankedScore: number }>): void {
   const db = getDb()
   const stmt = db.prepare(`UPDATE fast_context_index SET ranked_score = ? WHERE project_id = ? AND file_path = ?`)

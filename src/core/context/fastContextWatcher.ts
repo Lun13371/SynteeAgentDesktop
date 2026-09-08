@@ -97,6 +97,13 @@ function ensureWorker(): Worker {
       }
       return
     }
+    if (type === 'scanCompleted') {
+      // Safety net прогон завершился (в т.ч. тихий, 0 изменений) — фиксируем
+      // время проверки для модалки («Последняя проверка»).
+      const scanProjectId = msg.projectId as string
+      if (scanProjectId) _lastScanAt.set(scanProjectId, Date.now())
+      return
+    }
     if (type === 'done' || type === 'error') {
       const pending = jobId ? _workerPending.get(jobId) : undefined
       if (pending && jobId) {
@@ -222,6 +229,11 @@ const _queuedProjects = new Set<string>()
 // Кулдаун — чтобы переключение проектов туда-сюда не плодило full-сканы.
 const _lastPrewarmAt = new Map<string, number>()
 const PREWARM_SESSION_COOLDOWN_MS = 15 * 60_000
+
+// Timestamp последней проверки проекта фоном (safety net / prewarm / job done).
+// В отличие от lastUpdated (= когда менялись файлы), это «когда система
+// последний раз смотрела» — показывает живость фона в модалке.
+const _lastScanAt = new Map<string, number>()
 
 // ── Глобальная очередь индексации ────────────────────────────────────────────
 // Один job за раз в worker (worker однопоточный). Активный проект — приоритет.
@@ -356,6 +368,12 @@ export function isQueued(projectId: string): boolean {
   return _queuedProjects.has(projectId)
 }
 
+/** Timestamp последней фоновой проверки проекта (safety net / prewarm / job).
+ *  null — в этой сессии ещё не проверялся. */
+export function getLastScanAt(projectId: string): number | null {
+  return _lastScanAt.get(projectId) ?? null
+}
+
 /** Записать событие в историю + prune старых. */
 function recordHistory(projectId: string, eventType: string, filesChanged: number, durationMs: number): void {
   try {
@@ -371,6 +389,8 @@ function recordHistory(projectId: string, eventType: string, filesChanged: numbe
  *  делает тяжёлых DB-записей → UI не виснет. Вызывается из worker 'done'
  *  обработчика через setImmediate. */
 function handleWorkerDone(projectId: string, filesChanged: number, durationMs: number, isFull: boolean): void {
+  // Любой завершённый job (prewarm/reindex/incremental) — это тоже «проверка».
+  _lastScanAt.set(projectId, Date.now())
   // История: full-скан с 0 изменений (ежедневный prewarm «всё актуально») —
   // не событие, не пишем. Иначе после включения «prewarm всегда» каждый
   // старт приложения добавлял запись и история выглядела как бесконечный

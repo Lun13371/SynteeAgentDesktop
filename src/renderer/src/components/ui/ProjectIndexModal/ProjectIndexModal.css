@@ -97,7 +97,9 @@
 /* ── Stats grid ── */
 .pim-stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 5 карточек (файлы / проверка / обновление / watcher / статус) —
+     auto-fit, чтобы на узком окне аккуратно переносились. */
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 10px;
 }
 .pim-stat-card {

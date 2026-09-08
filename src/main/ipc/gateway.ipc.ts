@@ -87,6 +87,8 @@ function toModelMeta(m: GatewayModel): ModelMeta {
   if (m.supports_vision) caps.push('vision')
   if (m.supports_tools) caps.push('tools')
   if (m.supports_streaming) caps.push('code')
+  // Группа с настроенным reasoning-конфигом → capability для фильтров UI
+  if (m.reasoning?.supported) caps.push('reasoning')
   if (!caps.length) caps.push('tools', 'code')
 
   let speed: ModelMeta['speed'] = 'fast'

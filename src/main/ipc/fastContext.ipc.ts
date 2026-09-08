@@ -19,7 +19,7 @@ import {
 import {
   setProgressCallback, setUpdatedCallback, setActiveProject,
   isWatching, isIndexing, isQueued, forceReindex, setWatcherStore,
-  autoStartLastProject,
+  autoStartLastProject, getLastScanAt,
 } from '../../core/context/fastContextWatcher'
 import { setActiveExtensionsProject, initExtensionsDetector } from '../../core/extensionsDetector'
 import { getProjectById } from '../../core/db'
@@ -79,10 +79,11 @@ export function registerFastContextIPC(store: Store, getWindow: () => BrowserWin
     const watcherActive = isWatching(projectId)
     const indexing = isIndexing(projectId)
     const queued = isQueued(projectId)
+    const lastScanAt = getLastScanAt(projectId)
     const history = getIndexHistory(projectId, 50)
     const recentFiles = getRecentFastContextFiles(projectId, 10)
     const topFiles = getTopFastContextFiles(projectId, 10)
-    return { fileCount, lastUpdated, watcherActive, indexingInProgress: indexing, queued, history, recentFiles, topFiles }
+    return { fileCount, lastUpdated, watcherActive, indexingInProgress: indexing, queued, lastScanAt, history, recentFiles, topFiles }
   })
 
   // Принудительный реиндекс.
