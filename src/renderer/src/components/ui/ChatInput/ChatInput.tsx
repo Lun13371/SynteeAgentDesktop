@@ -6,7 +6,7 @@ import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewM
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { findMentionTokenAtCaret, mentionToAttachment } from '../../../../../shared/mentions'
-import type { Attachment, MentionItem, ApprovalMode, LastTurnChanges } from '../../../../../shared/types'
+import type { Attachment, MentionItem, ApprovalMode, AutoModeSettings, LastTurnChanges, ProjectPermissionOverride } from '../../../../../shared/types'
 import { DEFAULT_PERSONA, type PersonaId } from '../../../../../shared/modes'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import { useUIStore } from '../../../store/ui.store'
@@ -87,6 +87,10 @@ interface ChatInputProps {
   badgeLive?: boolean
   /** Колбэк открытия настроек проекта (hover-поповер на workdir-бейдже). */
   onOpenProjectSettings?: () => void
+  /** Проект текущего чата (по workdir) — открывает per-project настройки
+   *  защиты в ApprovalModeSelector. null/undefined = чат без проекта. */
+  projectId?: string | null
+  projectName?: string
 }
 
 // memo: ChatPage ре-рендерится ~20×/сек при стриминге и на scroll-range
@@ -123,8 +127,14 @@ function ChatInput({
   lastTurnChanges = null,
   badgeLive = false,
   onOpenProjectSettings,
+  projectId,
+  projectName,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
+  // Глобальные настройки авто-режима (agentPermissions.autoMode) и проектный
+  // override — для панели настроек защиты в ApprovalModeSelector.
+  const [globalAuto, setGlobalAuto] = useState<Partial<AutoModeSettings>>({})
+  const [projOverride, setProjOverride] = useState<ProjectPermissionOverride | null>(null)
   const [slashCmds, setSlashCmds] = useState<SlashCommand[]>([])
   const [slashIdx, setSlashIdx] = useState(0)
   // Превью вложения из чипов инпут-бара (модалка-лайтбокс)
@@ -212,11 +222,50 @@ function ChatInput({
     window.syntee.agent.getSettings().then((s: { approvalMode: ApprovalMode }) => {
       setApprovalMode(s.approvalMode)
     }).catch(() => {})
+    window.syntee.agent.getPermissions().then((p: { agentPermissions?: { autoMode?: Partial<AutoModeSettings> } }) => {
+      setGlobalAuto(p.agentPermissions?.autoMode ?? {})
+    }).catch(() => {})
   }, [])
 
-  const handleApprovalChange = (mode: ApprovalMode) => {
-    setApprovalMode(mode)
-    window.syntee.agent.setSettings({ approvalMode: mode }).catch(() => {})
+  // Проектный override разрешений — перезагружается при смене проекта чата
+  useEffect(() => {
+    if (projectId) {
+      window.syntee.agent.getProjectPermissions(projectId)
+        .then((o: ProjectPermissionOverride | null) => setProjOverride(o))
+        .catch(() => setProjOverride(null))
+    } else {
+      setProjOverride(null)
+    }
+  }, [projectId])
+
+  /** Выбор режима: project-scope → override проекта, иначе глобально. */
+  const handleApprovalChange = (mode: ApprovalMode | null, scope: 'global' | 'project') => {
+    if (scope === 'project' && projectId) {
+      const next: ProjectPermissionOverride = { ...(projOverride ?? {}) }
+      if (mode) next.approvalMode = mode
+      else delete next.approvalMode
+      setProjOverride(next)
+      window.syntee.agent.setProjectPermissions(projectId, next).catch(() => {})
+    } else if (mode) {
+      setApprovalMode(mode)
+      window.syntee.agent.setSettings({ approvalMode: mode }).catch(() => {})
+    }
+  }
+
+  /** Гранулярные настройки авто-режима в выбранном scope. */
+  const handleAutoChange = (patch: Partial<AutoModeSettings>, scope: 'global' | 'project') => {
+    if (scope === 'project' && projectId) {
+      const next: ProjectPermissionOverride = {
+        ...(projOverride ?? {}),
+        auto: { ...(projOverride?.auto ?? {}), ...patch },
+      }
+      setProjOverride(next)
+      window.syntee.agent.setProjectPermissions(projectId, next).catch(() => {})
+    } else {
+      const next = { ...globalAuto, ...patch }
+      setGlobalAuto(next)
+      window.syntee.agent.setAutoPermissions(next).catch(() => {})
+    }
   }
 
   // Авто-ресайз contentEditable-редактора
@@ -848,7 +897,17 @@ function ChatInput({
           />
 
           {!isIncognito && (
-            <ApprovalModeSelector value={approvalMode} onChange={handleApprovalChange} compact />
+            <ApprovalModeSelector
+              value={projOverride?.approvalMode ?? approvalMode}
+              onChange={handleApprovalChange}
+              compact
+              projectId={projectId ?? null}
+              projectName={projectName}
+              globalMode={approvalMode}
+              globalAuto={globalAuto}
+              projectOverride={projOverride}
+              onAutoChange={handleAutoChange}
+            />
           )}
 
           {showContextRing && !isIncognito && (

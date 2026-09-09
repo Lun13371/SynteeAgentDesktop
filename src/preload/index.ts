@@ -594,6 +594,11 @@ const synteeAPI = {
     clearChat: (chatId: string) => ipcRenderer.invoke('agent:clearChat', chatId),
     getSettings: () => ipcRenderer.invoke('agent:getSettings'),
     setSettings: (s: unknown) => ipcRenderer.invoke('agent:setSettings', s),
+    // ── Разрешения (глобальные + per-project overrides) ──
+    getPermissions: () => ipcRenderer.invoke('agent:getPermissions'),
+    setAutoPermissions: (auto: unknown) => ipcRenderer.invoke('agent:setAutoPermissions', auto),
+    getProjectPermissions: (projectId: string) => ipcRenderer.invoke('agent:getProjectPermissions', projectId),
+    setProjectPermissions: (projectId: string, override: unknown) => ipcRenderer.invoke('agent:setProjectPermissions', projectId, override),
     onConfirm: (cb: (data: { reqId: string; toolName: string; args: unknown; dangerLevel?: string; dangerReason?: string; previewDiff?: string }) => void) => {
       const wrapper = (_: unknown, data: unknown) => cb(data as { reqId: string; toolName: string; args: unknown; dangerLevel?: string; dangerReason?: string; previewDiff?: string })
       ipcRenderer.on('agent:confirm', wrapper)

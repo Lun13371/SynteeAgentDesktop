@@ -1,6 +1,7 @@
 ﻿import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
-import { needsApproval } from './commandSafety'
+import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths } from './commandSafety'
+import type { ProjectPermissionOverride } from '../../shared/types'
 import { updateStructuredMemory } from '../context/structuredMemory'
 import type { DiffEntry } from '../context/structuredMemory'
 import {
@@ -884,18 +885,33 @@ export class Agent {
             return
           }
 
-          const mode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
+          const baseMode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
           // Читаем agentPermissions из store — раньше они были объявлены в
           // DEFAULT_SETTINGS и показаны в UI, но нигде не использовались.
           const agentPerms = (this.store.get('agentPermissions') as {
             confirmDangerous?: boolean
             dryRunMode?: boolean
             forbiddenPaths?: string[]
+            autoMode?: Partial<import('../../shared/types').AutoModeSettings>
           } | undefined) ?? {}
           const dryRunMode = agentPerms.dryRunMode === true
+
+          // ── Каскад project → global (§permissions) ──
+          // Проектный override применяется ТОЛЬКО к главному агенту чата —
+          // суб-агенты имеют собственный approval-override от spawn_agent.
+          const projectPerms = (this.store.get('projectPermissions') as
+            Record<string, ProjectPermissionOverride> | undefined) ?? {}
+          const projOverride = this.role === 'main' && this.projectId
+            ? projectPerms[this.projectId]
+            : undefined
+          const mode = ((this.role === 'main' && projOverride?.approvalMode)
+            ?? baseMode) as 'auto' | 'ask' | 'full'
+          const autoSettings = resolveAutoModeSettings(agentPerms, projOverride)
+          const forbiddenPaths = mergeForbiddenPaths(agentPerms.forbiddenPaths, projOverride)
+
           const approval = needsApproval(fn.name, args, mode, {
-            confirmDangerous: agentPerms.confirmDangerous,
-            forbiddenPaths: agentPerms.forbiddenPaths,
+            auto: autoSettings,
+            forbiddenPaths,
             workdir: this.workdir,
           })
           const effectiveApproval = isHiddenTool ? { confirm: false, block: false, reason: '' } : approval
