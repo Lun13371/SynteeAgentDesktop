@@ -1,70 +1,98 @@
 /* ── ApprovalModeSelector ────────────────────────────────── */
 
 /* Кнопка-триггер */
-.approval-selector { position: relative; display: inline-flex; }
-.approval-selector--compact .approval-btn { padding: 2px 4px; gap: 2px; }
+.approval-selector { position: relative; display: flex; align-items: center; }
 
 .approval-btn {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 6px; border: none; border-radius: 6px;
-  background: var(--bg-secondary, #1e1e2e); color: var(--text-primary, #cdd6f4);
-  font-size: 10px; cursor: pointer; white-space: nowrap;
-  transition: background .12s;
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 8px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted); font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: border-color 0.15s, color 0.15s, background 0.15s;
+  white-space: nowrap;
+  /* Без backdrop-filter — чип на инпут-баре с glass-фоном (см. ReasoningSelector) */
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
 }
-.approval-btn:hover { background: var(--bg-hover, #313244); }
-.approval-btn--ask  { color: var(--color-warn, #fab387); }
-.approval-btn--auto { color: var(--color-accent, #89b4fa); }
-.approval-btn--full { color: var(--color-green, #a6e3a1); }
-.approval-btn-label { font-size: 10px; }
-.approval-btn-project-dot {
-  width: 5px; height: 5px; border-radius: 50%;
-  background: var(--color-accent, #89b4fa); flex-shrink: 0;
+.approval-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: var(--accent-subtle);
 }
+
+.approval-btn--ask   { color: #facc15; border-color: rgba(250,204,21,0.3); }
+.approval-btn--auto  { color: #4ade80; border-color: rgba(74,222,128,0.3); }
+.approval-btn--full  { color: #f87171; border-color: rgba(248,113,114,0.3); }
+
+.approval-btn--ask:hover   { background: rgba(250,204,21,0.1); }
+.approval-btn--auto:hover  { background: rgba(74,222,128,0.1); }
+.approval-btn--full:hover  { background: rgba(248,113,114,0.1); }
+
+.approval-btn-label { font-size: 11px; }
+
+.approval-selector--compact .approval-btn { padding: 4px 7px; }
+.approval-selector--compact .approval-btn-label { display: none; }
 
 /* ── Дропдаун ── */
 .approval-dropdown {
-  width: 272px; max-height: 480px; overflow-y: auto;
-  background: var(--bg-primary, #181825); border: 1px solid var(--border, #313244);
-  border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,.45);
-  padding: 4px 0;
+  position: fixed;
+  width: 240px;
+  border-radius: 14px;
+  padding: 8px;
+  background: var(--glass-bg, rgba(18,18,28,0.97));
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  z-index: 9999;
 }
 
 /* ── Блок режима ── */
 .approval-mode-block { /* без padding — отступов по бокам нет */ }
 
-/* Кнопка опции */
+/* ── Опция режима ── */
 .approval-option {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 6px 10px; border: none; background: transparent;
-  color: var(--text-primary, #cdd6f4); font-size: 11px;
-  cursor: pointer; text-align: left;
-  transition: background .1s;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  background: none; border: none; cursor: pointer;
+  text-align: left; width: 100%;
+  transition: background 0.12s;
 }
-.approval-option:hover { background: var(--bg-hover, #313244); }
-.approval-option--active { background: var(--bg-active, #45475a); }
+.approval-option:hover { background: var(--accent-subtle); }
+.approval-option--active { background: var(--accent-subtle); }
 
 .approval-option-icon {
-  width: 20px; height: 20px; border-radius: 5px;
+  width: 26px; height: 26px; border-radius: 6px;
   display: flex; align-items: center; justify-content: center;
-  background: var(--bg-tertiary, #313244); flex-shrink: 0;
+  flex-shrink: 0;
 }
-.approval-option-icon--ask  { color: var(--color-warn, #fab387); }
-.approval-option-icon--auto { color: var(--color-accent, #89b4fa); }
-.approval-option-icon--full { color: var(--color-green, #a6e3a1); }
+.approval-option-icon--ask  { background: rgba(250,204,21,0.15); color: #facc15; }
+.approval-option-icon--auto { background: rgba(74,222,128,0.15); color: #4ade80; }
+.approval-option-icon--full { background: rgba(248,113,113,0.15); color: #f87171; }
 
-.approval-option-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.approval-option-label { font-size: 11px; font-weight: 500; display: flex; align-items: center; gap: 4px; }
-.approval-option-desc  { font-size: 9px; color: var(--text-muted, #6c7086); line-height: 1.2; }
+.approval-option-text { display: flex; flex-direction: column; flex: 1; }
+.approval-option-label { font-size: 12px; font-weight: 500; color: var(--text-primary); }
+.approval-option-desc  { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
 
+/* Бейдж «проект» */
 .approval-project-badge {
   font-size: 8px; padding: 0 4px; border-radius: 3px;
   background: var(--color-accent, #89b4fa); color: #000;
-  font-weight: 600; line-height: 14px;
+  font-weight: 600; line-height: 14px; margin-left: 4px;
+}
+
+/* Точка-индикатор проектного override на кнопке */
+.approval-btn-project-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--color-accent, #89b4fa); flex-shrink: 0;
 }
 
 /* ── Панель авто-режима (под опцией «Авто») ── */
 .approval-auto-panel {
-  padding: 0 0 4px 0; /* НЕТ боковых отступов */
+  padding: 0 0 4px 0;
 }
 
 /* Свёрнутая строка-кнопка */
@@ -83,13 +111,13 @@
 
 /* Развёрнутая панель */
 .approval-settings-panel {
-  overflow: hidden; /* для spring height animation */
+  overflow: hidden;
 }
 
 /* Шапка */
 .approval-auto-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 4px 10px 2px; /* НЕТ боковых отступов у родителя — только внутренние */
+  padding: 4px 10px 2px;
 }
 .approval-auto-title { font-size: 10px; font-weight: 600; color: var(--text-secondary, #a6adc8); }
 .approval-auto-collapse-btn {
@@ -102,7 +130,7 @@
 
 /* Scope-переключатель */
 .approval-scope {
-  display: flex; gap: 0; margin: 2px 10px 4px; /* НЕТ боковых отступов у панели — margin только внутренний */
+  display: flex; gap: 0; margin: 2px 10px 4px;
   border-radius: 5px; overflow: hidden;
   background: var(--bg-tertiary, #313244);
 }
@@ -128,7 +156,7 @@
 }
 
 /* Тогглы */
-.approval-auto-toggles { padding: 0 10px 2px; /* НЕТ боковых отступов у панели */ }
+.approval-auto-toggles { padding: 0 10px 2px; }
 .approval-auto-subtitle {
   font-size: 9px; font-weight: 600; color: var(--text-secondary, #a6adc8);
   margin-bottom: 2px; display: flex; align-items: center; gap: 4px;
@@ -150,6 +178,6 @@
 
 /* Хинт внизу */
 .approval-settings-hint {
-  padding: 4px 10px 2px; /* НЕТ боковых отступов у панели */
+  padding: 4px 10px 2px;
   font-size: 8px; color: var(--text-muted, #6c7086); font-style: italic;
 }
