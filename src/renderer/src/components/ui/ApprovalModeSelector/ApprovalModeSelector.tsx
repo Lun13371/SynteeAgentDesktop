@@ -16,14 +16,14 @@ const MODES: { value: ApprovalMode; label: string; icon: string; desc: string }[
 
 /** Гранулярные тогглы авто-режима (порядок = порядок в панели). */
 const AUTO_TOGGLES: Array<{ key: keyof AutoModeSettings; label: string; desc: string }> = [
-  { key: 'askOnDangerous',   label: 'Опасные действия',       desc: 'Удаление файлов, реестр, force push' },
-  { key: 'askOnWarn',        label: 'Потенциально опасные',   desc: 'chmod, планировщик задач, eval' },
-  { key: 'askGitPush',       label: 'Git push',               desc: 'Отправка в удалённый репозиторий' },
-  { key: 'askNetwork',       label: 'Сетевые команды',        desc: 'npm/pip install, curl, ssh, git clone' },
-  { key: 'askOutsideWorkdir', label: 'Вне папки проекта',     desc: 'Правка файлов и команды вне workdir' },
+  { key: 'askOnDangerous',   label: 'Опасные',       desc: 'Удаление, реестр, force push' },
+  { key: 'askOnWarn',        label: 'Потенциально опасные',   desc: 'chmod, eval' },
+  { key: 'askGitPush',       label: 'Git push',               desc: 'push в удалённый репо' },
+  { key: 'askNetwork',       label: 'Сеть',        desc: 'npm/pip install, curl, ssh' },
+  { key: 'askOutsideWorkdir', label: 'Вне папки',     desc: 'Файлы и команды вне workdir' },
 ]
 
-/** Оценочная высота дропдауна: без панели ~170, с развёрнутой панелью ~460. */
+/** Оценочная высота дропдауна. */
 const DROPDOWN_H = 170
 
 const MODE_LABELS: Record<ApprovalMode, string> = {
@@ -64,7 +64,6 @@ export default function ApprovalModeSelector({
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
   const [scope, setScope] = useState<PermissionScope>('global')
-  const [autoPanelOpen, setAutoPanelOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const current = MODES.find(m => m.value === value) || MODES[0]
 
@@ -79,8 +78,6 @@ export default function ApprovalModeSelector({
     const spaceBelow = window.innerHeight - r.bottom
     const openUp = spaceBelow < DROPDOWN_H + 12
     const dropW = 272
-    // кламп по правому краю колонки чата (а не окна) — не выезжаем
-    // в пустоту справа от центрированной колонки
     const left = Math.max(8, Math.min(r.left, chatColumnRight(btnRef.current) - dropW))
     setPos({
       top: openUp ? r.top - 8 : r.bottom + 6,
@@ -90,14 +87,10 @@ export default function ApprovalModeSelector({
     setOpen(o => !o)
   }
 
-  // При открытии дропдауна: scope по умолчанию = project, если override уже есть;
-  // панель авто-настроек сворачивается по умолчанию.
   useEffect(() => {
     if (open) {
       setScope(overrideActive ? 'project' : 'global')
-      setAutoPanelOpen(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   useEffect(() => {
@@ -107,7 +100,6 @@ export default function ApprovalModeSelector({
     return () => document.removeEventListener('mousedown', close)
   }, [open])
 
-  // Эффективные настройки авто-режима для отображения тогглов
   const effAuto: AutoModeSettings = scope === 'project' && hasProject
     ? { ...DEFAULT_AUTO_MODE_SETTINGS, ...globalAuto, ...projectOverride?.auto }
     : { ...DEFAULT_AUTO_MODE_SETTINGS, ...globalAuto }
@@ -187,110 +179,70 @@ export default function ApprovalModeSelector({
                     {/* ── Панель настроек авто-режима: под опцией «Авто» ── */}
                     {isAuto && isActive && (
                       <div className="approval-auto-panel">
-                        {/* Свёрнутый вид: компактная строка-кнопка */}
-                        {!autoPanelOpen && (
-                          <button
-                            className="approval-auto-collapsed"
-                            onClick={(e) => { e.stopPropagation(); setAutoPanelOpen(true) }}
-                          >
-                            <AppIcon name="settings" size="xs" />
-                            <span>Настройки защиты</span>
-                            {hasProject && overrideActive && (
-                              <span className="approval-auto-collapsed-hint">проект</span>
-                            )}
-                            <AppIcon name="chevronDown" size="xs" />
-                          </button>
+                        {/* Scope: глобально / этот проект */}
+                        {hasProject && (
+                          <div className="approval-scope">
+                            <button
+                              className={`approval-scope-btn ${scope === 'global' ? 'approval-scope-btn--active' : ''}`}
+                              onClick={() => setScope('global')}
+                            >Все проекты</button>
+                            <button
+                              className={`approval-scope-btn ${scope === 'project' ? 'approval-scope-btn--active' : ''}`}
+                              onClick={() => setScope('project')}
+                              title={projectName}
+                            >Этот проект</button>
+                          </div>
                         )}
 
-                        {/* Развёрнутый вид */}
-                        <AnimatePresence initial={false}>
-                          {autoPanelOpen && (
-                            <motion.div
-                              className="approval-settings-panel"
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+                        {/* Проектный override режима подтверждения */}
+                        {scope === 'project' && hasProject && (
+                          <label className="approval-mode-override">
+                            <span>Режим проекта</span>
+                            <select
+                              value={projModeValue}
+                              onChange={e => {
+                                const v = e.target.value
+                                onChange(v ? (v as ApprovalMode) : null, 'project')
+                              }}
                             >
-                              {/* Шапка: заголовок + кнопка свернуть */}
-                              <div className="approval-auto-header">
-                                <span className="approval-auto-title">Настройки</span>
-                                <button
-                                  className="approval-auto-collapse-btn"
-                                  onClick={(e) => { e.stopPropagation(); setAutoPanelOpen(false) }}
-                                  title="Свернуть"
-                                >
-                                  <AppIcon name="chevronUp" size="xs" />
-                                </button>
+                              <option value="">Как глобально{globalMode ? ` (${MODE_LABELS[globalMode]})` : ''}</option>
+                              <option value="ask">Спрашивать</option>
+                              <option value="auto">Авто</option>
+                              <option value="full">Полный доступ</option>
+                            </select>
+                          </label>
+                        )}
+
+                        {/* Гранулярные тогглы авто-режима */}
+                        <div className="approval-auto-toggles">
+                          <div className="approval-auto-subtitle">
+                            Спрашивать:
+                            {scope === 'project' && hasProject && (
+                              <span className="approval-auto-scope-hint">
+                                {projectOverride?.auto ? 'переопределено' : 'как глобально'}
+                              </span>
+                            )}
+                          </div>
+                          {AUTO_TOGGLES.map(t => (
+                            <div key={t.key} className="approval-setting-row" title={t.desc}>
+                              <div className="approval-setting-row-text">
+                                <span className="approval-setting-row-label">{t.label}</span>
+                                <span className="approval-setting-row-desc">{t.desc}</span>
                               </div>
+                              <Toggle
+                                value={effAuto[t.key]}
+                                onChange={v => handleAutoToggle(t.key, v)}
+                                aria-label={t.label}
+                              />
+                            </div>
+                          ))}
+                        </div>
 
-                              {/* Scope: глобально / этот проект */}
-                              {hasProject && (
-                                <div className="approval-scope">
-                                  <button
-                                    className={`approval-scope-btn ${scope === 'global' ? 'approval-scope-btn--active' : ''}`}
-                                    onClick={() => setScope('global')}
-                                  >Все проекты</button>
-                                  <button
-                                    className={`approval-scope-btn ${scope === 'project' ? 'approval-scope-btn--active' : ''}`}
-                                    onClick={() => setScope('project')}
-                                    title={projectName}
-                                  >Этот проект</button>
-                                </div>
-                              )}
-
-                              {/* Проектный override режима подтверждения */}
-                              {scope === 'project' && hasProject && (
-                                <label className="approval-mode-override">
-                                  <span>Режим проекта</span>
-                                  <select
-                                    value={projModeValue}
-                                    onChange={e => {
-                                      const v = e.target.value
-                                      onChange(v ? (v as ApprovalMode) : null, 'project')
-                                    }}
-                                  >
-                                    <option value="">Как глобально{globalMode ? ` (${MODE_LABELS[globalMode]})` : ''}</option>
-                                    <option value="ask">Спрашивать</option>
-                                    <option value="auto">Авто</option>
-                                    <option value="full">Полный доступ</option>
-                                  </select>
-                                </label>
-                              )}
-
-                              {/* Гранулярные тогглы авто-режима */}
-                              <div className="approval-auto-toggles">
-                                <div className="approval-auto-subtitle">
-                                  Спрашивать:
-                                  {scope === 'project' && hasProject && (
-                                    <span className="approval-auto-scope-hint">
-                                      {projectOverride?.auto ? 'переопределено' : 'как глобально'}
-                                    </span>
-                                  )}
-                                </div>
-                                {AUTO_TOGGLES.map(t => (
-                                  <div key={t.key} className="approval-setting-row" title={t.desc}>
-                                    <div className="approval-setting-row-text">
-                                      <span className="approval-setting-row-label">{t.label}</span>
-                                      <span className="approval-setting-row-desc">{t.desc}</span>
-                                    </div>
-                                    <Toggle
-                                      value={effAuto[t.key]}
-                                      onChange={v => handleAutoToggle(t.key, v)}
-                                      aria-label={t.label}
-                                    />
-                                  </div>
-                                ))}
-                              </div>
-
-                              <div className="approval-settings-hint">
-                                {scope === 'project' && hasProject
-                                  ? 'Только для этого проекта'
-                                  : 'Запрещённые папки — в Настройки → Безопасность'}
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
+                        <div className="approval-settings-hint">
+                          {scope === 'project' && hasProject
+                            ? 'Только для этого проекта'
+                            : 'Запрещённые папки — в Настройки → Безопасность'}
+                        </div>
                       </div>
                     )}
                   </div>

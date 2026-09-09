@@ -11,7 +11,6 @@
   color: var(--text-muted); font-size: 11px; font-weight: 500;
   cursor: pointer; transition: border-color 0.15s, color 0.15s, background 0.15s;
   white-space: nowrap;
-  /* Без backdrop-filter — чип на инпут-баре с glass-фоном (см. ReasoningSelector) */
   background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
 }
 .approval-btn:hover {
@@ -92,45 +91,13 @@
 
 /* ── Панель авто-режима (под опцией «Авто») ── */
 .approval-auto-panel {
-  padding: 0 0 4px 0;
+  padding: 4px 0 0 0;
+  border-top: 1px solid var(--border-subtle, #232336);
 }
-
-/* Свёрнутая строка-кнопка */
-.approval-auto-collapsed {
-  display: flex; align-items: center; gap: 4px; width: 100%;
-  padding: 4px 10px; border: none; background: transparent;
-  color: var(--text-muted, #6c7086); font-size: 9px;
-  cursor: pointer;
-  transition: color .1s;
-}
-.approval-auto-collapsed:hover { color: var(--text-primary, #cdd6f4); }
-.approval-auto-collapsed-hint {
-  font-size: 8px; padding: 0 3px; border-radius: 2px;
-  background: var(--bg-tertiary, #313244); color: var(--text-muted, #6c7086);
-}
-
-/* Развёрнутая панель */
-.approval-settings-panel {
-  overflow: hidden;
-}
-
-/* Шапка */
-.approval-auto-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 4px 10px 2px;
-}
-.approval-auto-title { font-size: 10px; font-weight: 600; color: var(--text-secondary, #a6adc8); }
-.approval-auto-collapse-btn {
-  width: 18px; height: 18px; border: none; border-radius: 4px;
-  background: transparent; color: var(--text-muted, #6c7086);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer;
-}
-.approval-auto-collapse-btn:hover { background: var(--bg-hover, #313244); color: var(--text-primary, #cdd6f4); }
 
 /* Scope-переключатель */
 .approval-scope {
-  display: flex; gap: 0; margin: 2px 10px 4px;
+  display: flex; gap: 0; margin: 4px 10px 4px;
   border-radius: 5px; overflow: hidden;
   background: var(--bg-tertiary, #313244);
 }
