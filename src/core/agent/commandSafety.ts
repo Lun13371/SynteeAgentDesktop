@@ -11,6 +11,10 @@
  *   BLOCKED   — всегда блокировать независимо от режима (fork bomb, disk wipe и т.д.)
  */
 
+import * as path from 'path'
+import type { AutoModeSettings, ProjectPermissionOverride } from '../../shared/types'
+import { DEFAULT_AUTO_MODE_SETTINGS } from '../../shared/types'
+
 export type DangerLevel = 'safe' | 'warn' | 'dangerous' | 'blocked'
 
 export interface SafetyResult {
@@ -94,6 +98,106 @@ function hasWord(cmd: string, ...words: string[]): boolean {
     const re = new RegExp(`(^|[\\s;|&>(])${w.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}([\\s;|&<(]|$)`)
     return re.test(cmd)
   })
+}
+
+// ─── Категории для гранулярных настроек авто-режима ────────────────────────
+
+/**
+ * Сетевые команды: установка пакетов, загрузка/выгрузка, удалённый доступ.
+ * Управляются настройкой autoMode.askNetwork (отдельно от warn-уровня,
+ * т.к. npm install и т.п. классифицируются как safe, но ходят в интернет).
+ */
+export function isNetworkCommand(cmd: string): boolean {
+  const c = normalize(cmd)
+  // Менеджеры пакетов
+  if (/\b(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|ci|publish)\b/.test(c)) return true
+  if (/\b(?:pip|pip3)\s+install\b/.test(c)) return true
+  if (/\bpython(?:3)?\s+-m\s+pip\s+install\b/.test(c)) return true
+  if (/\b(?:cargo|composer|gem|go)\s+(?:install|get)\b/.test(c)) return true
+  if (/\b(?:winget|choco|scoop|brew|apt|apt-get|dnf|yum|pacman)\s+(?:install|upgrade|update|remove)\b/.test(c)) return true
+  if (/\bdocker\s+(?:pull|push)\b/.test(c)) return true
+  // HTTP-клиенты
+  if (hasWord(c, 'curl', 'wget', 'http', 'https')) return true
+  if (hasWord(c, 'invoke-webrequest', 'invoke-restmethod', 'iwr', 'irm')) return true
+  if (/\bnet\.webclient\b/.test(c)) return true
+  // Git-сетевые операции (push отдельно — askGitPush)
+  if (/\bgit\s+(?:clone|fetch|pull|remote|ls-remote)\b/.test(c)) return true
+  // Удалённый доступ / передача файлов
+  if (hasWord(c, 'ssh', 'scp', 'sftp', 'rsync', 'ftp', 'telnet')) return true
+  return false
+}
+
+/** git push без force (force — уже DANGEROUS). Отдельная настройка askGitPush. */
+export function isGitPushCommand(cmd: string): boolean {
+  const c = normalize(cmd)
+  return /\bgit\s+push\b/.test(c) && !has(c, '--force') && !has(c, ' -f')
+}
+
+/**
+ * Находится ли путь вне рабочей директории (папки проекта).
+ * Относительные пути резолвятся от workdir. true = вне песочницы проекта.
+ */
+export function isPathOutsideWorkdir(p: string, workdir: string): boolean {
+  if (!p || !workdir) return false
+  const abs = path.isAbsolute(p) ? p : path.resolve(workdir, p)
+  const np = normalizePath(abs)
+  const nw = normalizePath(workdir)
+  if (!np || !nw) return false
+  return !(np === nw || np.startsWith(nw + '\\'))
+}
+
+/**
+ * Проверка «вне workdir» для конкретного тула:
+ *  - write_file/edit_file — по args.path;
+ *  - run_command — по args.cwd (если задан явно).
+ * Пути внутри текста команды не парсим — слишком эвристично.
+ */
+export function isToolOutsideWorkdir(
+  toolName: string,
+  args: Record<string, unknown>,
+  workdir?: string,
+): boolean {
+  if (!workdir) return false
+  if (toolName === 'write_file' || toolName === 'edit_file') {
+    const p = String(args.path ?? '')
+    return !!p && isPathOutsideWorkdir(p, workdir)
+  }
+  if (toolName === 'run_command') {
+    const cwd = String(args.cwd ?? '')
+    return !!cwd && isPathOutsideWorkdir(cwd, workdir)
+  }
+  return false
+}
+
+/**
+ * Каскадное разрешение эффективных настроек авто-режима:
+ *   DEFAULT_AUTO_MODE_SETTINGS → глобальные agentPermissions.autoMode
+ *   → (legacy confirmDangerous → askOnDangerous) → projectOverride.auto.
+ */
+export function resolveAutoModeSettings(
+  globalPerms?: { confirmDangerous?: boolean; autoMode?: Partial<AutoModeSettings> },
+  projOverride?: ProjectPermissionOverride,
+): AutoModeSettings {
+  const g = globalPerms?.autoMode ?? {}
+  const out: AutoModeSettings = { ...DEFAULT_AUTO_MODE_SETTINGS, ...g }
+  // Legacy-миграция: старые хранилища имеют confirmDangerous, но не autoMode.
+  if (g.askOnDangerous === undefined && globalPerms?.confirmDangerous !== undefined) {
+    out.askOnDangerous = !!globalPerms.confirmDangerous
+  }
+  if (projOverride?.auto) {
+    Object.assign(out, projOverride.auto)
+  }
+  return out
+}
+
+/** Мерж запрещённых путей: глобальные + проектный override. */
+export function mergeForbiddenPaths(
+  globalPaths?: string[],
+  projOverride?: ProjectPermissionOverride,
+): string[] | undefined {
+  const proj = projOverride?.forbiddenPaths
+  if (!globalPaths?.length && !proj?.length) return undefined
+  return [...(globalPaths ?? []), ...(proj ?? [])]
 }
 
 // ─── BLOCKED — всегда отклонять ────────────────────────────────────────────
@@ -441,21 +545,29 @@ export function classifyCommand(cmd: string): SafetyResult {
  * Нужно ли подтверждение для данного тула и режима?
  *
  * blocked: блокировать везде независимо от режима
- * auto:    умный режим — dangerous+warn спрашивать, safe пропускать.
- *          Если confirmDangerous=false, dangerous пропускается без подтверждения
- *          (только blocked блокируется) — более перmissive режим.
+ * auto:    умный режим — решение по гранулярным настройкам AutoModeSettings:
+ *          askOnDangerous / askOnWarn / askGitPush / askNetwork /
+ *          askOutsideWorkdir (все дефолтятся в true — «безопасно по умолчанию»).
  * ask:     спрашивать каждый тул
  * full:    полный доступ — всё пропускается без проверок
  *
  * Опции:
- *   confirmDangerous — из agentPermissions.confirmDangerous (по умолч. true)
- *   forbiddenPaths   — из agentPermissions.forbiddenPaths
+ *   auto             — эффективные настройки авто-режима (resolveAutoModeSettings)
+ *   confirmDangerous — legacy (agentPermissions.confirmDangerous), применяется
+ *                      только если auto.askOnDangerous не задан явно
+ *   forbiddenPaths   — глобальные + проектные запрещённые пути (mergeForbiddenPaths)
+ *   workdir          — рабочая директория чата (для askOutsideWorkdir)
  */
 export function needsApproval(
   toolName: string,
   args: Record<string, unknown>,
   mode: 'auto' | 'ask' | 'full',
-  opts?: { confirmDangerous?: boolean; forbiddenPaths?: string[]; workdir?: string },
+  opts?: {
+    auto?: Partial<AutoModeSettings>
+    confirmDangerous?: boolean
+    forbiddenPaths?: string[]
+    workdir?: string
+  },
 ): { confirm: boolean; block: boolean; reason: string } {
   // full — полный доступ, ничего не проверяем
   if (mode === 'full') {
@@ -464,7 +576,6 @@ export function needsApproval(
 
   // Единая классификация (покрывает и run_command, и файловые тулы)
   const result = classifyTool(toolName, args, { forbiddenPaths: opts?.forbiddenPaths, workdir: opts?.workdir })
-  const confirmDangerous = opts?.confirmDangerous !== false // по умолч. true
 
   // blocked — блокировать везде, диалога нет
   if (result.level === 'blocked') {
@@ -476,14 +587,37 @@ export function needsApproval(
     return { confirm: true, block: false, reason: result.reason || 'Режим "спрашивать" — подтверждение на каждый тул' }
   }
 
-  // auto — умная детекция
-  if (result.level === 'dangerous') {
-    // confirmDangerous=false → не спрашивать dangerous (только blocked ловим выше)
-    return { confirm: confirmDangerous, block: false, reason: result.reason }
-  }
-  if (result.level === 'warn') {
-    return { confirm: true, block: false, reason: result.reason }
+  // ── auto — гранулярные настройки ──
+  const auto: AutoModeSettings = { ...DEFAULT_AUTO_MODE_SETTINGS, ...(opts?.auto ?? {}) }
+  // Legacy: confirmDangerous=false и нет явного auto.askOnDangerous → не спрашивать dangerous
+  if (opts?.auto?.askOnDangerous === undefined && opts?.confirmDangerous === false) {
+    auto.askOnDangerous = false
   }
 
+  const reasons: string[] = []
+  const cmd = toolName === 'run_command' ? String(args.command ?? '') : ''
+  const gitPush = cmd ? isGitPushCommand(cmd) : false
+  const network = cmd ? isNetworkCommand(cmd) : false
+
+  if (result.level === 'dangerous' && auto.askOnDangerous) {
+    reasons.push(result.reason)
+  }
+  if (gitPush && auto.askGitPush) {
+    reasons.push('Git push в удалённый репозиторий')
+  }
+  if (network && auto.askNetwork) {
+    reasons.push('Сетевая команда (установка пакетов / загрузка / удалённый доступ)')
+  }
+  // warn-уровень: git push уже покрыт отдельной настройкой — не дублируем
+  if (result.level === 'warn' && auto.askOnWarn && !gitPush) {
+    reasons.push(result.reason)
+  }
+  if (auto.askOutsideWorkdir && isToolOutsideWorkdir(toolName, args, opts?.workdir)) {
+    reasons.push('Действие вне папки проекта (workdir)')
+  }
+
+  if (reasons.length > 0) {
+    return { confirm: true, block: false, reason: reasons.join('; ') }
+  }
   return { confirm: false, block: false, reason: '' }
 }

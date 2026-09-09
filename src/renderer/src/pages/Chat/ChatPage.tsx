@@ -2287,6 +2287,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                 const project = projects.find(p => p.workdir === currentWorkdir)
                 if (project) setSettingsModalProject(project)
               } : undefined}
+              projectId={currentWorkdir ? (projects.find(p => p.workdir === currentWorkdir)?.id ?? null) : null}
+              projectName={currentWorkdir ? projects.find(p => p.workdir === currentWorkdir)?.name : undefined}
             />
           </div>
 

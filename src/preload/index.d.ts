@@ -503,6 +503,10 @@ declare const synteeAPI: {
         clearChat: (chatId: string) => Promise<any>;
         getSettings: () => Promise<any>;
         setSettings: (s: unknown) => Promise<any>;
+        getPermissions: () => Promise<any>;
+        setAutoPermissions: (auto: unknown) => Promise<any>;
+        getProjectPermissions: (projectId: string) => Promise<any>;
+        setProjectPermissions: (projectId: string, override: unknown) => Promise<any>;
         onConfirm: (cb: (data: {
             reqId: string;
             toolName: string;

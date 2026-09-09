@@ -92,6 +92,49 @@ export interface ModelParams {
 export type ApprovalMode = 'ask' | 'auto' | 'full'
 export type ToolOutputMode = 'compact' | 'normal' | 'detailed'
 
+/**
+ * Гранулярные настройки авто-режима (approvalMode='auto'): какие категории
+ * действий всё-таки запрашивают подтверждение. Хранятся в
+ * store.agentPermissions.autoMode (глобально) и могут быть переопределены
+ * per-project через ProjectPermissionOverride.auto.
+ */
+export interface AutoModeSettings {
+  /** DANGEROUS-уровень (rm -rf, reg add, git push -f...) — спрашивать. */
+  askOnDangerous: boolean
+  /** WARN-уровень (rm без -r, chmod, schtasks...) — спрашивать. */
+  askOnWarn: boolean
+  /** git push (без force) — отдельная кнопка от остальных warn. */
+  askGitPush: boolean
+  /** Сетевые команды (npm/pip install, curl, git clone/pull, ssh...). */
+  askNetwork: boolean
+  /** Файловые тулы (write/edit) и run_command с cwd вне папки проекта. */
+  askOutsideWorkdir: boolean
+}
+
+export const DEFAULT_AUTO_MODE_SETTINGS: AutoModeSettings = {
+  askOnDangerous: true,
+  askOnWarn: true,
+  askGitPush: true,
+  askNetwork: true,
+  askOutsideWorkdir: true,
+}
+
+/** Куда пишет панель настроек защиты: глобальный store или override проекта. */
+export type PermissionScope = 'global' | 'project'
+
+/**
+ * Per-project переопределение разрешений: store.projectPermissions[projectId].
+ * Все поля опциональны — незаданные наследуются от глобальных настроек.
+ */
+export interface ProjectPermissionOverride {
+  /** Режим подтверждения только для этого проекта (undefined = как глобально). */
+  approvalMode?: ApprovalMode
+  /** Переопределение отдельных настроек авто-режима (мерж поверх глобальных). */
+  auto?: Partial<AutoModeSettings>
+  /** Дополнительные запрещённые пути (мерж с глобальными forbiddenPaths). */
+  forbiddenPaths?: string[]
+}
+
 export interface AgentSettings {
   approvalMode: ApprovalMode
   maxSteps: number

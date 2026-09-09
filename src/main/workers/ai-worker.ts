@@ -510,7 +510,16 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               const agentPerms = (storeData.agentPermissions as {
                 forbiddenPaths?: string[]
               } | undefined) ?? {}
-              const classification = classifyTool(toolName, args, { forbiddenPaths: agentPerms.forbiddenPaths, workdir: agent?.workdir })
+              // Проектный override: доп. запрещённые пути мержатся с глобальными
+              const projectPerms = (storeData.projectPermissions as Record<string, {
+                forbiddenPaths?: string[]
+              }> | undefined) ?? {}
+              const projForbidden = agent?.projectId ? projectPerms[agent.projectId]?.forbiddenPaths : undefined
+              const forbiddenPaths = [
+                ...(agentPerms.forbiddenPaths ?? []),
+                ...(projForbidden ?? []),
+              ]
+              const classification = classifyTool(toolName, args, { forbiddenPaths, workdir: agent?.workdir })
               // Diff-превью для файловых тулов (§4.1) — dryRun без записи
               let previewDiff = ''
               try {

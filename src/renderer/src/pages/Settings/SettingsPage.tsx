@@ -34,7 +34,7 @@ import { BUILTIN_THEMES } from '../../utils/builtinThemes'
 import { applyPluginThemeToDOM, isPluginThemeKey } from '../../utils/pluginTheme'
 import { collectPluginBackgrounds, collectPluginThemes } from '../../utils/pluginExtApi'
 import { whileHoverWide, whileTapWide, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../utils/motionPresets'
-import { DEFAULT_AGENT_SETTINGS, type AgentSettings as SharedAgentSettings, type CustomTheme } from '../../../../shared/types'
+import { DEFAULT_AGENT_SETTINGS, DEFAULT_AUTO_MODE_SETTINGS, type AgentSettings as SharedAgentSettings, type AutoModeSettings, type CustomTheme } from '../../../../shared/types'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
 import './SettingsPage.css'
 
@@ -143,7 +143,11 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   { section: 'agent', id: 'autoMemoryInterval', label: 'Автосохранение рабочей памяти', keywords: ['память', 'автосохранение'] },
   { section: 'agent', id: 'maxRepeatedToolCalls', label: 'Повтор tool-call', keywords: ['зацикливание', 'повтор'] },
   { section: 'agent', id: 'maxRepeatedErrors', label: 'Повтор одной ошибки', keywords: ['ошибка', 'повтор'] },
-  { section: 'agent', id: 'confirmDangerous', label: 'Подтверждение опасных действий', keywords: ['опасно', 'удаление'] },
+  { section: 'agent', id: 'autoAskOnDangerous', label: 'Опасные действия', keywords: ['опасно', 'удаление', 'подтверждение'] },
+  { section: 'agent', id: 'autoAskOnWarn', label: 'Потенциально опасные', keywords: ['warn', 'chmod', 'подтверждение'] },
+  { section: 'agent', id: 'autoAskGitPush', label: 'Git push', keywords: ['git', 'push', 'отправка'] },
+  { section: 'agent', id: 'autoAskNetwork', label: 'Сетевые команды', keywords: ['сеть', 'install', 'curl', 'npm'] },
+  { section: 'agent', id: 'autoAskOutsideWorkdir', label: 'Вне папки проекта', keywords: ['workdir', 'вне', 'папка'] },
   { section: 'agent', id: 'forbiddenPaths', label: 'Запрещённые папки', keywords: ['папки', 'запрет', 'пути'] },
   // Интеграции
   { section: 'integrations', id: 'tavilyKey', label: 'Tavily API ключ', keywords: ['тавли', 'поиск', 'tavily'] },
@@ -2216,6 +2220,12 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
 
   const perms = (settings['agentPermissions'] as Record<string, unknown>) || {}
 
+  // Гранулярные настройки авто-режима (глобальный scope; per-project —
+  // в панели ApprovalModeSelector в чате). Мерж с дефолтами для UI.
+  const autoPerms: AutoModeSettings = { ...DEFAULT_AUTO_MODE_SETTINGS, ...((perms['autoMode'] as Partial<AutoModeSettings>) || {}) }
+  const setAutoPerm = (patch: Partial<AutoModeSettings>) =>
+    onSet('agentPermissions', { ...perms, autoMode: { ...autoPerms, ...patch } })
+
   const OUTPUT_MODES = [
     { value: 'compact',  label: 'Компактный', desc: 'Только иконки инструментов в одну строку' },
     { value: 'normal',   label: 'Обычный',    desc: 'Название + первый аргумент каждого шага' },
@@ -2233,7 +2243,9 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <ApprovalModeSelector
               value={agentSettings.approvalMode as import('../../../../shared/types').ApprovalMode}
-              onChange={mode => updateAgent({ approvalMode: mode })}
+              onChange={mode => { if (mode) updateAgent({ approvalMode: mode }) }}
+              globalAuto={autoPerms}
+              onAutoChange={patch => setAutoPerm(patch)}
             />
             <ResetButton current={agentSettings.approvalMode} defaultValue={DEFAULT_AGENT_SETTINGS.approvalMode} onReset={() => updateAgent({ approvalMode: DEFAULT_AGENT_SETTINGS.approvalMode })} />
           </div>
@@ -2306,8 +2318,24 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
       </Group>
 
       <Group id="agent-security" icon="lock" title="Безопасность">
-        <Field id="confirmDangerous" label="Подтверждение опасных действий" description="Удаление файлов, системные команды">
-          <Toggle value={!!perms['confirmDangerous']} onChange={v => onSet('agentPermissions', { ...perms, confirmDangerous: v })} />
+        <Field id="autoAskOnDangerous" label="Опасные действия" description="Удаление файлов, реестр, force push — спрашивать в авто-режиме">
+          <Toggle value={autoPerms.askOnDangerous} onChange={v => setAutoPerm({ askOnDangerous: v })} />
+        </Field>
+
+        <Field id="autoAskOnWarn" label="Потенциально опасные" description="chmod, планировщик задач, eval — спрашивать в авто-режиме">
+          <Toggle value={autoPerms.askOnWarn} onChange={v => setAutoPerm({ askOnWarn: v })} />
+        </Field>
+
+        <Field id="autoAskGitPush" label="Git push" description="Отправка в удалённый репозиторий — спрашивать в авто-режиме">
+          <Toggle value={autoPerms.askGitPush} onChange={v => setAutoPerm({ askGitPush: v })} />
+        </Field>
+
+        <Field id="autoAskNetwork" label="Сетевые команды" description="npm/pip install, curl, ssh, git clone — спрашивать в авто-режиме">
+          <Toggle value={autoPerms.askNetwork} onChange={v => setAutoPerm({ askNetwork: v })} />
+        </Field>
+
+        <Field id="autoAskOutsideWorkdir" label="Вне папки проекта" description="Правка файлов и команды вне workdir чата — спрашивать в авто-режиме">
+          <Toggle value={autoPerms.askOutsideWorkdir} onChange={v => setAutoPerm({ askOutsideWorkdir: v })} />
         </Field>
 
         <Field id="forbiddenPaths" label="Запрещённые папки" description="Через запятую — агент не трогает эти пути">

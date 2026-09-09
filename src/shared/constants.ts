@@ -150,7 +150,19 @@ export const DEFAULT_SETTINGS = {
     confirmDangerous: true,
     dryRunMode: false,
     forbiddenPaths: ['C:\\Windows', 'C:\\Program Files\\SynteeHelper'],
+    // Гранулярные настройки авто-режима (см. AutoModeSettings в types/provider).
+    // confirmDangerous — legacy-поле, мигрируется в autoMode.askOnDangerous
+    // через resolveAutoModeSettings() при чтении.
+    autoMode: {
+      askOnDangerous: true,
+      askOnWarn: true,
+      askGitPush: true,
+      askNetwork: true,
+      askOutsideWorkdir: true,
+    },
   },
+  // Per-project переопределение разрешений: { [projectId]: ProjectPermissionOverride }
+  projectPermissions: {} as Record<string, import('./types').ProjectPermissionOverride>,
   backupEnabled: true,
   backupPath: '',
   agentPanelWidth: 420,
