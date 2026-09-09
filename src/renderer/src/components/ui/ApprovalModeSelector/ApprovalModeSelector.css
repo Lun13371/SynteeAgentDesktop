@@ -92,7 +92,7 @@
 /* ── Панель авто-режима (под опцией «Авто») ── */
 .approval-auto-panel {
   padding: 4px 0 0 0;
-  border-top: 1px solid var(--border-subtle, #232336);
+  /* НЕТ border-top — единый блок с опцией «Авто» */
 }
 
 /* Свёрнутая строка-кнопка */
@@ -170,7 +170,7 @@
   padding: 3px 0;
 }
 .approval-setting-row + .approval-setting-row {
-  border-top: 1px solid var(--border-subtle, #232336);
+  /* НЕТ border-top — единый блок без разделителей */
 }
 .approval-setting-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .approval-setting-row-label { font-size: 10px; color: var(--text-primary, #cdd6f4); }
