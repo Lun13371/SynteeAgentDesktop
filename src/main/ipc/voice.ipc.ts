@@ -142,6 +142,33 @@ function getMainWinSafe(): BrowserWindow | null {
   try { return _getMainWin() } catch { return null }
 }
 
+/**
+ * Транскрипция через локальный Whisper (переиспользуется voice:transcribe
+ * и speech.stt из плагинов). audio — mono 16 кГц Float32Array.
+ */
+export async function whisperTranscribe(
+  store: Store,
+  audio: Float32Array,
+  modelSize?: 'tiny' | 'base',
+): Promise<string> {
+  const size = modelSize || (store.get('sttModelSize') as string) || 'tiny'
+  const worker = ensureWhisperWorker(size)
+  const reqId = `stt-${++whisperReqId}`
+  worker.postMessage({ type: 'init', modelSize: size })
+  const p = new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      whisperPending.delete(reqId)
+      reject(new Error('Превышено время ожидания распознавания (180с). Возможно, модель ещё скачивается — повторите через минуту.'))
+    }, 180000)
+    whisperPending.set(reqId, {
+      resolve: (t) => { clearTimeout(timer); resolve(t) },
+      reject: (e) => { clearTimeout(timer); reject(e) },
+    })
+    worker.postMessage({ type: 'transcribe', reqId, audio, modelSize: size })
+  })
+  return p.finally(() => touchWhisperIdle())
+}
+
 export function registerVoiceIPC(
   store: Store,
   getMainWin: () => BrowserWindow | null
@@ -166,24 +193,7 @@ export function registerVoiceIPC(
   // Аудио захватывается в renderer (getUserMedia + AudioContext resample),
   // инференс идёт в worker_thread чтобы не блокировать main-поток IPC.
   ipcMain.handle('voice:transcribe', async (_, audio: Float32Array, opts?: { modelSize?: 'tiny' | 'base' }) => {
-    const modelSize = opts?.modelSize || (store.get('sttModelSize') as string) || 'tiny'
-    const worker = ensureWhisperWorker(modelSize)
-    const reqId = `stt-${++whisperReqId}`
-    worker.postMessage({ type: 'init', modelSize })
-    const p = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        whisperPending.delete(reqId)
-        reject(new Error('Превышено время ожидания распознавания (180с). Возможно, модель ещё скачивается — повторите через минуту.'))
-      }, 180000)
-      whisperPending.set(reqId, {
-        resolve: (t) => { clearTimeout(timer); resolve(t) },
-        reject: (e) => { clearTimeout(timer); reject(e) },
-      })
-      worker.postMessage({ type: 'transcribe', reqId, audio, modelSize })
-    })
-    // После завершения транскрипции перезапускаем idle-таймер — если голос
-    // больше не используется, воркер выгрузится через WHISPER_IDLE_MS.
-    return p.finally(() => touchWhisperIdle())
+    return whisperTranscribe(store, audio, opts?.modelSize)
   })
 
   // ── Groq Whisper fallback (только если sttProvider='groq') ──

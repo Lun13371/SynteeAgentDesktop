@@ -19,6 +19,39 @@ await syntee.chat.send('черновик', { silent: true })
 await syntee.chat.reply('Готово: найдено 3 файла.')
 ```
 
+### Стриминг ответа (живой текст)
+
+Вместо одного `chat.reply` можно постепенно дописывать ответ — UI обновляется на лету (троттлинг ~120 мс):
+
+```js
+// 1. Создать пустое assistant-сообщение в активном чате → его id
+const replyId = await syntee.chat.beginReply()
+
+// 2. Дописывать текст по мере поступления
+await syntee.chat.appendChunk(replyId, 'Начинаю… ')
+await syntee.chat.appendChunk(replyId, 'готово.')
+
+// 3. Финализировать (обязательно — иначе сообщение останется «пишущимся»)
+await syntee.chat.endReply(replyId)
+```
+
+Типичный сценарий — трансляция ответа LLM в чат:
+
+```js
+const rid = await syntee.chat.beginReply()
+await syntee.ai.chat(prompt, {
+  stream: true,
+  onDelta: (d) => syntee.chat.appendChunk(rid, d),
+}).then(() => syntee.chat.endReply(rid))
+```
+
+### Активный чат
+
+```js
+// permission 'chats:read'
+const { chatId } = await syntee.chat.getActive()   // string | null — активный чат в UI
+```
+
 ## chats — чтение и изменение чатов
 
 ```js
@@ -28,6 +61,26 @@ const full = await syntee.chats.get(chatId)     // { chat: {...}, messages: [...
 await syntee.chats.open(chatId)                 // переключить активный чат в UI
 const atts = await syntee.chats.getAttachments(messageId)  // [{ id, kind, name, path, mime, size }]
 
+// Пагинация сообщений — для длинных чатов (не тащи всё сразу)
+const page = await syntee.chats.getMessages(chatId, { limit: 50 })  // последние 50
+// page: { messages: [...], hasMore: boolean }
+const older = await syntee.chats.getMessages(chatId, {
+  limit: 50,
+  beforeCreatedAt: page.messages[0].createdAt,   // курсор = первый элемент страницы
+  beforeId: page.messages[0].id,
+})
+// Листай «вглубь»: курсор каждой следующей страницы — первый элемент предыдущей
+
+// Пагинация сообщений — для длинных чатов (не тащи всё сразу)
+const page = await syntee.chats.getMessages(chatId, { limit: 50 })  // последние 50
+// page: { messages: [...], hasMore: boolean }
+const older = await syntee.chats.getMessages(chatId, {
+  limit: 50,
+  beforeCreatedAt: page.messages[0].createdAt,   // курсор = первый элемент страницы
+  beforeId: page.messages[0].id,
+})
+// Листай «вглубь»: курсор каждой следующей страницы — первый элемент предыдущей
+
 // 'chats:write'
 const { id } = await syntee.chats.create('Новый чат', projectId?)
 await syntee.chats.rename(chatId, 'Новое имя')
@@ -35,6 +88,19 @@ await syntee.chats.delete(chatId)
 const { id: msgId } = await syntee.chats.appendMessage(chatId, 'assistant', 'текст')
 await syntee.chats.editMessage(msgId, 'новый текст')
 await syntee.chats.deleteMessage(msgId)
+```
+
+## Хук chat:message (обогащённый payload)
+
+Событие `chat:message` (permission `hooks`) несёт полные метаданные сообщения — плагины-логгеры и поисковики больше не тянут весь чат через `chats.get`:
+
+```js
+syntee.on('chat:message', (p) => {
+  // p: { chatId, content, role: 'user', messageId, attachments?: [{ name, kind, path }] }
+  if (p.attachments?.length) {
+    // файлы, приложенные к сообщению: kind — 'file' | 'image'
+  }
+})
 ```
 
 ## projects (`projects:read` / `projects:write`)

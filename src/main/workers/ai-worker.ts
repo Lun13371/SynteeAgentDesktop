@@ -633,6 +633,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             const map = ((workerData as Record<string, unknown>).mcpApprovalMap as Record<string, boolean> | undefined) ?? {}
             return map[fullToolName] ?? true
           },
+          onPluginRequiresApproval: (fullToolName) => {
+            // Аналогично MCP: { [toolFullName]: boolean } из main. По умолчанию
+            // false — тулы плагинов исторически выполняются без подтверждения
+            // (backward compat), спрашивают только явно помеченные.
+            const map = ((workerData as Record<string, unknown>).pluginApprovalMap as Record<string, boolean> | undefined) ?? {}
+            return map[fullToolName] ?? false
+          },
           onPluginCall: (fullToolName, args) => {
             return new Promise((resolve) => {
               const replyId = `plugin-call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`

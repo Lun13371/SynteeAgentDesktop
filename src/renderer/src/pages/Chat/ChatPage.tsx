@@ -292,12 +292,21 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
   const [reasoningValue, setReasoningValue] = useState('')
-  const [isCompacting, setIsCompacting] = useState(false)
+  // ChatId чата, в котором сейчас идёт manual /compact (null — нигде).
+  // Привязан к chatId, а не boolean: при переключении на другой чат
+  // compacting-индикатор НЕ должен утекать в чужую ленту (раньше
+  // isCompacting:boolean рисовал блок внизу любого открытого чата).
+  const [compactingChatId, setCompactingChatId] = useState<string | null>(null)
   // Стрим резюме при manual /compact: AI пишет резюме контекста в реальном
   // времени, токены приходят через IPC chat:compact-stream и показываются
-  // в compacting-индикаторе (внизу чата). Сбрасывается при start-сигнале,
-  // смене чата и завершении /compact.
+  // в compacting-индикаторе (внизу чата). Копим по chatId в ref-Map — без
+  // фильтра по текущему чату, чтобы при переключении и возврате резюме
+  // было целиком (раньше фильтр по currentChatId терял начало стрима).
+  // В state — текст только для текущего чата (для рендера).
   const [compactingSummary, setCompactingSummary] = useState('')
+  const compactingSummariesRef = useRef<Map<string, string>>(new Map())
+  // Сжатие идёт ИМЕННО в открытом сейчас чате — для индикатора/инпута.
+  const isCompactingHere = compactingChatId !== null && compactingChatId === currentChatId
 
   // ── Кастомные slash-команды (из .md-файлов через CommandManager) ──
   // Загружаются при mount и при смене workdir (проектные команды).
@@ -475,23 +484,33 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [currentChatId, setMessagesWindow, toast])
 
   // CHAT_COMPACT_STREAM — стрим резюме при manual /compact. AI пишет резюме
-  // контекста в реальном времени; токены аккумулируются в compactingSummary и
-  // показываются в compacting-индикаторе (внизу чата) как live-markdown. При
-  // start-сигнале — сброс, при chunk — аккумулямуляция. Только для manual
-  // /compact (авто-компакция стрим не шлёт — индикатора нет).
+  // контекста в реальном времени; токены аккумулируются по chatId в
+  // compactingSummariesRef и показываются в compacting-индикаторе (внизу
+  // чата) как live-markdown. При start-сигнале — сброс, при chunk —
+  // аккумуляция. Только для manual /compact (авто-компакция стрим не шлёт).
   useEffect(() => {
     const off = window.syntee.on('chat:compact-stream', (data: unknown) => {
       const d = data as { chatId: string; chunk?: string; start?: boolean }
-      if (d.chatId !== currentChatId) return
-      if (d.start) { setCompactingSummary(''); return }
-      if (d.chunk) setCompactingSummary(s => s + d.chunk)
+      // Без фильтра по currentChatId: стрим может идти в чат, который
+      // пользователь сейчас не открыл — копим в Map, чтобы при возврате
+      // резюме показалось целиком.
+      if (d.start) {
+        compactingSummariesRef.current.delete(d.chatId)
+        if (d.chatId === currentChatId) setCompactingSummary('')
+        return
+      }
+      if (d.chunk) {
+        const next = (compactingSummariesRef.current.get(d.chatId) ?? '') + d.chunk
+        compactingSummariesRef.current.set(d.chatId, next)
+        if (d.chatId === currentChatId) setCompactingSummary(next)
+      }
     })
     return () => { off() }
   }, [currentChatId])
 
-  // Сброс стрима резюме при смене чата — иначе при возврате в чат, где
-  // ранее было сжатие, в индикаторе остался бы прошлогодний текст.
-  useEffect(() => { setCompactingSummary('') }, [currentChatId])
+  // Смена чата — показываем накопленное резюме сжимаемого чата (если
+  // вернулись в него), иначе пусто. Сама Map чистится по завершении /compact.
+  useEffect(() => { setCompactingSummary(compactingSummariesRef.current.get(currentChatId) ?? '') }, [currentChatId])
 
   // Смена чата — очищаем множество анимированных id, чтобы сообщения нового
   // чата анимировались при появлении (как при полном перемонте раньше).
@@ -1056,7 +1075,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (isInitialScrollRef.current) {
       requestAnimationFrame(() => { pinAutoscroll(true); isInitialScrollRef.current = false })
     }
-  }, [messages.length, isTyping, isLoadingMessages, isCompacting, pinAutoscroll])
+  }, [messages.length, isTyping, isLoadingMessages, isCompactingHere, pinAutoscroll])
 
   const selectChat = useCallback(async (id: string) => {
     isInitialScrollRef.current = true
@@ -1418,7 +1437,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // и не понимает что команда вообще сработала. Инпут блокируется.
     if (slash?.command.name === 'compact') {
       if (!currentChatId) { toast('Создай чат перед /compact', 'info'); return }
-      setIsCompacting(true)
+      // Фиксируем chatId запуска: finally может сработать уже после
+      // переключения на другой чат — чистим состояние именно этого чата.
+      const compactChatId = currentChatId
+      setCompactingChatId(compactChatId)
       pinAutoscroll()
       // Guard выставляем ДО invoke. Main эмитит CHAT_COMPACTED ещё во время
       // хендлера (event.sender.send до return), invoke резолвится после.
@@ -1445,7 +1467,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
           toast(result.error, 'error')
           return
         }
-        if (result.messages) setMessages(result.messages)
+        // Применяем ленту ТОЛЬКО если пользователь всё ещё в этом чате:
+        // иначе сообщения сжимаемого чата затёрли бы ленту чужого открытого
+        // чата (при возврате selectChat сам перечитает из БД с divider'ом).
+        if (result.messages && useChatStore.getState().currentChatId === compactChatId) setMessages(result.messages)
         if (result.stats) {
           const tk = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n)
           toast(`Контекст сжат: удалено ${result.stats.removedCount} сообщ. · ${tk(result.stats.tokensBefore)}→${tk(result.stats.tokensAfter)} tok · сэкономлено ~${tk(result.stats.tokensSaved)}`, 'success')
@@ -1454,7 +1479,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         toast('Ошибка сжатия: ' + String((e as Error)?.message ?? e), 'error')
       } finally {
         clearTimeout(compactGuardTimer)
-        setIsCompacting(false)
+        setCompactingChatId(null)
+        compactingSummariesRef.current.delete(compactChatId)
         setCompactingSummary('')
       }
       return
@@ -1750,6 +1776,64 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     return () => { off?.() }
   }, [handleSend, handleDraftChange, addMessage, setCurrentChat])
 
+  // ── plugins:reply-chunk — стриминг ответа плагина в текущий чат ──
+  //   begin: сообщение уже создано в БД с пустым контентом → добавляем в store
+  //   chunk/end: content ВСЕГДА полный текст сообщения → обновляем контент
+  useEffect(() => {
+    const off = window.syntee.on('plugins:reply-chunk', (data: unknown) => {
+      const d = data as { action: 'begin' | 'chunk' | 'end'; chatId: string; messageId: string; content: string }
+      if (!d || !d.messageId) return
+      const st = useChatStore.getState()
+      if (d.chatId !== st.currentChatId) return
+      if (d.action === 'begin') {
+        const createdAt = Date.now()
+        st.addMessage({
+          id: d.messageId,
+          chatId: d.chatId,
+          role: 'assistant',
+          content: d.content ?? '',
+          createdAt,
+          isPinned: 0,
+        } as Message)
+        return
+      }
+      // chunk/end — дешёвый точечный апдейт контента (стриминг ~8 раз/сек).
+      const list = useChatStore.getState().messages
+      const idx = list.findIndex(m => m.id === d.messageId)
+      if (idx === -1) return
+      if (list[idx].content === d.content) return
+      const next = list.slice()
+      next[idx] = { ...next[idx], content: d.content }
+      useChatStore.getState().setMessages(next)
+    })
+    return () => { off?.() }
+  }, [])
+
+  // ── plugins:tool-progress — live-карточки прогресса тулов плагинов ──
+  // begin → добавить карточку, update → обновить label, finish → убрать.
+  const [pluginProgress, setPluginProgress] = useState<Array<{ progressId: string; pluginId: string; label: string }>>([])
+
+  useEffect(() => {
+    const off = window.syntee.on('plugins:tool-progress', (data: unknown) => {
+      const d = data as { pluginId: string; progressId: string; action: 'begin' | 'update' | 'finish'; label: string }
+      if (!d || !d.progressId) return
+      if (d.action === 'begin') {
+        setPluginProgress(prev =>
+          prev.some(p => p.progressId === d.progressId)
+            ? prev
+            : [...prev, { progressId: d.progressId, pluginId: d.pluginId, label: d.label ?? '' }],
+        )
+      } else if (d.action === 'update') {
+        setPluginProgress(prev =>
+          prev.map(p => (p.progressId === d.progressId ? { ...p, label: d.label ?? p.label } : p)),
+        )
+      } else if (d.action === 'finish') {
+        setPluginProgress(prev => prev.filter(p => p.progressId !== d.progressId))
+      }
+    })
+    return () => { off?.() }
+  }, [])
+
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
     pinMessage(id)
@@ -1768,8 +1852,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   const handleStop = useCallback(() => {
     if (!currentChatId) return
-    if (isCompacting) {
-      window.syntee.chat.compactCancel(currentChatId)
+    if (compactingChatId) {
+      // Отменяем ИМЕННО тот чат, в котором идёт сжатие, а не текущий:
+      // раньше compactCancel(currentChatId) из чужого чата молча не
+      // срабатывал (controller лежит в compactRuns под другим chatId).
+      window.syntee.chat.compactCancel(compactingChatId)
       manualCompactJustDoneRef.current = false
     } else {
       // Оптимально сбрасываем live-state, чтобы UI мгновенно отразил стоп
@@ -1779,7 +1866,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       useChatStore.getState().clearLiveState(currentChatId)
       window.syntee.chat.stop(currentChatId)
     }
-  }, [currentChatId, isCompacting])
+  }, [currentChatId, compactingChatId])
 
   const handleRewind = useCallback(async (userMessageId: string) => {
     if (!currentChatId) return
@@ -1945,11 +2032,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         livePlanningMode: planningMode,
       } as Message & Record<string, unknown>]
     }
-    if (isCompacting) {
+    if (isCompactingHere) {
       // Compacting-индикатор — временный system-разделитель внизу чата со
       // спиннером. Показывает что /compact работает (AI-суммаризация занимает
       // несколько секунд). После завершения заменяется реальным compact-
-      // разделителем из обновлённой ленты messages.
+      // разделителем из обновлённой ленты messages. Только в чате, где
+      // идёт сжатие (compactingChatId === currentChatId) — не в чужом.
       // compactLiveSummary — стримящееся резюме (токены приходят через
       // chat:compact-stream), показывается как live-markdown под бейджем.
       result = [...result, {
@@ -1965,7 +2053,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }
     return result
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showLiveBubble, liveMsgId, isCompacting, planningMode, compactingSummary])
+  }, [messages, showLiveBubble, liveMsgId, isCompactingHere, planningMode, compactingSummary])
 
   // getItemKey: привязываем кэш высот к message.id (не к индексу позиции) —
   // иначе при замене массива (compact вставляет divider, окно сдвигается на 1)
@@ -2249,15 +2337,26 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
             )}
           </AnimatePresence>
 
+          {pluginProgress.length > 0 && (
+            <div className="plugin-progress-stack">
+              {pluginProgress.map(p => (
+                <div key={p.progressId} className="plugin-progress-card">
+                  <span className="plugin-progress-spinner" />
+                  <span className="plugin-progress-label" title={p.label}>{p.label || p.pluginId}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div ref={chatInputWrapRef} style={{ display: 'contents' }}>
             <ChatInput
               chatId={currentChatId ?? undefined}
               onSend={handleSend}
-              disabled={isTyping || isCompacting}
+              disabled={isTyping || isCompactingHere}
               isIncognito={isIncognito}
               replyTo={replyTo}
               onCancelReply={handleCancelReply}
-              isGenerating={isTyping || isAgentRunning || isCompacting}
+              isGenerating={isTyping || isAgentRunning || isCompactingHere}
               onStop={handleStop}
               contextInfo={contextInfo}
               showContextRing={showContextRing}

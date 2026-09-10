@@ -196,6 +196,8 @@ const contextMenuHandlers = new Map<string, ContextMenuHandler>()
 const webhookHandlers = new Map<number, WebhookHandler>()
 /** ai:delta: requestId → onDelta (событие 'ai:delta' {requestId, delta}). */
 const aiDeltaWaiters = new Map<string, (delta: string) => void>()
+/** ai.chat opts.tools: name → handler (вызов через callHandler kind 'aiTool'). */
+const aiToolHandlers = new Map<string, (args: Record<string, unknown>) => unknown>()
 let deactivateFn: (() => void | Promise<void>) | null = null
 let active = false
 let permissions: Set<string> = new Set()
@@ -254,12 +256,16 @@ export interface SynteePluginApi {
   permissions: string[]
   /** Версия хоста (приложения) — для совместимости API. */
   version: string
-  /** Зарегистрировать тул для AI. Имя — короткое (без plugin__ префикса). */
+  /** Зарегистрировать тул для AI. Имя — короткое (без plugin__ префикса).
+   *  requiresApproval: true — мутабельный тул: каждый вызов требует
+   *  подтверждения пользователя (approval-диалог агента), независимо
+   *  от режима подтверждений. */
   registerTool(def: {
     name: string
     description: string
     parameters?: Record<string, unknown>
     handler: (args: Record<string, unknown>) => unknown
+    requiresApproval?: boolean
   }): void
   /** Зарегистрировать слэш-команду: /name args → handler(args).
    *  Имя без слэша, [a-zA-Z][a-zA-Z0-9_]*. */
@@ -308,6 +314,26 @@ export interface SynteePluginApi {
   /** Зарегистрировать рендерер markdown-кодоблоков (permission 'ui'):
    *  кодоблок ```language рендерится iframe с entry, код — в data. */
   registerMarkdownRenderer(def: { language: string; entry: string; height?: number }): void
+  /** Зарегистрировать кастомный тег сообщений (permission 'ui'):
+   *  парный тег <tag attr="...">…</tag> в тексте сообщения рендерится
+   *  iframe-виджетом плагина (entry + data { attrs, inner }).
+   *  Имя тега: [a-zA-Z][a-zA-Z0-9-]*. Тег попадает в system prompt —
+   *  AI знает, что может вставлять его в ответы. */
+  registerMessageTag(def: { tag: string; entry: string; height?: number; description?: string }): void
+  /** Снять регистрацию тега сообщений (имя тега). */
+  unregisterMessageTag(tag: string): void
+  /** Зарегистрировать статическую секцию system prompt (permission
+   *  'context'): markdown-блок «### title» в промпте на время работы
+   *  плагина. Для динамического контекста (на каждый запрос) —
+   *  registerContextProvider. */
+  registerPromptSection(def: { id?: string; title: string; content: string }): void
+  /** Снять секцию промпта (id из registerPromptSection). */
+  unregisterPromptSection(id: string): void
+  /** Зарегистрировать секцию настроек в SettingsPage (permission 'ui'):
+   *  своя вкладка с iframe (entry) — для богатой конфигурации,
+   *  которая не влезает в декларативную форму config манифеста. */
+  registerSettingsSection(def: { id: string; title: string; entry: string; icon?: string }): void
+  unregisterSettingsSection(id: string): void
   /** Зарегистрировать search provider (permission 'ui') — результаты
    *  в глобальном поиске (Spotlight). handler: { query } → items[]
    *  или { click: item } при клике по результату. */
@@ -354,7 +380,8 @@ export interface SynteePluginApi {
     src: string
   }): void
   /** Подписаться на событие хоста:
-   *   'chat:message'     — { chatId, content }, fire-and-forget;
+   *   'chat:message'     — { chatId, content, role, messageId, attachments? },
+   *                        fire-and-forget (role='user' при отправке);
    *   'chat:before-send' — { chatId, content }, хук с ответом: вернуть
    *                        undefined/'allow' | { action:'modify', content }
    *                        | { action:'reject', reason? };
@@ -432,6 +459,10 @@ export interface SynteePluginApi {
     pickFile(opts?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null>
     /** Нативный диалог выбора папки (permission 'ui'). null — отмена. */
     pickDir(opts?: { title?: string }): Promise<string | null>
+    /** Нативный диалог выбора НЕСКОЛЬКИХ файлов (permission 'ui'). [] — отмена. */
+    pickFiles(opts?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string[]>
+    /** Нативный диалог «Сохранить как» (permission 'ui'). null — отмена. */
+    saveDialog(opts?: { title?: string; defaultPath?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null>
   }
   /** Буфер обмена (требует permission 'clipboard'). */
   clipboard: {
@@ -474,6 +505,18 @@ export interface SynteePluginApi {
       maxTokens?: number
       stream?: boolean
       onDelta?: (delta: string) => void
+      /** Function calling: свои тулы внутри одного вызова — модель может
+       *  их вызывать, хост исполняет handler и возвращает результат в цикле. */
+      tools?: Array<{
+        name: string
+        description?: string
+        parameters?: Record<string, unknown>
+        handler: (args: Record<string, unknown>) => unknown
+      }>
+      /** Подмешать историю чата (chatId, по умолчанию активный) в контекст. */
+      chatContext?: boolean
+      /** Для chatContext — какой чат (по умолчанию активный). */
+      chatId?: string
     }): Promise<string>
     embed(text: string): Promise<number[]>
     /** Доступные модели приложения: [{ id, providerId, name, contextWindow }]. */
@@ -513,6 +556,33 @@ export interface SynteePluginApi {
     get(key: string): Promise<string | undefined>
     set(key: string, value: string): Promise<void>
     delete(key: string): Promise<void>
+  }
+  /** Речь (permission 'speech'): tts — синтез через TTS-провайдер
+   *  приложения (возвращает base64 mp3); stt — распознавание WAV-файла
+   *  (локальный Whisper; 16kHz mono лучше всего). */
+  speech: {
+    tts(text: string, opts?: { model?: string; voice?: string }): Promise<string>
+    stt(wavPath: string): Promise<string>
+  }
+  /** Публичные настройки приложения (permission 'settings:read') —
+   *  только чтение: тема, стриминг, язык интерфейса и т.п. */
+  settings: {
+    get(): Promise<Record<string, unknown>>
+  }
+  /** Регистрация провайдера моделей (permission 'provider'):
+   *  OpenAI-compatible endpoint появляется в Настройках → Провайдеры,
+   *  его модели можно назначать на роли. Провайдер живёт, пока плагин
+   *  запущен; id неймспейсится (plugin-{pluginId}-{id}). */
+  provider: {
+    register(def: {
+      id: string
+      name: string
+      baseUrl: string
+      apiKey?: string
+      /** Список моделей (id); иначе подтянутся из /models endpoint. */
+      models?: string[]
+    }): Promise<void>
+    unregister(id: string): Promise<void>
   }
   /** Git-операции по workdir (permission 'git'). */
   git: {
@@ -588,6 +658,12 @@ export interface SynteePluginApi {
     showChatOverlay(def: { entry?: string; title?: string; width?: number; height?: number; position?: 'left' | 'right' | 'center' }): void
     /** Скрыть chat overlay плагина. */
     hideChatOverlay(): void
+    /** Live-карточка прогресса (для долгих операций тула): плавающая
+     *  карточка в чате. update меняет текст, finish убирает карточку. */
+    beginProgress(def: { label: string }): {
+      update(text: string): void
+      finish(): void
+    }
   }
   /** Действия в чате (permission 'chat'). */
   chat: {
@@ -598,6 +674,23 @@ export interface SynteePluginApi {
     send(text: string, opts?: { silent?: boolean; attachments?: Array<{ path: string; name?: string; kind?: 'file' | 'image' }> }): Promise<void>
     /** Вставить ответ от имени плагина в текущий чат. */
     reply(text: string): Promise<void>
+    /** Стриминг ответа плагина: beginReply создаёт пустое
+     *  assistant-сообщение и возвращает replyId; appendChunk дописывает
+     *  дельту (троттлинг ~120мс, UI обновляется живьём); endReply
+     *  финализирует сообщение. Между begin/end НЕ вызывайте reply. */
+    beginReply(): Promise<string>
+    appendChunk(replyId: string, delta: string): Promise<void>
+    endReply(replyId: string): Promise<void>
+    /** Активный чат пользователя: { chatId } или { chatId: null },
+     *  если чат не открыт (permission 'chats:read'). */
+    getActive(): Promise<{ chatId: string | null }>
+  }
+  /** System prompt агента (permission 'hooks'). get — финальный
+   *  собранный промпт для чата (без хука prompt:before-build — иначе
+   *  рекурсия; свой вклад плагины и так знают). Только чтение —
+   *  менять промпт можно хуком prompt:before-build или секциями. */
+  prompt: {
+    get(chatId?: string): Promise<string>
   }
   /** Чтение/изменение чатов приложения. list/get — 'chats:read';
    *  create/rename/delete/appendMessage/editMessage/deleteMessage — 'chats:write'. */
@@ -614,6 +707,11 @@ export interface SynteePluginApi {
     open(chatId: string): Promise<void>
     /** Вложения сообщения (файлы/картинки): [{ id, kind, name, path, mime, size }]. */
     getAttachments(messageId: string): Promise<Array<Record<string, unknown>>>
+    /** Сообщения чата с пагинацией (permission 'chats:read'): последние
+     *  limit (по умолчанию 50, макс 200) либо старее курсора
+     *  (beforeCreatedAt, beforeId из последнего элемента страницы).
+     *  Возвращает { messages, hasMore }. */
+    getMessages(chatId: string, opts?: { limit?: number; beforeCreatedAt?: number; beforeId?: string }): Promise<{ messages: Array<Record<string, unknown>>; hasMore: boolean }>
   }
   /** Проекты приложения. list/current — 'projects:read'; create — 'projects:write'. */
   projects: {
@@ -683,7 +781,7 @@ function buildApi(): SynteePluginApi {
         inputSchema: def.parameters ?? { type: 'object', properties: {} },
         handler: def.handler,
       })
-      send({ type: 'registerTool', name: def.name, description: def.description || '', inputSchema: def.parameters ?? { type: 'object', properties: {} } })
+      send({ type: 'registerTool', name: def.name, description: def.description || '', inputSchema: def.parameters ?? { type: 'object', properties: {} }, requiresApproval: def.requiresApproval === true })
     },
     unregisterTool(name: string) {
       if (tools.delete(name)) {
@@ -788,6 +886,55 @@ function buildApi(): SynteePluginApi {
         throw new Error('registerMarkdownRenderer: entry обязателен (HTML-файл относительно папки плагина)')
       }
       send({ type: 'registerMarkdownRenderer', language: def.language, entry: def.entry, height: def.height })
+    },
+    registerMessageTag(def) {
+      requirePermission('ui', 'registerMessageTag')
+      if (!def || typeof def.tag !== 'string' || !def.tag) {
+        throw new Error('registerMessageTag: tag обязателен')
+      }
+      if (!/^[a-zA-Z][a-zA-Z0-9-]*$/.test(def.tag)) {
+        throw new Error(`registerMessageTag: имя тега "${def.tag}" должно быть [a-zA-Z][a-zA-Z0-9-]*`)
+      }
+      if (typeof def.entry !== 'string' || !def.entry) {
+        throw new Error('registerMessageTag: entry обязателен (HTML-файл относительно папки плагина)')
+      }
+      send({ type: 'registerMessageTag', tag: def.tag, entry: def.entry, height: def.height, description: def.description })
+    },
+    unregisterMessageTag(tag) {
+      requirePermission('ui', 'unregisterMessageTag')
+      send({ type: 'unregisterMessageTag', name: tag })
+    },
+    registerPromptSection(def) {
+      requirePermission('context', 'registerPromptSection')
+      if (!def || typeof def.title !== 'string' || !def.title) {
+        throw new Error('registerPromptSection: title обязателен')
+      }
+      if (typeof def.content !== 'string') {
+        throw new Error('registerPromptSection: content обязателен (markdown-строка)')
+      }
+      const id = def.id || def.title
+      send({ type: 'registerPromptSection', id, title: def.title, content: def.content })
+    },
+    unregisterPromptSection(id) {
+      requirePermission('context', 'unregisterPromptSection')
+      send({ type: 'unregisterPromptSection', name: id })
+    },
+    registerSettingsSection(def) {
+      requirePermission('ui', 'registerSettingsSection')
+      if (!def || typeof def.id !== 'string' || !def.id) {
+        throw new Error('registerSettingsSection: id обязателен')
+      }
+      if (typeof def.title !== 'string' || !def.title) {
+        throw new Error('registerSettingsSection: title обязателен')
+      }
+      if (typeof def.entry !== 'string' || !def.entry) {
+        throw new Error('registerSettingsSection: entry обязателен (HTML-файл относительно папки плагина)')
+      }
+      send({ type: 'registerSettingsSection', id: def.id, title: def.title, entry: def.entry, icon: def.icon })
+    },
+    unregisterSettingsSection(id) {
+      requirePermission('ui', 'unregisterSettingsSection')
+      send({ type: 'unregisterSettingsSection', name: id })
     },
     registerSearchProvider(def) {
       requirePermission('ui', 'registerSearchProvider')
@@ -983,7 +1130,11 @@ function buildApi(): SynteePluginApi {
     ai: {
       async chat(
         prompt: string | Array<{ type: 'text'; text: string } | { type: 'image'; path?: string; url?: string; base64?: string }>,
-        opts?: { system?: string; model?: string; maxTokens?: number; stream?: boolean; onDelta?: (delta: string) => void },
+        opts?: {
+          system?: string; model?: string; maxTokens?: number; stream?: boolean; onDelta?: (delta: string) => void
+          tools?: Array<{ name: string; description?: string; parameters?: Record<string, unknown>; handler: (args: Record<string, unknown>) => unknown }>
+          chatContext?: boolean; chatId?: string
+        },
       ): Promise<string> {
         requirePermission('ai', 'ai.chat')
         const params: Record<string, unknown> = {
@@ -995,6 +1146,20 @@ function buildApi(): SynteePluginApi {
           params.messages = prompt
         } else {
           params.prompt = prompt
+        }
+        // Function calling: хендлеры остаются в процессе плагина — в main
+        // уходит только декларация; вызовы приходят callHandler 'aiTool'.
+        if (opts?.tools?.length) {
+          params.tools = opts.tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+          }))
+          for (const t of opts.tools) aiToolHandlers.set(t.name, t.handler)
+        }
+        if (opts?.chatContext) {
+          params.chatContext = true
+          params.chatId = opts.chatId
         }
         if (opts?.stream) {
           // Стриминг: дельты приходят событием 'ai:delta' { requestId, delta },
@@ -1112,6 +1277,48 @@ function buildApi(): SynteePluginApi {
         requirePermission('secrets', 'secrets.delete')
         const r = await hostRequest('secrets.delete', { key })
         if (!r.ok) throw new Error(r.error || 'secrets.delete failed')
+      },
+    },
+    speech: {
+      async tts(text: string, opts?: { model?: string; voice?: string }): Promise<string> {
+        requirePermission('speech', 'speech.tts')
+        const r = await hostRequest('speech.tts', { text, model: opts?.model, voice: opts?.voice })
+        if (!r.ok) throw new Error(r.error || 'speech.tts failed')
+        return String(r.result ?? '')
+      },
+      async stt(wavPath: string): Promise<string> {
+        requirePermission('speech', 'speech.stt')
+        const r = await hostRequest('speech.stt', { path: wavPath })
+        if (!r.ok) throw new Error(r.error || 'speech.stt failed')
+        return String(r.result ?? '')
+      },
+    },
+    settings: {
+      async get(): Promise<Record<string, unknown>> {
+        requirePermission('settings:read', 'settings.get')
+        const r = await hostRequest('settings.get', {})
+        if (!r.ok) throw new Error(r.error || 'settings.get failed')
+        return (r.result as Record<string, unknown>) ?? {}
+      },
+    },
+    provider: {
+      async register(def: { id: string; name: string; baseUrl: string; apiKey?: string; models?: string[] }): Promise<void> {
+        requirePermission('provider', 'provider.register')
+        if (!def || typeof def.id !== 'string' || !def.id) {
+          throw new Error('provider.register: id обязателен')
+        }
+        if (typeof def.baseUrl !== 'string' || !/^https?:\/\//.test(def.baseUrl)) {
+          throw new Error('provider.register: baseUrl обязателен (http/https)')
+        }
+        const r = await hostRequest('provider.register', {
+          id: def.id, name: def.name, baseUrl: def.baseUrl, apiKey: def.apiKey, models: def.models,
+        })
+        if (!r.ok) throw new Error(r.error || 'provider.register failed')
+      },
+      async unregister(id: string): Promise<void> {
+        requirePermission('provider', 'provider.unregister')
+        const r = await hostRequest('provider.unregister', { id })
+        if (!r.ok) throw new Error(r.error || 'provider.unregister failed')
       },
     },
     git: {
@@ -1337,6 +1544,18 @@ function buildApi(): SynteePluginApi {
         if (!r.ok) throw new Error(r.error || 'fs.pickDir failed')
         return (r.result as string | null) ?? null
       },
+      async pickFiles(opts?: { title?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string[]> {
+        requirePermission('ui', 'fs.pickFiles')
+        const r = await hostRequest('fs.pickFiles', { title: opts?.title, filters: opts?.filters })
+        if (!r.ok) throw new Error(r.error || 'fs.pickFiles failed')
+        return (r.result as string[]) ?? []
+      },
+      async saveDialog(opts?: { title?: string; defaultPath?: string; filters?: Array<{ name: string; extensions: string[] }> }): Promise<string | null> {
+        requirePermission('ui', 'fs.saveDialog')
+        const r = await hostRequest('fs.saveDialog', { title: opts?.title, defaultPath: opts?.defaultPath, filters: opts?.filters })
+        if (!r.ok) throw new Error(r.error || 'fs.saveDialog failed')
+        return (r.result as string | null) ?? null
+      },
     },
     ui: {
       onMessage(handler: (data: unknown) => void): void {
@@ -1395,6 +1614,22 @@ function buildApi(): SynteePluginApi {
         requirePermission('ui', 'hideChatOverlay')
         fireAndForget('ui.hideChatOverlay', {}, 'ui.hideChatOverlay')
       },
+      beginProgress(def: { label: string }) {
+        requirePermission('ui', 'beginProgress')
+        if (!def || typeof def.label !== 'string' || !def.label) {
+          throw new Error('beginProgress: label обязателен')
+        }
+        const progressId = `pg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        fireAndForget('ui.progress', { progressId, action: 'begin', label: def.label }, 'ui.progress')
+        return {
+          update(text: string): void {
+            fireAndForget('ui.progress', { progressId, action: 'update', label: String(text ?? '') }, 'ui.progress')
+          },
+          finish(): void {
+            fireAndForget('ui.progress', { progressId, action: 'finish' }, 'ui.progress')
+          },
+        }
+      },
     },
     chat: {
       async send(text: string, opts?: { silent?: boolean; attachments?: Array<{ path: string; name?: string; kind?: 'file' | 'image' }> }) {
@@ -1410,6 +1645,36 @@ function buildApi(): SynteePluginApi {
         requirePermission('chat', 'chat.reply')
         const r = await hostRequest('chat.reply', { text })
         if (!r.ok) throw new Error(r.error || 'chat.reply failed')
+      },
+      async beginReply() {
+        requirePermission('chat', 'chat.beginReply')
+        const r = await hostRequest('chat.beginReply', {})
+        if (!r.ok) throw new Error(r.error || 'chat.beginReply failed')
+        return String(r.result ?? '')
+      },
+      async appendChunk(replyId: string, delta: string) {
+        requirePermission('chat', 'chat.appendChunk')
+        const r = await hostRequest('chat.appendChunk', { replyId, delta })
+        if (!r.ok) throw new Error(r.error || 'chat.appendChunk failed')
+      },
+      async endReply(replyId: string) {
+        requirePermission('chat', 'chat.endReply')
+        const r = await hostRequest('chat.endReply', { replyId })
+        if (!r.ok) throw new Error(r.error || 'chat.endReply failed')
+      },
+      async getActive() {
+        requirePermission('chats:read', 'chat.getActive')
+        const r = await hostRequest('chat.getActive', {})
+        if (!r.ok) throw new Error(r.error || 'chat.getActive failed')
+        return (r.result as { chatId: string | null }) ?? { chatId: null }
+      },
+    },
+    prompt: {
+      async get(chatId?: string) {
+        requirePermission('hooks', 'prompt.get')
+        const r = await hostRequest('prompt.get', { chatId })
+        if (!r.ok) throw new Error(r.error || 'prompt.get failed')
+        return String(r.result ?? '')
       },
     },
     chats: {
@@ -1467,6 +1732,17 @@ function buildApi(): SynteePluginApi {
         const r = await hostRequest('chats.getAttachments', { messageId })
         if (!r.ok) throw new Error(r.error || 'chats.getAttachments failed')
         return (r.result as Array<Record<string, unknown>>) ?? []
+      },
+      async getMessages(chatId: string, opts?: { limit?: number; beforeCreatedAt?: number; beforeId?: string }) {
+        requirePermission('chats:read', 'chats.getMessages')
+        const r = await hostRequest('chats.getMessages', {
+          chatId,
+          limit: opts?.limit,
+          beforeCreatedAt: opts?.beforeCreatedAt,
+          beforeId: opts?.beforeId,
+        })
+        if (!r.ok) throw new Error(r.error || 'chats.getMessages failed')
+        return (r.result as { messages: Array<Record<string, unknown>>; hasMore: boolean }) ?? { messages: [], hasMore: false }
       },
     },
     projects: {
@@ -1790,6 +2066,10 @@ port.on('message', (e) => {
             const h = contextMenuHandlers.get(msg.name)
             if (!h) throw new Error(`Пункт меню не зарегистрирован: ${msg.name}`)
             await h(msg.payload as { messageId?: string; chatId?: string; content?: string; selection?: string })
+          } else if (msg.kind === 'aiTool') {
+            const h = aiToolHandlers.get(msg.name)
+            if (!h) throw new Error(`AI-tool handler не зарегистрирован: ${msg.name}`)
+            result = await h((msg.payload as { args?: Record<string, unknown> })?.args ?? {})
           } else {
             throw new Error(`Неизвестный kind: ${msg.kind}`)
           }

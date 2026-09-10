@@ -328,6 +328,11 @@ declare const synteeAPI: {
         getAll: () => Promise<any>;
         setActive: (chatId: string | null) => Promise<any>;
         getActive: () => Promise<string | null>;
+        previewSystemPrompt: (chatId?: string) => Promise<{
+            ok: boolean;
+            prompt?: string;
+            error?: string;
+        }>;
         getMessages: (chatId: string) => Promise<any>;
         getMessagesPage: (chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) => Promise<{
             messages: import("../../shared/types").Message[];
@@ -516,7 +521,7 @@ declare const synteeAPI: {
             previewDiff?: string;
         }) => void) => (_: unknown, data: unknown) => void;
         offConfirm: (wrapper: (...args: unknown[]) => void) => void;
-        confirmResponse: (reqId: string, approved: boolean, always?: 'session' | 'project' | 'global') => void;
+        confirmResponse: (reqId: string, approved: boolean, always?: "session" | "project" | "global") => void;
         onConfirmDismiss: (cb: (reqId: string) => void) => () => Electron.IpcRenderer;
         onQuestion: (cb: (data: {
             reqId: string;
@@ -527,6 +532,17 @@ declare const synteeAPI: {
         offQuestion: (wrapper: (...args: unknown[]) => void) => void;
         questionResponse: (reqId: string, answers: unknown[]) => void;
         onQuestionDismiss: (cb: (reqId: string) => void) => () => Electron.IpcRenderer;
+    };
+    protectedVars: {
+        list: () => Promise<import("../shared/types/protectedVars").ProtectedVarMeta[]>;
+        save: (input: import("../shared/types/protectedVars").ProtectedVarSaveInput) => Promise<{
+            ok: true;
+            meta: import("../shared/types/protectedVars").ProtectedVarMeta;
+        } | {
+            ok: false;
+            error: string;
+        }>;
+        delete: (id: string) => Promise<boolean>;
     };
     providers: {
         getAll: () => Promise<any>;

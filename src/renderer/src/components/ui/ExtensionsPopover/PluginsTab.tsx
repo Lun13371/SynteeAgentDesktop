@@ -18,6 +18,7 @@ import { useExtensionsStore } from '../../../store/extensions.store'
 import { usePluginPanelStore } from '../../../store/pluginPanel.store'
 import PluginIframe from '../PluginSlot/PluginIframe'
 import type { PluginRuntime, ExtensionScope, PluginConfigField } from '../../../../../shared/types'
+import { PERMISSION_LABELS, pluginCapabilities, permSeverity, sortBySeverity, hasHighRiskPermission } from '../../../utils/pluginPermissions'
 import './PluginsTab.css'
 
 /** Текстовая подпись области применения (локальная копия scopeLabel). */
@@ -42,7 +43,27 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
   const [busy, setBusy] = useState<string | null>(null)
   /** Consent-диалог: плагин ждёт подтверждения прав перед включением. */
   const [pendingConsent, setPendingConsent] = useState<PluginRuntime | null>(null)
+  /** Модалка «Системный промпт»: previewSystemPrompt активного чата. */
+  const [promptView, setPromptView] = useState<string | null>(null)
+  const [promptLoading, setPromptLoading] = useState(false)
   const openPanel = usePluginPanelStore(s => s.openPanel)
+
+  /** Открыть модалку с финальным system prompt активного чата. */
+  const showSystemPrompt = async () => {
+    setPromptLoading(true)
+    try {
+      const res = await window.syntee.chat.previewSystemPrompt() as { ok: boolean; prompt?: string; error?: string }
+      if (!res.ok || res.prompt === undefined) {
+        window.alert(res.error || 'Не удалось собрать системный промпт')
+        return
+      }
+      setPromptView(res.prompt)
+    } catch (e) {
+      window.alert(`Не удалось собрать системный промпт: ${(e as Error).message}`)
+    } finally {
+      setPromptLoading(false)
+    }
+  }
 
   const toggleEnabled = async (p: PluginRuntime) => {
     // Первое включение плагина с правами → consent-диалог.
@@ -215,6 +236,25 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                 </div>
                 {p.manifest.description && <div className="ext-card-desc">{p.manifest.description}</div>}
                 {p.error && <div className="plugin-error-line">{p.error}</div>}
+                {/* Возможности (что реально делает плагин) — краткая витрина. */}
+                {(() => {
+                  const caps = pluginCapabilities(p.manifest.permissions ?? [])
+                  if (caps.length === 0) return null
+                  const shown = caps.slice(0, 3)
+                  const rest = caps.length - shown.length
+                  const accentFor = (c: string) =>
+                    c === 'меняет system prompt' ? ' plugin-cap-chip--accent'
+                    : c === 'запускает команды' ? ' plugin-cap-chip--danger'
+                    : ''
+                  return (
+                    <div className="plugin-cap-row">
+                      {shown.map(c => (
+                        <span key={c} className={`plugin-cap-chip${accentFor(c)}`}>{c}</span>
+                      ))}
+                      {rest > 0 && <span className="plugin-cap-chip plugin-cap-chip--more">+{rest}</span>}
+                    </div>
+                  )
+                })()}
                 {/* Зависимости (python: pip, node: npm): статус + быстрая установка. */}
                 {p.deps && p.deps.required.length > 0 && (
                   p.deps.installed ? (
@@ -288,7 +328,11 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                       <span className="ext-card-row-label">Права</span>
                       <div className="plugin-perms">
                         {p.manifest.permissions.map(perm => (
-                          <span key={perm} className="plugin-perm-badge">{perm}</span>
+                          <span
+                            key={perm}
+                            className={`plugin-perm-badge plugin-perm-badge--${permSeverity(perm)}`}
+                            title={PERMISSION_LABELS[perm] ?? perm}
+                          >{perm}</span>
                         ))}
                       </div>
                     </div>
@@ -415,6 +459,10 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                 <AppIcon name="refreshCw" size="xs" />
                 Перезагрузить
               </button>
+              <button className="ext-action-btn" onClick={showSystemPrompt} disabled={promptLoading}>
+                <AppIcon name="fileText" size="xs" />
+                {promptLoading ? 'Сборка…' : 'Системный промпт'}
+              </button>
               {!p.manifest.builtin && (
                 <button
                   className="ext-action-btn ext-action-btn--danger"
@@ -455,9 +503,25 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
                 Плагин <b>{pendingConsent.manifest.name}</b> (v{pendingConsent.manifest.version})
                 {pendingConsent.manifest.author ? <> от {pendingConsent.manifest.author}</> : null} запрашивает доступ:
               </div>
+              {hasHighRiskPermission(pendingConsent.manifest.permissions ?? []) && (
+                <div className="plugin-consent-warn">
+                  <AppIcon name="shieldAlert" size="sm" tone="danger" />
+                  <span>Плагин получает широкий доступ: запуск команд, работа с файлами за пределами песочницы,
+                    сеть, секреты или доступ к системным API. Включайте только доверенные плагины.</span>
+                </div>
+              )}
+              {pluginCapabilities(pendingConsent.manifest.permissions ?? []).includes('меняет system prompt') && (
+                <div className="plugin-consent-warn plugin-consent-warn--prompt">
+                  ⚠ Может изменять системный промпт и видеть переписку
+                </div>
+              )}
               <div className="plugin-perms">
-                {pendingConsent.manifest.permissions?.map(perm => (
-                  <span key={perm} className="plugin-perm-badge">{PERMISSION_LABELS[perm] ?? perm}</span>
+                {sortBySeverity(pendingConsent.manifest.permissions ?? []).map(perm => (
+                  <span
+                    key={perm}
+                    className={`plugin-perm-badge plugin-perm-badge--${permSeverity(perm)}`}
+                    title={perm}
+                  >{PERMISSION_LABELS[perm] ?? perm}</span>
                 ))}
               </div>
               {pendingConsent.manifest.runtime === 'python' && (pendingConsent.manifest.requirements?.length ?? 0) > 0 && (
@@ -481,38 +545,38 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Модалка «Системный промпт» — previewSystemPrompt активного чата. */}
+      <AnimatePresence>
+        {promptView !== null && (
+          <motion.div
+            className="ext-modal-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onMouseDown={e => { if (e.target === e.currentTarget) setPromptView(null) }}
+          >
+            <motion.div
+              className="plugin-consent plugin-prompt-modal"
+              initial={{ opacity: 0, y: 16, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+            >
+              <div className="plugin-consent-title">
+                <AppIcon name="fileText" size="md" tone="accent" />
+                Системный промпт (активный чат)
+              </div>
+              <pre className="plugin-prompt-view">{promptView}</pre>
+              <div className="plugin-consent-actions">
+                <button className="ext-action-btn" onClick={() => setPromptView(null)}>Закрыть</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   )
-}
-
-/** Человекочитаемые названия прав. */
-const PERMISSION_LABELS: Record<string, string> = {
-  'net': 'сеть (HTTP-запросы, внешние ссылки)',
-  'fs:read': 'чтение файлов',
-  'fs:write': 'запись файлов (в папке плагина)',
-  'fs:write:any': 'запись/удаление файлов в любых путях',
-  'clipboard': 'буфер обмена',
-  'notifications': 'уведомления',
-  'ui': 'элементы интерфейса',
-  'chat': 'действия в чате',
-  'chats:read': 'чтение чатов',
-  'chats:write': 'изменение чатов и сообщений',
-  'projects:read': 'чтение проектов',
-  'projects:write': 'создание проектов',
-  'memory': 'долговременная память',
-  'ai': 'доступ к LLM (модели приложения)',
-  'scheduler': 'планировщик задач',
-  'shortcuts': 'глобальные горячие клавиши',
-  'process:exec': 'запуск shell-команд',
-  'overlay': 'overlay-окно',
-  'tray': 'меню в трее',
-  'context': 'динамический контекст в промпте',
-  'secrets': 'шифрованное хранилище секретов',
-  'git': 'git-операции',
-  'mcp': 'вызов тулов MCP',
-  'webhook': 'локальный HTTP-сервер',
-  'agent': 'вызов тулов и субагентов хоста',
-  'hooks': 'хуки контента (сообщения, тулы, промпт)',
 }
 
 /** Нормализация options поля: строки или {value,label} → {value,label}[]. */

@@ -164,6 +164,21 @@ window.addEventListener('message', (e) => {
 
 `manifest.configUi: 'ui/settings.html'` — iframe в карточке плагина вместо декларативной формы `config`. Панель читает/пишет настройки через `synteeBridge.call('…')` → свои `ui.handle`-хендлеры (например, хранит в `storage` или `secrets`).
 
+## Секция в настройках приложения — registerSettingsSection (`ui`)
+
+Своя вкладка в SettingsPage (iframe) — для богатой конфигурации, которая не влезает в декларативную форму `config` и не тонет в карточке плагина:
+
+```js
+syntee.registerSettingsSection({
+  id: 'main',
+  title: 'My Plugin',
+  entry: 'ui/settings.html',   // путь относительно папки плагина
+})
+syntee.unregisterSettingsSection('main')
+```
+
+Отличие от `configUi`: `configUi` рендерится **внутри карточки плагина**, а секция — полноценная вкладка в настройках приложения (в ряду остальных). Работает как обычный iframe-UI: `synteeBridge.call(...)` → `syntee.ui.handle(...)`.
+
 ## Chat overlay — плавающая панель поверх чата (`ui`)
 
 В отличие от `overlay.show` (отдельное окно поверх всего) и `openModal` (модалка с затемнением) — компактный iframe, висящий над областью переписки в главном окне. Живые данные — через `ui.emit` + `synteeBridge.on`:
@@ -172,6 +187,18 @@ window.addEventListener('message', (e) => {
 syntee.ui.showChatOverlay({ entry: 'ui/live.html', title: 'Live', width: 360, height: 300, position: 'right' })
 syntee.ui.hideChatOverlay()
 ```
+
+## Live-карточка прогресса — ui.beginProgress (`ui`)
+
+Для долгих операций тулов: плавающая карточка над полем ввода чата с текстом статуса.
+
+```js
+const progress = syntee.ui.beginProgress({ label: 'Рендерю сцену…' })
+progress.update('Кадр 12/40')   // обновляет текст карточки в чате
+progress.finish()               // убирает карточку
+```
+
+Пока карточка жива — тул «работает» визуально. Вызывай `finish()` в конце (лучше — в `finally`), иначе карточка повиснет.
 
 ## События жизненного цикла панелей
 
@@ -184,11 +211,102 @@ syntee.on('panel:closed', (p) => { /* p: { panelId } */ })
 
 Работает для right-табов, page, bottom, modal. Прав не требует.
 
+## Кастомные теги сообщений — registerMessageTag (`ui`)
+
+Плагин регистрирует собственный тег, который AI вставляет в текст ответа, а приложение рендерит как iframe-карточку прямо в сообщении:
+
+```js
+syntee.ui.registerMessageTag({
+  tag: 'kanban',                                    // [a-zA-Z][a-zA-Z0-9-]*
+  entry: 'ui/tag.html',                             // HTML-файл в папке плагина
+  height: 300,                                       // высота карточки, px (по умолчанию 260)
+  description: 'Канбан-доска — вставляй для визуализации задач', // попадает в system prompt
+})
+```
+
+`description` виден модели — AI узнаёт, что тег существует, и может вставлять его в ответ парно или самозакрыто:
+
+```html
+<kanban title="Спринт">куплено;сделано;готово</kanban>
+<kanban data="todo|doing|done" />
+```
+
+Незарегистрированный тег остаётся обычным текстом.
+
+Свойства тега приходят в iframe как `widgetData`:
+
+| Поле | Тип | Что это |
+|---|---|---|
+| `widgetData.attrs` | `Record<string, string>` | распарсенные атрибуты тега (`title`, `data`, …) |
+| `widgetData.inner` | `string` | внутренний текст тега |
+
+Пример `ui/tag.html`, читающего теги:
+
+```html
+<!DOCTYPE html>
+<html><body>
+<div id="board"></div>
+<script>
+function render(widgetData) {
+  const attrs = widgetData.attrs || {}
+  const inner = widgetData.inner || ''
+  const columns = (attrs.data || '').split('|').filter(Boolean)
+  document.getElementById('board').innerHTML =
+    '<h3>' + (attrs.title || 'Доска') + '</h3>' +
+    (columns.length ? '<ul>' + columns.map(c => '<li>' + c + '</li>').join('') + '</ul>'
+                    : '<pre>' + inner + '</pre>')
+}
+// Хост присылает widgetData сообщением — как тему, через syntee-plugin-host
+window.addEventListener('message', (e) => {
+  const d = e.data
+  if (d && d.source === 'syntee-plugin-host' && d.widgetData) render(d.widgetData)
+})
+</script>
+</body></html>
+```
+
+Снять регистрацию: `syntee.ui.unregisterMessageTag('kanban')`.
+
+## Action-кнопки у инлайн-виджетов (`ui`)
+
+Тул может вернуть виджет с кнопками под карточкой — клик выполняет слэш-команду плагина или открывает панель:
+
+```js
+return JSON.stringify({
+  __plugin_ui__: true,
+  pluginId: 'myplugin',
+  entry: 'ui/card.html',
+  data: { … },
+  height: 260,
+  actions: [
+    { label: 'Обновить', command: 'refresh' },   // слэш-команда плагина (см. commands)
+    { label: 'Открыть панель', panel: 'main' },  // панель из registerPanel
+  ],
+})
+```
+
+`command` — имя слэш-команды плагина (`/refresh`), `panel` — id панели из `registerPanel`. Кнопки рендерятся внизу карточки виджета.
+
 ## unregister — снять регистрацию панели
 
 ```js
 syntee.unregisterPanel('main')   // панель закрывается у пользователя
 ```
+
+## Системные диалоги — fs.pickFiles / fs.saveDialog (`ui`)
+
+```js
+// Выбор нескольких файлов → массив абсолютных путей
+const files = await syntee.fs.pickFiles({
+  title: 'Выберите файлы',
+  filters: [{ name: 'Images', extensions: ['png', 'jpg'] }],
+})
+
+// Диалог сохранения → путь файла (null — пользователь отменил)
+const path = await syntee.fs.saveDialog({ title: 'Сохранить отчёт', defaultPath: 'report.md' })
+```
+
+Отмена диалога → `[]` / `null` — обрабатывай оба случая.
 
 ## Ограничения iframe
 

@@ -1,7 +1,7 @@
 ﻿import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, normalizeCommandKey } from './commandSafety'
-import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
+import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, isWebSourceTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
 import type { ProjectPermissionOverride, ApprovalAllowlistEntry, AllowScope } from '../../shared/types'
 import { updateStructuredMemory } from '../context/structuredMemory'
 import type { DiffEntry } from '../context/structuredMemory'
@@ -1067,6 +1067,18 @@ export class Agent {
             }
           }
 
+          // Тулы плагинов: per-tool флаг requiresApproval (registerTool).
+          // Мутабельные тулы плагина спрашивают подтверждение всегда
+          // (кроме full-режима), поверх allowlist и авто-настроек.
+          const isPluginTool = fn.name.startsWith('plugin__')
+          if (isPluginTool && !effectiveApproval.block && callbacks.onPluginRequiresApproval) {
+            const pluginNeedsConfirm = callbacks.onPluginRequiresApproval(fn.name)
+            if (pluginNeedsConfirm && mode !== 'full') {
+              effectiveApproval.confirm = true
+              if (!effectiveApproval.reason) effectiveApproval.reason = 'Тул плагина помечен как требующий подтверждения'
+            }
+          }
+
           if (effectiveApproval.block) {
             const blockMsg = `Action blocked (mode ${mode}): ${effectiveApproval.reason}`
             resultMap.set(callId, { contentForAI: blockMsg, callId, name: fn.name })
@@ -1149,11 +1161,19 @@ export class Agent {
                 }
               }
               const fnNameCopy = fn.name
+              // §rollback — в undoStack кладём АБСОЛЮТНЫЙ путь. file_snapshots
+              // из undoStack попадают в БД и используются chat:rewindTo /
+              // chat:undoLastTurnFiles для восстановления файлов; относительный
+              // путь там резолвился бы против process.cwd() main-процесса
+              // (папка установки приложения), а не workdir чата — файлы
+              // «откатывались» в никуда.
+              let snapPath = p
+              try { snapPath = resolve(this.workdir ?? process.cwd(), p) } catch { /* raw path */ }
               pendingMutations.push(() => {
                 modifiedFiles.add(p)
                 successfulEditCount++
                 // §1.8 — сохраняем оригинал для undo (null = файл был создан заново)
-                this.undoStack.push({ path: p, originalContent: origContent ?? null })
+                this.undoStack.push({ path: snapPath, originalContent: origContent ?? null })
                 if (this.undoStack.length > 50) this.undoStack.shift()  // ограничиваем стек
                 for (const key of Array.from(this.readFileCache.keys())) {
                   if (key.startsWith(p + ':')) this.readFileCache.delete(key)
@@ -1200,19 +1220,28 @@ export class Agent {
           let finalContent = (rawContent || '') + errorHint
           if (!imageUrl && finalContent) {
             if (isScannedTool(fn.name)) {
-              const scan = scanForInjection(finalContent)
+              // §v2 — эскалация ТОЛЬКО для внешнего контента (web-туры) при
+              // strong-паттерне/пороге weak. Локальные read_file не эскалируют:
+              // исходники клиента содержат «system prompt» на каждом шагу,
+              // и эскалация от каждого read_file превращала авто-режим в
+              // «спрашивать всегда». Обёртка <untrusted_data> остаётся для всех.
+              const scan = scanForInjection(finalContent, isWebSourceTool(fn.name))
               if (scan.suspicious) {
-                this.injectionEscalation = INJECTION_ESCALATION_STEPS
                 finalContent = wrapUntrustedContent(finalContent, scan)
-                log('[Agent] injectionGuard: подозрительный контент от %s — паттерны: %s',
-                  fn.name, scan.patterns.join(', '))
-                callbacks.onStep({
-                  type: 'tool_result',
-                  toolName: '_injection_guard',
-                  content: `⚠ Подозрительный контент в результате ${fn.name}: ${scan.patterns.slice(0, 3).join(', ')}. Следующие изменяющие действия потребуют подтверждения.`,
-                  success: true,
-                  hidden: true,
-                })
+                log('[Agent] injectionGuard: подозрительный контент от %s — паттерны: %s (strong=%d weak=%d escalate=%s)',
+                  fn.name, scan.patterns.join(', '), scan.strongCount, scan.weakCount, scan.escalate)
+                if (scan.escalate && this.injectionEscalation === 0) {
+                  // Не перезаряжаем активное окно — иначе серия suspicious-ридов
+                  // держала эскалацию бесконечно. Тикает до нуля и гаснет.
+                  this.injectionEscalation = INJECTION_ESCALATION_STEPS
+                  callbacks.onStep({
+                    type: 'tool_result',
+                    toolName: '_injection_guard',
+                    content: `⚠ Подозрительный контент в результате ${fn.name}: ${scan.patterns.slice(0, 3).join(', ')}. Следующие изменяющие действия потребуют подтверждения.`,
+                    success: true,
+                    hidden: true,
+                  })
+                }
               }
             }
             if (fn.name === 'read_file' && isSecretPath(String(args.path ?? ''))) {

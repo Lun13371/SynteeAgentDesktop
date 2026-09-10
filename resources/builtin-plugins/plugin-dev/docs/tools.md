@@ -31,6 +31,26 @@ syntee.registerTool({
 - Ошибка в handler → модель получит текст ошибки (не роняет процесс плагина).
 - Права проверяются в handler-е как обычно (`net.fetch` требует `net` и т.д.).
 
+## Подтверждение пользователя — requiresApproval
+
+Мутабельные тулы (покупки, деплой, удаление данных) помечай флагом `requiresApproval: true` — каждый вызов будет показан пользователю в approval-диалоге агента, и только после подтверждения выполнится handler:
+
+```js
+syntee.registerTool({
+  name: 'deploy',
+  description: 'Deploy current branch to production',
+  parameters: {
+    type: 'object',
+    properties: { env: { type: 'string', enum: ['staging', 'prod'] } },
+    required: ['env'],
+  },
+  handler: async (args) => { /* … */ },
+  requiresApproval: true,   // каждый вызов требует подтверждения пользователя
+})
+```
+
+Правило: тулы с побочными эффектами (запись, отправка, удаление) всегда ставь `requiresApproval: true` — подтверждение спрашивается **независимо** от режима подтверждений агента (кроме режима `full`, где подтверждается всё подряд). Read-only тулы (поиск, чтение) флаг не ставят — иначе пользователь устанет жать «Разрешить».
+
 ## Инлайн-виджеты (rich-результат)
 
 Тул может вернуть не текст, а JSON-маркер — тогда в чат рендерится **виджет** вместо текста. Два вида:
@@ -74,6 +94,21 @@ return JSON.stringify({
   kind: 'badge',
   text: '✓ Тесты пройдены (42)',
   color: '#22c55e',                 // опционально: CSS-цвет (дефолт — акцент темы)
+})
+```
+
+**4. Action-кнопки** — у iframe-виджета могут быть кнопки под карточкой (см. **ui** → «Action-кнопки у инлайн-виджетов»):
+
+```js
+return JSON.stringify({
+  __plugin_ui__: true,
+  pluginId: 'my-plugin',
+  entry: 'ui/card.html',
+  data: { status: 'ok' }, height: 260,
+  actions: [
+    { label: 'Обновить', command: 'refresh' },   // слэш-команда плагина
+    { label: 'Открыть панель', panel: 'main' },  // панель из registerPanel
+  ],
 })
 ```
 

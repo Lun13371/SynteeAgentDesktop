@@ -395,6 +395,10 @@ const synteeAPI = {
     // при смене currentChatId, getActive — Spotlight-окном.
     setActive: (chatId: string | null) => ipcRenderer.invoke('chat:setActive', chatId),
     getActive: () => ipcRenderer.invoke('chat:getActive') as Promise<string | null>,
+    // Превью финального system prompt (просмотр в UI: карточка плагина,
+    // настройки агента). Возвращает { ok, prompt } или { ok: false, error }.
+    previewSystemPrompt: (chatId?: string) =>
+      ipcRenderer.invoke('chat:previewSystemPrompt', chatId) as Promise<{ ok: boolean; prompt?: string; error?: string }>,
     getMessages: (chatId: string) => ipcRenderer.invoke('chat:getMessages', chatId),
     // Окно сообщений для пагинации. Возвращает { messages, hasMore }.
     // limit — размер страницы (по умолчанию 20). beforeCreatedAt/beforeId —

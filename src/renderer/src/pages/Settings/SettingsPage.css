@@ -333,6 +333,24 @@
   max-width: 760px;
 }
 
+/* Секция настроек плагина (registerSettingsSection): заголовок
+   «{title} · {pluginName}» + iframe панели плагина на всю ширину. */
+.settings-plugin-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-plugin-iframe {
+  width: 100%;
+  height: calc(100vh - 240px);
+  min-height: 380px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-tertiary);
+  display: block;
+}
+
 /* Обёртка заголовка секции: sticky + блюр-подложка при прокрутке.
    Заголовок и серое описание раздела внутри. */
 .settings-section-title-wrap {

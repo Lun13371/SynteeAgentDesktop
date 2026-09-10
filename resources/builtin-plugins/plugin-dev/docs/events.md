@@ -41,11 +41,13 @@ syntee.on('prompt:before-build', (p) => {
 })
 ```
 
+Хук вызывается **последним** — после сборки секций и context-провайдеров. Читать финальный промпт без изменения можно через `syntee.prompt.get(chatId?)`; статические секции — через `syntee.registerPromptSection({ title, content })` (см. api-system).
+
 ## События (уведомления)
 
 | Событие | Payload | Когда |
 |---|---|---|
-| `chat:message` | `{ chatId, content }` | сообщение пользователя отправлено (permission `hooks`) |
+| `chat:message` | `{ chatId, content, role, messageId, attachments? }` — `attachments`: `[{ name, kind, path }]` | сообщение пользователя отправлено (permission `hooks`) |
 | `chat:completed` | `{ chatId }` | агент закончил ответ (permission `hooks`) |
 | `chat:switched` | `{ chatId }` | пользователь переключил активный чат |
 | `message:delta` | `{ chatId, delta }` | стриминг ответа (троттлинг 250 мс; permission `hooks`) |

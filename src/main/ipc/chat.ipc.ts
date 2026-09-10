@@ -707,6 +707,19 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch { /* плагины не должны ломать промпт */ }
     }
 
+    // Статические секции промпта плагинов (registerPromptSection).
+    let pluginSections: Array<{ title: string; content: string }> = []
+    if (!isIncognito) {
+      try {
+        pluginSections = withRetrySync('pluginSections', () =>
+          getPluginManager().collectPromptSections({
+            projectWorkdir: workdir,
+            projectId: promptProjectId,
+            isIncognito,
+          }), [])
+      } catch { /* плагины не должны ломать промпт */ }
+    }
+
     // Защищённые переменные (секреты юзера) — расшифровываются здесь и
     // инжектятся в промпт. Инкогнито — пропуск (приватность).
     let protectedVars: ProtectedVarPromptInfo[] | undefined
@@ -716,7 +729,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch { /* не ломаем промпт из-за секретов */ }
     }
 
-    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext, protectedVars })
+    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext, pluginSections, protectedVars })
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).
@@ -729,6 +742,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     return systemPrompt
 
   }
+
+  // Билдер system prompt для плагинов (syntee.prompt.get) и превью в UI.
+  // Без рекурсии: getSystemPrompt не зовёт хук prompt:before-build повторно
+  // сам по себе — хук выполняется внутри только при реальных запросах агента.
+  try {
+    getPluginManager().setPromptBuilder(async (chatId) => getSystemPrompt(chatId))
+  } catch { /* плагины не инициализированы — ок */ }
 
   /**
    * Строит текстовый отчёт об установленных расширениях для агента
@@ -1733,6 +1753,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Plugins: сбор тулов запущенных плагинов для агента. Синхронно —
     // getActiveToolsForChat возвращает только тулы уже запущенных процессов.
     let pluginTools: Array<{ name: string; shortName: string; description: string; inputSchema: Record<string, unknown>; pluginId: string }> = []
+    // Approval map: тулы плагинов с requiresApproval:true требуют подтверждения.
+    const pluginApprovalMap: Record<string, boolean> = {}
     try {
       pluginTools = getPluginManager().getActiveToolsForChat({
         projectWorkdir: chatWorkdir,
@@ -1742,6 +1764,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         })(),
         isIncognito: isIncognitoRun,
       })
+      for (const t of pluginTools) {
+        if ((t as { requiresApproval?: boolean }).requiresApproval === true) {
+          pluginApprovalMap[t.name] = true
+        }
+      }
     } catch (e) {
       console.error('[chat:send] plugins load failed:', (e as Error).message)
     }
@@ -1799,6 +1826,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         mcpTools,
         mcpApprovalMap,
         pluginTools,
+        pluginApprovalMap,
       },
       env: process.env,
     })
@@ -1809,7 +1837,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Инкогнито-чаты не отправляются плагинам (приватность).
     if (!isIncognitoRun) {
       try {
-        getPluginManager().emitChatMessage(params.chatId, params.content ?? '')
+        getPluginManager().emitChatMessage(params.chatId, params.content ?? '', {
+          role: 'user',
+          messageId: userMsg.id,
+          attachments: (userMsg.attachments ?? []).map(a => ({ name: a.name, kind: a.kind, path: a.path })),
+        })
         // agent:status 'started' — подписавшимся плагинам.
         getPluginManager().emitAgentStatus(params.chatId, 'started')
       } catch { /* плагины недоступны — не роняем чат */ }
@@ -3191,6 +3223,17 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     try { getPluginManager().emitChatSwitched(chatId ?? null) } catch { /* plugins не должны ломать чат */ }
   })
   ipcMain.handle('chat:getActive', () => lastActiveChatId)
+  // Превью финального system prompt (UI: просмотр в карточке плагина /
+  // настройках агента). Инкогнито-режим не применяется — это явный
+  // запрос пользователя посмотреть свой промпт.
+  ipcMain.handle('chat:previewSystemPrompt', async (_, chatId?: string) => {
+    try {
+      const prompt = await getSystemPrompt(chatId ?? lastActiveChatId ?? undefined)
+      return { ok: true, prompt }
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) }
+    }
+  })
   // ВНИМАНИЕ: в renderer сообщения уходят ТОЛЬКО через slimMessagesForUI —
   // полные tool-пейлоады (тела файлов, diff'ы, выводы) остаются в БД для
   // AI-контекста (messageToContextMessages), UI показывает урезанную копию.
@@ -3769,6 +3812,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       return { error: 'Сжатие уже идёт — дождитесь завершения.' }
     }
 
+    // Итог компакции для терминального run-статуса в finally
+    // (done/cancelled/error) — сайдбар-бейдж после завершения сжатия.
+    let compactOutcome: 'done' | 'cancelled' | 'error' = 'done'
+
     try {
       const storeData: Record<string, unknown> = {}
       const storeKeys = [
@@ -3809,6 +3856,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // байт-идентичным состоянию до компакции.
       const controller = new AbortController()
       compactRuns.set(chatId, controller)
+      // Статус для сайдбара/табов: чат «сжимает контекст» (спиннер в списке
+      // чатов). Терминальный статус эмитится в finally ниже.
+      emitRunStatus(mainWindow.getWindow(), chatId, 'compacting')
 
       const summaryFn = async (systemPrompt: string, userContent: string): Promise<string> => {
         const aiClient = new AIClient(store)
@@ -3868,6 +3918,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const compactMode = mode === 'last' ? 'last' : 'full'
       const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true, compactMode)
       if (!result.compressed) {
+        compactOutcome = 'error'
         return { error: 'Недостаточно сообщений для сжатия (нужно больше 2).' }
       }
 
@@ -3887,6 +3938,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // saveMessage(divider) (abort прилетает между двумя writes).
       if (controller.signal.aborted) {
         log('[chat:compact] aborted chatId=%s — summary & divider NOT applied', chatId)
+        compactOutcome = 'cancelled'
         return { cancelled: true, error: 'Сжатие отменено' }
       }
 
@@ -3913,6 +3965,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       })
       if (controller.signal.aborted) {
         log('[chat:compact] aborted (pre-tx) chatId=%s — summary & divider NOT applied', chatId)
+        compactOutcome = 'cancelled'
         return { cancelled: true, error: 'Сжатие отменено' }
       }
       tx()
@@ -4007,11 +4060,16 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       }
     } catch (e) {
       log('[chat:compact] error chatId=%s: %s', chatId, (e as Error).message)
+      compactOutcome = 'error'
       return { error: `Ошибка сжатия контекста: ${(e as Error).message}` }
     } finally {
       // Всегда убираем AbortController из map — даже на cancel/error/early-return.
       // Без этого повторный /compact после cancel думал бы что он ещё активен.
       compactRuns.delete(chatId)
+      // Терминальный статус для сайдбара (гасим «compacting»-спиннер, ставим
+      // бейдж ✓/✗/— как unread). Эмитим ПОСЛЕ compactRuns.delete, чтобы
+      // renderer не видел «compacting» у уже свободного чата.
+      emitRunStatus(mainWindow.getWindow(), chatId, compactOutcome)
       // Запускаем накопленные запросы из очереди (если во время сжатия пришли
       // новые chat:send — они стояли в chatQueues, т.к. compactRuns.has
       // блокировал их старт). drainQueue безопасен при пустой очереди.

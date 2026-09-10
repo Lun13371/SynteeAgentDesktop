@@ -32,7 +32,9 @@ import { applyFontToDOM, applyMonoToDOM, injectCustomFonts, applyAccentToDOM, ap
 import type { CustomFont } from '../../App'
 import { BUILTIN_THEMES } from '../../utils/builtinThemes'
 import { applyPluginThemeToDOM, isPluginThemeKey } from '../../utils/pluginTheme'
-import { collectPluginBackgrounds, collectPluginThemes } from '../../utils/pluginExtApi'
+import { collectPluginBackgrounds, collectPluginThemes, collectSettingsSections, selectRunningPlugins } from '../../utils/pluginExtApi'
+import { useExtensionsStore } from '../../store/extensions.store'
+import PluginIframe from '../../components/ui/PluginSlot/PluginIframe'
 import { whileHoverWide, whileTapWide, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../utils/motionPresets'
 import { DEFAULT_AGENT_SETTINGS, DEFAULT_AUTO_MODE_SETTINGS, type AgentSettings as SharedAgentSettings, type AutoModeSettings, type NetworkPolicy, type ApprovalAllowlistEntry, type CustomTheme } from '../../../../shared/types'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
@@ -200,7 +202,7 @@ export default function SettingsPage() {
   const navSection = useNavStore(s => s.settingsSection)
   const setNavSection = useNavStore(s => s.setSettingsSection)
   const setMainPage = useNavStore(s => s.setMainPage)
-  const [section, setSection] = useState<Section>(
+  const [section, setSection] = useState<Section | string>(
     (navSection as Section) || 'general'
   )
   // Синхронизация: при изменении settingsSection извне (openSettings) —
@@ -348,12 +350,31 @@ export default function SettingsPage() {
   })))
   const { add: toast } = useToast()
 
+  // ── Секции настроек плагинов (registerSettingsSection) ──
+  // Собираем из запущенных плагинов; ключ секции — plugin:{pluginId}:{sectionId}
+  // (уникален и не конфликтует с встроенными Section). Заголовок пункта —
+  // title секции, в контенте показываем «{title} · {pluginName}».
+  const extPlugins = useExtensionsStore(s => s.plugins)
+  const pluginSections = useMemo(() => {
+    const running = selectRunningPlugins()
+    const nameById = new Map(running.map(p => [p.id, p.name]))
+    return collectSettingsSections().map(s => ({
+      key: `plugin:${s.pluginId}:${s.id}`,
+      pluginId: s.pluginId,
+      sectionId: s.id,
+      title: s.title,
+      entry: s.entry,
+      icon: (s.icon ?? 'puzzle') as IconName,
+      pluginName: nameById.get(s.pluginId) ?? s.pluginId,
+    }))
+  }, [extPlugins])
+
   // Обратная синхронизация: локальный выбор юзера пишем в nav store.
   // БЕЗ AnimatePresence: mode="wait" застревал после визита «Статистики»
   // (exit-анимация модалки через createPortal не давала onExitComplete
   // сработать) — новая вкладка не монтировалась, контент пропадал навсегда.
   // Теперь секции переключаются синхронно: обычный div + CSS-анимация входа.
-  const handleSectionChange = (s: Section) => {
+  const handleSectionChange = (s: Section | string) => {
     if (s === section) return
     playNavigateSound()
     setSection(s)
@@ -580,6 +601,41 @@ export default function SettingsPage() {
             ))}
           </motion.div>
         ))}
+        {/* Секции настроек плагинов (registerSettingsSection) — в конец навигации */}
+        {pluginSections.length > 0 && (
+          <motion.div
+            key="plugin-sections"
+            className="settings-nav-group"
+            initial={{ opacity: 0, x: -12 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 30, delay: 0.1 }}
+          >
+            <div className="settings-nav-group-title">Плагины</div>
+            {pluginSections.map((ps, si) => (
+              <motion.button
+                key={ps.key}
+                type="button"
+                className={`settings-nav-item no-drag ${section === ps.key ? 'settings-nav-item--active' : ''}`}
+                onClick={() => handleSectionChange(ps.key)}
+                whileTap={{ scale: 0.97 }}
+                whileHover={{ x: 2 }}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 30, delay: 0.12 + si * 0.02 }}
+              >
+                {section === ps.key && (
+                  <motion.span
+                    layoutId="settings-nav-active"
+                    className="settings-nav-active-pill"
+                    transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+                  />
+                )}
+                <AppIcon name={ps.icon} size="sm" tone={section === ps.key ? 'accent' : 'muted'} />
+                <span className="settings-nav-item-label">{highlightLabel(ps.title)}</span>
+              </motion.button>
+            ))}
+          </motion.div>
+        )}
       </motion.nav>
 
       {/* Контент */}
@@ -635,6 +691,23 @@ export default function SettingsPage() {
             {section === 'notifications' && (
               <NotificationsSection settings={settings} onSet={handleSet} />
             )}
+            {/* Секция настроек плагина (plugin:{pluginId}:{sectionId}) — iframe */}
+            {section.startsWith('plugin:') && (() => {
+              const ps = pluginSections.find(x => x.key === section)
+              return ps ? (
+                <div className="settings-plugin-section">
+                  <SectionTitle description={`Секция настроек плагина «${ps.pluginName}»`}>
+                    {ps.title} · {ps.pluginName}
+                  </SectionTitle>
+                  <PluginIframe
+                    pluginId={ps.pluginId}
+                    entry={ps.entry}
+                    title={`${ps.title} · ${ps.pluginName}`}
+                    className="plugin-iframe settings-plugin-iframe"
+                  />
+                </div>
+              ) : null
+            })()}
         </div>
       </div>
     </div>

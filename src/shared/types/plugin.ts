@@ -39,6 +39,10 @@ export type PluginPermission =
   | 'hooks'          // подписка на хуки/события контента: chat:message,
                     // chat:before-send, chat:completed, message:delta,
                     // tool:call, tool:result, prompt:before-build
+  | 'provider'       // регистрация провайдера моделей (provider.register —
+                    // OpenAI-compatible endpoint появляется в настройках)
+  | 'settings:read'  // чтение публичных настроек приложения (settings.get)
+  | 'speech'         // синтез и распознавание речи (speech.tts/stt)
 
 /** Вариант выбора для select/multiselect-полей настроек. */
 export interface PluginConfigOption {
@@ -193,6 +197,9 @@ export interface PluginToolRuntime {
   shortName: string
   description: string
   inputSchema: Record<string, unknown>
+  /** Мутабельный тул: вызов требует подтверждения пользователя
+   *  (approval-диалог агента) независимо от режима. */
+  requiresApproval?: boolean
 }
 
 /** Слэш-команда плагина (registerCommand). */
@@ -285,6 +292,35 @@ export interface PluginMarkdownRendererRuntime {
   height?: number
 }
 
+/** Кастомный тег сообщения (registerMessageTag) — парный тег
+ *  <tag attr="...">…</tag> в тексте сообщения рендерится iframe-виджетом
+ *  плагина (механика та же, что у инлайн-виджетов). Незарегистрированный
+ *  тег остаётся обычным текстом. */
+export interface PluginMessageTagRuntime {
+  pluginId: string
+  /** Имя тега ([a-zA-Z][a-zA-Z0-9-]*). */
+  tag: string
+  /** HTML-файл виджета (относительный путь в папке плагина). */
+  entry: string
+  /** Высота карточки по умолчанию (px). */
+  height?: number
+  /** Описание для AI — когда и зачем вставлять тег в ответ. */
+  description?: string
+}
+
+/** Статическая секция system prompt (registerPromptSection) —
+ *  неизменяемый markdown-блок, добавляемый в промпт на время работы
+ *  плагина (в отличие от context provider — без вызова на каждый запрос). */
+export interface PluginPromptSectionRuntime {
+  pluginId: string
+  /** Уникальный id секции (для unregisterPromptSection). */
+  id: string
+  /** Заголовок (### {title} в промпте). */
+  title: string
+  /** Markdown-контент секции. */
+  content: string
+}
+
 /** Search provider плагина (registerSearchProvider) — результаты
  *  в глобальном поиске (Spotlight). */
 export interface PluginSearchProviderRuntime {
@@ -365,6 +401,20 @@ export interface PluginBackgroundContribution {
   src: string
 }
 
+/** Секция настроек плагина (registerSettingsSection) — своя вкладка
+ *  в SettingsPage (iframe с entry), для богатой конфигурации. */
+export interface PluginSettingsSectionRuntime {
+  pluginId: string
+  /** Уникальный id секции. */
+  id: string
+  /** Заголовок в навигации настроек. */
+  title: string
+  /** HTML-файл секции (относительный путь в папке плагина). */
+  entry: string
+  /** Имя иконки AppIcon (опционально). */
+  icon?: string
+}
+
 /** Маркер инлайн-виджета: тул плагина возвращает JSON этого вида —
  *  renderer рендерит iframe-карточку вместо текста. */
 export interface PluginUiWidgetPayload {
@@ -391,6 +441,16 @@ export interface PluginUiWidgetPayload {
   text?: string
   /** Для kind='badge': цвет (CSS-цвет; по умолчанию акцент темы). */
   color?: string
+  /** Action-кнопки под карточкой (kind='iframe'): клик выполняет
+   *  слэш-команду плагина (с payload виджета как args-контекстом)
+   *  или открывает его панель. */
+  actions?: Array<{
+    label: string
+    /** Слэш-команда плагина (без слэша). */
+    command?: string
+    /** id панели плагина (registerPanel) — открыть по клику. */
+    panel?: string
+  }>
 }
 
 /** Полное состояние плагина для UI. */
@@ -415,6 +475,12 @@ export interface PluginRuntime extends Plugin {
   contextMenu: PluginContextMenuRuntime[]
   /** Кнопки над полем ввода (registerInputAction). */
   inputActions: PluginInputActionRuntime[]
+  /** Секции настроек в SettingsPage (registerSettingsSection). */
+  settingsSections: PluginSettingsSectionRuntime[]
+  /** Кастомные теги сообщений (registerMessageTag). */
+  messageTags: PluginMessageTagRuntime[]
+  /** Статические секции system prompt (registerPromptSection). */
+  promptSections: PluginPromptSectionRuntime[]
   /** Темы от плагина (registerTheme). */
   themes: PluginThemeContribution[]
   /** Фоны от плагина (registerBackground). */
@@ -439,6 +505,8 @@ export interface PluginPromptInfo {
   tools: string[]
   /** Инлайн-виджеты: AI может попросить тул плагина вернуть виджет-карточку. */
   widgets?: Array<{ name: string; description?: string }>
+  /** Кастомные теги сообщений: AI может вставлять <tag>…</tag> в ответы. */
+  messageTags?: Array<{ tag: string; description?: string }>
   /** Context providers — их контент уже включён в промпт отдельным блоком;
    *  здесь только имена, чтобы AI знал источник. */
   contextProviders?: string[]

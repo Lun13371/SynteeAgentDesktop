@@ -21,6 +21,8 @@
 
 Правая панель «Plugin Dev»: браузер документации (14 секций), мастер создания плагинов и список установленных.
 
+Документация покрывает и новые API ядра: стриминг ответа в чат (`chat.beginReply/appendChunk/endReply`), чтение промпта и статические секции (`prompt.get`, `registerPromptSection`), кастомные теги сообщений (`ui.registerMessageTag`), function calling в `ai.chat` (`tools` + `chatContext`), live-карточка прогресса (`ui.beginProgress`) и action-кнопки виджетов, плагин-провайдеры моделей (`provider.register`), пагинация сообщений (`chats.getMessages`), секции в настройках (`registerSettingsSection`), системные диалоги (`fs.pickFiles`/`fs.saveDialog`), голос (`speech.tts`/`speech.stt`), чтение настроек (`settings.get`) и подтверждение тулов (`requiresApproval`).
+
 ## Для AI: как создать плагин
 
 1. Прочитай доки: `plugin_docs(section="index")` → для объёмного плагина обязательно `architecture`, дальше по необходимости (`tools`, `permissions`, …).

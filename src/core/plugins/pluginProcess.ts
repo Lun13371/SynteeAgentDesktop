@@ -31,6 +31,9 @@ import type {
   PluginUiContribution,
   PluginContextProviderRuntime,
   PluginMarkdownRendererRuntime,
+  PluginMessageTagRuntime,
+  PluginPromptSectionRuntime,
+  PluginSettingsSectionRuntime,
   PluginSearchProviderRuntime,
   PluginAutocompleteRuntime,
   PluginContextMenuRuntime,
@@ -62,6 +65,14 @@ export interface PluginProcessCallbacks {
   onContextProviderRegistered: (provider: PluginContextProviderRuntime) => void
   /** Рендерер markdown-кодоблоков зарегистрирован. */
   onMarkdownRendererRegistered: (renderer: PluginMarkdownRendererRuntime) => void
+  /** Кастомный тег сообщений зарегистрирован (registerMessageTag). */
+  onMessageTagRegistered: (tag: PluginMessageTagRuntime) => void
+  /** Плагин снял регистрацию тула/команды/панели/секции промпта/тега/секции настроек в рантайме. */
+  onUnregistered: (kind: 'tool' | 'command' | 'panel' | 'promptSection' | 'messageTag' | 'settingsSection', name: string) => void
+  /** Статическая секция system prompt зарегистрирована (registerPromptSection). */
+  onPromptSectionRegistered: (section: PluginPromptSectionRuntime) => void
+  /** Секция настроек в SettingsPage зарегистрирована (registerSettingsSection). */
+  onSettingsSectionRegistered: (section: PluginSettingsSectionRuntime) => void
   /** Search provider (Spotlight) зарегистрирован. */
   onSearchProviderRegistered: (provider: PluginSearchProviderRuntime) => void
   /** Autocomplete-провайдер инпута зарегистрирован. */
@@ -74,8 +85,6 @@ export interface PluginProcessCallbacks {
   onThemeRegistered: (theme: PluginThemeContribution) => void
   /** Фон плагина зарегистрирован. */
   onBackgroundRegistered: (background: PluginBackgroundContribution) => void
-  /** Плагин снял регистрацию тула/команды/панели в рантайме. */
-  onUnregistered: (kind: 'tool' | 'command' | 'panel', name: string) => void
   /** Плагин отправил сообщение в свои iframe-панели. */
   onUiPostMessage: (data: unknown) => void
   /** Плагин подписался на события (список всех событий с хендлерами). */
@@ -207,7 +216,7 @@ export class PluginProcess {
   /** Вызов зарегистрированного провайдера/хендлера плагина
    *  (context provider / search / autocomplete / context menu). */
   async callHandler(
-    kind: 'context' | 'search' | 'autocomplete' | 'menu',
+    kind: 'context' | 'search' | 'autocomplete' | 'menu' | 'aiTool',
     name: string,
     payload: Record<string, unknown>,
     timeoutMs = 3_000,
@@ -310,6 +319,7 @@ export class PluginProcess {
           shortName: msg.name,
           description: msg.description,
           inputSchema: msg.inputSchema ?? { type: 'object', properties: {} },
+          requiresApproval: msg.requiresApproval === true,
         })
         break
       }
@@ -345,6 +355,18 @@ export class PluginProcess {
       }
       case 'unregisterPanel': {
         this.callbacks.onUnregistered('panel', msg.name)
+        break
+      }
+      case 'unregisterPromptSection': {
+        this.callbacks.onUnregistered('promptSection', msg.name)
+        break
+      }
+      case 'unregisterMessageTag': {
+        this.callbacks.onUnregistered('messageTag', msg.name)
+        break
+      }
+      case 'unregisterSettingsSection': {
+        this.callbacks.onUnregistered('settingsSection', msg.name)
         break
       }
       case 'subscribeEvents': {
@@ -396,6 +418,35 @@ export class PluginProcess {
           language: msg.language,
           entry: msg.entry,
           height: msg.height,
+        })
+        break
+      }
+      case 'registerMessageTag': {
+        this.callbacks.onMessageTagRegistered({
+          pluginId: this.pluginId,
+          tag: msg.tag,
+          entry: msg.entry,
+          height: msg.height,
+          description: msg.description,
+        })
+        break
+      }
+      case 'registerPromptSection': {
+        this.callbacks.onPromptSectionRegistered({
+          pluginId: this.pluginId,
+          id: msg.id,
+          title: msg.title,
+          content: msg.content,
+        })
+        break
+      }
+      case 'registerSettingsSection': {
+        this.callbacks.onSettingsSectionRegistered({
+          pluginId: this.pluginId,
+          id: msg.id,
+          title: msg.title,
+          entry: msg.entry,
+          icon: msg.icon,
         })
         break
       }

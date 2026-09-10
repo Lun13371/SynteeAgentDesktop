@@ -124,10 +124,10 @@ export interface PluginMsgRegisterCommand {
 }
 
 /** plugin → main: снять регистрацию в рантайме (unregisterTool /
- *  unregisterCommand / unregisterPanel). */
+ *  unregisterCommand / unregisterPanel / unregisterPromptSection). */
 export interface PluginMsgUnregister {
-  type: 'unregisterTool' | 'unregisterCommand' | 'unregisterPanel'
-  /** Имя тула / команды или id панели. */
+  type: 'unregisterTool' | 'unregisterCommand' | 'unregisterPanel' | 'unregisterPromptSection' | 'unregisterMessageTag' | 'unregisterSettingsSection'
+  /** Имя тула / команды, id панели, id секции промпта, имя тега или id секции настроек. */
   name: string
 }
 
@@ -190,6 +190,8 @@ export interface PluginMsgRegisterTool {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  /** Мутабельный тул — вызов требует подтверждения пользователя. */
+  requiresApproval?: boolean
 }
 
 /** plugin → main: зарегистрировать context provider — динамический
@@ -206,6 +208,36 @@ export interface PluginMsgRegisterMarkdownRenderer {
   language: string
   entry: string
   height?: number
+}
+
+/** plugin → main: зарегистрировать кастомный тег сообщений —
+ *  парный тег <tag>…</tag> в тексте сообщения рендерится
+ *  iframe-виджетом плагина. */
+export interface PluginMsgRegisterMessageTag {
+  type: 'registerMessageTag'
+  tag: string
+  entry: string
+  height?: number
+  description?: string
+}
+
+/** plugin → main: зарегистрировать статическую секцию system prompt
+ *  (registerPromptSection). */
+export interface PluginMsgRegisterPromptSection {
+  type: 'registerPromptSection'
+  id: string
+  title: string
+  content: string
+}
+
+/** plugin → main: зарегистрировать секцию настроек в SettingsPage
+ *  (registerSettingsSection). */
+export interface PluginMsgRegisterSettingsSection {
+  type: 'registerSettingsSection'
+  id: string
+  title: string
+  entry: string
+  icon?: string
 }
 
 /** plugin → main: зарегистрировать search provider (Spotlight). */
@@ -260,15 +292,16 @@ export interface PluginMsgRegisterBackground {
 }
 
 /** main → plugin: вызов зарегистрированного провайдера/хендлера
- *  (context provider, search, autocomplete, context menu).
+ *  (context provider, search, autocomplete, context menu, ai-tool).
  *  kind: 'context' — name = имя провайдера, payload { chatId };
  *        'search'  — name = id провайдера, payload { query };
  *        'autocomplete' — name = trigger, payload { query };
- *        'menu'    — name = id пункта, payload { messageId?, selection?, chatId? }. */
+ *        'menu'    — name = id пункта, payload { messageId?, selection?, chatId? };
+ *        'aiTool'  — name = имя тула из opts.tools ai.chat, payload { args }. */
 export interface PluginMsgCallHandler {
   type: 'callHandler'
   requestId: string
-  kind: 'context' | 'search' | 'autocomplete' | 'menu'
+  kind: 'context' | 'search' | 'autocomplete' | 'menu' | 'aiTool'
   name: string
   payload: Record<string, unknown>
 }
@@ -312,6 +345,9 @@ export interface PluginMsgHostRequest {
     | 'ui.openModal' | 'ui.closeModal' | 'ui.registerWidget'
     | 'ui.showChatOverlay' | 'ui.hideChatOverlay'
     | 'chat.send' | 'chat.reply'
+    | 'chat.beginReply' | 'chat.appendChunk' | 'chat.endReply'
+    | 'chat.getActive'
+    | 'prompt.get'
     | 'chats.list' | 'chats.get'
     | 'chats.create' | 'chats.rename' | 'chats.delete'
     | 'chats.appendMessage' | 'chats.editMessage' | 'chats.deleteMessage'
@@ -340,7 +376,13 @@ export interface PluginMsgHostRequest {
     | 'net.listen' | 'net.close'
     | 'git.status' | 'git.diff' | 'git.log' | 'git.commit' | 'git.branches'
     | 'fs.pickFile' | 'fs.pickDir'
+    | 'fs.pickFiles' | 'fs.saveDialog'
     | 'memory.chat.get' | 'memory.chat.set' | 'memory.chat.delete'
+    | 'chats.getMessages'
+    | 'ui.progress'
+    | 'settings.get'
+    | 'provider.register' | 'provider.unregister'
+    | 'speech.tts' | 'speech.stt'
   params: Record<string, unknown>
 }
 
@@ -381,6 +423,9 @@ export type PluginMsgPluginToHost =
   | PluginMsgUiPostMessage
   | PluginMsgRegisterContextProvider
   | PluginMsgRegisterMarkdownRenderer
+  | PluginMsgRegisterMessageTag
+  | PluginMsgRegisterPromptSection
+  | PluginMsgRegisterSettingsSection
   | PluginMsgRegisterSearchProvider
   | PluginMsgRegisterAutocomplete
   | PluginMsgRegisterContextMenu

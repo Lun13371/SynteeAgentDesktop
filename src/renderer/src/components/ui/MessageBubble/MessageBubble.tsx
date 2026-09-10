@@ -9,8 +9,9 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import type { PluginUiWidgetPayload } from '@shared/types/plugin'
 import PluginIframe from '../PluginSlot/PluginIframe'
-import { collectMarkdownRenderers, collectMessageContextMenu, getPluginsExt } from '../../../utils/pluginExtApi'
+import { collectMarkdownRenderers, collectMessageContextMenu, collectMessageTags, getPluginsExt } from '../../../utils/pluginExtApi'
 import { useExtensionsStore } from '../../../store/extensions.store'
+import { usePluginPanelStore } from '../../../store/pluginPanel.store'
 // ── Быстрый рендер код-блоков через HTML-строку ──────────────────────────
 // Заменяет react-syntax-highlighter (React-дерево из тысяч <span>) на
 // refractor → HAST → HTML-строка → dangerouslySetInnerHTML.
@@ -486,20 +487,50 @@ function PluginDiffWidget({ widget }: { widget: PluginUiWidgetPayload }) {
 }
 
 function PluginInlineWidget({ widget }: { widget: PluginUiWidgetPayload }) {
+  const openPluginPanel = usePluginPanelStore(s => s.openPanel)
   const kind = widget.kind ?? 'iframe'
   // kind='diff' — нативный diff-виджет хоста (iframe не грузим).
   if (kind === 'diff') return <PluginDiffWidget widget={widget} />
   // kind='badge' — инлайн-пилюля (декорация сообщения без iframe).
   if (kind === 'badge') return <PluginBadgeWidget widget={widget} />
   const height = typeof widget.height === 'number' ? widget.height : 260
+  // Action-кнопки виджета: command → слэш-команда плагина,
+  // panel → открыть панель плагина (registerPanel).
+  const widgetActions = widget.actions ?? []
+  const runAction = (a: { label: string; command?: string; panel?: string }) => {
+    if (a.command) {
+      const ext = getPluginsExt()
+      if (ext.notificationAction) {
+        void ext.notificationAction({ pluginId: widget.pluginId, command: a.command }).catch(() => {})
+      }
+      return
+    }
+    if (a.panel) openPluginPanel(widget.pluginId, a.label)
+  }
   return (
-    <div className="plugin-inline-widget" style={{ height }}>
-      <PluginIframe
-        pluginId={widget.pluginId}
-        entry={widget.entry}
-        widgetData={widget.data}
-        className="plugin-inline-widget-frame"
-      />
+    <div className="plugin-inline-widget">
+      <div className="plugin-inline-widget-frame-wrap" style={{ height }}>
+        <PluginIframe
+          pluginId={widget.pluginId}
+          entry={widget.entry}
+          widgetData={widget.data}
+          className="plugin-inline-widget-frame"
+        />
+      </div>
+      {widgetActions.length > 0 && (
+        <div className="plugin-widget-actions">
+          {widgetActions.map((a, i) => (
+            <button
+              key={`${a.label}-${i}`}
+              type="button"
+              className="plugin-widget-action-btn"
+              onClick={() => runAction(a)}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -656,6 +687,87 @@ function PluginMessageButtons({ message }: { message: Message }) {
   )
 }
 
+// ── Кастомные теги сообщений плагинов (registerMessageTag) ───────────────
+// Парный тег <tag attr="...">inner</tag> или самозакрытый <tag attr="..."/>
+// рендерится iframe-виджетом плагина вместо markdown. Незарегистрированный
+// тег остаётся обычным текстом (в markdown это выглядит как raw HTML —
+// react-markdown выводит его как есть, т.к. rehype-raw не подключён, значит
+// текст просто не пропадает).
+function parseAttrs(attrStr: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  const re = /([a-zA-Z_][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(attrStr))) {
+    out[m[1]] = m[2] ?? m[3] ?? m[4] ?? ''
+  }
+  return out
+}
+
+function PluginTagWidget({ pluginId, entry, height, attrs, inner }: {
+  pluginId: string
+  entry: string
+  height: number
+  attrs: Record<string, string>
+  inner: string
+}) {
+  return (
+    <div className="plugin-message-tag" style={{ height }}>
+      <PluginIframe
+        pluginId={pluginId}
+        entry={entry}
+        widgetData={{ attrs, inner }}
+        className="plugin-message-tag-frame"
+      />
+    </div>
+  )
+}
+
+interface PluginTagMatch {
+  pluginId: string
+  entry: string
+  height?: number
+  attrs: Record<string, string>
+  inner: string
+  start: number
+  end: number
+}
+
+/** Просканировать текст на зарегистрированные теги плагинов. Пусто — нет. */
+function scanPluginTags(content: string): PluginTagMatch[] {
+  const tags = collectMessageTags()
+  if (tags.length === 0) return []
+  const byTag = new Map<string, { pluginId: string; entry: string; height?: number }>()
+  for (const t of tags) {
+    if (t.tag && !byTag.has(t.tag)) byTag.set(t.tag, { pluginId: t.pluginId, entry: t.entry, height: t.height })
+  }
+  if (byTag.size === 0) return []
+  const names = [...byTag.keys()].map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const re = new RegExp(
+    `<(${names})((?:\\s+[a-zA-Z_][\\w-]*(?:\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s"'>]+))?)*)\\s*(?:/>|>([\\s\\S]*?)<\\/\\1\\s*>)`,
+    'g',
+  )
+  const out: PluginTagMatch[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content))) {
+    const meta = byTag.get(m[1])
+    if (!meta) continue
+    out.push({
+      pluginId: meta.pluginId,
+      entry: meta.entry,
+      height: meta.height,
+      attrs: parseAttrs(m[2] || ''),
+      inner: m[3] ?? '',
+      start: m.index,
+      end: m.index + m[0].length,
+    })
+  }
+  return out
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 // ── renderParsedSegments: рендер массива сегментов из parseContent ─────────
 // Переиспользуется в 4 местах (основной рендер, iterations, liveTextAfter).
 // Принимает per-instance mdComponents (с доступом к workdir для кликабельных путей).
@@ -699,6 +811,55 @@ function renderParsedSegments(
     const widget = tryParsePluginWidget(s.content)
     if (widget) {
       return <PluginInlineWidget key={`widget-${i}`} widget={widget} />
+    }
+    // Кастомные теги плагинов (registerMessageTag): разбиваем md-сегмент на
+    // под-части — markdown-текст через обычный ReactMarkdown, теги — виджеты.
+    const tagMatches = scanPluginTags(s.content)
+    if (tagMatches.length > 0) {
+      const parts: React.ReactNode[] = []
+      let cursor = 0
+      tagMatches.forEach((m, ti) => {
+        const before = s.content.slice(cursor, m.start)
+        if (before.trim()) {
+          parts.push(
+            <ReactMarkdown
+              key={`md-${i}-${ti}`}
+              remarkPlugins={remarkPlugins as never}
+              rehypePlugins={rehypePlugins as never}
+              components={mdComponents as never}
+              urlTransform={safeUrlTransform}
+            >
+              {before}
+            </ReactMarkdown>,
+          )
+        }
+        parts.push(
+          <PluginTagWidget
+            key={`tag-${i}-${ti}`}
+            pluginId={m.pluginId}
+            entry={m.entry}
+            height={typeof m.height === 'number' ? m.height : 260}
+            attrs={m.attrs}
+            inner={m.inner}
+          />,
+        )
+        cursor = m.end
+      })
+      const tail = s.content.slice(cursor)
+      if (tail.trim()) {
+        parts.push(
+          <ReactMarkdown
+            key={`md-${i}-tail`}
+            remarkPlugins={remarkPlugins as never}
+            rehypePlugins={rehypePlugins as never}
+            components={mdComponents as never}
+            urlTransform={safeUrlTransform}
+          >
+            {tail}
+          </ReactMarkdown>,
+        )
+      }
+      return <React.Fragment key={`md-tags-${i}`}>{parts}</React.Fragment>
     }
     return (
       <ReactMarkdown

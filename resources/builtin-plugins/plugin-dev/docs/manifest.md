@@ -60,6 +60,25 @@ module.exports.activate = (syntee) => {
 }
 ```
 
+## Что требует какого права (шпаргалка)
+
+| API | Право |
+|---|---|
+| `chat.beginReply` / `appendChunk` / `endReply` / `chat.send` / `chat.reply` | `chat` |
+| `chat.getActive` | `chats:read` |
+| `prompt.get` | `hooks` |
+| `registerPromptSection` / `unregisterPromptSection` / `registerContextProvider` | `context` |
+| `ui.registerMessageTag` | `ui` |
+| `registerSettingsSection` / `unregisterSettingsSection` | `ui` |
+| `ui.beginProgress` | `ui` |
+| `fs.pickFiles` / `fs.saveDialog` | `ui` |
+| `chats.getMessages` | `chats:read` |
+| `provider.register` / `provider.unregister` | `provider` |
+| `settings.get` | `settings:read` |
+| `speech.tts` / `speech.stt` | `speech` |
+
+Полный список прав — в секции **permissions**.
+
 ## Config-поля
 
 Декларативная схема настроек — хост сам рисует форму в карточке плагина (вкладка «Плагины» → «Подробнее»). Пользователь редактирует значения в UI, плагин читает их через `syntee.config.get(key)` / `getAll()`.

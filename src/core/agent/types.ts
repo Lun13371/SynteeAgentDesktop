@@ -81,6 +81,12 @@ export interface AgentCallbacks {
    */
   onMcpRequiresApproval?: (fullToolName: string) => boolean
   /**
+   * Проверка, требует ли тул плагина подтверждения (registerTool
+   * с requiresApproval: true). Если вернёт true — агент запросит
+   * одобрение через onConfirm.
+   */
+  onPluginRequiresApproval?: (fullToolName: string) => boolean
+  /**
    * Вызов тула плагина (round-trip в main-процесс, где живёт PluginManager).
    * fullToolName = plugin__{pluginId}__{toolName}.
    */
