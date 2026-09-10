@@ -267,6 +267,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // workdir чата (новые Code-чаты после фичи workdir; undefined для
       // Work-режима и старых чатов — поведение остаётся прежним).
       agent.workdir = (workerData as Record<string, unknown>).workdir as string | undefined
+      // §worktree — маппинг projectRoot → worktreePath для перенаправления
+      // путей мутирующих тулов суб-агента в его worktree.
+      agent.worktreeMap = (workerData as Record<string, unknown>).worktreeMap as
+        { projectRoot: string; worktreePath: string } | undefined
       agent.userDataPath = (workerData as Record<string, unknown>).userDataPath as string | undefined
       agent.projectId = (workerData as Record<string, unknown>).projectId as string | undefined
       agent.verificationCommand = (workerData as Record<string, unknown>).verificationCommand as string | undefined
@@ -504,7 +508,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             return new Promise(async (resolve) => {
               const reqId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
               replyHandlers.set(`confirm-reply-${reqId}`, (reply) => {
-                resolve(reply.approved as boolean)
+                // §allowlist — решение может содержать always (scope «Всегда разрешать»)
+                resolve({
+                  approved: (reply as { approved?: boolean }).approved === true,
+                  always: (reply as { always?: 'session' | 'project' | 'global' }).always,
+                })
               })
               // Единый источник правды: классификация из commandSafety (§1.4)
               const agentPerms = (storeData.agentPermissions as {

@@ -443,6 +443,20 @@ class AgentManager {
       }
     }
     const effectiveWorkdir = record.worktreeInfo?.worktreePath ?? context?.workdir
+    // §worktree — маппинг projectRoot → worktreePath для авто-перенаправления
+    // путей мутирующих тулов суб-агента (см. Agent.worktreeMap).
+    const worktreeMap = record.worktreeInfo && record.workdir
+      ? { projectRoot: record.workdir, worktreePath: record.worktreeInfo.worktreePath }
+      : undefined
+    // §worktree — суб-агент должен знать свою реальную рабочую директорию:
+    // раньше промпт не содержал пути, модель получала от родителя абсолютные
+    // пути проекта и работала с ними (спам approval «вне workdir» + правки
+    // мимо worktree). Добавляем явный блок в system prompt.
+    const workdirNotice = record.worktreeInfo
+      ? `\n\nВАЖНО — твоя рабочая директория (workdir): "${record.worktreeInfo.worktreePath}"\nЭто отдельная git-worktree копия проекта (снапшот HEAD). Все файловые операции (edit_file, write_file, cwd для run_command) выполняй ТОЛЬКО с путями внутри этой директории — используй относительные пути или пути внутри workdir. Пути исходного проекта (${record.workdir}\\...) автоматически перенаправляются в workdir, но лучше сразу указывай верные пути. НЕ пиши в исходную папку проекта — твои изменения смержатся обратно автоматически после завершения.`
+      : effectiveWorkdir
+        ? `\n\nТвоя рабочая директория (workdir): "${effectiveWorkdir}". Файловые операции и команды выполняй относительно неё (или указывай cwd).`
+        : ''
 
     // Токен для воркера — с авто-refresh (сам воркер рефрешить не может:
     // electron-store/tokenStore в worker_threads недоступны).
@@ -466,6 +480,8 @@ class AgentManager {
             gatewayToken,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
             workdir: effectiveWorkdir,
+            // §worktree — маппинг путей projectRoot → worktreePath (Agent.worktreeMap)
+            worktreeMap,
             projectId: context?.projectId,
             fastContextDbPath: context?.fastContextDbPath,
             fastContextWasmDir: context?.fastContextWasmDir,
@@ -539,13 +555,16 @@ class AgentManager {
 ${fallbackRoleInjection}${subModeIntro}
 Финальный ответ дай кратко:
 ${subModeOutro}`
+      // §worktree — добавляем блок с реальной workdir суб-агента (worktree или
+      // workdir проекта) к промпту из контекста или fallback.
+      const effectiveSystemPrompt = (context?.systemPrompt ?? fallbackSystemPrompt) + workdirNotice
 
       worker.postMessage({
         chatId: `subagent:${record.id}`,
         msgId: record.id,
         content: record.task,
         history: context?.history ?? [],
-        systemPrompt: context?.systemPrompt ?? fallbackSystemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         enableTools: true,
         incognito: false,
         agentSettings,
@@ -716,12 +735,12 @@ ${subModeOutro}`
           // висит вечно → суб-агент зависает на await onConfirm.
           case 'confirm': {
             const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
-            confirmCallbacks.set(reqId, (approved: boolean) => {
-              worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved })
+            confirmCallbacks.set(reqId, (approved: boolean, always?: string) => {
+              worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always })
             })
-            ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+            ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean, always?: string) => {
               const cb = confirmCallbacks.get(reqId)
-              if (cb) { confirmCallbacks.delete(reqId); cb(approved) }
+              if (cb) { confirmCallbacks.delete(reqId); cb(approved, always) }
             })
             const win = this.windowGetter?.()
             const target = Array.isArray(win) ? win[0] : win

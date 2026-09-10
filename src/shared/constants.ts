@@ -155,9 +155,9 @@ export const DEFAULT_SETTINGS = {
     // через resolveAutoModeSettings() при чтении.
     autoMode: {
       askOnDangerous: true,
-      askOnWarn: true,
+      askOnWarn: false,
       askGitPush: true,
-      askNetwork: true,
+      networkPolicy: 'smart',
       askOutsideWorkdir: true,
     },
   },

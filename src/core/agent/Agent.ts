@@ -1,7 +1,8 @@
 ﻿import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
-import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths } from './commandSafety'
-import type { ProjectPermissionOverride } from '../../shared/types'
+import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, normalizeCommandKey } from './commandSafety'
+import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
+import type { ProjectPermissionOverride, ApprovalAllowlistEntry, AllowScope } from '../../shared/types'
 import { updateStructuredMemory } from '../context/structuredMemory'
 import type { DiffEntry } from '../context/structuredMemory'
 import {
@@ -61,11 +62,20 @@ export class Agent {
    */
   workdir?: string
   /**
+   * §worktree — маппинг путей для суб-агентов в git-worktree изоляции.
+   * Когда задан, пути мутирующих тулов (write_file/edit_file/run_command.cwd),
+   * указывающие внутрь projectRoot, автоматически перенаправляются в
+   * worktreePath. Решает две проблемы: (1) спам подтверждений «вне workdir» —
+   * модель получает от родителя абсолютные пути проекта, а её workdir =
+   * worktree; (2) реальная изоляция — правки идут в worktree и мержатся
+   * обратно через git apply --3way, а не в живую папку проекта.
+   */
+  worktreeMap?: { projectRoot: string; worktreePath: string }
+  /**
    * ID проекта (из таблицы projects) — используется fast context для
    * привязки tree-sitter индекса к проекту. undefined для чатов без проекта.
    */
-  projectId?: string
-  /**
+  projectId?: string  /**
    * Команда авто-верификации проекта (напр. "npm test"), запускаемая
    * автоматически после VERIFICATION_INTERVAL успешных file-edit тулов —
    * упрощённый аналог PostToolUse-хука Claude Code без полной hook-инфры.
@@ -121,12 +131,98 @@ export class Agent {
   // lastShellCwd, commandsRun, undoStack, pendingDiffEntries).
   private toolDispatcher: ToolDispatcher
 
+  // §allowlist — сессионная память одобрений: нормализованные ключи
+  // `tool|command-or-path`, не спрашиваем повторно в рамках этого чата.
+  private sessionAllowed = new Set<string>()
+
+  // §injection — сколько вызовов тулов осталось в окне эскалации после
+  // подозрительного контента (prompt injection guard). >0 → мутирующие
+  // тулы требуют подтверждения всегда, даже в full-auto и в allowlist.
+  private injectionEscalation = 0
+
   /**
    * Синхронизирует workdir/projectId/chatId/gateway-поля/колбэки в ToolDispatcher.
    * Вызывается ПОСЛЕ установки полей Agent'а (в ai-worker.ts поля
    * workdir/projectId/chatId устанавливаются после конструктора, но
    * ToolDispatcher создаётся в конструкторе и не получает их).
    */
+  /**
+   * §worktree — перенаправляет путь внутрь projectRoot на соответствующий
+   * путь в worktreePath (case-insensitive, / и \ эквивалентны). Пути вне
+   * projectRoot возвращаются без изменений.
+   */
+  private mapPathToWorktree(p: string): string {
+    const m = this.worktreeMap
+    if (!m || !p) return p
+    const norm = (s: string) => s.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+    const root = norm(m.projectRoot)
+    const np = norm(p)
+    if (np !== root && !np.startsWith(root + '\\')) return p
+    // Суффикс берём от оригинала (с приведением слешей) по длине root —
+    // norm() мог изменить длину (двойные слеши, trailing).
+    const suffix = p.replace(/\//g, '\\').slice(root.length).replace(/\\+$/, '')
+    return suffix ? m.worktreePath + '\\' + suffix : m.worktreePath
+  }
+
+  // ─── §allowlist — «Всегда разрешать» ───────────────────────────────────────
+
+  /** Ключ сессионной памяти для тула и args (команда или нормализованный путь). */
+  private allowlistKey(toolName: string, args: Record<string, unknown>): string {
+    if (toolName === 'run_command') return `run_command|${normalizeCommandKey(String(args.command ?? ''))}`
+    if (toolName === 'write_file' || toolName === 'edit_file') {
+      const p = String(args.path ?? '').toLowerCase().replace(/\//g, '\\').replace(/\\+$/, '')
+      return `${toolName}|${p}`
+    }
+    return `${toolName}|${JSON.stringify(args).slice(0, 200)}`
+  }
+
+  /** Разрешено ли действие allowlist'ом (сессия + store: глобально + проект). */
+  private isActionAllowlisted(toolName: string, args: Record<string, unknown>): boolean {
+    const agentPerms = (this.store.get('agentPermissions') as {
+      approvalAllowlist?: ApprovalAllowlistEntry[]
+    } | undefined) ?? {}
+    const projectPerms = (this.store.get('projectPermissions') as
+      Record<string, ProjectPermissionOverride> | undefined) ?? {}
+    const projEntries = this.role === 'main' && this.projectId
+      ? projectPerms[this.projectId]?.approvalAllowlist
+      : undefined
+    const entries = [...(agentPerms.approvalAllowlist ?? []), ...(projEntries ?? [])]
+    return isAllowlisted(toolName, args, { entries, sessionKeys: this.sessionAllowed })
+  }
+
+  /** Записывает одобрение в выбранный scope (session / project / global). */
+  private recordAllowlist(toolName: string, args: Record<string, unknown>, scope: AllowScope): void {
+    try {
+      if (scope === 'session') {
+        this.sessionAllowed.add(this.allowlistKey(toolName, args))
+        return
+      }
+      const pattern = toolName === 'run_command'
+        ? normalizeCommandKey(String(args.command ?? ''))
+        : String(args.path ?? '')
+      if (!pattern) return
+      const entry: ApprovalAllowlistEntry = { tool: toolName, pattern, scope, createdAt: Date.now() }
+      if (scope === 'project' && this.role === 'main' && this.projectId) {
+        const projectPerms = (this.store.get('projectPermissions') as
+          Record<string, ProjectPermissionOverride> | undefined) ?? {}
+        const cur = projectPerms[this.projectId] ?? {}
+        const list = [...(cur.approvalAllowlist ?? []), entry].slice(-200)
+        this.store.set('projectPermissions', {
+          ...projectPerms,
+          [this.projectId]: { ...cur, approvalAllowlist: list },
+        })
+      } else {
+        const agentPerms = (this.store.get('agentPermissions') as
+          Record<string, unknown> | undefined) ?? {}
+        const list = [...((agentPerms.approvalAllowlist as ApprovalAllowlistEntry[] | undefined) ?? []), entry].slice(-200)
+        this.store.set('agentPermissions', { ...agentPerms, approvalAllowlist: list })
+      }
+      log('[Agent] allowlist: записано %s scope=%s pattern="%s"', toolName, scope, pattern)
+    } catch (e) {
+      log('[Agent] allowlist: ошибка записи — %s', e instanceof Error ? e.message : String(e))
+    }
+  }
+
   syncToolDispatcher(): void {
     this.toolDispatcher.workdir = this.workdir
     this.toolDispatcher.userDataPath = this.userDataPath
@@ -885,6 +981,27 @@ export class Agent {
             return
           }
 
+          // §worktree — перенаправляем пути проекта в worktree суб-агента ДО
+          // approval-проверки: иначе каждый edit_file/run_command с абсолютным
+          // путём проекта классифицируется как «вне workdir» (workdir = worktree)
+          // и требует подтверждения, хотя правка легитимна. Заодно правки
+          // реально попадают в worktree (изоляция + merge через git apply).
+          if (this.worktreeMap) {
+            let remapped = false
+            if ((fn.name === 'write_file' || fn.name === 'edit_file') && typeof args.path === 'string') {
+              const mapped = this.mapPathToWorktree(args.path)
+              if (mapped !== args.path) { args.path = mapped; remapped = true }
+            } else if (fn.name === 'run_command' && typeof args.cwd === 'string') {
+              const mapped = this.mapPathToWorktree(args.cwd)
+              if (mapped !== args.cwd) { args.cwd = mapped; remapped = true }
+            }
+            if (remapped) {
+              // Консистентность истории: tool_call в messages должен содержать
+              // те же args, что реально исполнялись.
+              try { fn.arguments = JSON.stringify(args) } catch { /* noop */ }
+            }
+          }
+
           const baseMode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
           // Читаем agentPermissions из store — раньше они были объявлены в
           // DEFAULT_SETTINGS и показаны в UI, но нигде не использовались.
@@ -914,7 +1031,29 @@ export class Agent {
             forbiddenPaths,
             workdir: this.workdir,
           })
-          const effectiveApproval = isHiddenTool ? { confirm: false, block: false, reason: '' } : approval
+          // §allowlist — «Всегда разрешать»: пропускаем подтверждение, если
+          // действие в allowlist. DANGEROUS-уровень allowlist'ом не покрывается
+          // (кнопка в диалоге для dangerous скрыта, но проверим и здесь).
+          if (approval.confirm && !approval.block && approval.level !== 'dangerous'
+            && this.isActionAllowlisted(fn.name, args)) {
+            approval.confirm = false
+            approval.reason = ''
+            log('[Agent] allowlist: пропуск подтверждения для %s', fn.name)
+          }
+          // §injection — эскалация после подозрительного контента: мутирующие
+          // тулы спрашивают ВСЕГДА, поверх allowlist и настроек авто-режима.
+          // Именно здесь ловится атака «страница говорит выполнить команду».
+          if (this.injectionEscalation > 0 && !approval.block && isMutatingTool(fn.name) && mode !== 'full') {
+            approval.confirm = true
+            approval.reason = `После подозрительного контента (возможна prompt injection) — подтверждение обязательно (осталось шагов: ${this.injectionEscalation})`
+          }
+          // Диагностика «почему не спросил / почему спросил»: решение approval
+          // нигде не писалось — невозможно было понять, какая ветка сработала.
+          log(
+            '[Agent] approval: tool=%s mode=%s confirm=%s block=%s reason="%s"',
+            fn.name, mode, approval.confirm, approval.block, approval.reason,
+          )
+          const effectiveApproval = isHiddenTool ? { confirm: false, block: false, reason: '', level: approval.level } as typeof approval : approval
 
           // MCP-тулы: per-tool флаг requireApproval из McpManager.
           // Если true — всегда спрашиваем (независимо от mode auto/ask,
@@ -936,11 +1075,17 @@ export class Agent {
           }
 
           if (effectiveApproval.confirm && callbacks.onConfirm) {
-            const approved = await callbacks.onConfirm(fn.name, args)
+            const decision = await callbacks.onConfirm(fn.name, args)
+            const approved = typeof decision === 'boolean' ? decision : decision?.approved === true
             if (!approved) {
               resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
-              callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: 'Rejected by the user', success: false })
+              callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: 'Rejected by the user', success: false, callId, hidden: isHiddenTool })
               return
+            }
+            // §allowlist — «Всегда разрешать» из диалога: записываем в scope
+            const always = typeof decision === 'object' && decision ? decision.always : undefined
+            if (always && approval.level !== 'dangerous') {
+              this.recordAllowlist(fn.name, args, always)
             }
           }
 
@@ -1046,6 +1191,37 @@ export class Agent {
             ? 'Image generated and shown to the user.'
             : (result.output || (result.success ? '' : `Error: ${result.error}`))
           const errorHint = !result.success ? getToolErrorHint(fn.name, result.error ?? '') : ''
+
+          // §injection — скан результатов внешнего/файлового контента.
+          // Подозрительный результат: оборачиваем в untrusted-маркеры и
+          // открываем окно эскалации (мутирующие тулы → подтверждение всегда).
+          // §secrets — маскирование значений при чтении секретных файлов:
+          // модель видит структуру .env, но не сами секреты.
+          let finalContent = (rawContent || '') + errorHint
+          if (!imageUrl && finalContent) {
+            if (isScannedTool(fn.name)) {
+              const scan = scanForInjection(finalContent)
+              if (scan.suspicious) {
+                this.injectionEscalation = INJECTION_ESCALATION_STEPS
+                finalContent = wrapUntrustedContent(finalContent, scan)
+                log('[Agent] injectionGuard: подозрительный контент от %s — паттерны: %s',
+                  fn.name, scan.patterns.join(', '))
+                callbacks.onStep({
+                  type: 'tool_result',
+                  toolName: '_injection_guard',
+                  content: `⚠ Подозрительный контент в результате ${fn.name}: ${scan.patterns.slice(0, 3).join(', ')}. Следующие изменяющие действия потребуют подтверждения.`,
+                  success: true,
+                  hidden: true,
+                })
+              }
+            }
+            if (fn.name === 'read_file' && isSecretPath(String(args.path ?? ''))) {
+              finalContent = maskSecretValues(finalContent)
+            }
+          }
+          // Окно эскалации тикает на каждый выполненный тул
+          if (this.injectionEscalation > 0) this.injectionEscalation--
+
           // Per-tool потолок обрезки: search_code уже сам режет до 20 000 симв.
           // по границам файлов (sliceOnFileBoundary), read_file возвращает
           // первые 400 строк — дефолтный toolMaxChars (6000)
@@ -1073,8 +1249,8 @@ export class Agent {
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars
           const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
-            ? truncateToolResult((rawContent || '') + errorHint, perToolMax)
-            : ((rawContent || '') + errorHint)
+            ? truncateToolResult(finalContent, perToolMax)
+            : finalContent
 
           if (!result.success && !isHiddenTool) {
             // Fingerprint ошибки включает args (через buildToolFingerprint —
