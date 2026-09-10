@@ -40,6 +40,8 @@ export interface GatewayModel {
   }
   api_type?: string
   type?: string
+  /** Модальность группы: chat | embedding | image | transcription | tts. */
+  modality?: string
   description?: string
   routing_mode?: string
   providers?: string[]
@@ -89,6 +91,13 @@ function toModelMeta(m: GatewayModel): ModelMeta {
   if (m.supports_streaming) caps.push('code')
   // Группа с настроенным reasoning-конфигом → capability для фильтров UI
   if (m.reasoning?.supported) caps.push('reasoning')
+  // Модальность группы (models.py: chat|embedding|image|transcription|tts) →
+  // capability: без этого image-модели gateway не попадают в пикер «Генерация
+  // изображений» (filterCaps=['image_gen']) и роли TTS/STT/Embeddings.
+  if (m.modality === 'image') caps.push('image_gen')
+  else if (m.modality === 'embedding') caps.push('embedding')
+  else if (m.modality === 'tts') caps.push('tts')
+  else if (m.modality === 'transcription') caps.push('stt')
   if (!caps.length) caps.push('tools', 'code')
 
   let speed: ModelMeta['speed'] = 'fast'
