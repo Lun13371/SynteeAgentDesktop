@@ -34,13 +34,13 @@ import { BUILTIN_THEMES } from '../../utils/builtinThemes'
 import { applyPluginThemeToDOM, isPluginThemeKey } from '../../utils/pluginTheme'
 import { collectPluginBackgrounds, collectPluginThemes } from '../../utils/pluginExtApi'
 import { whileHoverWide, whileTapWide, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, springHover } from '../../utils/motionPresets'
-import { DEFAULT_AGENT_SETTINGS, DEFAULT_AUTO_MODE_SETTINGS, type AgentSettings as SharedAgentSettings, type AutoModeSettings, type CustomTheme } from '../../../../shared/types'
+import { DEFAULT_AGENT_SETTINGS, DEFAULT_AUTO_MODE_SETTINGS, type AgentSettings as SharedAgentSettings, type AutoModeSettings, type NetworkPolicy, type ApprovalAllowlistEntry, type CustomTheme } from '../../../../shared/types'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
 import './SettingsPage.css'
 
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
-  | 'agent' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
+  | 'agent' | 'security' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
   | 'changelog' | 'notifications' | 'stats'
 
 interface SectionDef { id: Section; label: string; icon: IconName; keywords?: string[] }
@@ -70,7 +70,8 @@ const SECTION_GROUPS: SectionGroup[] = [
       { id: 'modelStatus', label: 'Статус моделей', icon: 'server', keywords: ['статус', 'сервер', 'доступность'] },
       { id: 'context',    label: 'Контекст',       icon: 'layers', keywords: ['компакция', 'токены', 'лимит'] },
       { id: 'indexing',   label: 'Индексация',     icon: 'cpu',    keywords: ['индексация', 'поиск', 'файлы'] },
-      { id: 'agent',      label: 'Агент',          icon: 'bot',    keywords: ['агент', 'инструменты', 'права', 'подтверждение'] },
+      { id: 'agent',      label: 'Агент',          icon: 'bot',    keywords: ['агент', 'инструменты', 'суб-агент', 'циклы'] },
+      { id: 'security',   label: 'Безопасность',   icon: 'shield', keywords: ['безопасность', 'права', 'подтверждение', 'approval', 'запрещённые', 'опасные'] },
     ],
   },
   {
@@ -136,19 +137,20 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   { section: 'voice', id: 'sttModelSize', label: 'Размер модели Whisper', keywords: ['whisper', 'модель', 'tiny', 'base'] },
   { section: 'voice', id: 'groqApiKey', label: 'Groq API key', keywords: ['groq', 'ключ'] },
   // Агент
-  { section: 'agent', id: 'approvalMode', label: 'Режим подтверждения действий', keywords: ['подтверждение', 'approval'] },
   { section: 'agent', id: 'enableThinking', label: 'Режим размышлений', keywords: ['мышление', 'thinking', 'мысли'] },
   { section: 'agent', id: 'toolOutputMode', label: 'Вывод инструментов', keywords: ['инструменты', 'тул', 'вывод'] },
   { section: 'agent', id: 'maxParallelSubAgents', label: 'Параллельных суб-агентов', keywords: ['суб-агент', 'параллельно'] },
   { section: 'agent', id: 'autoMemoryInterval', label: 'Автосохранение рабочей памяти', keywords: ['память', 'автосохранение'] },
   { section: 'agent', id: 'maxRepeatedToolCalls', label: 'Повтор tool-call', keywords: ['зацикливание', 'повтор'] },
   { section: 'agent', id: 'maxRepeatedErrors', label: 'Повтор одной ошибки', keywords: ['ошибка', 'повтор'] },
-  { section: 'agent', id: 'autoAskOnDangerous', label: 'Опасные действия', keywords: ['опасно', 'удаление', 'подтверждение'] },
-  { section: 'agent', id: 'autoAskOnWarn', label: 'Потенциально опасные', keywords: ['warn', 'chmod', 'подтверждение'] },
-  { section: 'agent', id: 'autoAskGitPush', label: 'Git push', keywords: ['git', 'push', 'отправка'] },
-  { section: 'agent', id: 'autoAskNetwork', label: 'Сетевые команды', keywords: ['сеть', 'install', 'curl', 'npm'] },
-  { section: 'agent', id: 'autoAskOutsideWorkdir', label: 'Вне папки проекта', keywords: ['workdir', 'вне', 'папка'] },
-  { section: 'agent', id: 'forbiddenPaths', label: 'Запрещённые папки', keywords: ['папки', 'запрет', 'пути'] },
+  // Безопасность
+  { section: 'security', id: 'approvalMode', label: 'Режим подтверждения действий', keywords: ['подтверждение', 'approval', 'авто', 'спрашивать'] },
+  { section: 'security', id: 'autoAskOnDangerous', label: 'Опасные действия', keywords: ['опасно', 'удаление', 'подтверждение'] },
+  { section: 'security', id: 'autoAskOnWarn', label: 'Потенциально опасные', keywords: ['warn', 'chmod', 'подтверждение'] },
+  { section: 'security', id: 'autoAskGitPush', label: 'Git push', keywords: ['git', 'push', 'отправка'] },
+  { section: 'security', id: 'autoAskNetwork', label: 'Сетевые команды', keywords: ['сеть', 'install', 'curl', 'npm'] },
+  { section: 'security', id: 'autoAskOutsideWorkdir', label: 'Вне папки проекта', keywords: ['workdir', 'вне', 'папка'] },
+  { section: 'security', id: 'forbiddenPaths', label: 'Запрещённые папки', keywords: ['папки', 'запрет', 'пути'] },
   // Интеграции
   { section: 'integrations', id: 'tavilyKey', label: 'Tavily API ключ', keywords: ['тавли', 'поиск', 'tavily'] },
   { section: 'integrations', id: 'telegramToken', label: 'Telegram Bot Token', keywords: ['телеграм', 'бот'] },
@@ -617,6 +619,9 @@ export default function SettingsPage() {
             )}
             {section === 'agent' && (
               <AgentSection settings={settings} onSet={handleSet} />
+            )}
+            {section === 'security' && (
+              <SecuritySection settings={settings} onSet={handleSet} />
             )}
             {section === 'integrations' && (
               <IntegrationsSection settings={settings} onSet={handleSet} />
@@ -2218,14 +2223,6 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
     window.syntee.agent.setSettings(next).catch(() => {})
   }
 
-  const perms = (settings['agentPermissions'] as Record<string, unknown>) || {}
-
-  // Гранулярные настройки авто-режима (глобальный scope; per-project —
-  // в панели ApprovalModeSelector в чате). Мерж с дефолтами для UI.
-  const autoPerms: AutoModeSettings = { ...DEFAULT_AUTO_MODE_SETTINGS, ...((perms['autoMode'] as Partial<AutoModeSettings>) || {}) }
-  const setAutoPerm = (patch: Partial<AutoModeSettings>) =>
-    onSet('agentPermissions', { ...perms, autoMode: { ...autoPerms, ...patch } })
-
   const OUTPUT_MODES = [
     { value: 'compact',  label: 'Компактный', desc: 'Только иконки инструментов в одну строку' },
     { value: 'normal',   label: 'Обычный',    desc: 'Название + первый аргумент каждого шага' },
@@ -2234,23 +2231,11 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
 
   return (
     <>
-      <SectionTitle description="Поведение агента, лимиты циклов и защита от опасных действий">
-        Агент и Безопасность
+      <SectionTitle description="Поведение агента и лимиты циклов">
+        Агент
       </SectionTitle>
 
       <Group id="agent-behavior" icon="bot" title="Поведение">
-        <Field id="approvalMode" label="Режим подтверждения действий" description="Когда агент запрашивает подтверждение перед выполнением">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <ApprovalModeSelector
-              value={agentSettings.approvalMode as import('../../../../shared/types').ApprovalMode}
-              onChange={mode => { if (mode) updateAgent({ approvalMode: mode }) }}
-              globalAuto={autoPerms}
-              onAutoChange={patch => setAutoPerm(patch)}
-            />
-            <ResetButton current={agentSettings.approvalMode} defaultValue={DEFAULT_AGENT_SETTINGS.approvalMode} onReset={() => updateAgent({ approvalMode: DEFAULT_AGENT_SETTINGS.approvalMode })} />
-          </div>
-        </Field>
-
         <Field id="enableThinking" label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />
@@ -2316,8 +2301,57 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
           </div>
         </Field>
       </Group>
+    </>
+  )
+})
 
-      <Group id="agent-security" icon="lock" title="Безопасность">
+// ── Безопасность: режим подтверждений + гранулярные настройки авто-режима ──
+// Вынесено из AgentSection в отдельную категорию настроек (§security-section).
+// Быстрый доступ к тем же значениям — шестерёнка в ApprovalModeSelector в чате.
+const SecuritySection = memo(function SecuritySection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
+  const [agentSettings, setAgentSettings] = useState<SharedAgentSettings>(DEFAULT_AGENT_SETTINGS)
+
+  useEffect(() => {
+    window.syntee.agent.getSettings().then((s: SharedAgentSettings) => {
+      setAgentSettings(prev => ({ ...prev, ...s }))
+    }).catch(() => {})
+  }, [])
+
+  const updateAgent = (patch: Partial<SharedAgentSettings>) => {
+    const next = { ...agentSettings, ...patch }
+    setAgentSettings(next)
+    window.syntee.agent.setSettings(next).catch(() => {})
+  }
+
+  const perms = (settings['agentPermissions'] as Record<string, unknown>) || {}
+
+  // Гранулярные настройки авто-режима (глобальный scope; per-project —
+  // в панели ApprovalModeSelector в чате). Мерж с дефолтами для UI.
+  const autoPerms: AutoModeSettings = { ...DEFAULT_AUTO_MODE_SETTINGS, ...((perms['autoMode'] as Partial<AutoModeSettings>) || {}) }
+  const setAutoPerm = (patch: Partial<AutoModeSettings>) =>
+    onSet('agentPermissions', { ...perms, autoMode: { ...autoPerms, ...patch } })
+
+  return (
+    <>
+      <SectionTitle description="Подтверждения действий агента и защита от опасных операций">
+        Безопасность
+      </SectionTitle>
+
+      <Group id="security-mode" icon="shield" title="Режим подтверждения">
+        <Field id="approvalMode" label="Режим подтверждения действий" description="Когда агент запрашивает подтверждение перед выполнением">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <ApprovalModeSelector
+              value={agentSettings.approvalMode as import('../../../../shared/types').ApprovalMode}
+              onChange={mode => { if (mode) updateAgent({ approvalMode: mode }) }}
+              globalAuto={autoPerms}
+              onAutoChange={patch => setAutoPerm(patch)}
+            />
+            <ResetButton current={agentSettings.approvalMode} defaultValue={DEFAULT_AGENT_SETTINGS.approvalMode} onReset={() => updateAgent({ approvalMode: DEFAULT_AGENT_SETTINGS.approvalMode })} />
+          </div>
+        </Field>
+      </Group>
+
+      <Group id="security-auto" icon="zap" title="Авто-режим: что спрашивать" note="действует при режиме «Авто»">
         <Field id="autoAskOnDangerous" label="Опасные действия" description="Удаление файлов, реестр, force push — спрашивать в авто-режиме">
           <Toggle value={autoPerms.askOnDangerous} onChange={v => setAutoPerm({ askOnDangerous: v })} />
         </Field>
@@ -2330,14 +2364,55 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
           <Toggle value={autoPerms.askGitPush} onChange={v => setAutoPerm({ askGitPush: v })} />
         </Field>
 
-        <Field id="autoAskNetwork" label="Сетевые команды" description="npm/pip install, curl, ssh, git clone — спрашивать в авто-режиме">
-          <Toggle value={autoPerms.askNetwork} onChange={v => setAutoPerm({ askNetwork: v })} />
+        <Field id="autoNetworkPolicy" label="Сетевые команды" description="Умно: пакеты из официальных реестров (npm/pip/winget) — без вопроса; произвольные URL, ssh и публикация — спрашивать">
+          <div style={{ display: 'flex', gap: 4 }}>
+            {([
+              { v: 'ask-all', l: 'Спрашивать всё' },
+              { v: 'smart', l: 'Умно' },
+              { v: 'off', l: 'Не спрашивать' },
+            ] as Array<{ v: NetworkPolicy; l: string }>).map(o => (
+              <button
+                key={o.v}
+                className={`settings-chip-btn ${autoPerms.networkPolicy === o.v ? 'settings-chip-btn--active' : ''}`}
+                onClick={() => setAutoPerm({ networkPolicy: o.v })}
+              >{o.l}</button>
+            ))}
+          </div>
         </Field>
 
         <Field id="autoAskOutsideWorkdir" label="Вне папки проекта" description="Правка файлов и команды вне workdir чата — спрашивать в авто-режиме">
           <Toggle value={autoPerms.askOutsideWorkdir} onChange={v => setAutoPerm({ askOutsideWorkdir: v })} />
         </Field>
+      </Group>
 
+      <Group id="security-allowlist" icon="check" title="Всегда разрешать" note="правила из кнопки «Всегда разрешать» в диалоге подтверждения">
+        <Field id="approvalAllowlist" label="Разрешённые команды и пути" description="Не требуют подтверждения в авто-режиме (кроме опасных действий). Опасные (dangerous) действия разрешить навсегда нельзя.">
+          {(() => {
+            const entries = (perms['approvalAllowlist'] as ApprovalAllowlistEntry[]) || []
+            if (entries.length === 0) {
+              return <div className="settings-hint">Пока пусто — при следующем подтверждении отметь «Всегда разрешать»</div>
+            }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+                {entries.map((e, i) => (
+                  <div key={`${e.tool}-${e.pattern}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="settings-allowlist-tool">{e.tool === 'run_command' ? '$' : e.tool === 'write_file' ? 'W' : 'E'}</span>
+                    <code className="settings-allowlist-pattern" title={e.pattern}>{e.pattern}</code>
+                    <span className="settings-allowlist-scope">{e.scope === 'global' ? 'всегда' : e.scope === 'project' ? 'проект' : 'чат'}</span>
+                    <button
+                      className="settings-allowlist-del"
+                      title="Удалить правило"
+                      onClick={() => onSet('agentPermissions', { ...perms, approvalAllowlist: entries.filter((_, j) => j !== i) })}
+                    >✕</button>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
+        </Field>
+      </Group>
+
+      <Group id="security-sandbox" icon="lock" title="Песочница">
         <Field id="forbiddenPaths" label="Запрещённые папки" description="Через запятую — агент не трогает эти пути">
           <input
             className="settings-input"

@@ -2044,13 +2044,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
           // Регистрируем callback в глобальной Map — NotificationManager
           // вызовет resolveConfirm() напрямую (тот же процесс, без IPC).
-          confirmCallbacks.set(reqId, (approved: boolean) => {
-            worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved })
+          confirmCallbacks.set(reqId, (approved: boolean, always?: string) => {
+            worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always })
           })
           // ipcMain.once — для главного окна (AgentConfirmDialog шлёт через ipcRenderer.send)
-          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean) => {
+          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean, always?: string) => {
             const cb = confirmCallbacks.get(reqId)
-            if (cb) { confirmCallbacks.delete(reqId); cb(approved) }
+            if (cb) { confirmCallbacks.delete(reqId); cb(approved, always) }
           })
           win?.webContents.send('agent:confirm', {
             reqId, toolName, args,

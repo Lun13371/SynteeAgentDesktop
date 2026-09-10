@@ -47,7 +47,16 @@
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   z-index: 9999;
+  /* max-height задаётся инлайн (по месту на экране); при переполнении — скролл */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong, #45475a) transparent;
 }
+.approval-dropdown::-webkit-scrollbar { width: 6px; }
+.approval-dropdown::-webkit-scrollbar-thumb {
+  background: var(--border-strong, #45475a);
+  border-radius: 3px;
+}
+.approval-dropdown::-webkit-scrollbar-track { background: transparent; }
 
 /* ── Блок режима ── */
 .approval-mode-block { /* без padding — отступов по бокам нет */ }
@@ -89,44 +98,37 @@
   background: var(--color-accent, #89b4fa); flex-shrink: 0;
 }
 
-/* ── Панель авто-режима (под опцией «Авто») ── */
+/* ── Панель авто-режима (выдвигается вниз из блока «Авто») ── */
 .approval-auto-panel {
-  padding: 4px 0 0 0;
+  padding: 2px 0 0 0;
   /* НЕТ border-top — единый блок с опцией «Авто» */
 }
 
-/* Свёрнутая строка-кнопка */
-.approval-auto-collapsed {
-  display: flex; align-items: center; gap: 4px; width: 100%;
-  padding: 4px 10px; border: none; background: transparent;
-  color: var(--text-muted, #6c7086); font-size: 9px;
-  cursor: pointer;
-  transition: color .1s;
+/* Шестерёнка в строке «Авто» — открывает/закрывает панель настроек */
+.approval-gear {
+  width: 22px; height: 22px;
+  border: none; border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted, #6c7086);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+  transition: background .12s, color .12s, transform .25s;
 }
-.approval-auto-collapsed:hover { color: var(--text-primary, #cdd6f4); }
-.approval-auto-collapsed-hint {
-  font-size: 8px; padding: 0 3px; border-radius: 2px;
-  background: var(--bg-tertiary, #313244); color: var(--text-muted, #6c7086);
+.approval-gear:hover {
+  background: var(--bg-hover, #313244);
+  color: var(--text-primary, #cdd6f4);
+}
+.approval-gear--open {
+  background: var(--accent-subtle, rgba(137,180,250,0.12));
+  color: var(--color-accent, #89b4fa);
+  transform: rotate(45deg);
 }
 
 /* Развёрнутая панель */
 .approval-settings-panel {
   overflow: hidden;
+  padding-top: 2px;
 }
-
-/* Шапка */
-.approval-auto-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 4px 10px 2px;
-}
-.approval-auto-title { font-size: 10px; font-weight: 600; color: var(--text-secondary, #a6adc8); }
-.approval-auto-collapse-btn {
-  width: 18px; height: 18px; border: none; border-radius: 4px;
-  background: transparent; color: var(--text-muted, #6c7086);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer;
-}
-.approval-auto-collapse-btn:hover { background: var(--bg-hover, #313244); color: var(--text-primary, #cdd6f4); }
 
 /* Scope-переключатель */
 .approval-scope {
@@ -175,6 +177,30 @@
 .approval-setting-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .approval-setting-row-label { font-size: 10px; color: var(--text-primary, #cdd6f4); }
 .approval-setting-row-desc  { font-size: 8px; color: var(--text-muted, #6c7086); line-height: 1.2; }
+
+/* §network-policy — трёхпозиционный сегмент «Сеть» */
+.approval-network-policy {
+  display: flex; gap: 2px;
+  border: 1px solid var(--border, #45475a);
+  border-radius: var(--radius-sm, 6px);
+  padding: 2px;
+  flex-shrink: 0;
+}
+.approval-network-btn {
+  font-size: 9px; font-weight: 500;
+  padding: 3px 8px;
+  border: none; border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted, #6c7086);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.approval-network-btn:hover { color: var(--text-primary, #cdd6f4); }
+.approval-network-btn--active {
+  background: var(--accent-subtle, rgba(137,220,235,0.15));
+  color: var(--accent, #89dceb);
+}
 
 /* Хинт внизу */
 .approval-settings-hint {

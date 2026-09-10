@@ -1,5 +1,5 @@
 import type { FileCacheEntry } from '../context/fileCacheTypes'
-import type { QuestionSpec, QuestionAnswer } from '../../shared/types'
+import type { QuestionSpec, QuestionAnswer, AllowScope } from '../../shared/types'
 import type Store from 'electron-store'
 
 export interface AgentStep {
@@ -46,7 +46,12 @@ export interface AgentCallbacks {
    *  breakdown консистентен с computeContextSnapshot. */
   onContextUpdate?: (info: ContextCountedInfo) => void
   onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
-  onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
+  /**
+   * Подтверждение действия. Возвращает boolean (одноразовое решение) или
+   * объект с always — записать «Всегда разрешать» в выбранный scope
+   * (см. Agent.recordAllowlist).
+   */
+  onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean | { approved: boolean; always?: AllowScope }>
   approvalMode?: 'auto' | 'ask'
   onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none'; role?: string; callId?: string }) => Promise<{ summary: string; error?: string }>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>

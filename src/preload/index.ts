@@ -607,8 +607,8 @@ const synteeAPI = {
     offConfirm: (wrapper: (...args: unknown[]) => void) => {
       ipcRenderer.removeListener('agent:confirm', wrapper)
     },
-    confirmResponse: (reqId: string, approved: boolean) => {
-      ipcRenderer.send(`agent:confirm:response:${reqId}`, approved)
+    confirmResponse: (reqId: string, approved: boolean, always?: 'session' | 'project' | 'global') => {
+      ipcRenderer.send(`agent:confirm:response:${reqId}`, approved, always)
     },
     // Dismiss — notification overlay уже обработал ответ, закрыть диалог
     onConfirmDismiss: (cb: (reqId: string) => void) => {
