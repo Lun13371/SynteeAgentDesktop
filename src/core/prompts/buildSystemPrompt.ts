@@ -20,13 +20,14 @@ import {
   buildMemoryStatsBlock,
   buildGraphStatsBlock,
   buildNotesBlock,
+  buildSecretsBlock,
   buildPlanningInjection,
   buildAskInjection,
   buildPersonaInjection,
 } from './sections'
-import type { McpPromptInfo } from './sections'
+import type { McpPromptInfo, ProtectedVarPromptInfo } from './sections'
 
-export type { McpPromptInfo, PluginPromptInfo }
+export type { McpPromptInfo, PluginPromptInfo, ProtectedVarPromptInfo }
 
 export function buildSystemPrompt(params: {
   userName?: string
@@ -93,10 +94,13 @@ export function buildSystemPrompt(params: {
   /** Max parallel sub-agents — injected into the spawn_agent section. */
   maxParallelSubAgents?: number
   /** Контент context providers плагинов (registerContextProvider) —
-   *  собирается перед запросом, попадает в plugins block. */
+    *  собирается перед запросом, попадает в plugins block. */
   pluginContext?: Array<{ name: string; content: string }>
+  /** Защищённые переменные юзера (секреты) — расшифрованные значения
+    *  инжектятся отдельной секцией. Инкогнито-чаты не передают их. */
+  protectedVars?: ProtectedVarPromptInfo[]
 }): string {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext, protectedVars } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -108,6 +112,7 @@ export function buildSystemPrompt(params: {
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)
   const notesBlock = buildNotesBlock(notesInfo)
+  const secretsBlock = buildSecretsBlock(protectedVars)
   const modeInjection = planningMode
     ? buildPlanningInjection()
     : askMode
@@ -122,6 +127,7 @@ Date and time: ${dateStr}.
 ${memoryStatsBlock}
 ${graphStatsBlock}
 ${notesBlock}
+${secretsBlock}
 ${memoryContext ? '\n' + memoryContext : ''}
 ${workingMemory ? `\n## Working memory (what was done in this chat)\n${workingMemory}\n` : ''}
 ${customSystemPrompt ? `\n## Custom instruction\n${customSystemPrompt}\n` : ''}

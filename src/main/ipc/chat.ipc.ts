@@ -29,6 +29,8 @@ import { onCompactionTrigger } from '../../core/memory/extractor'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats } from '../../core/memory/graphStore'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
+import type { ProtectedVarPromptInfo } from '../../core/prompts/buildSystemPrompt'
+import { resolveActive } from '../services/protectedVarsStore'
 import { readProjectContextFiles } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
 import { modelSupportsVisionByHeuristic } from '../../core/ai/visionSupport'
@@ -705,7 +707,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch { /* плагины не должны ломать промпт */ }
     }
 
-    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext })
+    // Защищённые переменные (секреты юзера) — расшифровываются здесь и
+    // инжектятся в промпт. Инкогнито — пропуск (приватность).
+    let protectedVars: ProtectedVarPromptInfo[] | undefined
+    if (!isIncognito) {
+      try {
+        protectedVars = resolveActive()
+      } catch { /* не ломаем промпт из-за секретов */ }
+    }
+
+    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext, protectedVars })
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).

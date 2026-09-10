@@ -638,6 +638,15 @@ const synteeAPI = {
     },
   },
 
+  // Защищённые переменные (секреты → system prompt). Значения НЕ покидают
+  // main-процесс: list возвращает только метаданные.
+  protectedVars: {
+    list: () => ipcRenderer.invoke('protectedVars:list') as Promise<import('../shared/types/protectedVars').ProtectedVarMeta[]>,
+    save: (input: import('../shared/types/protectedVars').ProtectedVarSaveInput) =>
+      ipcRenderer.invoke('protectedVars:save', input) as Promise<{ ok: true; meta: import('../shared/types/protectedVars').ProtectedVarMeta } | { ok: false; error: string }>,
+    delete: (id: string) => ipcRenderer.invoke('protectedVars:delete', id) as Promise<boolean>,
+  },
+
   // Провайдеры и модели
   providers: {
     getAll: () => ipcRenderer.invoke('providers:getAll'),

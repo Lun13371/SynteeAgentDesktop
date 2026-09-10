@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
+import { ProtectedVarsModal } from '../ProtectedVarsModal/ProtectedVarsModal'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { findMentionTokenAtCaret, mentionToAttachment } from '../../../../../shared/mentions'
@@ -139,6 +140,10 @@ function ChatInput({
   const [slashIdx, setSlashIdx] = useState(0)
   // Превью вложения из чипов инпут-бара (модалка-лайтбокс)
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
+  // ── Защищённые переменные (секреты) ──
+  // protectedVarsOpen — модалка управления; secretsCount — бейдж в + меню.
+  const [protectedVarsOpen, setProtectedVarsOpen] = useState(false)
+  const [secretsCount, setSecretsCount] = useState(0)
   // ── Пикер аргументов команды (многоуровневый enum-пикер) ──
   // argPickerCmd — команда, для которой показываем пикер (null = скрыт).
   // argPickerLevel — индекс текущего аргумента в cmd.arguments.
@@ -225,6 +230,8 @@ function ChatInput({
     window.syntee.agent.getPermissions().then((p: { agentPermissions?: { autoMode?: Partial<AutoModeSettings> } }) => {
       setGlobalAuto(p.agentPermissions?.autoMode ?? {})
     }).catch(() => {})
+    // Счётчик секретов для бейджа в + меню
+    window.syntee.protectedVars.list().then(l => setSecretsCount(l.length)).catch(() => {})
   }, [])
 
   // Проектный override разрешений — перезагружается при смене проекта чата
@@ -852,6 +859,8 @@ function ChatInput({
           {/* + кнопка с меню */}
           <ChatInputPlusMenu
             onAttachClick={handleAttachClick}
+            secretsCount={secretsCount}
+            onProtectedVarsClick={() => setProtectedVarsOpen(true)}
             planningMode={planningMode}
             onPlanningModeChange={onPlanningModeChange}
             imageMode={imageMode}
@@ -935,6 +944,15 @@ function ChatInput({
         key={previewAttachment?.id ?? 'none'}
         attachment={previewAttachment}
         onClose={() => setPreviewAttachment(null)}
+      />
+
+      {/* Модалка защищённых переменных (секреты → system prompt) */}
+      <ProtectedVarsModal
+        open={protectedVarsOpen}
+        onClose={() => setProtectedVarsOpen(false)}
+        onChanged={() => {
+          window.syntee.protectedVars.list().then(l => setSecretsCount(l.length)).catch(() => {})
+        }}
       />
     </div>
   )
