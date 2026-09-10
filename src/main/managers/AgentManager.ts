@@ -13,6 +13,8 @@ import {
   mergeWorktreeBack,
   discardWorktree,
   cleanupWorktree,
+  hasWorktreeChanges,
+  cleanupAbandonedWorktree,
   type WorktreeInfo,
 } from './WorktreeIsolation'
 import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
@@ -63,6 +65,14 @@ export interface AgentRecord {
   workdir?: string
   /** Резолвнутый режим изоляции ('auto' свернут в 'worktree'|'none' до старта). */
   isolationMode: 'worktree' | 'none'
+  /**
+   * §изоляция — reason, если запрошенная worktree-изоляция не сработала и
+   * суб-агент работал в общей папке проекта (shared). Не персистится:
+   * живёт только в текущей сессии (после рестарта воркеры всё равно мертвы).
+   * По нему в done/error к summary добавляется предупреждение — раньше
+   * fallback был виден только в console.warn main-процесса.
+   */
+  isolationFallback?: 'not-git' | 'error'
   /** Созданный worktree, если isolationMode === 'worktree' и creation удалось. */
   worktreeInfo?: WorktreeInfo
   /** Роль суб-агента (researcher/deep-researcher/editor/implementer/reviewer).
@@ -161,6 +171,20 @@ class AgentManager {
         if (!record.finishedAt) record.finishedAt = record.createdAt
         saveSubagent(this.recordToRow(record))
         repaired++
+        // §изоляция — worktree суб-агента, убитого рестартом, иначе остаётся
+        // сиротой (папка в userData/worktrees + ветка syntee-sub/*) навсегда.
+        // Есть изменения → сохраняем и дописываем путь в error (правки можно
+        // спасти вручную); нет → удаляем.
+        if (record.isolationMode === 'worktree' && record.workdir) {
+          void cleanupAbandonedWorktree(record.workdir, record.id)
+            .then((kept) => {
+              if (kept) {
+                record.error = `${record.error}. Правки суб-агента сохранены в worktree: ${kept}`
+                try { saveSubagent(this.recordToRow(record)) } catch { /* noop */ }
+              }
+            })
+            .catch(() => { /* noop */ })
+        }
       }
       this.agents.set(record.id, record)
       loaded++
@@ -337,6 +361,36 @@ class AgentManager {
     return result
   }
 
+  /**
+   * §изоляция — note в summary, если worktree-изоляция не сработала и
+   * суб-агент работал в общей папке проекта напрямую (в обход undoStack
+   * родителя). Раньше об этом знал только console.warn main-процесса.
+   */
+  private appendIsolationFallbackNote(record: AgentRecord): void {
+    const reason = record.isolationFallback === 'not-git'
+      ? 'проект не является git-репозиторием'
+      : 'не удалось создать worktree'
+    record.summary += `\n\n[Внимание: worktree-изоляция не сработала (${reason}) — суб-агент работал в общей рабочей папке проекта напрямую.]`
+  }
+
+  /**
+   * §изоляция — финализация worktree при ошибке/краше суб-агента: правки не
+   * выбрасываем молча. Есть изменения → сохраняем worktree + note в summary
+   * (данные можно спасти вручную); нет изменений → discard. Ошибки самой
+   * проверки не блокируют финализацию записи.
+   */
+  private async finalizeWorktreeOnError(record: AgentRecord): Promise<void> {
+    if (!record.worktreeInfo || !record.workdir) return
+    try {
+      const hasChanges = await hasWorktreeChanges(record.worktreeInfo.worktreePath)
+      if (hasChanges) {
+        record.summary += `\n\n[Суб-агент завершился с ошибкой, но успел изменить файлы — правки сохранены в worktree: ${record.worktreeInfo.worktreePath}]`
+      } else {
+        await discardWorktree(record.workdir, record.worktreeInfo)
+      }
+    } catch { /* noop */ }
+  }
+
   async spawn(opts: {
     id: string
     parentId: string
@@ -426,11 +480,13 @@ class AgentManager {
         } else {
           // не-git → shared, как и без изоляции
           record.isolationMode = 'none'
+          record.isolationFallback = 'not-git'
         }
       } catch (e: any) {
         // Не удалось создать worktree (git error, нет прав и т.п.) — fallback на
         // shared, чтобы суб-агент хотя бы запустился. Логируем для диагностики.
         record.isolationMode = 'none'
+        record.isolationFallback = 'error'
         this.persist(record)
         console.warn(`[AgentManager] worktree creation failed for ${record.id} (fallback to shared): ${e.message}`)
       }
@@ -665,6 +721,9 @@ ${subModeOutro}`
             record.status = 'done'
             record.finishedAt = Date.now()
             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
+            // §изоляция — предупредить, что суб-агент работал в общей папке
+            // проекта (worktree не создался), а не в изолированной копии.
+            if (record.isolationFallback) this.appendIsolationFallbackNote(record)
             this.workers.delete(record.id)
             worker.terminate()
             this.resolvers.delete(record.id)
@@ -675,9 +734,9 @@ ${subModeOutro}`
                 try {
                   const mergeResult = await this.serializedMerge(record.workdir!, record.worktreeInfo!)
                   if (mergeResult.conflict) {
-                    record.summary += `\n\n[Внимание: конфликт слияния worktree с WIP родителя. Изменения суб-агента сохранены в: ${record.worktreeInfo!.worktreePath}]`
+                    record.summary += `\n\n[Внимание: конфликт слияния worktree с WIP родителя. Конфликтные файлы возвращены к версии родителя; изменения суб-агента полностью сохранены в worktree: ${record.worktreeInfo!.worktreePath}. Часть неконфликтных правок могла примениться — проверь git status.]`
                   } else if (!mergeResult.ok) {
-                    record.summary += `\n\n[Ошибка слияния worktree: ${mergeResult.error}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
+                    record.summary += `\n\n[Ошибка слияния worktree: ${mergeResult.error}.${mergeResult.worktreeKept ? ` Worktree сохранён: ${record.worktreeInfo!.worktreePath}` : ' Изменения суб-агента НЕ применены.'}]`
                   }
                   if (!mergeResult.worktreeKept) {
                     try { await cleanupWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
@@ -711,13 +770,18 @@ ${subModeOutro}`
             // родителю как частичный summary вместо пустой строки, иначе
             // родительский агент теряет весь прогресс суб-агента.
             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
+            if (record.isolationFallback) this.appendIsolationFallbackNote(record)
             this.workers.delete(record.id)
             worker.terminate()
             this.resolvers.delete(record.id)
-             // §изоляция — при ошибке discard worktree (правки суб-агента не нужны).
+             // §изоляция — при ошибке суб-агент мог успеть сделать полезные
+             // правки (ошибка API на последнем шаге, rate limit и т.п.).
+             // Раньше worktree безусловно discard'ился — правки молча
+             // терялись. Теперь: есть изменения → сохраняем worktree + note;
+             // нет → discard.
              if (record.worktreeInfo && record.workdir) {
                ;(async () => {
-                 try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+                 await this.finalizeWorktreeOnError(record)
                  this.persistNow(record)
                  this.broadcast('agent:update', record)
                  resolve({ summary: record.summary, error: record.error })
@@ -874,13 +938,14 @@ ${subModeOutro}`
         record.finishedAt = Date.now()
         this.workers.delete(record.id)
         worker.terminate()
-        // §изоляция — discard worktree при crash worker'а.
+        // §изоляция — при crash worker'а правки не выбрасываем молча:
+        // есть изменения → сохраняем worktree + note в summary.
         if (record.worktreeInfo && record.workdir) {
           ;(async () => {
-            try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+            await this.finalizeWorktreeOnError(record)
             this.persistNow(record)
             this.broadcast('agent:update', record)
-            resolve({ summary: '', error: e.message })
+            resolve({ summary: record.summary, error: e.message })
           })()
         } else {
           this.persistNow(record)
@@ -895,10 +960,11 @@ ${subModeOutro}`
           record.error = code !== 0 ? `Worker завершился с кодом ${code}` : undefined
           record.finishedAt = Date.now()
           this.workers.delete(record.id)
-          // §изоляция — discard worktree при неожиданном exit (если ещё не очищен).
+          // §изоляция — при неожиданном exit правки не выбрасываем молча:
+          // есть изменения → сохраняем worktree + note в summary.
           if (record.worktreeInfo && record.workdir) {
             ;(async () => {
-              try { await discardWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+              await this.finalizeWorktreeOnError(record)
               this.persistNow(record)
               this.broadcast('agent:update', record)
               resolve({ summary: record.summary || '', error: record.error })
