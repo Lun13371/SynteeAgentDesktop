@@ -318,7 +318,13 @@ export class ToolDispatcher {
       case 'get_system_info':
         return getSystemInfo()
       case 'generate_image':
-        return generateImage(args as { prompt: string; model?: string; size?: string; quality?: string; style?: string }, this.store)
+        // gatewayToken — JWT Syntee-Gateway для image-провайдера (worker-поток:
+        // тул сам токен не достанет, electron-store недоступен). userDataPath —
+        // куда сохранять b64_json-ответы gpt-image-*.
+        return generateImage(args as { prompt: string; model?: string; size?: string; quality?: string; style?: string }, this.store, {
+          gatewayToken: this.gatewayToken,
+          userDataPath: this.userDataPath,
+        })
       case 'analyze_image':
         // Распознавание картинки с диска: прямой пас (imageParts) для
         // vision-способной основной модели, иначе — описание от vision-модели.

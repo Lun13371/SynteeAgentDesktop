@@ -2258,13 +2258,17 @@ export class PluginManager {
           // Генерация картинки через image-провайдер приложения.
           const prompt = String(params.prompt ?? '')
           if (!prompt) return { ok: false, error: 'ai.generateImage: prompt обязателен' }
+          // Gateway-провайдер авторизуется JWT аккаунта — тул в main-процессе
+          // достанет токен сам, но передаём явно (как search_web выше).
+          let gatewayToken: string | null = null
+          try { gatewayToken = await getGatewayAuthToken() } catch { /* не авторизован — ок */ }
           const r = await toolGenerateImage({
             prompt,
             model: params.model ? String(params.model) : undefined,
             size: params.size ? String(params.size) : undefined,
             quality: params.quality ? String(params.quality) : undefined,
             style: params.style ? String(params.style) : undefined,
-          }, this.store)
+          }, this.store, { gatewayToken })
           if (!r.success) return { ok: false, error: r.error || 'ai.generateImage failed' }
           return { ok: true, result: r.output }
         }
