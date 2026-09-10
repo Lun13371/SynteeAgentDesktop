@@ -42,6 +42,7 @@ import { registerPtyIPC } from './ipc/pty.ipc'
 import { registerFastContextIPC } from './ipc/fastContext.ipc'
 import { registerCommandsIPC } from './ipc/commands.ipc'
 import { registerMentionsIPC, shutdownMentions } from './ipc/mentions.ipc'
+import { registerProtectedVarsIPC } from './ipc/protectedVars.ipc'
 import { registerAuthIPC, registerDeepLinks } from './ipc/auth.ipc'
 import { registerGatewayIPC } from './ipc/gateway.ipc'
 import { registerBillingIPC } from './ipc/billing.ipc'
@@ -297,6 +298,8 @@ app.whenReady().then(async () => {
   registerFastContextIPC(store, () => mainWindow.getWindow())
   registerCommandsIPC()
   registerMentionsIPC()
+  // Защищённые переменные (секреты юзера → system prompt)
+  registerProtectedVarsIPC()
 
   // Syntee-Gateway auth + profile + deep-link (synteehelper://)
   registerDeepLinks(() => mainWindow.getWindow())

@@ -54,24 +54,49 @@ export default function AgentConfirmDialog() {
   // Dangerous нельзя разрешить «навсегда» — только разово
   const canAlways = level !== 'dangerous' && level !== 'blocked'
 
+  // §visual — горячие клавиши: Enter — разрешить, Esc — отклонить.
+  // Не срабатывает, когда фокус в поле ввода/селекте (иначе Enter в select
+  // «Всегда разрешать» открывал бы диалог заново).
+  useEffect(() => {
+    if (!current) return
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'SELECT' || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        respond(current.reqId, true, always ? allowScope : undefined)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        respond(current.reqId, false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [current, always, allowScope])
+
   return createPortal(
     <AnimatePresence>
       {current && meta && (
         <motion.div
-          className="agent-confirm-overlay"
+          className={`agent-confirm-overlay agent-confirm-overlay--${level}`}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
+          transition={{ duration: 0.18 }}
         >
           <motion.div
-            className="agent-confirm-dialog"
-            initial={{ opacity: 0, y: 24, scale: 0.96 }}
+            className={`agent-confirm-dialog agent-confirm-dialog--${level}`}
+            initial={{ opacity: 0, y: 28, scale: 0.94 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 16, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+            exit={{ opacity: 0, y: 18, scale: 0.96 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 28 }}
           >
+            {/* Тематическая полоса-градиент сверху — цвет уровня опасности */}
+            <div className="agent-confirm-dialog-glow" />
+
             <div className={`agent-confirm-icon ${isDanger ? 'agent-confirm-icon--danger' : isWarn ? 'agent-confirm-icon--warn' : 'agent-confirm-icon--safe'}`}>
               <AppIcon name={meta.icon as 'zap'} size="md" />
+              {isDanger && <div className="agent-confirm-icon-pulse" />}
             </div>
 
             <div className="agent-confirm-body">
@@ -89,7 +114,7 @@ export default function AgentConfirmDialog() {
                   <div key={k} className="agent-confirm-arg">
                     <span className="agent-confirm-arg-key">{k}</span>
                     <span className="agent-confirm-arg-val">
-                      {typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : String(v)}
+                      {typeof v === 'string' && v.length > 120 ? v.slice(0, 120) + '…' : String(v)}
                     </span>
                   </div>
                 ))}
@@ -101,7 +126,10 @@ export default function AgentConfirmDialog() {
               )}
 
               {queue.length > 1 && (
-                <div className="agent-confirm-queue">Ещё {queue.length - 1} действий в очереди</div>
+                <div className="agent-confirm-queue">
+                  <span className="agent-confirm-queue-dot" />
+                  Ещё {queue.length - 1} {queue.length - 1 === 1 ? 'действие' : 'действий'} в очереди
+                </div>
               )}
             </div>
 
@@ -134,18 +162,24 @@ export default function AgentConfirmDialog() {
               <motion.button
                 className="agent-confirm-btn agent-confirm-btn--deny"
                 onClick={() => respond(current.reqId, false)}
-                whileTap={{ scale: 0.95 }}
+                whileHover={{ y: -1 }}
+                whileTap={{ scale: 0.96 }}
+                title="Esc"
               >
                 <AppIcon name="x" size="sm" />
                 Отклонить
+                <span className="agent-confirm-key">Esc</span>
               </motion.button>
               <motion.button
                 className="agent-confirm-btn agent-confirm-btn--allow"
                 onClick={() => respond(current.reqId, true, always ? allowScope : undefined)}
-                whileTap={{ scale: 0.95 }}
+                whileHover={{ y: -1 }}
+                whileTap={{ scale: 0.96 }}
+                title="Enter"
               >
                 <AppIcon name="check" size="sm" />
                 Разрешить
+                <span className="agent-confirm-key">↵</span>
               </motion.button>
             </div>
           </motion.div>
