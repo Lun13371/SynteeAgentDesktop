@@ -80,6 +80,17 @@ export function collectMarkdownRenderers(): Array<{ pluginId: string; language: 
   return out
 }
 
+/** Кастомные теги сообщений плагинов (registerMessageTag). */
+export function collectMessageTags(): Array<{ pluginId: string; tag: string; entry: string; height?: number; description?: string }> {
+  const out: Array<{ pluginId: string; tag: string; entry: string; height?: number; description?: string }> = []
+  for (const p of selectRunningPlugins()) {
+    for (const t of p.messageTags ?? []) {
+      out.push({ pluginId: p.id, tag: t.tag, entry: t.entry, height: t.height, description: t.description })
+    }
+  }
+  return out
+}
+
 /** Контекстные пункты меню сообщений запущенных плагинов. */
 export function collectMessageContextMenu(): Array<{ pluginId: string; id: string; label: string; icon?: string; scope: 'message' | 'selection'; button?: boolean }> {
   const out: Array<{ pluginId: string; id: string; label: string; icon?: string; scope: 'message' | 'selection'; button?: boolean }> = []
@@ -131,6 +142,17 @@ export function parsePluginBgKey(key: string): { pluginId: string; id: string } 
   const idx = rest.indexOf(':')
   if (idx <= 0) return null
   return { pluginId: rest.slice(0, idx), id: rest.slice(idx + 1) }
+}
+
+/** Секции настроек плагинов (registerSettingsSection) — для SettingsPage. */
+export function collectSettingsSections(): Array<{ pluginId: string; id: string; title: string; entry: string; icon?: string }> {
+  const out: Array<{ pluginId: string; id: string; title: string; entry: string; icon?: string }> = []
+  for (const p of selectRunningPlugins()) {
+    for (const s of p.settingsSections ?? []) {
+      out.push({ pluginId: p.id, id: s.id, title: s.title, entry: s.entry, icon: s.icon })
+    }
+  }
+  return out
 }
 
 /** URL файла в папке плагина (для iframe / fetch / <img>/<video>). */

@@ -61,7 +61,23 @@ module.exports.deactivate = function () {}
 
 - Тулы доступны модели как `plugin__{pluginId}__{toolName}` (в карточке UI — короткое имя).
 - `promptDescription` манифеста (~200 симв.) попадает в system prompt — AI понимает, зачем плагин и что умеют его тулы.
+- **`registerPromptSection`** добавляет в промпт статическую markdown-секцию плагина (справки, памятки).
+- **`registerMessageTag`** добавляет в промпт список кастомных тегов — AI вставляет их в ответ, приложение рендерит как карточки.
 - Слэш-команды `/name` — в автокомплите поля ввода, выполняются до отправки агенту.
+
+## Возможности, о которых стоит знать
+
+- **Стриминг ответа в чат** — `chat.beginReply` / `chat.appendChunk` / `chat.endReply` (и `chat.getActive`); удобно транслировать ответ LLM из `ai.chat({ stream: true })`. См. **api-chat**.
+- **Секции system prompt** — `registerPromptSection` / `unregisterPromptSection` (статично на всё время работы) против `registerContextProvider` (на каждый запрос) и хука `prompt:before-build` (полная замена). Плюс `prompt.get()` — чтение финального промпта. См. **api-system**, **permissions**.
+- **Кастомные теги сообщений** — `ui.registerMessageTag` (`ui`) с iframe-рендером и `widgetData { attrs, inner }`. См. **ui**.
+- **Провайдер моделей** — `provider.register` (`provider`): плагин как OpenAI-совместимый endpoint; модели появляются в Настройках → Провайдеры и назначаются на роли. См. **api-system**.
+- **Function calling в `ai.chat`** — тулы плагина (`tools`) + история чата (`chatContext: true`). См. **api-ai**.
+- **Live-карточка прогресса** — `ui.beginProgress` (`ui`) для долгих тулов; у виджетов — action-кнопки. См. **ui**.
+- **Подтверждение тулов** — `requiresApproval: true` в `registerTool` для мутабельных операций (деплой, удаление). См. **tools**.
+- **Пагинация сообщений** — `chats.getMessages` (`chats:read`); хук `chat:message` несёт role/messageId/attachments. См. **api-chat**.
+- **Секция в настройках** — `registerSettingsSection` (`ui`), системные диалоги — `fs.pickFiles` / `fs.saveDialog`. См. **ui**.
+- **Голос** — `speech.tts` / `speech.stt` (`speech`). См. **api-ai**.
+- **Публичные настройки** — `settings.get` (`settings:read`). См. **api-system**.
 
 ## Создание плагина
 
@@ -93,8 +109,8 @@ create_plugin({
 - **ui** — панели, iframe, протокол syntee-plugin://, мост synteeBridge
 - **contributions** — виджеты, поиск, autocomplete, контекстное меню, темы, фоны, statusbar
 - **api-core** — storage, config, fs, clipboard, notifications, sound, window, bus
-- **api-chat** — chat, chats, projects, memory
-- **api-ai** — ai.chat/embed/listModels/generateImage, agent, mcp
-- **api-system** — net, shell, git, process, scheduler, shortcuts, tray, overlay, secrets
+- **api-chat** — chat, chats (пагинация `getMessages`, хук `chat:message`), projects, memory
+- **api-ai** — ai.chat (вкл. tools/chatContext), embed, listModels, generateImage, speech, agent, mcp
+- **api-system** — net, shell, git, process, scheduler, shortcuts, tray, overlay, secrets, prompt (чтение промпта, секции), provider, settings
 - **events** — все события on() и хуки (before-send, tool:result, prompt:before-build)
 - **examples** — готовые примеры и шаблоны

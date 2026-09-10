@@ -54,11 +54,12 @@ import { getGatewayModelsCache } from '../tokens/gatewayModelsCache'
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import { IPC_EVENTS } from '../../shared/constants'
 import { createChat, getAllChats, getChatWorkdirContext, renameChat, deleteChat } from '../db/chats'
-import { getMessages, saveMessage, editMessageContent, deleteMessageById, getMessageById } from '../db/messages'
+import { getMessages, getMessagesPage, saveMessage, editMessageContent, deleteMessageById, getMessageById } from '../db/messages'
 import { getAllProjects, createProject, renameProject } from '../db/projects'
 import { agentManager } from '../../main/managers/AgentManager'
 import { generateImage as toolGenerateImage } from '../tools/image'
 import { lastActiveChatId } from '../../main/ipc/chatShared'
+import { whisperTranscribe } from '../../main/ipc/voice.ipc'
 import { searchMemories, saveMemory } from '../memory/MemoryEngine'
 import { matchesCronExpression } from './pluginScheduler'
 import type {
@@ -75,6 +76,9 @@ import type {
   PluginStatusbarItem,
   PluginContextProviderRuntime,
   PluginMarkdownRendererRuntime,
+  PluginMessageTagRuntime,
+  PluginPromptSectionRuntime,
+  PluginSettingsSectionRuntime,
   PluginSearchProviderRuntime,
   PluginAutocompleteRuntime,
   PluginContextMenuRuntime,
@@ -83,6 +87,7 @@ import type {
   PluginBackgroundContribution,
   ExtensionScope,
   Message,
+  Provider,
 } from '../../shared/types'
 import type { SlashCommand } from '../../shared/slashCommands'
 
@@ -101,6 +106,77 @@ const WRITEFILES_MAX_TOTAL_BYTES = 10_485_760
 const WATCH_DEBOUNCE_MS = 800
 /** Троттлинг message:delta в плагины (мс на chatId). */
 const DELTA_THROTTLE_MS = 250
+/** Троттлинг appendChunk → БД/UI при стриминге ответа плагина (мс). */
+const REPLY_CHUNK_THROTTLE_MS = 120
+/** Лимит суммарной длины стримингового ответа плагина. */
+const REPLY_MAX_LENGTH = 200_000
+/** Таймаут одного aiTool-вызова (function calling в ai.chat). */
+const AI_TOOL_TIMEOUT_MS = 30_000
+
+/** Разбор WAV-файла → Float32Array mono 16 кГц (линейный ресемплинг).
+ *  Для speech.stt: локальный Whisper ожидает именно такой формат.
+ *  Поддерживает PCM 16/24/32-bit int и 32/64-bit float, любое число каналов. */
+function parseWavToMono16k(buf: Buffer): Float32Array {
+  if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error('speech.stt: не WAV-файл (ожидался RIFF/WAVE заголовок)')
+  }
+  let offset = 12
+  let sampleRate = 0
+  let channels = 1
+  let bits = 16
+  let isFloat = false
+  let dataStart = -1
+  let dataLen = 0
+  while (offset + 8 <= buf.length) {
+    const id = buf.toString('ascii', offset, offset + 4)
+    const size = buf.readUInt32LE(offset + 4)
+    if (id === 'fmt ') {
+      const audioFormat = buf.readUInt16LE(offset + 8)
+      isFloat = audioFormat === 3
+      channels = Math.max(1, buf.readUInt16LE(offset + 10))
+      sampleRate = buf.readUInt32LE(offset + 12)
+      bits = buf.readUInt16LE(offset + 22)
+    } else if (id === 'data') {
+      dataStart = offset + 8
+      dataLen = Math.min(size, buf.length - dataStart)
+      break
+    }
+    offset += 8 + size + (size % 2)
+  }
+  if (dataStart < 0 || !sampleRate) throw new Error('speech.stt: битый WAV (нет fmt/data чанков)')
+  const bytesPerSample = bits / 8
+  if (![2, 3, 4, 8].includes(bytesPerSample)) throw new Error(`speech.stt: неподдерживаемая битность WAV (${bits} bit)`)
+  const frames = Math.floor(dataLen / (bytesPerSample * channels))
+  // 1. Декодинг в mono float [-1..1].
+  const mono = new Float32Array(frames)
+  for (let i = 0; i < frames; i++) {
+    let acc = 0
+    for (let c = 0; c < channels; c++) {
+      const p = dataStart + (i * channels + c) * bytesPerSample
+      let v = 0
+      if (isFloat && bits === 32) v = buf.readFloatLE(p)
+      else if (isFloat && bits === 64) v = buf.readDoubleLE(p)
+      else if (bits === 16) v = buf.readInt16LE(p) / 32768
+      else if (bits === 24) v = ((buf.readUInt8(p) | (buf.readInt8(p + 1) << 8) | (buf.readInt8(p + 2) << 16)) / 8_388_608)
+      else if (bits === 32) v = buf.readInt32LE(p) / 2_147_483_648
+      acc += v
+    }
+    mono[i] = acc / channels
+  }
+  // 2. Ресемплинг в 16 кГц (линейная интерполяция).
+  if (sampleRate === 16000) return mono
+  const ratio = sampleRate / 16000
+  const outLen = Math.max(1, Math.floor(frames / ratio))
+  const out = new Float32Array(outLen)
+  for (let i = 0; i < outLen; i++) {
+    const src = i * ratio
+    const i0 = Math.floor(src)
+    const i1 = Math.min(frames - 1, i0 + 1)
+    const frac = src - i0
+    out[i] = mono[i0] * (1 - frac) + mono[i1] * frac
+  }
+  return out
+}
 /** Лимиты process.exec. */
 const EXEC_TIMEOUT_DEFAULT_MS = 30_000
 const EXEC_TIMEOUT_MAX_MS = 120_000
@@ -154,6 +230,12 @@ interface RunningPlugin {
   contextProviders: Map<string, PluginContextProviderRuntime>
   /** Рендереры markdown-кодоблоков: language → renderer. */
   markdownRenderers: Map<string, PluginMarkdownRendererRuntime>
+  /** Кастомные теги сообщений: tag → tag def. */
+  messageTags: Map<string, PluginMessageTagRuntime>
+  /** Статические секции system prompt: id → section. */
+  promptSections: Map<string, PluginPromptSectionRuntime>
+  /** Секции настроек в SettingsPage: id → section. */
+  settingsSections: Map<string, PluginSettingsSectionRuntime>
   /** Search providers: id → provider. */
   searchProviders: Map<string, PluginSearchProviderRuntime>
   /** Autocomplete: trigger → provider. */
@@ -207,8 +289,23 @@ export class PluginManager {
   private pluginOverlayTimer: NodeJS.Timeout | null = null
   /** Буферы message:delta для троттлинга: chatId → { buffer, timer }. */
   private deltaBuffers = new Map<string, { buffer: string; timer: NodeJS.Timeout | null }>()
+  /** Стриминг ответов плагинов (chat.beginReply/appendChunk/endReply):
+   *  replyId → { pluginId, chatId, messageId, content, timer }. */
+  private pluginReplies = new Map<string, {
+    pluginId: string
+    chatId: string
+    messageId: string
+    content: string
+    timer: NodeJS.Timeout | null
+  }>()
+  /** Билдер system prompt (регистрируется chat.ipc) — для prompt.get()
+   *  плагинов и превью в UI. Без рекурсии: хук prompt:before-build не зовётся. */
+  private promptBuilder: ((chatId?: string) => Promise<string>) | null = null
   /** Webhook-серверы плагинов: pluginId → (port → server). */
   private webhookServers = new Map<string, Map<number, http.Server>>()
+  /** Провайдеры моделей, зарегистрированные плагинами: pluginId → Set<storeId>.
+   *  Удаляются из store при остановке/краше плагина. */
+  private pluginProviders = new Map<string, Set<string>>()
   /** Папка Python SDK (синхронизируется в конструкторе). */
   private pythonSdkDir = ''
 
@@ -354,6 +451,9 @@ export class PluginManager {
         widgets: run ? [...run.widgets.values()] : [],
         contextProviders: run ? [...run.contextProviders.values()] : [],
         markdownRenderers: run ? [...run.markdownRenderers.values()] : [],
+        messageTags: run ? [...run.messageTags.values()] : [],
+        promptSections: run ? [...run.promptSections.values()] : [],
+        settingsSections: run ? [...run.settingsSections.values()] : [],
         searchProviders: run ? [...run.searchProviders.values()] : [],
         autocomplete: run ? [...run.autocomplete.values()] : [],
         contextMenu: run ? [...run.contextMenu.values()] : [],
@@ -439,6 +539,9 @@ export class PluginManager {
       widgets: new Map(),
       contextProviders: new Map(),
       markdownRenderers: new Map(),
+      messageTags: new Map(),
+      promptSections: new Map(),
+      settingsSections: new Map(),
       searchProviders: new Map(),
       autocomplete: new Map(),
       contextMenu: new Map(),
@@ -521,6 +624,18 @@ export class PluginManager {
         run.markdownRenderers.set(renderer.language.toLowerCase(), renderer)
         this.emitChanged()
       },
+      onMessageTagRegistered: tag => {
+        run.messageTags.set(tag.tag, tag)
+        this.emitChanged()
+      },
+      onPromptSectionRegistered: section => {
+        run.promptSections.set(section.id, section)
+        this.emitChanged()
+      },
+      onSettingsSectionRegistered: section => {
+        run.settingsSections.set(section.id, section)
+        this.emitChanged()
+      },
       onSearchProviderRegistered: provider => {
         run.searchProviders.set(provider.id, provider)
         this.emitChanged()
@@ -542,6 +657,12 @@ export class PluginManager {
         else if (kind === 'command') run.commands.delete(name)
         else if (kind === 'panel') {
           run.ui = run.ui.filter(u => u.panelId !== name)
+        } else if (kind === 'promptSection') {
+          run.promptSections.delete(name)
+        } else if (kind === 'messageTag') {
+          run.messageTags.delete(name)
+        } else if (kind === 'settingsSection') {
+          run.settingsSections.delete(name)
         }
         this.emitChanged()
       },
@@ -759,6 +880,20 @@ export class PluginManager {
    *  сокеты, statusbar, tray). Вызывается в stop() ДО завершения процесса
    *  и в onExit при краше. */
   private cleanupPluginInfrastructure(pluginId: string): void {
+    // Незавершённые стриминговые ответы плагина — финализируем как есть.
+    for (const [replyId, entry] of [...this.pluginReplies]) {
+      if (entry.pluginId === pluginId) this.flushPluginReply(replyId, true)
+    }
+    // Зарегистрированные плагином провайдеры моделей — убираем из store
+    // (вместе с плагином уходит и его endpoint).
+    const provs = this.pluginProviders.get(pluginId)
+    if (provs && provs.size > 0) {
+      try {
+        const list = (this.store.get('providers', []) as Array<{ id: string }>).filter(p => !provs.has(p.id))
+        this.store.set('providers', list)
+      } catch { /* ignore */ }
+      this.pluginProviders.delete(pluginId)
+    }
     // Hot reload-вотчеры.
     this.closeHotReloadWatcher(pluginId)
     // Планировщик.
@@ -920,11 +1055,22 @@ export class PluginManager {
   // ── Хуки ───────────────────────────────────────────────────────────────
 
   /** Рассылает событие chat:message всем запущенным плагинам.
-   *  Fire-and-forget — НИКОГДА не блокирует отправку сообщения в чате. */
-  emitChatMessage(chatId: string, content: string): void {
+   *  Fire-and-forget — НИКОГДА не блокирует отправку сообщения в чате.
+   *  payload: { chatId, content, role, messageId, attachments? }. */
+  emitChatMessage(chatId: string, content: string, extra?: {
+    role?: string
+    messageId?: string
+    attachments?: Array<{ name?: string; kind?: string; path?: string }>
+  }): void {
+    const payload: Record<string, unknown> = { chatId, content }
+    if (extra?.role) payload.role = extra.role
+    if (extra?.messageId) payload.messageId = extra.messageId
+    if (extra?.attachments?.length) {
+      payload.attachments = extra.attachments.slice(0, 20).map(a => ({ name: a.name, kind: a.kind, path: a.path }))
+    }
     for (const [pluginId, run] of this.running) {
       try {
-        run.proc.sendEvent('chat:message', { chatId, content })
+        run.proc.sendEvent('chat:message', payload)
       } catch (e) {
         console.warn(`[plugins] emitChatMessage → ${pluginId} failed:`, (e as Error).message)
       }
@@ -1047,10 +1193,65 @@ export class PluginManager {
     system?: string
     model?: string
     maxTokens?: number
+    /** Function calling: декларации тулов (хендлеры живут в процессе
+     *  плагина — вызываются через callHandler kind 'aiTool'). */
+    tools?: Array<{ name: string; description?: string; parameters?: Record<string, unknown> }>
+    /** Подмешать историю чата (chatId, по умолчанию активный). */
+    chatContext?: boolean
+    chatId?: string
+    /** pluginId вызывающего плагина — для роутинга aiTool-вызовов. */
+    pluginId?: string
   }): Promise<string> {
     const client = new AIClient(this.store)
     const maxTokens = Math.min(Math.max(1, Number(params.maxTokens) || 1024), AI_MAX_TOKENS)
     const opts = params.model ? { model: String(params.model), maxTokens } : { maxTokens }
+
+    // Function calling / chatContext — отдельный путь (текстовый).
+    const tools = (Array.isArray(params.tools) ? params.tools : []).filter(t => t && typeof t.name === 'string' && t.name)
+    if (tools.length > 0 || params.chatContext === true) {
+      const prompt = Array.isArray(params.messages)
+        ? params.messages.filter(m => m?.type === 'text').map(m => String(m.text ?? '')).join('\n')
+        : String(params.prompt ?? '')
+      if (!prompt) throw new Error('ai.chat: prompt обязателен')
+      // История чата (последние 40 текстовых сообщений).
+      const msgs: Array<{ role: 'user' | 'assistant'; content: string }> = []
+      if (params.chatContext === true) {
+        const chatId = String(params.chatId || lastActiveChatId || '')
+        if (chatId) {
+          const hist = getMessages(chatId)
+            .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+            .slice(-40)
+          for (const m of hist) msgs.push({ role: m.role as 'user' | 'assistant', content: m.content })
+        }
+      }
+      msgs.push({ role: 'user', content: prompt })
+      if (tools.length > 0) {
+        const pluginId = String(params.pluginId ?? '')
+        const run = pluginId ? this.running.get(pluginId) : undefined
+        if (!run) throw new Error('ai.chat: процесс плагина не найден (tools недоступны)')
+        return client.completeWithTools(
+          msgs,
+          tools.map(t => ({
+            type: 'function' as const,
+            function: {
+              name: t.name,
+              description: t.description || `Tool ${t.name}`,
+              parameters: t.parameters ?? { type: 'object', properties: {} },
+            },
+          })),
+          async (name, args) => {
+            const r = await run.proc.callHandler('aiTool', name, { args }, AI_TOOL_TIMEOUT_MS)
+            if (!r.ok) throw new Error(r.error || `AI-tool ${name} failed`)
+            return r.result
+          },
+          'main',
+          params.system ? String(params.system) : undefined,
+          opts,
+        )
+      }
+      return client.complete(msgs as never, 'main', params.system ? String(params.system) : undefined, opts)
+    }
+
     // Vision: собираем content-части (text + image_url с data URL).
     if (Array.isArray(params.messages) && params.messages.length > 0) {
       const parts: Array<Record<string, unknown>> = []
@@ -1548,10 +1749,62 @@ export class PluginManager {
         widgets: run
           ? [...run.widgets.values()].map(w => ({ name: w.name, description: w.description }))
           : [],
+        messageTags: run
+          ? [...run.messageTags.values()].map(t => ({ tag: t.tag, description: t.description }))
+          : [],
         contextProviders: run ? [...run.contextProviders.keys()] : [],
       })
     }
     return out
+  }
+
+  /** Статические секции system prompt активных плагинов
+   *  (registerPromptSection) — для buildSystemPrompt. */
+  collectPromptSections(opts: {
+    projectWorkdir?: string
+    projectId?: string
+    isIncognito?: boolean
+  }): Array<{ title: string; content: string }> {
+    if (opts.isIncognito) return []
+    const out: Array<{ title: string; content: string }> = []
+    for (const plugin of this.scan(opts.projectWorkdir, opts.projectId)) {
+      const state = this.getState(plugin.id)
+      if (!state.enabled) continue
+      if (!this.scopeApplies(state.scope, opts.projectId)) continue
+      const run = this.running.get(plugin.id)
+      if (!run) continue
+      for (const s of run.promptSections.values()) {
+        out.push({ title: s.title, content: s.content })
+      }
+    }
+    return out
+  }
+
+  /** Регистрация билдера system prompt (вызывает chat.ipc при старте) —
+   *  для prompt.get() плагинов и превью промпта в UI. */
+  setPromptBuilder(fn: (chatId?: string) => Promise<string>): void {
+    this.promptBuilder = fn
+  }
+
+  /** Превью system prompt для UI (plugins:getSystemPrompt). */
+  async getPromptPreview(chatId?: string): Promise<string> {
+    if (!this.promptBuilder) return ''
+    return this.promptBuilder(chatId || lastActiveChatId || undefined)
+  }
+
+  /** Флаш стримингового ответа плагина: контент в БД + push в renderer. */
+  private flushPluginReply(replyId: string, final = false): void {
+    const entry = this.pluginReplies.get(replyId)
+    if (!entry) return
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = null }
+    try { editMessageContent(entry.messageId, entry.content) } catch { /* ignore */ }
+    this.win?.webContents.send(IPC_EVENTS.PLUGINS_REPLY_CHUNK, {
+      action: final ? 'end' : 'chunk',
+      chatId: entry.chatId,
+      messageId: entry.messageId,
+      content: entry.content,
+    })
+    if (final) this.pluginReplies.delete(replyId)
   }
 
   /** Вызов тула по полному имени plugin__{pluginId}__{toolName}. */
@@ -1831,6 +2084,61 @@ export class PluginManager {
         case 'chat.reply':
           this.chatAction('reply', String(params.text ?? ''))
           return { ok: true }
+        case 'chat.beginReply': {
+          const chatId = lastActiveChatId
+          if (!chatId) return { ok: false, error: 'chat.beginReply: нет активного чата' }
+          const replyId = `pr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          const messageId = uuid()
+          const msg: Message = {
+            id: messageId,
+            chatId,
+            role: 'assistant',
+            content: '',
+            createdAt: Date.now(),
+            isPinned: 0,
+          }
+          try {
+            saveMessage(msg)
+          } catch (e) {
+            return { ok: false, error: `chat.beginReply: ${(e as Error).message}` }
+          }
+          this.pluginReplies.set(replyId, { pluginId, chatId, messageId, content: '', timer: null })
+          // Renderer создаёт пузырь сообщения (добавит в store).
+          this.win?.webContents.send(IPC_EVENTS.PLUGINS_REPLY_CHUNK, {
+            action: 'begin', chatId, messageId, content: '',
+          })
+          return { ok: true, result: replyId }
+        }
+        case 'chat.appendChunk': {
+          const replyId = String(params.replyId ?? '')
+          const entry = this.pluginReplies.get(replyId)
+          if (!entry) return { ok: false, error: 'chat.appendChunk: неизвестный replyId (стриминг завершён или не начинался)' }
+          if (entry.pluginId !== pluginId) return { ok: false, error: 'chat.appendChunk: replyId принадлежит другому плагину' }
+          const delta = String(params.delta ?? '')
+          if (delta) entry.content = (entry.content + delta).slice(0, REPLY_MAX_LENGTH)
+          if (!entry.timer) {
+            entry.timer = setTimeout(() => this.flushPluginReply(replyId), REPLY_CHUNK_THROTTLE_MS)
+          }
+          return { ok: true }
+        }
+        case 'chat.endReply': {
+          const replyId = String(params.replyId ?? '')
+          const entry = this.pluginReplies.get(replyId)
+          if (!entry) return { ok: false, error: 'chat.endReply: неизвестный replyId' }
+          if (entry.pluginId !== pluginId) return { ok: false, error: 'chat.endReply: replyId принадлежит другому плагину' }
+          this.flushPluginReply(replyId, true)
+          return { ok: true }
+        }
+        case 'chat.getActive':
+          return { ok: true, result: { chatId: lastActiveChatId ?? null } }
+        case 'prompt.get': {
+          if (!this.promptBuilder) {
+            return { ok: false, error: 'prompt.get: system prompt ещё не доступен (чат не инициализирован)' }
+          }
+          const chatId = params.chatId ? String(params.chatId) : (lastActiveChatId ?? undefined)
+          const prompt = await this.promptBuilder(chatId)
+          return { ok: true, result: prompt }
+        }
         case 'chats.list': {
           const chats = getAllChats().map(c => ({
             id: c.id, title: c.title, createdAt: c.createdAt, updatedAt: c.updatedAt,
@@ -2375,6 +2683,10 @@ export class PluginManager {
             system: params.system as string | undefined,
             model: params.model as string | undefined,
             maxTokens: params.maxTokens as number | undefined,
+            tools: params.tools as Array<{ name: string; description?: string; parameters?: Record<string, unknown> }> | undefined,
+            chatContext: params.chatContext === true,
+            chatId: params.chatId as string | undefined,
+            pluginId,
           })
           return { ok: true, result: text }
         }
@@ -2701,6 +3013,123 @@ export class PluginManager {
             properties: ['openDirectory'],
           })
           return { ok: true, result: res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0] }
+        }
+        case 'fs.pickFiles': {
+          const filters = (Array.isArray(params.filters) ? params.filters : []).map(f => ({
+            name: String(f?.name ?? 'Files'),
+            extensions: Array.isArray(f?.extensions) ? f.extensions.map(String) : ['*'],
+          }))
+          const res = await dialog.showOpenDialog(this.win!, {
+            title: params.title ? String(params.title) : 'Выберите файлы',
+            properties: ['openFile', 'multiSelections'],
+            filters: filters.length ? filters : undefined,
+          })
+          return { ok: true, result: res.canceled ? [] : res.filePaths }
+        }
+        case 'fs.saveDialog': {
+          const filters = (Array.isArray(params.filters) ? params.filters : []).map(f => ({
+            name: String(f?.name ?? 'Files'),
+            extensions: Array.isArray(f?.extensions) ? f.extensions.map(String) : ['*'],
+          }))
+          const res = await dialog.showSaveDialog(this.win!, {
+            title: params.title ? String(params.title) : 'Сохранить файл',
+            defaultPath: params.defaultPath ? String(params.defaultPath) : undefined,
+            filters: filters.length ? filters : undefined,
+          })
+          return { ok: true, result: res.canceled ? null : res.filePath }
+        }
+        // ── Live-карточка прогресса тула ──
+        case 'ui.progress': {
+          this.win?.webContents.send(IPC_EVENTS.PLUGINS_TOOL_PROGRESS, {
+            pluginId,
+            progressId: String(params.progressId ?? ''),
+            action: String(params.action ?? ''),
+            label: String(params.label ?? ''),
+          })
+          return { ok: true }
+        }
+        // ── Публичные настройки (read-only) ──
+        case 'settings.get': {
+          const theme = this.getThemeInfo()
+          const mp = (this.store.get('modelParams') as { streaming?: boolean } | undefined)
+          return {
+            ok: true,
+            result: {
+              theme: theme.theme,
+              accentColor: theme.accentColor,
+              dark: theme.dark,
+              streaming: mp?.streaming ?? true,
+              platform: process.platform,
+              appVersion: app.getVersion(),
+              locale: app.getLocale(),
+            },
+          }
+        }
+        // ── Провайдеры моделей от плагинов ──
+        case 'provider.register': {
+          const id = String(params.id ?? '')
+          if (!id || !/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(id)) {
+            return { ok: false, error: 'provider.register: id обязателен ([a-zA-Z][a-zA-Z0-9_-]*)' }
+          }
+          const baseUrl = String(params.baseUrl ?? '')
+          if (!/^https?:\/\//.test(baseUrl)) {
+            return { ok: false, error: 'provider.register: baseUrl должен быть http(s)://' }
+          }
+          const storeId = `plugin-${pluginId}-${id}`
+          const list = (this.store.get('providers', []) as Provider[])
+          const next = list.filter(p => p.id !== storeId)
+          next.push({
+            id: storeId,
+            type: 'custom',
+            name: String(params.name || id),
+            baseUrl,
+            apiKey: String(params.apiKey ?? ''),
+            enabled: true,
+            isCustom: true,
+            modelsOverride: Array.isArray(params.models) ? params.models.map(String).slice(0, 100) : undefined,
+          })
+          this.store.set('providers', next)
+          let set = this.pluginProviders.get(pluginId)
+          if (!set) { set = new Set(); this.pluginProviders.set(pluginId, set) }
+          set.add(storeId)
+          return { ok: true, result: { id: storeId } }
+        }
+        case 'provider.unregister': {
+          const storeId = `plugin-${pluginId}-${String(params.id ?? '')}`
+          this.store.set('providers', (this.store.get('providers', []) as Provider[]).filter(p => p.id !== storeId))
+          this.pluginProviders.get(pluginId)?.delete(storeId)
+          return { ok: true }
+        }
+        // ── Речь ──
+        case 'speech.tts': {
+          const text = String(params.text ?? '')
+          if (!text) return { ok: false, error: 'speech.tts: text обязателен' }
+          const client = new AIClient(this.store)
+          const audioBase64 = await client.textToSpeech(text.slice(0, 4000))
+          return { ok: true, result: audioBase64 }
+        }
+        case 'speech.stt': {
+          const p = String(params.path ?? '')
+          if (!p) return { ok: false, error: 'speech.stt: path обязателен' }
+          if (!existsSync(p)) return { ok: false, error: `speech.stt: файл не найден: ${p}` }
+          const st = statSync(p)
+          if (st.size > 26_214_400) return { ok: false, error: 'speech.stt: файл больше 25 МБ' }
+          const audio = parseWavToMono16k(readFileSync(p))
+          const text = await whisperTranscribe(this.store, audio)
+          return { ok: true, result: text }
+        }
+        // ── Пагинация сообщений чата ──
+        case 'chats.getMessages': {
+          const chatId = String(params.chatId ?? '')
+          if (!chatId) return { ok: false, error: 'chats.getMessages: chatId обязателен' }
+          const limit = Math.min(Math.max(1, Number(params.limit) || 50), 200)
+          const page = getMessagesPage(
+            chatId,
+            limit,
+            params.beforeCreatedAt !== undefined ? Number(params.beforeCreatedAt) : undefined,
+            params.beforeId !== undefined ? String(params.beforeId) : undefined,
+          )
+          return { ok: true, result: page }
         }
         // ── Chat-scoped память плагина ──
         case 'memory.chat.get':

@@ -541,6 +541,60 @@ export class AIClient {
     throw new Error('Rate limit: превышено число попыток')
   }
 
+  /**
+   * complete с function calling (для ai.chat плагинов с opts.tools):
+   * цикл «модель вызывает тул → execTool → результат обратно в модель»,
+   * максимум 8 раундов, финал — текстовый ответ модели.
+   */
+  async completeWithTools(
+    messages: ChatMessage[],
+    tools: Array<{ type: 'function'; function: { name: string; description?: string; parameters?: Record<string, unknown> } }>,
+    execTool: (name: string, args: Record<string, unknown>) => Promise<unknown>,
+    modelType: 'main' | 'fast' = 'main',
+    systemPrompt?: string,
+    opts?: { model?: string; maxTokens?: number },
+  ): Promise<string> {
+    const model = opts?.model || this.getModel(modelType)
+    const client = await this.getClientForRoleAsync(modelType)
+    const msgs: OpenAI.Chat.ChatCompletionMessageParam[] = []
+    if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt })
+    msgs.push(...messages)
+    const MAX_ROUNDS = 8
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      const resp = await client.chat.completions.create({
+        model,
+        messages: msgs,
+        tools: tools as OpenAI.Chat.ChatCompletionTool[],
+        tool_choice: 'auto',
+        max_tokens: opts?.maxTokens ?? 2048,
+      })
+      const choice = resp.choices?.[0]
+      const toolCalls = choice?.message?.tool_calls
+      if (toolCalls?.length) {
+        msgs.push(choice.message)
+        for (const call of toolCalls) {
+          if (call.type !== 'function') continue
+          let args: Record<string, unknown> = {}
+          try { args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown> } catch { /* пустые args */ }
+          let result: unknown
+          try {
+            result = await execTool(call.function.name, args)
+          } catch (e) {
+            result = `Error: ${(e as Error).message}`
+          }
+          msgs.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: typeof result === 'string' ? result : JSON.stringify(result ?? null),
+          })
+        }
+        continue
+      }
+      return choice?.message?.content ?? ''
+    }
+    throw new Error('ai.chat: превышен лимит раундов вызова тулов (8)')
+  }
+
   async textToSpeech(text: string): Promise<string> {
     const apiKey = this.store.get('apiKey') as string
     const endpoint = (this.store.get('apiEndpoint') as string) || ''

@@ -43,7 +43,7 @@ export interface ChatLiveState {
   lastError?: string | null
 }
 
-export type RunStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'
+export type RunStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled' | 'compacting'
 
 export interface RunStatusInfo {
   status: RunStatus
@@ -475,13 +475,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       for (const id of Object.keys(nextLive)) {
         if (id === cur || id === split || id === chatId) continue
         const rs = s.runStatusByChat[id]
-        if (rs && (rs.status === 'running' || rs.status === 'queued')) continue
+        if (rs && (rs.status === 'running' || rs.status === 'queued' || rs.status === 'compacting')) continue
         delete nextLive[id]
       }
       for (const id of Object.keys(nextActive)) {
         if (id === cur || id === chatId) continue
         const rs = s.runStatusByChat[id]
-        if (rs && (rs.status === 'running' || rs.status === 'queued')) continue
+        if (rs && (rs.status === 'running' || rs.status === 'queued' || rs.status === 'compacting')) continue
         delete nextActive[id]
       }
       return {

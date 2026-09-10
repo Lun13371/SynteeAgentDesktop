@@ -35,6 +35,32 @@ const models = await syntee.ai.listModels()     // [{ id, providerId, name, cont
 const md = await syntee.ai.generateImage('кот-космонавт', { size: '1024x1024' })
 ```
 
+### Function calling — tools + chatContext
+
+`ai.chat` умеет давать модели тулы плагина: модель решает, какие звать (цикл до 8 раундов), хост исполняет **хендлеры плагина** и отдаёт модели результат. Финал — текстовый ответ.
+
+```js
+const answer = await syntee.ai.chat('Какая погода в Москве?', {
+  system: 'Отвечай кратко.',
+  tools: [{
+    name: 'get_weather',
+    description: 'Погода в городе',
+    parameters: {
+      type: 'object',
+      properties: { city: { type: 'string', description: 'Название города' } },
+      required: ['city'],
+    },
+    handler: async (args) => ({ temp: 21, condition: 'ясно' }),  // хендлер живёт в плагине
+  }],
+  chatContext: true,   // подмешать историю чата (последние 40 текстовых сообщений)
+  // chatId: '…',      // чат для контекста (по умолчанию активный)
+})
+```
+
+- **`tools`** — как в `registerTool`: `name`, `description`, `parameters` (JSON Schema), `handler`. Хендлер возвращает объект — он сериализуется и уходит модели как результат тула.
+- **`chatContext: true`** — подмешивает историю активного чата (последние 40 текстовых сообщений) как контекст; укажи `chatId` для другого чата.
+- `tools` + `chatContext` — **текстовый путь**: vision-сообщения с картинками в этой комбинации не поддерживаются.
+
 ## agent — тулы и субагенты (`agent`)
 
 ```js
@@ -64,6 +90,19 @@ const res = await syntee.mcp.call('server-name', 'tool-name', { arg: 1 })
 ```
 
 MCP-серверы настраиваются в приложении (`~/.syntee/mcp.json` / `.mcp.json`) — плагин может вызывать их тулы без своего MCP-клиента.
+
+## speech — синтез и распознавание речи (`speech`)
+
+Голос через инфраструктуру приложения (TTS-провайдер и локальный Whisper) — плагину не нужно поднимать свой движок:
+
+```js
+// Синтез речи → base64 MP3 (TTS-провайдер приложения)
+const mp3Base64 = await syntee.speech.tts('Привет!')
+
+// Распознавание речи → текст (локальный Whisper)
+// WAV: PCM 16/24/32-bit, любое число каналов — ресемплится в 16k mono
+const text = await syntee.speech.stt('C:/recording.wav')
+```
 
 ## Паттерн «AI-тул»
 

@@ -278,6 +278,13 @@ export const IPC_EVENTS = {
   // 'send' — отправить сообщение от пользователя (запускает агент),
   // 'reply' — вставить ответ от имени плагина.
   PLUGINS_CHAT_ACTION: 'plugins:chat-action',
+  // Стриминг ответа плагина (chat.beginReply/appendChunk/endReply):
+  // { action: 'begin'|'chunk'|'end', chatId, messageId, content } —
+  // content всегда ПОЛНЫЙ текст сообщения (не дельта).
+  PLUGINS_REPLY_CHUNK: 'plugins:reply-chunk',
+  // Live-карточка прогресса тула плагина (ui.beginProgress):
+  // { pluginId, progressId, action: 'begin'|'update'|'finish', label }.
+  PLUGINS_TOOL_PROGRESS: 'plugins:tool-progress',
   // Плагин просит проиграть звук приложения: { soundId } (renderer → Web Audio).
   PLUGINS_PLAY_SOUND: 'plugins:play-sound',
   // Элементы status bar от плагина (снапшот): { pluginId, items: PluginStatusbarItem[] }.

@@ -118,7 +118,7 @@ export default function ChatTabs() {
         {tabIds.map(id => {
           const chat = chatById.get(id)!
           const status = runStatusByChat[id]?.status
-          const running = status === 'running' || status === 'queued'
+          const running = status === 'running' || status === 'queued' || status === 'compacting'
           const active = id === currentChatId
           return (
             <Reorder.Item
@@ -139,7 +139,7 @@ export default function ChatTabs() {
               transition={{ type: 'spring', stiffness: 500, damping: 35 }}
             >
               {running ? (
-                <span className="titlebar-tab-spinner" title={status === 'queued' ? 'В очереди' : 'Работает'} />
+                <span className="titlebar-tab-spinner" title={status === 'compacting' ? 'Сжимает контекст' : status === 'queued' ? 'В очереди' : 'Работает'} />
               ) : (
                 chat.color && <span className="titlebar-tab-color" style={{ background: chat.color }} />
               )}
@@ -177,13 +177,13 @@ export default function ChatTabs() {
       {/* Чип сплит-чата: виден пока открыта вторая половина экрана.
           Крестик закрывает сплит (вкладка чата остаётся). */}
       {splitChat && (() => {
-        const splitStatus = runStatusByChat[splitChat.id]?.status
-        const splitRunning = splitStatus === 'running' || splitStatus === 'queued'
+          const splitStatus = runStatusByChat[splitChat.id]?.status
+          const splitRunning = splitStatus === 'running' || splitStatus === 'queued' || splitStatus === 'compacting'
         return (
         <div className="titlebar-split-chip no-drag" title={`Сплит: ${splitChat.title}`}>
           <AppIcon name="columns" size="xs" tone="accent" />
           {splitRunning ? (
-            <span className="titlebar-tab-spinner" title={splitStatus === 'queued' ? 'В очереди' : 'Работает'} />
+            <span className="titlebar-tab-spinner" title={splitStatus === 'compacting' ? 'Сжимает контекст' : splitStatus === 'queued' ? 'В очереди' : 'Работает'} />
           ) : (
             splitChat.color && <span className="titlebar-tab-color" style={{ background: splitChat.color }} />
           )}

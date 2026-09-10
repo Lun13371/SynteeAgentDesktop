@@ -94,20 +94,22 @@ export function buildSystemPrompt(params: {
   /** Max parallel sub-agents — injected into the spawn_agent section. */
   maxParallelSubAgents?: number
   /** Контент context providers плагинов (registerContextProvider) —
-    *  собирается перед запросом, попадает в plugins block. */
+   *  собирается перед запросом, попадает в plugins block. */
   pluginContext?: Array<{ name: string; content: string }>
+  /** Статические секции промпта плагинов (registerPromptSection). */
+  pluginSections?: Array<{ title: string; content: string }>
   /** Защищённые переменные юзера (секреты) — расшифрованные значения
     *  инжектятся отдельной секцией. Инкогнито-чаты не передают их. */
   protectedVars?: ProtectedVarPromptInfo[]
 }): string {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext, protectedVars } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
   const skillsBlock = buildSkillsBlock(activeSkills)
   const oneShotSkillBlock = buildOneShotSkillBlock(oneShotSkill)
   const mcpBlock = buildMcpBlock(activeMcpServers)
-  const pluginsBlock = buildPluginsBlock(activePlugins, pluginContext)
+  const pluginsBlock = buildPluginsBlock(activePlugins, pluginContext, pluginSections)
   const installPathsBlock = buildInstallPathsBlock(workdir, globalSkillsDir, globalPluginsDir)
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)

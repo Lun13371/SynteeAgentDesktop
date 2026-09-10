@@ -227,7 +227,7 @@ export function cancelIdleExtraction(chatId: string): void {
 export function emitRunStatus(
   win: BrowserWindow | null,
   chatId: string,
-  status: 'running' | 'done' | 'error' | 'cancelled' | 'queued',
+  status: 'running' | 'done' | 'error' | 'cancelled' | 'queued' | 'compacting',
   msgId?: string,
   error?: string,
 ) {

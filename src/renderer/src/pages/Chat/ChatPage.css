@@ -431,3 +431,52 @@
 
 
 @keyframes chat-older-spin { to { transform: rotate(360deg); } }
+
+/* ── Live-карточки прогресса тулов плагинов (plugins:tool-progress) ──────
+   Плавающая стопка карточек над областью ввода. Позиция — как у кнопки
+   «прокрутить вниз»: absolute в .chat-main (position:relative), отступ
+   снизу = высота инпута (--chat-input-h, проставляет ResizeObserver). */
+.plugin-progress-stack {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--chat-input-h, 120px) + 12px);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: min(520px, calc(100vw - 48px));
+  pointer-events: none;
+}
+.plugin-progress-card {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong, var(--border));
+  background: var(--glass-bg, rgba(18, 18, 28, 0.92));
+  color: var(--text-primary);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+}
+.plugin-progress-spinner {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(139, 92, 246, 0.25);
+  border-top-color: var(--accent, #8b5cf6);
+  animation: plugin-progress-spin 0.7s linear infinite;
+}
+.plugin-progress-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+@keyframes plugin-progress-spin { to { transform: rotate(360deg); } }

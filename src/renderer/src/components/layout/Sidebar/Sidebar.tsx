@@ -866,8 +866,8 @@ function Sidebar({
           </div>
           <div className="sidebar-chat-meta">
             {/* Индикатор статуса агента: spinner (работает) или бейдж ✓/✗ (завершено, непрочитано) */}
-            {(status === 'running' || status === 'queued') && (
-              <span className="sidebar-chat-spinner" title={status === 'queued' ? 'В очереди' : 'Работает'} />
+            {(status === 'running' || status === 'queued' || status === 'compacting') && (
+              <span className={`sidebar-chat-spinner ${status === 'compacting' ? 'sidebar-chat-spinner--compacting' : ''}`} title={status === 'compacting' ? 'Сжимает контекст' : status === 'queued' ? 'В очереди' : 'Работает'} />
             )}
             {unread === 'done' && (
               <span className="sidebar-chat-status sidebar-chat-status--done" title="Завершено">
@@ -1906,8 +1906,8 @@ function RailProjectFlyout({
                 </div>
               </div>
               <div className="srf-chat-meta">
-                {(status === 'running' || status === 'queued') && (
-                  <span className="sidebar-chat-spinner" title={status === 'queued' ? 'В очереди' : 'Работает'} />
+                {(status === 'running' || status === 'queued' || status === 'compacting') && (
+                  <span className={`sidebar-chat-spinner ${status === 'compacting' ? 'sidebar-chat-spinner--compacting' : ''}`} title={status === 'compacting' ? 'Сжимает контекст' : status === 'queued' ? 'В очереди' : 'Работает'} />
                 )}
                 {unread === 'done' && (
                   <span className="sidebar-chat-status sidebar-chat-status--done" title="Завершено">
@@ -2102,8 +2102,8 @@ function RailSearchFlyout({
                     </div>
                   </div>
                   <div className="srf-chat-meta">
-                    {(status === 'running' || status === 'queued') && (
-                      <span className="sidebar-chat-spinner" title={status === 'queued' ? 'В очереди' : 'Работает'} />
+                    {(status === 'running' || status === 'queued' || status === 'compacting') && (
+                      <span className={`sidebar-chat-spinner ${status === 'compacting' ? 'sidebar-chat-spinner--compacting' : ''}`} title={status === 'compacting' ? 'Сжимает контекст' : status === 'queued' ? 'В очереди' : 'Работает'} />
                     )}
                     {unread === 'done' && (
                       <span className="sidebar-chat-status sidebar-chat-status--done" title="Завершено">

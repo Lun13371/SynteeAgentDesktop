@@ -84,6 +84,33 @@ syntee.tray.setMenu([
 syntee.tray.clearMenu()
 ```
 
+## prompt — system prompt (`hooks` / `context`)
+
+```js
+// Чтение ФИНАЛЬНОГО промпта (после сборки секций и хука prompt:before-build).
+// permission 'hooks'
+const text = await syntee.prompt.get(chatId)   // chatId опционален — по умолчанию активный чат
+
+// Статическая секция промпта на всё время работы плагина.
+// permission 'context': в промпт добавляется markdown-блок «### {title}»
+syntee.registerPromptSection({
+  id: 'kanban-hint',          // опционально, по умолчанию = title
+  title: 'Канбан-доска',
+  content: 'Используй тег <kanban> для визуализации задач.',
+})
+syntee.unregisterPromptSection('kanban-hint')   // или без аргумента — по id/title
+```
+
+### Три способа вмешаться в промпт
+
+| Способ | Право | Когда вызывается | Что делает |
+|---|---|---|---|
+| `registerContextProvider` | `context` | **на каждый запрос** | динамический markdown — данные, зависящие от чата/времени |
+| `registerPromptSection` | `context` | один раз при регистрации | **статический** markdown-блок `### title` на всё время работы плагина |
+| хук `prompt:before-build` | `hooks` | на каждый запрос, последний этап | полная замена/правка уже собранного промпта (`{ action: 'modify', content }`) |
+
+Правило: статичный текст (справка о тегах, памятка) → `registerPromptSection`; живые данные (задачи, состояние) → `registerContextProvider`; тотальная переработка промпта → `prompt:before-build`.
+
 ## secrets — шифрованное хранилище (`secrets`)
 
 API-ключи и токены — НЕ в plugin.json и не в storage (открытый JSON). safeStorage ОС:
@@ -92,6 +119,32 @@ API-ключи и токены — НЕ в plugin.json и не в storage (от�
 await syntee.secrets.set('api_key', 'sk-…')
 const key = await syntee.secrets.get('api_key')     // string | undefined
 await syntee.secrets.delete('api_key')
+```
+
+## provider — плагин как провайдер моделей (`provider`)
+
+Плагин может зарегистрировать свой OpenAI-совместимый endpoint — он появится в **Настройках → Провайдеры**, его модели можно назначать на роли:
+
+```js
+await syntee.provider.register({
+  id: 'my-llm',              // уникальный id (неймспейсится: plugin-{pluginId}-{id})
+  name: 'My LLM Service',
+  baseUrl: 'https://api.myllm.dev/v1',   // OpenAI-compatible endpoint
+  apiKey: 'sk-…',            // опционально — лучше хранить в syntee.secrets
+  models: ['my-model-1', 'my-model-2'],  // опционально; без него — запрос к /models
+})
+await syntee.provider.unregister('my-llm')
+```
+
+Провайдер **живёт, пока запущен плагин**: при остановке/крахе процесса он автоматически удаляется из store. Ключ не обязан лежать в манифесте — доставай его из `syntee.secrets.get('api_key')` прямо при регистрации.
+
+## settings — публичные настройки приложения (`settings:read`)
+
+Только чтение — тема, платформа, версия приложения (изменение настроек плагинам не даётся):
+
+```js
+const s = await syntee.settings.get()
+// s: { theme, accentColor, dark, streaming, platform, appVersion, locale }
 ```
 
 ## Типичный фоновый плагин
