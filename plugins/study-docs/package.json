@@ -1,0 +1,20 @@
+{
+  "name": "study-docs",
+  "version": "1.0.0",
+  "description": "Помощник для учёбы: генерация и чтение Word/Excel — курсовые, рефераты, лабы. Оформление по ГОСТ 7.32 или своё, экспорт в PDF через Word.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "docx": "^9.7.1",
+    "exceljs": "^4.4.0",
+    "mammoth": "^1.12.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

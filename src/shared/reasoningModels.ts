@@ -190,3 +190,18 @@ export function buildReasoningParams(
   }
   return {}
 }
+
+/**
+ * Responses API (OpenAI /responses): переводит reasoningExtra в формат
+ * `reasoning: { effort }`. Мапится только reasoning_effort — toggle и
+ * budget_tokens (chat/completions-специфика) в Responses не имеют аналога,
+ * 'none'/'off' Responses не поддерживает (параметр не шлём вовсе).
+ */
+export function responsesReasoningParam(
+  reasoningExtra: Record<string, unknown>,
+): Record<string, unknown> {
+  const effort = reasoningExtra.reasoning_effort
+  return typeof effort === 'string' && effort && effort !== 'none' && effort !== 'off'
+    ? { reasoning: { effort } }
+    : {}
+}
