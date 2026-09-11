@@ -142,6 +142,20 @@ export default function AnimatedBackground() {
     if (ro && canvasRef.current) ro.observe(canvasRef.current)
     window.addEventListener('resize', onResize)
 
+    // Смена devicePixelRatio (масштаб Windows 100→125→150%, перетаскивание
+    // окна между мониторами с разным DPI) НЕ всегда меняет CSS-размер canvas
+    // → resize не приходит, буфер остаётся со старым dpr и фон мылится.
+    // Следим через matchMedia: при смене dpr перевыставляем буфер.
+    let dprMql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+    const onDprChange = () => {
+      const next = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      dprMql.removeEventListener('change', onDprChange)
+      dprMql = next
+      dprMql.addEventListener('change', onDprChange)
+      onResize()
+    }
+    dprMql.addEventListener('change', onDprChange)
+
     // Мышь: canvas имеет pointer-events:none, события идут через window.
     // Переводим client-координаты в UV (0-1), Y флипаем для WebGL.
     //
@@ -188,6 +202,7 @@ export default function AnimatedBackground() {
       ro?.disconnect()
       window.removeEventListener('resize', onResize)
       window.removeEventListener('mousemove', onMouseMove)
+      dprMql.removeEventListener('change', onDprChange)
     }
   }, [])
 
