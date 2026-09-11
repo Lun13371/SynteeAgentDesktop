@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Study Docs</title>
+<link rel="stylesheet" href="css/panel.css">
+</head>
+<body>
+  <div class="sd-head">
+    <div class="sd-head-icon">📚</div>
+    <div>
+      <div class="sd-head-title">Study Docs</div>
+      <div class="sd-head-sub">курсовые · рефераты · отчёты · таблицы</div>
+    </div>
+  </div>
+
+  <div class="sd-card sd-draft hidden" id="draft-banner">
+    <div class="sd-draft-title">✍️ Черновик пишется</div>
+    <div class="sd-draft-sub" id="draft-info"></div>
+  </div>
+
+  <div class="sd-card">
+    <div class="sd-card-title">✨ Создать документ</div>
+    <div class="sd-seg" id="kind">
+      <button class="sd-seg-btn active" data-kind="kursovaya" title="Курсовая работа">Курсовая</button>
+      <button class="sd-seg-btn" data-kind="referat" title="Реферат">Реферат</button>
+      <button class="sd-seg-btn" data-kind="otchet" title="Отчёт">Отчёт</button>
+      <button class="sd-seg-btn" data-kind="excel" title="Excel-таблица">Excel</button>
+    </div>
+    <input id="topic" class="sd-input" type="text" placeholder="Тема… (Enter — отправить)" autocomplete="off">
+    <button id="go" class="sd-btn sd-btn-primary">Сгенерировать</button>
+    <div class="sd-hint">AI покажет план, спросит данные титульника и соберёт файл</div>
+  </div>
+
+  <div class="sd-card">
+    <div class="sd-card-title">📎 Отправить в чат на анализ</div>
+    <div class="sd-row">
+      <button id="pick-docx" class="sd-btn sd-btn-half">📄 Word</button>
+      <button id="pick-xlsx" class="sd-btn sd-btn-half">📊 Excel</button>
+    </div>
+  </div>
+
+  <div class="sd-card">
+    <div class="sd-card-title">🎨 Оформление</div>
+    <label class="sd-radio"><input type="radio" name="preset" value="gost" checked> ГОСТ 7.32</label>
+    <div class="sd-preset-preview" id="preview-gost">Times New Roman 14 · интервал 1.5 · поля 30/15/20/20 мм</div>
+    <label class="sd-radio"><input type="radio" name="preset" value="custom"> Свой формат</label>
+    <div id="custom" class="sd-custom hidden">
+      <div class="sd-grid">
+        <label>Шрифт
+          <select id="c-font" class="sd-input">
+            <option>Times New Roman</option>
+            <option>Arial</option>
+            <option>Calibri</option>
+            <option>PT Serif</option>
+          </select>
+        </label>
+        <label>Размер, pt
+          <select id="c-size" class="sd-input">
+            <option>12</option><option selected>14</option><option>16</option>
+          </select>
+        </label>
+        <label>Интервал
+          <select id="c-spacing" class="sd-input">
+            <option value="1">1.0</option>
+            <option value="1.15">1.15</option><option value="1.5" selected>1.5</option><option value="2">2.0</option>
+          </select>
+        </label>
+        <label>Номера стр.
+          <select id="c-pages" class="sd-input">
+            <option value="1" selected>да</option>
+            <option value="0">нет</option>
+          </select>
+        </label>
+      </div>
+      <div class="sd-margins-label">Поля, мм</div>
+      <div class="sd-grid sd-margins">
+        <label>лево<input id="c-left" class="sd-input" type="number" value="30" min="5" max="60"></label>
+        <label>право<input id="c-right" class="sd-input" type="number" value="15" min="5" max="60"></label>
+        <label>верх<input id="c-top" class="sd-input" type="number" value="20" min="5" max="60"></label>
+        <label>низ<input id="c-bottom" class="sd-input" type="number" value="20" min="5" max="60"></label>
+      </div>
+      <div class="sd-preset-preview" id="preview-custom"></div>
+    </div>
+    <button id="save-format" class="sd-btn">Сохранить формат</button>
+  </div>
+
+  <div class="sd-card">
+    <div class="sd-card-title sd-row-between">
+      <span>📁 Мои файлы <span class="sd-chip" id="files-count">0</span></span>
+      <button id="clear" class="sd-link-btn" title="Очистить журнал">очистить</button>
+    </div>
+    <div id="files" class="sd-files"><div class="sd-empty">Пока ничего не создано<br><span class="sd-empty-sub">Файлы появятся здесь после генерации</span></div></div>
+  </div>
+
+  <script src="js/bridge.js"></script>
+  <script src="js/panel.js"></script>
+</body>
+</html>
