@@ -328,7 +328,7 @@ export default function SettingsPage() {
   const { setTheme, setAccentColor, setBgStyle, setMsgAnim,
     setAvatarStyle, setShowTime, setUserMarkdown, setUiSounds, setSendEffect,
     setGlassBlur, setDensity, setAccentGradient, setRainbowAccent, setBgImage,
-    setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed, setBgStyleParams,
+    setBgImageEnabled, setAnimatedBackground, setAnimatedBgOpacity, setAnimatedBgSpeed, setBgStyleParams,
     setCustomThemes, setActiveCustomThemeId, setThemeSchedule, setRecentAccents,
     setSoundVolume, setSoundAssignments, setMouseNavEnabled,
     setFavoriteThemes, setFontSizeUI, setFontSizeChat,
@@ -338,7 +338,8 @@ export default function SettingsPage() {
     setUserMarkdown: s.setUserMarkdown, setUiSounds: s.setUiSounds, setSendEffect: s.setSendEffect,
     setGlassBlur: s.setGlassBlur, setDensity: s.setDensity, setAccentGradient: s.setAccentGradient,
     setRainbowAccent: s.setRainbowAccent, setBgImage: s.setBgImage,
-    setBgImageEnabled: s.setBgImageEnabled, setAnimatedBgOpacity: s.setAnimatedBgOpacity,
+    setBgImageEnabled: s.setBgImageEnabled, setAnimatedBackground: s.setAnimatedBackground,
+    setAnimatedBgOpacity: s.setAnimatedBgOpacity,
     setAnimatedBgSpeed: s.setAnimatedBgSpeed, setBgStyleParams: s.setBgStyleParams,
     setCustomThemes: s.setCustomThemes, setActiveCustomThemeId: s.setActiveCustomThemeId,
     setThemeSchedule: s.setThemeSchedule, setRecentAccents: s.setRecentAccents,
@@ -411,6 +412,10 @@ export default function SettingsPage() {
       if (!useUIStore.getState().rainbowAccent) applyAccentToDOM(value as string)
     }
     if (key === 'bgStyle') setBgStyle(value as string)
+    // Кнопка «Выкл» в сетке стилей пишет animatedBackground=false. Без этой
+    // ветки значение уходило только в electron-store — живой zustand-стор
+    // не обновлялся, AnimatedBackground продолжал рендерить до перезапуска.
+    if (key === 'animatedBackground') setAnimatedBackground(value as boolean)
     if (key === 'msgAnim') setMsgAnim(value as string)
     if (key === 'avatarStyle') setAvatarStyle(value as any)
     if (key === 'showTime') setShowTime(value as any)
@@ -476,7 +481,7 @@ export default function SettingsPage() {
     if (key === 'systemSyncLight') setSystemSyncLight(value as string)
   }, [set, setTheme, setAccentColor, setBgStyle, setMsgAnim, setAvatarStyle, setShowTime,
     setUserMarkdown, setUiSounds, setSendEffect, setGlassBlur, setDensity, setAccentGradient,
-    setRainbowAccent, setBgImage, setBgImageEnabled, setAnimatedBgOpacity, setAnimatedBgSpeed,
+    setRainbowAccent, setBgImage, setBgImageEnabled, setAnimatedBackground, setAnimatedBgOpacity, setAnimatedBgSpeed,
     setFavoriteThemes, setFontSizeUI, setFontSizeChat,
     setSystemThemeSync, setSystemSyncDark, setSystemSyncLight,
     setBgStyleParams,
