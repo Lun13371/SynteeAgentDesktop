@@ -118,11 +118,18 @@ interface UIStore {
   // Навигация боковыми кнопками мыши (X1 — назад, X2 — вперёд). По умолчанию
   // включено, как в браузере.
   mouseNavEnabled: boolean
+  // ── ChangesBadge → SessionChangesPanel фокус ──
+  // focusSessionChanges вызывается при клике по бейджу/файлу в popup:
+  // инкрементит nonce (SessionChangesPanel по нему перезагружает последний
+  // чекпоинт с правками) и запоминает файл для выделения в diff-списке.
+  sessionFocusFile: string | null
+  sessionFocusNonce: number
   setTheme: (theme: Theme) => void
   setAccentColor: (color: string) => void
   setAgentPanelWidth: (width: number) => void
   setAgentPanelOpen: (open: boolean) => void
   setAgentPanelTab: (tab: RightPanelTab) => void
+  focusSessionChanges: (file?: string | null) => void
   setAgentPanelExpanded: (v: boolean) => void
   setCurrentPage: (page: Page) => void
   setLoading: (loading: boolean) => void
@@ -212,6 +219,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
   soundVolume: 70,
   soundAssignments: {},
   mouseNavEnabled: true,
+  sessionFocusFile: null,
+  sessionFocusNonce: 0,
 
   setTheme: (theme) => set({ theme }),
   setAccentColor: (accentColor) => set({ accentColor }),
@@ -224,6 +233,10 @@ export const useUIStore = create<UIStore>((set, get) => ({
     }
   },
   setAgentPanelTab: (agentPanelTab) => set({ agentPanelTab }),
+  focusSessionChanges: (file) => set({
+    sessionFocusFile: file ?? null,
+    sessionFocusNonce: get().sessionFocusNonce + 1,
+  }),
   setAgentPanelExpanded: (agentPanelExpanded) => set({ agentPanelExpanded }),
   setCurrentPage: (currentPage) => set({ currentPage }),
   setLoading: (isLoading) => set({ isLoading }),

@@ -12,6 +12,7 @@ import {
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
   getChatModel, setChatModel,
+  getChatReasoning, setChatReasoning,
   getChatModes, setChatModes, setChatPlanningMode, setChatImageMode, setChatAskMode,
   getChatPersona, setChatPersona,
   getChatDraft, setChatDraft, getUserMessageContents,
@@ -29,7 +30,7 @@ import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } fr
 import { onCompactionTrigger } from '../../core/memory/extractor'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats } from '../../core/memory/graphStore'
-import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
+import { buildSystemPrompt, SYSTEM_PROMPT_CACHE_BREAK } from '../../core/prompts/buildSystemPrompt'
 import type { ProtectedVarPromptInfo } from '../../core/prompts/buildSystemPrompt'
 import { resolveActive } from '../services/protectedVarsStore'
 import { readProjectContextFiles } from '../../core/prompts/projectInstructions'
@@ -1134,6 +1135,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       imageMode?: boolean
       mode?: ChatMode
       sideChatParentId?: string
+      /** Уровень мышления из UI на момент клика «Отправить» (source of truth).
+       *  Приоритет над БД и глобальной настройкой — устраняет гонки
+       *  restore-цепочки и записи chat:setReasoning. */
+      reasoningValue?: string
       /** One-shot скилл — инструкции временно инъектируются на этот прогон
        *  (без записи в skillsState). Используется командами типа /review. */
       oneShotSkill?: { name: string; instructions: string }
@@ -1163,7 +1168,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       if (v !== undefined) storeData[k] = v
     }
 
-    // ── Per-chat модель ──────────────────────────────────────────────────────
+    // ── Per-chat модель + уровень мышления ────────────────────────────────────
     // Если у чата задана своя модель (chats.model_id/model_provider) —
     // подменяем запись role:'main' в storeData. Тогда ВСЁ ниже по потоку
     // (mainAssignment → workerData.modelId, getModelContextWindow для
@@ -1171,8 +1176,16 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // модель чата, а не глобальную. NULL у колонки = глобальное назначение
     // (все чаты, созданные до фичи, ведут себя как раньше).
     // Side-чаты (sideChatParentId) наследуют модель родителя.
+    // Аналогично reasoning_value: подменяем storeData.reasoningValue —
+    // worker (fakeStore поверх storeData) и AIClient читают его при
+    // построении reasoning-параметров запроса.
+    // ПРИОРИТЕТ: params.reasoningValue (значение из UI на момент клика
+    // «Отправить») > chats.reasoning_value (БД) > глобальная настройка.
+    // UI-значение — высший приоритет: устраняет гонки, когда restore-цепочка
+    // или запись в БД не успели, и в запрос уходило значение прошлого чата.
     try {
-      const chatModel = getChatModel(params.sideChatParentId ?? params.chatId)
+      const dbId = params.sideChatParentId ?? params.chatId
+      const chatModel = getChatModel(dbId)
       if (chatModel) {
         const assignments = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
         const idx = assignments.findIndex(a => a.role === 'main')
@@ -1180,6 +1193,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         if (idx >= 0) assignments[idx] = override
         else assignments.push(override)
         storeData.modelAssignments = assignments
+      }
+      if (params.reasoningValue !== undefined) {
+        storeData.reasoningValue = params.reasoningValue
+      } else {
+        const chatReasoning = getChatReasoning(dbId)
+        if (chatReasoning !== null) storeData.reasoningValue = chatReasoning
       }
     } catch { /* ok — чат мог быть удалён */ }
 
@@ -1456,6 +1475,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       bufferedAgentStatus: null,
       bufferedRateLimitSec: 0,
       bufferedRetry: null,
+      bufferedUsage: { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      streamingMs: 0,
+      lastOutputAt: 0,
       doneSent: false,
       sendDone: () => { /* присваивается ниже после определения sendDone */ },
       pendingTextAfter: '',
@@ -1510,6 +1532,21 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       run.uiFlushTimer = setTimeout(flushUiTokens, UI_FLUSH_MS)
     }
 
+    // ── Учёт фактического времени стриминга (для скорости ток/с) ──
+    // Вызывается на каждый text/thinking-токен. Гэп между токенами > 3с —
+    // это пауза (выполнение тулов, ожидание следующего раунда LLM), её НЕ
+    // считаем. Итог: streamingMs ≈ чистое время генерации токенов.
+    const OUTPUT_GAP_MAX_MS = 3000
+    const noteOutputActivity = () => {
+      const now = Date.now()
+      if (run.lastOutputAt > 0) {
+        const gap = now - run.lastOutputAt
+        if (gap <= OUTPUT_GAP_MAX_MS) run.streamingMs += gap
+        // gap > порога: новая волна генерации после тулов — не засчитываем
+      }
+      run.lastOutputAt = now
+    }
+
     const sendDone = (
       fullText: string,
       thinkingText?: string,
@@ -1519,6 +1556,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       todo?: unknown[],
       fileSnapshots?: Array<{ path: string; contentBefore: string | null }>,
       usage?: { promptTokens?: number; completionTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number },
+      finishReason: 'done' | 'stopped' | 'error' = 'done',
     ) => {
       if (run.doneSent) return
       run.doneSent = true
@@ -1576,6 +1614,20 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         : 0
       // Полная длительность ответа от старта run до завершения.
       const durationMs = Date.now() - run.startedAt
+      // Usage: приоритет — явный usage из done/error воркера; fallback —
+      // накопленный в run.bufferedUsage из context_usage source:'real'
+      // (при Стопе/краше воркер terminate()ится до отправки done — но сырые
+      // суммы токенов уже доехали в main заранее, на каждом LLM-вызове).
+      const effUsage = (usage && (usage.promptTokens != null || usage.completionTokens != null))
+        ? usage
+        : ((run.bufferedUsage.promptTokens > 0 || run.bufferedUsage.completionTokens > 0)
+            ? {
+                promptTokens: run.bufferedUsage.promptTokens || undefined,
+                completionTokens: run.bufferedUsage.completionTokens || undefined,
+                cacheReadTokens: run.bufferedUsage.cacheReadTokens || undefined,
+                cacheWriteTokens: run.bufferedUsage.cacheWriteTokens || undefined,
+              }
+            : undefined)
       const assistantMsg: Message & { iterations?: unknown } = {
         id: assistantMsgId,
         chatId: params.chatId,
@@ -1599,11 +1651,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         attachmentResult: run.attachmentResult ?? undefined,
         // Per-message статистика для развёртываемой панели в UI.
         durationMs,
-        promptTokens: usage?.promptTokens,
-        completionTokens: usage?.completionTokens,
-        cacheReadTokens: usage?.cacheReadTokens,
-        cacheWriteTokens: usage?.cacheWriteTokens,
+        // Чистое время генерации (без тулов/обработки промпта) — для
+        // честной скорости ток/с. 0/undefined → UI fallback на durationMs.
+        streamingMs: run.streamingMs > 0 ? run.streamingMs : undefined,
+        promptTokens: effUsage?.promptTokens,
+        completionTokens: effUsage?.completionTokens,
+        cacheReadTokens: effUsage?.cacheReadTokens,
+        cacheWriteTokens: effUsage?.cacheWriteTokens,
         toolCallsCount: toolCallsCount > 0 ? toolCallsCount : undefined,
+        // Как завершился turn: done/stopped/error — UI показывает бейдж
+        // «Остановлено»/«Обрыв» на оборванных сообщениях.
+        finishReason,
       }
 
       if (!params.incognito) saveMessage(assistantMsg)
@@ -1994,6 +2052,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           run.bufferedText += (msg.token as string) || ''
           run.pendingTextAfter += (msg.token as string) || ''
           run.checkpointDirty = true
+          noteOutputActivity()
           // Батчинг: IPC пачкой раз в UI_FLUSH_MS, а не на каждый токен.
           run.uiTokenBuf += (msg.token as string) || ''
           scheduleUiFlush()
@@ -2004,6 +2063,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           run.bufferedThinking += tok
           run.pendingThinking += tok
           run.checkpointDirty = true
+          noteOutputActivity()
           run.uiThinkingBuf += tok
           scheduleUiFlush()
           break
@@ -2914,6 +2974,15 @@ ${subModeOutro}`,
                 ts: Date.now(),
               })
             } catch { /* ok — не критично */ }
+            // Аккумулируем сырые токены turn'а в run-буфер: при Стопе/краше
+            // воркера done/error не приходят, но статистика токенов уже
+            // известна main'у — sendDone возьмёт её из bufferedUsage.
+            if (typeof msg.rawPromptTokens === 'number' || typeof msg.rawCompletionTokens === 'number') {
+              run.bufferedUsage.promptTokens = Math.max(run.bufferedUsage.promptTokens, (msg.rawPromptTokens as number) || 0)
+              run.bufferedUsage.completionTokens = Math.max(run.bufferedUsage.completionTokens, (msg.rawCompletionTokens as number) || 0)
+              run.bufferedUsage.cacheReadTokens = Math.max(run.bufferedUsage.cacheReadTokens, (msg.rawCacheReadTokens as number) || 0)
+              run.bufferedUsage.cacheWriteTokens = Math.max(run.bufferedUsage.cacheWriteTokens, (msg.rawCacheWriteTokens as number) || 0)
+            }
           }
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
             chatId: params.chatId,
@@ -2989,6 +3058,7 @@ ${subModeOutro}`,
                 cacheReadTokens: msg.cacheReadTokens as number | undefined,
                 cacheWriteTokens: msg.cacheWriteTokens as number | undefined,
               },
+              'error',
             )
           } else {
             // Нет прогресса — сохраняем сообщение с текстом ошибки чтобы
@@ -3005,6 +3075,13 @@ ${subModeOutro}`,
               toolSteps: undefined,
               iterations: undefined,
               durationMs: Date.now() - run.startedAt,
+              // Статистика всё равно сохраняется: часть LLM-вызовов могла
+              // пройти до ошибки (токены уже в run.bufferedUsage).
+              promptTokens: run.bufferedUsage.promptTokens || undefined,
+              completionTokens: run.bufferedUsage.completionTokens || undefined,
+              cacheReadTokens: run.bufferedUsage.cacheReadTokens || undefined,
+              cacheWriteTokens: run.bufferedUsage.cacheWriteTokens || undefined,
+              finishReason: 'error',
             }
             if (!params.incognito) saveMessage(errorAssistantMsg)
             run.doneSent = true
@@ -3043,7 +3120,7 @@ ${subModeOutro}`,
       console.log('[chat.ipc] Worker CRASH: %s', err.message)
       log('[Worker] CRASH chatId=%s: %s', params.chatId, err.message)
       console.error('[Worker] CRASH:', err)
-      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
+      sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo, undefined, undefined, 'error')
       emitRunStatus(win, params.chatId, 'error', assistantMsgId, err.message)
       win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
         chatId: params.chatId, error: err.message,
@@ -3062,7 +3139,7 @@ ${subModeOutro}`,
         if (!run.doneSent) {
           log('[Worker] exit без done — флешим накопленный прогресс chatId=%s (text=%d chars, steps=%d)',
             params.chatId, run.bufferedText.length, run.bufferedSteps.length)
-          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
+          sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo, undefined, undefined, 'error')
         }
       })
     })
@@ -3238,7 +3315,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // ── Проекты (рабочие директории) — вынесены в projects.ipc.ts ────────
   registerProjectsIPC(mainWindow)
 
-  ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string, model?: { modelId?: string; modelProvider?: string }) => {
+  ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string, model?: { modelId?: string; modelProvider?: string; reasoningValue?: string }) => {
     return createChat(isIncognito, mode, projectId, model)
   })
 
@@ -3259,7 +3336,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   ipcMain.handle('chat:previewSystemPrompt', async (_, chatId?: string) => {
     try {
       const prompt = await getSystemPrompt(chatId ?? lastActiveChatId ?? undefined)
-      return { ok: true, prompt }
+      // Маркер кэш-разрыва — служебный, в UI-превью не показываем.
+      return { ok: true, prompt: prompt.replaceAll(SYSTEM_PROMPT_CACHE_BREAK, '\n\n') }
     } catch (e: any) {
       return { ok: false, error: e?.message ?? String(e) }
     }
@@ -3344,6 +3422,12 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   ipcMain.handle('chat:getModel', (_, chatId: string) => getChatModel(chatId))
   ipcMain.handle('chat:setModel', (_, chatId: string, modelId: string | null, modelProvider: string | null) => {
     setChatModel(chatId, modelId, modelProvider)
+    return true
+  })
+  // Per-chat уровень мышления: NULL = глобальный settings.reasoningValue.
+  ipcMain.handle('chat:getReasoning', (_, chatId: string) => getChatReasoning(chatId))
+  ipcMain.handle('chat:setReasoning', (_, chatId: string, value: string | null) => {
+    setChatReasoning(chatId, value)
     return true
   })
   ipcMain.handle('chat:getDraft', (_, chatId: string) => getChatDraft(chatId))
@@ -3503,6 +3587,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     oneShotAllowedTools?: string[]
     /** Режим для кастомной команды: 'ask' (read-only) | 'plan' | 'code'. */
     oneShotMode?: 'ask' | 'plan' | 'code'
+    /** Уровень мышления из UI на момент клика «Отправить» (source of truth,
+     *  приоритет над БД/глобальной настройкой — см. runChatSend). */
+    reasoningValue?: string
     /** Прикреплённые файлы/изображения из @mention/drag&drop/paste/dialog.
      *  Текстовые файлы инлайним в content, картинки — путь (vision Phase 2). */
     attachments?: Attachment[]
@@ -3731,8 +3818,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       ptyManager.interruptByChat(run.chatId)
       // Флешим накопленный прогресс — пользователь увидит частичный ответ,
       // сохранённый в историю. sendDone также сбрасывает activeRunMeta и
-      // дрейнит очередь этого чата.
-      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo)
+      // дрейнит очередь этого чата. usage не передаём — sendDone возьмёт
+      // накопленный run.bufferedUsage (воркер terminate()ится раньше, чем
+      // успел бы отправить done с usage).
+      run.sendDone(run.bufferedText, run.bufferedThinking, run.bufferedThinkingMs, run.bufferedSteps, buildFinalIters(run), run.bufferedTodo, undefined, undefined, 'stopped')
       // 'cancelled' шлём ТОЛЬКО если sendDone не зарегистрировал 'done'.
       // sendDone первым делом ставит doneSent=true и в норме эмитит 'done'
       // (CHAT_STREAM_DONE + CHAT_RUN_STATUS:'done'). Переопределение 'done'

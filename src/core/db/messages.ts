@@ -16,8 +16,8 @@ export function setMessageSavedCallback(cb: (chatId: string) => void): void { _o
 
 export function saveMessage(msg: Message): void {
   getDB().prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, tool_calls_count, thinking_blocks)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, tool_calls_count, thinking_blocks, finish_reason, streaming_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
     msg.toolSteps ? JSON.stringify(msg.toolSteps) : null,
@@ -37,6 +37,8 @@ export function saveMessage(msg: Message): void {
     msg.cacheWriteTokens ?? null,
     msg.toolCallsCount ?? null,
     (msg as Message & { thinkingBlocks?: unknown }).thinkingBlocks ? JSON.stringify((msg as Message & { thinkingBlocks?: unknown }).thinkingBlocks) : null,
+    msg.finishReason ?? null,
+    msg.streamingMs ?? null,
   )
   touchChat(msg.chatId)
   _onMessageSaved?.(msg.chatId)
@@ -70,8 +72,9 @@ const MESSAGE_SELECT_COLS = `SELECT
   tool_steps as toolStepsJson, thinking, thinking_ms as thinkingMs, slash_command as slashCommandJson,
   iterations as iterationsJson, plan_data as planDataJson, todo as todoJson, compact_summary as compactSummary,
   compact_stats as compactStatsJson, attachments as attachmentsJson, attachment_result as attachmentResultJson,
-  duration_ms as durationMs, prompt_tokens as promptTokens, completion_tokens as completionTokens,
+  duration_ms as durationMs, streaming_ms as streamingMs, prompt_tokens as promptTokens, completion_tokens as completionTokens,
   cache_read_tokens as cacheReadTokens, cache_write_tokens as cacheWriteTokens, tool_calls_count as toolCallsCount,
+  finish_reason as finishReason,
   thinking_blocks as thinkingBlocksJson, hidden_from_context as hiddenFromContext`
 
 export function getMessages(chatId: string): Message[] {

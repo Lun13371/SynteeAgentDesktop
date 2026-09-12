@@ -64,8 +64,21 @@ export interface ActiveRun {
   bufferedAgentStatus: string | null
   bufferedRateLimitSec: number
   bufferedRetry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
+  // Накопленный реальный usage turn'а (сырые суммы по всем LLM-вызовам).
+  // Воркер шлёт их в каждом context_usage source:'real' — main аккумулирует
+  // здесь, чтобы при Стопе/краше (когда done/error от воркера не приходят)
+  // sendDone всё равно сохранил статистику токенов в сообщении.
+  bufferedUsage: { promptTokens: number; completionTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+  // ── Фактическое время стриминга (для честной скорости ток/с) ──
+  // durationMs включает обработку промпта до первого токена и выполнение
+  // тулов между раундами — скорость completionTokens/durationMs получалась
+  // заниженной в разы. Здесь копим ТОЛЬКО время активной генерации: от
+  // первого до последнего токена, гэпы > OUTPUT_GAP_MAX_MS (тулы, пауза
+  // между раундами) не считаются.
+  streamingMs: number
+  lastOutputAt: number
   doneSent: boolean
-  sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[], todo?: unknown[], fileSnapshots?: Array<{ path: string; contentBefore: string | null }>, usage?: { promptTokens?: number; completionTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }) => void
+  sendDone: (fullText: string, thinkingText?: string, thinkingMs?: number, steps?: unknown[], iters?: unknown[], todo?: unknown[], fileSnapshots?: Array<{ path: string; contentBefore: string | null }>, usage?: { promptTokens?: number; completionTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }, finishReason?: 'done' | 'stopped' | 'error') => void
   // ── Реконструкция итераций (зеркало ai-worker.ts:113-125) ──
   // Раньше bufferedIters был всегда [] — main не группировал шаги в итерации,
   // полагаясь на worker.collectedIters в сообщении 'done'. Но при stop/exit/

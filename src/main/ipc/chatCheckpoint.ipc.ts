@@ -59,10 +59,16 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
       const fileMap = new Map<string, { added: number; deleted: number }>()
       for (const step of assistantMsg.toolSteps) {
         if (step.type !== 'tool_result' || !step.diff) continue
-        // Извлекаем path из +++ строки, fallback — toolArgs.path
+        // Извлекаем path из +++ строки, fallback — toolArgs.path.
+        // createPatch на Windows оборачивает пути с '\' в кавычки И экранирует
+        // слеши: +++ "C:\\Projects\\..." — срезаем кавычки и расэкранируем
+        // \\ → \, иначе путь не матчится с parsePatch (панель «Сессия»).
         const pathMatch = step.diff.match(/^\+\+\+\s+(.+)$/m)
         let filePath = pathMatch?.[1]?.trim() ?? (step.toolArgs?.path as string | undefined)
         if (!filePath) continue
+        if (filePath.startsWith('"') && filePath.endsWith('"')) {
+          filePath = filePath.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"')
+        }
         // Считаем + и - строки (пропуская +++/--- заголовки)
         let added = 0, deleted = 0
         for (const line of step.diff.split('\n')) {

@@ -34,10 +34,11 @@ export function registerForkIPC(): void {
       }
 
       // Создаём новый чат с теми же параметрами (не инкогнито, тот же режим/проект).
-      // Модель наследуется от исходного чата (per-chat model).
+      // Модель и уровень мышления наследуются от исходного чата (per-chat).
       const forkedChat = createChat(false, sourceChat.mode, sourceChat.projectId, {
         modelId: sourceChat.modelId,
         modelProvider: sourceChat.modelProvider,
+        reasoningValue: sourceChat.reasoningValue,
       })
       const forkedChatId = forkedChat.id
       const forkTitle = (title && title.trim()) || `${sourceChat.title} (fork)`

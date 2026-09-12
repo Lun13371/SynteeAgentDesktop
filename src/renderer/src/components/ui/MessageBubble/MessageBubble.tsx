@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import type { PluginUiWidgetPayload } from '@shared/types/plugin'
+import { formatTokens, formatTokensFull, formatDuration } from '@shared/format'
 import PluginIframe from '../PluginSlot/PluginIframe'
 import { collectMarkdownRenderers, collectMessageContextMenu, collectMessageTags, getPluginsExt } from '../../../utils/pluginExtApi'
 import { useExtensionsStore } from '../../../store/extensions.store'
@@ -2221,10 +2222,27 @@ const MessageContent = memo(function MessageContent({
           {(() => {
             const hasStats = !isUser && (
               message.durationMs != null || message.promptTokens != null ||
-              message.completionTokens != null || message.toolCallsCount != null
+              message.completionTokens != null || message.toolCallsCount != null ||
+              message.finishReason != null
             )
             const dur = message.durationMs
-            const durStr = dur == null ? '' : dur < 1000 ? `${dur} мс` : `${(dur / 1000).toFixed(dur < 10000 ? 1 : 0)} с`
+            const durStr = dur == null ? '' : formatDuration(dur)
+            const fmtMs = (ms?: number) => (ms == null ? '' : formatDuration(ms))
+            const totalTokens = (message.promptTokens ?? 0) + (message.completionTokens ?? 0)
+            // Скорость генерации — из ЧИСТОГО времени стриминга (streamingMs,
+            // без пауз на тулы и обработку промпта). Fallback на durationMs —
+            // старые сообщения без streamingMs. Гард 500мс: на коротких
+            // ответах стриминг слишком мал для осмысленной скорости.
+            const speedBaseMs = (message.streamingMs != null && message.streamingMs >= 500)
+              ? message.streamingMs
+              : ((dur != null && dur >= 1000) ? dur : null)
+            const speed = speedBaseMs != null && message.completionTokens != null
+              ? message.completionTokens / (speedBaseMs / 1000)
+              : null
+            const finishLabel = message.finishReason === 'stopped'
+              ? 'Остановлено вручную'
+              : message.finishReason === 'error' ? 'Оборвано (ошибка)' : null
+            const itersCount = (message as { iterations?: unknown[] }).iterations?.length ?? 0
             return (
               <>
                 {hasStats && (
@@ -2238,6 +2256,16 @@ const MessageContent = memo(function MessageContent({
                   >
                     <AppIcon name="info" size="xs" tone={statsOpen ? 'accent' : 'muted'} />
                   </button>
+                )}
+                {/* Бейдж «как завершился turn» — видно сразу в футере, без
+                    разворачивания панели: ⏹ остановлено / ⚠ оборвано ошибкой. */}
+                {!isUser && finishLabel && (
+                  <span
+                    className={`message-finish-badge message-finish-badge--${message.finishReason}`}
+                    title={finishLabel}
+                  >
+                    {message.finishReason === 'stopped' ? '⏹ остановлено' : '⚠ оборвано'}
+                  </span>
                 )}
                 {/* Скрыто из AI-контекста: бейдж с кликом «вернуть» (вне режима
                     редактора — мгновенная запись в БД + патч локального стора). */}
@@ -2266,48 +2294,90 @@ const MessageContent = memo(function MessageContent({
                       exit={{ opacity: 0, y: 6, scale: 0.97 }}
                       transition={{ duration: 0.16, ease: 'easeOut' }}
                     >
-                      {durStr && (
-                        <div className="message-stats-row">
-                          <AppIcon name="clock" size="xs" tone="muted" />
-                          <span className="message-stats-label">Длительность</span>
-                          <span className="message-stats-value">{durStr}</span>
-                        </div>
-                      )}
-                      {message.promptTokens != null && (
-                        <div className="message-stats-row">
-                          <span className="message-stats-arrow message-stats-arrow--up">↑</span>
-                          <span className="message-stats-label">Вход</span>
-                          <span className="message-stats-value">{message.promptTokens.toLocaleString('ru')}</span>
-                        </div>
-                      )}
-                      {message.completionTokens != null && (
-                        <div className="message-stats-row">
-                          <span className="message-stats-arrow message-stats-arrow--down">↓</span>
-                          <span className="message-stats-label">Выход</span>
-                          <span className="message-stats-value">{message.completionTokens.toLocaleString('ru')}</span>
-                        </div>
-                      )}
-                      {!!message.cacheReadTokens && (
-                        <div className="message-stats-row">
-                          <span className="message-stats-arrow">≡</span>
-                          <span className="message-stats-label">Кэш чтение</span>
-                          <span className="message-stats-value">{message.cacheReadTokens.toLocaleString('ru')}</span>
-                        </div>
-                      )}
-                      {!!message.cacheWriteTokens && (
-                        <div className="message-stats-row">
-                          <span className="message-stats-arrow">≡</span>
-                          <span className="message-stats-label">Кэш запись</span>
-                          <span className="message-stats-value">{message.cacheWriteTokens.toLocaleString('ru')}</span>
-                        </div>
-                      )}
-                      {message.toolCallsCount != null && (
-                        <div className="message-stats-row">
-                          <AppIcon name="wrench" size="xs" tone="muted" />
-                          <span className="message-stats-label">Вызовы тулов</span>
-                          <span className="message-stats-value">{message.toolCallsCount}</span>
-                        </div>
-                      )}
+                    {finishLabel && (
+                      <div className={`message-stats-row message-stats-row--finish message-stats-row--finish-${message.finishReason}`}>
+                        <AppIcon name={message.finishReason === 'stopped' ? 'pause' : 'alertTriangle'} size="xs" tone={message.finishReason === 'stopped' ? 'muted' : 'warning'} />
+                        <span className="message-stats-label">Статус</span>
+                        <span className="message-stats-value">{finishLabel}</span>
+                      </div>
+                    )}
+                    {message.model && message.model !== 'error' && (
+                      <div className="message-stats-row">
+                        <AppIcon name="cpu" size="xs" tone="muted" />
+                        <span className="message-stats-label">Модель</span>
+                        <span className="message-stats-value">{message.model}</span>
+                      </div>
+                    )}
+                    {durStr && (
+                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(Math.round((dur ?? 0) / 100) / 10)} с`}>
+                        <AppIcon name="clock" size="xs" tone="muted" />
+                        <span className="message-stats-label">Длительность</span>
+                        <span className="message-stats-value">{durStr}</span>
+                      </div>
+                    )}
+                    {message.promptTokens != null && (
+                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(message.promptTokens)} токенов`}>
+                        <span className="message-stats-arrow message-stats-arrow--up">↑</span>
+                        <span className="message-stats-label">Вход</span>
+                        <span className="message-stats-value">{formatTokens(message.promptTokens)}</span>
+                      </div>
+                    )}
+                    {message.completionTokens != null && (
+                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(message.completionTokens)} токенов`}>
+                        <span className="message-stats-arrow message-stats-arrow--down">↓</span>
+                        <span className="message-stats-label">Выход</span>
+                        <span className="message-stats-value">{formatTokens(message.completionTokens)}</span>
+                      </div>
+                    )}
+                    {totalTokens > 0 && (
+                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(totalTokens)} токенов`}>
+                        <AppIcon name="layers" size="xs" tone="muted" />
+                        <span className="message-stats-label">Всего</span>
+                        <span className="message-stats-value">{formatTokens(totalTokens)}</span>
+                      </div>
+                    )}
+                    {!!message.cacheReadTokens && (
+                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(message.cacheReadTokens)} токенов`}>
+                        <span className="message-stats-arrow">≡</span>
+                        <span className="message-stats-label">Кэш чтение</span>
+                        <span className="message-stats-value">{formatTokens(message.cacheReadTokens)}</span>
+                      </div>
+                    )}
+                    {!!message.cacheWriteTokens && (
+                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(message.cacheWriteTokens)} токенов`}>
+                        <span className="message-stats-arrow">≡</span>
+                        <span className="message-stats-label">Кэш запись</span>
+                        <span className="message-stats-value">{formatTokens(message.cacheWriteTokens)}</span>
+                      </div>
+                    )}
+                    {speed != null && speed > 0 && (
+                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(Math.round(speed))} токенов/с — по чистому времени генерации (${formatDuration(speedBaseMs ?? 0)})`}>
+                        <AppIcon name="zap" size="xs" tone="muted" />
+                        <span className="message-stats-label">Скорость</span>
+                        <span className="message-stats-value">{speed >= 100 ? Math.round(speed) : speed.toFixed(1)} ток/с</span>
+                      </div>
+                    )}
+                    {message.thinkingMs != null && message.thinkingMs > 0 && (
+                      <div className="message-stats-row">
+                        <AppIcon name="brain" size="xs" tone="muted" />
+                        <span className="message-stats-label">Размышления</span>
+                        <span className="message-stats-value">{fmtMs(message.thinkingMs)}</span>
+                      </div>
+                    )}
+                    {itersCount > 1 && (
+                      <div className="message-stats-row">
+                        <AppIcon name="listChecks" size="xs" tone="muted" />
+                        <span className="message-stats-label">Итерации</span>
+                        <span className="message-stats-value">{itersCount}</span>
+                      </div>
+                    )}
+                    {message.toolCallsCount != null && (
+                      <div className="message-stats-row">
+                        <AppIcon name="wrench" size="xs" tone="muted" />
+                        <span className="message-stats-label">Вызовы тулов</span>
+                        <span className="message-stats-value">{message.toolCallsCount}</span>
+                      </div>
+                    )}
                     </motion.div>
                   )}
                 </AnimatePresence>

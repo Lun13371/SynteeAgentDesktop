@@ -206,6 +206,9 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
   const [mainModelProviderId, setMainModelProviderId] = useState('anthropic')
   const [reasoningValue, setReasoningValue] = useState('')
+  // Pick-guard (см. ChatPage.lastUserPickRef): поздний restore не затирает
+  // свежий ручной выбор пользователя.
+  const lastUserPickRef = useRef<{ chatId: string; ts: number } | null>(null)
   const [showContextRing] = useState(true)
   const [customCommands, setCustomCommands] = useState<SlashCommand[]>([])
 
@@ -217,12 +220,15 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     let cancelled = false
     ;(async () => {
       try {
-        const [assignments, reason, chatModel] = await Promise.all([
+        const [assignments, reason, chatModel, chatReasoning] = await Promise.all([
           window.syntee.settings.get('modelAssignments'),
           window.syntee.settings.get('reasoningValue'),
           // Per-chat модель имеет приоритет над глобальным назначением.
           (chat && !isIncognito)
             ? window.syntee.chat.getModel(chatId).catch(() => null)
+            : Promise.resolve(null),
+          (chat && !isIncognito)
+            ? window.syntee.chat.getReasoning(chatId).catch(() => null)
             : Promise.resolve(null),
         ])
         if (cancelled) return
@@ -236,7 +242,9 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
             setMainModelProviderId(main.providerId ?? 'anthropic')
           }
         }
-        if (typeof reason === 'string' && reason) setReasoningValue(reason)
+        // Per-chat reasoning имеет приоритет; глобальный — дефолт.
+        if (typeof chatReasoning === 'string') setReasoningValue(chatReasoning)
+        else if (typeof reason === 'string' && reason) setReasoningValue(reason)
       } catch { /* ok */ }
     })()
     return () => { cancelled = true }
@@ -263,23 +271,37 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
         // Сбрасываем режимы синхронно — чтобы UI не показывал вспышку
         // режимов предыдущего чата пока async-load не завершится.
         setPlanningMode(false); setImageMode(false); setAskMode(false)
-        const [modes, draftText, history, attachments, loadedPersona, chatModel] = await Promise.all([
-          window.syntee.chat.getModes(chatId),
-          window.syntee.chat.getDraft(chatId),
-          window.syntee.chat.getInputHistory(chatId),
-          window.syntee.draft.getAttachments(chatId),
-          window.syntee.chat.getPersona(chatId),
-          window.syntee.chat.getModel(chatId).catch(() => null),
+        // Модель + reasoning — ОТДЕЛЬНАЯ цепочка (как в ChatPage): падение
+        // modes/draft-загрузки не должно блокировать их восстановление.
+        // PICK-GUARD: поздний restore не затирает свежий ручной выбор.
+        const targetChatId = chatId
+        const restoreStartedAt = Date.now()
+        Promise.all([
+          window.syntee.chat.getModel(targetChatId).catch(() => null),
+          window.syntee.chat.getReasoning(targetChatId).catch(() => null),
+        ]).then(([m, r]) => {
+          if (cancelled || targetChatId !== chatId) return
+          const pick = lastUserPickRef.current
+          if (pick && pick.chatId === targetChatId && pick.ts > restoreStartedAt) return
+          if (m) {
+            setMainModelId(m.modelId)
+            setMainModelProviderId(m.modelProvider)
+          }
+          if (typeof r === 'string') setReasoningValue(r)
+        }).catch(() => {})
+        const [modes, draftText, history, attachments, loadedPersona] = await Promise.all([
+          window.syntee.chat.getModes(chatId).catch(() => null),
+          window.syntee.chat.getDraft(chatId).catch(() => null),
+          window.syntee.chat.getInputHistory(chatId).catch(() => null),
+          window.syntee.draft.getAttachments(chatId).catch(() => null),
+          window.syntee.chat.getPersona(chatId).catch(() => null),
         ])
         if (cancelled) return
-        // Per-chat модель сплит-чата (null = глобальная main).
-        if (chatModel) {
-          setMainModelId(chatModel.modelId)
-          setMainModelProviderId(chatModel.modelProvider)
+        if (modes) {
+          setPlanningMode(!!modes.planningMode)
+          setImageMode(!!modes.imageMode)
+          setAskMode(!!modes.askMode)
         }
-        setPlanningMode(!!modes.planningMode)
-        setImageMode(!!modes.imageMode)
-        setAskMode(!!modes.askMode)
         const safePersona = isValidPersona(loadedPersona) ? loadedPersona : DEFAULT_PERSONA
         setPersonaState(safePersona); personaRef.current = safePersona
         setDraft(typeof draftText === 'string' ? draftText : '')
@@ -493,13 +515,21 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
 
   const handleReasoningChange = useCallback((value: string) => {
     setReasoningValue(value)
+    // Per-chat reasoning (см. ChatPage.handleReasoningChange): пишем в чат,
+    // глобальная настройка — дефолт для новых чатов.
+    if (!isIncognito) {
+      lastUserPickRef.current = { chatId, ts: Date.now() }
+      window.syntee.chat.setReasoning(chatId, value).catch(() => {})
+    }
     window.syntee.settings.set('reasoningValue', value).catch(() => {})
-  }, [])
+  }, [chatId, isIncognito])
 
   const handleMainModelChange = useCallback(async (modelId: string, providerId: string) => {
     setMainModelId(modelId)
+    setMainModelProviderId(providerId)
     // Per-chat модель сплит-чата (см. ChatPage.handleMainModelChange).
     if (!isIncognito) {
+      lastUserPickRef.current = { chatId, ts: Date.now() }
       window.syntee.chat.setModel(chatId, modelId, providerId).catch((e: unknown) => {
         console.error('[SplitChatPane] chat:setModel', e)
       })
@@ -715,6 +745,8 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       persona,
       mode: activeMode,
       oneShotSkill, oneShotAllowedTools, oneShotMode, oneShotPersona,
+      // Уровень мышления из UI на момент клика (source of truth, см. ChatPage).
+      reasoningValue: reasoningValue,
       attachments: attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
     }) as { queued?: boolean; assistantMsgId?: string }
 
@@ -725,7 +757,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       initChatSend(chatId)
       requestAnimationFrame(() => pinAutoscroll(true))
     }
-  }, [chatId, customCommands, replyTo, isIncognito, planningMode, askMode, imageMode, persona, activeMode, addMessage, setMessagesWindow, pinAutoscroll, chat])
+  }, [chatId, customCommands, replyTo, isIncognito, planningMode, askMode, imageMode, persona, activeMode, reasoningValue, addMessage, setMessagesWindow, pinAutoscroll, chat])
 
   const chatTitle = chat?.title ?? 'Чат'
 
