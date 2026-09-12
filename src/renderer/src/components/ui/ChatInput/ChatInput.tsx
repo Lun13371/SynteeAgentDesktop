@@ -715,6 +715,10 @@ function ChatInput({
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
+      // Открыт диалог подтверждения тулов — Enter подтверждает ЕГО
+      // (AgentConfirmDialog ловит тот же keydown на window и вызывает
+      // respond), а не отправляет набранный в инпуте текст.
+      if (document.querySelector('.agent-confirm-overlay')) return
       handleSend()
     }
   }

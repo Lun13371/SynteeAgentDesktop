@@ -388,7 +388,7 @@ const synteeAPI = {
 
   // Чат
   chat: {
-    create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string, model?: { modelId?: string; modelProvider?: string }) => ipcRenderer.invoke('chat:create', incognito, mode, projectId, model),
+    create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string, model?: { modelId?: string; modelProvider?: string; reasoningValue?: string }) => ipcRenderer.invoke('chat:create', incognito, mode, projectId, model),
     getAll: () => ipcRenderer.invoke('chat:getAll'),
     // Активный чат (зеркало currentChatId из zustand renderer'а) — для
     // Spotlight "спросить в текущем чате". setActive вызывается App.tsx
@@ -422,6 +422,8 @@ const synteeAPI = {
       oneShotSkill?: { name: string; instructions: string }
       oneShotAllowedTools?: string[]
       oneShotMode?: 'ask' | 'plan' | 'code'
+      /** Уровень мышления из UI на момент отправки (source of truth для main). */
+      reasoningValue?: string
       attachments?: import('../../shared/types').Attachment[]
     }) => ipcRenderer.invoke('chat:send', params),
     delete: (chatId: string) => ipcRenderer.invoke('chat:delete', chatId),
@@ -537,6 +539,9 @@ const synteeAPI = {
     /** Per-chat модель: null = глобальное назначение role:'main'. */
     getModel: (chatId: string) => ipcRenderer.invoke('chat:getModel', chatId) as Promise<{ modelId: string; modelProvider: string } | null>,
     setModel: (chatId: string, modelId: string | null, modelProvider: string | null) => ipcRenderer.invoke('chat:setModel', chatId, modelId, modelProvider),
+    /** Per-chat уровень мышления: null = глобальный settings.reasoningValue. */
+    getReasoning: (chatId: string) => ipcRenderer.invoke('chat:getReasoning', chatId) as Promise<string | null>,
+    setReasoning: (chatId: string, value: string | null) => ipcRenderer.invoke('chat:setReasoning', chatId, value),
     getDraft: (chatId: string) => ipcRenderer.invoke('chat:getDraft', chatId) as Promise<string>,
     setDraft: (chatId: string, draft: string) => ipcRenderer.invoke('chat:setDraft', chatId, draft),
     getInputHistory: (chatId: string) => ipcRenderer.invoke('chat:getInputHistory', chatId) as Promise<string[]>,

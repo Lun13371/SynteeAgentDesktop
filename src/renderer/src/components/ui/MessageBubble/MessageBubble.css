@@ -713,6 +713,33 @@
   font-weight: 500;
 }
 
+/* Строка «Статус» в панели статистики — подсветка оборванных turn'ов */
+.message-stats-row--finish-stopped .message-stats-value { color: var(--text-secondary); }
+.message-stats-row--finish-error .message-stats-value { color: var(--danger, #f87171); }
+
+/* Бейдж «⏹ остановлено» / «⚠ оборвано» в футере сообщения — видно без
+   разворачивания панели статистики. */
+.message-finish-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-secondary, rgba(128, 128, 128, 0.08));
+  white-space: nowrap;
+  user-select: none;
+}
+
+.message-finish-badge--error {
+  color: var(--danger, #f87171);
+  border-color: color-mix(in srgb, var(--danger, #f87171) 35%, transparent);
+  background: color-mix(in srgb, var(--danger, #f87171) 8%, transparent);
+}
+
 .message-avatar--circle {
   width: 28px;
   height: 28px;

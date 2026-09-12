@@ -326,6 +326,16 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const mainModelRef = useRef<{ modelId: string; providerId: string } | null>(null)
   const currentChatIdRef = useRef<string | null>(null)
   const [reasoningValue, setReasoningValue] = useState('')
+  // Глобальный reasoning (дефолт для чатов без своего значения) и ref текущего
+  // значения — для наследования при создании нового чата.
+  const globalReasoningRef = useRef<string>('')
+  const reasoningRef = useRef<string>('')
+  // Pick-guard: { chatId, ts } последнего ручного выбора пользователя
+  // (модель или reasoning). Restore-цепочка при переключении чата НЕ должна
+  // перезаписывать значение, которое пользователь уже выбрал в этом чате
+  // после свитча — иначе поздний restore затирал свежий выбор (баг:
+  // «выбрал max — ушло medium»).
+  const lastUserPickRef = useRef<{ chatId: string; ts: number } | null>(null)
   // ChatId чата, в котором сейчас идёт manual /compact (null — нигде).
   // Привязан к chatId, а не boolean: при переключении на другой чат
   // compacting-индикатор НЕ должен утекать в чужую ленту (раньше
@@ -363,6 +373,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // бы memo при каждом ре-рендере ChatPage (стриминг 20×/сек, скролл).
   const handleReasoningChange = useCallback((value: string) => {
     setReasoningValue(value)
+    reasoningRef.current = value
+    // Per-chat: уровень мышления пишется в чат. Глобальная настройка тоже
+    // обновляется — она дефолт для новых чатов и чатов без своего значения.
+    const cid = currentChatIdRef.current
+    if (cid) {
+      lastUserPickRef.current = { chatId: cid, ts: Date.now() }
+      window.syntee.chat.setReasoning(cid, value).catch(() => {})
+    }
     window.syntee.settings.set('reasoningValue', value).catch(() => {})
   }, [])
 
@@ -375,6 +393,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // меняется только из настроек и служит дефолтом для чатов без своей модели.
     const cid = currentChatIdRef.current
     if (cid) {
+      lastUserPickRef.current = { chatId: cid, ts: Date.now() }
       window.syntee.chat.setModel(cid, modelId, providerId).catch((e: unknown) => {
         console.error('[ChatPage] chat:setModel error', e)
       })
@@ -385,6 +404,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // UI-стейт синхронным с БД.
   useEffect(() => { currentChatIdRef.current = currentChatId }, [currentChatId])
   useEffect(() => { mainModelRef.current = mainModelId ? { modelId: mainModelId, providerId: mainModelProviderId } : null }, [mainModelId, mainModelProviderId])
+  useEffect(() => { reasoningRef.current = reasoningValue }, [reasoningValue])
 
   useEffect(() => {
     window.syntee.settings.get('showContextRing').then((v: unknown) => {
@@ -413,8 +433,17 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         }
       }
     }).catch(() => {})
-    window.syntee.settings.get('reasoningValue').then((v: unknown) => {
-      if (typeof v === 'string' && v) setReasoningValue(v)
+    window.syntee.settings.get('reasoningValue').then(async (v: unknown) => {
+      if (typeof v === 'string') globalReasoningRef.current = v
+      // Ре-резолв для уже открытого чата: если у него нет своего значения —
+      // применяем глобальное (как с моделью выше).
+      const cid = currentChatIdRef.current
+      let chatReasoning: string | null = null
+      if (cid) {
+        try { chatReasoning = await window.syntee.chat.getReasoning(cid) } catch { /* ok */ }
+      }
+      const resolved = chatReasoning ?? globalReasoningRef.current
+      if (resolved && reasoningRef.current !== resolved) setReasoningValue(resolved)
     }).catch(() => {})
   }, [])
 
@@ -766,11 +795,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setDraftAttachments([])
       draftRef.current = ''
       draftAttachmentsRef.current = []
-      // Без чата — показываем глобальное назначение main.
+      // Без чата — глобальные значения.
       if (globalMainModelRef.current) {
         setMainModelId(globalMainModelRef.current.modelId)
         setMainModelProviderId(globalMainModelRef.current.providerId)
       }
+      setReasoningValue(globalReasoningRef.current)
       return
     }
     // Отменяем pending-debounce от прежнего чата
@@ -786,13 +816,47 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       draftRef.current = ''
       draftAttachmentsRef.current = []
       setInputHistory(incognitoHistoryRef.current.get(currentChatId) ?? [])
-      // Инкогнито не имеет per-chat модели — глобальное назначение.
+      // Инкогнито не имеет per-chat модели/reasoning — глобальные значения.
       if (globalMainModelRef.current) {
         setMainModelId(globalMainModelRef.current.modelId)
         setMainModelProviderId(globalMainModelRef.current.providerId)
       }
+      setReasoningValue(globalReasoningRef.current)
       return
     }
+
+    // ── Восстановление модели + уровня мышления ────────────────────────────
+    // ОТДЕЛЬНАЯ цепочка от modes/draft-загрузки: раньше модель сидела в общем
+    // Promise.all, и падение ЛЮБОГО запроса (draft/persona/history) уводило
+    // весь chain в .catch — модель прошлого чата оставалась висеть. Теперь
+    // модель восстанавливается независимо, с индивидуальными catch.
+    // PICK-GUARD: если пользователь уже выбрал модель/reasoning в этом чате
+    // ПОСЛЕ свитча — поздний restore не должен затирать свежий выбор.
+    {
+      const targetChatId = currentChatId
+      const restoreStartedAt = Date.now()
+      Promise.all([
+        window.syntee.chat.getModel(targetChatId).catch(() => null),
+        window.syntee.chat.getReasoning(targetChatId).catch(() => null),
+      ]).then(([chatModel, chatReasoning]) => {
+        // Guard: пользователь мог уйти на другой чат, пока грузилось.
+        if (targetChatId !== prevChatIdRef.current) return
+        // Pick-guard: свежий ручной выбор в этом чате важнее restore.
+        const pick = lastUserPickRef.current
+        if (pick && pick.chatId === targetChatId && pick.ts > restoreStartedAt) return
+        const cm = chatModel as { modelId: string; modelProvider: string } | null
+        const resolvedModel = cm
+          ? { modelId: cm.modelId, providerId: cm.modelProvider }
+          : globalMainModelRef.current
+        if (resolvedModel) {
+          setMainModelId(resolvedModel.modelId)
+          setMainModelProviderId(resolvedModel.providerId)
+        }
+        const resolvedReasoning = (chatReasoning as string | null) ?? globalReasoningRef.current
+        setReasoningValue(resolvedReasoning)
+      }).catch(() => { /* оба промиса уже имеют catch — сюда не попадём */ })
+    }
+
     // Обычный чат: грузим modes/draft/history/attachments из БД параллельно.
     // Сначала сбрасываем режимы в false синхронно — чтобы UI не показывал
     // вспышку режимов предыдущего чата пока async-load не завершится.
@@ -800,32 +864,23 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     planningModeRef.current = false; imageModeRef.current = false; askModeRef.current = false
     let cancelled = false
     Promise.all([
-      window.syntee.chat.getModes(currentChatId),
-      window.syntee.chat.getDraft(currentChatId),
-      window.syntee.chat.getInputHistory(currentChatId),
-      window.syntee.draft.getAttachments(currentChatId),
-      window.syntee.chat.getPersona(currentChatId),
+      window.syntee.chat.getModes(currentChatId).catch(() => null),
+      window.syntee.chat.getDraft(currentChatId).catch(() => null),
+      window.syntee.chat.getInputHistory(currentChatId).catch(() => null),
+      window.syntee.draft.getAttachments(currentChatId).catch(() => null),
+      window.syntee.chat.getPersona(currentChatId).catch(() => null),
       window.syntee.chat.getLastTurnChanges?.(currentChatId).catch(() => null),
-      // Per-chat модель: null = глобальное назначение role:'main'.
-      window.syntee.chat.getModel(currentChatId).catch(() => null),
-    ]).then(([modes, draftText, history, attachments, loadedPersona, lastChanges, chatModel]) => {
+    ]).then(([modes, draftText, history, attachments, loadedPersona, lastChanges]) => {
       if (cancelled || currentChatId !== prevChatIdRef.current) return
       useChatStore.getState().setLastTurnChanges(currentChatId, lastChanges ?? null)
-      // Модель чата: своя если задана, иначе глобальное назначение main.
-      const cm = chatModel as { modelId: string; modelProvider: string } | null
-      const resolvedModel = cm
-        ? { modelId: cm.modelId, providerId: cm.modelProvider }
-        : globalMainModelRef.current
-      if (resolvedModel) {
-        setMainModelId(resolvedModel.modelId)
-        setMainModelProviderId(resolvedModel.providerId)
+      if (modes) {
+        setPlanningMode(!!modes.planningMode)
+        setImageMode(!!modes.imageMode)
+        setAskMode(!!modes.askMode)
+        planningModeRef.current = !!modes.planningMode
+        imageModeRef.current = !!modes.imageMode
+        askModeRef.current = !!modes.askMode
       }
-      setPlanningMode(!!modes.planningMode)
-      setImageMode(!!modes.imageMode)
-      setAskMode(!!modes.askMode)
-      planningModeRef.current = !!modes.planningMode
-      imageModeRef.current = !!modes.imageMode
-      askModeRef.current = !!modes.askMode
       const safePersona = isValidPersona(loadedPersona) ? loadedPersona : DEFAULT_PERSONA
       setPersonaState(safePersona)
       personaRef.current = safePersona
@@ -1259,9 +1314,17 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setActiveProject(project.id)
       pid = project.id
     }
-    // Новый чат наследует модель текущего чата (mainModelRef — ref, не стейт:
-    // переживает протухшее замыкание useCallback).
-    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, pid, mainModelRef.current ?? undefined)
+    // Новый чат наследует модель и уровень мышления текущего чата (ref'ы, не
+    // стейт: переживают протухшее замыкание useCallback).
+    // ВНИМАНИЕ: ключи IPC-контракта — modelId/modelProvider, а ref хранит
+    // providerId. Раньше спред {...mainModelRef.current} переносил providerId,
+    // который main игнорировал → model_provider = NULL в БД → getChatModel
+    // возвращал null → чат падал на глобальную модель.
+    const cur = mainModelRef.current
+    const inherit = cur
+      ? { modelId: cur.modelId, modelProvider: cur.providerId, reasoningValue: reasoningRef.current || undefined }
+      : (reasoningRef.current ? { reasoningValue: reasoningRef.current } : undefined)
+    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, pid, inherit)
     const all: Chat[] = await window.syntee.chat.getAll()
     setChats(all)
     setCurrentChat(chat.id)
@@ -1282,8 +1345,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [setProjects, setActiveProject])
 
   const createChatWithoutProject = useCallback(async () => {
-    // Наследуем модель текущего чата (см. createNewChat).
-    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, undefined, mainModelRef.current ?? undefined)
+    // Наследуем модель и уровень мышления текущего чата (см. createNewChat;
+    // ключи маппим явно: providerId → modelProvider).
+    const cur = mainModelRef.current
+    const inherit = cur
+      ? { modelId: cur.modelId, modelProvider: cur.providerId, reasoningValue: reasoningRef.current || undefined }
+      : (reasoningRef.current ? { reasoningValue: reasoningRef.current } : undefined)
+    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, undefined, inherit)
     const all: Chat[] = await window.syntee.chat.getAll()
     setChats(all)
     setCurrentChat(chat.id)
@@ -1756,6 +1824,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // Per-message persona override (/debug, /review, ...). Не персистится —
       // sticky persona чата не меняется, только этот прогон.
       oneShotPersona,
+      // Уровень мышления из UI на момент клика (source of truth). Гарантирует:
+      // что видно в селекторе — то и уходит в запрос, независимо от гонок
+      // restore-цепочки и записи chat:setReasoning в БД.
+      reasoningValue: reasoningRef.current,
       // Прикреплённые файлы/изображения. main-процесс инлайнит текстовые
       // файлы в content, картинки передаёт как путь (vision — Phase 2).
       attachments: attachmentsToSend.length > 0 ? attachmentsToSend : undefined,

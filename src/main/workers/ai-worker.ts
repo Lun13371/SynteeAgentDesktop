@@ -471,6 +471,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               breakdown: snapshot.breakdown,
               sessionCostCents: sess?.totalCents ?? null,
               sessionRequests: sess?.requests ?? 0,
+              // Сырые накопленные токены turn'а — main аккумулирует их в
+              // run.bufferedUsage, чтобы статистика сохранилась при Стопе/
+              // краше воркера (done/error при terminate() уже не приходят).
+              rawPromptTokens: accPromptTokens || undefined,
+              rawCompletionTokens: accCompletionTokens || undefined,
+              rawCacheReadTokens: accCacheReadTokens || undefined,
+              rawCacheWriteTokens: accCacheWriteTokens || undefined,
             })
           },
           onQuestion: (questions) => {
@@ -830,6 +837,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               breakdown: snapshot.breakdown,
               sessionCostCents: sess?.totalCents ?? null,
               sessionRequests: sess?.requests ?? 0,
+              // Сырые накопленные токены turn'а (см. агентный onUsage выше)
+              rawPromptTokens: accPromptTokens || undefined,
+              rawCompletionTokens: accCompletionTokens || undefined,
+              rawCacheReadTokens: accCacheReadTokens || undefined,
+              rawCacheWriteTokens: accCacheWriteTokens || undefined,
             })
           },
           onDone: () => finalize(),
@@ -870,6 +882,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       type: 'error', chatId, error: errMsg,
       fullText, thinkingText: thinkingText || undefined, thinkingMs,
       collectedSteps, collectedIters: collectedIters.length > 0 ? collectedIters : undefined,
+      ...usagePayload(),
       updatedProviders: storeData.providers,
       fileCacheUpdates: agent?.getFileCacheUpdates(),
     })
