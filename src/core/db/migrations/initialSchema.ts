@@ -183,6 +183,12 @@ export function runInitialSchema(db: Database.Database): void {
   // точный контекст после перезахода в чат (tiktoken-оценка без этого
   // занижает: не знает про tool schemas overhead, reasoning и т.д.).
   if (!chatCols.find(c => c.name === 'last_usage'))   db.prepare(`ALTER TABLE chats ADD COLUMN last_usage TEXT`).run()
+  // model_id / model_provider — per-chat модель (NULL = использовать глобальное
+  // назначение role:'main' из electron-store). Новый чат наследует модель чата,
+  // из которого он создан; смена модели в чате пишется сюда, а не в глобальный
+  // store (см. chat:setModel в chat.ipc.ts).
+  if (!chatCols.find(c => c.name === 'model_id'))      db.prepare(`ALTER TABLE chats ADD COLUMN model_id TEXT`).run()
+  if (!chatCols.find(c => c.name === 'model_provider')) db.prepare(`ALTER TABLE chats ADD COLUMN model_provider TEXT`).run()
 
   // Миграция: verification_command на projects — команда авто-проверки
   // (напр. "npm test"), запускаемая после серии успешных правок файлов.

@@ -448,6 +448,126 @@
   outline: 1px solid rgba(250,204,21,0.4);
 }
 
+/* ── Редактор чата: скрытые из контекста / режим правки ─────────────────── */
+
+/* Скрытое из AI-контекста сообщение: заметное затемнение — текст реально
+   темнеет (brightness), а не просто «плавает» прозрачностью. */
+.message-wrap--context-hidden {
+  opacity: 0.75;
+  filter: brightness(0.55) saturate(0.45);
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+/* Hover чуть проявляет — сообщение всё ещё интерактивно */
+.message-wrap--context-hidden:hover {
+  opacity: 0.9;
+  filter: brightness(0.75) saturate(0.7);
+}
+
+/* Сообщение с несохранёнными правками (режим редактора): акцентная
+   подсветка пузыря + мягкое свечение — сразу видно, что изменено */
+.message-wrap--editor-draft .message-bubble--assistant,
+.message-wrap--editor-draft .message-bubble--user {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* Скрытое И с черновиком: акцент важнее затемнения */
+.message-wrap--context-hidden.message-wrap--editor-draft {
+  opacity: 0.75;
+  filter: saturate(0.9);
+}
+
+/* Бейдж «скрыто из контекста» в футере (клик — вернуть в контекст) */
+.message-hidden-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0.8;
+  transition: color 0.15s, opacity 0.15s;
+}
+.message-hidden-badge:hover {
+  color: var(--text-primary);
+  opacity: 1;
+}
+
+/* Итерация в режиме редактора: текст = textarea, тулы остаются между ними */
+.message-iteration--editing {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Тулчейн внутри редактируемой итерации — чуть приглушён (не редактируется) */
+.message-iteration--editing .tc2 {
+  opacity: 0.75;
+}
+
+/* Textarea inline-правки текста сообщения */
+.message-editor-textarea {  width: 100%;
+  min-height: 60px;
+  resize: none;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-secondary, rgba(128,128,128,0.08)));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius-md, 10px);
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.message-editor-textarea:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.message-editor-textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-secondary, rgba(128,128,128,0.08)));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.message-editor-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* Полоска «сообщение будет удалено» (схлопнутый пузырь в режиме редактора) */
+.message-wrap--editor-deleted {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0;
+}
+.message-editor-deleted-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(239,68,68,0.08);
+  border: 1px dashed rgba(239,68,68,0.35);
+  border-radius: var(--radius-sm, 6px);
+  padding: 4px 12px;
+}
+.message-editor-restore-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.message-editor-restore-btn:hover {
+  color: var(--accent-bg);
+}
+
 .message-time {
   font-size: 10px;
   color: var(--text-muted);

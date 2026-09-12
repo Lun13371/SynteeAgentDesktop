@@ -16,6 +16,11 @@ export interface Chat {
   projectId?: string  // FK на projects.id; NULL = «Без проекта»
   lastMessage?: string
   messageCount?: number
+  /** Per-chat модель: NULL/undefined = использовать глобальное назначение role:'main'.
+   *  Пишется при смене модели в чате (chat:setModel), наследуется при создании
+   *  нового чата из текущего. */
+  modelId?: string
+  modelProvider?: string
 }
 
 export interface Project {
@@ -97,6 +102,10 @@ export interface Message {
   cacheWriteTokens?: number
   /** Кол-во вызванных тулов в этом turn'е (число tool_call шагов). */
   toolCallsCount?: number
+  /** Скрыто из AI-контекста (редактор чата): видно пользователю в чате
+   *  (затемнено, с пометкой), но модель не получает — getLiveMessages
+   *  фильтрует. 1 = скрыто, 0/undefined = обычное. */
+  hiddenFromContext?: number
 }
 
 // ── Checkpoint / Rewind ──────────────────────────────────────────────────

@@ -388,7 +388,7 @@ const synteeAPI = {
 
   // Чат
   chat: {
-    create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string) => ipcRenderer.invoke('chat:create', incognito, mode, projectId),
+    create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string, model?: { modelId?: string; modelProvider?: string }) => ipcRenderer.invoke('chat:create', incognito, mode, projectId, model),
     getAll: () => ipcRenderer.invoke('chat:getAll'),
     // Активный чат (зеркало currentChatId из zustand renderer'а) — для
     // Spotlight "спросить в текущем чате". setActive вызывается App.tsx
@@ -428,6 +428,18 @@ const synteeAPI = {
     rename: (chatId: string, title: string) => ipcRenderer.invoke('chat:rename', chatId, title),
     pin: (messageId: string) => ipcRenderer.invoke('chat:pinMsg', messageId),
     unpin: (messageId: string) => ipcRenderer.invoke('chat:unpinMsg', messageId),
+    // ── Редактор чата ──
+    // Правка текста сообщения (возвращает true если сообщение найдено).
+    // iterTexts — новые значения textBefore по индексу итерации (для
+    // сообщений с тулами: текст правится по сегментам между тулами).
+    editMessage: (messageId: string, content: string, iterTexts?: string[]) =>
+      ipcRenderer.invoke('chat:editMessage', messageId, content, iterTexts) as Promise<boolean>,
+    // Скрыть/вернуть сообщение в AI-контекст (пользователь видит, модель — нет).
+    setMessageHidden: (messageId: string, hidden: boolean) =>
+      ipcRenderer.invoke('chat:setMessageHidden', messageId, hidden) as Promise<boolean>,
+    // Удалить сообщение навсегда (и из чата, и из AI-контекста).
+    deleteMessage: (messageId: string) =>
+      ipcRenderer.invoke('chat:deleteMessage', messageId) as Promise<boolean>,
     reloadClient: () => ipcRenderer.invoke('chat:reloadClient'),
     stop: (chatId?: string) => ipcRenderer.invoke('chat:stop', chatId),
     getLiveState: (chatId: string) => ipcRenderer.invoke('chat:getLiveState', chatId),
@@ -522,6 +534,9 @@ const synteeAPI = {
     /** Single-select persona run mode (classic/architect/debugger/...). */
     getPersona: (chatId: string) => ipcRenderer.invoke('chat:getPersona', chatId) as Promise<import('../../shared/modes').PersonaId>,
     setPersona: (chatId: string, persona: import('../../shared/modes').PersonaId) => ipcRenderer.invoke('chat:setPersona', chatId, persona),
+    /** Per-chat модель: null = глобальное назначение role:'main'. */
+    getModel: (chatId: string) => ipcRenderer.invoke('chat:getModel', chatId) as Promise<{ modelId: string; modelProvider: string } | null>,
+    setModel: (chatId: string, modelId: string | null, modelProvider: string | null) => ipcRenderer.invoke('chat:setModel', chatId, modelId, modelProvider),
     getDraft: (chatId: string) => ipcRenderer.invoke('chat:getDraft', chatId) as Promise<string>,
     setDraft: (chatId: string, draft: string) => ipcRenderer.invoke('chat:setDraft', chatId, draft),
     getInputHistory: (chatId: string) => ipcRenderer.invoke('chat:getInputHistory', chatId) as Promise<string[]>,

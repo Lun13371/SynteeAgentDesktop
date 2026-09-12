@@ -17,6 +17,7 @@ import { playDoneSound } from '../../utils/sounds'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
 import { ChatRemeasureContext } from '../../components/ui/MessageBubble/remeasure'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
+import { useChatEditor } from '../../hooks/useChatEditor'
 import LiveTodoBar from '../../components/ui/LiveTodoBar/LiveTodoBar'
 import ChatFilesPopover from '../../components/ui/ChatFilesPopover/ChatFilesPopover'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
@@ -77,7 +78,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   msg, vItemStart, vItemIndex, measureRef,
   toolOutputMode, onPin, onCopy, onReply, onRewind,
   searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate,
-  workdir,
+  workdir, editorAvailable,
 }: {
   msg: Message
   vItemStart: number
@@ -95,6 +96,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   rateLimitSec?: number
   shouldAnimate?: boolean
   workdir?: string
+  editorAvailable?: boolean
 }) {
   return (
     <div
@@ -117,6 +119,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
         rateLimitSec={rateLimitSec}
         shouldAnimate={shouldAnimate}
         workdir={workdir}
+        editorAvailable={editorAvailable}
       />
     </div>
   )
@@ -139,7 +142,8 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   prev.isWaiting === next.isWaiting &&
   prev.rateLimitSec === next.rateLimitSec &&
   prev.shouldAnimate === next.shouldAnimate &&
-  prev.workdir === next.workdir
+  prev.workdir === next.workdir &&
+  prev.editorAvailable === next.editorAvailable
 )
 
 function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -205,6 +209,26 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   })))
   const isTyping = liveIsTyping
   const isAgentRunning = liveIsAgentRunning
+
+  // ── Редактор чата: режим inline-правки сообщений ─────────────────────────
+  // Общая логика (применение черновиков, перезагрузка окна) — в useChatEditor,
+  // тот же хук использует SplitChatPane.
+  const {
+    editorMode,
+    draftsCount: editorDraftsCount,
+    editsCount: editorEditsCount,
+    hiddenCount: editorHiddenCount,
+    deletedCount: editorDeletedCount,
+    applying: editorApplying,
+    apply: handleApplyEditorDrafts,
+    discard: discardEditorDrafts,
+  } = useChatEditor(currentChatId)
+
+  // Смена чата в режиме редактора — черновики принадлежат сообщениям старого
+  // чата, применять их к новому нельзя. Сбрасываем без записи в БД.
+  useEffect(() => {
+    if (useChatStore.getState().editorChatId) discardEditorDrafts()
+  }, [currentChatId, discardEditorDrafts])
 
   const { add: toast } = useToast()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -291,6 +315,16 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
+  // Провайдер per-chat модели (mainModelId без провайдера бесполезен: одинаковые
+  // id моделей бывают у разных провайдеров). Синхронизируется с mainModelId.
+  const [mainModelProviderId, setMainModelProviderId] = useState('anthropic')
+  // Глобальное назначение role:'main' (дефолт для чатов без своей модели).
+  // Нужен как fallback при переключении на чат с model_id = NULL.
+  const globalMainModelRef = useRef<{ modelId: string; providerId: string } | null>(null)
+  // Текущие per-chat значения в ref — для handleMainModelChange и наследования
+  // при создании нового чата (стейт в замыкании протухает в useCallback).
+  const mainModelRef = useRef<{ modelId: string; providerId: string } | null>(null)
+  const currentChatIdRef = useRef<string | null>(null)
   const [reasoningValue, setReasoningValue] = useState('')
   // ChatId чата, в котором сейчас идёт manual /compact (null — нигде).
   // Привязан к chatId, а не boolean: при переключении на другой чат
@@ -333,22 +367,50 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [])
 
   const handleMainModelChange = useCallback(async (modelId: string, providerId: string) => {
-    try {
-      await window.syntee.models.setAssignment({ role: 'main', modelId, providerId })
-      setMainModelId(modelId)
-    } catch (e) {
-      console.error('[ChatPage] setAssignment error', e)
+    setMainModelId(modelId)
+    setMainModelProviderId(providerId)
+    mainModelRef.current = { modelId, providerId }
+    // Per-chat: модель пишется в чат (chats.model_id/model_provider), а НЕ в
+    // глобальное назначение — у каждого чата своя модель. Глобальное main
+    // меняется только из настроек и служит дефолтом для чатов без своей модели.
+    const cid = currentChatIdRef.current
+    if (cid) {
+      window.syntee.chat.setModel(cid, modelId, providerId).catch((e: unknown) => {
+        console.error('[ChatPage] chat:setModel error', e)
+      })
     }
   }, [])
+
+  // Смена модели чата извне (fork/импорт/дубликат пока чат открыт) — держим
+  // UI-стейт синхронным с БД.
+  useEffect(() => { currentChatIdRef.current = currentChatId }, [currentChatId])
+  useEffect(() => { mainModelRef.current = mainModelId ? { modelId: mainModelId, providerId: mainModelProviderId } : null }, [mainModelId, mainModelProviderId])
 
   useEffect(() => {
     window.syntee.settings.get('showContextRing').then((v: unknown) => {
       if (v !== null && v !== undefined) setShowContextRing(v as boolean)
     }).catch(() => {})
-    window.syntee.settings.get('modelAssignments').then((v: unknown) => {
+    window.syntee.settings.get('modelAssignments').then(async (v: unknown) => {
       if (Array.isArray(v)) {
-        const main = (v as Array<{ role: string; modelId: string }>).find(a => a.role === 'main')
-        if (main) setMainModelId(main.modelId)
+        const main = (v as Array<{ role: string; modelId: string; providerId?: string }>).find(a => a.role === 'main')
+        if (main) {
+          globalMainModelRef.current = { modelId: main.modelId, providerId: main.providerId ?? 'anthropic' }
+          // Ре-резолв для уже открытого чата: если у него нет своей модели —
+          // применяем глобальную (chat-switch эффект мог отработать раньше
+          // этой загрузки и застрять на дефолтном стейте).
+          const cid = currentChatIdRef.current
+          let chatModel: { modelId: string; modelProvider: string } | null = null
+          if (cid) {
+            try { chatModel = await window.syntee.chat.getModel(cid) } catch { /* ok */ }
+          }
+          const resolved = chatModel
+            ? { modelId: chatModel.modelId, providerId: chatModel.modelProvider }
+            : globalMainModelRef.current
+          if (resolved && (!mainModelRef.current || mainModelRef.current.modelId !== resolved.modelId)) {
+            setMainModelId(resolved.modelId)
+            setMainModelProviderId(resolved.providerId)
+          }
+        }
       }
     }).catch(() => {})
     window.syntee.settings.get('reasoningValue').then((v: unknown) => {
@@ -704,6 +766,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setDraftAttachments([])
       draftRef.current = ''
       draftAttachmentsRef.current = []
+      // Без чата — показываем глобальное назначение main.
+      if (globalMainModelRef.current) {
+        setMainModelId(globalMainModelRef.current.modelId)
+        setMainModelProviderId(globalMainModelRef.current.providerId)
+      }
       return
     }
     // Отменяем pending-debounce от прежнего чата
@@ -719,6 +786,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       draftRef.current = ''
       draftAttachmentsRef.current = []
       setInputHistory(incognitoHistoryRef.current.get(currentChatId) ?? [])
+      // Инкогнито не имеет per-chat модели — глобальное назначение.
+      if (globalMainModelRef.current) {
+        setMainModelId(globalMainModelRef.current.modelId)
+        setMainModelProviderId(globalMainModelRef.current.providerId)
+      }
       return
     }
     // Обычный чат: грузим modes/draft/history/attachments из БД параллельно.
@@ -734,9 +806,20 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       window.syntee.draft.getAttachments(currentChatId),
       window.syntee.chat.getPersona(currentChatId),
       window.syntee.chat.getLastTurnChanges?.(currentChatId).catch(() => null),
-    ]).then(([modes, draftText, history, attachments, loadedPersona, lastChanges]) => {
+      // Per-chat модель: null = глобальное назначение role:'main'.
+      window.syntee.chat.getModel(currentChatId).catch(() => null),
+    ]).then(([modes, draftText, history, attachments, loadedPersona, lastChanges, chatModel]) => {
       if (cancelled || currentChatId !== prevChatIdRef.current) return
       useChatStore.getState().setLastTurnChanges(currentChatId, lastChanges ?? null)
+      // Модель чата: своя если задана, иначе глобальное назначение main.
+      const cm = chatModel as { modelId: string; modelProvider: string } | null
+      const resolvedModel = cm
+        ? { modelId: cm.modelId, providerId: cm.modelProvider }
+        : globalMainModelRef.current
+      if (resolvedModel) {
+        setMainModelId(resolvedModel.modelId)
+        setMainModelProviderId(resolvedModel.providerId)
+      }
       setPlanningMode(!!modes.planningMode)
       setImageMode(!!modes.imageMode)
       setAskMode(!!modes.askMode)
@@ -1176,7 +1259,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setActiveProject(project.id)
       pid = project.id
     }
-    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, pid)
+    // Новый чат наследует модель текущего чата (mainModelRef — ref, не стейт:
+    // переживает протухшее замыкание useCallback).
+    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, pid, mainModelRef.current ?? undefined)
     const all: Chat[] = await window.syntee.chat.getAll()
     setChats(all)
     setCurrentChat(chat.id)
@@ -1197,7 +1282,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   }, [setProjects, setActiveProject])
 
   const createChatWithoutProject = useCallback(async () => {
-    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, undefined)
+    // Наследуем модель текущего чата (см. createNewChat).
+    const chat: Chat = await window.syntee.chat.create(isIncognito, activeMode, undefined, mainModelRef.current ?? undefined)
     const all: Chat[] = await window.syntee.chat.getAll()
     setChats(all)
     setCurrentChat(chat.id)
@@ -2179,7 +2265,89 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         />
         <main className="chat-main">
           <LiveTodoBar items={overlayTodo} active={overlayActive} />
-          <ChatFilesPopover messages={messages} workdir={currentWorkdir} />
+
+          {/* ── Кластер в правом верхнем углу: пилюля «файлы в чате» +
+              ОТДЕЛЬНАЯ кнопка редактора чата (inline-правка сообщений). ── */}
+          <div className="chat-topright-actions">
+            <ChatFilesPopover messages={messages} workdir={currentWorkdir} />
+            {!isIncognito && currentChatId && (
+              <button
+                type="button"
+                className={`chat-editor-fab${editorMode ? ' chat-editor-fab--active' : ''}`}
+                onClick={() => { if (!editorMode) useChatStore.getState().enterEditorMode(currentChatId) }}
+                title={editorMode
+                  ? 'Редактор активен — изменения применяются на плашке сверху'
+                  : 'Редактор чата: правка текста, скрытие из контекста, удаление сообщений'}
+                aria-label="Редактор чата"
+                aria-pressed={editorMode}
+              >
+                <AppIcon name="edit" size="xs" tone={editorMode ? 'accent' : 'default'} />
+              </button>
+            )}
+          </div>
+
+          {/* ── Редактор чата: плашка режима inline-правки ──
+              Появляется при editorMode: чипсы-счётчики изменений по типам
+              (правки / скрыто / удалено) + применить/отменить.
+              Ввод в ChatInput заблокирован (disabled={editorMode}). */}
+          <AnimatePresence>
+            {editorMode && (
+              <motion.div
+                key="chat-editor-bar"
+                className="chat-editor-bar"
+                initial={{ opacity: 0, y: -14, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -14, scale: 0.97 }}
+                transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+              >
+                <span className="chat-editor-bar__icon">
+                  <AppIcon name="edit" size="sm" />
+                </span>
+                <span className="chat-editor-bar__label">Редактирование</span>
+                {editorDraftsCount > 0 ? (
+                  <span className="chat-editor-bar__chips">
+                    {editorEditsCount > 0 && (
+                      <span className="chat-editor-bar__chip chat-editor-bar__chip--edit">
+                        <AppIcon name="edit" size="xs" /> {editorEditsCount}
+                      </span>
+                    )}
+                    {editorHiddenCount > 0 && (
+                      <span className="chat-editor-bar__chip chat-editor-bar__chip--hidden">
+                        <AppIcon name="eyeOff" size="xs" /> {editorHiddenCount}
+                      </span>
+                    )}
+                    {editorDeletedCount > 0 && (
+                      <span className="chat-editor-bar__chip chat-editor-bar__chip--deleted">
+                        <AppIcon name="trash" size="xs" /> {editorDeletedCount}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="chat-editor-bar__hint">правьте текст, скрывайте из контекста или удаляйте сообщения</span>
+                )}
+                <div className="chat-editor-bar__actions">
+                  <button
+                    type="button"
+                    className="chat-editor-bar__btn chat-editor-bar__btn--ghost"
+                    onClick={discardEditorDrafts}
+                    disabled={editorApplying}
+                  >
+                    <AppIcon name="x" size="xs" />
+                    <span>Отменить всё</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-editor-bar__btn chat-editor-bar__btn--primary"
+                    onClick={() => void handleApplyEditorDrafts()}
+                    disabled={editorApplying || editorDraftsCount === 0}
+                  >
+                    <AppIcon name="check" size="xs" />
+                    <span>{editorApplying ? 'Применение…' : editorDraftsCount === 0 ? 'Закрыть' : `Применить (${editorDraftsCount})`}</span>
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           <AnimatePresence>
             {showSearch && (
@@ -2300,6 +2468,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
                       rateLimitSec={isLive ? liveRateLimitSec : undefined}
                       shouldAnimate={shouldAnimate}
                       workdir={currentWorkdir}
+                      editorAvailable={!isIncognito}
                     />
                   )
                 })}
@@ -2352,7 +2521,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
             <ChatInput
               chatId={currentChatId ?? undefined}
               onSend={handleSend}
-              disabled={isTyping || isCompactingHere}
+              disabled={isTyping || isCompactingHere || editorMode}
               isIncognito={isIncognito}
               replyTo={replyTo}
               onCancelReply={handleCancelReply}
@@ -2364,6 +2533,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onChangeValue={handleDraftChange}
               inputHistory={inputHistory}
               mainModelId={mainModelId}
+              mainModelProviderId={mainModelProviderId}
               onMainModelChange={handleMainModelChange}
               reasoningValue={reasoningValue}
               onReasoningChange={handleReasoningChange}

@@ -32,6 +32,8 @@ interface ChatInputStatusRowProps {
   onPersonaChange?: (v: PersonaId) => void
   lang: 'ru' | 'en'
   mainModelId?: string
+  /** Провайдер per-chat модели (для корректного бейджа ModelSelector). */
+  mainModelProviderId?: string
   onMainModelChange?: (modelId: string, providerId: string) => void
   /** Текущее значение режима мышления (глобальный store 'reasoningValue'). */
   reasoningValue?: string
@@ -64,6 +66,7 @@ export function ChatInputStatusRow({
   onPersonaChange,
   lang,
   mainModelId,
+  mainModelProviderId,
   onMainModelChange,
   reasoningValue,
   onReasoningChange,
@@ -314,7 +317,7 @@ export function ChatInputStatusRow({
             />
           )}
           {onMainModelChange && (
-            <ModelSelector modelId={mainModelId} onChange={onMainModelChange} />
+            <ModelSelector modelId={mainModelId} providerId={mainModelProviderId} onChange={onMainModelChange} />
           )}
         </div>
       )}

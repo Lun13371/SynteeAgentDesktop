@@ -72,7 +72,7 @@ const MESSAGE_SELECT_COLS = `SELECT
   compact_stats as compactStatsJson, attachments as attachmentsJson, attachment_result as attachmentResultJson,
   duration_ms as durationMs, prompt_tokens as promptTokens, completion_tokens as completionTokens,
   cache_read_tokens as cacheReadTokens, cache_write_tokens as cacheWriteTokens, tool_calls_count as toolCallsCount,
-  thinking_blocks as thinkingBlocksJson`
+  thinking_blocks as thinkingBlocksJson, hidden_from_context as hiddenFromContext`
 
 export function getMessages(chatId: string): Message[] {
   const rows = getDB().prepare(`
@@ -138,11 +138,36 @@ export function getMessagesPage(
   return { messages: rows.map(parseMessageRow), hasMore }
 }
 
-/** Правка содержимого сообщения (для плагинов: chats.editMessage). */
-export function editMessageContent(messageId: string, content: string): boolean {
+/** Правка содержимого сообщения (для плагинов: chats.editMessage; для
+ *  редактора чата: chat:editMessage).
+ *
+ *  iterTexts — правка текстовых сегментов СООБЩЕНИЯ С ТУЛАМИ: у таких
+ *  сообщений текст размазан по iterations[].textBefore (UI рендерит именно
+ *  их), а message.content в UI не отображается. Передаём новые значения
+ *  textBefore по индексу итерации — main мержит их в ПОЛНУЮ запись из БД
+ *  (renderer держит лишь slim-копию с урезанными tool-пейлоадами — писать
+ *  её назад нельзя). content пересобирается из итоговых textBefore, чтобы
+ *  AI-контекст (messageToContextMessages берёт content) видел правки. */
+export function editMessageContent(messageId: string, content: string, iterTexts?: string[]): boolean {
   const db = getDB()
-  const row = db.prepare('SELECT chat_id as chatId FROM messages WHERE id = ?').get(messageId) as { chatId: string } | undefined
-  const info = db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, messageId)
+  const row = db.prepare('SELECT chat_id as chatId, iterations FROM messages WHERE id = ?')
+    .get(messageId) as { chatId: string; iterations: string | null } | undefined
+  if (!row) return false
+  let finalContent = content
+  let iterationsJson: string | null = row.iterations
+  if (Array.isArray(iterTexts)) {
+    let iters: Array<{ textBefore?: string }> = []
+    try { iters = row.iterations ? JSON.parse(row.iterations) : [] } catch { iters = [] }
+    if (iters.length > 0) {
+      iters = iters.map((it, i) => (i < iterTexts.length ? { ...it, textBefore: iterTexts[i] } : it))
+      iterationsJson = JSON.stringify(iters)
+      // content = конкатенация непустых сегментов — то, что видит пользователь
+      // (messageToContextMessages отправляет content в AI-контекст).
+      finalContent = iters.map(it => it.textBefore ?? '').filter(t => t.trim().length > 0).join('\n\n')
+    }
+  }
+  const info = db.prepare('UPDATE messages SET content = ?, iterations = ? WHERE id = ?')
+    .run(finalContent, iterationsJson, messageId)
   if (info.changes > 0 && row) {
     touchChat(row.chatId)
     _onMessageSaved?.(row.chatId)
@@ -171,7 +196,25 @@ export function deleteMessageById(messageId: string): void {
   // Чистим streaming-буфер этого сообщения, чтобы краш-рекавери (historyCache)
   // не воскресил удалённое сообщение из чекпоинта стриминга.
   deleteStreamingBuffer(messageId)
+  // Чекпоинты ссылаются на user_message_id/assistant_message_id — удаляем
+  // осиротевшие, иначе кнопка «Откатить» в панели «Сессия» укажет в пустоту.
+  getDB().prepare(`DELETE FROM chat_checkpoints WHERE user_message_id = ? OR assistant_message_id = ?`).run(messageId, messageId)
   if (row?.chatId) _onMessageSaved?.(row.chatId)
+}
+
+/** Скрыть/показать сообщение в AI-контексте (редактор чата).
+ *  Скрытое остаётся в чате (затемнено, с пометкой), но getLiveMessages
+ *  исключает его из промпта, счётчика контекста и компакции. */
+export function setMessageHidden(messageId: string, hidden: boolean): boolean {
+  const db = getDB()
+  const row = db.prepare('SELECT chat_id as chatId FROM messages WHERE id = ?').get(messageId) as { chatId: string } | undefined
+  const info = db.prepare('UPDATE messages SET hidden_from_context = ? WHERE id = ?').run(hidden ? 1 : 0, messageId)
+  if (info.changes > 0 && row) {
+    touchChat(row.chatId)
+    _onMessageSaved?.(row.chatId)
+    return true
+  }
+  return false
 }
 
 /**

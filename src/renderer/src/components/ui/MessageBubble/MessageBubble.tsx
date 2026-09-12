@@ -173,6 +173,8 @@ interface MessageBubbleProps {
   /** Рабочая директория чата — для кликабельных путей в сообщениях.
    *  Относительные пути резолвятся от workdir. undefined = пути не кликабельны. */
   workdir?: string
+  /** Доступен ли редактор чата (false — инкогнито-чаты, live-пузыри). */
+  editorAvailable?: boolean
 }
 
 // Memoized code highlighter — рендерит HTML-строку через dangerouslySetInnerHTML.
@@ -214,6 +216,31 @@ const CopyButton = memo(function CopyButton({ raw }: { raw: string }) {
     >
       {copied ? '✓ Скопировано' : 'Копировать'}
     </button>
+  )
+})
+
+// ── Редактор чата: textarea для inline-правки текста сообщения ───────────
+// Авто-рост по контенту. Значение управляется снаружи (draft в chat.store) —
+// пишется в БД только при «Применить и закрыть» (applyEditorDrafts в ChatPage).
+const EditorTextarea = memo(function EditorTextarea({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  // Авто-рост: сброс высоты → scrollHeight. На каждый change value.
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 600)}px`
+  }, [value])
+  return (
+    <textarea
+      ref={ref}
+      className="message-editor-textarea"
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      spellCheck={false}
+      // Не даём Escape закрывать модалки/меню пока фокус в редакторе.
+      onKeyDown={e => { if (e.key === 'Escape') e.stopPropagation() }}
+    />
   )
 })
 
@@ -1601,6 +1628,7 @@ const MessageContent = memo(function MessageContent({
   spawnedAgents,
   onPreviewAttachment,
   workdir,
+  editorAvailable = true,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -1624,6 +1652,8 @@ const MessageContent = memo(function MessageContent({
   spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
   onPreviewAttachment?: (a: Attachment | null) => void
   workdir?: string
+  /** Доступен ли редактор чата для этого сообщения (false в инкогнито). */
+  editorAvailable?: boolean
 }) {
   const [statsOpen, setStatsOpen] = useState(false)
   // Если панель статистики не влезает сверху (сообщение в самом верху чата) —
@@ -1658,6 +1688,22 @@ const MessageContent = memo(function MessageContent({
   // (message.planData), ИЛИ (2) это live-bubble в режиме планирования.
   // Вне режима планирования <plan>-теги рендерятся как обычный текст.
   const allowPlanCard = !!message.planData || !!(message as Message & { livePlanningMode?: boolean }).livePlanningMode
+
+  // ── Редактор чата: режим + черновик этого сообщения ────────────────────
+  // Режим привязан к chatId (editorChatId) — не «утекает» в сплит-чат.
+  // Селекторы узкие: вне режима editorDraft всегда undefined → memo
+  // MessageContent не пробивается (0 ре-рендеров). Live-пузырь не редактируется.
+  const isLiveBubble = message.id === 'live-streaming-bubble' || message.id === 'split-live-streaming-bubble'
+  const editorMode = useChatStore(s => !!s.editorChatId && s.editorChatId === message.chatId)
+  const editorDraft = useChatStore(s => (s.editorChatId === message.chatId && !isLiveBubble ? s.editorDrafts[message.id] : undefined))
+  const enterEditorMode = useChatStore(s => s.enterEditorMode)
+  const updateEditorDraft = useChatStore(s => s.updateEditorDraft)
+  const clearEditorDraft = useChatStore(s => s.clearEditorDraft)
+  const patchMessage = useChatStore(s => s.patchMessage)
+  const editorActive = editorMode && !isLiveBubble && editorAvailable
+  // Эффективное «скрыто из контекста»: черновик перекрывает БД-значение.
+  const hiddenNow = editorDraft?.hidden !== undefined ? editorDraft.hidden : !!message.hiddenFromContext
+  const hasDraft = editorDraft !== undefined
 
   // ── Мемоизированные карточки spawn_agent (fallback для старых сообщений без iterations) ──
   // Раньше .filter().map() с вложенным .find() выполнялись на КАЖДОМ рендере.
@@ -1778,19 +1824,37 @@ const MessageContent = memo(function MessageContent({
           <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={false} />
         )}
 
-        {/* Финальный рендер итераций из БД — точно как live, каждая итерация отдельно */}
+        {/* Финальный рендер итераций из БД — точно как live, каждая итерация отдельно.
+            В режиме редактора текстовые сегменты (textBefore) превращаются
+            в textarea — тулы остаются на месте между ними, правится только текст. */}
         {!isUser && !liveIters?.length && (() => {
           type Iter = { label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }
           const iters = (message as Message & { iterations?: Iter[] }).iterations
           if (!iters?.length) return null
+          // Текущие значения сегментов в редакторе: черновик перекрывает БД.
+          const draftTexts = editorActive ? (editorDraft?.iterTexts ?? []) : []
+          const setIterText = (i: number, v: string) => {
+            const next = iters.map((it, idx) => draftTexts[idx] ?? it.textBefore ?? '')
+            next[i] = v
+            updateEditorDraft(message.id, { iterTexts: next })
+          }
           return (
             <div className="message-iters">
               {iters.map((iter, i) => (
-                <div key={i} className="message-iteration">
+                <div key={i} className={`message-iteration${editorActive ? ' message-iteration--editing' : ''}`}>
                   {iter.thinking && (
                     <ThinkingBlock text={iter.thinking} thinkingMs={iter.thinkingMs} />
                   )}
-                  {iter.textBefore && (
+                  {editorActive ? (
+                    (iter.textBefore || draftTexts[i] !== undefined) && (
+                      <div className="message-content message-content--editing">
+                        <EditorTextarea
+                          value={draftTexts[i] ?? iter.textBefore}
+                          onChange={v => setIterText(i, v)}
+                        />
+                      </div>
+                    )
+                  ) : iter.textBefore && (
                     <div className="message-content selectable">
                       <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
@@ -2020,6 +2084,22 @@ const MessageContent = memo(function MessageContent({
           (() => {
             type Iter = { label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }
             const savedIters = (message as Message & { iterations?: Iter[] }).iterations
+            // ── Редактор чата: текст сообщения → textarea с черновиком ──
+            // Для сообщений с iterations текст правится ПОСЕГМЕНТНО в блоке
+            // рендера итераций выше (textarea на каждом textBefore) — здесь
+            // отдельный textarea для content не нужен (content в UI не
+            // рендерится при наличии итераций, пересобирается при apply).
+            if (editorActive) {
+              if (!isUser && savedIters?.length) return null
+              return (
+                <div className="message-content message-content--editing">
+                  <EditorTextarea
+                    value={editorDraft?.content ?? content}
+                    onChange={v => updateEditorDraft(message.id, { content: v })}
+                  />
+                </div>
+              )
+            }
             if (!isUser && savedIters?.length) return null
             // ── User-сообщения с inline-токенами вложений [[attach:id]] ──
             // Чипы восстанавливаются НА СВОИХ МЕСТАХ в потоке текста (как в
@@ -2094,15 +2174,49 @@ const MessageContent = memo(function MessageContent({
         {/* Footer: кнопки действий + время + панель статистики */}
         <div className="message-footer">
           <div className="message-actions">
-            <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={onCopy} />
-            <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
-            {onReply && <IconButton icon="reply" label="Ответить" className="msg-action-btn" onClick={onReply} />}
-            {isUser && onRewind && <IconButton icon="rewind" label="Откатить к этому сообщению" className="msg-action-btn" onClick={onRewind} />}
-            {!isUser && <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={onReadAloud} />}
-            {/* Пункты контекстного меню от плагинов (registerContextMenu) */}
-            <PluginMessageCtxMenu message={message} />
-            {/* Кнопки-декорации от плагинов (registerContextMenu button) */}
-            <PluginMessageButtons message={message} />
+            {editorActive ? (
+              <>
+                {/* ── Контролы редактора чата ── */}
+                <IconButton
+                  icon={hiddenNow ? 'eye' : 'eyeOff'}
+                  label={hiddenNow ? 'Вернуть в контекст' : 'Скрыть из контекста'}
+                  className="msg-action-btn"
+                  active={hiddenNow}
+                  onClick={() => updateEditorDraft(message.id, { hidden: !hiddenNow })}
+                />
+                <IconButton
+                  icon="trash"
+                  label="Удалить навсегда"
+                  className="msg-action-btn"
+                  danger
+                  onClick={() => updateEditorDraft(message.id, { deleted: true })}
+                />
+                {hasDraft && (
+                  <IconButton
+                    icon="rewind"
+                    label="Отменить правки этого сообщения"
+                    className="msg-action-btn"
+                    onClick={() => clearEditorDraft(message.id)}
+                  />
+                )}
+              </>
+            ) : (
+              <>
+                <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={onCopy} />
+                <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
+                {onReply && <IconButton icon="reply" label="Ответить" className="msg-action-btn" onClick={onReply} />}
+                {isUser && onRewind && <IconButton icon="rewind" label="Откатить к этому сообщению" className="msg-action-btn" onClick={onRewind} />}
+                {!isUser && <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={onReadAloud} />}
+                {/* Редактор чата: карандаш открывает режим inline-правки */}
+                {editorAvailable && !isLiveBubble && (
+                  <IconButton icon="edit" label="Редактировать сообщения чата" className="msg-action-btn" onClick={() => enterEditorMode(message.chatId)} />
+                )}
+                {/* Пункты контекстного меню от плагинов (registerContextMenu) */}
+                <PluginMessageCtxMenu message={message} />
+                {/* Кнопки-декорации от плагинов (registerContextMenu button) */}
+                <PluginMessageButtons message={message} />
+              </>
+            )}
           </div>
           {(() => {
             const hasStats = !isUser && (
@@ -2123,6 +2237,22 @@ const MessageContent = memo(function MessageContent({
                     aria-expanded={statsOpen}
                   >
                     <AppIcon name="info" size="xs" tone={statsOpen ? 'accent' : 'muted'} />
+                  </button>
+                )}
+                {/* Скрыто из AI-контекста: бейдж с кликом «вернуть» (вне режима
+                    редактора — мгновенная запись в БД + патч локального стора). */}
+                {!editorActive && hiddenNow && (
+                  <button
+                    type="button"
+                    className="message-hidden-badge"
+                    title="AI это сообщение не видит. Клик — вернуть в контекст"
+                    onClick={() => {
+                      void window.syntee.chat.setMessageHidden(message.id, false)
+                      patchMessage(message.id, { hiddenFromContext: 0 })
+                    }}
+                  >
+                    <AppIcon name="eyeOff" size="xs" tone="muted" />
+                    скрыто из контекста
                   </button>
                 )}
                 {timeEl}
@@ -2217,9 +2347,19 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
 
 
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true, workdir,
+  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true, workdir, editorAvailable = true,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
+
+  // ── Редактор чата: черновик этого сообщения (для корневых модификаторов) ──
+  // deleted — сообщение схлопывается в полоску «будет удалено»; hidden —
+  // затемнение + пунктир. Вне режима редактора — всегда undefined (stable).
+  const editorDraft = useChatStore(s => (s.editorChatId === message.chatId ? s.editorDrafts[message.id] : undefined))
+  const clearEditorDraft = useChatStore(s => s.clearEditorDraft)
+  const editorDeleted = !!editorDraft?.deleted
+  const contextHidden = editorDraft?.hidden !== undefined ? editorDraft.hidden : !!message.hiddenFromContext
+  // Есть несохранённые правки (кроме удаления) → акцентная подсветка пузыря.
+  const editorDraftDirty = !!editorDraft && !editorDraft.deleted
 
   // ── Live-текст из store: только для live-пузыря ──────────────────────
   // ChatPage больше не кладёт streamingText в displayMessages → memo
@@ -2359,9 +2499,25 @@ const MessageBubble = memo(function MessageBubble({
     return <SystemDivider message={message} isRewind={isRewind} isCompact={isCompact} isCompacting={isCompacting} timeEl={timeEl} liveSummary={liveSummary} />
   }
 
+  // ── Редактор чата: помеченное к удалению сообщение схлопывается в полоску.
+  // Реальное удаление — при «Применить и закрыть» (applyEditorDrafts).
+  if (editorDeleted) {
+    return (
+      <div className="message-wrap message-wrap--editor-deleted">
+        <div className="message-editor-deleted-strip">
+          <AppIcon name="trash" size="xs" tone="muted" />
+          <span>Сообщение будет удалено</span>
+          <button type="button" className="message-editor-restore-btn" onClick={() => clearEditorDraft(message.id)}>
+            Вернуть
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <motion.div
-      className={`message-wrap ${isUser ? 'message-wrap--user' : 'message-wrap--assistant'} ${searchQuery ? 'message-wrap--search-match' : ''}`}
+      className={`message-wrap ${isUser ? 'message-wrap--user' : 'message-wrap--assistant'} ${searchQuery ? 'message-wrap--search-match' : ''} ${contextHidden ? 'message-wrap--context-hidden' : ''} ${editorDraftDirty ? 'message-wrap--editor-draft' : ''}`}
       ref={wrapRef}
       // shouldAnimate=false → initial={false}: framer-motion сразу рисует в
       // финальном состоянии без проигрывания entrance. При scroll-remount того
@@ -2405,6 +2561,7 @@ const MessageBubble = memo(function MessageBubble({
             spawnedAgents={spawnedAgentsFromStore}
             onPreviewAttachment={setPreviewAttachment}
             workdir={workdir}
+            editorAvailable={editorAvailable}
           />
         </div>
       ) : (
@@ -2438,6 +2595,7 @@ const MessageBubble = memo(function MessageBubble({
         spawnedAgents={spawnedAgentsFromStore}
         onPreviewAttachment={setPreviewAttachment}
         workdir={workdir}
+        editorAvailable={editorAvailable}
       />
       )}
 
