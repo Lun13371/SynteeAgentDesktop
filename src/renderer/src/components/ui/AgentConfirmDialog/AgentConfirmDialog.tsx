@@ -86,10 +86,14 @@ export default function AgentConfirmDialog() {
         >
           <motion.div
             className={`agent-confirm-dialog agent-confirm-dialog--${level}`}
-            initial={{ opacity: 0, y: 28, scale: 0.94 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 18, scale: 0.96 }}
-            transition={{ type: 'spring', stiffness: 380, damping: 28 }}
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{
+              duration: 0.26,
+              ease: [0.16, 1, 0.3, 1],
+              exit: { duration: 0.16, ease: 'easeIn' },
+            }}
           >
             {/* Тематическая полоса-градиент сверху — цвет уровня опасности */}
             <div className="agent-confirm-dialog-glow" />

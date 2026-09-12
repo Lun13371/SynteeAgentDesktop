@@ -14,6 +14,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import AppIcon from '../AppIcon/AppIcon'
+import ExtListToolbar from './ExtListToolbar'
 import { useExtensionsStore } from '../../../store/extensions.store'
 import { usePluginPanelStore } from '../../../store/pluginPanel.store'
 import PluginIframe from '../PluginSlot/PluginIframe'
@@ -37,16 +38,37 @@ const STATUS_META: Record<PluginRuntime['status'], { label: string; color: strin
   starting: { label: 'запуск…', color: 'var(--warning, #f59e0b)' },
 }
 
+/** Фильтр списка плагинов. */
+type PluginsFilter = 'all' | 'enabled' | 'disabled' | 'error'
+
 export default function PluginsTab({ projectId, projects }: { projectId?: string; projects: Array<{ id: string; name: string }> }) {
   const plugins = useExtensionsStore(s => s.plugins)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState<PluginsFilter>('all')
   /** Consent-диалог: плагин ждёт подтверждения прав перед включением. */
   const [pendingConsent, setPendingConsent] = useState<PluginRuntime | null>(null)
   /** Модалка «Системный промпт»: previewSystemPrompt активного чата. */
   const [promptView, setPromptView] = useState<string | null>(null)
   const [promptLoading, setPromptLoading] = useState(false)
   const openPanel = usePluginPanelStore(s => s.openPanel)
+
+  // Поиск: имя, id, описание, имена тулов и команд
+  const q = search.trim().toLowerCase()
+  const searched = q
+    ? plugins.filter(p =>
+        p.manifest.name.toLowerCase().includes(q) ||
+        p.manifest.id.toLowerCase().includes(q) ||
+        (p.manifest.description ?? '').toLowerCase().includes(q) ||
+        p.tools.some(t => t.shortName.toLowerCase().includes(q)) ||
+        p.commands.some(c => c.name.toLowerCase().includes(q)))
+    : plugins
+  const visiblePlugins = searched.filter(p =>
+    filter === 'all' ? true
+    : filter === 'enabled' ? p.state.enabled
+    : filter === 'disabled' ? !p.state.enabled
+    : p.status === 'error')
 
   /** Открыть модалку с финальным system prompt активного чата. */
   const showSystemPrompt = async () => {
@@ -188,7 +210,27 @@ export default function PluginsTab({ projectId, projects }: { projectId?: string
         </div>
       )}
 
-      {plugins.map(p => {
+      {plugins.length > 0 && (
+        <ExtListToolbar
+          search={search}
+          onSearch={setSearch}
+          placeholder="Поиск по имени, описанию или тулам…"
+          filters={[
+            { value: 'all', label: 'Все', count: plugins.length },
+            { value: 'enabled', label: 'Активные', count: plugins.filter(p => p.state.enabled).length },
+            { value: 'disabled', label: 'Отключённые', count: plugins.filter(p => !p.state.enabled).length },
+            { value: 'error', label: 'С ошибкой', count: plugins.filter(p => p.status === 'error').length },
+          ]}
+          activeFilter={filter}
+          onFilter={setFilter}
+        />
+      )}
+
+      {plugins.length > 0 && visiblePlugins.length === 0 && (q !== '' || filter !== 'all') && (
+        <div className="ext-empty">Ничего не найдено по запросу «{search}»</div>
+      )}
+
+      {visiblePlugins.map(p => {
         const isOpen = expanded === p.id
         const enabled = p.state.enabled
         const status = STATUS_META[p.status]

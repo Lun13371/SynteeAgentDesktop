@@ -6,7 +6,7 @@
    всё на CSS-переменных темы клиента.
    ───────────────────────────────────────────────────────────────────── */
 
-/* ── Оверлей: fullscreen + блюр заднего плана ── */
+/* ── Оверлей: fullscreen, затемнение без блюра ── */
 .agent-confirm-overlay {
   position: fixed;
   inset: 0;
@@ -15,9 +15,11 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
+  /* Блюр заднего фона — на оверлее (только fade, без трансформаций):
+     блюр статичен и не «плывёт», в отличие от блюра на самой карточке. */
   background: rgba(var(--shadow-rgb, 0, 0, 0), 0.45);
-  backdrop-filter: blur(14px) saturate(120%);
-  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
 }
 
 /* Лёгкая тонировка оверлея под уровень опасности */
