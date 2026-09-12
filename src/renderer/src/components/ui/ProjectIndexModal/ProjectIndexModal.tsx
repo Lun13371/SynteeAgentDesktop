@@ -204,14 +204,19 @@ export function ProjectIndexModal({ open, projectId, projectName, onClose }: Pro
         <motion.div
           className="pim-overlay"
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: 'easeOut', exit: { duration: 0.15, ease: 'easeIn' } }}
           onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}
         >
           <motion.div
             className="pim-modal"
-            initial={{ opacity: 0, y: 20, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 14, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{
+              duration: 0.26,
+              ease: [0.16, 1, 0.3, 1],
+              exit: { duration: 0.16, ease: 'easeIn' },
+            }}
           >
             {/* Header */}
             <div className="pim-header">
