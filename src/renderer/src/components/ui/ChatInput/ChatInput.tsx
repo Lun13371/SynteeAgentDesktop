@@ -48,6 +48,8 @@ interface ChatInputProps {
    *  по стрелкам вверх/вниз когда слеш-меню закрыто. */
   inputHistory?: string[]
   mainModelId?: string
+  /** Провайдер per-chat модели (для корректного бейджа ModelSelector). */
+  mainModelProviderId?: string
   onMainModelChange?: (modelId: string, providerId: string) => void
   reasoningValue?: string
   onReasoningChange?: (value: string) => void
@@ -107,6 +109,7 @@ function ChatInput({
   value, onChangeValue,
   inputHistory = [],
   mainModelId = '',
+  mainModelProviderId,
   onMainModelChange,
   reasoningValue = '',
   onReasoningChange,
@@ -792,6 +795,7 @@ function ChatInput({
         onPersonaChange={onPersonaChange}
         lang={lang}
         mainModelId={mainModelId}
+        mainModelProviderId={mainModelProviderId}
         onMainModelChange={onMainModelChange}
         reasoningValue={reasoningValue}
         onReasoningChange={onReasoningChange}

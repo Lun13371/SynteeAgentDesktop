@@ -367,6 +367,13 @@ declare const synteeAPI: {
         rename: (chatId: string, title: string) => Promise<any>;
         pin: (messageId: string) => Promise<any>;
         unpin: (messageId: string) => Promise<any>;
+        /** Редактор чата: правка текста сообщения. iterTexts — правка
+         *  текстовых сегментов iterations[].textBefore (сообщения с тулами). */
+        editMessage: (messageId: string, content: string, iterTexts?: string[]) => Promise<boolean>;
+        /** Редактор чата: скрыть/вернуть сообщение в AI-контекст. */
+        setMessageHidden: (messageId: string, hidden: boolean) => Promise<boolean>;
+        /** Редактор чата: удалить сообщение навсегда. */
+        deleteMessage: (messageId: string) => Promise<boolean>;
         reloadClient: () => Promise<any>;
         stop: (chatId?: string) => Promise<any>;
         getLiveState: (chatId: string) => Promise<any>;

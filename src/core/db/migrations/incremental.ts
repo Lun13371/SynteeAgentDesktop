@@ -131,6 +131,12 @@ export function runIncrementalMigrations(db: Database.Database): void {
     if (!cols.find(c => c.name === 'thinking_blocks')) {
       db.prepare(`ALTER TABLE messages ADD COLUMN thinking_blocks TEXT`).run()
     }
+    // hidden_from_context — сообщение скрыто из AI-контекста редактором чата:
+    // пользователь видит его в чате (затемнено, с пометкой), но getLiveMessages
+    // исключает его из промпта, счётчика контекста и компакции.
+    if (!cols.find(c => c.name === 'hidden_from_context')) {
+      db.prepare(`ALTER TABLE messages ADD COLUMN hidden_from_context INTEGER NOT NULL DEFAULT 0`).run()
+    }
   }
 
   // chat_draft_attachments — вложения черновика (переживают рестарт, не

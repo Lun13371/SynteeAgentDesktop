@@ -11,13 +11,14 @@ import {
   DEFAULT_CHAT_TITLE,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
+  getChatModel, setChatModel,
   getChatModes, setChatModes, setChatPlanningMode, setChatImageMode, setChatAskMode,
   getChatPersona, setChatPersona,
   getChatDraft, setChatDraft, getUserMessageContents,
   setChatLastUsage, getChatLastUsage, clearChatLastUsage,
   getAllProjects,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
-  getCheckpoints, pruneOldCheckpoints, deleteMessageById,
+  getCheckpoints, pruneOldCheckpoints, deleteMessageById, editMessageContent, setMessageHidden,
   saveStreamingBuffer, deleteStreamingBuffer,
   logAgentAction,
 } from '../../core/db'
@@ -455,8 +456,11 @@ function getLiveMessages(history: Message[]): Message[] {
       lastCompactionAt = msg.createdAt
     }
   }
-  if (lastCompactionAt === 0) return history
-  return history.filter(m => m.createdAt > lastCompactionAt && m.slashCommand?.name !== 'compact')
+  // hiddenFromContext: сообщения, скрытые редактором чата, не попадают в
+  // AI-контекст (промпт, счётчик контекста, компакция). Пользователь видит
+  // их в UI (затемнёнными), модель — нет.
+  if (lastCompactionAt === 0) return history.filter(m => !m.hiddenFromContext)
+  return history.filter(m => m.createdAt > lastCompactionAt && m.slashCommand?.name !== 'compact' && !m.hiddenFromContext)
 }
 
 /**
@@ -935,7 +939,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     //    ВНИМАНИЕ: storeData из runChatSend НЕ доступен тут (processAttachmentsAndStream —
     //    сиблинг runChatSend, не вложенная функция). Используем store.get() напрямую.
     const modelAssignments = store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined
-    const mainAssignment = modelAssignments?.find(a => a.role === 'main')
+    let mainAssignment = modelAssignments?.find(a => a.role === 'main')
+    // Per-chat модель: если у чата задана своя — она важнее глобального
+    // назначения main (решает, видит ли модель картинки напрямую).
+    try {
+      const chatModel = getChatModel(chatId)
+      if (chatModel) mainAssignment = { role: 'main', modelId: chatModel.modelId, providerId: chatModel.modelProvider }
+    } catch { /* ok */ }
 
     // Эвристика vision-способности вынесена в src/core/ai/visionSupport.ts —
     // общий модуль: используется и здесь (вложения), и в тулe analyze_image
@@ -1152,6 +1162,26 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       const v = store.get(k)
       if (v !== undefined) storeData[k] = v
     }
+
+    // ── Per-chat модель ──────────────────────────────────────────────────────
+    // Если у чата задана своя модель (chats.model_id/model_provider) —
+    // подменяем запись role:'main' в storeData. Тогда ВСЁ ниже по потоку
+    // (mainAssignment → workerData.modelId, getModelContextWindow для
+    // rolling-компакции, checkpoint-метка model) автоматически использует
+    // модель чата, а не глобальную. NULL у колонки = глобальное назначение
+    // (все чаты, созданные до фичи, ведут себя как раньше).
+    // Side-чаты (sideChatParentId) наследуют модель родителя.
+    try {
+      const chatModel = getChatModel(params.sideChatParentId ?? params.chatId)
+      if (chatModel) {
+        const assignments = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
+        const idx = assignments.findIndex(a => a.role === 'main')
+        const override = { role: 'main', modelId: chatModel.modelId, providerId: chatModel.modelProvider }
+        if (idx >= 0) assignments[idx] = override
+        else assignments.push(override)
+        storeData.modelAssignments = assignments
+      }
+    } catch { /* ok — чат мог быть удалён */ }
 
     const ctxSettings = getContextSettings(storeData)
     // Для side-чата DB-lookups (working memory, summary, workdir, system prompt)
@@ -3208,8 +3238,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // ── Проекты (рабочие директории) — вынесены в projects.ipc.ts ────────
   registerProjectsIPC(mainWindow)
 
-  ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string) => {
-    return createChat(isIncognito, mode, projectId)
+  ipcMain.handle('chat:create', async (_, isIncognito = false, mode: ChatMode = 'code', projectId?: string, model?: { modelId?: string; modelProvider?: string }) => {
+    return createChat(isIncognito, mode, projectId, model)
   })
 
   ipcMain.handle('chat:getAll', () => getAllChats())
@@ -3284,6 +3314,14 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
   ipcMain.handle('chat:unpinMsg', (_, messageId: string) => unpinMessage(messageId))
 
+  // ── Редактор чата: правка текста / скрытие из контекста / удаление ──────
+  // iterTexts — правка текстовых сегментов iterations[].textBefore у
+  // сообщений с тулами (мерж в полную запись БД внутри editMessageContent).
+  ipcMain.handle('chat:editMessage', (_, messageId: string, content: string, iterTexts?: string[]) =>
+    editMessageContent(messageId, content, iterTexts))
+  ipcMain.handle('chat:setMessageHidden', (_, messageId: string, hidden: boolean) => setMessageHidden(messageId, hidden))
+  ipcMain.handle('chat:deleteMessage', (_, messageId: string) => { deleteMessageById(messageId); return true })
+
   // ── Per-chat UI state: режимы инпут-бара, черновик, история ввода ──
   // Хранятся в chats/messages, переживают перезапуск. Для инкогнито
   // рендерер не вызывает эти методы (guard в ChatPage), но на уровне IPC
@@ -3301,6 +3339,13 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // Persona — single-select run mode (classic/architect/debugger/...).
   ipcMain.handle('chat:getPersona', (_, chatId: string) => getChatPersona(chatId))
   ipcMain.handle('chat:setPersona', (_, chatId: string, persona: import('../../shared/modes').PersonaId) => { setChatPersona(chatId, persona); return true })
+  // Per-chat модель: NULL = глобальное назначение role:'main'. Пишется при
+  // смене модели в пикере чата; новый чат наследует модель чата-родителя.
+  ipcMain.handle('chat:getModel', (_, chatId: string) => getChatModel(chatId))
+  ipcMain.handle('chat:setModel', (_, chatId: string, modelId: string | null, modelProvider: string | null) => {
+    setChatModel(chatId, modelId, modelProvider)
+    return true
+  })
   ipcMain.handle('chat:getDraft', (_, chatId: string) => getChatDraft(chatId))
   ipcMain.handle('chat:setDraft', (_, chatId: string, draft: string) => {
     setChatDraft(chatId, draft)
@@ -3329,6 +3374,20 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         const v = store.get(k)
         if (v !== undefined) storeData[k] = v
       }
+
+      // Per-chat модель: подменяем role:'main' на модель чата, чтобы окно
+      // контекста считалось от неё (как в runChatSend).
+      try {
+        const chatModel = getChatModel(chatId)
+        if (chatModel) {
+          const assignments = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
+          const idx = assignments.findIndex(a => a.role === 'main')
+          const override = { role: 'main', modelId: chatModel.modelId, providerId: chatModel.modelProvider }
+          if (idx >= 0) assignments[idx] = override
+          else assignments.push(override)
+          storeData.modelAssignments = assignments
+        }
+      } catch { /* ok */ }
 
       const ctxSettings = getContextSettings(storeData)
       if (!ctxSettings.tokenCounterEnabled) return
