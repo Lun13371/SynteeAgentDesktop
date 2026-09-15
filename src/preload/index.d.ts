@@ -10,6 +10,7 @@ declare const synteeAPI: {
         get: (key: string) => Promise<any>;
         set: (key: string, value: unknown) => Promise<any>;
         getAll: () => Promise<any>;
+        getAutostartStatus: () => Promise<boolean>;
     };
     systemTheme: {
         isDark: () => Promise<boolean>;
