@@ -5,10 +5,13 @@ const settings = require('../lib/settings')
 const recent = require('../lib/recent')
 const widgets = require('../ui/widgets')
 
-/** ctx для spec-сборщика: чтение картинок (base64) через fs хоста. */
-function makeCtx() {
+/** ctx для spec-сборщика: чтение картинок (base64) через fs хоста +
+ *  layout-дефолты из настроек плагина (поля/красная строка/списки/разрывы). */
+async function makeCtx() {
   const api = state.api
+  const defaults = await settings.layoutDefaults()
   return {
+    defaults,
     async readImage(p) {
       const b64 = await api.fs.readFile(p, { encoding: 'base64' })
       const ext = (p.split('.').pop() || 'png').toLowerCase()
@@ -27,7 +30,7 @@ async function createWordFile({ path: p, name, spec, open }) {
   const builder = require('../lib/word/spec')
   const target = await paths.resolveTarget({ path: p, name, ext: '.docx' })
 
-  const built = await builder.buildDocument(spec, makeCtx())
+  const built = await builder.buildDocument(spec, await makeCtx())
   await api.fs.writeFile(target, Buffer.from(built.buffer).toString('base64'), { encoding: 'base64' })
 
   const st = await api.fs.stat(target)
