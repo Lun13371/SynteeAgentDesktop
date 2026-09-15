@@ -82,14 +82,17 @@ function buildCell(cell, opts) {
 
 /**
  * table-блок спеки → docx Table. Обновляет stats.tables (вызывает сам).
+ * opts.smartBreaks → cantSplit у строк (не разрывать строку между страницами);
+ * block.allowSplit === true отключает cantSplit для всей таблицы.
  */
-function buildTable(block, stats) {
+function buildTable(block, stats, opts) {
   if (!Array.isArray(block.rows) || !block.rows.length) {
     throw new Error('table.rows (массив строк) обязателен')
   }
   const preset = TABLE_PRESETS[String(block.style || '').toLowerCase()] || {}
   const borders = specBorders(block.borders) || specBorders(preset.borders)
   const headerFill = block.headerFill || preset.headerFill
+  const noSplit = !!(opts && opts.smartBreaks !== false) && block.allowSplit !== true
 
   const rows = block.rows.map((row, ri) => {
     const cells = (row || []).map((cell) => buildCell(cell, {
@@ -100,21 +103,22 @@ function buildTable(block, stats) {
     return new TableRow({
       children: cells,
       ...(block.header && ri === 0 ? { tableHeader: true } : {}),
+      ...(noSplit ? { cantSplit: true } : {}),
     })
   })
 
-  const opts = { rows }
-  if (borders) opts.borders = borders
+  const tableOpts = { rows }
+  if (borders) tableOpts.borders = borders
   if (Array.isArray(block.columnWidths) && block.columnWidths.length) {
-    opts.columnWidths = block.columnWidths.map((cm) => cmToTwips(cm))
+    tableOpts.columnWidths = block.columnWidths.map((cm) => cmToTwips(cm))
   }
   const widthPct = Number(block.width)
-  if (widthPct > 0) opts.width = { size: widthPct, type: WidthType.PERCENTAGE }
+  if (widthPct > 0) tableOpts.width = { size: widthPct, type: WidthType.PERCENTAGE }
   else if (opts.columnWidths) {
     opts.width = { size: opts.columnWidths.reduce((a, b) => a + b, 0), type: WidthType.DXA }
   }
-  if (block.align) opts.alignment = alignType(block.align) || AlignmentType.CENTER
-  return new Table(opts)
+  if (block.align) tableOpts.alignment = alignType(block.align) || AlignmentType.CENTER
+  return new Table(tableOpts)
 }
 
 module.exports = { buildTable, specBorders, TABLE_PRESETS }

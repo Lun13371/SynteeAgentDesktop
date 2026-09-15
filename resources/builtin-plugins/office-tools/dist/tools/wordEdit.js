@@ -1,6 +1,13 @@
 // wordEdit — тулы word_edit / word_append: гранулярные правки существующих .docx
 const state = require('../state')
 const recent = require('../lib/recent')
+const settings = require('../lib/settings')
+
+/** Настройки вёрстки пользователя (layoutDefaults), если они поддерживаются сборкой. */
+async function layoutDefaultsOrNull() {
+  if (typeof settings.layoutDefaults !== 'function') return undefined
+  try { return await settings.layoutDefaults() } catch { return undefined }
+}
 
 async function editWord({ path: p, ops }) {
   if (!p) throw new Error('path обязателен')
@@ -10,7 +17,7 @@ async function editWord({ path: p, ops }) {
   if (!st.exists) throw new Error('Файл не найден: ' + p)
 
   const editor = require('../lib/word/edit')
-  const res = await editor.applyOps(p, ops)
+  const res = await editor.applyOps(p, ops, await layoutDefaultsOrNull())
 
   const st2 = await api.fs.stat(p)
   await recent.add({
@@ -33,7 +40,7 @@ function registerWordEditTools(syntee) {
   syntee.registerTool({
     name: 'word_edit',
     description:
-      'Apply granular edit operations to an existing .docx. Ops: append_blocks (add content blocks to end), insert_after (block after index), replace_text (find & replace), set_style (restyle block by index), insert_table, add_image, add_header/add_footer, delete_block, patch_document (read full spec → modify → rebuild; use for complex changes). Call word_read mode "structure"/"full" first to get block indexes.',
+      'Apply granular edit operations to an existing .docx. Page setup (size, orientation, margins, columns) is preserved on rebuild. Content ops: append_blocks, insert_after, insert_at (insert BEFORE index), replace_block, move_block, delete_block, replace_text, set_style, insert_table, add_image, add_header/add_footer, remove_header/remove_footer, patch_document. Page/typography ops: set_page (merge page setup: size/orientation/margins/columns), add_watermark (text, color, opacity, diagonal), remove_watermark, set_typography (firstLineIndent, compactLists, smartBreaks). Call word_read mode "structure"/"full" first to get block indexes.',
     parameters: {
       type: 'object',
       properties: {

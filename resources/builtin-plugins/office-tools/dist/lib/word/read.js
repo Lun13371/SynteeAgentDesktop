@@ -7,6 +7,70 @@ const mammoth = require('mammoth')
 const { collectText } = require('./blocks')
 const { pngSize, jpegSize } = require('./media')
 
+// estimatePages из pagination.js (может отсутствовать в старой сборке — тогда fallback-формула)
+let estimatePages = null
+try { ({ estimatePages } = require('./pagination')) } catch { /* pagination недоступен */ }
+
+// Известные форматы страницы (twips, w x h) → имя спеки
+const PAGE_SIZES = {
+  '11906x16838': 'a4',
+  '12240x15840': 'letter',
+  '12240x20160': 'legal',
+  '8391x11906': 'a5',
+  '16838x23811': 'a3',
+}
+
+/** Значение атрибута attr тега tag из xml (первое вхождение). */
+function xmlAttr(xml, tag, attr) {
+  const m = new RegExp('<' + tag + '[^>]*\\s' + attr + '="([^"]+)"').exec(xml || '')
+  return m ? m[1] : null
+}
+
+const round2 = (v) => Math.round(v * 100) / 100
+const twipsToCm = (t) => round2(Number(t) / 567)
+
+/**
+ * Page setup из .docx (adm-zip): word/document.xml <w:sectPr> + word/settings.xml.
+ * Заголовки/колонтитулы НЕ парсим (ограничение: пересборка их не сохраняет).
+ * @returns {object|undefined} spec.page или undefined при ошибке/отсутствии sectPr
+ */
+function readPageSetup(buffer) {
+  try {
+    const AdmZip = require('adm-zip')
+    const zip = new AdmZip(buffer)
+    const doc = zip.readAsText('word/document.xml')
+    if (!doc) return undefined
+    const sects = doc.match(/<w:sectPr[\s>][\s\S]*?<\/w:sectPr>/g)
+    if (!sects || !sects.length) return undefined
+    const sect = sects[sects.length - 1] // последний sectPr — финальная секция документа
+
+    const page = {}
+    const w = Number(xmlAttr(sect, 'w:pgSz', 'w:w'))
+    const h = Number(xmlAttr(sect, 'w:pgSz', 'w:h'))
+    if (w > 0 && h > 0) {
+      const size = PAGE_SIZES[[Math.min(w, h), Math.max(w, h)].join('x')]
+      if (size) page.size = size
+    }
+    if (xmlAttr(sect, 'w:pgSz', 'w:orient') === 'landscape') page.orientation = 'landscape'
+    const margins = {}
+    for (const side of ['top', 'right', 'bottom', 'left']) {
+      const t = Number(xmlAttr(sect, 'w:pgMar', 'w:' + side))
+      if (t > 0) margins[side] = twipsToCm(t)
+    }
+    if (Object.keys(margins).length === 4) page.margins = margins
+    const cols = Number(xmlAttr(sect, 'w:cols', 'w:num'))
+    if (cols > 1) page.columns = cols
+    if (/<w:titlePg\b/.test(sect)) page.differentFirstPage = true
+
+    const settingsXml = zip.readAsText('word/settings.xml')
+    if (settingsXml && /<w:evenAndOddHeaders\b/.test(settingsXml)) page.evenAndOdd = true
+
+    return Object.keys(page).length ? page : undefined
+  } catch {
+    return undefined // ошибка парсинга — page просто отсутствует
+  }
+}
+
 const VOID_TAGS = new Set(['img', 'br', 'hr'])
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '—', ndash: '–' }
 
@@ -224,8 +288,8 @@ function htmlToBlocks(root) {
   return blocks
 }
 
-/** Блоки → stats (как у buildDocument). */
-function blocksStats(blocks) {
+/** Блоки → stats (как у buildDocument). page — известный page setup (для estimatePages). */
+function blocksStats(blocks, page) {
   const stats = { paragraphs: 0, words: 0, tables: 0, images: 0, lists: 0, approxPages: 1 }
   const texts = []
   for (const b of blocks) {
@@ -243,9 +307,22 @@ function blocksStats(blocks) {
     collectText(b, texts)
   }
   stats.words = texts.join(' ').split(/\s+/).filter(Boolean).length
-  const est = stats.words / 400 + stats.tables * 0.25 + stats.images * 0.15 + stats.paragraphs * 0.02
-  stats.approxPages = Math.max(1, Math.ceil(est))
+  // Точная оценка страниц через pagination.js; при его отсутствии — грубая формула
+  if (typeof estimatePages === 'function') {
+    try {
+      stats.approxPages = Math.max(1, estimatePages(blocks, { page: page || undefined, compactLists: true }))
+    } catch {
+      stats.approxPages = fallbackPages(stats)
+    }
+  } else {
+    stats.approxPages = fallbackPages(stats)
+  }
   return stats
+}
+
+function fallbackPages(stats) {
+  const est = stats.words / 400 + stats.tables * 0.25 + stats.images * 0.15 + stats.paragraphs * 0.02
+  return Math.max(1, Math.ceil(est))
 }
 
 function previewOf(block) {
@@ -277,12 +354,14 @@ async function readDocument(path, mode) {
 
   const html = await mammoth.convertToHtml({ buffer })
   const blocks = htmlToBlocks(parseHtml(html.value))
-  const stats = blocksStats(blocks)
+  const page = m === 'full' ? readPageSetup(buffer) : undefined
+  const stats = blocksStats(blocks, page)
 
   if (m === 'stats') return { stats }
 
   if (m === 'full') {
-    return { spec: { content: blocks }, stats }
+    // page setup сохраняется для пересборки через word_edit / word_create
+    return { spec: { content: blocks, ...(page ? { page } : {}) }, stats }
   }
 
   // structure
@@ -294,4 +373,4 @@ async function readDocument(path, mode) {
   return { outline, blocks: structBlocks, stats }
 }
 
-module.exports = { readDocument, htmlToBlocks, parseHtml, blocksStats }
+module.exports = { readDocument, htmlToBlocks, parseHtml, blocksStats, readPageSetup }
