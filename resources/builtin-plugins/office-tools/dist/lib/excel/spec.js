@@ -12,6 +12,94 @@ function applyCellSpec(cell, cellSpec) {
   if (st) cell.style = Object.assign({}, cell.style, st)
 }
 
+/** hex → argb-объект цвета для CF (exceljs ColorXform) */
+function cfColor(hex) {
+  if (!hex || typeof hex !== 'string') return undefined
+  let h = hex.replace('#', '').toUpperCase()
+  if (h.length === 6) h = 'FF' + h
+  return { argb: h }
+}
+
+/**
+ * Нормализация правила условного форматирования.
+ * exceljs требует обязательные поля ПРЯМО на правиле (cfvo/color/formulae),
+ * иначе падает 'Cannot read properties of undefined (reading forEach)'.
+ * Здесь — дефолты и валидация с понятной ошибкой.
+ */
+function mapCfRule(r) {
+  if (!r || typeof r !== 'object') return null
+  const type = r.type || 'cellIs'
+  const rule = { type }
+
+  // Общие поля
+  if (r.priority != null) rule.priority = Number(r.priority)
+  if (r.operator) rule.operator = r.operator
+  if (r.style) {
+    const st = {}
+    if (r.style.fill) st.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + String(r.style.fill).replace('#', '').toUpperCase() } }
+    if (r.style.color) st.font = { color: { argb: 'FF' + String(r.style.color).replace('#', '').toUpperCase() } }
+    if (Object.keys(st).length) rule.style = st
+  }
+
+  if (type === 'colorScale') {
+    // cfvo: точки шкалы; color: цвета (по числу точек)
+    rule.cfvo = Array.isArray(r.cfvo) && r.cfvo.length
+      ? r.cfvo.map((c) => (typeof c === 'string' ? { type: c } : c))
+      : [{ type: 'min' }, { type: 'max' }]
+    const colors = Array.isArray(r.colors) ? r.colors : Array.isArray(r.color) ? r.color : null
+    rule.color = (colors || ['F8696B', '63BE7B']).map(cfColor).filter(Boolean)
+    if (rule.color.length !== rule.cfvo.length) {
+      // выравниваем количество цветов под точки
+      while (rule.color.length < rule.cfvo.length) rule.color.push(rule.color[rule.color.length - 1])
+      rule.color = rule.color.slice(0, rule.cfvo.length)
+    }
+    return rule
+  }
+
+  if (type === 'dataBar') {
+    rule.cfvo = Array.isArray(r.cfvo) && r.cfvo.length
+      ? r.cfvo.map((c) => (typeof c === 'string' ? { type: c } : c))
+      : [{ type: 'min' }, { type: 'max' }]
+    const c = r.color || r.barColor
+    rule.color = c ? (typeof c === 'string' ? cfColor(c) : c) : undefined
+    if (r.minLength != null) rule.minLength = Number(r.minLength)
+    if (r.maxLength != null) rule.maxLength = Number(r.maxLength)
+    if (r.showValue != null) rule.showValue = !!r.showValue
+    return rule
+  }
+
+  if (type === 'iconSet') {
+    rule.iconSet = r.iconSet || '3TrafficLights'
+    if (r.reverse != null) rule.reverse = !!r.reverse
+    if (r.showValue != null) rule.showValue = !!r.showValue
+    rule.cfvo = Array.isArray(r.cfvo) && r.cfvo.length
+      ? r.cfvo.map((c) => (typeof c === 'string' ? { type: c } : c))
+      : [{ type: 'percent', value: 0 }, { type: 'percent', value: 33 }, { type: 'percent', value: 67 }]
+    return rule
+  }
+
+  if (type === 'top10' || type === 'aboveAverage') {
+    if (r.rank != null) rule.rank = Number(r.rank)
+    if (r.percent != null) rule.percent = !!r.percent
+    if (r.bottom != null) rule.bottom = !!r.bottom
+    return rule
+  }
+
+  if (type === 'containsText' || type === 'timePeriod') {
+    if (r.text) rule.text = String(r.text)
+    return rule
+  }
+
+  // cellIs / expression — требуют formulae
+  if (!Array.isArray(r.formulae) || !r.formulae.length) {
+    throw new Error(
+      'conditionalFormatting: правило ' + type + ' требует formulae (массив, например ["100"] или ["A1>0"])',
+    )
+  }
+  rule.formulae = r.formulae.map(String)
+  return rule
+}
+
 /** Нормализовать строку спеки → { cells: [...], height, style } */
 function normalizeRow(row) {
   if (row === null || row === undefined) return { cells: [], height: null, style: null }
@@ -124,20 +212,8 @@ async function buildWorkbook(spec) {
     if (Array.isArray(sheetSpec.conditionalFormatting)) {
       for (const cf of sheetSpec.conditionalFormatting) {
         if (!cf || !cf.range || !Array.isArray(cf.rules)) continue
-        const rules = cf.rules.map((r) => {
-          const rule = { type: r.type || 'cellIs' }
-          if (r.priority != null) rule.priority = Number(r.priority)
-          if (r.operator) rule.operator = r.operator
-          if (Array.isArray(r.formulae)) rule.formulae = r.formulae.map(String)
-          if (r.style) {
-            const st = {}
-            if (r.style.fill) st.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + String(r.style.fill).replace('#', '').toUpperCase() } }
-            if (r.style.color) st.font = { color: { argb: 'FF' + String(r.style.color).replace('#', '').toUpperCase() } }
-            if (Object.keys(st).length) rule.style = st
-          }
-          return rule
-        })
-        ws.addConditionalFormatting({ ref: String(cf.range), rules })
+        const rules = cf.rules.map((r) => mapCfRule(r)).filter(Boolean)
+        if (rules.length) ws.addConditionalFormatting({ ref: String(cf.range), rules })
       }
     }
 
