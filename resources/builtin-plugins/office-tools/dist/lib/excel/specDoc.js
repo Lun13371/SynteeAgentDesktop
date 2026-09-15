@@ -26,10 +26,15 @@ Workbook spec (argument "spec"):
   ],
   "conditionalFormatting": [
     { "range": "C2:C10",
-      "rules": [ { "type": "cellIs"|"expression"|"top10"|"colorScale"|"dataBar"|"iconSet",
-                   "operator": "greaterThan"|"lessThan"|"equal"|..., "priority": 1,
-                   "formulae": ["100"], "style": { "fill": "FFC7CE", "color": "9C0006" } } ] }
+      "rules": [ rule, ... ] }
   ],
+  // rule formats by type:
+  //  cellIs:     { "type": "cellIs", "operator": "greaterThan"|"lessThan"|"equal"|"between"|..., "formulae": ["100"], "style": { "fill": "FFC7CE", "color": "9C0006" } }   // formulae REQUIRED
+  //  expression: { "type": "expression", "formulae": ["A1>0"], "style": { … } }                                                                  // formulae REQUIRED
+  //  top10:      { "type": "top10", "rank": 10, "percent": false, "bottom": false }
+  //  colorScale: { "type": "colorScale", "cfvo": [{ "type": "min" }, { "type": "max" }], "colors": ["F8696B", "63BE7B"] }   // cfvo/colors optional (defaults min→max, red→green); cfvo types: min|max|num|percent|formula (with "value")
+  //  dataBar:    { "type": "dataBar", "cfvo": [{ "type": "min" }, { "type": "max" }], "color": "638EC6" }
+  //  iconSet:    { "type": "iconSet", "iconSet": "3TrafficLights"|"3Arrows"|"4RedToBlack"|"5Rating", "cfvo": [{ "type": "percent", "value": 0 }, …], "showValue": true }
   "protection": { "password": "secret", "selectLockedCells": true, "insertRows": false }  // optional; omit password → no password
 }
 
