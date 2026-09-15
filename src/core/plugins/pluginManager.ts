@@ -790,6 +790,9 @@ export class PluginManager {
       let entries: string[]
       try { entries = readdirSync(dir) } catch { return }
       for (const name of entries) {
+        // node_modules (тестовые пакеты в исходниках builtin-плагина) —
+        // не код плагина, не снапшотим и не следим: тысячи файлов впустую.
+        if (name === 'node_modules') continue
         const full = join(dir, name)
         try {
           const st = statSync(full)
@@ -828,6 +831,8 @@ export class PluginManager {
       const name = String(filename)
       // Временные файлы редакторов/сборщиков — не код.
       if (/(^|[\\/])~|\.(tmp|crdownload|lock|swp|bak|log)$/.test(name)) return
+      // node_modules — не код плагина (npm install в исходниках builtin).
+      if (/(^|[\\/])node_modules([\\/]|$)/.test(name)) return
       // Абсолютный путь: filename относителен к наблюдаемой папке
       // (recursive-режим) или совпадает с именем наблюдаемого файла.
       const abs = target.recursive
