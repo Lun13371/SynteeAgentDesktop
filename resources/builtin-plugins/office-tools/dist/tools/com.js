@@ -19,10 +19,9 @@ async function officeOpen({ path: p, app }) {
     return 'Открыто в Word: ' + p
   }
   if (ext === 'xlsx' || ext === 'xls' || app === 'excel') {
-    // Фаза 2: lib/com/excel.js. Пока — дефолтное приложение.
-    const shell = require('../lib/com/shell')
-    await shell.openWithDefault(p)
-    return 'Открыто: ' + p
+    const com = require('../lib/com/excel')
+    await com.openBook(p)
+    return 'Открыто в Excel: ' + p
   }
   const shell = require('../lib/com/shell')
   await shell.openWithDefault(p)
@@ -82,6 +81,36 @@ function registerComTools(syntee) {
     },
     handler: wordExportPdf,
     requiresApproval: true,
+  })
+
+  syntee.registerTool({
+    name: 'excel_chart',
+    description:
+      'Add an embedded chart to an existing .xlsx sheet via real MS Excel COM (exceljs cannot create charts). Types: bar, column, line, pie, doughnut, area, scatter, radar. The chart is anchored to a cell and the workbook is saved. Requires Excel installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to .xlsx' },
+        sheet: { type: 'string', description: 'Sheet name' },
+        type: { type: 'string', enum: ['bar', 'column', 'line', 'pie', 'doughnut', 'area', 'scatter', 'radar'] },
+        dataRange: { type: 'string', description: 'Data range on the sheet, e.g. "A1:B10" (include headers row for legend)' },
+        title: { type: 'string', description: 'Chart title (optional)' },
+        anchor: { type: 'string', description: 'Top-left anchor cell, e.g. "D2" (default D2)' },
+        width: { type: 'number', description: 'Chart width px (default 480)' },
+        height: { type: 'number', description: 'Chart height px (default 300)' },
+      },
+      required: ['path', 'sheet', 'type', 'dataRange'],
+    },
+    handler: async ({ path: p, ...rest }) => {
+      if (!p) throw new Error('path обязателен')
+      const api = state.api
+      const st = await api.fs.stat(p)
+      if (!st.exists) throw new Error('Файл не найден: ' + p)
+      const com = require('../lib/com/excel')
+      await com.addChart({ path: p, ...rest })
+      return 'Диаграмма добавлена: ' + p + ' (лист ' + rest.sheet + ', ' + rest.type + ' ' + rest.dataRange + ')'
+    },
+    requiresApproval: true, // запускает реальный Excel и мутирует файл
   })
 }
 

@@ -22,7 +22,7 @@ const plugin = require('../dist/index.js')
 plugin.activate(syntee)
 plugin.deactivate()
 
-const expectedTools = ['word_create', 'word_spec_docs', 'word_read', 'word_edit', 'word_append', 'office_open', 'word_export_pdf']
+const expectedTools = ['word_create', 'word_spec_docs', 'word_read', 'word_edit', 'word_append', 'excel_create', 'excel_spec_docs', 'excel_read', 'excel_edit', 'excel_chart', 'office_convert', 'office_export_pdf', 'office_open', 'word_export_pdf']
 const expectedHandlers = ['getRecent', 'getCurrent', 'clearRecent', 'getSettings', 'setSettings', 'pickSaveDir', 'getDefaultSaveDir', 'openFile', 'showInFolder', 'exportPdf', 'quickAction', 'insertPrompt', 'getTemplates']
 
 let fail = 0
@@ -46,5 +46,7 @@ check(new Set(ids).size === ids.length, 'template ids unique')
 // specDoc
 const doc = require('../dist/lib/word/specDoc').specDoc()
 check(typeof doc === 'string' && doc.length > 1000 && doc.includes('word_create'), 'specDoc ' + doc.length + ' chars')
+const xdoc = require('../dist/lib/excel/specDoc').specDoc()
+check(typeof xdoc === 'string' && xdoc.length > 1000 && xdoc.includes('excel_create'), 'excel specDoc ' + xdoc.length + ' chars')
 
 process.exit(fail ? 1 : 0)

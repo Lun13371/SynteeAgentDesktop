@@ -1,10 +1,10 @@
 {
   "id": "office-tools",
   "name": "Office Tools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "SynteeHelper",
-  "description": "Работа с офисными документами: создание, чтение и правка Word (.docx) с полным оформлением (стили, таблицы, картинки, оглавление, колонтитулы), экспорт в PDF, открытие в MS Office. Правая панель: быстрые действия, шаблоны, недавние файлы, превью документа.",
-  "promptDescription": "Word/Excel office documents. Tools: word_create (full .docx from JSON spec: styles, tables, images, TOC, headers, page setup), word_spec_docs (spec reference), word_read (structure/text/full/stats), word_edit/word_append (granular edits), office_open (open in MS Word), word_export_pdf. Use for ANY Word document task.",
+  "description": "Работа с офисными документами: создание, чтение и правка Word (.docx) и Excel (.xlsx) с полным оформлением (стили, таблицы, формулы, заливки, freeze, фильтры), диаграммы, конвертация (xlsx↔csv, →PDF), открытие в MS Office. Правая панель: быстрые действия, шаблоны, недавние файлы, превью.",
+  "promptDescription": "Word/Excel office documents. Word: word_create (full .docx from JSON spec), word_spec_docs, word_read, word_edit/word_append. Excel: excel_create (full .xlsx: formulas, styles, merges, freeze, filters, validation), excel_spec_docs, excel_read, excel_edit, excel_chart (COM). Convert: office_convert (xlsx<->csv), office_export_pdf, office_open. Use for ANY office document task.",
   "main": "dist/index.js",
   "ui": "ui/panel.html",
   "readme": "readme.md",
@@ -18,5 +18,5 @@
     "process:exec",
     "chat"
   ],
-  "dependencies": ["docx", "mammoth"]
+  "dependencies": ["docx", "mammoth", "exceljs"]
 }

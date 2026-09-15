@@ -22,12 +22,16 @@
     root.innerHTML =
       '<button class="ot-action" id="ot-quick-word" title="Вставить промпт в поле ввода">'
       + OT.icon('doc') + '<span>Новый документ Word</span></button>'
-      + '<button class="ot-action ot-disabled" disabled title="Появится в фазе 2">'
+      + '<button class="ot-action" id="ot-quick-excel" title="Вставить промпт в поле ввода">'
       + OT.icon('table') + '<span>Новая таблица Excel</span></button>'
 
     document.getElementById('ot-quick-word').addEventListener('click', function () {
       // вставить в поле ввода, НЕ отправлять
       OT.bridge.call('insertPrompt', { prompt: 'Создай Word-документ: ' })
+        .catch(function (e) { showActionsError('Не удалось вставить промпт: ' + e.message) })
+    })
+    document.getElementById('ot-quick-excel').addEventListener('click', function () {
+      OT.bridge.call('insertPrompt', { prompt: 'Создай Excel-таблицу: ' })
         .catch(function (e) { showActionsError('Не удалось вставить промпт: ' + e.message) })
     })
   }
