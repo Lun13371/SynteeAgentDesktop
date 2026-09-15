@@ -7,7 +7,10 @@ const { parseRef, parseRange, rangeToString, lettersToNum, numToLetters } = requ
 /** Найти индекс листа в спеке по имени */
 function sheetIdx(spec, name) {
   const i = spec.sheets.findIndex((s) => s.name === name)
-  if (i < 0) throw new Error('Лист не найден: ' + name)
+  if (i < 0) {
+    const names = spec.sheets.map((s) => '"' + s.name + '"').join(', ')
+    throw new Error('Лист не найден: ' + name + '. Листы в файле: ' + names)
+  }
   return i
 }
 
