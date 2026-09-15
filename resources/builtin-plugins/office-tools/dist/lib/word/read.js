@@ -1,0 +1,297 @@
+// read — чтение .docx через mammoth (docx → html → разбор → блоки спеки).
+// Режимы: 'structure' (outline + blocks + stats), 'text' (plain text),
+// 'full' (спека для пересборки через word_create / word_edit), 'stats'.
+
+const fs = require('fs')
+const mammoth = require('mammoth')
+const { collectText } = require('./blocks')
+const { pngSize, jpegSize } = require('./media')
+
+const VOID_TAGS = new Set(['img', 'br', 'hr'])
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '—', ndash: '–' }
+
+function decodeEntities(s) {
+  return s
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&([a-zA-Z]+);/g, (m, name) => ENTITIES[name] !== undefined ? ENTITIES[name] : m)
+}
+
+function parseAttrs(str) {
+  const attrs = {}
+  const re = /([a-zA-Z-]+)\s*=\s*("([^"]*)"|'([^']*)')/g
+  let m
+  while ((m = re.exec(str))) attrs[m[1].toLowerCase()] = m[3] != null ? m[3] : m[4]
+  return attrs
+}
+
+/** Мини-парсер mammoth-HTML → дерево { tag, attrs, children }. */
+function parseHtml(html) {
+  const root = { tag: 'root', attrs: {}, children: [] }
+  const stack = [root]
+  const re = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
+  let m, last = 0
+  const pushText = (t) => { if (t) stack[stack.length - 1].children.push(t) }
+  while ((m = re.exec(html))) {
+    if (m.index > last) pushText(decodeEntities(html.slice(last, m.index)))
+    last = re.lastIndex
+    const tag = m[2].toLowerCase()
+    const attrs = parseAttrs(m[3] || '')
+    if (tag === 'br') {
+      stack[stack.length - 1].children.push({ tag: 'br', attrs, children: [] })
+    } else if (m[1] === '/') {
+      for (let i = stack.length - 1; i > 0; i--) {
+        if (stack[i].tag === tag) { stack.length = i; break }
+      }
+    } else if (VOID_TAGS.has(tag)) {
+      stack[stack.length - 1].children.push({ tag, attrs, children: [] })
+    } else {
+      const node = { tag, attrs, children: [] }
+      stack[stack.length - 1].children.push(node)
+      stack.push(node)
+    }
+  }
+  if (last < html.length) pushText(decodeEntities(html.slice(last)))
+  return root
+}
+
+/** img-атрибуты (data URI) → image-блок спеки (+ sniffing размеров). */
+function imageFromAttrs(attrs) {
+  const src = attrs.src || ''
+  const m = /^data:image\/([a-zA-Z0-9]+);base64,(.*)$/s.exec(src)
+  if (!m) return { type: 'image', path: attrs.src || '' }
+  const ext = m[1].toLowerCase().replace('jpeg', 'jpg')
+  const block = { type: 'image', data: m[2], ext: ext === 'jpg' ? 'jpeg' : ext }
+  try {
+    const buf = Buffer.from(m[2], 'base64')
+    const nat = (ext === 'png' && pngSize(buf)) || ((ext === 'jpg') && jpegSize(buf))
+    if (nat) { block.width = nat[0]; block.height = nat[1] }
+  } catch { /* размеры неизвестны — buildDocument возьмёт дефолт */ }
+  return block
+}
+
+function styleKey(r) {
+  return [r.bold, r.italic, r.underline, r.strike, r.subscript, r.superscript, r.url].join('|')
+}
+
+/** Инлайн-узлы → runs спеки ({ text, bold, … }); картинки → { __image }. */
+function inlineRuns(nodes, state, out) {
+  state = state || {}
+  for (const n of nodes || []) {
+    if (typeof n === 'string') { pushRun(out, n, state); continue }
+    if (n.tag === 'br') { pushRun(out, '\n', state); continue }
+    if (n.tag === 'img') { out.push({ __image: imageFromAttrs(n.attrs) }); continue }
+    const s = { ...state }
+    if (n.tag === 'strong' || n.tag === 'b') s.bold = true
+    else if (n.tag === 'em' || n.tag === 'i') s.italic = true
+    else if (n.tag === 'u') s.underline = true
+    else if (n.tag === 's' || n.tag === 'strike' || n.tag === 'del') s.strike = true
+    else if (n.tag === 'sup') s.superscript = true
+    else if (n.tag === 'sub') s.subscript = true
+    else if (n.tag === 'a' && n.attrs.href) s.url = n.attrs.href
+    inlineRuns(n.children, s, out)
+  }
+  return out
+}
+
+function pushRun(out, text, state) {
+  if (!text) return
+  const last = out.length && out[out.length - 1]
+  if (last && !last.__image && styleKey(last) === styleKey(state)) {
+    last.text += text
+    return
+  }
+  const r = { text }
+  for (const k of ['bold', 'italic', 'underline', 'strike', 'subscript', 'superscript']) {
+    if (state[k]) r[k] = true
+  }
+  if (state.url) r.url = state.url
+  out.push(r)
+}
+
+/** Узел → текст (для заголовков/предпросмотра). */
+function textOf(nodes) {
+  return inlineRuns(nodes || [], {}, []).filter((r) => !r.__image).map((r) => r.text).join('')
+}
+
+/** p-узел → блоки спеки (paragraph | hyperlink | image). */
+function paragraphBlocks(node) {
+  const runs = inlineRuns(node.children, {}, [])
+  const images = runs.filter((r) => r.__image).map((r) => r.__image)
+  const textRuns = runs.filter((r) => !r.__image)
+  const out = [...images]
+  if (!textRuns.length) return out
+  const nonEmpty = textRuns.filter((r) => r.text)
+  // Параграф целиком = одна ссылка → hyperlink-блок
+  if (nonEmpty.length === 1 && nonEmpty[0].url && nonEmpty.every((r) => r.url === nonEmpty[0].url)) {
+    out.push({ type: 'hyperlink', text: nonEmpty.map((r) => r.text).join(''), url: nonEmpty[0].url })
+    return out
+  }
+  const block = { type: 'paragraph' }
+  const plain = nonEmpty.map((r) => r.text).join('')
+  const hasStyle = nonEmpty.some((r) => r.bold || r.italic || r.underline || r.strike || r.subscript || r.superscript)
+  if (hasStyle) {
+    block.runs = nonEmpty.map((r) => {
+      const { url, ...rest } = r
+      return rest
+    })
+  } else {
+    block.text = plain
+  }
+  if (node.attrs && node.attrs.style && /text-align:\s*center/i.test(node.attrs.style)) block.alignment = 'center'
+  out.push(block)
+  return out
+}
+
+/** ul/ol-узел → list-блок (вложенные списки → level). */
+function listBlocks(node, ordered, depth, items) {
+  for (const li of node.children || []) {
+    if (typeof li === 'string' || li.tag !== 'li') continue
+    const inline = []
+    const nested = []
+    for (const c of li.children || []) {
+      if (typeof c === 'string') { inline.push(c); continue }
+      if (c.tag === 'ul' || c.tag === 'ol') nested.push(c)
+      else inline.push(c)
+    }
+    const runs = inlineRuns(inline, {}, []).filter((r) => !r.__image)
+    const text = runs.map((r) => r.text).join('').trim()
+    const item = { text, level: depth }
+    if (runs.some((r) => r.bold || r.italic || r.underline)) {
+      item.runs = runs.map((r) => { const { url, ...rest } = r; return rest })
+    }
+    items.push(item)
+    for (const nl of nested) listBlocks(nl, nl.tag === 'ol', depth + 1, items)
+  }
+  return items
+}
+
+/** table-узел → table-блок спеки (mammoth оборачивает строки в thead/tbody). */
+function tableBlock(node) {
+  const rows = []
+  let header = false
+  const walkRows = (n, inHead) => {
+    for (const child of n.children || []) {
+      if (typeof child === 'string') continue
+      if (child.tag === 'thead') { walkRows(child, true); continue }
+      if (child.tag === 'tbody' || child.tag === 'tfoot' || child.tag === 'table') { walkRows(child, inHead); continue }
+      if (child.tag !== 'tr') continue
+      const cells = []
+      for (const td of child.children || []) {
+        if (typeof td === 'string') continue
+        if (td.tag !== 'td' && td.tag !== 'th') continue
+        const runs = inlineRuns(td.children, {}, []).filter((r) => !r.__image)
+        const cell = { text: runs.map((r) => r.text).join('').trim() }
+        if (td.tag === 'th' || inHead || runs.some((r) => r.bold)) cell.bold = true
+        if (td.attrs && td.attrs.colspan) cell.colspan = Number(td.attrs.colspan)
+        if (td.attrs && td.attrs.rowspan) cell.rowspan = Number(td.attrs.rowspan)
+        cells.push(cell)
+      }
+      if (cells.length) {
+        if (inHead && !rows.length) header = true
+        rows.push(cells)
+      }
+    }
+  }
+  walkRows(node, false)
+  return rows.length ? { type: 'table', rows, header } : null
+}
+
+/** Дерево html → блоки спеки. */
+function htmlToBlocks(root) {
+  const blocks = []
+  for (const n of root.children || []) {
+    if (typeof n === 'string') {
+      if (n.trim()) blocks.push({ type: 'paragraph', text: n.trim() })
+      continue
+    }
+    if (/^h[1-6]$/.test(n.tag)) {
+      blocks.push({ type: 'heading', level: Number(n.tag[1]), text: textOf(n.children) })
+    } else if (n.tag === 'p') {
+      blocks.push(...paragraphBlocks(n))
+    } else if (n.tag === 'ul' || n.tag === 'ol') {
+      const items = listBlocks(n, n.tag === 'ol', 0, [])
+      if (items.length) blocks.push({ type: 'list', ordered: n.tag === 'ol', items })
+    } else if (n.tag === 'table') {
+      const t = tableBlock(n)
+      if (t) blocks.push(t)
+    } else if (n.tag === 'img') {
+      blocks.push(imageFromAttrs(n.attrs))
+    } else {
+      blocks.push(...htmlToBlocks(n))
+    }
+  }
+  return blocks
+}
+
+/** Блоки → stats (как у buildDocument). */
+function blocksStats(blocks) {
+  const stats = { paragraphs: 0, words: 0, tables: 0, images: 0, lists: 0, approxPages: 1 }
+  const texts = []
+  for (const b of blocks) {
+    if (b.type === 'list') {
+      stats.lists++
+      stats.paragraphs += (b.items || []).length
+      for (const it of b.items || []) texts.push(it.text || '')
+    } else if (b.type === 'table') {
+      stats.tables++
+    } else if (b.type === 'image') {
+      stats.images++
+    } else {
+      stats.paragraphs++
+    }
+    collectText(b, texts)
+  }
+  stats.words = texts.join(' ').split(/\s+/).filter(Boolean).length
+  const est = stats.words / 400 + stats.tables * 0.25 + stats.images * 0.15 + stats.paragraphs * 0.02
+  stats.approxPages = Math.max(1, Math.ceil(est))
+  return stats
+}
+
+function previewOf(block) {
+  let t = ''
+  if (block.type === 'heading') t = block.text
+  else if (block.type === 'list') t = (block.items || []).map((i) => (typeof i === 'string' ? i : i.text)).join(' · ')
+  else if (block.type === 'table') t = '[' + (block.rows || []).length + 'x' + ((block.rows || [])[0] || []).length + '] ' + ((block.rows || [])[0] || []).map((c) => (typeof c === 'string' ? c : c.text)).join(' | ')
+  else if (block.type === 'image') t = '[image' + (block.width ? ' ' + block.width + 'x' + block.height : '') + ']'
+  else t = block.text || (block.runs || []).map((r) => r.text).join('') || block.url || ''
+  t = String(t || '').replace(/\s+/g, ' ').trim()
+  return t.length > 80 ? t.slice(0, 77) + '…' : t
+}
+
+/**
+ * Чтение .docx. Файл читается напрямую через require('fs').
+ * @returns {Promise<object|string>} — зависит от mode.
+ */
+async function readDocument(path, mode) {
+  const m = mode || 'structure'
+  if (!['structure', 'text', 'full', 'stats'].includes(m)) {
+    throw new Error('Неизвестный режим: ' + m + ' (structure | text | full | stats)')
+  }
+  const buffer = fs.readFileSync(path)
+
+  if (m === 'text') {
+    const r = await mammoth.extractRawText({ buffer })
+    return r.value
+  }
+
+  const html = await mammoth.convertToHtml({ buffer })
+  const blocks = htmlToBlocks(parseHtml(html.value))
+  const stats = blocksStats(blocks)
+
+  if (m === 'stats') return { stats }
+
+  if (m === 'full') {
+    return { spec: { content: blocks }, stats }
+  }
+
+  // structure
+  const outline = []
+  const structBlocks = blocks.map((b, index) => {
+    if (b.type === 'heading') outline.push({ level: b.level, text: b.text })
+    return { index, type: b.type, preview: previewOf(b) }
+  })
+  return { outline, blocks: structBlocks, stats }
+}
+
+module.exports = { readDocument, htmlToBlocks, parseHtml, blocksStats }
