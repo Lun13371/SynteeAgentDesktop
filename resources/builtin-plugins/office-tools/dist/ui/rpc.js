@@ -29,6 +29,9 @@ function registerHandlers(syntee) {
     if (ext === 'docx' || ext === 'doc') {
       const com = require('../lib/com/word')
       await com.openDoc(path)
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      const com = require('../lib/com/excel')
+      await com.openBook(path)
     } else {
       const shell = require('../lib/com/shell')
       await shell.openWithDefault(path)

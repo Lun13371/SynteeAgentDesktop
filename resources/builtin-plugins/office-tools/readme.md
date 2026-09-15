@@ -11,8 +11,14 @@
 | `word_read` | Чтение .docx: `structure` / `text` / `full` / `stats` |
 | `word_edit` | Гранулярные правки существующих .docx (массив операций) |
 | `word_append` | Дописать блоки в конец документа |
-| `office_open` | Открыть файл в реальном Word (COM) |
-| `word_export_pdf` | Экспорт .docx → PDF (COM) |
+| `excel_create` | Создание .xlsx из JSON-спеки: листы, формулы, форматы, стили, merged, freeze, автофильтры, валидация, условное форматирование, защита |
+| `excel_spec_docs` | Справочник формата Excel-спеки |
+| `excel_read` | Чтение .xlsx: `meta` / `values` / `formulas` / `full` (+ превью-таблица в чате) |
+| `excel_edit` | Гранулярные правки: ячейки, строки/колонки, листы, ширины, merge, freeze, сортировка |
+| `excel_chart` | Диаграммы через реальный Excel (COM) |
+| `office_convert` | Конвертация: xlsx↔csv |
+| `office_export_pdf` | Экспорт .docx/.xlsx → PDF (COM) |
+| `office_open` | Открыть файл в реальном Word/Excel (COM) |
 
 ## Панель
 
