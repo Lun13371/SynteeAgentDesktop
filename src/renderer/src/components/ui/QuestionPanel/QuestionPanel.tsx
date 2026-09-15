@@ -63,15 +63,10 @@ export default function QuestionPanel() {
         msgId: data.msgId,
         questions,
       })
-      // Инициализируем черновики с defaultValue
+      // Инициализируем пустые черновики (AI не может предзаполнять ответы)
       const init: Record<string, AnswerDraft> = {}
       for (const q of questions) {
-        const type = resolveType(q)
-        init[q.id!] = {
-          ...EMPTY_DRAFT,
-          text: q.defaultValue || '',
-        }
-        void type
+        init[q.id!] = { ...EMPTY_DRAFT }
       }
       setDrafts(init)
       setVisibleIdx(0)
