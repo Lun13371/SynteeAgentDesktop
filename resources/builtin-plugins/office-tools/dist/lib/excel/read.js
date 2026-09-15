@@ -44,7 +44,11 @@ function workbookStats(wb) {
 function findSheet(wb, sheetName) {
   if (!sheetName) return wb.worksheets[0]
   const ws = wb.getWorksheet(sheetName)
-  if (!ws) throw new Error('Лист не найден: ' + sheetName)
+  if (!ws) {
+    // Подсказка модели: какие листы ЕСТЬ (баг-репорт «не шарит что есть»).
+    const names = wb.worksheets.map((w) => '"' + w.name + '"').join(', ')
+    throw new Error('Лист не найден: ' + sheetName + '. Доступные листы: ' + names)
+  }
   return ws
 }
 

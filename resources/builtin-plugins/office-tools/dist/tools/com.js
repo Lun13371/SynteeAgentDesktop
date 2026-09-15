@@ -106,6 +106,19 @@ function registerComTools(syntee) {
       const api = state.api
       const st = await api.fs.stat(p)
       if (!st.exists) throw new Error('Файл не найден: ' + p)
+      // Превалидация ДО COM: понятные ошибки вместо криптичного PS-вывода.
+      if (!rest.sheet) throw new Error('sheet обязателен (имя листа). Узнать листы: excel_read mode "meta"')
+      if (!rest.dataRange) throw new Error('dataRange обязателен, например "A1:B10" (включите строку заголовков для легенды)')
+      if (!/^[A-Za-z]+[0-9]+:[A-Za-z]+[0-9]+$/.test(String(rest.dataRange).replace(/\$/g, '').replace(/'/g, ''))) {
+        throw new Error('dataRange должен быть диапазоном вида "A1:B10", получено: ' + rest.dataRange)
+      }
+      const reader = require('../lib/excel/read')
+      const meta = await reader.readWorkbook(p, { mode: 'meta' })
+      const found = (meta.sheets || []).find((s) => s.name === rest.sheet)
+      if (!found) {
+        const names = (meta.sheets || []).map((s) => '"' + s.name + '" (' + s.rowCount + 'x' + s.columnCount + ')').join(', ')
+        throw new Error('Лист не найден: ' + rest.sheet + '. Листы в файле: ' + names)
+      }
       const com = require('../lib/com/excel')
       await com.addChart({ path: p, ...rest })
       return 'Диаграмма добавлена: ' + p + ' (лист ' + rest.sheet + ', ' + rest.type + ' ' + rest.dataRange + ')'

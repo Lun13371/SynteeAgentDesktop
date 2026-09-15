@@ -132,7 +132,10 @@ async function applyOps(path, ops) {
         break
       }
       default:
-        throw new Error('Неизвестная операция: ' + JSON.stringify(name))
+        throw new Error(
+          'Неизвестная операция: ' + JSON.stringify(name) +
+          '. Доступно: append_blocks, insert_after, replace_text, set_style, insert_table, add_image, add_header, add_footer, delete_block, patch_document',
+        )
     }
   }
 
