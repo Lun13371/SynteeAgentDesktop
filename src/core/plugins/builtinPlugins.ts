@@ -31,7 +31,7 @@ import { app } from 'electron'
 import type { PluginManifest } from '../../shared/types'
 
 /** Встроенные плагины, включаемые автоматически при первой установке. */
-export const DEFAULT_ENABLED_BUILTINS = new Set(['plugin-dev'])
+export const DEFAULT_ENABLED_BUILTINS = new Set(['plugin-dev', 'office-tools'])
 
 /** Папка с исходниками встроенных плагинов (dev — репозиторий, prod — resources). */
 export function getBuiltinPluginsDir(): string {
