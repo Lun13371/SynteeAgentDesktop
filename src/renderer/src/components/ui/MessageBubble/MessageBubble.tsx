@@ -95,6 +95,7 @@ import TodoChecklist from '../TodoChecklist/TodoChecklist'
 import FastContextBlock, { type FastContextResultData } from '../FastContextBlock/FastContextBlock'
 import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
+import ChartBlock from './ChartBlock'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
 import { useChatStore } from '../../../store/chat.store'
@@ -949,6 +950,7 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
       if (isInline) return <code className="inline-code">{children}</code>
       const lang = match?.[1] || 'text'
       if (lang === 'mermaid') return <MermaidBlock code={raw} />
+      if (lang === 'chart') return <ChartBlock code={raw} />
       if (lang === 'diff') return <DiffBlock code={raw} />
       // Кастомный рендерер кодоблока от плагина (registerMarkdownRenderer):
       // если плагин зарегистрировал рендерер для этого языка — грузим его

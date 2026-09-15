@@ -412,6 +412,8 @@
   border-radius: var(--radius-md);
   overflow-x: auto;
   text-align: center;
+  /* Кнопка ⤢ «открыть в панели просмотра» — абсолютная в углу блока */
+  position: relative;
 }
 .mermaid-block svg { max-width: 100%; height: auto; }
 .mermaid-error {
@@ -422,6 +424,8 @@
   font-size: 12px; color: #fca5a5;
 }
 .mermaid-error pre { margin: 4px 0 0; font-size: 11px; opacity: 0.8; white-space: pre-wrap; }
+/* Кнопки ⬇/⤢ на mermaid-блоке — общие стили .chart-actions/.chart-action-btn
+   живут в ChartBlock.css (импортируется глобально вместе с ChartBlock). */
 
 /* Reply цитата */
 .message-reply-quote {
