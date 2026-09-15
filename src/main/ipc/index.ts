@@ -1,5 +1,5 @@
 import { ipcMain, nativeTheme, webContents } from 'electron'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { app } from 'electron'
 import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync, readFileSync, statSync } from 'fs'
 import type Store from 'electron-store'
@@ -41,9 +41,47 @@ function registerWindowIPC({ mainWindow }: IPCContext): void {
   ipcMain.handle('window:isMaximized', () => mainWindow.isMaximized())
 }
 
+// ── Автозагрузка (Login Items / HKCU\...\Run) ──────────────────
+// Реальное состояние берём из Electron (app.getLoginItemSettings),
+// а не из config.json — чекбокс в настройках всегда показывает правду
+// (в т.ч. если юзер отключил автозапуск через Диспетчер задач).
+function getAutostartState(): boolean {
+  try {
+    return app.getLoginItemSettings().openAtLogin
+  } catch (e) {
+    console.error('[autostart] getLoginItemSettings failed:', e)
+    return false
+  }
+}
+
+function applyAutostart(enabled: boolean): boolean {
+  try {
+    if (app.isPackaged) {
+      app.setLoginItemSettings({ openAtLogin: enabled })
+    } else {
+      // dev-режим: process.execPath = electron.exe, без явного path/args
+      // в Run прописался бы голый electron без пути к приложению.
+      app.setLoginItemSettings({
+        openAtLogin: enabled,
+        path: process.execPath,
+        args: [resolve(process.argv[1] || '.')],
+      })
+    }
+    return true
+  } catch (e) {
+    console.error('[autostart] setLoginItemSettings failed:', e)
+    return false
+  }
+}
+
 function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
   ipcMain.handle('settings:get', (_, key: string) => store.get(key))
   ipcMain.handle('settings:set', (_, key: string, value: unknown) => {
+    // Автозагрузка: применяем в ОС ДО сохранения настройки — если реестр
+    // недоступен, чекбокс не должен показывать ложное «включено».
+    if (key === 'autostart') {
+      if (!applyAutostart(Boolean(value))) return
+    }
     store.set(key, value)
     // Сброс кэша ActivityManager при изменении его настройки
     if (key === 'activityMonitor') {
@@ -56,6 +94,8 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     }
   })
   ipcMain.handle('settings:getAll', () => store.store)
+  // Живой опрос реального состояния автозагрузки из реестра Windows
+  ipcMain.handle('settings:autostartStatus', () => getAutostartState())
   ipcMain.handle('settings:reset', () => { store.clear(); return true })
 
   // ── Background image persistence ──────────────────────────────

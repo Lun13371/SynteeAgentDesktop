@@ -18,6 +18,7 @@ const synteeAPI = {
     get: (key: string) => ipcRenderer.invoke('settings:get', key),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
     getAll: () => ipcRenderer.invoke('settings:getAll'),
+    getAutostartStatus: () => ipcRenderer.invoke('settings:autostartStatus') as Promise<boolean>,
   },
 
   // Системная тема Windows (nativeTheme в main-процессе)
