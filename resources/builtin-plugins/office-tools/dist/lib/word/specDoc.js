@@ -60,6 +60,9 @@ Document spec (argument "spec"):
   //        "borders": { … } }
 { "type": "image", "path": "C:/abs/pic.png", "width": 400, "height": 300,   // px; omit both → natural size
   "alignment": "left"|"center"|"right" }
+  // image can also use "data" (base64) + "ext" instead of "path" — but avoid large base64
+  // in YOUR specs. NOTE: word_read mode "full" returns images ONLY as "path" (extracted
+  // to files, listed in res.images) — never as base64, to keep the AI context clean.
 { "type": "hyperlink", "text": "…", "url": "https://…" }
 { "type": "cover", "title": "…", "subtitle": "…", "author": "…", "date": "…",   // title page + page break
   "meta": [ { "label": "…", "value": "…" } ],
