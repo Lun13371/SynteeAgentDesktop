@@ -1,8 +1,15 @@
 // read — чтение .docx через mammoth (docx → html → разбор → блоки спеки).
 // Режимы: 'structure' (outline + blocks + stats), 'text' (plain text),
 // 'full' (спека для пересборки через word_create / word_edit), 'stats'.
+//
+// ВАЖНО: встроенные картинки НЕ возвращаются как base64 (одна картинка
+// в 400 КБ — это ~200k токенов мусора в контексте AI). Вместо этого они
+// извлекаются в файлы (extractImages), а в блоках остаётся только path —
+// по нему можно смотреть картинку через analyze_image и пересобирать документ.
 
 const fs = require('fs')
+const os = require('os')
+const nodePath = require('path')
 const mammoth = require('mammoth')
 const { collectText } = require('./blocks')
 const { pngSize, jpegSize } = require('./media')
@@ -330,17 +337,50 @@ function previewOf(block) {
   if (block.type === 'heading') t = block.text
   else if (block.type === 'list') t = (block.items || []).map((i) => (typeof i === 'string' ? i : i.text)).join(' · ')
   else if (block.type === 'table') t = '[' + (block.rows || []).length + 'x' + ((block.rows || [])[0] || []).length + '] ' + ((block.rows || [])[0] || []).map((c) => (typeof c === 'string' ? c : c.text)).join(' | ')
-  else if (block.type === 'image') t = '[image' + (block.width ? ' ' + block.width + 'x' + block.height : '') + ']'
+  else if (block.type === 'image') t = '[image' + (block.width ? ' ' + block.width + 'x' + block.height : '') + (block.path ? ' → ' + block.path : '') + ']'
   else t = block.text || (block.runs || []).map((r) => r.text).join('') || block.url || ''
   t = String(t || '').replace(/\s+/g, ' ').trim()
   return t.length > 80 ? t.slice(0, 77) + '…' : t
 }
 
 /**
- * Чтение .docx. Файл читается напрямую через require('fs').
- * @returns {Promise<object|string>} — зависит от mode.
+ * Извлечение встроенных картинок в файлы: у image-блоков data (base64)
+ * заменяется на path. Возвращает список { index, path, ext, width, height }.
+ * Имена детерминированы (docName-imgN.ext) — повторное чтение перезаписывает.
+ * При ошибке записи data всё равно удаляется (base64 не должен попадать в контекст).
  */
-async function readDocument(path, mode) {
+function extractImages(blocks, docxPath, imageDir) {
+  const dir = imageDir || nodePath.join(os.tmpdir(), 'office-tools-media')
+  const base = nodePath.basename(String(docxPath || 'doc')).replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '_') || 'doc'
+  const out = []
+  let n = 0
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    if (!b || b.type !== 'image' || !b.data) continue
+    n++
+    const ext = String(b.ext || 'png').toLowerCase()
+    const file = nodePath.join(dir, base + '-img' + n + '.' + ext)
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(file, Buffer.from(b.data, 'base64'))
+      b.path = file
+      out.push({ index: i, path: file, ext, width: b.width, height: b.height })
+    } catch {
+      b.note = 'извлечение в файл не удалось'
+    }
+    delete b.data // base64 никогда не возвращается наружу
+  }
+  return out
+}
+
+/**
+ * Чтение .docx. Файл читается напрямую через require('fs').
+ * @param {object} [opts] { imageDir } — куда извлекать встроенные картинки
+ *   (по умолчанию os.tmpdir()/office-tools-media).
+ * @returns {Promise<object|string>} — зависит от mode. В 'full' и 'structure'
+ *   картинки — файлами (path), в 'full' добавляется список res.images.
+ */
+async function readDocument(path, mode, opts) {
   const m = mode || 'structure'
   if (!['structure', 'text', 'full', 'stats'].includes(m)) {
     throw new Error('Неизвестный режим: ' + m + ' (structure | text | full | stats)')
@@ -354,6 +394,10 @@ async function readDocument(path, mode) {
 
   const html = await mammoth.convertToHtml({ buffer })
   const blocks = htmlToBlocks(parseHtml(html.value))
+  // Картинки → файлы: base64 не должен попадать в контекст AI
+  const images = m === 'full' || m === 'structure'
+    ? extractImages(blocks, path, opts && opts.imageDir)
+    : []
   const page = m === 'full' ? readPageSetup(buffer) : undefined
   const stats = blocksStats(blocks, page)
 
@@ -361,7 +405,7 @@ async function readDocument(path, mode) {
 
   if (m === 'full') {
     // page setup сохраняется для пересборки через word_edit / word_create
-    return { spec: { content: blocks, ...(page ? { page } : {}) }, stats }
+    return { spec: { content: blocks, ...(page ? { page } : {}) }, stats, ...(images.length ? { images } : {}) }
   }
 
   // structure
@@ -373,4 +417,4 @@ async function readDocument(path, mode) {
   return { outline, blocks: structBlocks, stats }
 }
 
-module.exports = { readDocument, htmlToBlocks, parseHtml, blocksStats, readPageSetup }
+module.exports = { readDocument, htmlToBlocks, parseHtml, blocksStats, readPageSetup, extractImages }

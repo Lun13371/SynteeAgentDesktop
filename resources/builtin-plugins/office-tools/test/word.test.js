@@ -187,12 +187,25 @@ async function main() {
   const readRuns = content.find((b) => b.type === 'paragraph' && Array.isArray(b.runs))
   check('full: styled runs распознаны (bold/italic)', !!readRuns && readRuns.runs.some((r) => r.bold || r.italic), readRuns)
 
+  // --- Картинки извлекаются в файлы, base64 не возвращается (регрессия контекста) ---
+  const imgBlock = content.find((b) => b.type === 'image')
+  check('full: у image-блока есть path', !!imgBlock && typeof imgBlock.path === 'string' && imgBlock.path.length > 0, imgBlock)
+  check('full: у image-блока НЕТ base64 data', !!imgBlock && imgBlock.data === undefined, imgBlock && { data: imgBlock.data && imgBlock.data.slice(0, 30) })
+  check('full: файл картинки существует на диске', !!imgBlock && fs.existsSync(imgBlock.path), imgBlock && imgBlock.path)
+  check('full: файл картинки не пустой', !!imgBlock && fs.statSync(imgBlock.path).size > 50, imgBlock && imgBlock.path)
+  check('full: res.images — список с path', Array.isArray(full.images) && full.images.length === 1 && full.images[0].path === imgBlock.path, full.images)
+  check('full: JSON результата без base64 (компактен)', JSON.stringify(full).length < 30000, JSON.stringify(full).length)
+  // structure-превью тоже показывает путь
+  const stImg = st.blocks.find((b) => b.type === 'image')
+  check('structure: превью картинки содержит путь', !!stImg && stImg.preview.includes('→'), stImg && stImg.preview)
+
   // --- Пересборка full-спеки (round-trip) ---
   console.log('[6] round-trip: пересборка full-спеки')
   const rebuilt = await buildDocument(full.spec, ctx)
   const RT = path.join(TMP_DIR, 'word-roundtrip.docx')
   fs.writeFileSync(RT, rebuilt.buffer)
   check('round-trip: валидный zip', rebuilt.buffer[0] === 0x50 && rebuilt.buffer[1] === 0x4b)
+  check('round-trip: картинка пересобрана из файла (images = 1)', rebuilt.stats.images === 1, rebuilt.stats)
   const rtText = await readDocument(RT, 'text')
   check('round-trip: текст совпадает по ключевым фрагментам',
     rtText.includes('Тестовый документ') && rtText.includes('объединённая ячейка') && rtText.includes('кастомный A'))

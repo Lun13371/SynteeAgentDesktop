@@ -8,7 +8,7 @@
 |---|---|
 | `word_create` | Создание .docx из JSON-спеки: стили, списки, таблицы (merged/borders/fills), картинки, TOC, колонтитулы (default/first/even), сноски, водяные знаки, титульная страница, закладки/ссылки, настройка страницы, умная вёрстка |
 | `word_spec_docs` | Полный справочник формата спеки (вызывай перед сложными документами) |
-| `word_read` | Чтение .docx: `structure` / `text` / `full` (с сохранением page setup) / `stats` |
+| `word_read` | Чтение .docx: `structure` / `text` / `full` (с сохранением page setup) / `stats`. Встроенные картинки извлекаются в файлы (`cache/media`) и возвращаются путями — base64 в контекст AI не попадает |
 | `word_edit` | Гранулярные правки существующих .docx: append/insert_after/insert_at, replace_text, replace_block, move_block, delete_block, set_style, set_page, set_typography, add/remove_watermark, add_header/add_footer, remove_header/footer, insert_table, add_image, patch_document |
 | `word_append` | Дописать блоки в конец документа |
 | `word_compare` | Сравнение двух .docx (диф по блокам или строкам): добавлено/удалено/изменено |
