@@ -538,6 +538,12 @@ export default function SettingsPage() {
             </button>
           )}
         </div>
+        {/* Скролл-область сайдбара: на низких окнах группы разделов и результаты
+            поиска прокручиваются, а «Назад»/заголовок/поиск остаются закреплёнными.
+            Скролл именно здесь, а не на самом .settings-nav, потому что .glass
+            { overflow: hidden } из globals.css идёт позже в каскаде (main.tsx
+            импортирует App раньше globals.css) и перекрывал бы overflow-y. */}
+        <div className="settings-nav-scroll">
         {navQuery.trim() && filteredGroups.length === 0 && fieldResults.length === 0 && (
           <div className="settings-nav-empty">Ничего не найдено</div>
         )}
@@ -641,6 +647,7 @@ export default function SettingsPage() {
             ))}
           </motion.div>
         )}
+        </div>
       </motion.nav>
 
       {/* Контент */}
