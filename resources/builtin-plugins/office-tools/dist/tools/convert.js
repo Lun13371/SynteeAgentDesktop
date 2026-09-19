@@ -33,7 +33,7 @@ async function convertDocx(p, dstExt, out) {
 }
 
 /** xlsx → csv (exceljs) или csv → xlsx. */
-async function convertTable({ path: p, to, out, sheet, delimiter }) {
+async function convertTable({ path: p, to, out, sheet, delimiter, encoding }) {
   if (!p) throw new Error('path обязателен')
   const api = state.api
   const st = await api.fs.stat(p)
@@ -51,13 +51,13 @@ async function convertTable({ path: p, to, out, sheet, delimiter }) {
 
   if (srcExt === 'xlsx' && (dstExt === 'csv' || dstExt === 'txt')) {
     const target = out || p.replace(/\.xlsx$/i, '.csv')
-    const res = await convert.xlsxToCsv(p, target, { sheet, delimiter })
+    const res = await convert.xlsxToCsv(p, target, { sheet, delimiter, encoding })
     await recent.add({ path: target, kind: 'excel', op: 'convert', name: target.split(/[\\/]/).pop(), size: res.size })
     return 'CSV создан: ' + target + '\n' + res.summary
   }
   if (srcExt === 'csv' && dstExt === 'xlsx') {
     const target = out || p.replace(/\.csv$/i, '.xlsx')
-    const res = await convert.csvToXlsx(p, target, { delimiter, sheetName: sheet })
+    const res = await convert.csvToXlsx(p, target, { delimiter, sheetName: sheet, encoding })
     await recent.add({ path: target, kind: 'excel', op: 'convert', name: target.split(/[\\/]/).pop(), size: res.size })
     return 'XLSX создан: ' + target + '\n' + res.summary
   }
@@ -91,7 +91,7 @@ function registerConvertTools(syntee) {
   syntee.registerTool({
     name: 'office_convert',
     description:
-      'Convert office documents. Supported: xlsx→csv (sheet/delimiter options), csv→xlsx, docx→markdown (also "md"), docx→txt, docx→html (pure JS via mammoth, no MS Office needed), xlsx→pdf and docx→pdf (via real MS Office COM — requires Word/Excel installed; see office_export_pdf). Returns the output path.',
+      'Convert office documents. Supported: xlsx→csv (sheet/delimiter/encoding options), csv→xlsx (encoding option for legacy RU encodings), docx→markdown (also "md"), docx→txt, docx→html (pure JS via mammoth, no MS Office needed), xlsx→pdf and docx→pdf (via real MS Office COM — requires Word/Excel installed; see office_export_pdf). Returns the output path.',
     parameters: {
       type: 'object',
       properties: {
@@ -100,6 +100,7 @@ function registerConvertTools(syntee) {
         out: { type: 'string', description: 'Output path (default: same name with new extension)' },
         sheet: { type: 'string', description: 'xlsx→csv: sheet name; csv→xlsx: new sheet name' },
         delimiter: { type: 'string', description: 'csv delimiter (default ";")' },
+        encoding: { type: 'string', description: 'csv encoding. csv→xlsx reads with this encoding (utf-8 default; also windows-1251, cp866, koi8-r, iso-8859-1). xlsx→csv supports only utf-8 (with BOM).' },
       },
       required: ['path', 'to'],
     },

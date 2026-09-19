@@ -33,10 +33,12 @@ import { join } from 'path'
 import { app } from 'electron'
 import type { PluginManifest } from '../../shared/types'
 
-/** Встроенные плагины, включаемые автоматически при первой установке. */
-export const DEFAULT_ENABLED_BUILTINS = new Set(['plugin-dev', 'office-tools'])
-
 /**
+ * Встроенные плагины (builtin) НЕ включаются автоматически ни при первой
+ * установке, ни при обновлении: единая модель — opt-in. Плагин без записи в
+ * pluginsState считается выключенным, включение — только явным toggle в UI
+ * (с consent-диалогом прав). См. PluginManager.getState.
+ *
  * Рантайм-состояние плагина, которое ПЕРЕЖИВАЕТ resync из репозитория:
  * установленные npm-пакеты, маркеры зависимостей (npm/python), кэш.
  * Без этого каждый запуск в dev-режиме сносил бы node_modules, и плагин

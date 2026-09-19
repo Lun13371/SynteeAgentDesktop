@@ -78,6 +78,39 @@ function readPageSetup(buffer) {
   }
 }
 
+/**
+ * Сноски из word/footnotes.xml (adm-zip). Mammoth отдаёт ссылки как <sup>N</sup>,
+ * но теряет текст сноски — здесь восстанавливаем соответствие id → текст.
+ * @returns {object|null} { byId: { [id]: text }, ordered: [text, …] } или null
+ */
+function readFootnotes(buffer) {
+  try {
+    const AdmZip = require('adm-zip')
+    const zip = new AdmZip(buffer)
+    const xml = zip.readAsText('word/footnotes.xml')
+    if (!xml) return null
+    const byId = {}
+    const ordered = []
+    const fnRe = /<w:footnote\b[^>]*\sw:id="(-?\d+)"[^>]*>([\s\S]*?)<\/w:footnote>/g
+    let m
+    while ((m = fnRe.exec(xml))) {
+      const id = parseInt(m[1], 10)
+      if (!(id > 0)) continue // 0 и отрицательные — разделители/продолжения
+      const parts = []
+      const tRe = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g
+      let tm
+      while ((tm = tRe.exec(m[2]))) parts.push(tm[1])
+      const text = decodeEntities(parts.join('')).trim()
+      if (!text) continue
+      byId[id] = text
+      ordered.push(text)
+    }
+    return ordered.length ? { byId, ordered } : null
+  } catch {
+    return null
+  }
+}
+
 const VOID_TAGS = new Set(['img', 'br', 'hr'])
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '—', ndash: '–' }
 
@@ -183,6 +216,35 @@ function pushRun(out, text, state) {
 /** Узел → текст (для заголовков/предпросмотра). */
 function textOf(nodes) {
   return inlineRuns(nodes || [], {}, []).filter((r) => !r.__image).map((r) => r.text).join('')
+}
+
+/**
+ * Привязка текста сносок к runs: суперскрипт-номер (из <sup>N</sup>) заменяется
+ * на footnote-ссылку — текст сноски вешается на предыдущий run, номер убирается.
+ * byId — соответствие id→текст, ordered — по порядку (fallback, если id не совпал).
+ */
+function applyFootnotes(blocks, footnotes) {
+  if (!footnotes) return
+  const { byId, ordered } = footnotes
+  for (const b of blocks || []) {
+    if (!b || !Array.isArray(b.runs)) continue
+    for (let i = 0; i < b.runs.length; i++) {
+      const r = b.runs[i]
+      if (!r || !r.superscript || !/^\d+$/.test(String(r.text || '').trim())) continue
+      const n = parseInt(String(r.text).trim(), 10)
+      const text = byId[n] || ordered[n - 1]
+      if (!text) continue
+      if (i > 0) {
+        b.runs[i - 1].footnote = text // текст сноски вешается на предыдущий run
+        b.runs.splice(i, 1)           // номер-маркер удаляем (сноска нумеруется при сборке)
+        i--
+      } else {
+        r.text = ''
+        delete r.url
+        r.footnote = text
+      }
+    }
+  }
 }
 
 /** p-узел → блоки спеки (paragraph | hyperlink | image). */
@@ -394,6 +456,7 @@ async function readDocument(path, mode, opts) {
 
   const html = await mammoth.convertToHtml({ buffer })
   const blocks = htmlToBlocks(parseHtml(html.value))
+  applyFootnotes(blocks, readFootnotes(buffer))
   // Картинки → файлы: base64 не должен попадать в контекст AI
   const images = m === 'full' || m === 'structure'
     ? extractImages(blocks, path, opts && opts.imageDir)
@@ -417,4 +480,4 @@ async function readDocument(path, mode, opts) {
   return { outline, blocks: structBlocks, stats }
 }
 
-module.exports = { readDocument, htmlToBlocks, parseHtml, blocksStats, readPageSetup, extractImages }
+module.exports = { readDocument, htmlToBlocks, parseHtml, blocksStats, readPageSetup, readFootnotes, extractImages }

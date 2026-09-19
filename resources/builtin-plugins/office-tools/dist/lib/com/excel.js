@@ -98,4 +98,31 @@ async function addChart({ path, sheet, type, dataRange, title, anchor, width, he
   return true
 }
 
-module.exports = { openBook, exportPdf, addChart }
+/**
+ * Сохранить книгу в другом формате (Workbook.SaveAs).
+ * Format (xlFileFormat): 51=xlsx, 56=xls (Excel 97-2003), 6=csv.
+ */
+async function saveAs(srcPath, outPath, format) {
+  const ps = [
+    "$ErrorActionPreference = 'Stop'",
+    'try {',
+    "  $excel = New-Object -ComObject Excel.Application",
+    '  $excel.Visible = $false',
+    '  $excel.DisplayAlerts = $false',
+    "  $wb = $excel.Workbooks.Open('" + q(srcPath) + "')",
+    "  $wb.SaveAs('" + q(outPath) + "', " + Number(format) + ")",
+    '  $wb.Close($false)',
+    '  $excel.Quit()',
+    "  Write-Output 'OK'",
+    '} catch {',
+    "  Write-Output ('ERR: ' + $_.Exception.Message)",
+    '  try { $excel.Quit() } catch {}',
+    '  exit 1',
+    '}',
+  ].join('\n')
+  const r = await runPs(ps, { timeoutMs: 120000 })
+  assertOk(r, 'Excel SaveAs')
+  return outPath
+}
+
+module.exports = { openBook, exportPdf, addChart, saveAs }
