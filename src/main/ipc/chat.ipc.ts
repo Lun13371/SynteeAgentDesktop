@@ -62,9 +62,9 @@ import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import { getPluginManager } from '../../core/plugins/pluginManager'
-import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult } from '../../shared/types'
+import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult, ReplyTarget } from '../../shared/types'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
-import { messageToContextMessages } from './chatContextHelpers'
+import { messageToContextMessages, formatReplyQuote } from './chatContextHelpers'
 import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
 import { getMessagesCached, recoverStreamingBuffersForChat } from './historyCache'
 import {
@@ -1149,6 +1149,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       oneShotAllowedTools?: string[]
       /** Режим для кастомной команды: 'ask' (read-only) | 'plan' | 'code'. */
       oneShotMode?: 'ask' | 'plan' | 'code'
+      /** Вложения отправки (включая реплайнутые с source:'reply') —
+       *  обрабатываются processAttachmentsAndStream. Поле не было объявлено
+       *  в типе, хотя код использовал params.attachments (TS2339). */
+      attachments?: Attachment[]
+      /** Реплай-цитаты — цитата для AI строится из userMsg.replyTo ниже. */
+      replyTo?: ReplyTarget[]
     },
     win: BrowserWindow | null,
     chatMode: ChatMode,
@@ -2049,6 +2055,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Результат сохраняем в run.attachmentResult — sendDone добавит его в
     // assistantMsg (поле в БД, UI-блок удалён).
     let effectiveContent = params.content
+    // ── Реплай-цитаты ─────────────────────────────────────────────────────
+    // Вложения реплайнутых сообщений уже слиты в params.attachments
+    // (source:'reply') и обрабатываются общим пайплайном ниже. Текст исходных
+    // сообщений цитируем поверх — AI видит, на что отвечает пользователь.
+    // В истории (следующие ходы) ту же цитату восстановит
+    // messageToContextMessages из userMsg.replyTo — формат един (formatReplyQuote).
+    if (userMsg.replyTo?.length) {
+      effectiveContent = `${formatReplyQuote(userMsg.replyTo)}\n\n${effectiveContent}`
+    }
     if (params.attachments && params.attachments.length > 0) {
       // AbortController для прерывания обработки вложений при chat:stop.
       // Воркер ещё не создан, terminate() не помогает — нужен отдельный signal.
@@ -2062,7 +2077,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         const ATTACHMENT_TIMEOUT_MS = 120_000
         const processed = await Promise.race([
           processAttachmentsAndStream(
-            win, params.chatId, assistantMsgId, params.content, params.attachments,
+            // effectiveContent (не params.content): уже может содержать
+            // реплай-цитату поверх — инлайн-блоки файлов добавляются после неё.
+            win, params.chatId, assistantMsgId, effectiveContent, params.attachments,
           ),
           new Promise<never>((_, reject) => {
             const t = setTimeout(() => reject(new Error('Таймаут обработки вложений')), ATTACHMENT_TIMEOUT_MS)
@@ -3642,8 +3659,13 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
      *  приоритет над БД/глобальной настройкой — см. runChatSend). */
     reasoningValue?: string
     /** Прикреплённые файлы/изображения из @mention/drag&drop/paste/dialog.
-     *  Текстовые файлы инлайним в content, картинки — путь (vision Phase 2). */
+     *  Текстовые файлы инлайним в content, картинки — путь (vision Phase 2).
+     *  Вложения реплайнутых сообщений приходят здесь же с source:'reply'. */
     attachments?: Attachment[]
+    /** Реплай-цитаты: метаданные сообщений, на которые отвечает эта отправка
+     *  (из контекстного меню «Ответить»). Персистится в userMsg.replyTo → БД
+     *  (reply_to); цитата для AI строится в runChatSend + messageToContextMessages. */
+    replyTo?: ReplyTarget[]
   }) => {
     const win = mainWindow.getWindow()
 
@@ -3669,6 +3691,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       isPinned: 0,
       slashCommand: params.slashCommand,
       attachments: attachments.length > 0 ? attachments : undefined,
+      replyTo: params.replyTo,
     }
     const history = params.incognito ? [] : getMessagesCached(params.chatId)
     const assistantMsgId = uuid()

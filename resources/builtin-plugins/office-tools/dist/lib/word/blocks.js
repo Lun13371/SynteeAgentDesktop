@@ -14,6 +14,7 @@ const { buildTable } = require('./tables')
 const { buildImageParagraph } = require('./media')
 const { estimatePages } = require('./pagination')
 const { buildCover, buildBookmarkParagraph, buildRefParagraph } = require('./extras')
+const { latexToMathElement } = require('./math')
 
 const { Paragraph, TextRun, HeadingLevel, AlignmentType, LevelFormat, BorderStyle,
   PageBreak, ExternalHyperlink, TableOfContents, FootnoteReferenceRun } = docx
@@ -40,6 +41,7 @@ const ORDERED_TEXT = ['%1.', '%2)', '%3.', '%4)', '%5.', '%6)']
 /**
  * Runs-массив спеки → TextRun[] (style-объекты применяются к каждому run).
  * Run с полем footnote → после него FootnoteReferenceRun (номер из builder).
+ * Run с полем math → инлайн-формула (docx Math, LaTeX-синтаксис).
  */
 function buildRuns(runs, extraProps, builder) {
   const out = []
@@ -47,6 +49,10 @@ function buildRuns(runs, extraProps, builder) {
     if (r == null) continue
     if (typeof r === 'string') {
       if (r) out.push(new TextRun({ text: r, ...extraProps }))
+      continue
+    }
+    if (r.math) {
+      out.push(latexToMathElement(r.math))
       continue
     }
     if (!r.text && !r.break) continue
@@ -64,8 +70,12 @@ function buildRuns(runs, extraProps, builder) {
 function collectText(block, acc) {
   if (!block || typeof block !== 'object') return acc
   if (typeof block.text === 'string') acc.push(block.text)
+  if (typeof block.latex === 'string') acc.push(block.latex)
   if (Array.isArray(block.runs)) {
-    for (const r of block.runs) acc.push(typeof r === 'string' ? r : (r && r.text) || '')
+    for (const r of block.runs) {
+      if (typeof r === 'string') acc.push(r)
+      else if (r && typeof r === 'object') acc.push(r.math || r.text || '')
+    }
   }
   if (Array.isArray(block.items)) {
     for (const it of block.items) {
@@ -276,6 +286,21 @@ class BlockBuilder {
         }))
         this.stats.paragraphs++
         this._countWords(block)
+        break
+      }
+      case 'math': {
+        // Формула (LaTeX → OMML, нативный формат Word Equation Editor).
+        // display=true (по умолчанию) — отдельный центрированный абзац,
+        // display=false — абзац без выравнивания (в строке слева).
+        const el = latexToMathElement(block.latex)
+        const p = { children: [el] }
+        if (block.display !== false) {
+          p.alignment = AlignmentType.CENTER
+          p.spacing = { before: 120, after: 120 }
+        }
+        this.children.push(new Paragraph(p))
+        this.stats.paragraphs++
+        this._countWords({ text: block.latex })
         break
       }
       case 'table': {

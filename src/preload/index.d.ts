@@ -248,15 +248,7 @@ declare const synteeAPI: {
             chatId?: string;
             reqId?: string;
         }) => void;
-        setIgnoreMouseEvents: (ignore: boolean) => void;
-        updateBounds: (bounds: Array<{
-            x: number;
-            y: number;
-            w: number;
-            h: number;
-        }>) => void;
-        startTracking: () => void;
-        stopTracking: () => void;
+        setInteractive: (v: boolean) => void;
         captureScreen: () => Promise<string | null>;
         onPush: (cb: (payload: import("../../shared/types").NotificationPayload) => void) => () => Electron.IpcRenderer;
         onDismissAll: (cb: () => void) => () => Electron.IpcRenderer;
@@ -366,9 +358,13 @@ declare const synteeAPI: {
             };
             oneShotAllowedTools?: string[];
             oneShotMode?: "ask" | "plan" | "code";
+            /** Per-message persona override (/debug, /review, ...). */
+            oneShotPersona?: import("../../shared/modes").PersonaId;
             /** Уровень мышления из UI на момент отправки (source of truth для main). */
             reasoningValue?: string;
             attachments?: import("../../shared/types").Attachment[];
+            /** Реплай-цитаты: сообщения, на которые отвечает эта отправка. */
+            replyTo?: import("../../shared/types").ReplyTarget[];
         }) => Promise<any>;
         delete: (chatId: string) => Promise<any>;
         rename: (chatId: string, title: string) => Promise<any>;

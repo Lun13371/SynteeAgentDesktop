@@ -4,6 +4,7 @@
 const business = require('./business')
 const reports = require('./reports')
 const excel = require('./excel')
+const presentation = require('./presentation')
 
 /**
  * Шаблон: { id, group: 'business'|'report'|'excel', name, description,
@@ -12,7 +13,7 @@ const excel = require('./excel')
  * {{key}} подставляются из полей мини-формы в панели.
  */
 function getTemplates() {
-  return [...business, ...reports, ...excel]
+  return [...business, ...reports, ...excel, ...presentation]
 }
 
 module.exports = { getTemplates }

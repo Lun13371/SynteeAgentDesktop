@@ -8,6 +8,10 @@ const { registerExcelReadTools } = require('./excelRead')
 const { registerExcelEditTools } = require('./excelEdit')
 const { registerConvertTools } = require('./convert')
 const { registerComTools } = require('./com')
+const { registerPptTools } = require('./pptCreate')
+const { registerPptReadTools } = require('./pptRead')
+const { registerPptEditTools } = require('./pptEdit')
+const { registerPptTemplateTools } = require('./pptTemplates')
 
 function registerTools(syntee) {
   registerWordTools(syntee)
@@ -19,6 +23,10 @@ function registerTools(syntee) {
   registerExcelEditTools(syntee)
   registerConvertTools(syntee)
   registerComTools(syntee)
+  registerPptTools(syntee)
+  registerPptReadTools(syntee)
+  registerPptEditTools(syntee)
+  registerPptTemplateTools(syntee)
 }
 
 module.exports = { registerTools }

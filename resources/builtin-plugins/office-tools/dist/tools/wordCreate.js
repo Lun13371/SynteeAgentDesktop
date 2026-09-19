@@ -65,7 +65,7 @@ function registerWordTools(syntee) {
   syntee.registerTool({
     name: 'word_create',
     description:
-      'Create a Word .docx document from a JSON spec. Supports: headings, paragraphs with full run styling (bold/italic/underline/strike, font, size, color, highlight, sub/superscript), alignment, spacing, bullet/numbered/multilevel lists, tables (borders, cell fills, merged cells, column widths, header row), images, hyperlinks, page breaks, table of contents, headers/footers with page numbers, page setup (A4/Letter, margins, orientation). Call word_spec_docs first for the exact spec format. Returns a file card widget with stats and open/PDF buttons.',
+      'Create a Word .docx document from a JSON spec. Supports: headings, paragraphs with full run styling (bold/italic/underline/strike, font, size, color, highlight, sub/superscript), alignment, spacing, bullet/numbered/multilevel lists, tables (borders, cell fills, merged cells, column widths, header row), images, hyperlinks, MATH FORMULAS in LaTeX (\\frac, \\sqrt, \\sum/\\int with limits, greek letters, matrices, cases — native Word equations, block or inline), page breaks, table of contents, headers/footers with page numbers, page setup (A4/Letter, margins, orientation). Call word_spec_docs first for the exact spec format. Returns a file card widget with stats and open/PDF buttons.',
     parameters: {
       type: 'object',
       properties: {

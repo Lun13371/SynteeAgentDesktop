@@ -13,6 +13,7 @@ const nodePath = require('path')
 const mammoth = require('mammoth')
 const { collectText } = require('./blocks')
 const { pngSize, jpegSize } = require('./media')
+const { extractMath, applyMath, sweepMathText } = require('./math')
 
 // estimatePages из pagination.js (может отсутствовать в старой сборке — тогда fallback-формула)
 let estimatePages = null
@@ -397,6 +398,7 @@ function fallbackPages(stats) {
 function previewOf(block) {
   let t = ''
   if (block.type === 'heading') t = block.text
+  else if (block.type === 'math') t = '[formula] ' + (block.latex || '')
   else if (block.type === 'list') t = (block.items || []).map((i) => (typeof i === 'string' ? i : i.text)).join(' · ')
   else if (block.type === 'table') t = '[' + (block.rows || []).length + 'x' + ((block.rows || [])[0] || []).length + '] ' + ((block.rows || [])[0] || []).map((c) => (typeof c === 'string' ? c : c.text)).join(' | ')
   else if (block.type === 'image') t = '[image' + (block.width ? ' ' + block.width + 'x' + block.height : '') + (block.path ? ' → ' + block.path : '') + ']'
@@ -449,14 +451,24 @@ async function readDocument(path, mode, opts) {
   }
   const buffer = fs.readFileSync(path)
 
+  // Формулы: mammoth выбрасывает m:oMath — заменяем на плейсхолдеры,
+  // читаем OMML напрямую и восстанавливаем latex в блоках (roundtrip).
+  const math = extractMath(buffer)
+
   if (m === 'text') {
-    const r = await mammoth.extractRawText({ buffer })
-    return r.value
+    const r = await mammoth.extractRawText({ buffer: math.buffer })
+    let text = r.value
+    if (math.latex.length) {
+      text = text.replace(/\u27E6MATH:(\d+)\u27E7/g, (_, i) => ' ' + (math.latex[Number(i)] || '') + ' ')
+    }
+    return text
   }
 
-  const html = await mammoth.convertToHtml({ buffer })
+  const html = await mammoth.convertToHtml({ buffer: math.buffer })
   const blocks = htmlToBlocks(parseHtml(html.value))
   applyFootnotes(blocks, readFootnotes(buffer))
+  applyMath(blocks, math.latex)
+  sweepMathText(blocks, math.latex)
   // Картинки → файлы: base64 не должен попадать в контекст AI
   const images = m === 'full' || m === 'structure'
     ? extractImages(blocks, path, opts && opts.imageDir)

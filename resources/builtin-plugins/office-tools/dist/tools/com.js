@@ -23,6 +23,11 @@ async function officeOpen({ path: p, app }) {
     await com.openBook(p)
     return 'Открыто в Excel: ' + p
   }
+  if (ext === 'pptx' || ext === 'ppt' || ext === 'ppsx' || app === 'powerpoint') {
+    const com = require('../lib/com/powerpoint')
+    await com.openPres(p)
+    return 'Открыто в PowerPoint: ' + p
+  }
   const shell = require('../lib/com/shell')
   await shell.openWithDefault(p)
   return 'Открыто: ' + p
@@ -52,12 +57,21 @@ async function wordExportPdf({ path: p, out }) {
 
 const WORD_SAVE_FORMATS = { doc: 0, docx: 12, pdf: 17, html: 8, htm: 8, txt: 2, rtf: 7 }
 const EXCEL_SAVE_FORMATS = { xls: 56, xlsx: 51, csv: 6 }
+// PpSaveAsFileType: 1=ppt, 7=pps, 6=rtf, 12=html, 16=gif, 17=jpg, 18=png, 19=bmp,
+// 24=pptx, 26=potx, 28=ppsx, 32=pdf, 33=xps, 34=wmv, 39=mp4
+const PPT_SAVE_FORMATS = {
+  ppt: 1, pps: 7, rtf: 6, html: 12, htm: 12, gif: 16, jpg: 17, jpeg: 17, png: 18,
+  bmp: 19, pptx: 24, potx: 26, ppsx: 28, pdf: 32, xps: 33, wmv: 34, mp4: 39,
+}
 
 function guessWordFormat(dstExt) {
   return Object.prototype.hasOwnProperty.call(WORD_SAVE_FORMATS, dstExt) ? WORD_SAVE_FORMATS[dstExt] : null
 }
 function guessExcelFormat(dstExt) {
   return Object.prototype.hasOwnProperty.call(EXCEL_SAVE_FORMATS, dstExt) ? EXCEL_SAVE_FORMATS[dstExt] : null
+}
+function guessPptFormat(dstExt) {
+  return Object.prototype.hasOwnProperty.call(PPT_SAVE_FORMATS, dstExt) ? PPT_SAVE_FORMATS[dstExt] : null
 }
 
 function requireDocx(p) {
@@ -103,20 +117,50 @@ async function officeSaveAs({ path: p, out, format }) {
       throw new Error('Не удалось определить формат Excel для .' + dstExt + '. Укажите format (51=xlsx, 56=xls, 6=csv)')
     }
     com = require('../lib/com/excel')
+  } else if (srcExt === 'pptx' || srcExt === 'ppt' || srcExt === 'pps' || srcExt === 'ppsx') {
+    usedFormat = fmt != null ? fmt : guessPptFormat(dstExt)
+    if (usedFormat == null) {
+      throw new Error('Не удалось определить формат PowerPoint для .' + dstExt + '. Укажите format (1=ppt, 24=pptx, 28=ppsx, 32=pdf, 39=mp4, 18=png, 12=html)')
+    }
+    com = require('../lib/com/powerpoint')
   } else {
-    throw new Error('office_save_as поддерживает .docx/.doc/.rtf (Word) и .xlsx/.xls (Excel), получено .' + srcExt)
+    throw new Error('office_save_as поддерживает .docx/.doc/.rtf (Word), .xlsx/.xls (Excel) и .pptx/.ppt/.ppsx (PowerPoint), получено .' + srcExt)
   }
 
   await com.saveAs(p, out, usedFormat)
   const st2 = await api.fs.stat(out)
   await recent.add({
     path: out,
-    kind: dstExt === 'pdf' ? 'pdf' : (srcExt === 'xlsx' || srcExt === 'xls' ? 'excel' : 'word'),
+    kind: dstExt === 'pdf' ? 'pdf' : (srcExt === 'xlsx' || srcExt === 'xls' ? 'excel' : (srcExt === 'pptx' || srcExt === 'ppt' || srcExt === 'ppsx' ? 'ppt' : 'word')),
     op: 'convert',
     name: out.split(/[\\/]/).pop(),
     size: st2.size,
   })
   return 'Сохранено: ' + out + ' (формат ' + usedFormat + ')'
+}
+
+/** Экспорт .pptx → .pdf через реальный PowerPoint (COM). */
+async function pptExportPdf({ path: p, out }) {
+  if (!p) throw new Error('path обязателен')
+  const api = state.api
+  const st = await api.fs.stat(p)
+  if (!st.exists) throw new Error('Файл не найден: ' + p)
+  const ext = extOf(p)
+  if (ext !== 'pptx' && ext !== 'ppt' && ext !== 'ppsx') {
+    throw new Error('Ожидался .pptx/.ppt/.ppsx, получено .' + ext)
+  }
+  const com = require('../lib/com/powerpoint')
+  const target = out || p.replace(/\.(pptx|ppt|ppsx)$/i, '.pdf')
+  await com.exportPdf(p, target)
+  const st2 = await api.fs.stat(target)
+  await recent.add({
+    path: target,
+    kind: 'pdf',
+    op: 'export',
+    name: target.split(/[\\/]/).pop(),
+    size: st2.size,
+  })
+  return 'PDF создан: ' + target
 }
 
 async function officeFindReplace({ path: p, find, replace, matchCase, wholeWord }) {
@@ -157,12 +201,12 @@ function registerComTools(syntee) {
   syntee.registerTool({
     name: 'office_open',
     description:
-      'Open a document in the real MS Office application (Word via COM for .docx/.doc, default app otherwise). The Office window becomes visible on screen.',
+      'Open a document in the real MS Office application (Word via COM for .docx/.doc, Excel for .xlsx/.xls, PowerPoint for .pptx/.ppt/.ppsx, default app otherwise). The Office window becomes visible on screen.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the file' },
-        app: { type: 'string', enum: ['word', 'excel'], description: 'Force app (optional, auto-detected by extension)' },
+        app: { type: 'string', enum: ['word', 'excel', 'powerpoint'], description: 'Force app (optional, auto-detected by extension)' },
       },
       required: ['path'],
     },
@@ -247,17 +291,33 @@ function registerComTools(syntee) {
   syntee.registerTool({
     name: 'office_save_as',
     description:
-      'Save a document in a different format via Word/Excel COM (also converts legacy formats). Word formats: doc=0, docx=12, pdf=17, html=8, txt=2, rtf=7. Excel formats: xlsx=51, xls=56, csv=6. Common cases: .doc→.docx (12), .docx→.doc (0), .docx→.html (8), .docx→.txt (2), .docx→.rtf (7), .xlsx→.xls (56), .xlsx→.csv (6). Format is auto-detected from the out extension when omitted. Requires Word/Excel installed.',
+      'Save a document in a different format via Word/Excel/PowerPoint COM (also converts legacy formats). Word formats: doc=0, docx=12, pdf=17, html=8, txt=2, rtf=7. Excel formats: xlsx=51, xls=56, csv=6. PowerPoint formats: ppt=1, pptx=24, ppsx=28, pdf=32, mp4=39 (VIDEO!), wmv=34, png=18, jpg=17, html=12, rtf=6. Common cases: .doc→.docx (12), .ppt→.pptx (24), .pptx→.pdf (32), .pptx→.mp4 (39), .xlsx→.csv (6). Format is auto-detected from the out extension when omitted. Requires MS Office installed.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path to source (.docx/.doc/.rtf or .xlsx/.xls)' },
+        path: { type: 'string', description: 'Absolute path to source (.docx/.doc/.rtf, .xlsx/.xls or .pptx/.ppt/.ppsx)' },
         out: { type: 'string', description: 'Absolute output path with target extension' },
         format: { type: 'number', description: 'Explicit format code (optional; auto-detected from out extension)' },
       },
       required: ['path', 'out'],
     },
     handler: officeSaveAs,
+    requiresApproval: true,
+  })
+
+  syntee.registerTool({
+    name: 'ppt_export_pdf',
+    description:
+      'Export a .pptx presentation to PDF using installed MS PowerPoint (COM SaveAs format 32). Requires PowerPoint installed. Returns the PDF path.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to .pptx/.ppt' },
+        out: { type: 'string', description: 'Output .pdf path (default: same name .pdf)' },
+      },
+      required: ['path'],
+    },
+    handler: pptExportPdf,
     requiresApproval: true,
   })
 
@@ -315,6 +375,7 @@ module.exports = {
   registerComTools,
   officeOpen,
   wordExportPdf,
+  pptExportPdf,
   officeUpdateFields,
   officeSaveAs,
   officeFindReplace,

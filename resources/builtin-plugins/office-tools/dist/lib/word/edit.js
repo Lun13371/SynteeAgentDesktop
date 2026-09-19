@@ -4,6 +4,7 @@
 const fs = require('fs')
 const { readDocument } = require('./read')
 const { buildDocument } = require('./spec')
+const { collectText } = require('./blocks')
 const { backupFile } = require('../backup')
 
 /** ctx для пересборки: картинки читаются напрямую через fs; defaults — настройки вёрстки. */
@@ -56,6 +57,11 @@ function checkIndex(content, index, op) {
   if (!Number.isInteger(index) || index < 0 || index >= content.length) {
     throw new Error(op + ': индекс ' + index + ' вне диапазона 0..' + (content.length - 1))
   }
+}
+
+/** Плоский текст блока (text/runs/items/rows) — для find_text. */
+function collectBlockText(block) {
+  return collectText(block, []).join(' ')
 }
 
 function insertAt(content, after, blocks, opName) {
@@ -218,19 +224,130 @@ async function applyOps(path, ops, defaults) {
         applied.push('remove_footer')
         break
       }
+      case 'find_text': {
+        if (!op.find) throw new Error('find_text: find обязателен')
+        const needle = String(op.find)
+        const results = []
+        spec.content.forEach((block, idx) => {
+          const text = collectBlockText(block)
+          if (text && text.includes(needle)) {
+            results.push({ index: idx, type: block.type, preview: text.replace(/\s+/g, ' ').trim().substring(0, 80) })
+          }
+        })
+        applied.push(
+          'find_text "' + needle + '": ' + results.length + ' совпадений ' + JSON.stringify(results),
+        )
+        break
+      }
+      case 'set_run_style': {
+        checkIndex(spec.content, op.index, 'set_run_style')
+        const b = spec.content[op.index]
+        if (b.type !== 'paragraph' && b.type !== 'heading') {
+          throw new Error('set_run_style: блок ' + op.index + ' имеет тип ' + b.type + ' (нужен paragraph/heading)')
+        }
+        // Плоский текст → runs, чтобы можно было стилизовать фрагмент
+        if (!Array.isArray(b.runs) && b.text != null) {
+          b.runs = [{ text: String(b.text) }]
+          delete b.text
+        }
+        if (!Array.isArray(b.runs)) b.runs = []
+        if (op.find) {
+          const needle = String(op.find)
+          let found = false
+          const newRuns = []
+          for (const run of b.runs) {
+            if (!found && run && typeof run.text === 'string' && run.text.includes(needle)) {
+              const parts = run.text.split(needle)
+              const base = { ...run }
+              delete base.style
+              if (parts[0]) newRuns.push({ ...base, text: parts[0] })
+              newRuns.push({ ...base, text: needle, style: { ...(run.style || {}), ...(op.style || {}) } })
+              if (parts[1]) newRuns.push({ ...base, text: parts.slice(1).join(needle) })
+              found = true
+            } else {
+              newRuns.push(run)
+            }
+          }
+          if (found) b.runs = newRuns
+          applied.push('set_run_style: ' + (found ? 'применён к "' + needle + '" в блоке ' + op.index : 'текст "' + needle + '" не найден в блоке ' + op.index))
+        } else {
+          for (const run of b.runs) {
+            if (run && typeof run === 'object') run.style = { ...(run.style || {}), ...(op.style || {}) }
+          }
+          applied.push('set_run_style: все runs блока ' + op.index)
+        }
+        break
+      }
+      case 'add_table_row': {
+        checkIndex(spec.content, op.index, 'add_table_row')
+        const b = spec.content[op.index]
+        if (b.type !== 'table') throw new Error('add_table_row: блок ' + op.index + ' имеет тип ' + b.type + ' (нужен table)')
+        if (!Array.isArray(b.rows)) b.rows = []
+        const newRow = Array.isArray(op.cells)
+          ? op.cells.map((c) => (c && typeof c === 'object' ? c : { text: String(c ?? '') }))
+          : []
+        if (op.at != null) {
+          if (!Number.isInteger(op.at) || op.at < 0 || op.at > b.rows.length) {
+            throw new Error('add_table_row: at ' + op.at + ' вне диапазона 0..' + b.rows.length)
+          }
+          b.rows.splice(op.at, 0, newRow)
+          applied.push('add_table_row: строка вставлена в таблицу ' + op.index + ' на позицию ' + op.at)
+        } else {
+          b.rows.push(newRow)
+          applied.push('add_table_row: строка добавлена в таблицу ' + op.index)
+        }
+        break
+      }
+      case 'delete_table_row': {
+        checkIndex(spec.content, op.index, 'delete_table_row')
+        const b = spec.content[op.index]
+        if (b.type !== 'table') throw new Error('delete_table_row: блок ' + op.index + ' имеет тип ' + b.type + ' (нужен table)')
+        if (op.row == null) throw new Error('delete_table_row: row обязателен')
+        if (!Array.isArray(b.rows) || op.row < 0 || op.row >= b.rows.length) {
+          throw new Error('delete_table_row: row ' + op.row + ' вне диапазона 0..' + ((b.rows || []).length - 1))
+        }
+        b.rows.splice(op.row, 1)
+        applied.push('delete_table_row: строка ' + op.row + ' удалена из таблицы ' + op.index)
+        break
+      }
+      case 'merge_cells': {
+        checkIndex(spec.content, op.index, 'merge_cells')
+        const b = spec.content[op.index]
+        if (b.type !== 'table') throw new Error('merge_cells: блок ' + op.index + ' имеет тип ' + b.type + ' (нужен table)')
+        if (!op.range) throw new Error('merge_cells: range обязателен (например "A1:B2")')
+        if (!Array.isArray(b.merged)) b.merged = []
+        if (!b.merged.includes(op.range)) b.merged.push(op.range)
+        applied.push('merge_cells: ' + op.range + ' в таблице ' + op.index)
+        break
+      }
+      case 'insert_list': {
+        if (!Array.isArray(op.items) || !op.items.length) throw new Error('insert_list: items обязателен')
+        const listBlock = {
+          type: 'list',
+          ordered: !!op.ordered,
+          items: op.items.map((item) => (item && typeof item === 'object' ? item : { text: String(item ?? '') })),
+        }
+        applied.push('insert_list: ' + insertAt(spec.content, op.after, [listBlock], 'insert_list'))
+        break
+      }
+      case 'insert_math': {
+        if (!op.latex) throw new Error('insert_math: latex обязателен')
+        const mathBlock = { type: 'math', latex: String(op.latex), display: op.display !== false }
+        applied.push('insert_math: ' + insertAt(spec.content, op.after, [mathBlock], 'insert_math'))
+        break
+      }
       default:
         throw new Error(
           'Неизвестная операция: ' + JSON.stringify(name) +
-          '. Доступно: append_blocks, insert_after, insert_at, replace_text, set_style, insert_table, add_image, add_header, add_footer, delete_block, replace_block, move_block, patch_document, set_page, add_watermark, remove_watermark, set_typography, remove_header, remove_footer',
+          '. Доступно: append_blocks, insert_after, insert_at, replace_text, find_text, set_style, set_run_style, insert_table, add_table_row, delete_table_row, merge_cells, insert_list, insert_math, add_image, add_header, add_footer, delete_block, replace_block, move_block, patch_document, set_page, add_watermark, remove_watermark, set_typography, remove_header, remove_footer',
         )
     }
   }
 
   const built = await buildDocument(spec, makeCtx(defaults))
-  // Бэкап оригинала до перезаписи (best-effort, не валит edit при ошибке)
-  const backup = backupFile(path)
+  backupFile(path) // .bak перед перезаписью (best-effort)
   fs.writeFileSync(path, built.buffer)
-  return { stats: built.stats, outline: built.outline, applied, backup }
+  return { stats: built.stats, outline: built.outline, applied }
 }
 
 module.exports = { applyOps }
