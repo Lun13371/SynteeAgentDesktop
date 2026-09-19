@@ -32,6 +32,7 @@ import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectG
 import { getGraphStats } from '../../core/memory/graphStore'
 import { buildSystemPrompt, SYSTEM_PROMPT_CACHE_BREAK } from '../../core/prompts/buildSystemPrompt'
 import type { ProtectedVarPromptInfo } from '../../core/prompts/buildSystemPrompt'
+import { secretPlaceholder } from '../../core/prompts/sections/secretsSection'
 import { resolveActive } from '../services/protectedVarsStore'
 import { readProjectContextFiles } from '../../core/prompts/projectInstructions'
 import { AIClient } from '../../core/ai/AIClient'
@@ -1256,6 +1257,36 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       || params.slashCommand?.name === 'ask'
       || params.oneShotMode === 'ask'
 
+    // §secrets — защищённые переменные: резолвим ОДИН раз на прогон.
+    // 1) tool-результаты в истории из БД маскируются (шаги, записанные до
+    //    фикса onStep-маскировки в Agent, могли сохранить сырые значения);
+    // 2) map уходит в worker для подстановки ${{KEY}} в аргументы тулов.
+    // Инкогнито — секреты не резолвим вовсе (приватность).
+    let secretValuesMap: Record<string, string> | undefined
+    if (!params.incognito) {
+      try {
+        const resolvedSecrets = resolveActive()
+        if (resolvedSecrets.length > 0) {
+          secretValuesMap = {}
+          for (const v of resolvedSecrets) {
+            secretValuesMap[v.key] = v.value
+          }
+        }
+      } catch { /* секреты не должны ломать чат */ }
+    }
+    const maskSecretsInHistory = (text: string): string => {
+      if (!secretValuesMap) return text
+      let result = text
+      for (const [key, value] of Object.entries(secretValuesMap)) {
+        if (!value || value.length < 2) continue
+        const placeholder = secretPlaceholder(key)
+        while (result.includes(value)) {
+          result = result.replace(value, placeholder)
+        }
+      }
+      return result
+    }
+
     // Live-подмножество истории: сообщения ПОСЛЕ последнего compaction-divider'а.
     // Старые (summarized) сообщения остаются в БД (UI хранит всю историю),
     // но в контекст модели не грузятся — их заменяет summary в system prompt.
@@ -1266,6 +1297,17 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
       messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),
     )
+    // §secrets — маскируем tool-результаты в истории: шаги в БД хранят output
+    // тулов, и до фикса onStep-маскировки туда попадали сырые значения секретов
+    // → история «возвращала» их модели на следующих ходах. Роль 'tool' —
+    // только результаты тулов; user/assistant не трогаем (там свои тексты).
+    if (secretValuesMap) {
+      for (const cm of rawHistory) {
+        if (cm.role === 'tool' && typeof cm.content === 'string') {
+          cm.content = maskSecretsInHistory(cm.content)
+        }
+      }
+    }
     log('[chat:send] chatId=%s history loaded: dbMsgs=%d liveMsgs=%d → contextMsgs=%d (after messageToContextMessages)',
       params.chatId, history.length, liveMessages.length, rawHistory.length)
     console.log('[chat.ipc] history loaded: dbMsgs=%d liveMsgs=%d contextMsgs=%d (chatId=%s)', history.length, liveMessages.length, rawHistory.length, params.chatId)
@@ -1885,22 +1927,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // effectivePlanningMode/effectiveAskMode объявлены выше (до token
     // estimation) — workerData ниже использует эти значения.
 
-    // Защищённые переменные: key → decrypted value. Строим ЗДЕСЬ (в скоупе
-    // создания Worker) — реальные значения уходят ТОЛЬКО в worker для
-    // подстановки ${{KEY}} в аргументы тулов, в промпт они не попадают.
-    // Инкогнито — пропуск (приватность).
-    let secretValuesMap: Record<string, string> | undefined
-    if (!isIncognitoRun) {
-      try {
-        const resolvedSecrets = resolveActive()
-        if (resolvedSecrets.length > 0) {
-          secretValuesMap = {}
-          for (const v of resolvedSecrets) {
-            secretValuesMap[v.key] = v.value
-          }
-        }
-      } catch { /* секреты не должны ломать чат */ }
-    }
+    // §secrets — secretValuesMap резолвится ОДИН раз в начале прогона (до
+    // построения истории — для маскировки tool-результатов) и переиспользуется
+    // здесь для workerData.
 
     const worker = new Worker(workerPath, {
       workerData: {

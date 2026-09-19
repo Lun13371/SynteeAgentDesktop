@@ -1327,7 +1327,11 @@ export class Agent {
           callbacks.onStep({
             type: 'tool_result',
             toolName: fn.name,
-            content: imageUrl ? 'Изображение сгенерировано' : (result.output || result.error || ''),
+            // §secrets — контент шага уходит в UI и БД, а из БД разворачивается
+            // обратно в контекст модели на следующих ходах
+            // (chatContextHelpers.messageToContextMessages). Маскируем ЗДЕСЬ,
+            // иначе история возвращает модели сырые значения секретов.
+            content: imageUrl ? 'Изображение сгенерировано' : this.toolDispatcher.maskSecretValuesInText(result.output || result.error || ''),
             success: result.success,
             imageUrl,
             diff: (result as { diff?: string }).diff,
