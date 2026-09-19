@@ -32,6 +32,9 @@ function registerHandlers(syntee) {
     } else if (ext === 'xlsx' || ext === 'xls') {
       const com = require('../lib/com/excel')
       await com.openBook(path)
+    } else if (ext === 'pptx' || ext === 'ppt' || ext === 'ppsx' || ext === 'pps') {
+      const com = require('../lib/com/powerpoint')
+      await com.openPres(path)
     } else {
       const shell = require('../lib/com/shell')
       await shell.openWithDefault(path)
@@ -44,9 +47,17 @@ function registerHandlers(syntee) {
     return { ok: true }
   })
   syntee.ui.handle('exportPdf', async ({ path }) => {
-    const com = require('../lib/com/word')
-    const out = path.replace(/\.(docx|doc)$/i, '.pdf')
-    await com.exportPdf(path, out)
+    const ext = (path.split('.').pop() || '').toLowerCase()
+    let out
+    if (ext === 'pptx' || ext === 'ppt' || ext === 'ppsx' || ext === 'pps') {
+      const com = require('../lib/com/powerpoint')
+      out = path.replace(/\.(pptx|ppt|ppsx|pps)$/i, '.pdf')
+      await com.exportPdf(path, out)
+    } else {
+      const com = require('../lib/com/word')
+      out = path.replace(/\.(docx|doc)$/i, '.pdf')
+      await com.exportPdf(path, out)
+    }
     return { ok: true, out }
   })
 

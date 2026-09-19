@@ -64,6 +64,20 @@ Document spec (argument "spec"):
   // in YOUR specs. NOTE: word_read mode "full" returns images ONLY as "path" (extracted
   // to files, listed in res.images) — never as base64, to keep the AI context clean.
 { "type": "hyperlink", "text": "…", "url": "https://…" }
+{ "type": "math", "latex": "\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}", "display": true }
+  // MATH FORMULA (native Word equation, OMML). LaTeX syntax. display=true (default)
+  // → own centered paragraph; display=false → left-aligned paragraph.
+  // Supported LaTeX: \\frac{a}{b}, \\sqrt{x}, \\sqrt[n]{x}, x^2, x_i, x_i^2 (both),
+  // \\sum_{i=1}^{n}, \\prod, \\int_0^1, \\iint, \\oint, \\bigcup, \\bigcap (limits above/below),
+  // \\lim_{x \\to 0}, \\sin \\cos \\tan \\log \\ln \\exp \\max \\min (upright functions),
+  // \\text{plain text}, \\mathbb{R} (double-struck), greek \\alpha…\\Omega,
+  // symbols (\\times \\cdot \\pm \\leq \\geq \\neq \\approx \\infty \\to \\in \\subset \\cup \\cap
+  // \\forall \\exists \\partial \\nabla \\hbar \\ell …),
+  // \\left( \\right), \\left[ \\right], \\left\\{ \\right\\}, \\langle \\rangle, | |,
+  // \\begin{matrix|pmatrix|bmatrix|cases} a & b \\\\ c & d \\end{...},
+  // accents \\hat{x} \\bar{x} \\vec{v} \\dot{x} \\tilde{x} \\overline{x} \\underline{x},
+  // \\binom{n}{k}, \\underset{a}{b}, \\overset{a}{b}, spacing \\, \\; \\quad.
+  // Unknown commands render as plain text (graceful degradation).
 { "type": "cover", "title": "…", "subtitle": "…", "author": "…", "date": "…",   // title page + page break
   "meta": [ { "label": "…", "value": "…" } ],
   "image": { "path": "…", "width": 400, "height": 300 } }
@@ -80,7 +94,8 @@ Document spec (argument "spec"):
   "font": "Times New Roman", "size": 24,          // half-points: 24 → 12pt
   "color": "FF0000", "highlight": "yellow",       // highlight: named or hex
   "allCaps": true, "caps": true,
-  "footnote": "текст сноски" } ]                  // footnote reference right after this run
+  "footnote": "текст сноски" },                   // footnote reference right after this run
+  { "math": "E = mc^2" } ]                        // INLINE math formula (LaTeX, same syntax as math block)
 
 ## Colors
 Hex without '#': "FF0000", "1F1F1F", "auto".

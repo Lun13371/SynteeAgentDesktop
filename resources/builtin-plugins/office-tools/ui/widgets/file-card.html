@@ -121,6 +121,7 @@
       var conf = {
         word: { letter: 'W', color: '#2b579a' },
         excel: { letter: 'X', color: '#217346' },
+        ppt: { letter: 'P', color: '#d24726' },
         pdf: { letter: 'P', color: '#d13438' },
       }[k] || { letter: '?', color: '#8a8f98' }
       return '<span class="badge" style="background:' + conf.color + '">' + conf.letter + '</span>'
@@ -144,17 +145,20 @@
       var statsHtml = ''
       if (stats) {
         var parts = []
+        if (stats.slides != null) parts.push(stats.slides + ' слайдов')
         if (stats.paragraphs != null) parts.push(stats.paragraphs + ' абзацев')
         if (stats.words != null) parts.push(stats.words + ' слов')
         if (stats.tables != null) parts.push(stats.tables + ' таблиц')
         if (stats.images != null) parts.push(stats.images + ' изображений')
+        if (stats.charts != null) parts.push(stats.charts + ' диаграмм')
         if (stats.approxPages != null) parts.push('~' + stats.approxPages + ' стр.')
         if (parts.length) statsHtml = '<div class="stats">' + esc(parts.join(' · ')) + '</div>'
       }
 
+      var kind = String(d.kind || '').toLowerCase()
       var btns = '<button data-act="open">' + icon('open') + '<span>Открыть</span></button>'
         + '<button data-act="folder">' + icon('folder') + '<span>Показать в папке</span></button>'
-      if (String(d.kind || '').toLowerCase() === 'word') {
+      if (kind === 'word' || kind === 'ppt') {
         btns += '<button data-act="pdf">' + icon('pdf') + '<span>PDF</span></button>'
       }
 

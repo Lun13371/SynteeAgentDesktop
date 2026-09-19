@@ -10,7 +10,6 @@ import type { OverlayWindow } from '../windows/OverlayWindow'
 import type { VoiceWindow } from '../windows/VoiceWindow'
 import type { SpotlightWindow } from '../windows/SpotlightWindow'
 import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
-import type { NotificationWindow } from '../windows/NotificationWindow'
 import type { HotkeyManager } from '../hotkeys/HotkeyManager'
 
 interface IPCContext {
@@ -20,7 +19,6 @@ interface IPCContext {
   voiceWindow: VoiceWindow
   spotlightWindow: SpotlightWindow
   trayMenuWindow: TrayMenuWindow
-  notificationWindow: NotificationWindow
   hotkeyManager?: HotkeyManager
 }
 

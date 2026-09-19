@@ -1,10 +1,14 @@
 // md — конвертация .docx в Markdown / plain text.
 // Цепочка: mammoth → html → блоки спеки (read.js) → markdown.
+// Формулы: extractMath заменяет m:oMath на плейсхолдеры → math-блоки
+// → $latex$ (стандартная md-нотация формул).
 
+const fs = require('fs')
 const mammoth = require('mammoth')
 const { htmlToBlocks, parseHtml } = require('./read')
+const { extractMath, applyMath, sweepMathText } = require('./math')
 
-/** Runs/текст блока → инлайн-markdown (**bold**, *italic*, ~~strike~~, <u>, [text](url)). */
+/** Runs/текст блока → инлайн-markdown (**bold**, *italic*, ~~strike~~, <u>, [text](url), $формулы$). */
 function inlineMd(block) {
   if (Array.isArray(block.runs) && block.runs.length) {
     return block.runs.map(runMd).join('')
@@ -13,7 +17,8 @@ function inlineMd(block) {
 }
 
 function runMd(r) {
-  let t = String(r.text || '')
+  if (r && r.math) return '$' + String(r.math) + '$'
+  let t = String((r && r.text) || '')
   if (!t) return ''
   if (r.url) return '[' + t + '](' + r.url + ')'
   if (r.bold) t = '**' + t + '**'
@@ -62,6 +67,8 @@ function blockMd(b) {
   switch (b.type) {
     case 'heading':
       return '#'.repeat(Math.min(6, Math.max(1, b.level || 1))) + ' ' + String(b.text || '')
+    case 'math':
+      return '$$' + String(b.latex || '') + '$$'
     case 'paragraph':
       return inlineMd(b)
     case 'hyperlink':
@@ -96,8 +103,12 @@ function blockMd(b) {
  * @returns {Promise<string>} markdown-текст
  */
 async function docxToMarkdown(path) {
-  const r = await mammoth.convertToHtml({ path })
+  const buffer = fs.readFileSync(path)
+  const math = extractMath(buffer)
+  const r = await mammoth.convertToHtml({ buffer: math.buffer })
   const blocks = htmlToBlocks(parseHtml(r.value))
+  applyMath(blocks, math.latex)
+  sweepMathText(blocks, math.latex)
   return blocks.map(blockMd).filter((s) => s !== '').join('\n\n')
 }
 
@@ -107,8 +118,11 @@ async function docxToMarkdown(path) {
  * @returns {Promise<string>}
  */
 async function docxToText(path) {
-  const r = await mammoth.extractRawText({ path })
-  return r.value
+  const buffer = fs.readFileSync(path)
+  const math = extractMath(buffer)
+  const r = await mammoth.extractRawText({ buffer: math.buffer })
+  if (!math.latex.length) return r.value
+  return r.value.replace(/⟦MATH:(\d+)⟧/g, (_, i) => ' ' + (math.latex[Number(i)] || '') + ' ')
 }
 
 module.exports = { docxToMarkdown, docxToText, blockMd }

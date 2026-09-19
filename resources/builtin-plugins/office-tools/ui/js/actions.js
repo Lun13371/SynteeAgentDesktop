@@ -6,6 +6,7 @@
     { id: 'business', title: 'Деловые' },
     { id: 'report', title: 'Отчёты и работы' },
     { id: 'excel', title: 'Excel' },
+    { id: 'presentation', title: 'Презентации' },
   ]
 
   var templates = []
@@ -24,6 +25,8 @@
       + OT.icon('doc') + '<span>Новый документ Word</span></button>'
       + '<button class="ot-action" id="ot-quick-excel" title="Вставить промпт в поле ввода">'
       + OT.icon('table') + '<span>Новая таблица Excel</span></button>'
+      + '<button class="ot-action" id="ot-quick-ppt" title="Вставить промпт в поле ввода">'
+      + OT.icon('ppt') + '<span>Новая презентация</span></button>'
 
     document.getElementById('ot-quick-word').addEventListener('click', function () {
       // вставить в поле ввода, НЕ отправлять
@@ -32,6 +35,10 @@
     })
     document.getElementById('ot-quick-excel').addEventListener('click', function () {
       OT.bridge.call('insertPrompt', { prompt: 'Создай Excel-таблицу: ' })
+        .catch(function (e) { showActionsError('Не удалось вставить промпт: ' + e.message) })
+    })
+    document.getElementById('ot-quick-ppt').addEventListener('click', function () {
+      OT.bridge.call('insertPrompt', { prompt: 'Создай презентацию PowerPoint: ' })
         .catch(function (e) { showActionsError('Не удалось вставить промпт: ' + e.message) })
     })
   }
