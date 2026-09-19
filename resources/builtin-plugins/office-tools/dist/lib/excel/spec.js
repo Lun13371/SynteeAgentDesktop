@@ -169,7 +169,37 @@ async function buildWorkbook(spec) {
         if (cellSpec.hyperlink && typeof cellSpec.hyperlink === 'string') {
           cell.value = { text: String(cellSpec.value != null ? cellSpec.value : cellSpec.hyperlink), hyperlink: cellSpec.hyperlink }
         }
+        if (cellSpec.comment) {
+          const cm = cellSpec.comment
+          const text = typeof cm === 'string' ? cm : (cm && cm.text) || ''
+          if (text) cell.note = { texts: [{ text: String(text) }] }
+        }
       }
+    }
+
+    // Высоты строк и скрытие строк/колонок
+    if (sheetSpec.rowHeights && typeof sheetSpec.rowHeights === 'object') {
+      for (const [k, v] of Object.entries(sheetSpec.rowHeights)) {
+        const n = parseInt(k, 10)
+        if (n >= 1 && v != null) ws.getRow(n).height = Number(v)
+      }
+    }
+    if (Array.isArray(sheetSpec.hiddenRows)) {
+      for (const n of sheetSpec.hiddenRows) { if (Number(n) >= 1) ws.getRow(Number(n)).hidden = true }
+    }
+    if (Array.isArray(sheetSpec.hiddenColumns)) {
+      for (const n of sheetSpec.hiddenColumns) { if (Number(n) >= 1) ws.getColumn(Number(n)).hidden = true }
+    }
+
+    // Цвет ярлыка листа
+    if (sheetSpec.tabColor) {
+      if (!ws.properties) ws.properties = {}
+      ws.properties.tabColor = cfColor(sheetSpec.tabColor) || undefined
+    }
+
+    // Скрытый лист (state: visible | hidden | veryHidden)
+    if (sheetSpec.hidden) {
+      try { ws.state = sheetSpec.hidden === 'veryHidden' ? 'veryHidden' : 'hidden' } catch (e) { /* ignore: экзотический exceljs */ }
     }
 
     // Merged

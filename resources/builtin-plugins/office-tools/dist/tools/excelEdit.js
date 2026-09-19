@@ -29,7 +29,7 @@ function registerExcelEditTools(syntee) {
   syntee.registerTool({
     name: 'excel_edit',
     description:
-      'Apply granular edit operations to an existing .xlsx. Ops: set_cells (values/formulas/styles by ref), insert_rows/delete_rows, insert_columns/delete_columns, add_sheet/delete_sheet/rename_sheet, set_column_width, merge, freeze, auto_filter, protect, sort. Call excel_read mode "meta" first to inspect the workbook.',
+      'Apply granular edit operations to an existing .xlsx (a .bak backup is written next to the file before overwriting). Ops: set_cells (values/formulas/styles by ref), insert_rows/delete_rows, insert_columns/delete_columns, add_sheet/delete_sheet/rename_sheet, set_column_width, set_row_height, hide_rows/unhide_rows, hide_columns/unhide_columns, clear_cells, find_replace, copy_range, set_cell_style, set_tab_color, hide_sheet/unhide_sheet, add_comment/remove_comment, merge, freeze, auto_filter, protect, sort. Existing dataValidation/conditionalFormatting/comments/row-heights/hidden state are preserved on rebuild. Call excel_read mode "meta" first to inspect the workbook.',
     parameters: {
       type: 'object',
       properties: {

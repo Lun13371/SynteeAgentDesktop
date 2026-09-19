@@ -35,7 +35,12 @@ Workbook spec (argument "spec"):
   //  colorScale: { "type": "colorScale", "cfvo": [{ "type": "min" }, { "type": "max" }], "colors": ["F8696B", "63BE7B"] }   // cfvo/colors optional (defaults min→max, red→green); cfvo types: min|max|num|percent|formula (with "value")
   //  dataBar:    { "type": "dataBar", "cfvo": [{ "type": "min" }, { "type": "max" }], "color": "638EC6" }
   //  iconSet:    { "type": "iconSet", "iconSet": "3TrafficLights"|"3Arrows"|"4RedToBlack"|"5Rating", "cfvo": [{ "type": "percent", "value": 0 }, …], "showValue": true }
-  "protection": { "password": "secret", "selectLockedCells": true, "insertRows": false }  // optional; omit password → no password
+  "protection": { "password": "secret", "selectLockedCells": true, "insertRows": false },  // optional; omit password → no password
+  "rowHeights": { "1": 24, "3": 30 },    // optional: row number → height (points)
+  "hiddenRows": [ 5, 6 ],                // optional: 1-based row numbers to hide
+  "hiddenColumns": [ 2 ],                // optional: 1-based column numbers to hide
+  "tabColor": "FF0000",                  // optional: sheet tab color (hex, no '#')
+  "hidden": true | "veryHidden"          // optional: hide the sheet
 }
 
 ## Row
@@ -59,6 +64,7 @@ value                                    // shorthand: number | string | boolean
                    "wrapText": true, "shrinkToFit": true, "textRotation": 90 }
   },
   "hyperlink": "https://…"               // cell becomes a link (value = text)
+  "comment": { "text": "note", "author": "AI" }   // optional cell comment/note
 }
 
 ## Colors

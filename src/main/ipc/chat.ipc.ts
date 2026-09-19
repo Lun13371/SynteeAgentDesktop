@@ -725,8 +725,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch { /* плагины не должны ломать промпт */ }
     }
 
-    // Защищённые переменные (секреты юзера) — расшифровываются здесь и
-    // инжектятся в промпт. Инкогнито — пропуск (приватность).
+    // Защищённые переменные (секреты юзера) — расшифровываются здесь.
+    // В промпт идут только ключи-плейсхолдеры (${{KEY}}), реальные значения
+    // НЕ попадают в промпт (см. secretsSection.ts). Инкогнито — пропуск.
     let protectedVars: ProtectedVarPromptInfo[] | undefined
     if (!isIncognito) {
       try {
@@ -1884,6 +1885,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // effectivePlanningMode/effectiveAskMode объявлены выше (до token
     // estimation) — workerData ниже использует эти значения.
 
+    // Защищённые переменные: key → decrypted value. Строим ЗДЕСЬ (в скоупе
+    // создания Worker) — реальные значения уходят ТОЛЬКО в worker для
+    // подстановки ${{KEY}} в аргументы тулов, в промпт они не попадают.
+    // Инкогнито — пропуск (приватность).
+    let secretValuesMap: Record<string, string> | undefined
+    if (!isIncognitoRun) {
+      try {
+        const resolvedSecrets = resolveActive()
+        if (resolvedSecrets.length > 0) {
+          secretValuesMap = {}
+          for (const v of resolvedSecrets) {
+            secretValuesMap[v.key] = v.value
+          }
+        }
+      } catch { /* секреты не должны ломать чат */ }
+    }
+
     const worker = new Worker(workerPath, {
       workerData: {
         storeData,
@@ -1915,6 +1933,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         mcpApprovalMap,
         pluginTools,
         pluginApprovalMap,
+        // Защищённые переменные: key → decrypted value. Worker строит Map и
+        // передаёт в Agent/ToolDispatcher для подстановки ${{KEY}} в аргументы
+        // тулов и обратной маскировки значений в результатах.
+        secretValues: secretValuesMap,
       },
       env: process.env,
     })

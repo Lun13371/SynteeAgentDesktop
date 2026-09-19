@@ -630,7 +630,7 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
                         style={{ display: tab === panelKind ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}
                       >
                         {panelKind === 'agents' && (
-                          <AgentPanel focusAgentId={focusAgentId} currentChatId={currentChatId} />
+                          <AgentPanel focusAgentId={focusAgentId} currentChatId={currentChatId} isVisible={tab === 'agents'} />
                         )}
                         {panelKind === 'sidechat' && (
                           <SideChatPanel currentChatId={currentChatId ?? null} />

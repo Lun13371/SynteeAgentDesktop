@@ -48,7 +48,7 @@ function registerExcelReadTools(syntee) {
   syntee.registerTool({
     name: 'excel_read',
     description:
-      'Read an .xlsx file. Modes: "meta" (sheets list: name/rows/cols/merged/hasFormulas), "values" (cell values of a sheet, default — returns a table preview widget), "formulas" (values + formula strings), "full" (full JSON spec suitable for rebuilding via excel_create). Optional sheet name (default first) and range like "A1:C20".',
+      'Read an .xlsx file. Modes: "meta" (sheets list: name/rows/cols/merged/hasFormulas), "values" (cell values of a sheet, default — returns a table preview widget), "formulas" (values + formula strings), "full" (full JSON spec suitable for rebuilding via excel_create/excel_edit: cells, styles, merges, freeze, filters, protection, data validation, conditional formatting, comments, row heights, hidden rows/columns/sheets, tab color). Optional sheet name (default first) and range like "A1:C20".',
     parameters: {
       type: 'object',
       properties: {

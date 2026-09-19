@@ -11,9 +11,16 @@ function csvField(v) {
   return s
 }
 
-/** xlsxToCsv(src, out, { sheet, delimiter }) → { size, summary } */
+/** xlsxToCsv(src, out, { sheet, delimiter, encoding }) → { size, summary } */
 async function xlsxToCsv(src, out, opts) {
-  const { sheet, delimiter = ';' } = opts || {}
+  const { sheet, delimiter = ';', encoding = 'utf-8' } = opts || {}
+  const enc = String(encoding || 'utf-8').toLowerCase()
+  if (enc !== 'utf-8' && enc !== 'utf8') {
+    throw new Error(
+      'Кодировка вывода не поддерживается: ' + encoding +
+      '. Доступно: utf-8 (с BOM). Для других кодировок используйте office_save_as (.xlsx→.csv) или конвертацию через MS Excel.',
+    )
+  }
   const wb = new ExcelJS.Workbook()
   await wb.xlsx.readFile(src)
   const ws = sheet ? wb.getWorksheet(sheet) : wb.worksheets[0]
@@ -102,10 +109,27 @@ function guessType(s) {
   return { value: s }
 }
 
-/** csvToXlsx(src, out, { delimiter, sheetName }) → { size, summary } */
+/** Декодировать CSV/текстовый файл с учётом кодировки (utf-8, windows-1251, cp866, koi8-r, iso-8859-1...) */
+function readTextWithEncoding(src, encoding) {
+  const enc = String(encoding || 'utf-8').toLowerCase()
+  if (enc === 'utf-8' || enc === 'utf8') {
+    return fs.readFileSync(src, 'utf-8')
+  }
+  const buf = fs.readFileSync(src)
+  try {
+    return new TextDecoder(enc).decode(buf)
+  } catch (e) {
+    throw new Error(
+      'Неподдерживаемая кодировка: ' + encoding +
+      '. Поддерживаются: utf-8, windows-1251, cp866, koi8-r, iso-8859-1',
+    )
+  }
+}
+
+/** csvToXlsx(src, out, { delimiter, sheetName, encoding }) → { size, summary } */
 async function csvToXlsx(src, out, opts) {
-  const { delimiter = ';', sheetName = 'Данные' } = opts || {}
-  const text = fs.readFileSync(src, 'utf-8')
+  const { delimiter = ';', sheetName = 'Данные', encoding = 'utf-8' } = opts || {}
+  const text = readTextWithEncoding(src, encoding)
   const rows = parseCsv(text, delimiter)
   if (!rows.length) throw new Error('CSV пуст: ' + src)
 
@@ -137,4 +161,4 @@ async function csvToXlsx(src, out, opts) {
   return { size, summary: rows.length + ' строк, ' + maxCols + ' колонок' }
 }
 
-module.exports = { xlsxToCsv, csvToXlsx, parseCsv, guessType, csvField }
+module.exports = { xlsxToCsv, csvToXlsx, parseCsv, guessType, csvField, readTextWithEncoding }

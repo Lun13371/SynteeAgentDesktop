@@ -95,6 +95,9 @@ export class Agent {
   onGetWorkingMemory?: (chatId: string) => string
   /** Колбэк после записи/редактирования файла агентом — для live-обновления UI */
   onFileChanged?: (path: string) => void
+  /** Защищённые переменные: key → decrypted value. Подстановка ${{KEY}} в
+   *  аргументы тулов и обратная маскировка в результатах. */
+  secretValues?: Map<string, string>
   pendingDiffEntries: DiffEntry[] = []
   private readFileCache = new Map<string, string>()
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
@@ -233,6 +236,7 @@ export class Agent {
     this.toolDispatcher.onUpdateWorkingMemory = this.onUpdateWorkingMemory
     this.toolDispatcher.onGetWorkingMemory = this.onGetWorkingMemory
     this.toolDispatcher.onFileChanged = this.onFileChanged
+    this.toolDispatcher.secretValues = this.secretValues
   }
 
   constructor(store: Store, role: 'main' | 'subagent' = 'main') {
@@ -1246,6 +1250,13 @@ export class Agent {
             }
             if (fn.name === 'read_file' && isSecretPath(String(args.path ?? ''))) {
               finalContent = maskSecretValues(finalContent)
+            }
+            // §secrets — маскировка значений защищённых переменных в результатах
+            // ЛЮБОГО тула: если AI случайно получила реальное значение (через
+            // вывод команды, содержимое файла и т.д.) — заменяем обратно на
+            // ${{KEY}}, чтобы модель никогда не видела секрет.
+            if (this.toolDispatcher.secretValues && this.toolDispatcher.secretValues.size > 0) {
+              finalContent = this.toolDispatcher.maskSecretValuesInText(finalContent)
             }
           }
           // Окно эскалации тикает на каждый выполненный тул

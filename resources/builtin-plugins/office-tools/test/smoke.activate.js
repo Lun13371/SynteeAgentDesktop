@@ -22,7 +22,7 @@ const plugin = require('../dist/index.js')
 plugin.activate(syntee)
 plugin.deactivate()
 
-const expectedTools = ['word_create', 'word_spec_docs', 'word_read', 'word_edit', 'word_append', 'word_compare', 'excel_create', 'excel_spec_docs', 'excel_read', 'excel_edit', 'excel_chart', 'office_convert', 'office_export_pdf', 'office_open', 'word_export_pdf']
+const expectedTools = ['word_create', 'word_spec_docs', 'word_read', 'word_edit', 'word_append', 'word_compare', 'excel_create', 'excel_spec_docs', 'excel_read', 'excel_edit', 'excel_chart', 'office_convert', 'office_export_pdf', 'office_open', 'word_export_pdf', 'office_update_fields', 'office_save_as', 'office_find_replace', 'office_accept_changes', 'office_reject_changes']
 const expectedHandlers = ['getRecent', 'getCurrent', 'clearRecent', 'getSettings', 'setSettings', 'pickSaveDir', 'getDefaultSaveDir', 'openFile', 'showInFolder', 'exportPdf', 'quickAction', 'insertPrompt', 'getTemplates']
 
 let fail = 0

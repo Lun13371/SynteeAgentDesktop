@@ -3,6 +3,7 @@ const fs = require('fs')
 const { readWorkbook } = require('./read')
 const { buildWorkbook } = require('./spec')
 const { parseRef, parseRange, rangeToString, lettersToNum, numToLetters } = require('./cells')
+const { backupFile } = require('../backup')
 
 /** Найти индекс листа в спеке по имени */
 function sheetIdx(spec, name) {
@@ -93,6 +94,21 @@ function shiftSheetRefs(sh, axis, at, count, insert) {
   }
   if (Array.isArray(sh.conditionalFormatting)) {
     sh.conditionalFormatting = sh.conditionalFormatting.map((cf) => (cf && cf.range ? Object.assign({}, cf, { range: shiftRangeStr(cf.range) }) : cf)).filter(Boolean)
+  }
+  if (axis === 'row') {
+    if (sh.rowHeights && typeof sh.rowHeights === 'object') {
+      const nh = {}
+      for (const [k, v] of Object.entries(sh.rowHeights)) {
+        const n = shiftIdx(parseInt(k, 10), at, count, insert)
+        if (n != null) nh[n] = v
+      }
+      sh.rowHeights = nh
+    }
+    if (Array.isArray(sh.hiddenRows)) {
+      sh.hiddenRows = sh.hiddenRows.map((n) => shiftIdx(n, at, count, insert)).filter((n) => n != null)
+    }
+  } else if (Array.isArray(sh.hiddenColumns)) {
+    sh.hiddenColumns = sh.hiddenColumns.map((n) => shiftIdx(n, at, count, insert)).filter((n) => n != null)
   }
 }
 
@@ -288,6 +304,177 @@ function opSort(spec, op) {
   for (let i = 0; i < slice.length; i++) sh.rows[rng.r1 - 1 + i] = slice[i]
 }
 
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+
+/** set_row_height { sheet, row, height } */
+function opSetRowHeight(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  const row = Number(op.row)
+  if (!(row >= 1)) throw new Error('set_row_height: row (1-based) обязателен')
+  if (op.height == null) throw new Error('set_row_height: height обязателен')
+  if (!sh.rowHeights || typeof sh.rowHeights !== 'object') sh.rowHeights = {}
+  sh.rowHeights[row] = Number(op.height)
+}
+
+/** hide_rows / unhide_rows { sheet, at (1-based), count? } */
+function opHideRows(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  const at = Math.max(1, Number(op.at || op.row || 1))
+  const count = Math.max(1, Number(op.count || 1))
+  if (!Array.isArray(sh.hiddenRows)) sh.hiddenRows = []
+  for (let i = 0; i < count; i++) {
+    const n = at + i
+    if (!sh.hiddenRows.includes(n)) sh.hiddenRows.push(n)
+  }
+}
+function opUnhideRows(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  const at = Math.max(1, Number(op.at || op.row || 1))
+  const count = Math.max(1, Number(op.count || 1))
+  sh.hiddenRows = (sh.hiddenRows || []).filter((n) => !(n >= at && n < at + count))
+  if (!sh.hiddenRows.length) delete sh.hiddenRows
+}
+
+/** hide_columns / unhide_columns { sheet, at (1-based), count? } */
+function opHideColumns(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  const at = Math.max(1, Number(op.at || op.column || 1))
+  const count = Math.max(1, Number(op.count || 1))
+  if (!Array.isArray(sh.hiddenColumns)) sh.hiddenColumns = []
+  for (let i = 0; i < count; i++) {
+    const n = at + i
+    if (!sh.hiddenColumns.includes(n)) sh.hiddenColumns.push(n)
+  }
+}
+function opUnhideColumns(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  const at = Math.max(1, Number(op.at || op.column || 1))
+  const count = Math.max(1, Number(op.count || 1))
+  sh.hiddenColumns = (sh.hiddenColumns || []).filter((n) => !(n >= at && n < at + count))
+  if (!sh.hiddenColumns.length) delete sh.hiddenColumns
+}
+
+/** clear_cells { sheet, range } — значения+стиль ячеек диапазона → null */
+function opClearCells(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  if (!op.range) throw new Error('clear_cells: range обязателен')
+  const rng = parseRange(op.range)
+  for (let r = rng.r1; r <= rng.r2; r++) {
+    const row = sh.rows[r - 1]
+    if (!Array.isArray(row)) continue
+    for (let c = rng.c1; c <= rng.c2; c++) row[c - 1] = null
+  }
+}
+
+/** find_replace { sheet, find, replace?, matchCase? } — замена в текстовых значениях */
+function opFindReplace(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  if (op.find == null || op.find === '') throw new Error('find_replace: find обязателен')
+  const find = String(op.find)
+  const replace = op.replace == null ? '' : String(op.replace)
+  const caseSensitive = !!op.matchCase
+  const re = caseSensitive ? null : new RegExp(escapeRegExp(find), 'gi')
+  let n = 0
+  for (const row of sh.rows || []) {
+    const cells = Array.isArray(row) ? row : row && row.cells
+    if (!cells) continue
+    for (const cell of cells) {
+      if (!cell || typeof cell !== 'object' || typeof cell.value !== 'string') continue
+      if (caseSensitive ? cell.value.includes(find) : re.test(cell.value)) {
+        cell.value = caseSensitive ? cell.value.split(find).join(replace) : cell.value.replace(re, replace)
+        n++
+      }
+    }
+  }
+  op._replaced = n
+}
+
+/** copy_range { sheet, from ("A1:B2"), to ("D1" — левый верхний угол) } */
+function opCopyRange(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  if (!op.from || !op.to) throw new Error('copy_range: from и to обязательны')
+  const src = parseRange(op.from)
+  const dst = parseRef(op.to)
+  const h = src.r2 - src.r1 + 1
+  const w = src.c2 - src.c1 + 1
+  ensureRows(sh, dst.row + h - 1, dst.col + w - 1)
+  const grid = []
+  for (let r = 0; r < h; r++) {
+    const rowArr = []
+    for (let c = 0; c < w; c++) {
+      const cell = sh.rows[src.r1 - 1 + r][src.c1 - 1 + c]
+      rowArr.push(cell && typeof cell === 'object' ? JSON.parse(JSON.stringify(cell)) : cell)
+    }
+    grid.push(rowArr)
+  }
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) sh.rows[dst.row - 1 + r][dst.col - 1 + c] = grid[r][c]
+  }
+}
+
+/** set_cell_style { sheet, range, style?, numFmt? } — единый стиль/формат на диапазон */
+function opSetCellStyle(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  if (!op.range) throw new Error('set_cell_style: range обязателен')
+  if (!op.style && !op.numFmt) throw new Error('set_cell_style: нужен style и/или numFmt')
+  const rng = parseRange(op.range)
+  ensureRows(sh, rng.r2, rng.c2)
+  for (let r = rng.r1; r <= rng.r2; r++) {
+    for (let c = rng.c1; c <= rng.c2; c++) {
+      const cur = sh.rows[r - 1][c - 1]
+      const cell = cur && typeof cur === 'object' ? cur : (cur == null ? {} : { value: cur })
+      if (op.style) cell.style = Object.assign({}, cell.style, op.style)
+      if (op.numFmt) cell.numFmt = op.numFmt
+      sh.rows[r - 1][c - 1] = Object.keys(cell).length ? cell : null
+    }
+  }
+}
+
+/** set_tab_color { name, color (hex, напр. "FF0000") } */
+function opSetTabColor(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.name || op.sheet)]
+  if (!op.color) throw new Error('set_tab_color: color обязателен (hex, напр. "FF0000")')
+  sh.tabColor = String(op.color).replace('#', '')
+}
+
+/** hide_sheet / unhide_sheet { name, veryHidden? } */
+function opHideSheet(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.name)]
+  sh.hidden = op.veryHidden ? 'veryHidden' : true
+}
+function opUnhideSheet(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.name)]
+  delete sh.hidden
+}
+
+/** add_comment { sheet, ref, text, author? } */
+function opAddComment(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  if (!op.ref) throw new Error('add_comment: ref обязателен')
+  if (op.text == null) throw new Error('add_comment: text обязателен')
+  const { col, row } = parseRef(op.ref)
+  ensureRows(sh, row, col)
+  const cur = sh.rows[row - 1][col - 1]
+  const cell = cur && typeof cur === 'object' ? cur : (cur == null ? {} : { value: cur })
+  cell.comment = { text: String(op.text) }
+  if (op.author) cell.comment.author = String(op.author)
+  sh.rows[row - 1][col - 1] = cell
+}
+
+/** remove_comment { sheet, ref } */
+function opRemoveComment(spec, op) {
+  const sh = spec.sheets[sheetIdx(spec, op.sheet)]
+  if (!op.ref) throw new Error('remove_comment: ref обязателен')
+  const { col, row } = parseRef(op.ref)
+  const rowArr = sh.rows[row - 1]
+  if (!Array.isArray(rowArr)) return
+  const cur = rowArr[col - 1]
+  if (cur && typeof cur === 'object') {
+    delete cur.comment
+    if (!Object.keys(cur).length) rowArr[col - 1] = null
+  }
+}
+
 const OPS = {
   set_cells: opSetCells,
   insert_rows: opInsertRows,
@@ -298,6 +485,20 @@ const OPS = {
   delete_sheet: opDeleteSheet,
   rename_sheet: opRenameSheet,
   set_column_width: opSetColumnWidth,
+  set_row_height: opSetRowHeight,
+  hide_rows: opHideRows,
+  unhide_rows: opUnhideRows,
+  hide_columns: opHideColumns,
+  unhide_columns: opUnhideColumns,
+  clear_cells: opClearCells,
+  find_replace: opFindReplace,
+  copy_range: opCopyRange,
+  set_cell_style: opSetCellStyle,
+  set_tab_color: opSetTabColor,
+  hide_sheet: opHideSheet,
+  unhide_sheet: opUnhideSheet,
+  add_comment: opAddComment,
+  remove_comment: opRemoveComment,
   merge: opMerge,
   freeze: opFreeze,
   auto_filter: opAutoFilter,
@@ -322,9 +523,11 @@ async function applyOps(path, ops) {
   }
 
   const built = await buildWorkbook(spec)
+  // Бэкап оригинала до перезаписи (best-effort, не валит edit при ошибке)
+  const backup = backupFile(path)
   fs.writeFileSync(path, built.buffer)
 
-  return { stats: built.stats, preview: built.preview, applied }
+  return { stats: built.stats, preview: built.preview, applied, backup }
 }
 
 function describeOp(op) {
@@ -343,6 +546,20 @@ function describeOp(op) {
     case 'auto_filter': return 'auto_filter: ' + op.range + ' "' + op.sheet + '"'
     case 'protect': return 'protect: "' + op.sheet + '"' + (op.password ? ' (с паролем)' : '')
     case 'sort': return 'sort: ' + op.range + ' по ' + op.byColumn + (op.ascending !== false ? ' ↑' : ' ↓')
+    case 'set_row_height': return 'set_row_height: строка ' + op.row + ' = ' + op.height + ' "' + op.sheet + '"'
+    case 'hide_rows': return 'hide_rows: ' + (op.count || 1) + ' стр. с ' + (op.at || 1) + ' "' + op.sheet + '"'
+    case 'unhide_rows': return 'unhide_rows: ' + (op.count || 1) + ' стр. с ' + (op.at || 1) + ' "' + op.sheet + '"'
+    case 'hide_columns': return 'hide_columns: ' + (op.count || 1) + ' кол. с ' + (op.at || 1) + ' "' + op.sheet + '"'
+    case 'unhide_columns': return 'unhide_columns: ' + (op.count || 1) + ' кол. с ' + (op.at || 1) + ' "' + op.sheet + '"'
+    case 'clear_cells': return 'clear_cells: ' + op.range + ' "' + op.sheet + '"'
+    case 'find_replace': return 'find_replace: "' + op.find + '" → "' + (op.replace == null ? '' : op.replace) + '" (' + (op._replaced || 0) + ' яч.) "' + op.sheet + '"'
+    case 'copy_range': return 'copy_range: ' + op.from + ' → ' + op.to + ' "' + op.sheet + '"'
+    case 'set_cell_style': return 'set_cell_style: ' + op.range + ' "' + op.sheet + '"'
+    case 'set_tab_color': return 'set_tab_color: "' + (op.name || op.sheet) + '" = ' + op.color
+    case 'hide_sheet': return 'hide_sheet: "' + op.name + '"' + (op.veryHidden ? ' (veryHidden)' : '')
+    case 'unhide_sheet': return 'unhide_sheet: "' + op.name + '"'
+    case 'add_comment': return 'add_comment: ' + op.ref + ' "' + op.sheet + '"'
+    case 'remove_comment': return 'remove_comment: ' + op.ref + ' "' + op.sheet + '"'
     default: return op.op
   }
 }

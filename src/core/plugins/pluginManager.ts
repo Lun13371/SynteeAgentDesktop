@@ -33,7 +33,7 @@ import { v4 as uuid } from 'uuid'
 import { scanPluginsDir } from './pluginLoader'
 import { PluginProcess } from './pluginProcess'
 import { PluginStorage } from './pluginStorage'
-import { DEFAULT_ENABLED_BUILTINS, getBuiltinPluginsDir, syncBuiltinPlugins, syncBuiltinPluginDir } from './builtinPlugins'
+import { getBuiltinPluginsDir, syncBuiltinPlugins, syncBuiltinPluginDir } from './builtinPlugins'
 import {
   depsInstalled, detectPython, installRequirements, syncPythonSdk,
   type PythonInfo,
@@ -320,13 +320,11 @@ export class PluginManager {
     }
     // Встроенные плагины (resources/builtin-plugins → {userData}/plugins):
     // установка при первом запуске + обновление вместе с приложением.
+    // Состояние НЕ выставляем: встроенные плагины, как и любые другие,
+    // по умолчанию ВЫключены (opt-in). Включение — только явное действие
+    // пользователя в UI (toggle → consent-диалог прав).
     try {
-      const synced = syncBuiltinPlugins(this.globalPluginsDir)
-      for (const id of synced.installed) {
-        if (DEFAULT_ENABLED_BUILTINS.has(id)) {
-          this.setState(id, { enabled: true, scope: { type: 'global' } })
-        }
-      }
+      syncBuiltinPlugins(this.globalPluginsDir)
     } catch (e) {
       console.warn('[plugins] builtin sync failed:', (e as Error).message)
     }

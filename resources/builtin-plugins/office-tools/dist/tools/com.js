@@ -50,6 +50,109 @@ async function wordExportPdf({ path: p, out }) {
   return 'PDF создан: ' + target
 }
 
+const WORD_SAVE_FORMATS = { doc: 0, docx: 12, pdf: 17, html: 8, htm: 8, txt: 2, rtf: 7 }
+const EXCEL_SAVE_FORMATS = { xls: 56, xlsx: 51, csv: 6 }
+
+function guessWordFormat(dstExt) {
+  return Object.prototype.hasOwnProperty.call(WORD_SAVE_FORMATS, dstExt) ? WORD_SAVE_FORMATS[dstExt] : null
+}
+function guessExcelFormat(dstExt) {
+  return Object.prototype.hasOwnProperty.call(EXCEL_SAVE_FORMATS, dstExt) ? EXCEL_SAVE_FORMATS[dstExt] : null
+}
+
+function requireDocx(p) {
+  const ext = extOf(p)
+  if (ext !== 'docx' && ext !== 'doc' && ext !== 'rtf') {
+    throw new Error('Ожидался .docx/.doc/.rtf, получено .' + ext)
+  }
+}
+
+async function officeUpdateFields({ path: p }) {
+  if (!p) throw new Error('path обязателен')
+  const api = state.api
+  const st = await api.fs.stat(p)
+  if (!st.exists) throw new Error('Файл не найден: ' + p)
+  requireDocx(p)
+  const com = require('../lib/com/word')
+  await com.updateFields(p)
+  return 'Поля обновлены: ' + p
+}
+
+async function officeSaveAs({ path: p, out, format }) {
+  if (!p) throw new Error('path обязателен')
+  const api = state.api
+  const st = await api.fs.stat(p)
+  if (!st.exists) throw new Error('Файл не найден: ' + p)
+  if (!out) throw new Error('out обязателен (путь выходного файла)')
+
+  const srcExt = extOf(p)
+  const dstExt = extOf(out)
+  const fmt = format != null && format !== '' ? Number(format) : null
+
+  let com
+  let usedFormat
+  if (srcExt === 'docx' || srcExt === 'doc' || srcExt === 'rtf') {
+    usedFormat = fmt != null ? fmt : guessWordFormat(dstExt)
+    if (usedFormat == null) {
+      throw new Error('Не удалось определить формат Word для .' + dstExt + '. Укажите format (0=doc, 12=docx, 17=pdf, 8=html, 2=txt, 7=rtf)')
+    }
+    com = require('../lib/com/word')
+  } else if (srcExt === 'xlsx' || srcExt === 'xls') {
+    usedFormat = fmt != null ? fmt : guessExcelFormat(dstExt)
+    if (usedFormat == null) {
+      throw new Error('Не удалось определить формат Excel для .' + dstExt + '. Укажите format (51=xlsx, 56=xls, 6=csv)')
+    }
+    com = require('../lib/com/excel')
+  } else {
+    throw new Error('office_save_as поддерживает .docx/.doc/.rtf (Word) и .xlsx/.xls (Excel), получено .' + srcExt)
+  }
+
+  await com.saveAs(p, out, usedFormat)
+  const st2 = await api.fs.stat(out)
+  await recent.add({
+    path: out,
+    kind: dstExt === 'pdf' ? 'pdf' : (srcExt === 'xlsx' || srcExt === 'xls' ? 'excel' : 'word'),
+    op: 'convert',
+    name: out.split(/[\\/]/).pop(),
+    size: st2.size,
+  })
+  return 'Сохранено: ' + out + ' (формат ' + usedFormat + ')'
+}
+
+async function officeFindReplace({ path: p, find, replace, matchCase, wholeWord }) {
+  if (!p) throw new Error('path обязателен')
+  if (find == null || find === '') throw new Error('find обязателен (текст для поиска)')
+  const api = state.api
+  const st = await api.fs.stat(p)
+  if (!st.exists) throw new Error('Файл не найден: ' + p)
+  requireDocx(p)
+  const com = require('../lib/com/word')
+  const res = await com.findReplace(p, find, replace == null ? '' : replace, !!matchCase, !!wholeWord)
+  return 'Замена выполнена в ' + p + ' (' + res + ')'
+}
+
+async function officeAcceptChanges({ path: p }) {
+  if (!p) throw new Error('path обязателен')
+  const api = state.api
+  const st = await api.fs.stat(p)
+  if (!st.exists) throw new Error('Файл не найден: ' + p)
+  requireDocx(p)
+  const com = require('../lib/com/word')
+  await com.acceptChanges(p)
+  return 'Все изменения приняты: ' + p
+}
+
+async function officeRejectChanges({ path: p }) {
+  if (!p) throw new Error('path обязателен')
+  const api = state.api
+  const st = await api.fs.stat(p)
+  if (!st.exists) throw new Error('Файл не найден: ' + p)
+  requireDocx(p)
+  const com = require('../lib/com/word')
+  await com.rejectChanges(p)
+  return 'Все изменения отклонены: ' + p
+}
+
 function registerComTools(syntee) {
   syntee.registerTool({
     name: 'office_open',
@@ -125,6 +228,96 @@ function registerComTools(syntee) {
     },
     requiresApproval: true, // запускает реальный Excel и мутирует файл
   })
+
+  syntee.registerTool({
+    name: 'office_update_fields',
+    description:
+      'Update ALL fields in a .docx (TOC, PAGE/NUMPAGES, DATE, cross-references, headers/footers) via real MS Word COM and save. Makes a generated TOC show real page numbers. Requires Word installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to .docx/.doc' },
+      },
+      required: ['path'],
+    },
+    handler: officeUpdateFields,
+    requiresApproval: true, // запускает реальный Word и мутирует файл
+  })
+
+  syntee.registerTool({
+    name: 'office_save_as',
+    description:
+      'Save a document in a different format via Word/Excel COM (also converts legacy formats). Word formats: doc=0, docx=12, pdf=17, html=8, txt=2, rtf=7. Excel formats: xlsx=51, xls=56, csv=6. Common cases: .doc→.docx (12), .docx→.doc (0), .docx→.html (8), .docx→.txt (2), .docx→.rtf (7), .xlsx→.xls (56), .xlsx→.csv (6). Format is auto-detected from the out extension when omitted. Requires Word/Excel installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to source (.docx/.doc/.rtf or .xlsx/.xls)' },
+        out: { type: 'string', description: 'Absolute output path with target extension' },
+        format: { type: 'number', description: 'Explicit format code (optional; auto-detected from out extension)' },
+      },
+      required: ['path', 'out'],
+    },
+    handler: officeSaveAs,
+    requiresApproval: true,
+  })
+
+  syntee.registerTool({
+    name: 'office_find_replace',
+    description:
+      'Find and replace text in a .docx/.doc via real MS Word COM. LOSSLESS: preserves ALL formatting (styles, headers/footers, footnotes, tracked changes, comments). Prefer this over word_edit replace_text for simple textual substitutions. Optionally case-sensitive and whole-word. Requires Word installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to .docx/.doc' },
+        find: { type: 'string', description: 'Text to search for' },
+        replace: { type: 'string', description: 'Replacement text (empty string deletes matches)' },
+        matchCase: { type: 'boolean', description: 'Case-sensitive match (default false)' },
+        wholeWord: { type: 'boolean', description: 'Match whole words only (default false)' },
+      },
+      required: ['path', 'find'],
+    },
+    handler: officeFindReplace,
+    requiresApproval: true,
+  })
+
+  syntee.registerTool({
+    name: 'office_accept_changes',
+    description:
+      'Accept ALL tracked changes (revisions) in a .docx via real MS Word COM and save. Requires Word installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to .docx/.doc' },
+      },
+      required: ['path'],
+    },
+    handler: officeAcceptChanges,
+    requiresApproval: true,
+  })
+
+  syntee.registerTool({
+    name: 'office_reject_changes',
+    description:
+      'Reject ALL tracked changes (revisions) in a .docx via real MS Word COM and save. Requires Word installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to .docx/.doc' },
+      },
+      required: ['path'],
+    },
+    handler: officeRejectChanges,
+    requiresApproval: true,
+  })
 }
 
-module.exports = { registerComTools, officeOpen, wordExportPdf }
+module.exports = {
+  registerComTools,
+  officeOpen,
+  wordExportPdf,
+  officeUpdateFields,
+  officeSaveAs,
+  officeFindReplace,
+  officeAcceptChanges,
+  officeRejectChanges,
+}

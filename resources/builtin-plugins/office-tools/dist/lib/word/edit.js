@@ -4,6 +4,7 @@
 const fs = require('fs')
 const { readDocument } = require('./read')
 const { buildDocument } = require('./spec')
+const { backupFile } = require('../backup')
 
 /** ctx для пересборки: картинки читаются напрямую через fs; defaults — настройки вёрстки. */
 function makeCtx(defaults) {
@@ -226,8 +227,10 @@ async function applyOps(path, ops, defaults) {
   }
 
   const built = await buildDocument(spec, makeCtx(defaults))
+  // Бэкап оригинала до перезаписи (best-effort, не валит edit при ошибке)
+  const backup = backupFile(path)
   fs.writeFileSync(path, built.buffer)
-  return { stats: built.stats, outline: built.outline, applied }
+  return { stats: built.stats, outline: built.outline, applied, backup }
 }
 
 module.exports = { applyOps }
