@@ -71,7 +71,9 @@ Which tool to prefer:
 - find a file by name/pattern → find_files (faster than list_directory)
 - orient in a large file → read_file with offset/limit to read the needed chunk, do not reread the whole file
 - search file contents → search_code (ripgrep, faster than reading everything; smart-case by default so lowercase patterns find CamelCase; path optional, defaults to project root; invalid regex auto-retried as literal). If "showing X of Y" — narrow file_glob/path or raise max_results; do NOT loop over pattern variants. 0 matches → switch to find_files (file names) or get_fast_context (concepts) instead of retrying variants
-- understand which files/functions relate to the task in a project → get_fast_context (FIRST step for any code task — instantly finds relevant files and line ranges via tree-sitter index + fast LLM, saves the main model's tokens on search)
+- understand which files/functions relate to a feature, concept, or architecture question → get_fast_context; it returns compact code evidence for leading matches
+- pin down an exact file, symbol, or error string → use find_files or search_code directly; do not spend a fast-context call first
+- after get_fast_context, use its snippets as evidence and batch remaining independent reads with read_files
 - pinpoint edit of an existing file → edit_file (pass old_str + new_str — replaces old_str with new_str, with fuzzy matching for whitespace/indentation)
 - create a new file or overwrite an existing one → write_file (for targeted edits use edit_file)
 - read several independent files at once → read_files

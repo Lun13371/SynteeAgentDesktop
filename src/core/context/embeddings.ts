@@ -8,14 +8,15 @@
  * Работает в main process и worker_threads (onnxruntime-node).
  */
 
-import { sep } from 'path'
-
+// Embedding helpers are platform-independent; paths are normalized as strings below.
 // ─── Типы ────────────────────────────────────────────────────────────────────
 
 export type Embedding = Float32Array
 
 export interface Embedder {
   embed(text: string): Promise<Embedding>
+  stableEmbed?: (text: string) => Promise<Embedding>
+  stableDim?: number
   dim: number
   mode: 'neural' | 'tfidf'
 }
@@ -79,11 +80,10 @@ export function disposeEmbedder(): void {
 }
 
 const NEURAL_DIM = 384
-// TF-IDF использует 1024 измерений вместо 384 — меньше хэш-коллизий
-// (384 buckets / 20K terms ≈ 52 terms/bucket → 1024 / 20K ≈ 20 terms/bucket).
-// Память: 5K файлов × 1024 × 4 bytes = 20MB — приемлемо.
-// Neural embeddings остаются 384-dim (MiniLM output) — не пересекаются с TF-IDF.
+// Memory TF-IDF layout stays stable. Fast-context uses a separate dimension so
+// old vectors are invalidated without changing persisted memory embeddings.
 const TFIDF_DIM = 1024
+const FAST_TFIDF_DIM = 2048
 
 async function embedNeural(text: string): Promise<Embedding> {
   if (!_pipeline) await initNeural()
@@ -131,32 +131,32 @@ function tokenize(text: string): string[] {
     .filter(t => t.length >= 2)
 }
 
+function embedHashed(text: string, dim: number, idf?: Map<string, number>, docCount = 1): Embedding {
+  const tf = new Map<string, number>()
+  for (const t of tokenize(text)) tf.set(t, (tf.get(t) ?? 0) + 1)
+  const vec = new Float32Array(dim)
+  for (const [term, freq] of tf) {
+    const weight = idf
+      ? freq * (idf.get(term) ?? Math.log(docCount || 1))
+      : 1 + Math.log(freq)
+    let hash = 0
+    for (let i = 0; i < term.length; i++) hash = ((hash << 5) - hash + term.charCodeAt(i)) | 0
+    vec[Math.abs(hash) % dim] += weight
+  }
+  let norm = 0
+  for (let i = 0; i < dim; i++) norm += vec[i] * vec[i]
+  norm = Math.sqrt(norm) || 1
+  for (let i = 0; i < dim; i++) vec[i] /= norm
+  return vec
+}
+
 function embedTfidf(text: string): Embedding {
   const project = _activeProjectId ? IDF_BY_PROJECT.get(_activeProjectId) : null
-  const tokens = tokenize(text)
-  const tf = new Map<string, number>()
-  for (const t of tokens) {
-    tf.set(t, (tf.get(t) ?? 0) + 1)
-  }
-  // Векторизуем: хэш в TFIDF_DIM измерений (1024 — меньше коллизий чем 384)
-  const vec = new Float32Array(TFIDF_DIM)
-  for (const [term, freq] of tf) {
-    const idf = project?.idf.get(term) ?? Math.log(project?.docCount || 1)
-    const weight = freq * idf
-    // Simple hashing trick: hash term → bucket
-    let hash = 0
-    for (let i = 0; i < term.length; i++) {
-      hash = ((hash << 5) - hash + term.charCodeAt(i)) | 0
-    }
-    const bucket = Math.abs(hash) % TFIDF_DIM
-    vec[bucket] += weight
-  }
-  // L2 normalize
-  let norm = 0
-  for (let i = 0; i < TFIDF_DIM; i++) norm += vec[i] * vec[i]
-  norm = Math.sqrt(norm) || 1
-  for (let i = 0; i < TFIDF_DIM; i++) vec[i] /= norm
-  return vec
+  return embedHashed(text, TFIDF_DIM, project?.idf, project?.docCount)
+}
+
+function embedFastContextTfidf(text: string): Embedding {
+  return embedHashed(text, FAST_TFIDF_DIM)
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -167,11 +167,13 @@ export async function getEmbedder(): Promise<Embedder> {
   if (_useNeural && !_neuralInitFailed) {
     await initNeural()
     if (_pipeline) {
-      return { embed: embedNeural, dim: NEURAL_DIM, mode: 'neural' }
+      return { embed: embedNeural, stableEmbed: embedNeural, dim: NEURAL_DIM, stableDim: NEURAL_DIM, mode: 'neural' }
     }
   }
   return {
     embed: async (text: string) => embedTfidf(text),
+    stableEmbed: async (text: string) => embedFastContextTfidf(text),
+    stableDim: FAST_TFIDF_DIM,
     dim: TFIDF_DIM,
     mode: 'tfidf',
   }
