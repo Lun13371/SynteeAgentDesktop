@@ -256,6 +256,41 @@ const synteeAPI = {
     },
   },
 
+  // Устройства вывода Windows и их live peak-meter (только чтение).
+  // Монитор работает только пока открыты настройки визуализатора.
+  audioDevices: {
+    startMonitor: () => ipcRenderer.invoke('audioDevices:startMonitor') as Promise<Array<{ id: string; name: string; isDefault: boolean; level: number }>>,
+    stopMonitor: () => ipcRenderer.invoke('audioDevices:stopMonitor') as Promise<boolean>,
+    list: () => ipcRenderer.invoke('audioDevices:list') as Promise<Array<{ id: string; name: string; isDefault: boolean; level: number }>>,
+    onUpdate: (cb: (devices: Array<{ id: string; name: string; isDefault: boolean; level: number }>) => void) => {
+      const handler = (_event: unknown, devices: Array<{ id: string; name: string; isDefault: boolean; level: number }>) => cb(devices)
+      ipcRenderer.on('audioDevices:update', handler)
+      return () => ipcRenderer.removeListener('audioDevices:update', handler)
+    },
+    onStopped: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('audioDevices:stopped', handler)
+      return () => ipcRenderer.removeListener('audioDevices:stopped', handler)
+    },
+  },
+
+  // Захват системного звука с ВЫБРАННОГО устройства (WASAPI loopback в
+  // main-процессе). Системные настройки Windows не меняются.
+  audioVisualizer: {
+    start: (deviceId: string | null) => ipcRenderer.invoke('audioVisualizer:start', deviceId) as Promise<{ deviceId: string; name: string; sampleRate: number; channels: number }>,
+    stop: () => ipcRenderer.invoke('audioVisualizer:stop') as Promise<boolean>,
+    onFrame: (cb: (frame: { level: number; bands: number[]; timestamp: number; muted: boolean } | null) => void) => {
+      const handler = (_event: unknown, frame: { level: number; bands: number[]; timestamp: number; muted: boolean } | null) => cb(frame)
+      ipcRenderer.on('audioVisualizer:frame', handler)
+      return () => ipcRenderer.removeListener('audioVisualizer:frame', handler)
+    },
+    onStopped: (cb: () => void) => {
+      const handler = () => cb()
+      ipcRenderer.on('audioVisualizer:stopped', handler)
+      return () => ipcRenderer.removeListener('audioVisualizer:stopped', handler)
+    },
+  },
+
   // Система
   system: {
     info: () => ipcRenderer.invoke('system:info'),

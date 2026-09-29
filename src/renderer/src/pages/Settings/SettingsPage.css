@@ -540,6 +540,70 @@
 
 .settings-input:focus { border-color: var(--border-strong); }
 .settings-input--sm { min-width: 80px; }
+.settings-range { width: 180px; accent-color: var(--accent); }
+.settings-audio-visualizer-status { color: var(--text-muted); font-size: 12px; min-width: 120px; text-align: right; }
+.settings-audio-visualizer-actions { display: flex; align-items: center; gap: 8px; }
+.settings-audio-visualizer-connect { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer; font: inherit; font-size: 12px; }
+.settings-audio-visualizer-connect:hover { border-color: var(--accent); }
+.settings-audio-visualizer-preview { position: relative; display: grid; place-items: center; min-width: 280px; min-height: 72px; overflow: visible; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-secondary); color: var(--text-muted); font-size: 12px; isolation: isolate; }
+.settings-audio-visualizer-preview > .chat-input-audio-visualizer { inset: 0; width: 100%; height: 100%; }
+.settings-audio-visualizer-preview + .settings-audio-visualizer-connect { margin-top: 8px; }
+.settings-audio-devices {
+  display: grid;
+  gap: 6px;
+  width: min(100%, 520px);
+  max-height: 240px;
+  overflow: auto;
+  padding: 2px;
+}
+.settings-audio-devices-empty,
+.settings-audio-devices-note,
+.settings-audio-devices-error {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.settings-audio-devices-error { color: var(--danger, #ef6b73); margin-top: 6px; display: block; }
+.settings-audio-device-dead { color: var(--warning, #e6a23c); }
+.settings-audio-device {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.settings-audio-device:hover { border-color: var(--border-strong); }
+.settings-audio-device--selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.settings-audio-device-main { min-width: 0; display: grid; gap: 3px; }
+.settings-audio-device-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.settings-audio-device-meta { color: var(--text-muted); font-size: 10px; }
+.settings-audio-device-meter {
+  display: block;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--bg-tertiary, rgba(255,255,255,.08));
+}
+.settings-audio-device-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+.settings-audio-device-level { min-width: 38px; color: var(--text-muted); font-size: 10px; text-align: right; }
+.settings-audio-device-level--active { color: var(--accent); }
 .settings-input--mono { font-family: var(--font-mono); font-size: 12px; }
 
 .settings-chip {
