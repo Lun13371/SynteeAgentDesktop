@@ -1477,6 +1477,14 @@ export default function App() {
     }
   }, [bootDone])
 
+  // Boot-маркер: попадает в stderr только при --enable-logging. Нужен для
+  // smoke-тестов релизных сборок (V8-байткод/обфускация): по нему видно, что
+  // рендерер дошёл до готового UI, а не завис на BootScreen (симптом баги
+  // с cachedDataRejected preload на Electron 44).
+  useEffect(() => {
+    if (bootDone) console.log('[boot] UI ready — BootScreen dismissed')
+  }, [bootDone])
+
   // .app-root монтируется только когда bootDone=true (виден в JSX ниже).
   // applyBgImageToDOM ищет .app-root и если его нет — ничего не делает.
   // На старте applyVisualSettings зовёт applyBgImageToDOM ещё ДО того,
