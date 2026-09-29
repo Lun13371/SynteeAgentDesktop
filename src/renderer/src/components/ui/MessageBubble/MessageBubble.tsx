@@ -21,32 +21,36 @@ import { usePluginPanelStore } from '../../../store/pluginPanel.store'
 // Стили oneDark применяются как inline-стили — визуально пиксель-в-пиксель.
 // Языки регистрируются через refractor (тот же инстанс, что использовался
 // внутри react-syntax-highlighter PrismLight).
-import refractor from 'refractor/core'
+// refractor 5: именованный экспорт { refractor } (в v4 был default).
+import { refractor } from 'refractor/core'
 import { highlightCodeToHtml } from '../../../utils/codeHighlightHTML'
 
 // Регистрируем только нужные языки (~23 вместо ~270 в полном Prism).
-import tsx from 'refractor/lang/tsx'
-import typescript from 'refractor/lang/typescript'
-import javascript from 'refractor/lang/javascript'
-import jsx from 'refractor/lang/jsx'
-import python from 'refractor/lang/python'
-import json from 'refractor/lang/json'
-import bash from 'refractor/lang/bash'
-import shell from 'refractor/lang/shell-session'
-import sql from 'refractor/lang/sql'
-import go from 'refractor/lang/go'
-import rust from 'refractor/lang/rust'
-import yaml from 'refractor/lang/yaml'
-import markdownLang from 'refractor/lang/markdown'
-import cssLang from 'refractor/lang/css'
-import markup from 'refractor/lang/markup'
-import java from 'refractor/lang/java'
-import cLang from 'refractor/lang/c'
-import cpp from 'refractor/lang/cpp'
-import csharp from 'refractor/lang/csharp'
-import php from 'refractor/lang/php'
-import ruby from 'refractor/lang/ruby'
-import diffLang from 'refractor/lang/diff'
+// refractor 5 (пришёл с react-syntax-highlighter 16) поменял exports-мап:
+// './*' → './lang/*.js', поэтому языки импортируются как 'refractor/<lang>',
+// а не 'refractor/lang/<lang>' (иначе путь резолвится в lang/lang/...).
+import tsx from 'refractor/tsx'
+import typescript from 'refractor/typescript'
+import javascript from 'refractor/javascript'
+import jsx from 'refractor/jsx'
+import python from 'refractor/python'
+import json from 'refractor/json'
+import bash from 'refractor/bash'
+import shell from 'refractor/shell-session'
+import sql from 'refractor/sql'
+import go from 'refractor/go'
+import rust from 'refractor/rust'
+import yaml from 'refractor/yaml'
+import markdownLang from 'refractor/markdown'
+import cssLang from 'refractor/css'
+import markup from 'refractor/markup'
+import java from 'refractor/java'
+import cLang from 'refractor/c'
+import cpp from 'refractor/cpp'
+import csharp from 'refractor/csharp'
+import php from 'refractor/php'
+import ruby from 'refractor/ruby'
+import diffLang from 'refractor/diff'
 
 refractor.register(tsx)
 refractor.register(typescript)
