@@ -561,6 +561,7 @@ const synteeAPI = {
     touch: (id: string) => ipcRenderer.invoke('projects:touch', id),
     setVerificationCommand: (id: string, command: string | null) => ipcRenderer.invoke('projects:setVerificationCommand', id, command),
     setContextFiles: (id: string, files: string[], autoDiscover: boolean, disabledDiscoveryFiles?: string[]) => ipcRenderer.invoke('projects:setContextFiles', id, files, autoDiscover, disabledDiscoveryFiles),
+    setAppearance: (id: string, color: string, icon: string) => ipcRenderer.invoke('projects:setAppearance', id, color, icon),
   },
 
   // Fast Context — статус индекса проекта, реиндекс, live progress

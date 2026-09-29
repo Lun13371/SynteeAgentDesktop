@@ -25,12 +25,16 @@ export interface Chat {
   reasoningValue?: string
 }
 
+export type ProjectIcon = 'folder' | 'code' | 'bot' | 'briefcase' | 'layers' | 'database' | 'terminal' | 'globe' | 'star' | 'zap' | 'image' | 'git' | 'puzzle'
+
 export interface Project {
   id: string
   name: string
   workdir: string
   projectContext?: string  // результат analyzeProject при создании; не гоняем по IPC в каждый chats.list
   verificationCommand?: string  // команда авто-проверки после сессии правок (напр. "npm test")
+  color?: string  // цвет проекта в интерфейсе
+  icon?: ProjectIcon  // иконка проекта
   contextFiles?: string[]  // JSON-массив относительных путей к .md файлам для контекста
   autoDiscoverInstructions?: boolean  // авто-дискавери AGENTS.md/CLAUDE.md/.syntee/instructions.md
   disabledDiscoveryFiles?: string[]  // стандартные файлы, отключённые из авто-дискавери

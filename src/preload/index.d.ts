@@ -472,6 +472,7 @@ declare const synteeAPI: {
         touch: (id: string) => Promise<any>;
         setVerificationCommand: (id: string, command: string | null) => Promise<any>;
         setContextFiles: (id: string, files: string[], autoDiscover: boolean, disabledDiscoveryFiles?: string[]) => Promise<any>;
+        setAppearance: (id: string, color: string, icon: string) => Promise<any>;
     };
     fastContext: {
         getStatus: (projectId: string) => Promise<any>;
