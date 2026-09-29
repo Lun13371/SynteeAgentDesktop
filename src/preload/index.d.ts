@@ -222,6 +222,44 @@ declare const synteeAPI: {
             }>;
         };
     };
+    audioDevices: {
+        startMonitor: () => Promise<Array<{
+            id: string;
+            name: string;
+            isDefault: boolean;
+            level: number;
+        }>>;
+        stopMonitor: () => Promise<boolean>;
+        list: () => Promise<Array<{
+            id: string;
+            name: string;
+            isDefault: boolean;
+            level: number;
+        }>>;
+        onUpdate: (cb: (devices: Array<{
+            id: string;
+            name: string;
+            isDefault: boolean;
+            level: number;
+        }>) => void) => () => Electron.IpcRenderer;
+        onStopped: (cb: () => void) => () => Electron.IpcRenderer;
+    };
+    audioVisualizer: {
+        start: (deviceId: string | null) => Promise<{
+            deviceId: string;
+            name: string;
+            sampleRate: number;
+            channels: number;
+        }>;
+        stop: () => Promise<boolean>;
+        onFrame: (cb: (frame: {
+            level: number;
+            bands: number[];
+            timestamp: number;
+            muted: boolean;
+        } | null) => void) => () => Electron.IpcRenderer;
+        onStopped: (cb: () => void) => () => Electron.IpcRenderer;
+    };
     system: {
         info: () => Promise<any>;
         logError: (message: string, stack?: string) => Promise<any>;

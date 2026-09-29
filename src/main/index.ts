@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, session } from 'electron'
 import { join, relative, isAbsolute } from 'path'
 
 // ── ВАЖНО: setPath ДО любых импортов которые создают electron-store ──
@@ -8,7 +8,10 @@ import { join, relative, isAbsolute } from 'path'
 // выполниться ДО импорта tokenStore/gatewayClient (они создают Store при
 // импорте). Поэтому setPath — первое что выполняется в модуле.
 app.setName('SynteeHelper')
-app.setPath('userData', join(app.getPath('appData'), 'SynteeHelper'))
+// SYNTEE_USER_DATA_DIR — изоляция профиля для тестов запусков (QA/CI):
+// позволяет поднять второй инстанс с отдельным userData, не конфликтуя
+// с singleton-lock и данными живого инстанса юзера.
+app.setPath('userData', process.env.SYNTEE_USER_DATA_DIR || join(app.getPath('appData'), 'SynteeHelper'))
 
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import Store from 'electron-store'
@@ -50,6 +53,8 @@ import { registerBillingIPC } from './ipc/billing.ipc'
 import { registerStatsIPC } from './ipc/stats.ipc'
 import { registerMessengerIPC } from './ipc/messenger.ipc'
 import { registerUpdatesIPC } from './ipc/updates.ipc'
+import { registerAudioDevicesIPC, stopAudioDevicesIPC } from './ipc/audioDevices.ipc'
+import { registerAudioVisualizerIPC, stopAudioVisualizerIPC } from './ipc/audioVisualizer.ipc'
 import { registerNotificationIPC } from './ipc/notification.ipc'
 import { initNotificationManager } from './managers/NotificationManager'
 import { initActivityManager } from './managers/ActivityManager'
@@ -205,16 +210,16 @@ app.whenReady().then(async () => {
   // ── syntee-plugin:// — файлы UI плагинов (iframe-панели) ──
   protocol.handle('syntee-plugin', handlePluginProtocol)
 
-  // ── Permission для getUserMedia (микрофон голосового ввода в инпут-баре) ──
-  // Без явного handler Electron по умолчанию НЕ выдаёт 'media' permission →
-  // navigator.mediaDevices.getUserMedia висит/отклоняется молча. Разрешаем
-  // 'audioCapture' (микрофон) для основного окна. 'videoCapture' оставляем
-  // по умолчанию (запрет) — камеры у нас нет. Проверка через setPermissionCheckHandler
-  // нужна для повторных запросов того же permission без диалога.
-  const { session } = require('electron')
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission === 'audioCapture') callback(true)
-    else if (permission === 'media') callback(true)
+  // Захват системного звука для визуализатора — WASAPI loopback с выбранного
+  // устройства через vendored NativeAudioSDK (audioVisualizer.ipc.ts).
+  // Прежний Chromium getDisplayMedia-loopback убран: он умел только устройство
+  // по умолчанию, из-за чего «выбор устройства» приходилось делать сменой
+  // системного дефолта.
+
+  // Microphone permission supports the existing voice input.
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const name = permission as string
+    if (name === 'media' || name === 'audioCapture' || name === 'display-capture') callback(true)
     else callback(false)
   })
   session.defaultSession.setPermissionCheckHandler(() => true)
@@ -333,6 +338,8 @@ app.whenReady().then(async () => {
   registerMessengerIPC(() => mainWindow.getWindow())
   // In-app update checker (informational; the Go launcher does the actual apply)
   registerUpdatesIPC(() => mainWindow.getWindow())
+  registerAudioDevicesIPC(mainWindow)
+  registerAudioVisualizerIPC(mainWindow)
   startUpdatePolling()
 
   // ── Notification overlay ──────────────────────────────────────────
@@ -502,6 +509,8 @@ app.on('before-quit', () => {
   ptyManager.killAll()
   // Останавливаем опрос обновлений.
   stopUpdatePolling()
+  stopAudioDevicesIPC()
+  stopAudioVisualizerIPC()
   // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.
   stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
   // Останавливаем file indexer для @mention-пикера.

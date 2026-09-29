@@ -22,6 +22,7 @@ import { ChatInputPlusMenu } from './ChatInputPlusMenu'
 import { ChatInputActionButton } from './ChatInputActionButton'
 import { ChatInputEditor, type EditorApi } from './ChatInputEditor'
 import { ChatInputMenus } from './ChatInputMenus'
+import { AudioVisualizerLayer } from './AudioVisualizerLayer'
 import { PluginInputActions } from './PluginInputActions'
 import { getPluginsExt, type PluginAutoResult } from '../../../utils/pluginExtApi'
 import { ATTACH_TOKEN_RE, stripAttachTokens } from '../../../../../shared/attachmentMarkdown'
@@ -850,6 +851,7 @@ function ChatInput({
         onDragOver={handleDragOver}
         onDrop={handleDrop}
       >
+        <AudioVisualizerLayer />
         {/* Drag&Drop overlay — подсветка всего инпута + текст «Отпустите для прикрепления» */}
         <AnimatePresence>
           {isDragOver && (

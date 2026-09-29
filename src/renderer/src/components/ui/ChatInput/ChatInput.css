@@ -19,6 +19,7 @@
 .chat-input-main {
   padding: 0 8px 16px;
   position: relative;
+  isolation: isolate;
   max-width: 900px;
   margin: 0 auto;
 }
@@ -117,6 +118,8 @@
 }
 
 .chat-input-box {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -133,6 +136,20 @@
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+
+.chat-input-audio-visualizer {
+  position: absolute;
+  inset: -6px;
+  width: calc(100% + 12px);
+  height: calc(100% + 12px);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.chat-input-box > .chat-input-row {
+  position: relative;
+  z-index: 1;
 }
 
 .chat-input-row {
