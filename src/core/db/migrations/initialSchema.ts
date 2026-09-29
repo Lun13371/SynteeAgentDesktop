@@ -233,6 +233,12 @@ export function runInitialSchema(db: Database.Database): void {
   if (!projectCols.find(c => c.name === 'disabled_discovery_files')) {
     db.prepare(`ALTER TABLE projects ADD COLUMN disabled_discovery_files TEXT`).run()
   }
+  if (!projectCols.find(c => c.name === 'color')) {
+    db.prepare(`ALTER TABLE projects ADD COLUMN color TEXT`).run()
+  }
+  if (!projectCols.find(c => c.name === 'icon')) {
+    db.prepare(`ALTER TABLE projects ADD COLUMN icon TEXT`).run()
+  }
 
   // Индекс по project_id — создаём ПОСЛЕ миграции (колонка добавлена выше).
   // В db.exec() этот индекс создавать нельзя: на момент выполнения первого
