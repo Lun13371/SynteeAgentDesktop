@@ -279,8 +279,8 @@ const synteeAPI = {
   audioVisualizer: {
     start: (deviceId: string | null) => ipcRenderer.invoke('audioVisualizer:start', deviceId) as Promise<{ deviceId: string; name: string; sampleRate: number; channels: number }>,
     stop: () => ipcRenderer.invoke('audioVisualizer:stop') as Promise<boolean>,
-    onFrame: (cb: (frame: { level: number; bands: number[]; timestamp: number; muted: boolean } | null) => void) => {
-      const handler = (_event: unknown, frame: { level: number; bands: number[]; timestamp: number; muted: boolean } | null) => cb(frame)
+    onFrame: (cb: (frame: { level: number; bands: number[]; bass: number; mid: number; treble: number; timestamp: number; muted: boolean } | null) => void) => {
+      const handler = (_event: unknown, frame: { level: number; bands: number[]; bass: number; mid: number; treble: number; timestamp: number; muted: boolean } | null) => cb(frame)
       ipcRenderer.on('audioVisualizer:frame', handler)
       return () => ipcRenderer.removeListener('audioVisualizer:frame', handler)
     },

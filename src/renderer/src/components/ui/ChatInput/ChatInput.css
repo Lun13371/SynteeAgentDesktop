@@ -147,6 +147,26 @@
   pointer-events: none;
 }
 
+/* Огонь/искры/волна над инпутом; снизу запас 18px под переливашку */
+.chat-input-audio-visualizer--rise {
+  top: -64px;
+  bottom: -18px;
+  left: -6px;
+  right: -6px;
+  width: calc(100% + 12px);
+  height: calc(100% + 82px);
+}
+
+/* Спектр: палочки только над верхней гранью */
+.chat-input-audio-visualizer--top {
+  top: -24px;
+  bottom: -6px;
+  left: -6px;
+  right: -6px;
+  width: calc(100% + 12px);
+  height: calc(100% + 30px);
+}
+
 .chat-input-box > .chat-input-row {
   position: relative;
   z-index: 1;

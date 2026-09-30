@@ -3,8 +3,22 @@ import { useSettingsStore } from '../store/settings.store'
 export interface AudioFrame {
   level: number
   bands: number[]
+  bass: number
+  mid: number
+  treble: number
   timestamp: number
   muted?: boolean
+}
+
+/** Шейдерные пресеты визуализатора (WebGL2, как анимированный фон). */
+export const AUDIO_VISUALIZER_PRESETS = ['fire', 'sparks', 'wave', 'spectrum'] as const
+export type AudioVisualizerPreset = (typeof AUDIO_VISUALIZER_PRESETS)[number]
+
+/** Старые canvas-пресеты (neon/spectrum/fluid/pulse/full) больше не существуют. */
+export function normalizeVisualizerPreset(value: unknown): AudioVisualizerPreset {
+  return AUDIO_VISUALIZER_PRESETS.includes(value as AudioVisualizerPreset)
+    ? (value as AudioVisualizerPreset)
+    : 'fire'
 }
 
 export interface AudioOutputDevice {
@@ -70,9 +84,20 @@ export function startAudioVisualizerDemo() {
   const tick = (now: number) => {
     if (demoFrameId === 0 || demoId !== demoStartedAt) return
     const elapsed = (now - started) / 1000
-    const bands = Array.from({ length: 48 }, (_, i) => Math.max(0, Math.sin(elapsed * (3.2 + (i % 7) * 0.12) - i * 0.31)) ** 3 * (0.35 + 0.65 * Math.abs(Math.sin(elapsed * 1.8))))
-    const level = 0.24 + 0.2 * Math.max(0, Math.sin(elapsed * 3.6))
-    for (const listener of demoListeners) listener({ level, bands, timestamp: now })
+    // Спектр, похожий на музыку: бас качает, верха тише, «нота» бегает по частотам
+    const note = 0.5 + 0.5 * Math.sin(elapsed * 2.1)
+    const beat = Math.max(0, Math.sin(elapsed * Math.PI * 2.4)) ** 6
+    const bands = Array.from({ length: 64 }, (_, i) => {
+      const x = i / 63
+      const shape = Math.max(0.08, 1 - x * 0.75) // низы громче
+      const near = Math.exp(-((x - note) ** 2) * 40) // бегущая «нота»
+      return Math.min(1, shape * (0.22 + 0.5 * Math.abs(Math.sin(elapsed * 3.1 + i * 0.35))) + near * 0.55)
+    })
+    const level = Math.min(1, 0.3 + 0.45 * beat + 0.15 * Math.abs(Math.sin(elapsed * 1.3)))
+    const bass = Math.min(1, 0.35 + 0.6 * beat)
+    const mid = Math.min(1, 0.3 + 0.4 * Math.abs(Math.sin(elapsed * 2.2)))
+    const treble = Math.min(1, 0.18 + 0.35 * Math.abs(Math.sin(elapsed * 4.7)))
+    for (const listener of demoListeners) listener({ level, bands, bass, mid, treble, timestamp: now })
     demoFrameId = requestAnimationFrame(tick)
   }
   demoStartedAt = demoId

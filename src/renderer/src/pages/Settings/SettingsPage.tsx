@@ -42,6 +42,7 @@ import {
   subscribeAudioDeviceStatus,
   startAudioOutputDeviceMonitor,
   stopAudioOutputDeviceMonitor,
+  normalizeVisualizerPreset,
   type AudioOutputDevice,
 } from '../../utils/systemAudioVisualizer'
 import { AudioVisualizerLayer } from '../../components/ui/ChatInput/AudioVisualizerLayer'
@@ -1602,7 +1603,14 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
               return
             }
             onSet('audioVisualizerEnabled', true)
-            onSet('audioVisualizerStatus', 'disconnected')
+            // Включил — подключаем сразу, без ручного тыка «Подключить»
+            onSet('audioVisualizerStatus', 'connecting')
+            startSystemAudioVisualizer(settings['audioVisualizerDeviceId'] as string | undefined)
+              .then(() => onSet('audioVisualizerStatus', 'connected'))
+              .catch(error => {
+                onSet('audioVisualizerStatus', 'error')
+                toast(error instanceof Error ? error.message : 'Не удалось подключить системный звук', 'error')
+              })
           }} />
         </Field>
         {!!settings['audioVisualizerEnabled'] && (
@@ -1686,13 +1694,12 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
         </Field>
         {!!settings['audioVisualizerEnabled'] && (
           <>
-            <Field id="audioVisualizerPreset" label="Эффект" description="Выбери стиль реакции вокруг поля ввода">
-              <Select value={(settings['audioVisualizerPreset'] as string) || 'full'} onChange={v => onSet('audioVisualizerPreset', v)} options={[
-                { value: 'neon', label: 'Neon Ring' },
-                { value: 'spectrum', label: 'Spectrum' },
-                { value: 'fluid', label: 'Fluid' },
-                { value: 'pulse', label: 'Pulse' },
-                { value: 'full', label: 'Full' },
+            <Field id="audioVisualizerPreset" label="Эффект" description="Шейдерный стиль реакции вокруг поля ввода">
+              <Select value={normalizeVisualizerPreset(settings['audioVisualizerPreset'])} onChange={v => onSet('audioVisualizerPreset', v)} options={[
+                { value: 'fire', label: 'Огонь' },
+                { value: 'sparks', label: 'Искры' },
+                { value: 'wave', label: 'Волна' },
+                { value: 'spectrum', label: 'Спектр' },
               ]} />
             </Field>
             <Field id="audioVisualizerColorMode" label="Источник цвета">
@@ -1708,14 +1715,8 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
                 <input type="color" className="settings-input" value={(settings['audioVisualizerColor'] as string) || '#4d9fff'} onChange={e => onSet('audioVisualizerColor', e.target.value)} />
               </Field>
             )}
-            <Field id="audioVisualizerIntensity" label="Интенсивность" description="Яркость и сила свечения">
-              <input className="settings-range" type="range" min="10" max="100" value={(settings['audioVisualizerIntensity'] as number) ?? 55} onChange={e => onSet('audioVisualizerIntensity', Number(e.target.value))} />
-            </Field>
-            <Field id="audioVisualizerSensitivity" label="Чувствительность" description="Реакция на тихий звук">
-              <input className="settings-range" type="range" min="25" max="180" value={(settings['audioVisualizerSensitivity'] as number) ?? 100} onChange={e => onSet('audioVisualizerSensitivity', Number(e.target.value))} />
-            </Field>
-            <Field id="audioVisualizerQuality" label="Производительность" description="Качество адаптируется под нагрузку">
-              <span className="settings-audio-visualizer-status">Adaptive · 60 FPS</span>
+            <Field id="audioVisualizerQuality" label="Производительность" description="WebGL2-шейдеры, как у анимированного фона">
+              <span className="settings-audio-visualizer-status">WebGL2 · 60 FPS</span>
             </Field>
             <Field label="Превью" description="Демо-сигнал не использует аудиоустройства">
               <div className="settings-audio-visualizer-preview">
