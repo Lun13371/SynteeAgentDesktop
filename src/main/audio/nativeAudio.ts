@@ -10,6 +10,7 @@
 // (16-bit) с ЛЮБОГО устройства вывода — в отличие от Chromium loopback,
 // который умеет только устройство по умолчанию.
 import { app } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'path'
 
 export interface NativeAudioDevice {
@@ -42,14 +43,30 @@ export interface AudioControllerStatic {
 
 let cached: AudioControllerStatic | null = null
 
+/** Кандидаты пути к бинарнику, в порядке приоритета. */
+function binaryCandidates(): string[] {
+  const fileName = `NativeAudioSDK-${process.platform}-${process.arch}.node`
+  return [
+    // packaged: extraResources кладёт resources/ в process.resourcesPath
+    join(process.resourcesPath, 'native', fileName),
+    // dev (electron-vite dev / npm run dev): корень проекта — app.getAppPath()
+    join(app.getAppPath(), 'resources', 'native', fileName),
+    // npm run start / electron out/main/index.js: appPath = out/main, бандл в out/main
+    join(__dirname, '..', '..', 'resources', 'native', fileName),
+    join(__dirname, '..', 'resources', 'native', fileName),
+  ]
+}
+
 /** Загружает нативный модуль (лениво, с кэшем). Бросает понятную ошибку, если бинарника нет. */
 export function loadNativeAudio(): AudioControllerStatic {
   if (cached) return cached
-  const fileName = `NativeAudioSDK-${process.platform}-${process.arch}.node`
-  // dev: <project>/resources/native/...; packaged: <resourcesPath>/native/... (extraResources)
-  const devPath = join(app.getAppPath(), 'resources', 'native', fileName)
-  const prodPath = join(process.resourcesPath, 'native', fileName)
-  const binaryPath = app.isPackaged ? prodPath : devPath
+  const binaryPath = binaryCandidates().find(p => existsSync(p))
+  if (!binaryPath) {
+    throw new Error(
+      `Нативный аудио-модуль не найден (NativeAudioSDK-${process.platform}-${process.arch}.node). ` +
+      `Искал в: ${binaryCandidates().join('; ')}`
+    )
+  }
   try {
     // Динамический require по вычисляемому пути — rollup не может зарезолвить
     // его статически и оставляет как есть (CJS-выход main-бандла).

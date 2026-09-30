@@ -6,9 +6,23 @@
 // сменой системного дефолта (IPolicyConfig). Теперь звук берётся напрямую
 // с выбранного устройства, системные настройки Windows не трогаются.
 //
-// Поток: PCM 16-bit -> mono mixdown -> кольцевой буфер 1024 сэмплов ->
-// Hann window + radix-2 FFT -> 48 полос (квадратичное распределение, как в
-// прежнем AnalyserNode-варианте) -> IPC 'audioVisualizer:frame' (~22 раза/с).
+// Поток: PCM 16-bit -> mono mixdown -> кольцевой буфер 2048 сэмплов ->
+// Hann window + radix-2 FFT -> 48 лог-полос (32 Hz..16 kHz, как в настоящих
+// спектроанализаторах) -> dB-нормализация + attack/release -> IPC-кадр.
+//
+// Анализ v2 (починка «слабых частот»):
+//  - лог-распределение полос вместо квадратичного: у квадратичного низкие
+//    полосы дублировали одни и те же бины (полосы 0..5 все смотрели в бин 0..1),
+//    а верхние частоты сжимались в 2-3 широкие полосы;
+//  - dB-шкала (как у AnalyserNode getByteFrequencyData): у музыки спектр
+//    падает ~1/f, линейные амплитуды давали «мёртвые» верха;
+//  - компенсация окна Ханна (coherent gain x4/N) — раньше амплитуды были
+//    занижены вдвое;
+//  - раздельное сглаживание attack (быстрый подъём) / release (медленный
+//    спад) вместо симметричного 0.76/0.24 — реакция стала «панчевой»;
+//  - bass/mid/treble для шейдерных эффектов (огонь реагирует на бас и т.п.);
+//  - safety-таймер: если поток молчит (нет чанков), кадры всё равно
+//    эмитятся с затуханием — визуализатор не «замирает» на последнем кадре.
 import { ipcMain } from 'electron'
 import type { MainWindow } from '../windows/MainWindow'
 import {
@@ -20,25 +34,43 @@ import {
 export interface VisualizerFramePayload {
   level: number
   bands: number[]
+  bass: number
+  mid: number
+  treble: number
   timestamp: number
   muted: boolean
 }
 
-const FFT_SIZE = 1024
-const BANDS = 48
-const EMIT_INTERVAL_MS = 45
+const FFT_SIZE = 2048
+const BANDS = 64
+const EMIT_INTERVAL_MS = 33 // ~30 кадров/с; рендерер интерполирует до 60
+const MIN_HZ = 32
+const MAX_HZ = 16000
+const MIN_DB = -64
+const MAX_DB = -14
+const ATTACK = 0.6 // доля к цели при подъёме
+const RELEASE = 0.16 // доля к цели при спаде
 
 let controller: AudioControllerInstance | null = null
 let format: NativeAudioFormat | null = null
+let emitTimer: ReturnType<typeof setInterval> | null = null
 
 const ring = new Float32Array(FFT_SIZE)
 let ringPos = 0
 let ringFilled = 0
 const fftRe = new Float32Array(FFT_SIZE)
 const fftIm = new Float32Array(FFT_SIZE)
-const smoothed = new Float32Array(FFT_SIZE / 2)
+const smoothed = new Float32Array(BANDS)
+let bandEdges = new Int32Array(BANDS + 1) // бины (включительно), BANDS+1 значений
+let bassRange: [number, number] = [0, 8] // индексы полос [from, to)
+let midRange: [number, number] = [8, 30]
+let trebleRange: [number, number] = [30, BANDS]
 let lastEmitAt = 0
 let lastDataAt = 0
+let smoothBass = 0
+let smoothMid = 0
+let smoothTreble = 0
+let smoothLevel = 0
 
 function sendToWindow(mainWindow: MainWindow, channel: string, payload: unknown): void {
   try { mainWindow.getWindow()?.webContents.send(channel, payload) } catch { /* window may be closing */ }
@@ -81,11 +113,42 @@ function fft(re: Float32Array, im: Float32Array): void {
   }
 }
 
+/** Лог-полосы от MIN_HZ до MAX_HZ + диапазоны bass/mid/treble в индексах полос. */
+function computeBandEdges(sampleRate: number): void {
+  const nyquist = sampleRate / 2
+  const binHz = sampleRate / FFT_SIZE
+  const top = Math.min(MAX_HZ, nyquist * 0.95)
+  const edges = new Int32Array(BANDS + 1)
+  for (let i = 0; i <= BANDS; i++) {
+    const hz = MIN_HZ * Math.pow(top / MIN_HZ, i / BANDS)
+    edges[i] = Math.round(hz / binHz)
+  }
+  // строго возрастающие, минимум 1 бин на полосу
+  edges[0] = Math.max(1, edges[0])
+  for (let i = 1; i <= BANDS; i++) {
+    if (edges[i] <= edges[i - 1]) edges[i] = edges[i - 1] + 1
+    if (edges[i] > FFT_SIZE / 2 - 1) edges[i] = FFT_SIZE / 2 - 1
+  }
+  bandEdges = edges
+  const bandHz = (i: number) => (edges[i] + edges[i + 1]) / 2 * binHz
+  let bassEnd = 1
+  while (bassEnd < BANDS && bandHz(bassEnd) < 250) bassEnd++
+  let midEnd = bassEnd
+  while (midEnd < BANDS && bandHz(midEnd) < 2000) midEnd++
+  bassRange = [0, bassEnd]
+  midRange = [bassEnd, midEnd]
+  trebleRange = [midEnd, BANDS]
+}
+
 function resetAnalysis(): void {
   ring.fill(0)
   ringPos = 0
   ringFilled = 0
   smoothed.fill(0)
+  smoothBass = 0
+  smoothMid = 0
+  smoothTreble = 0
+  smoothLevel = 0
   lastEmitAt = 0
   lastDataAt = 0
 }
@@ -118,37 +181,74 @@ function emitFrame(mainWindow: MainWindow): void {
   fftIm.fill(0)
   fft(fftRe, fftIm)
 
-  const half = FFT_SIZE / 2
   let rms = 0
   for (let i = 0; i < FFT_SIZE; i++) rms += ring[i] * ring[i]
   rms = Math.sqrt(rms / FFT_SIZE)
 
   const bands = new Array<number>(BANDS)
-  let spectrum = 0
   for (let i = 0; i < BANDS; i++) {
-    // Квадратичное распределение бинов по полосам — как в прежнем
-    // AnalyserNode-варианте (низкие частоты детальнее).
-    const from = Math.floor((i / BANDS) ** 2 * half)
-    const to = Math.max(from + 1, Math.floor(((i + 1) / BANDS) ** 2 * half))
+    // максимум магнитуды по бинам полосы (peak-hold внутри полосы)
     let peak = 0
-    for (let j = from; j < to; j++) {
-      const mag = Math.hypot(fftRe[j], fftIm[j]) / half
-      // сглаживание как smoothingTimeConstant = 0.76
-      smoothed[j] = smoothed[j] * 0.76 + mag * 0.24
-      if (smoothed[j] > peak) peak = smoothed[j]
+    for (let j = bandEdges[i]; j < bandEdges[i + 1]; j++) {
+      // x4/N — компенсация coherent gain окна Ханна: синус амплитудой 1
+      // даёт mag = 1 (0 dB)
+      const mag = (4 * Math.hypot(fftRe[j], fftIm[j])) / FFT_SIZE
+      if (mag > peak) peak = mag
     }
-    bands[i] = Math.min(1, peak * 3)
-    if (i < 28) spectrum += bands[i]
+    // dB-шкала как у AnalyserNode: линейные амплитуды «хоронят» верха
+    const db = 20 * Math.log10(peak + 1e-9)
+    const target = Math.min(1, Math.max(0, (db - MIN_DB) / (MAX_DB - MIN_DB)))
+    // attack/release: быстрый подъём, плавный спад
+    const k = target > smoothed[i] ? ATTACK : RELEASE
+    smoothed[i] += (target - smoothed[i]) * k
+    bands[i] = smoothed[i]
   }
-  spectrum /= 28
-  // RMS ловит тихий/тональный звук, спектр — широкий; формула прежняя.
-  const level = Math.min(1, Math.max(rms * 5, spectrum * 2))
+
+  const avg = (from: number, to: number) => {
+    let sum = 0
+    for (let i = from; i < to; i++) sum += bands[i]
+    return sum / Math.max(1, to - from)
+  }
+  const bassT = avg(bassRange[0], bassRange[1])
+  const midT = avg(midRange[0], midRange[1])
+  const trebleT = avg(trebleRange[0], trebleRange[1])
+  smoothBass += (bassT - smoothBass) * (bassT > smoothBass ? 0.6 : 0.2)
+  smoothMid += (midT - smoothMid) * (midT > smoothMid ? 0.5 : 0.18)
+  smoothTreble += (trebleT - smoothTreble) * (trebleT > smoothTreble ? 0.5 : 0.18)
+
+  // RMS ловит тихий/тональный звук, взвешенный спектр — широкий
+  const spectrumLevel = smoothBass * 0.9 + smoothMid * 0.55 + smoothTreble * 0.3
+  const levelTarget = Math.min(1, Math.max(rms * 5.5, spectrumLevel * 1.15))
+  smoothLevel += (levelTarget - smoothLevel) * (levelTarget > smoothLevel ? 0.5 : 0.14)
+
   const muted = Date.now() - lastDataAt > 400
   sendToWindow(mainWindow, 'audioVisualizer:frame', {
-    level,
+    level: smoothLevel,
     bands,
+    bass: smoothBass,
+    mid: smoothMid,
+    treble: smoothTreble,
     timestamp: Date.now(),
     muted
+  } satisfies VisualizerFramePayload)
+}
+
+/** Кадр затухания: поток молчит — плавно гасим значения, а не замираем. */
+function emitDecayFrame(mainWindow: MainWindow): void {
+  if (!controller) return
+  for (let i = 0; i < BANDS; i++) smoothed[i] *= 0.82
+  smoothBass *= 0.82
+  smoothMid *= 0.82
+  smoothTreble *= 0.82
+  smoothLevel *= 0.82
+  sendToWindow(mainWindow, 'audioVisualizer:frame', {
+    level: smoothLevel,
+    bands: Array.from(smoothed),
+    bass: smoothBass,
+    mid: smoothMid,
+    treble: smoothTreble,
+    timestamp: Date.now(),
+    muted: true
   } satisfies VisualizerFramePayload)
 }
 
@@ -156,6 +256,7 @@ function stopCapture(mainWindow?: MainWindow): void {
   const instance = controller
   controller = null
   format = null
+  if (emitTimer) { clearInterval(emitTimer); emitTimer = null }
   if (instance) {
     try { instance.stop() } catch { /* уже остановлен */ }
   }
@@ -178,6 +279,7 @@ export function registerAudioVisualizerIPC(mainWindow: MainWindow): void {
     stopCapture()
 
     format = AudioController.getDeviceFormat(target.id)
+    computeBandEdges(format.sampleRate)
     const instance = new AudioController()
     try {
       instance.start({ deviceType: 'output', deviceId: target.id }, (error, data) => {
@@ -193,6 +295,13 @@ export function registerAudioVisualizerIPC(mainWindow: MainWindow): void {
       throw new Error(`Не удалось начать захват с «${target.name}»: ${message}`)
     }
     controller = instance
+    // Safety: если WASAPI перестал слать чанки (тишина/пауза), продолжаем
+    // эмитить кадры с затуханием, чтобы визуализатор плавно гас, а не зависал.
+    emitTimer = setInterval(() => {
+      if (controller && Date.now() - lastDataAt > EMIT_INTERVAL_MS * 2) {
+        emitDecayFrame(mainWindow)
+      }
+    }, EMIT_INTERVAL_MS)
     return {
       deviceId: target.id,
       name: target.name,

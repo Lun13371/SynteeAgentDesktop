@@ -20,6 +20,7 @@ import { useFileTabsStore } from './store/fileTabs.store'
 import { useMessengerStore } from './store/messenger.store'
 import { autoAssignGatewayModels, markAutoAssignDone, isAutoAssignDone } from './store/autoAssign'
 import { contrastText, withAlpha, hexToRgb, hslToHex } from './utils/colorUtils'
+import { startSystemAudioVisualizer } from './utils/systemAudioVisualizer'
 import { startThemeScheduler } from './utils/themeScheduler'
 import type { CustomTheme, Chat as ChatType, Message } from '../../shared/types'
 import ChatPage from './pages/Chat/ChatPage'
@@ -765,6 +766,31 @@ export default function App() {
       }
     }
     applyVisualSettings()
+  }, [])
+
+  // ── Аудиовизуализатор: автоподключение захвата при запуске ────────────
+  // Раньше после каждого старта приложения приходилось вручную тыкать
+  // «Подключить» в настройках. Теперь, если визуализация включена, захват
+  // стартует сам: сохранённое устройство → устройство по умолчанию.
+  useEffect(() => {
+    let cancelled = false
+    const autoConnect = async () => {
+      try { await useSettingsStore.getState().load() } catch { /* настройки не загрузились — не стартуем */ }
+      if (cancelled) return
+      const s = useSettingsStore.getState().settings as Record<string, unknown>
+      if (!s['audioVisualizerEnabled']) return
+      const device = typeof s['audioVisualizerDeviceId'] === 'string' ? s['audioVisualizerDeviceId'] as string : undefined
+      try {
+        await startSystemAudioVisualizer(device)
+        if (!cancelled) void useSettingsStore.getState().set('audioVisualizerStatus', 'connected')
+      } catch {
+        // Тихо: аудиоустройства могут отсутствовать — не заваливаем запуск
+        // тостами; статус ошибки виден в настройках визуализации.
+        if (!cancelled) void useSettingsStore.getState().set('audioVisualizerStatus', 'error')
+      }
+    }
+    void autoConnect()
+    return () => { cancelled = true }
   }, [])
 
   // Ждём готовности веб-шрифтов, чтобы после исчезновения BootScreen не было
