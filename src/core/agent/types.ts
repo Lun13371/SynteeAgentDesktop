@@ -61,6 +61,8 @@ export interface AgentCallbacks {
    * Round-trip worker → main → BrowserWindow → worker.
    */
   onRenderPage?: (url: string, opts: { waitSelector?: string; timeoutMs?: number }) => Promise<{ html: string; title?: string; error?: string }>
+  /** Логгер тулов с каскадами (fetch_page, search_images): стадии и диагностика. */
+  onLog?: (msg: string) => void
   /** Начало раунда: tiktoken-оценка того, что уйдёт в запрос (system+history
    *  с tool_calls+current user+tools schemas). breakdown консистентен. */
   onContextCounted?: (info: ContextCountedInfo) => void

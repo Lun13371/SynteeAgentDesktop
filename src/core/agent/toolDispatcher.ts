@@ -313,6 +313,7 @@ export class ToolDispatcher {
           section: resolvedArgs.section as string | undefined,
           maxChars: resolvedArgs.max_chars as number | undefined,
           onRenderPage: callbacks?.onRenderPage,
+          onLog: callbacks?.onLog,
         })
       case 'search_images':
         return searchImages(resolvedArgs.query as string, {
@@ -323,6 +324,7 @@ export class ToolDispatcher {
           download: resolvedArgs.download as boolean | undefined,
           downloadIndex: resolvedArgs.download_index as number | undefined,
           userDataPath: this.userDataPath,
+          onLog: callbacks?.onLog,
         })
       case 'write_file': {
         const wfResult = await writeFile(resolvedArgs.path as string, resolvedArgs.content as string, { dryRun, workdir: this.workdir })

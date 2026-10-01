@@ -2,7 +2,35 @@ import { useEffect } from 'react'
 import { v4 as uuid } from 'uuid'
 import type { ToolStep } from '../../../shared/types'
 import { useChatStore } from '../store/chat.store'
-import { getBuf, liveSet, drainBufs, isAuxWindow } from './chatRunRuntime'
+import { buffers, getBuf, liveSet, drainBufs, isAuxWindow } from './chatRunRuntime'
+
+// ── Time-based throttle для agent:tool_progress → liveSet ──────────────
+// Паттерн как у tokenBuf (FLUSH_MS в chatRunRuntime): события прогресса
+// копятся в buf.toolProgress, store-обновление — не чаще 80мс. Индексатор
+// fastContext эмитит прогресс per-batch (каждый батч файлов), run_command —
+// построчно: без троттлинга каждое событие = store-обновление + полный
+// ре-рендер стримящегося сообщения. Trailing-флеш доносит последнее
+// состояние; guard по buffers.get — если стрим уже завершён (buffers.delete
+// в CHAT_STREAM_DONE/ERROR), поздний флеш не реанимирует live-state.
+const TOOL_PROGRESS_FLUSH_MS = 80
+const tpFlushTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function flushToolProgressNow(chatId: string): void {
+  const timer = tpFlushTimers.get(chatId)
+  if (timer) { clearTimeout(timer); tpFlushTimers.delete(chatId) }
+  const buf = getBuf(chatId)
+  liveSet(chatId, { toolProgress: { ...buf.toolProgress } })
+}
+
+function scheduleToolProgressFlush(chatId: string): void {
+  if (tpFlushTimers.has(chatId)) return
+  tpFlushTimers.set(chatId, setTimeout(() => {
+    tpFlushTimers.delete(chatId)
+    const buf = buffers.get(chatId)
+    if (!buf) return // стрим завершён — буфер удалён, live-state не трогаем
+    liveSet(chatId, { toolProgress: { ...buf.toolProgress } })
+  }, TOOL_PROGRESS_FLUSH_MS))
+}
 
 /**
  * Прогресс тулов: agent:tool_progress (live-прогресс долгих тулов),
@@ -35,6 +63,7 @@ export function useToolProgress() {
         liveSet(data.chatId, { msgId: data.msgId, isTyping: true })
       }
       if (data.msgId && buf.streamMsgId && data.msgId !== buf.streamMsgId) return
+      const prevEntry = buf.toolProgress[data.toolName]
       buf.toolProgress = {
         ...buf.toolProgress,
         [data.toolName]: {
@@ -47,7 +76,16 @@ export function useToolProgress() {
           ts: Date.now(),
         },
       }
-      liveSet(data.chatId, { toolProgress: { ...buf.toolProgress } })
+      // ── Троттлинг liveSet ─────────────────────────────────────────────
+      // Счётчики (filesProcessed/detail) флешим не чаще 80мс; смену stage
+      // и терминальные stage ('done'/'error') — мгновенно: переход между
+      // этапами и завершение должны отражаться в UI сразу. Визуально
+      // неотличимо: счётчик N/M обновляется чуть реже.
+      if (!prevEntry || prevEntry.stage !== data.stage || data.stage === 'done' || data.stage === 'error') {
+        flushToolProgressNow(data.chatId)
+      } else {
+        scheduleToolProgressFlush(data.chatId)
+      }
     })
 
     // agent:spawn — main эмитит это СРАЗУ при получении spawn_agent от

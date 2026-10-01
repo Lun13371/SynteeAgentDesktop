@@ -1634,14 +1634,12 @@ export default function App() {
                 <div className={`page-host ${mainPage === 'chat' ? '' : 'page-host--hidden'}`}>
                   <ChatPage embedded />
                 </div>
-                {/* Exit-анимация страниц — безопасная версия: ТОЛЬКО числовые
-                    значения (opacity/scale) + tween с фиксированной длительностью
-                    0.18s внутри exit-варианта. Старый баг был от spring на exit:
-                    он мог не завершаться → AnimatePresence никогда не удалял
-                    страницу → невидимый слой блокировал чат. Tween завершается
-                    ВСЕГДА по таймеру, а framer-motion на exit ставит
-                    pointer-events:none inline — уходящая страница клики не
-                    перехватывает. Зависание физически невозможно. */}
+                {/* Exit-анимация страниц — безопасная: только числовые значения
+                    (opacity/scale) + явный pointerEvents:'none'. pointer-events
+                    отключается МГНОВЕННО на старте exit — даже если анимация
+                    зависнет, уходящая страница физически не сможет перехватить
+                    клики. Tween 0.18s (не spring) завершается всегда по таймеру,
+                    spring на exit раньше мог не «успокоиться» → зомби-слой. */}
                 <AnimatePresence>
               {mainPage === 'settings' && (
                 <motion.div
@@ -1649,7 +1647,7 @@ export default function App() {
                   className="page-motion-host"
                   initial={{ opacity: 0, scale: 0.92 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
+                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
                   transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                 >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
@@ -1663,7 +1661,7 @@ export default function App() {
                   className="page-motion-host"
                   initial={{ opacity: 0, scale: 0.92 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
+                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
                   transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                 >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
@@ -1677,7 +1675,7 @@ export default function App() {
                   className="page-motion-host"
                   initial={{ opacity: 0, scale: 0.92 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
+                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
                   transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                 >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
@@ -1691,7 +1689,7 @@ export default function App() {
                   className="page-motion-host"
                   initial={{ opacity: 0, scale: 0.92 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
+                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
                   transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                 >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>

@@ -595,6 +595,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               })
             })
           },
+          // Логгер каскадов fetch_page/search_images. worker_threads делят
+          // stdout родителя — console.log виден в терминале dev-режима.
+          onLog: (msg) => {
+            console.log(`[ai-worker:${chatId.slice(0, 8)}] ${msg}`)
+          },
           onGetAgentStatus: (agentId) => {
             return new Promise((resolve) => {
               const replyId = `get-status-${agentId}-${Date.now()}`
