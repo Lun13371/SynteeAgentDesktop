@@ -108,6 +108,11 @@ void main(){
   float sd = sdBox(p);
   float boxBottom = u_box.y - u_box.w;
   float below = boxBottom - p.y; // >0 ниже нижней грани инпута
+  // ОПТИМИЗАЦИЯ: sd < -1 — интерьер рамки. Огонь там математически нулевой
+  // (множитель smoothstep(-1,3,sd)=0 => f=0 => ранний выход уже был), а
+  // переливашка ниже грани имеет sd > 0. Пропускаем два fbm (~32 hash) для
+  // ~40% пикселей канваса — вывод побитово тот же.
+  if (sd < -1.0) { fragColor = vec4(0.0); return; }
   float t = u_time * (1.0 + u_bass * 0.9 + u_level * 0.4) + u_seed * 7.0;
   float ef = smoothstep(0.0, 0.05, uv.x) * smoothstep(1.0, 0.95, uv.x);
 
@@ -156,6 +161,10 @@ void main(){
   vec2 p = gl_FragCoord.xy;
   float sd = sdBox(p);
   float boxTop = u_box.y + u_box.w;
+  // ОПТИМИЗАЦИЯ: маска smoothstep(-1,2,sd) внутри рамки — 0, искры там
+  // не видны (alpha=0 => vec4(0)). Пропускаем 12-итерационный цикл для
+  // интерьера — вывод побитово тот же.
+  if (sd < -1.0) { fragColor = vec4(0.0); return; }
 
   float v = 0.0;
   vec3 colAcc = vec3(0.0);
@@ -195,6 +204,9 @@ void main(){
   vec2 uv = p / u_res;
   float sd = sdBox(p);
   float boxTop = u_box.y + u_box.w;
+  // ОПТИМИЗАЦИЯ: маска smoothstep(-1,2,sd) гасит кривую внутри рамки в
+  // ноль — пропускаем 5 выборок спектра и шум для интерьера. Вывод тот же.
+  if (sd < -1.0) { fragColor = vec4(0.0); return; }
   float x = uv.x;
 
   // одна плавная кривая: 5-tap сглаживание спектра
@@ -230,6 +242,10 @@ void main(){
   vec2 p = gl_FragCoord.xy;
   vec2 rel = p - u_box.xy;
   float above = rel.y - u_box.w; // >0 выше верхней грани
+  // ОПТИМИЗАЦИЯ: глубоко внутри рамки bar=0 и base=0 (маски), а вклад tip
+  // < 1e-5 — квантуется в 0 в 8-битном альфа-канале. Пропускаем вычисление
+  // палочек для ~85% пикселей канваса — вывод визуально идентичен.
+  if (above < -8.0) { fragColor = vec4(0.0); return; }
 
   // позиция вдоль верхней грани 0..1
   float u = clamp((rel.x + u_box.z) / (2.0 * u_box.z), 0.0, 1.0);
@@ -306,6 +322,11 @@ function hexRgb(hex: string): [number, number, number] {
 /** Гамма-буст: тихие детали видны, реакция «панчевая». */
 function shape(v: number): number {
   return Math.pow(Math.min(1, Math.max(0, v)), 0.72)
+}
+
+/** Асимметричное сглаживание (attack/release) — чистая функция вне кадра. */
+function toward(target: number, cur: number, up: number, down: number): number {
+  return cur + (target - cur) * (target > cur ? up : down)
 }
 
 interface AudioVisualizerLayerProps {
@@ -386,6 +407,12 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
     // ── состояние (сглаживание аудио, биты) ─────────────────────────────
     const tuning = EFFECT_TUNING[preset]
     const layout = PRESET_LAYOUT[preset]
+    // Цвета кэшируются на время жизни эффекта: regex-парсинг hex два раза
+    // в каждом кадре (120/с) — лишняя работа, значения меняются только
+    // вместе с настройками (deps эффекта).
+    const modeIndex = colorMode === 'rainbow' ? 3 : colorMode === 'gradient' ? 2 : colorMode === 'custom' ? 1 : 0
+    const c1 = hexRgb(modeIndex === 1 ? customColor : accent)
+    const c2 = hexRgb(gradient?.enabled ? gradient.color2 : accent)
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
     const seed = Math.random() * 100
     const sm = { level: 0, bass: 0, mid: 0, treble: 0, bands: new Float32Array(64) }
@@ -421,8 +448,6 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
 
       // сглаживание входных данных (кадры ~30 FPS -> шейдер 60 FPS)
       const frame = frameRef.current
-      const toward = (target: number, cur: number, up: number, down: number) =>
-        cur + (target - cur) * (target > cur ? up : down)
       sm.level = toward(shape((frame?.level ?? 0) * tuning.gain), sm.level, 0.55, 0.16)
       sm.bass = toward(shape((frame?.bass ?? 0) * tuning.gain), sm.bass, 0.6, 0.2)
       sm.mid = toward(shape((frame?.mid ?? 0) * tuning.gain), sm.mid, 0.55, 0.18)
@@ -437,7 +462,7 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
       bassHist.push(sm.bass)
       if (bassHist.length > 42) bassHist.shift()
       let avg = 0
-      for (const v of bassHist) avg += v
+      for (let i = 0; i < bassHist.length; i++) avg += bassHist[i]
       avg /= Math.max(1, bassHist.length)
       if (sm.bass > 0.16 && sm.bass > avg * 1.25 + 0.04 && now - lastBeatAt > 120) {
         lastBeatAt = now
@@ -445,10 +470,13 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
       }
       beat *= Math.exp(-dt * 5)
 
-      // цвета по режиму
-      const modeIndex = colorMode === 'rainbow' ? 3 : colorMode === 'gradient' ? 2 : colorMode === 'custom' ? 1 : 0
-      const c1 = hexRgb(modeIndex === 1 ? customColor : accent)
-      const c2 = hexRgb(gradient?.enabled ? gradient.color2 : accent)
+      // ТИШИНА: soundGate()=0 во всех пресетах => весь кадр полностью
+      // прозрачен. Чистим канвас и пропускаем шейдерный проход целиком —
+      // вывод побитово тот же (прозрачный кадр), GPU в простое.
+      gl.viewport(0, 0, canvas.width, canvas.height)
+      gl.clearColor(0, 0, 0, 0)
+      gl.clear(gl.COLOR_BUFFER_BIT)
+      if (sm.level < 0.015) return
 
       // инпут-бокс в GL-координатах (y вверх)
       const sideD = layout.side * dpr
@@ -459,9 +487,6 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
       const boxHx = Math.max(1, (canvas.width - 2 * sideD) / 2)
       const boxHy = Math.max(1, (boxTopY - boxBottomY) / 2)
 
-      gl.viewport(0, 0, canvas.width, canvas.height)
-      gl.clearColor(0, 0, 0, 0)
-      gl.clear(gl.COLOR_BUFFER_BIT)
       gl.useProgram(program)
       if (loc['u_res']) gl.uniform2f(loc['u_res'], canvas.width, canvas.height)
       if (loc['u_time']) gl.uniform1f(loc['u_time'], (now - t0) / 1000)

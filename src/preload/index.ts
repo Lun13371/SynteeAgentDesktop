@@ -418,6 +418,34 @@ const synteeAPI = {
       ipcRenderer.invoke('tray-menu:pluginAction', pluginId, label, command),
   },
 
+  // Dots — always-on фоновые агенты (аналог OpenAI Dots)
+  dots: {
+    list: () => ipcRenderer.invoke('dots:list') as Promise<import('../../shared/types').Dot[]>,
+    get: (dotId: string) => ipcRenderer.invoke('dots:get', dotId) as Promise<import('../../shared/types').Dot | null>,
+    create: (input: {
+      name: string
+      icon: string
+      color: string
+      purpose: string
+      rules?: string
+      schedule?: { kind: 'cron' | 'interval'; value: string }
+      watchPaths?: string[]
+      webhookEnabled?: boolean
+      modelId?: string | null
+      modelProvider?: string | null
+    }) => ipcRenderer.invoke('dots:create', input) as Promise<{ ok: boolean; dot?: import('../../shared/types').Dot; error?: string }>,
+    update: (dotId: string, patch: Partial<import('../../shared/types').DotConfig>) =>
+      ipcRenderer.invoke('dots:update', dotId, patch) as Promise<{ ok: boolean; dot?: import('../../shared/types').Dot; error?: string }>,
+    delete: (dotId: string) => ipcRenderer.invoke('dots:delete', dotId) as Promise<{ ok: boolean }>,
+    runNow: (dotId: string) => ipcRenderer.invoke('dots:runNow', dotId) as Promise<{ ok: boolean }>,
+    getRuns: (dotId: string, limit?: number) =>
+      ipcRenderer.invoke('dots:getRuns', dotId, limit) as Promise<import('../../shared/types').DotRun[]>,
+    getWebhookUrl: (dotId: string) => ipcRenderer.invoke('dots:getWebhookUrl', dotId) as Promise<string | null>,
+    getSettings: () => ipcRenderer.invoke('dots:getSettings') as Promise<import('../../shared/types').DotSettings>,
+    setSettings: (patch: Partial<import('../../shared/types').DotSettings>) =>
+      ipcRenderer.invoke('dots:setSettings', patch) as Promise<import('../../shared/types').DotSettings>,
+  },
+
   // Чат
   chat: {
     create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string, model?: { modelId?: string; modelProvider?: string; reasoningValue?: string }) => ipcRenderer.invoke('chat:create', incognito, mode, projectId, model),

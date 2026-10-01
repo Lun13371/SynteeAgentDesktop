@@ -604,6 +604,19 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'get_agent_status', chatId, msgId, replyId, agent_id: agentId })
             })
           },
+          onManageDots: (payload) => {
+            // Round-trip в main-процесс, где живёт DotManager (worker не может
+            // импортировать менеджер — это создало бы второй экземпляр с
+            // собственными таймерами и подключением к БД).
+            return new Promise((resolve) => {
+              const replyId = `dots-reply-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                resolve((reply.result as { success: boolean; error?: string; text?: string })
+                  ?? { success: false, error: 'manage_dots: нет ответа от main-процесса' })
+              })
+              send({ type: 'manage_dots', chatId, msgId, replyId, payload })
+            })
+          },
           onTodoUpdate: (items) => {
             send({ type: 'todo_update', chatId, msgId, items })
           },

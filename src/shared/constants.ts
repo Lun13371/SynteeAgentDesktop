@@ -301,6 +301,17 @@ export const IPC_EVENTS = {
   NOTIFICATION_PUSH: 'notification:push',
   // renderer → main: пользователь кликнул action на уведомлении
   NOTIFICATION_ACTION: 'notification:action',
+  // ── Dots (always-on фоновые агенты) ──
+  // main → renderer: список/конфиги Dot'ов изменились (CRUD) — перезагрузить
+  DOTS_CHANGED: 'dots:changed',
+  // main → renderer: живое состояние Dot'ов (статус/lastRun/nextRun)
+  DOTS_STATE: 'dots:state',
+  // main → renderer: ран Dot'а завершился ({chatId, dotId, status}) —
+  // DotChat перезагружает ленту (silent удалил сообщения, report добавил)
+  DOTS_RUN_FINISHED: 'dots:run-finished',
+  // main → renderer: Dot проснулся — wake-ран стартовал ({dotId, name, trigger}).
+  // App.tsx показывает тост (кроме manual — там фидбек даёт сама кнопка).
+  DOTS_WAKE: 'dots:wake',
 }
 
 // ── Plugins: iframe-мост ─────────────────────────────────────────────────

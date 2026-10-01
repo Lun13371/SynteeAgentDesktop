@@ -30,6 +30,7 @@ import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
+import { registerDotsIPC } from './ipc/dots.ipc'
 import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerNotesIPC } from './ipc/notes.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
@@ -307,6 +308,9 @@ app.whenReady().then(async () => {
   // Whisper worker создаётся лениво при первом voice:transcribe —
   // не держим ~40-80MB ONNX-модели в памяти с момента старта.
   registerAgentIPC(store, () => mainWindow.getWindow())
+  // Dots (always-on агенты): ПОСЛЕ registerChatIPC — DotManager будит Dot'ов
+  // через programmatic chat:send (chatSendImpl установлен в registerChatIPC).
+  registerDotsIPC(store, () => mainWindow.getWindow())
   registerMemoryIPC(store)
   registerNotesIPC(() => mainWindow.getWindow())
   registerProviderIPC(store)

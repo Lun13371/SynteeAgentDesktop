@@ -44,6 +44,7 @@ import { getToolSchemas, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } fro
 import { extractFinalPlan, stripPlanTags } from '../../shared/planParser'
 import { stripAttachTokens } from '../../shared/attachmentMarkdown'
 import { IPC_EVENTS } from '../../shared/constants'
+import type { Dot, DotConfig } from '../../shared/types'
 import { getNotificationManager } from '../managers/NotificationManager'
 import { getActivityManager } from '../managers/ActivityManager'
 
@@ -293,6 +294,39 @@ function buildFinalIters(run: ActiveRun): unknown[] | undefined {
     iter.steps = ensureToolResults(iter.steps)
   }
   return iters.length > 0 ? iters : undefined
+}
+
+// ── Programmatic chat:send для main-процессных модулей (DotManager) ──────
+// registerChatIPC при старте кладёт сюда реализацию chat:send. DotManager
+// будит Dot'ов (фоновые пробуждения по cron/webhook/fs) прямым вызовом из
+// main — без IPC round-trip через renderer. Результат тот же, что у
+// renderer-отправки: { userMsg, assistantMsgId, queued? }.
+export interface ProgrammaticChatSendParams {
+  chatId: string
+  content: string
+  displayContent?: string
+  slashCommand?: { name: string; args: string }
+  incognito?: boolean
+  userMsgId?: string
+  planningMode?: boolean
+  askMode?: boolean
+  imageMode?: boolean
+  mode?: ChatMode
+  oneShotSkill?: { name: string; instructions: string }
+  oneShotAllowedTools?: string[]
+  oneShotMode?: 'ask' | 'plan' | 'code'
+  reasoningValue?: string
+  attachments?: Attachment[]
+  replyTo?: ReplyTarget[]
+}
+let chatSendImpl: ((params: ProgrammaticChatSendParams) => Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }>) | null = null
+
+/** Отправить сообщение в чат из main-процесса (DotManager: пробуждение Dot'ов). */
+export function sendChatMessageProgrammatic(params: ProgrammaticChatSendParams): Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }> {
+  if (!chatSendImpl) {
+    return Promise.reject(new Error('chat:send не зарегистрирован — registerChatIPC ещё не вызван'))
+  }
+  return chatSendImpl(params)
 }
 
 /**
@@ -2541,6 +2575,149 @@ ${subModeOutro}`,
           break
         }
 
+        // ── Dots: manage_dots-тул агента (round-trip worker → DotManager) ──
+        // Форматирование отчёта здесь же, в main — воркер получает готовый text.
+        case 'manage_dots': {
+          ;(async () => {
+            const reply = (result: { success: boolean; error?: string; text?: string }) => {
+              worker.postMessage({ type: 'manage_dots_reply', replyId: msg.replyId, result })
+            }
+            try {
+              // Динамический импорт: DotManager статически импортирует
+              // sendChatMessageProgrammatic отсюда — статический импорт
+              // создал бы цикл (spaRenderer использует тот же паттерн).
+              const { dotManager } = await import('../managers/DotManager')
+              const p = (msg.payload ?? {}) as {
+                action?: string
+                dotId?: string
+                name?: string
+                purpose?: string
+                rules?: string
+                scheduleKind?: 'cron' | 'interval'
+                scheduleValue?: string
+                watchPaths?: string[]
+                webhookEnabled?: boolean
+                modelId?: string | null
+                modelProvider?: string | null
+                enabled?: boolean
+                icon?: string
+                color?: string
+              }
+              const action = p.action ?? ''
+
+              /** Dot по dot_id или точному имени (регистронезависимо). */
+              const findDot = (): Dot | null => {
+                const dots = dotManager.getDots()
+                if (p.dotId) {
+                  const byId = dots.find(d => d.id === p.dotId)
+                  if (byId) return byId
+                }
+                if (p.name) {
+                  const nm = p.name.trim().toLowerCase()
+                  return dots.find(d => d.name.toLowerCase() === nm) ?? null
+                }
+                return null
+              }
+
+              const fmtDot = (d: Dot): string => {
+                const st = d.state
+                const lines = [
+                  `«${d.name}» (id: ${d.id}) — ${st.status}${d.enabled ? '' : ' (выключен)'}`,
+                  `Задача: ${d.purpose}`,
+                ]
+                if (d.rules) lines.push(`Правила: ${d.rules}`)
+                if (d.schedule) {
+                  lines.push(
+                    `Расписание: ${d.schedule.kind} '${d.schedule.value}'`
+                    + (st.nextRunAt ? ` (следующее: ${new Date(st.nextRunAt).toLocaleString('ru-RU')})` : ''),
+                  )
+                }
+                if (d.watchPaths && d.watchPaths.length > 0) lines.push(`Наблюдение: ${d.watchPaths.join(', ')}`)
+                if (d.webhookEnabled) lines.push(`Webhook: ${dotManager.getWebhookUrl(d.id)}`)
+                lines.push(`Модель: ${d.modelId ?? 'глобальная модель Dots'}`)
+                lines.push(
+                  `Раны: ${st.runCount} (отчёты ${st.reportCount}, тихие ${st.silentCount}, ошибки ${st.errorCount})`
+                  + (st.lastRunAt ? `, последний: ${new Date(st.lastRunAt).toLocaleString('ru-RU')} (${st.lastRunTrigger ?? '?'})` : ''),
+                )
+                if (st.lastError) lines.push(`Последняя ошибка: ${st.lastError}`)
+                return lines.join('\n')
+              }
+
+              if (action === 'create') {
+                const dot = dotManager.createDot({
+                  name: p.name ?? '',
+                  icon: p.icon ?? 'bot',
+                  color: p.color ?? '#7c6cff',
+                  purpose: p.purpose ?? '',
+                  rules: p.rules,
+                  schedule: p.scheduleKind ? { kind: p.scheduleKind, value: p.scheduleValue ?? '' } : undefined,
+                  watchPaths: p.watchPaths,
+                  webhookEnabled: p.webhookEnabled,
+                  modelId: p.modelId ?? undefined,
+                  modelProvider: p.modelProvider ?? undefined,
+                })
+                // Тост: DOTS_CHANGED с payload (dots.store payload игнорирует,
+                // App.tsx тостит только source:'agent' — UI-визард не дублируется).
+                win?.webContents.send(IPC_EVENTS.DOTS_CHANGED, { source: 'agent', action: 'create', name: dot.name })
+                reply({
+                  success: true,
+                  text: `Dot создан.\n${fmtDot(dot)}\n\nDot живёт на странице «Dots»: спит в фоне, просыпается по триггеру и пишет отчёты в свой чат «Dot · ${dot.name}». Если триггеры не заданы — будить только вручную (action: wake или кнопка «Разбудить»).`,
+                })
+              } else if (action === 'list') {
+                const dots = dotManager.getDots()
+                if (dots.length === 0) {
+                  reply({ success: true, text: 'Dot\'ов пока нет. Создать можно через manage_dots action=create (name + purpose обязательны).' })
+                } else {
+                  reply({ success: true, text: `Dot'ы (${dots.length}):\n\n${dots.map((d, i) => `${i + 1}. ${fmtDot(d)}`).join('\n\n')}` })
+                }
+              } else if (action === 'get') {
+                const dot = findDot()
+                if (!dot) { reply({ success: false, error: 'Dot не найден (передай dot_id из list или точное имя)' }); return }
+                const runs = dotManager.getRuns(dot.id, 10)
+                const runsText = runs.length === 0
+                  ? 'Ранов ещё не было.'
+                  : `Последние раны:\n${runs.map(r => `- ${new Date(r.startedAt).toLocaleString('ru-RU')} [${r.trigger}] ${r.status}${r.summary ? `: ${r.summary.slice(0, 120)}` : ''}`).join('\n')}`
+                reply({ success: true, text: `${fmtDot(dot)}\n\n${runsText}` })
+              } else if (action === 'update') {
+                const dot = findDot()
+                if (!dot) { reply({ success: false, error: 'Dot не найден (передай dot_id из list или точное имя)' }); return }
+                const patch: Partial<DotConfig> = {}
+                if (p.name !== undefined) patch.name = p.name
+                if (p.purpose !== undefined) patch.purpose = p.purpose
+                if (p.rules !== undefined) patch.rules = p.rules
+                if (p.scheduleKind !== undefined) {
+                  patch.schedule = p.scheduleKind ? { kind: p.scheduleKind, value: p.scheduleValue ?? '' } : undefined
+                }
+                if (p.watchPaths !== undefined) patch.watchPaths = p.watchPaths
+                if (p.webhookEnabled !== undefined) patch.webhookEnabled = p.webhookEnabled
+                if (p.modelId !== undefined) patch.modelId = p.modelId
+                if (p.modelProvider !== undefined) patch.modelProvider = p.modelProvider
+                if (p.enabled !== undefined) patch.enabled = p.enabled
+                if (p.icon !== undefined) patch.icon = p.icon
+                if (p.color !== undefined) patch.color = p.color
+                const updated = dotManager.updateDot(dot.id, patch)
+                reply({ success: true, text: `Dot обновлён.\n${fmtDot(updated)}` })
+              } else if (action === 'delete') {
+                const dot = findDot()
+                if (!dot) { reply({ success: false, error: 'Dot не найден (передай dot_id из list или точное имя)' }); return }
+                dotManager.deleteDot(dot.id)
+                win?.webContents.send(IPC_EVENTS.DOTS_CHANGED, { source: 'agent', action: 'delete', name: dot.name })
+                reply({ success: true, text: `Dot «${dot.name}» удалён (вместе с его чатом «Dot · ${dot.name}»).` })
+              } else if (action === 'wake') {
+                const dot = findDot()
+                if (!dot) { reply({ success: false, error: 'Dot не найден (передай dot_id из list или точное имя)' }); return }
+                dotManager.runNow(dot.id)
+                reply({ success: true, text: `Dot «${dot.name}» разбужен — ран запущен. Отчёт появится в его чате «Dot · ${dot.name}» (или уведомлением, если есть что сказать).` })
+              } else {
+                reply({ success: false, error: `Неизвестный action: ${action}` })
+              }
+            } catch (e) {
+              reply({ success: false, error: (e as Error).message })
+            }
+          })()
+          break
+        }
+
         // ── SPA-рендер через скрытый BrowserWindow (основной путь для SPA) ──
         // Worker просит main-процесс отрендерить JS-heavy страницу.
         // Main использует пул hidden BrowserWindow (персистентное окно),
@@ -3715,7 +3892,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     }
   })
 
-  ipcMain.handle('chat:send', async (_, params: {
+  // ── chat:send — ядро вынесено в локальную chatSendHandler ───────────────
+  // Регистрируется и как IPC-хендлер, и как programmatic-API (см.
+  // sendChatMessageProgrammatic выше): DotManager будит Dot'ов из main.
+  const chatSendHandler = async (params: {
     chatId: string
     content: string
     displayContent?: string
@@ -3743,7 +3923,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
      *  (из контекстного меню «Ответить»). Персистится в userMsg.replyTo → БД
      *  (reply_to); цитата для AI строится в runChatSend + messageToContextMessages. */
     replyTo?: ReplyTarget[]
-  }) => {
+  }): Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }> => {
     const win = mainWindow.getWindow()
 
     // Фаза 3: сбрасываем idle-extraction timer — пользователь снова активен.
@@ -3831,7 +4011,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     void runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
       .catch((e) => log('[chat:send] runChatSend failed chatId=%s: %s', params.chatId, (e as Error).message))
     return { userMsg, assistantMsgId }
-  })
+  }
+
+  // Programmatic-API для main-модулей (DotManager) + IPC-регистрация.
+  chatSendImpl = chatSendHandler
+  ipcMain.handle('chat:send', (_, params: Parameters<typeof chatSendHandler>[0]) => chatSendHandler(params))
 
   // ── chat:sideSend — отправка сообщения в параллельный доп-чат (side chat).
   //    Side-чат эфемерный: incognito (не пишется в БД), хранится только в

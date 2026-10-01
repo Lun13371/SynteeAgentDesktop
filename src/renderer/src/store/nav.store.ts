@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type MainPage = 'chat' | 'settings' | 'memory' | 'messenger'
+export type MainPage = 'chat' | 'settings' | 'memory' | 'messenger' | 'dots'
 export type SettingsSection = string
 
 interface NavStore {

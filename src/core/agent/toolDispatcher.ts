@@ -620,6 +620,37 @@ export class ToolDispatcher {
           return { success: false, output: '', error: (e as Error).message }
         }
       }
+      case 'manage_dots': {
+        const action = resolvedArgs.action as string
+        if (!action || !['create', 'list', 'get', 'update', 'delete', 'wake'].includes(action)) {
+          return { success: false, output: '', error: 'action must be one of: create, list, get, update, delete, wake' }
+        }
+        if (!callbacks?.onManageDots) {
+          return { success: false, output: '', error: 'manage_dots unavailable (no dots backend)' }
+        }
+        try {
+          const result = await callbacks.onManageDots({
+            action: action as 'create' | 'list' | 'get' | 'update' | 'delete' | 'wake',
+            dotId: resolvedArgs.dot_id as string | undefined,
+            name: resolvedArgs.name as string | undefined,
+            purpose: resolvedArgs.purpose as string | undefined,
+            rules: resolvedArgs.rules as string | undefined,
+            scheduleKind: resolvedArgs.schedule_kind as 'cron' | 'interval' | undefined,
+            scheduleValue: resolvedArgs.schedule_value as string | undefined,
+            watchPaths: resolvedArgs.watch_paths as string[] | undefined,
+            webhookEnabled: resolvedArgs.webhook_enabled as boolean | undefined,
+            modelId: resolvedArgs.model_id as string | null | undefined,
+            modelProvider: resolvedArgs.model_provider as string | null | undefined,
+            enabled: resolvedArgs.enabled as boolean | undefined,
+            icon: resolvedArgs.icon as string | undefined,
+            color: resolvedArgs.color as string | undefined,
+          })
+          if (!result.success) return { success: false, output: '', error: result.error ?? 'manage_dots failed' }
+          return { success: true, output: result.text ?? 'OK' }
+        } catch (e) {
+          return { success: false, output: '', error: (e as Error).message }
+        }
+      }
       case 'think': {
         const thought = resolvedArgs.thought as string
         if (!thought) return { success: false, output: '', error: 'thought is required' }

@@ -354,6 +354,44 @@ declare const synteeAPI: {
         }>) => void) => () => Electron.IpcRenderer;
         pluginAction: (pluginId: string, label: string, command?: string) => Promise<any>;
     };
+    dots: {
+        list: () => Promise<import("../../shared/types").Dot[]>;
+        get: (dotId: string) => Promise<import("../../shared/types").Dot | null>;
+        create: (input: {
+            name: string;
+            icon: string;
+            color: string;
+            purpose: string;
+            rules?: string;
+            schedule?: {
+                kind: "cron" | "interval";
+                value: string;
+            };
+            watchPaths?: string[];
+            webhookEnabled?: boolean;
+            modelId?: string | null;
+            modelProvider?: string | null;
+        }) => Promise<{
+            ok: boolean;
+            dot?: import("../../shared/types").Dot;
+            error?: string;
+        }>;
+        update: (dotId: string, patch: Partial<import("../../shared/types").DotConfig>) => Promise<{
+            ok: boolean;
+            dot?: import("../../shared/types").Dot;
+            error?: string;
+        }>;
+        delete: (dotId: string) => Promise<{
+            ok: boolean;
+        }>;
+        runNow: (dotId: string) => Promise<{
+            ok: boolean;
+        }>;
+        getRuns: (dotId: string, limit?: number) => Promise<import("../../shared/types").DotRun[]>;
+        getWebhookUrl: (dotId: string) => Promise<string | null>;
+        getSettings: () => Promise<import("../../shared/types").DotSettings>;
+        setSettings: (patch: Partial<import("../../shared/types").DotSettings>) => Promise<import("../../shared/types").DotSettings>;
+    };
     chat: {
         create: (incognito?: boolean, mode?: "code" | "work", projectId?: string, model?: {
             modelId?: string;

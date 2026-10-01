@@ -44,12 +44,24 @@ export interface VisualizerFramePayload {
 const FFT_SIZE = 2048
 const BANDS = 64
 const EMIT_INTERVAL_MS = 33 // ~30 кадров/с; рендерер интерполирует до 60
+// Полная тишина: ниже этого уровня IPC-кадры не шлются — рендерер в тишине
+// не рисует (soundGate=0, весь кадр прозрачен). Порог подобран под
+// worst-case пресет (gain 1.3, гамма 0.72): shape(0.001*1.3) ≈ 0.008 < 0.015
+// — гейт рендерера остаётся закрытым, застревания на «почти нуле» нет.
+const SILENT_LEVEL = 0.001
 const MIN_HZ = 32
 const MAX_HZ = 16000
 const MIN_DB = -64
 const MAX_DB = -14
 const ATTACK = 0.6 // доля к цели при подъёме
-const RELEASE = 0.16 // доля к цели при спаде
+const RELEASE = 0.16 // доля к цели при спад
+
+// Окно Ханна — предвычислено один раз: раньше считалось заново на каждый
+// кадр FFT (2048 вызовов Math.cos, ~61k/с) — чистый расход CPU без пользы.
+const hannWindow = new Float32Array(FFT_SIZE)
+for (let i = 0; i < FFT_SIZE; i++) {
+  hannWindow[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (FFT_SIZE - 1)))
+}
 
 let controller: AudioControllerInstance | null = null
 let format: NativeAudioFormat | null = null
@@ -73,7 +85,15 @@ let smoothTreble = 0
 let smoothLevel = 0
 
 function sendToWindow(mainWindow: MainWindow, channel: string, payload: unknown): void {
-  try { mainWindow.getWindow()?.webContents.send(channel, payload) } catch { /* window may be closing */ }
+  try {
+    const win = mainWindow.getWindow()
+    if (!win) return
+    // Окно скрыто/свёрнуто: rAF рендерера всё равно не крутится — не тратим
+    // CPU на сериализацию и доставку кадров. Служебные события (stopped)
+    // шлём всегда, чтобы рендерер не повис на устаревшей подписке.
+    if (channel === 'audioVisualizer:frame' && !win.isVisible()) return
+    win.webContents.send(channel, payload)
+  } catch { /* window may be closing */ }
 }
 
 /** Итеративный radix-2 FFT (in-place, без внешних зависимостей). */
@@ -157,10 +177,21 @@ function handlePcmChunk(mainWindow: MainWindow, chunk: Buffer): void {
   lastDataAt = Date.now()
   const channels = Math.max(1, format?.channels ?? 2)
   const frameCount = Math.floor(chunk.length / (2 * channels))
+  // Быстрый путь: Int16Array-вью поверх буфера вместо readInt16LE на каждый
+  // сэмпл (~96k вызовов/с при 48 кГц стерео). x86 — little-endian; вью
+  // строится только при чётном byteOffset, иначе fallback на readInt16LE.
+  const samples = chunk.byteOffset % 2 === 0
+    ? new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length >> 1)
+    : null
   for (let f = 0; f < frameCount; f++) {
     // mono mixdown всех каналов (7.1 -> 1)
     let sum = 0
-    for (let c = 0; c < channels; c++) sum += chunk.readInt16LE((f * channels + c) * 2)
+    if (samples) {
+      const base = f * channels
+      for (let c = 0; c < channels; c++) sum += samples[base + c]
+    } else {
+      for (let c = 0; c < channels; c++) sum += chunk.readInt16LE((f * channels + c) * 2)
+    }
     ring[ringPos] = sum / channels / 32768
     ringPos = (ringPos + 1) % FFT_SIZE
     if (ringFilled < FFT_SIZE) ringFilled++
@@ -174,9 +205,9 @@ function handlePcmChunk(mainWindow: MainWindow, chunk: Buffer): void {
 
 function emitFrame(mainWindow: MainWindow): void {
   if (ringFilled < FFT_SIZE / 2) return // ещё не набрали достаточно сэмплов
-  // Упорядочиваем кольцевой буфер + окно Ханна
+  // Упорядочиваем кольцевой буфер + окно Ханна (предвычисленное)
   for (let i = 0; i < FFT_SIZE; i++) {
-    fftRe[i] = ring[(ringPos + i) % FFT_SIZE] * (0.5 * (1 - Math.cos((2 * Math.PI * i) / (FFT_SIZE - 1))))
+    fftRe[i] = ring[(ringPos + i) % FFT_SIZE] * hannWindow[i]
   }
   fftIm.fill(0)
   fft(fftRe, fftIm)
@@ -191,8 +222,9 @@ function emitFrame(mainWindow: MainWindow): void {
     let peak = 0
     for (let j = bandEdges[i]; j < bandEdges[i + 1]; j++) {
       // x4/N — компенсация coherent gain окна Ханна: синус амплитудой 1
-      // даёт mag = 1 (0 dB)
-      const mag = (4 * Math.hypot(fftRe[j], fftIm[j])) / FFT_SIZE
+      // даёт mag = 1 (0 dB). hypot в V8 заметно медленнее sqrt,
+      // переполнений при таких значениях не бывает.
+      const mag = (4 * Math.sqrt(fftRe[j] * fftRe[j] + fftIm[j] * fftIm[j])) / FFT_SIZE
       if (mag > peak) peak = mag
     }
     // dB-шкала как у AnalyserNode: линейные амплитуды «хоронят» верха
@@ -221,6 +253,9 @@ function emitFrame(mainWindow: MainWindow): void {
   const levelTarget = Math.min(1, Math.max(rms * 5.5, spectrumLevel * 1.15))
   smoothLevel += (levelTarget - smoothLevel) * (levelTarget > smoothLevel ? 0.5 : 0.14)
 
+  // Полная тишина: рендерер гасит эффекты (soundGate=0) — IPC-кадр не нужен
+  if (smoothLevel < SILENT_LEVEL) return
+
   const muted = Date.now() - lastDataAt > 400
   sendToWindow(mainWindow, 'audioVisualizer:frame', {
     level: smoothLevel,
@@ -241,6 +276,8 @@ function emitDecayFrame(mainWindow: MainWindow): void {
   smoothMid *= 0.82
   smoothTreble *= 0.82
   smoothLevel *= 0.82
+  // Полностью затухло — кадр не нужен рендереру (в тишине он не рисует)
+  if (smoothLevel < SILENT_LEVEL) return
   sendToWindow(mainWindow, 'audioVisualizer:frame', {
     level: smoothLevel,
     bands: Array.from(smoothed),
