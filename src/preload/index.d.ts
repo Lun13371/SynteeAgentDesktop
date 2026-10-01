@@ -255,6 +255,9 @@ declare const synteeAPI: {
         onFrame: (cb: (frame: {
             level: number;
             bands: number[];
+            bass: number;
+            mid: number;
+            treble: number;
             timestamp: number;
             muted: boolean;
         } | null) => void) => () => Electron.IpcRenderer;

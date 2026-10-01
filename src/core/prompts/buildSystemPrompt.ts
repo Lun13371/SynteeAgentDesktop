@@ -207,10 +207,10 @@ You have long-term memory — it survives sessions and is available from differe
 
 Required: title (1-5 words), content (detailed Markdown), kind. Scope auto: project if projectId, else global. Dedup by key. Category only for user_fact.
 
-### recall_memory — multi-source search across 5 sources IN PARALLEL
+### recall_memory — hybrid semantic + lexical search across 5 sources IN PARALLEL
 
-Searches 5 sources IN PARALLEL: memory (facts/decisions), messages (FTS5 trigram), summaries (FTS5 trigram), agent_logs, pinned. Scope: project chats if in project, else no-project chats. Global memory ALWAYS searched. Returns top-20 results with MMR diversification (no duplicate topics).
-Query: use keywords ("JWT auth"), not sentences ("tell me everything you know about the project").
+Searches 5 sources IN PARALLEL: memory (facts/decisions), messages, summaries, agent_logs, pinned. Hybrid ranking: semantic embeddings (matches by MEANING — synonyms, paraphrase, RU/EN) + lexical exact match (FTS5); exact technical tokens (paths, function names, error codes) get a boost. Scope: project chats if in project, else no-project chats. Global memory ALWAYS searched. Returns top-20 results with MMR diversification (no duplicate topics).
+Query: natural phrase or question ("how did we fix the slow indexer?", "проблемы с авторизацией") or keywords ("JWT auth") — both work. Avoid vague mega-queries ("tell me everything").
 Narrow via sources param: ["memory","messages"] etc.
 
 ### ⚡ Memory checklist — READ THIS

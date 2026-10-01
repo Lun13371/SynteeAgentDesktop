@@ -1186,6 +1186,24 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
   const [accentPickerOpen, setAccentPickerOpen] = useState(false)
   const [accentPickerPos, setAccentPickerPos] = useState<{ top: number; left: number } | null>(null)
   const accentBtnRef = useRef<HTMLButtonElement>(null)
+  const accentPickerRef = useRef<HTMLDivElement>(null)
+
+  // Тот же безопасный outside-click, что и у Popover/Select: без невидимого
+  // полноэкранного слоя, который может пережить закрытие второго меню.
+  useEffect(() => {
+    if (!accentPickerOpen) return
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (accentPickerRef.current?.contains(target) || accentBtnRef.current?.contains(target)) return
+      setAccentPickerOpen(false)
+    }
+    const id = window.setTimeout(() => document.addEventListener('pointerdown', onPointerDown), 0)
+    return () => {
+      window.clearTimeout(id)
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [accentPickerOpen])
+
   // rAF-throttle для applyAccentToDOM — без него каждый pointermove
   // переписывает CSS-переменные на :root → полная пересчётка стилей 60+ раз/сек.
   const accentRafRef = useRef<number | null>(null)
@@ -1791,37 +1809,37 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
       {createPortal(
         <AnimatePresence>
           {accentPickerOpen && !rainbowAccent && accentPickerPos && (
-            <>
-              <div className="settings-accent-popover-overlay" onClick={() => setAccentPickerOpen(false)} />
-              <motion.div
-                className="settings-accent-popover"
-                style={{ top: accentPickerPos.top, left: accentPickerPos.left }}
-                initial={{ opacity: 0, scale: 0.9, y: -8 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: -8 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 28 }}
-              >
-                <ColorPicker
-                  value={(settings['accentColor'] as string) || '#ffffff'}
-                  onChange={(c) => {
-                    useUIStore.getState().setAccentColor(c)
-                    // rAF-throttle: applyAccentToDOM переписывает CSS-переменные
-                    // на :root → полная пересчётка стилей. Без throttle лагает
-                    // на каждый pointermove (десятки раз/сек). С throttle — не
-                    // чаще одного раза за кадр (≤60fps).
-                    if (accentRafRef.current) cancelAnimationFrame(accentRafRef.current)
-                    accentRafRef.current = requestAnimationFrame(() => {
-                      if (!useUIStore.getState().rainbowAccent) applyAccentToDOM(c)
-                    })
-                  }}
-                  onCommit={(c) => {
-                    if (accentRafRef.current) { cancelAnimationFrame(accentRafRef.current); accentRafRef.current = null }
-                    commitAccent(c)
-                  }}
-                  recent={recentAccents}
-                />
-              </motion.div>
-            </>
+            <motion.div
+              key="accent-picker"
+              ref={accentPickerRef}
+              className="settings-accent-popover"
+              style={{ top: accentPickerPos.top, left: accentPickerPos.left }}
+              initial={{ opacity: 0, scale: 0.9, y: -8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: -8 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+              onPointerDown={e => e.stopPropagation()}
+            >
+            <ColorPicker
+              value={(settings['accentColor'] as string) || '#ffffff'}
+              onChange={(c) => {
+                useUIStore.getState().setAccentColor(c)
+                // rAF-throttle: applyAccentToDOM переписывает CSS-переменные
+                // на :root → полная пересчётка стилей. Без throttle лагает
+                // на каждый pointermove (десятки раз/сек). С throttle — не
+                // чаще одного раза за кадр (≤60fps).
+                if (accentRafRef.current) cancelAnimationFrame(accentRafRef.current)
+                accentRafRef.current = requestAnimationFrame(() => {
+                  if (!useUIStore.getState().rainbowAccent) applyAccentToDOM(c)
+                })
+              }}
+              onCommit={(c) => {
+                if (accentRafRef.current) { cancelAnimationFrame(accentRafRef.current); accentRafRef.current = null }
+                commitAccent(c)
+              }}
+              recent={recentAccents}
+            />
+            </motion.div>
           )}
         </AnimatePresence>,
         document.body
