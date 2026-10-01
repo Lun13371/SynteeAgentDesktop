@@ -55,6 +55,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "tree-sitter-wasms": "^0.1.13",
+    "unpdf": "^1.8.1",
     "uuid": "^11.1.1",
     "web-tree-sitter": "^0.24.0",
     "ws": "^8.21.1",

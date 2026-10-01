@@ -1553,6 +1553,14 @@ function plural(n: number, one: string, few: string, many: string): string {
  *  Раньше JSON.parse звался на каждом рендере MessageContent (внутри IIFE
  *  в liveIters.map и savedIters.map) — лишний CPU на каждый tool step. */
 const _fcResultCache = new Map<string, FastContextResultData>()
+
+/** Пустой result для live-режима FastContextBlock. Модульная константа:
+ *  инлайн-литерал в JSX создавал новый объект на каждый рендер MessageBubble
+ *  и ломал memo-компаратор FastContextBlock (prev.result === next.result) —
+ *  блок (stages/chips/shimmer) перерисовывался на каждый token-flush стрима,
+ *  хотя liveProgress не менялся. */
+const EMPTY_FC_RESULT: FastContextResultData = { files: [], summary: '', ms: 0, indexedFilesCount: 0 }
+
 function extractFastContextResult(steps: Array<{ type: string; toolName?: string; content?: string }>): FastContextResultData | null {
   for (const s of steps) {
     if (s.type === 'tool_result' && s.toolName === 'get_fast_context' && s.content) {
@@ -2051,7 +2059,7 @@ const MessageContent = memo(function MessageContent({
                     const fcLive = isStreaming && isLastIter ? toolProgress?.['get_fast_context'] : undefined
                     const isFcLive = fcLive && fcLive.stage !== 'done'
                     if (isFcLive) {
-                      return <FastContextBlock result={{ files: [], summary: '', ms: 0, indexedFilesCount: 0 }} liveProgress={fcLive} />
+                      return <FastContextBlock result={EMPTY_FC_RESULT} liveProgress={fcLive} />
                     }
                     const fcSaved = extractFastContextResult(iter.steps)
                     if (fcSaved) return <FastContextBlock result={fcSaved} />

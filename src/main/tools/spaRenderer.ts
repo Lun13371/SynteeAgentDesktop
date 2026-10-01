@@ -15,7 +15,8 @@
 //  - Scroll-to-bottom перед extraction → lazy-loaded контент попадает в DOM
 //  - render-process-gone handler — пересоздание окна при краше
 //  - Idle timeout 2 мин — неиспользуемое окно уничтожается
-//  - Очистка session storage/cache между запросами — нет утечки памяти
+//  - Очистка storage между запросами (cookies СОХРАНЯЕМ: cf_clearance
+//    от Cloudflare живёт — повторные запросы не решают челлендж заново)
 
 import { BrowserWindow, session } from 'electron'
 import { log } from '../../core/logger'
@@ -157,11 +158,16 @@ async function acquireWindow(): Promise<BrowserWindow> {
 function releaseWindow(): void {
   poolBusy = false
 
-  // Очистка session storage между запросами — нет утечки cookies/cache
+  // Очистка session storage между запросами — нет утечки памяти.
+  // ВАЖНО: cookies НЕ чистим. Cloudflare после прохождения JS-челленджа
+  // ставит cf_clearance — если его стирать, каждый следующий fetch_page
+  // на тот же домен решает челлендж заново (медленно + палит автоматизацию).
+  // Partition 'spa-renderer' неперсистентная (in-memory) — cookies живут
+  // только до перезапуска приложения, на диск ничего не пишется.
   try {
     if (poolWin && !poolWin.isDestroyed()) {
       poolWin.webContents.session.clearStorageData({
-        storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'serviceworkers'],
+        storages: ['localstorage', 'indexdb', 'shadercache', 'serviceworkers'],
       })
     }
   } catch {

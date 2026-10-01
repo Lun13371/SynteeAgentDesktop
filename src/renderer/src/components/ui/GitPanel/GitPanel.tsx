@@ -16,6 +16,29 @@ import './GitPanel.css'
 // Офлайн Monaco (уже сконфигурирован в FileEditorPane, но повторный вызов безопасен)
 loader.config({ monaco })
 
+// ── Опции Monaco DiffEditor (модульная константа) ───────────────────────
+// Инлайн-литерал в JSX пересоздавался на каждый рендер GitPanel →
+// @monaco-editor/react звал updateOptions (и relayout Monaco) на КАЖДЫЙ
+// рендер: каждая буква в поле коммита/поиска и 30-секундный refresh
+// дёргали редактор. Стабильная identity — options применяются один раз.
+// tabSize не входит в тип IDiffEditorConstructionOptions (TS2353 была и
+// в старых инлайн-литералах) — сохранён через cast, runtime идентичен.
+const DIFF_EDITOR_OPTIONS = {
+  readOnly: true,
+  fontSize: 13,
+  minimap: { enabled: false },
+  automaticLayout: true,
+  scrollBeyondLastLine: false,
+  wordWrap: 'on',
+  tabSize: 2,
+  renderSideBySide: true,
+  padding: { top: 8, bottom: 8 },
+  scrollbar: {
+    verticalScrollbarSize: 10,
+    horizontalScrollbarSize: 10,
+  },
+} as monaco.editor.IDiffEditorConstructionOptions
+
 interface GitFileStatus {
   path: string
   indexStatus: string
@@ -252,6 +275,306 @@ const GitTreeRow = memo(function GitTreeRow({
   prev.onToggleDir === next.onToggleDir &&
   prev.onLoadDiff === next.onLoadDiff
 )
+
+// ── Memoized status-row (status-режим, без виртуализации) ───────────────
+// Раньше renderStatusFile был инлайн-функцией в GitPanel: все строки
+// пересоздавались на каждый рендер панели (ввод в поиск/поле коммита,
+// refresh, открытие диффа). Теперь — memo со стабильными пропсами.
+const StatusFileRow = memo(function StatusFileRow({
+  file, selected, stats, actionLoading,
+  onStage, onUnstage, onDiscard, onLoadDiff,
+}: {
+  file: GitFileStatus
+  selected: boolean
+  stats: { added: number; deleted: number } | undefined
+  actionLoading: string | null
+  onStage: (file: string) => void | Promise<void>
+  onUnstage: (file: string) => void | Promise<void>
+  onDiscard: (file: string, untracked: boolean) => void | Promise<void>
+  onLoadDiff: (file: GitFileStatus) => void | Promise<void>
+}) {
+  const badge = getFileBadge(file)
+  const isUntracked = file.indexStatus === '?' && file.worktreeStatus === '?'
+  const isStaged = file.indexStatus !== ' ' && file.indexStatus !== '?'
+  const isUnstaged = file.worktreeStatus !== ' ' && file.worktreeStatus !== '?'
+  return (
+    <div className={`git-file-item-row ${selected ? 'git-file-item-row--selected' : ''}`}>
+      <button
+        className={`git-file-item ${selected ? 'git-file-item--selected' : ''}`}
+        style={{ paddingLeft: 26 }}
+        onClick={() => void onLoadDiff(file)}
+        title={file.path}
+      >
+        {badge && <span className={`git-file-item__badge ${badge.cls}`}>{badge.label}</span>}
+        <FileIcon name={file.path.split('/').pop() || file.path} size={14} />
+        <span className="git-file-item__name">{file.path}</span>
+        {stats && (
+          <span className="git-file-item__stats">
+            <span className="git-file-item__stats-added">+{stats.added}</span>
+            <span className="git-file-item__stats-deleted">-{stats.deleted}</span>
+          </span>
+        )}
+      </button>
+      <div className="git-file-item__actions">
+        {isUntracked && (
+          <button
+            className="git-file-action"
+            title="Добавить (git add)"
+            onClick={(e) => { e.stopPropagation(); void onStage(file.path) }}
+            disabled={actionLoading === file.path}
+          >
+            <AppIcon name="plus" size="xs" />
+          </button>
+        )}
+        {isStaged && !isUntracked && (
+          <button
+            className="git-file-action"
+            title="Убрать из staged (git reset)"
+            onClick={(e) => { e.stopPropagation(); void onUnstage(file.path) }}
+            disabled={actionLoading === file.path}
+          >
+            <AppIcon name="minus" size="xs" />
+          </button>
+        )}
+        {!isStaged && !isUntracked && isUnstaged && (
+          <button
+            className="git-file-action"
+            title="Добавить (git add)"
+            onClick={(e) => { e.stopPropagation(); void onStage(file.path) }}
+            disabled={actionLoading === file.path}
+          >
+            <AppIcon name="plus" size="xs" />
+          </button>
+        )}
+        <button
+          className="git-file-action git-file-action--danger"
+          title={isUntracked ? 'Удалить файл' : 'Отменить изменения'}
+          onClick={(e) => { e.stopPropagation(); void onDiscard(file.path, isUntracked) }}
+          disabled={actionLoading === file.path}
+        >
+          <AppIcon name="undo" size="xs" />
+        </button>
+      </div>
+    </div>
+  )
+})
+
+// ── GitDiffView — memoized diff-секция ──────────────────────────────────
+// Раньше жила инлайн в конце GitPanel: любой ре-рендер панели (ввод в поле
+// коммита/поиске, 30-секундный refresh, stage/unstage) ре-рендерил и её —
+// вместе с Monaco-обёрткой. Теперь memo: ре-рендер только при смене
+// выбранного файла/коммита/диффа.
+// Keys в AnimatePresence стабильные ('file'/'commit'/'empty'): переключение
+// файл→файл БЕЗ ремоунта — @monaco-editor/react при смене original/modified
+// свапает модели сам (в разы дешевле создания нового DiffEditor). Раньше
+// key={selectedFile} пересоздавал виджет целиком, и во время 0.12s
+// exit/enter-перехода жили ДВА редактора одновременно.
+const GitDiffView = memo(function GitDiffView({
+  selectedFile, selectedCommit, viewMode, diffLoading, diffError, diff, diffVersions,
+  fileLoading, fileContent, commitFiles, selectedCommitFile,
+  onViewMode, onLoadFileContent, onOpenInViewer, onOpenInEditor, onLoadCommitFileDiff,
+}: {
+  selectedFile: string | null
+  selectedCommit: { hash: string; message: string; author: string; date: string } | null
+  viewMode: 'diff' | 'file'
+  diffLoading: boolean
+  diffError: string | null
+  diff: string | null
+  diffVersions: { original: string; modified: string } | null
+  fileLoading: boolean
+  fileContent: { path: string; content: string; isBinary: boolean } | null
+  commitFiles: CommitFile[]
+  selectedCommitFile: string | null
+  onViewMode: (mode: 'diff' | 'file') => void
+  onLoadFileContent: (path: string) => void | Promise<void>
+  onOpenInViewer: (path: string) => void
+  onOpenInEditor: (path: string) => void
+  onLoadCommitFileDiff: (hash: string, file: string) => void | Promise<void>
+}) {
+  return (
+    <div className="git-panel__diff">
+      <AnimatePresence>
+        {selectedFile && (
+          <motion.div
+            key="file"
+            className="git-panel__diff-content"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
+          >
+            <div className="git-panel__diff-header">
+              <AppIcon name="fileText" size="xs" />
+              <span className="git-panel__diff-path" title={selectedFile}>{selectedFile}</span>
+              <div className="git-panel__diff-actions">
+                <div className="git-panel__view-toggle">
+                  <button
+                    className={`git-panel__view-btn ${viewMode === 'diff' ? 'git-panel__view-btn--active' : ''}`}
+                    onClick={() => onViewMode('diff')}
+                    title="Показать diff"
+                  >
+                    <AppIcon name="git" size="xs" />
+                  </button>
+                  <button
+                    className={`git-panel__view-btn ${viewMode === 'file' ? 'git-panel__view-btn--active' : ''}`}
+                    onClick={() => { onViewMode('file'); void onLoadFileContent(selectedFile) }}
+                    title="Показать весь файл"
+                  >
+                    <AppIcon name="fileText" size="xs" />
+                  </button>
+                </div>
+                <button
+                  className="git-panel__action-btn"
+                  onClick={() => onOpenInViewer(selectedFile)}
+                  title="Открыть в просмотре"
+                >
+                  <AppIcon name="eye" size="xs" />
+                </button>
+                <button
+                  className="git-panel__action-btn"
+                  onClick={() => onOpenInEditor(selectedFile)}
+                  title="Открыть в редакторе"
+                >
+                  <AppIcon name="filePen" size="xs" />
+                </button>
+              </div>
+            </div>
+            <div className="git-panel__diff-body">
+              {viewMode === 'diff' ? (
+                <>
+                  {diffLoading ? (
+                    <div className="git-panel__diff-loading">
+                      <AppIcon name="loader" size="sm" animation="spin" />
+                      <span>Загрузка diff...</span>
+                    </div>
+                  ) : diffError ? (
+                    <div className="git-panel__diff-error">
+                      <AppIcon name="x" size="lg" tone="danger" />
+                      <p>{diffError}</p>
+                    </div>
+                  ) : diffVersions ? (
+                    <SafeDiffEditor
+                      original={diffVersions.original}
+                      modified={diffVersions.modified}
+                      language={getLanguage(selectedFile)}
+                      theme="vs-dark"
+                      options={DIFF_EDITOR_OPTIONS}
+                    />
+                  ) : diff ? (
+                    <div className="git-panel__diff-text">{diff}</div>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  {fileLoading ? (
+                    <div className="git-panel__diff-loading">
+                      <AppIcon name="loader" size="sm" animation="spin" />
+                      <span>Загрузка файла...</span>
+                    </div>
+                  ) : fileContent?.isBinary ? (
+                    <div className="git-panel__diff-error">
+                      <AppIcon name="fileText" size="lg" tone="muted" />
+                      <p>Бинарный файл</p>
+                    </div>
+                  ) : fileContent ? (
+                    <CodePreview content={fileContent.content} path={selectedFile} />
+                  ) : null}
+                </>
+              )}
+            </div>
+          </motion.div>
+        )}
+        {selectedCommit && (
+          <motion.div
+            key="commit"
+            className="git-panel__diff-content"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
+          >
+            <div className="git-panel__diff-header">
+              <AppIcon name="git" size="xs" />
+              <span className="git-panel__diff-path" title={selectedCommit.message}>
+                {selectedCommit.hash.slice(0, 7)} · {selectedCommit.message.split('\n')[0]}
+              </span>
+              {selectedCommit.author && (
+                <span className="git-panel__commit-author">{selectedCommit.author}</span>
+              )}
+              {selectedCommit.date && (
+                <span className="git-panel__commit-date">{selectedCommit.date}</span>
+              )}
+            </div>
+            {selectedCommit.message.includes('\n') && (
+              <div className="git-panel__commit-body">
+                {selectedCommit.message.split('\n').slice(1).join('\n').trim()}
+              </div>
+            )}
+            {/* Список файлов в коммите — кликабельные, как в VS Code */}
+            {commitFiles.length > 0 && (
+              <div className="git-panel__commit-files">
+                {commitFiles.map(cf => (
+                  <button
+                    key={cf.path}
+                    className={`git-panel__commit-file ${selectedCommitFile === cf.path ? 'git-panel__commit-file--selected' : ''}`}
+                    title={cf.path}
+                    onClick={() => void onLoadCommitFileDiff(selectedCommit.hash, cf.path)}
+                  >
+                    <span className={`git-panel__commit-file-badge git-status-${cf.status === 'M' ? 'modified' : cf.status === 'A' ? 'added' : cf.status === 'D' ? 'deleted' : cf.status === 'R' ? 'renamed' : 'untracked'}`}>
+                      {cf.status}
+                    </span>
+                    <FileIcon name={cf.path.split('/').pop() || cf.path} size={14} />
+                    <span className="git-panel__commit-file-path">{cf.path}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="git-panel__diff-body">
+              {diffLoading ? (
+                <div className="git-panel__diff-loading">
+                  <AppIcon name="loader" size="sm" animation="spin" />
+                  <span>Загрузка коммита...</span>
+                </div>
+              ) : diffError ? (
+                <div className="git-panel__diff-error">
+                  <AppIcon name="x" size="lg" tone="danger" />
+                  <p>{diffError}</p>
+                </div>
+              ) : selectedCommitFile && diffVersions ? (
+                <SafeDiffEditor
+                  original={diffVersions.original}
+                  modified={diffVersions.modified}
+                  language={getLanguage(selectedCommitFile)}
+                  theme="vs-dark"
+                  options={DIFF_EDITOR_OPTIONS}
+                />
+              ) : diff ? (
+                <div className="git-panel__diff-text">{diff}</div>
+              ) : commitFiles.length > 0 ? (
+                <div className="git-panel__diff-empty">
+                  <AppIcon name="fileText" size="md" tone="muted" />
+                  <p>Выберите файл из списка выше</p>
+                </div>
+              ) : null}
+            </div>
+          </motion.div>
+        )}
+        {!selectedFile && !selectedCommit && (
+          <motion.div
+            key="empty"
+            className="git-panel__diff-empty"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <AppIcon name="git" size="lg" tone="muted" />
+            <p>Выберите файл или коммит, чтобы увидеть изменения</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+})
 
 interface StatusGroups {
   staged: GitFileStatus[]
@@ -577,28 +900,31 @@ export default function GitPanel({ workdir }: GitPanelProps) {
     }
   }, [workdir])
 
-  const toggleDir = (path: string) => {
+  // useCallback — иначе новая identity на каждый рендер валила memo
+  // GitTreeRow: все видимые строки дерева перерисовывались на любое
+  // действие (ввод в поиск/коммит, refresh, открытие диффа).
+  const toggleDir = useCallback((path: string) => {
     setExpandedDirs(prev => {
       const next = new Set(prev)
       if (next.has(path)) next.delete(path)
       else next.add(path)
       return next
     })
-  }
+  }, [])
 
-  const handleOpenInEditor = () => {
-    if (!workdir || !selectedFile) return
-    const fullpath = workdir.replace(/[\\/]+$/, '') + '\\' + selectedFile.replace(/\//g, '\\')
+  const handleOpenInEditor = useCallback((path: string) => {
+    if (!workdir) return
+    const fullpath = workdir.replace(/[\\/]+$/, '') + '\\' + path.replace(/\//g, '\\')
     window.syntee.shell.openPath(fullpath)
-  }
+  }, [workdir])
 
   // Открыть файл в просмотре (Monaco-редактор в основной области) в diff-режиме
-  const handleOpenInViewer = () => {
-    if (!workdir || !selectedFile) return
+  const handleOpenInViewer = useCallback((path: string) => {
+    if (!workdir) return
     useUIStore.getState().setAgentPanelOpen(true)
     window.syntee.settings.set('agentPanelOpen', true)
-    void useFileTabsStore.getState().openFileDiff(selectedFile, workdir)
-  }
+    void useFileTabsStore.getState().openFileDiff(path, workdir)
+  }, [workdir])
 
   // ── Git actions: stage / unstage / discard ──────────────────────
   const handleStage = useCallback(async (file: string) => {
@@ -800,77 +1126,6 @@ export default function GitPanel({ workdir }: GitPanelProps) {
     overscan: 8,
   })
 
-  const renderStatusFile = (file: GitFileStatus) => {
-    const badge = getFileBadge(file)
-    const stats = diffStats[file.path]
-    const isUntracked = file.indexStatus === '?' && file.worktreeStatus === '?'
-    const isStaged = file.indexStatus !== ' ' && file.indexStatus !== '?'
-    const isUnstaged = file.worktreeStatus !== ' ' && file.worktreeStatus !== '?'
-    return (
-      <div
-        key={file.path}
-        className={`git-file-item-row ${selectedFile === file.path ? 'git-file-item-row--selected' : ''}`}
-      >
-        <button
-          className={`git-file-item ${selectedFile === file.path ? 'git-file-item--selected' : ''}`}
-          style={{ paddingLeft: 26 }}
-          onClick={() => loadDiff(file)}
-          title={file.path}
-        >
-          {badge && <span className={`git-file-item__badge ${badge.cls}`}>{badge.label}</span>}
-          <FileIcon name={file.path.split('/').pop() || file.path} size={14} />
-          <span className="git-file-item__name">{file.path}</span>
-          {stats && (
-            <span className="git-file-item__stats">
-              <span className="git-file-item__stats-added">+{stats.added}</span>
-              <span className="git-file-item__stats-deleted">-{stats.deleted}</span>
-            </span>
-          )}
-        </button>
-        <div className="git-file-item__actions">
-          {isUntracked && (
-            <button
-              className="git-file-action"
-              title="Добавить (git add)"
-              onClick={(e) => { e.stopPropagation(); handleStage(file.path) }}
-              disabled={actionLoading === file.path}
-            >
-              <AppIcon name="plus" size="xs" />
-            </button>
-          )}
-          {isStaged && !isUntracked && (
-            <button
-              className="git-file-action"
-              title="Убрать из staged (git reset)"
-              onClick={(e) => { e.stopPropagation(); handleUnstage(file.path) }}
-              disabled={actionLoading === file.path}
-            >
-              <AppIcon name="minus" size="xs" />
-            </button>
-          )}
-          {!isStaged && !isUntracked && isUnstaged && (
-            <button
-              className="git-file-action"
-              title="Добавить (git add)"
-              onClick={(e) => { e.stopPropagation(); handleStage(file.path) }}
-              disabled={actionLoading === file.path}
-            >
-              <AppIcon name="plus" size="xs" />
-            </button>
-          )}
-          <button
-            className="git-file-action git-file-action--danger"
-            title={isUntracked ? 'Удалить файл' : 'Отменить изменения'}
-            onClick={(e) => { e.stopPropagation(); handleDiscard(file.path, isUntracked) }}
-            disabled={actionLoading === file.path}
-          >
-            <AppIcon name="undo" size="xs" />
-          </button>
-        </div>
-      </div>
-    )
-  }
-
   const renderStatusGroup = (label: string, files: GitFileStatus[], groupCls: string) => {
     if (files.length === 0) return null
     return (
@@ -881,7 +1136,19 @@ export default function GitPanel({ workdir }: GitPanelProps) {
           <span className="git-status-group__count">{files.length}</span>
         </div>
         <div className="git-status-group__files">
-          {files.map(renderStatusFile)}
+          {files.map(file => (
+            <StatusFileRow
+              key={file.path}
+              file={file}
+              selected={selectedFile === file.path}
+              stats={diffStats[file.path]}
+              actionLoading={actionLoading}
+              onStage={handleStage}
+              onUnstage={handleUnstage}
+              onDiscard={handleDiscard}
+              onLoadDiff={loadDiff}
+            />
+          ))}
         </div>
       </div>
     )
@@ -1229,217 +1496,24 @@ export default function GitPanel({ workdir }: GitPanelProps) {
         )}
       </div>
 
-      <div className="git-panel__diff">
-        <AnimatePresence>
-          {selectedFile && (
-            <motion.div
-              key={selectedFile}
-              className="git-panel__diff-content"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.12 }}
-            >
-              <div className="git-panel__diff-header">
-                <AppIcon name="fileText" size="xs" />
-                <span className="git-panel__diff-path" title={selectedFile}>{selectedFile}</span>
-                <div className="git-panel__diff-actions">
-                  <div className="git-panel__view-toggle">
-                    <button
-                      className={`git-panel__view-btn ${viewMode === 'diff' ? 'git-panel__view-btn--active' : ''}`}
-                      onClick={() => setViewMode('diff')}
-                      title="Показать diff"
-                    >
-                      <AppIcon name="git" size="xs" />
-                    </button>
-                    <button
-                      className={`git-panel__view-btn ${viewMode === 'file' ? 'git-panel__view-btn--active' : ''}`}
-                      onClick={() => { setViewMode('file'); loadFileContent(selectedFile) }}
-                      title="Показать весь файл"
-                    >
-                      <AppIcon name="fileText" size="xs" />
-                    </button>
-                  </div>
-                  <button
-                    className="git-panel__action-btn"
-                    onClick={handleOpenInViewer}
-                    title="Открыть в просмотре"
-                  >
-                    <AppIcon name="eye" size="xs" />
-                  </button>
-                  <button
-                    className="git-panel__action-btn"
-                    onClick={handleOpenInEditor}
-                    title="Открыть в редакторе"
-                  >
-                    <AppIcon name="filePen" size="xs" />
-                  </button>
-                </div>
-              </div>
-              <div className="git-panel__diff-body">
-                {viewMode === 'diff' ? (
-                  <>
-                    {diffLoading ? (
-                      <div className="git-panel__diff-loading">
-                        <AppIcon name="loader" size="sm" animation="spin" />
-                        <span>Загрузка diff...</span>
-                      </div>
-                    ) : diffError ? (
-                      <div className="git-panel__diff-error">
-                        <AppIcon name="x" size="lg" tone="danger" />
-                        <p>{diffError}</p>
-                      </div>
-                    ) : diffVersions ? (
-                      <SafeDiffEditor
-                        key={selectedFile}
-                        original={diffVersions.original}
-                        modified={diffVersions.modified}
-                        language={getLanguage(selectedFile)}
-                        theme="vs-dark"
-                        options={{
-                          readOnly: true,
-                          fontSize: 13,
-                          minimap: { enabled: false },
-                          automaticLayout: true,
-                          scrollBeyondLastLine: false,
-                          wordWrap: 'on',
-                          tabSize: 2,
-                          renderSideBySide: true,
-                          padding: { top: 8, bottom: 8 },
-                          scrollbar: {
-                            verticalScrollbarSize: 10,
-                            horizontalScrollbarSize: 10,
-                          },
-                        }}
-                      />
-                    ) : diff ? (
-                      <div className="git-panel__diff-text">{diff}</div>
-                    ) : null}
-                  </>
-                ) : (
-                  <>
-                    {fileLoading ? (
-                      <div className="git-panel__diff-loading">
-                        <AppIcon name="loader" size="sm" animation="spin" />
-                        <span>Загрузка файла...</span>
-                      </div>
-                    ) : fileContent?.isBinary ? (
-                      <div className="git-panel__diff-error">
-                        <AppIcon name="fileText" size="lg" tone="muted" />
-                        <p>Бинарный файл</p>
-                      </div>
-                    ) : fileContent ? (
-                      <CodePreview content={fileContent.content} path={selectedFile} />
-                    ) : null}
-                  </>
-                )}
-              </div>
-            </motion.div>
-          )}
-          {selectedCommit && (
-            <motion.div
-              key={selectedCommit.hash}
-              className="git-panel__diff-content"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.12 }}
-            >
-              <div className="git-panel__diff-header">
-                <AppIcon name="git" size="xs" />
-                <span className="git-panel__diff-path" title={selectedCommit.message}>
-                  {selectedCommit.hash.slice(0, 7)} · {selectedCommit.message.split('\n')[0]}
-                </span>
-                {selectedCommit.author && (
-                  <span className="git-panel__commit-author">{selectedCommit.author}</span>
-                )}
-                {selectedCommit.date && (
-                  <span className="git-panel__commit-date">{selectedCommit.date}</span>
-                )}
-              </div>
-              {selectedCommit.message.includes('\n') && (
-                <div className="git-panel__commit-body">
-                  {selectedCommit.message.split('\n').slice(1).join('\n').trim()}
-                </div>
-              )}
-              {/* Список файлов в коммите — кликабельные, как в VS Code */}
-              {commitFiles.length > 0 && (
-                <div className="git-panel__commit-files">
-                  {commitFiles.map(cf => (
-                    <button
-                      key={cf.path}
-                      className={`git-panel__commit-file ${selectedCommitFile === cf.path ? 'git-panel__commit-file--selected' : ''}`}
-                      title={cf.path}
-                      onClick={() => void loadCommitFileDiff(selectedCommit.hash, cf.path)}
-                    >
-                      <span className={`git-panel__commit-file-badge git-status-${cf.status === 'M' ? 'modified' : cf.status === 'A' ? 'added' : cf.status === 'D' ? 'deleted' : cf.status === 'R' ? 'renamed' : 'untracked'}`}>
-                        {cf.status}
-                      </span>
-                      <FileIcon name={cf.path.split('/').pop() || cf.path} size={14} />
-                      <span className="git-panel__commit-file-path">{cf.path}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="git-panel__diff-body">
-                {diffLoading ? (
-                  <div className="git-panel__diff-loading">
-                    <AppIcon name="loader" size="sm" animation="spin" />
-                    <span>Загрузка коммита...</span>
-                  </div>
-                ) : diffError ? (
-                  <div className="git-panel__diff-error">
-                    <AppIcon name="x" size="lg" tone="danger" />
-                    <p>{diffError}</p>
-                  </div>
-                ) : selectedCommitFile && diffVersions ? (
-                  <SafeDiffEditor
-                    key={selectedCommitFile}
-                    original={diffVersions.original}
-                    modified={diffVersions.modified}
-                    language={getLanguage(selectedCommitFile)}
-                    theme="vs-dark"
-                    options={{
-                      readOnly: true,
-                      fontSize: 13,
-                      minimap: { enabled: false },
-                      automaticLayout: true,
-                      scrollBeyondLastLine: false,
-                      wordWrap: 'on',
-                      tabSize: 2,
-                      renderSideBySide: true,
-                      padding: { top: 8, bottom: 8 },
-                      scrollbar: {
-                        verticalScrollbarSize: 10,
-                        horizontalScrollbarSize: 10,
-                      },
-                    }}
-                  />
-                ) : diff ? (
-                  <div className="git-panel__diff-text">{diff}</div>
-                ) : commitFiles.length > 0 ? (
-                  <div className="git-panel__diff-empty">
-                    <AppIcon name="fileText" size="md" tone="muted" />
-                    <p>Выберите файл из списка выше</p>
-                  </div>
-                ) : null}
-              </div>
-            </motion.div>
-          )}
-          {!selectedFile && !selectedCommit && (
-            <motion.div
-              key="empty"
-              className="git-panel__diff-empty"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <AppIcon name="git" size="lg" tone="muted" />
-              <p>Выберите файл или коммит, чтобы увидеть изменения</p>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      <GitDiffView
+        selectedFile={selectedFile}
+        selectedCommit={selectedCommit}
+        viewMode={viewMode}
+        diffLoading={diffLoading}
+        diffError={diffError}
+        diff={diff}
+        diffVersions={diffVersions}
+        fileLoading={fileLoading}
+        fileContent={fileContent}
+        commitFiles={commitFiles}
+        selectedCommitFile={selectedCommitFile}
+        onViewMode={setViewMode}
+        onLoadFileContent={loadFileContent}
+        onOpenInViewer={handleOpenInViewer}
+        onOpenInEditor={handleOpenInEditor}
+        onLoadCommitFileDiff={loadCommitFileDiff}
+      />
     </div>
   )
 }
