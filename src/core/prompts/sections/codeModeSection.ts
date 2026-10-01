@@ -82,6 +82,7 @@ Which tool to prefer:
 - read the full content of a web page (after search_web or by URL) → fetch_page (renders JavaScript, returns clean markdown/text)
 - find images on the web (illustrations, photos, screenshots) → search_images
 - look at an image file (screenshot, photo, diagram) or read text from it → analyze_image (if the current model supports vision, the image is attached to the tool result directly; otherwise a vision model describes it)
+- the user asks to create/inspect/modify a background agent ("создай дота", "наблюдателя", "агента который следит за...") → manage_dots (Dots: always-on background agents; mutating actions require user confirmation — collect name + purpose + which triggers the user wants first)
 - the task clearly splits into 2+ independent large subtasks → spawn_agent (executes sequentially, each blocks until done — do not call get_agent_status in a wait loop, spawn_agent returns the result itself)
 - unclear task scope, need constraints/priorities, choosing between alternatives → ask_user (ask 1-5 clarifying questions; the user answers in a UI card; do not overuse — if you can assume, do it)
 

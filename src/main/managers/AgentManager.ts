@@ -578,7 +578,9 @@ class AgentManager {
       // §no-nested-subagents — spawn_agent и get_agent_status ВСЕГДА вырезаются
       // из тулов саб-агента, независимо от роли. Саб-агент не может спавнить
       // вложенных саб-агентов — только основной агент имеет этот тул.
-      const NO_NESTED_TOOLS = new Set(['spawn_agent', 'get_agent_status'])
+      // manage_dots тоже: round-trip идёт через message-handler основного
+      // чат-воркера, которого у саб-агента нет — тул бы завис.
+      const NO_NESTED_TOOLS = new Set(['spawn_agent', 'get_agent_status', 'manage_dots'])
       const fullSchemas = getToolSchemas({ mode: record.mode })
       const effectiveToolSchemas = (roleDef.allowedTools.length > 0
         ? fullSchemas.filter(s => {

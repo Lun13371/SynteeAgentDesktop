@@ -18,6 +18,9 @@ import { useChatStore } from './store/chat.store'
 import { useTabsStore } from './store/tabs.store'
 import { useFileTabsStore } from './store/fileTabs.store'
 import { useMessengerStore } from './store/messenger.store'
+import { useDotsStore } from './store/dots.store'
+import { useToast } from './components/ui/Toast/Toast'
+import { IPC_EVENTS } from '../../shared/constants'
 import { autoAssignGatewayModels, markAutoAssignDone, isAutoAssignDone } from './store/autoAssign'
 import { contrastText, withAlpha, hexToRgb, hslToHex } from './utils/colorUtils'
 import { startSystemAudioVisualizer } from './utils/systemAudioVisualizer'
@@ -33,6 +36,7 @@ import './pages/Spotlight/SpotlightPage.css'
 import './pages/Settings/SettingsPage.css'
 import './pages/Memory/MemoryPage.css'
 import './pages/Messenger/MessengerPage.css'
+import './pages/Dots/DotsPage.css'
 import './pages/Login/LoginScreen.css'
 import './pages/Notifications/NotificationPage.css'
 // ── Восстановление после пересборки out/ на лету ─────────────────
@@ -70,6 +74,7 @@ const SpotlightPage = lazyWithReload(() => import('./pages/Spotlight/SpotlightPa
 const SettingsPage = lazyWithReload(() => import('./pages/Settings/SettingsPage'))
 const MemoryPage = lazyWithReload(() => import('./pages/Memory/MemoryPage'))
 const MessengerPage = lazyWithReload(() => import('./pages/Messenger/MessengerPage'))
+const DotsPage = lazyWithReload(() => import('./pages/Dots/DotsPage'))
 const LoginScreen = lazyWithReload(() => import('./pages/Login/LoginScreen'))
 // NotificationPage — НЕ lazy: import напрямую, чтобы overlay-окно не
 // показывало Suspense fallback (BootScreen) при первом уведомлении.
@@ -870,6 +875,54 @@ export default function App() {
     return () => { off() }
   }, [])
 
+  // Открытие Dots из трей-меню (main шлёт nav:open-dots после show()).
+  useEffect(() => {
+    const off = window.syntee.on('nav:open-dots', () => {
+      useNavStore.getState().toggleMainPage('dots')
+    })
+    return () => { off() }
+  }, [])
+
+  // Dots: тост при пробуждении Dot'а по триггеру (cron/interval/watch/webhook) —
+  // иначе пользователь не видит, что таймеры срабатывают (report-уведомления
+  // показываются только при неактивном окне, silent-раны молчат by design).
+  // manual не тостим — кнопка «Разбудить» уже даёт фидбек в DotsPage.
+  useEffect(() => {
+    const off = window.syntee.on(IPC_EVENTS.DOTS_WAKE, (...args: unknown[]) => {
+      const p = (args[0] ?? {}) as { name?: string; trigger?: string }
+      if (!p.name || p.trigger === 'manual') return
+      const trig = p.trigger === 'cron' ? 'расписание'
+        : p.trigger === 'interval' ? 'интервал'
+        : p.trigger === 'watch' ? 'изменения файлов'
+        : p.trigger === 'webhook' ? 'webhook'
+        : 'триггер'
+      useToast.getState().add(`Dot «${p.name}» проснулся — ${trig}`, 'info', 4000)
+    })
+    return () => { off() }
+  }, [])
+
+  // Dots: тост при создании/удалении Dot'а основным агентом (manage_dots).
+  // DOTS_CHANGED из DotManager (UI-визард) идёт без payload — тостим только
+  // source:'agent', чтобы не дублировать фидбек визарда.
+  useEffect(() => {
+    const off = window.syntee.on(IPC_EVENTS.DOTS_CHANGED, (...args: unknown[]) => {
+      const p = (args[0] ?? {}) as { source?: string; action?: string; name?: string }
+      if (p?.source !== 'agent' || !p.name) return
+      if (p.action === 'create') useToast.getState().add(`Dot «${p.name}» создан`, 'success', 4000)
+      else if (p.action === 'delete') useToast.getState().add(`Dot «${p.name}» удалён`, 'info', 4000)
+    })
+    return () => { off() }
+  }, [])
+
+  // Dots: глобальная инициализация стора — бейдж «работают сейчас» в TitleBar
+  // живёт даже когда страница Dots закрыта (DotsPage больше не подписывается
+  // на push-события сам — единственный подписчик здесь, на всё время жизни App).
+  useEffect(() => {
+    void useDotsStore.getState().load()
+    const off = useDotsStore.getState().initEvents()
+    return () => { off() }
+  }, [])
+
   // ── Spotlight relay-actions ──────────────────────────────────────────
   // Main-процесс получает spotlight:quickAsk / newChat / openChat от
   // Spotlight-окна, прячет его, показывает главное окно и шлёт nav:* событие
@@ -1568,6 +1621,7 @@ export default function App() {
               }}
               onMemoryClick={() => toggleMainPage('memory')}
               onMessengerClick={() => toggleMainPage('messenger')}
+              onDotsClick={() => toggleMainPage('dots')}
               onProfileClick={() => openSettings('profile')}
               onUpdateClick={() => setUpdateModalOpen(true)}
             />
@@ -1580,14 +1634,19 @@ export default function App() {
                 <div className={`page-host ${mainPage === 'chat' ? '' : 'page-host--hidden'}`}>
                   <ChatPage embedded />
                 </div>
+                {/* ВАЖНО: у page-host НЕТ exit-анимаций (только mount).
+                    Exit с pointerEvents + spring-переходом мог не завершаться
+                    (нечисловое значение не «успокаивается») → AnimatePresence
+                    никогда не удалял страницу → невидимый оверлей оставался
+                    висеть поверх чата, и его инпут перехватывал клики основного
+                    инпут-бара. Мгновенный unmount = застревание невозможно. */}
                 <AnimatePresence>
               {mainPage === 'settings' && (
                 <motion.div
                   key="settings-page"
                   className="page-motion-host"
                   initial={{ opacity: 0, scale: 0.92 }}
-                  animate={{ opacity: 1, scale: 1, pointerEvents: 'auto' }}
-                  exit={{ opacity: 0, scale: 1.05, pointerEvents: 'none' }}
+                  animate={{ opacity: 1, scale: 1 }}
                   transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                 >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
@@ -1600,8 +1659,7 @@ export default function App() {
                       key="memory-page"
                       className="page-motion-host"
                       initial={{ opacity: 0, scale: 0.92 }}
-                      animate={{ opacity: 1, scale: 1, pointerEvents: 'auto' }}
-                      exit={{ opacity: 0, scale: 1.05, pointerEvents: 'none' }}
+                      animate={{ opacity: 1, scale: 1 }}
                       transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                     >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
@@ -1614,12 +1672,24 @@ export default function App() {
                       key="messenger-page"
                       className="page-motion-host"
                       initial={{ opacity: 0, scale: 0.92 }}
-                      animate={{ opacity: 1, scale: 1, pointerEvents: 'auto' }}
-                      exit={{ opacity: 0, scale: 1.05, pointerEvents: 'none' }}
+                      animate={{ opacity: 1, scale: 1 }}
                       transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                     >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <MessengerPage />
+                      </Suspense>
+                    </motion.div>
+                  )}
+                  {mainPage === 'dots' && (
+                    <motion.div
+                      key="dots-page"
+                      className="page-motion-host"
+                      initial={{ opacity: 0, scale: 0.92 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                    >
+                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
+                        <DotsPage />
                       </Suspense>
                     </motion.div>
                   )}

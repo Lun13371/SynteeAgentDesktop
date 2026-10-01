@@ -181,6 +181,27 @@ export interface AgentCallbacks {
     projectId?: string
     chatId?: string
   }) => Promise<{ success: boolean; notes?: Array<{ id: string; title: string; content: string; updatedAt: number }>; note?: { id: string; title: string }; error?: string }>
+  /**
+   * manage_dots-тул: управление Dot'ами (always-on фоновые агенты).
+   * Round-trip в main-процесс, где живёт DotManager. Возвращает
+   * готовый текстовый отчёт для модели (форматирование в main).
+   */
+  onManageDots?: (params: {
+    action: 'create' | 'list' | 'get' | 'update' | 'delete' | 'wake'
+    dotId?: string
+    name?: string
+    purpose?: string
+    rules?: string
+    scheduleKind?: 'cron' | 'interval'
+    scheduleValue?: string
+    watchPaths?: string[]
+    webhookEnabled?: boolean
+    modelId?: string | null
+    modelProvider?: string | null
+    enabled?: boolean
+    icon?: string
+    color?: string
+  }) => Promise<{ success: boolean; error?: string; text?: string }>
 }
 
 export interface AgentSummaryDetails {

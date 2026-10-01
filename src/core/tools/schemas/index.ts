@@ -11,6 +11,7 @@ import { PLAN_TOOL_SCHEMAS } from './plan'
 import { MEMORY_TOOL_SCHEMAS } from './memory'
 import { EXTENSIONS_TOOL_SCHEMAS } from './extensions'
 import { VISION_TOOL_SCHEMAS } from './vision'
+import { DOTS_TOOL_SCHEMAS } from './dots'
 
 export const TOOL_SCHEMAS = [
   ...EDIT_TOOL_SCHEMAS,
@@ -22,6 +23,7 @@ export const TOOL_SCHEMAS = [
   ...MEMORY_TOOL_SCHEMAS,
   ...EXTENSIONS_TOOL_SCHEMAS,
   ...VISION_TOOL_SCHEMAS,
+  ...DOTS_TOOL_SCHEMAS,
 ]
 
 // Dynamic tool set — added by mode
@@ -142,6 +144,10 @@ export function getToolSchemas(options: {
     names.push('get_diagnostics')
     names.push('analyze_project')
     names.push('get_fast_context')
+    // Dots: управление always-on агентами — только в normal-режиме.
+    // ask/planning/read-only и фоновые wake-раны Dot'ов (oneShotMode:'ask')
+    // тул не получают: Dot не должен создавать других Dot'ов.
+    names.push('manage_dots')
   }
 
   if (imageMode) {

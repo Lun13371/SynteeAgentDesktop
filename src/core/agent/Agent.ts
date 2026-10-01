@@ -1083,6 +1083,20 @@ export class Agent {
             }
           }
 
+          // Dots: manage_dots — мутабельные action'ы (create/update/delete/wake)
+          // всегда требуют подтверждения (кроме full-режима): агент управляет
+          // always-on фоновыми агентами только с явного согласия пользователя.
+          // list/get — read-only, подтверждения не требуют.
+          if (fn.name === 'manage_dots' && mode !== 'full' && !effectiveApproval.block) {
+            const dotsAction = String(args.action ?? '')
+            if (dotsAction !== 'list' && dotsAction !== 'get') {
+              effectiveApproval.confirm = true
+              if (!effectiveApproval.reason) {
+                effectiveApproval.reason = `Управление Dot'ами (action: ${dotsAction})`
+              }
+            }
+          }
+
           if (effectiveApproval.block) {
             const blockMsg = `Action blocked (mode ${mode}): ${effectiveApproval.reason}`
             resultMap.set(callId, { contentForAI: blockMsg, callId, name: fn.name })

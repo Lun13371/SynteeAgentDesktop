@@ -42,6 +42,8 @@ const MUTATING_TOOLS = new Set([
   'edit_file',
   'write_file',
   'spawn_agent',
+  // Управление Dot'ами (create/update/delete/wake) — состояние приложения.
+  'manage_dots',
 ])
 
 export function isMutatingTool(name: string): boolean {
