@@ -6,6 +6,11 @@
  * Если загрузка не удалась — fallback на TF-IDF (чистый JS, без ML).
  *
  * Работает в main process и worker_threads (onnxruntime-node).
+ *
+ * Дополнительно: отдельный lazy E5-embedder (getE5Embedder) — multilingual
+ * модель для фоновой semantic-индексации recall_memory (см. memory/semanticIndex.ts).
+ * Полностью изолирован от getEmbedder/fast-context: свой pipeline, свои флаги,
+ * свой dispose. Недоступность E5 НЕ влияет на TF-IDF/MiniLM поиск.
  */
 
 // Embedding helpers are platform-independent; paths are normalized as strings below.
@@ -27,7 +32,6 @@ export interface Embedder {
 // Для desktop app TF-IDF достаточно (мгновенно, 0 CPU overhead).
 // Включить: setUseNeuralEmbeddings(true) из настроек.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _pipeline: any = null
 let _neuralInitAttempted = false
 let _neuralInitFailed = false
@@ -46,6 +50,7 @@ async function initNeural(): Promise<void> {
   try {
     // require вместо await import: нативный import() не работает в V8-байткоде
     // (пакет имеет CJS-сборку dist/transformers.node.cjs для require-экспорта)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { pipeline, env } = require('@huggingface/transformers')
     // ⚠️ @huggingface/transformers v4 НЕ читает TRANSFORMERS_CACHE из process.env.
     // Явно перенаправляем в userData/transformers-cache (writable в production).
@@ -69,7 +74,6 @@ async function initNeural(): Promise<void> {
 export function disposeEmbedder(): void {
   if (_pipeline) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const p = _pipeline as any
       if (typeof p.dispose === 'function') p.dispose()
       else if (p.model?.dispose) p.model.dispose()
@@ -84,6 +88,132 @@ const NEURAL_DIM = 384
 // old vectors are invalidated without changing persisted memory embeddings.
 const TFIDF_DIM = 1024
 const FAST_TFIDF_DIM = 2048
+
+// ─── E5 multilingual embeddings (semantic index recall_memory) ──────────────
+// Отдельный lazy-пайплайн от MiniLM. Официальная модель Xenova/multilingual-e5-small
+// (модели "small2" не существует — это small). 384-dim, обучена на 100+ языках
+// (русский ок). Требует префиксы "query: " / "passage: " — асимметричный формат E5.
+//
+// Назначение: фоновая индексация всех 5 источников recall_memory
+// (memory/messages/summaries/agent_logs/pinned) в таблицу semantic_embeddings.
+// НЕ используется getEmbedder'ом — fast-context и memory TF-IDF работают как раньше.
+//
+// Fallback-политика: getE5Embedder() возвращает null при недоступности модели
+// (нет сети / ONNX упал) и НЕ ретраит до перезапуска приложения — вызывающий
+// код (semanticIndex) просто пропускает индексацию, lexical/TF-IDF поиск
+// продолжает работать без изменений.
+
+export const E5_MODEL = 'Xenova/multilingual-e5-small'
+export const E5_DIM = 384
+
+export interface E5Embedder {
+  /** Embed поискового запроса (префикс "query: "). */
+  embedQuery(text: string): Promise<Embedding>
+  /** Embed индексируемого текста (префикс "passage: "). */
+  embedPassage(text: string): Promise<Embedding>
+  /** Размерность вектора (384). */
+  readonly dim: number
+  /** Имя модели — для инвалидации при смене (col semantic_embeddings.model). */
+  readonly model: string
+}
+
+let _e5Pipeline: any = null
+let _e5InitAttempted = false
+let _e5InitFailed = false
+let _e5LastFailureAt = 0
+const E5_RETRY_INTERVAL_MS = 5 * 60 * 1000
+
+async function initE5(): Promise<void> {
+  if (_e5InitAttempted) return
+  _e5InitAttempted = true
+  try {
+    // require вместо await import: нативный import() не работает в V8-байткоде
+    // (тот же паттерн, что initNeural выше).
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { pipeline, env } = require('@huggingface/transformers')
+    if (process.env.TRANSFORMERS_CACHE) {
+      env.cacheDir = process.env.TRANSFORMERS_CACHE
+    }
+    try {
+      env.backends.onnx.wasm.numThreads = 1
+    } catch { /* onnx may not be configured */ }
+    _e5Pipeline = await pipeline('feature-extraction', E5_MODEL, {
+      quantized: true,
+      cache_dir: process.env.TRANSFORMERS_CACHE || undefined,
+    })
+    console.log('[embeddings] E5 pipeline ready:', E5_MODEL)
+  } catch (e) {
+    _e5InitFailed = true
+    _e5LastFailureAt = Date.now()
+    console.warn('[embeddings] E5 init failed; lexical search remains active:', e instanceof Error ? e.message : e)
+  }
+}
+
+async function embedE5(text: string, prefix: 'query' | 'passage'): Promise<Embedding> {
+  if (!_e5Pipeline) await initE5()
+  if (!_e5Pipeline) throw new Error('E5 pipeline not available')
+  // E5 требует префикс "query: "/"passage: " перед текстом — без него качество
+  // проседает (модель обучена с этими префиксами).
+  const output = await _e5Pipeline([`${prefix}: ${text}`], { pooling: 'mean', normalize: true })
+  return output.data as Float32Array
+}
+
+/**
+ * Lazy E5-embedder или null, если модель недоступна. Никогда не бросает —
+ * semanticIndex при null просто пропускает цикл индексации, текущий
+ * TF-IDF/FTS поиск не затронут.
+ */
+function createE5Embedder(): E5Embedder | null {
+  if (!_e5Pipeline) return null
+  return {
+    embedQuery: (text: string) => embedE5(text, 'query'),
+    embedPassage: (text: string) => embedE5(text, 'passage'),
+    dim: E5_DIM,
+    model: E5_MODEL,
+  }
+}
+
+/**
+ * Загружает E5 для ФОНОВОГО индексатора. Повторяет временную неудачу не чаще
+ * раза в пять минут, чтобы не крутить downloader при офлайн-режиме.
+ */
+export async function getE5Embedder(): Promise<E5Embedder | null> {
+  if (_e5InitFailed) {
+    if (Date.now() - _e5LastFailureAt < E5_RETRY_INTERVAL_MS) return null
+    _e5InitFailed = false
+    _e5InitAttempted = false
+  }
+  await initE5()
+  return createE5Embedder()
+}
+
+/**
+ * Возвращает только уже прогретую E5-модель. Поиск никогда не запускает
+ * скачивание/инициализацию ONNX сам, поэтому первый recall не подвисает.
+ */
+export function getReadyE5Embedder(): E5Embedder | null {
+  return createE5Embedder()
+}
+
+/** E5 pipeline доступен (инициализирован и не упал)? Для статус-репортов. */
+export function isE5Available(): boolean {
+  return !_e5InitFailed && _e5Pipeline !== null
+}
+
+/** Освобождает E5 pipeline (before-quit / stopSemanticIndexer). */
+export function disposeE5Embedder(): void {
+  if (_e5Pipeline) {
+    try {
+      const p = _e5Pipeline as any
+      if (typeof p.dispose === 'function') p.dispose()
+      else if (p.model?.dispose) p.model.dispose()
+    } catch { /* ignore */ }
+    _e5Pipeline = null
+    _e5InitAttempted = false
+  }
+  _e5InitFailed = false
+  _e5LastFailureAt = 0
+}
 
 async function embedNeural(text: string): Promise<Embedding> {
   if (!_pipeline) await initNeural()

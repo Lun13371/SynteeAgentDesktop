@@ -37,6 +37,7 @@ import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
 import { stopAllWatchers as stopAllFastContextWatchers } from '../core/context/fastContextWatcher'
+import { stopSemanticIndexer } from '../core/memory/semanticIndex'
 import { registerFsIPC } from './ipc/fs.ipc'
 import { registerGitIPC } from './ipc/git.ipc'
 import { registerSkillsIPC } from './ipc/skills.ipc'
@@ -517,6 +518,9 @@ app.on('before-quit', () => {
   stopAudioVisualizerIPC()
   // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.
   stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
+  // Останавливаем фоновую semantic E5-индексацию (semantic_embeddings):
+  // снимаем таймеры, останавливаем текущий цикл, освобождаем ONNX pipeline.
+  try { stopSemanticIndexer() } catch { /* ok — best-effort */ }
   // Останавливаем file indexer для @mention-пикера.
   shutdownMentions().catch(() => { /* indexer опционален */ })
   // Уничтожаем пул SPA-renderer BrowserWindow — чтобы не было утечки.

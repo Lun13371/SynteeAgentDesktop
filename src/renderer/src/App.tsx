@@ -1634,12 +1634,14 @@ export default function App() {
                 <div className={`page-host ${mainPage === 'chat' ? '' : 'page-host--hidden'}`}>
                   <ChatPage embedded />
                 </div>
-                {/* ВАЖНО: у page-host НЕТ exit-анимаций (только mount).
-                    Exit с pointerEvents + spring-переходом мог не завершаться
-                    (нечисловое значение не «успокаивается») → AnimatePresence
-                    никогда не удалял страницу → невидимый оверлей оставался
-                    висеть поверх чата, и его инпут перехватывал клики основного
-                    инпут-бара. Мгновенный unmount = застревание невозможно. */}
+                {/* Exit-анимация страниц — безопасная версия: ТОЛЬКО числовые
+                    значения (opacity/scale) + tween с фиксированной длительностью
+                    0.18s внутри exit-варианта. Старый баг был от spring на exit:
+                    он мог не завершаться → AnimatePresence никогда не удалял
+                    страницу → невидимый слой блокировал чат. Tween завершается
+                    ВСЕГДА по таймеру, а framer-motion на exit ставит
+                    pointer-events:none inline — уходящая страница клики не
+                    перехватывает. Зависание физически невозможно. */}
                 <AnimatePresence>
               {mainPage === 'settings' && (
                 <motion.div
@@ -1647,6 +1649,7 @@ export default function App() {
                   className="page-motion-host"
                   initial={{ opacity: 0, scale: 0.92 }}
                   animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
                   transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
                 >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
@@ -1655,39 +1658,42 @@ export default function App() {
                     </motion.div>
                   )}
                   {mainPage === 'memory' && (
-                    <motion.div
-                      key="memory-page"
-                      className="page-motion-host"
-                      initial={{ opacity: 0, scale: 0.92 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
-                    >
+                <motion.div
+                  key="memory-page"
+                  className="page-motion-host"
+                  initial={{ opacity: 0, scale: 0.92 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
+                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <MemoryPage />
                       </Suspense>
                     </motion.div>
                   )}
                   {mainPage === 'messenger' && (
-                    <motion.div
-                      key="messenger-page"
-                      className="page-motion-host"
-                      initial={{ opacity: 0, scale: 0.92 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
-                    >
+<motion.div
+                  key="messenger-page"
+                  className="page-motion-host"
+                  initial={{ opacity: 0, scale: 0.92 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
+                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <MessengerPage />
                       </Suspense>
                     </motion.div>
                   )}
                   {mainPage === 'dots' && (
-                    <motion.div
-                      key="dots-page"
-                      className="page-motion-host"
-                      initial={{ opacity: 0, scale: 0.92 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
-                    >
+<motion.div
+                  key="dots-page"
+                  className="page-motion-host"
+                  initial={{ opacity: 0, scale: 0.92 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: 'easeIn' } }}
+                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
+                >
                       <Suspense fallback={<BootScreen status="Загрузка…" />}>
                         <DotsPage />
                       </Suspense>

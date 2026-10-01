@@ -549,5 +549,30 @@ export function runInitialSchema(db: Database.Database): void {
         INSERT INTO chat_summaries_fts(content, chat_id)
         VALUES (new.content, new.chat_id);
       END;
+
+    -- === Semantic embeddings (E5) для recall_memory ===
+    -- Фоновая индексация всех 5 источников (memory/messages/summaries/
+    -- agent_logs/pinned) моделью Xenova/multilingual-e5-small (384-dim Float32).
+    -- Заполняется semanticIndex.ts (lazy, идемпотентно, с паузами).
+    --   content_hash — sha256 индексируемого текста: неизменённые строки
+    --                 НЕ переэмбеддятся (O(changed), не O(N) на каждом цикле).
+    --   model        — инвалидация векторов при смене модели (hash совпал,
+    --                 модель другая → пересчёт).
+    --   PK(source, source_id) — идемпотентный upsert (INSERT OR REPLACE).
+    -- Индексируются ВСЕ строки без scope-фильтра — фильтрация по проекту
+    -- происходит на этапе поиска (как в chatSearch/search.ts).
+    -- CREATE TABLE IF NOT EXISTS — безопасно для существующих БД (миграция
+    -- идемпотентна, запускается на каждом старте через runMigrations).
+    CREATE TABLE IF NOT EXISTS semantic_embeddings (
+      source       TEXT NOT NULL,   -- 'memory'|'messages'|'summaries'|'agent_logs'|'pinned'
+      source_id    TEXT NOT NULL,   -- PK строки источника (memory_items.id, messages.id, chat_id, ...)
+      content_hash TEXT NOT NULL,   -- sha256 индексируемого текста
+      embedding    BLOB NOT NULL,   -- 384-dim Float32, L2-normalized (E5 passage)
+      model        TEXT NOT NULL,   -- 'Xenova/multilingual-e5-small'
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY(source, source_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_se_model ON semantic_embeddings(model);
+    CREATE INDEX IF NOT EXISTS idx_se_updated ON semantic_embeddings(updated_at);
   `)
 }
