@@ -279,6 +279,7 @@ const synteeAPI = {
   audioVisualizer: {
     start: (deviceId: string | null) => ipcRenderer.invoke('audioVisualizer:start', deviceId) as Promise<{ deviceId: string; name: string; sampleRate: number; channels: number }>,
     stop: () => ipcRenderer.invoke('audioVisualizer:stop') as Promise<boolean>,
+    setAgc: (enabled: boolean) => ipcRenderer.invoke('audioVisualizer:setAgc', enabled) as Promise<boolean>,
     onFrame: (cb: (frame: { level: number; bands: number[]; bass: number; mid: number; treble: number; timestamp: number; muted: boolean } | null) => void) => {
       const handler = (_event: unknown, frame: { level: number; bands: number[]; bass: number; mid: number; treble: number; timestamp: number; muted: boolean } | null) => cb(frame)
       ipcRenderer.on('audioVisualizer:frame', handler)
@@ -465,12 +466,19 @@ const synteeAPI = {
     closeTab: (tabId: string) => ipcRenderer.invoke('browser:closeTab', tabId) as Promise<boolean>,
     selectTab: (tabId: string) => ipcRenderer.invoke('browser:selectTab', tabId) as Promise<boolean>,
     getState: () => ipcRenderer.invoke('browser:getState') as Promise<{
-      tabs: Array<{ tabId: string; webContentsId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; favicon?: string }>
+      tabs: Array<{ tabId: string; webContentsId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; favicon?: string; discarded?: boolean }>
       activeTabId: string | null
     }>,
+    // Видимый таб (панель открыта + таб «Браузер» + этот таб активен) —
+    // main мьютит звук остальных. null = браузер не виден.
+    setVisibleTab: (tabId: string | null) =>
+      ipcRenderer.invoke('browser:setVisibleTab', tabId) as Promise<boolean>,
+    // Кэш сессии браузера: размер (байты) + очистка.
+    getCacheSize: () => ipcRenderer.invoke('browser:getCacheSize') as Promise<number>,
+    clearCache: () => ipcRenderer.invoke('browser:clearCache') as Promise<boolean>,
     // Событие: состояние табов изменилось (URL/title/loading/favicon).
     onTabState: (cb: (state: {
-      tabs: Array<{ tabId: string; webContentsId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; favicon?: string }>
+      tabs: Array<{ tabId: string; webContentsId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; favicon?: string; discarded?: boolean }>
       activeTabId: string | null
     }) => void) => {
       const listener = (_e: unknown, state: Parameters<typeof cb>[0]) => cb(state)

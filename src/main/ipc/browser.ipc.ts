@@ -21,10 +21,29 @@ import {
 import type Store from 'electron-store'
 
 export function registerBrowserIPC(store: Store, getWindow: () => BrowserWindow | null): void {
+  // Settings-store: гейт mouseNavEnabled для X1/X2-навигации в webview
+  // (инжектится в страницы, см. BrowserManager.injectSideButtonNav).
+  browserManager.setSettingsStore(store)
+
   // Регистрация webview-таба (did-attach в renderer).
   ipcMain.handle('browser:registerTab', (_e, tabId: string, webContentsId: number) => {
     browserManager.registerTab(tabId, webContentsId)
     return true
+  })
+
+  // Видимый таб (панель открыта + таб «Браузер» + этот таб активен) —
+  // main мьютит звук невидимых табов. null = браузер не виден.
+  ipcMain.handle('browser:setVisibleTab', (_e, tabId: string | null) => {
+    browserManager.setVisibleTab(tabId)
+    return true
+  })
+
+  // Кэш сессии браузера: размер (байты) + очистка.
+  ipcMain.handle('browser:getCacheSize', async () => {
+    try { return await browserManager.getSession().getCacheSize() } catch { return 0 }
+  })
+  ipcMain.handle('browser:clearCache', async () => {
+    try { await browserManager.getSession().clearCache(); return true } catch { return false }
   })
 
   // Снятие таба с регистрации (webview unmount).

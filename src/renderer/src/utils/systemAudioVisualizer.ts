@@ -174,6 +174,11 @@ export async function startSystemAudioVisualizer(deviceId?: string): Promise<voi
   // Устройство: явный аргумент → сохранённая настройка → устройство по умолчанию.
   const stored = (useSettingsStore.getState().settings as Record<string, unknown>)['audioVisualizerDeviceId']
   const id = deviceId ?? (typeof stored === 'string' && stored ? stored : null)
+  // AGC-флаг живёт в main-процессе — синхронизируем сохранённую настройку
+  // при каждом старте захвата (автозапуск, ручное подключение, смена
+  // устройства), иначе после перезапуска приложения она потерялась бы.
+  const storedAgc = (useSettingsStore.getState().settings as Record<string, unknown>)['audioVisualizerAgc']
+  if (typeof storedAgc === 'boolean') void api.setAgc(storedAgc)
   frameUnsub = api.onFrame(frame => emit(frame))
   frameStoppedUnsub = api.onStopped(() => emit(null))
   try {

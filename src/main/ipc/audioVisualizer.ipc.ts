@@ -53,6 +53,14 @@ const MIN_HZ = 32
 const MAX_HZ = 16000
 const MIN_DB = -64
 const MAX_DB = -14
+// AGC — авто-чувствительность (чекбокс в настройках, по умолчанию вкл):
+// окно нормализации дБ подъезжает под реальную громкость музыки — тихий
+// трек даёт такую же сочную визуализацию, как громкий. Выключено —
+// фиксированное окно MIN_DB..MAX_DB, поведение ровно как раньше.
+const AGC_DECAY_DB = 0.1          // спад слежения пика, дБ/кадр (~3 дБ/с при 30 к/с)
+const AGC_HEADROOM_DB = 3         // запас сверху: пики не клипятся в 1.0
+const AGC_MIN_MAXDB = MIN_DB + 12 // потолок усиления: maxDb не ниже -52
+const NOISE_FLOOR_DB = -80        // ниже — дизер/цифровая тишина, не усиливаем
 const ATTACK = 0.6 // доля к цели при подъёме
 const RELEASE = 0.16 // доля к цели при спад
 
@@ -73,6 +81,7 @@ let ringFilled = 0
 const fftRe = new Float32Array(FFT_SIZE)
 const fftIm = new Float32Array(FFT_SIZE)
 const smoothed = new Float32Array(BANDS)
+const bandDbs = new Float32Array(BANDS) // дБ-пики полос кадра (переиспользуется)
 let bandEdges = new Int32Array(BANDS + 1) // бины (включительно), BANDS+1 значений
 let bassRange: [number, number] = [0, 8] // индексы полос [from, to)
 let midRange: [number, number] = [8, 30]
@@ -83,6 +92,8 @@ let smoothBass = 0
 let smoothMid = 0
 let smoothTreble = 0
 let smoothLevel = 0
+let agcEnabled = true // «Авто-чувствительность»: чекбокс, включён по умолчанию
+let agcPeakDb = -20   // скользящий пик спектра (дБ), старт с типичного уровня
 
 function sendToWindow(mainWindow: MainWindow, channel: string, payload: unknown): void {
   try {
@@ -169,6 +180,7 @@ function resetAnalysis(): void {
   smoothMid = 0
   smoothTreble = 0
   smoothLevel = 0
+  agcPeakDb = -20
   lastEmitAt = 0
   lastDataAt = 0
 }
@@ -216,7 +228,8 @@ function emitFrame(mainWindow: MainWindow): void {
   for (let i = 0; i < FFT_SIZE; i++) rms += ring[i] * ring[i]
   rms = Math.sqrt(rms / FFT_SIZE)
 
-  const bands = new Array<number>(BANDS)
+  // ── проход 1: пики магнитуд по бинам полосы -> дБ ──
+  let framePeakDb = -180
   for (let i = 0; i < BANDS; i++) {
     // максимум магнитуды по бинам полосы (peak-hold внутри полосы)
     let peak = 0
@@ -229,7 +242,30 @@ function emitFrame(mainWindow: MainWindow): void {
     }
     // dB-шкала как у AnalyserNode: линейные амплитуды «хоронят» верха
     const db = 20 * Math.log10(peak + 1e-9)
-    const target = Math.min(1, Math.max(0, (db - MIN_DB) / (MAX_DB - MIN_DB)))
+    bandDbs[i] = db
+    if (db > framePeakDb) framePeakDb = db
+  }
+
+  // ── окно дБ: AGC (авто-чувствительность) или фиксированное ──
+  // Peak-follower: вверх мгновенно, вниз ~3 дБ/с; адаптируется только на
+  // реальном сигнале (громче -75 дБ) — в тишине окно заморожено и не
+  // сползает к шумам. Усиление только вверх (maxDb <= MAX_DB): громкая
+  // музыка визуально не меняется вообще, подтягивается только тихая.
+  let maxDb = MAX_DB
+  if (agcEnabled) {
+    if (framePeakDb > -75) agcPeakDb = Math.max(framePeakDb, agcPeakDb - AGC_DECAY_DB)
+    maxDb = Math.min(MAX_DB, Math.max(AGC_MIN_MAXDB, agcPeakDb - AGC_HEADROOM_DB))
+  }
+  const minDb = maxDb - (MAX_DB - MIN_DB)
+
+  // ── проход 2: нормализация окна + attack/release ──
+  const bands = new Array<number>(BANDS)
+  for (let i = 0; i < BANDS; i++) {
+    let db = bandDbs[i]
+    // абсолютный шумовой пол: дизер/тишину не усиливаем никогда, даже
+    // при сильно опущенном окне AGC
+    if (db < NOISE_FLOOR_DB) db = -999
+    const target = Math.min(1, Math.max(0, (db - minDb) / (maxDb - minDb)))
     // attack/release: быстрый подъём, плавный спад
     const k = target > smoothed[i] ? ATTACK : RELEASE
     smoothed[i] += (target - smoothed[i]) * k
@@ -350,6 +386,13 @@ export function registerAudioVisualizerIPC(mainWindow: MainWindow): void {
   ipcMain.handle('audioVisualizer:stop', () => {
     stopCapture(mainWindow)
     return true
+  })
+
+  // Живое переключение авто-чувствительности: просто флипает флаг, окно
+  // дБ пересчитывается в следующем же кадре — перезапуск захвата не нужен.
+  ipcMain.handle('audioVisualizer:setAgc', (_event, enabled: unknown) => {
+    agcEnabled = typeof enabled === 'boolean' ? enabled : true
+    return agcEnabled
   })
 }
 

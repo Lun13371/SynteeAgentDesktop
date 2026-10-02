@@ -252,6 +252,7 @@ declare const synteeAPI: {
             channels: number;
         }>;
         stop: () => Promise<boolean>;
+        setAgc: (enabled: boolean) => Promise<boolean>;
         onFrame: (cb: (frame: {
             level: number;
             bands: number[];

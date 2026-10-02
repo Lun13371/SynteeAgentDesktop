@@ -15,23 +15,26 @@
 //
 // Расширения (фаза 4): кнопка-пазл в тулбаре → ExtensionsPopover.
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, memo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import AppIcon from '../AppIcon/AppIcon'
 import { useBrowserStore, type BrowserTab } from '../../../store/browser.store'
+import { useUIStore } from '../../../store/ui.store'
 import BrowserExtensionsPopover from './BrowserExtensions'
 import type { WebviewElement } from './webview.d'
 import './BrowserPanel.css'
 
-/** Один webview-таб. Монтируется при появлении в реестре, НЕ анмаунтится
- *  при переключении (keep-alive). Регистрируется в main при did-attach.
+/** Хост webview-элемента. Монтируется пока таб жив; при idle-discard
+ *  анмаунтится (guest-процесс умирает), при восстановлении таба создаётся
+ *  ЗАНОВО — свежий mount → did-attach → registerTab перевешивает
+ *  слушатели на новый guest-процесс. Поэтому логика attach живёт здесь,
+ *  а не в родителе.
  *
- *  src — императивный, НЕ React-проп: ставится только когда webview ещё
- *  не attached (mount / навигация до создания guest-процесса). Для
- *  attached-табов навигирует ТОЛЬКО main (wc.loadURL) — React-обновление
- *  src поверх loadURL давало двойную навигацию (GUEST_VIEW_MANAGER_CALL)
- *  и перезагрузку страницы на каждый did-navigate push. */
-function BrowserTabView({ tab, isActive }: { tab: BrowserTab; isActive: boolean }) {
+ *  memo с полевым компаратором: main мутирует entry-объекты на месте
+ *  (Object.assign) — ссылка не меняется, дефолтный shallow-компаратор
+ *  заморозил бы UI. Сравниваем значимые поля: ре-рендер только когда
+ *  что-то из них реально изменилось (пуши идут пачками). */
+const WebviewHost = memo(function WebviewHost({ tab, isActive }: { tab: BrowserTab; isActive: boolean }) {
   const ref = useRef<WebviewElement>(null)
   const registered = useRef(false)
 
@@ -82,26 +85,71 @@ function BrowserTabView({ tab, isActive }: { tab: BrowserTab; isActive: boolean 
       wv.removeEventListener('did-attach', onAttach)
       wv.removeEventListener('dom-ready', onAttach)
       if (registered.current) {
-        window.syntee.browser.unregisterTab(tab.tabId).catch(() => { /* ok */ })
+        // Выгруженный (discarded) таб живёт в реестре main — webview уходит,
+        // запись остаётся (восстановится при tab_select). При обычном
+        // закрытии таб уже удалён из реестра (browser:closeTab) — повторный
+        // unregister в main это no-op.
+        if (!tab.discarded) {
+          window.syntee.browser.unregisterTab(tab.tabId).catch(() => { /* ok */ })
+        }
         registered.current = false
       }
     }
+    // tab.discarded НЕ в deps НАМЕРЕННО: cleanup должен читать СВЕЖЕЕ
+    // значение (main мутирует entry на месте) в момент анмаунта — webview
+    // уходит из-за discard, а запись таба обязана выжить. Deps по
+    // discarded перевесили бы слушатели в середине цикла discard/restore.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.tabId])
 
   return (
     <webview
       ref={ref}
       className="browser-webview"
-      // eslint-disable-next-line react/no-unknown-property -- Electron webview-атрибут (custom element)
+      // eslint-disable-next-line react/no-unknown-property -- Electron webview-атрибуты (custom element)
       partition="persist:syntee-browser"
+      // Без allowpopups webview блокирует target=_blank / window.open НА
+      // УРОВНЕ КОНТЕНТА — setWindowOpenHandler в main даже не вызывается
+      // (ссылки «открыть в новой вкладке» молча не открывались). С атрибутом
+      // вызывается хендлер → deny + новый таб панели.
+      // eslint-disable-next-line react/no-unknown-property -- Electron webview-атрибут (custom element)
+      allowpopups={true}
       style={{ display: isActive ? 'flex' : 'none', flex: 1, width: '100%' }}
     />
   )
+}, (a, b) =>
+  a.isActive === b.isActive
+  && a.tab.tabId === b.tab.tabId
+  && a.tab.url === b.tab.url
+  && a.tab.title === b.tab.title
+  && a.tab.loading === b.tab.loading
+  && a.tab.favicon === b.tab.favicon
+  && a.tab.discarded === b.tab.discarded
+  && a.tab.canGoBack === b.tab.canGoBack
+  && a.tab.canGoForward === b.tab.canGoForward
+)
+
+/** Один таб браузера: webview (живой) или заглушка (выгружен idle-discard).
+ *  Монтируется при появлении в реестре, НЕ анмаунтится при переключении
+ *  (keep-alive). */
+function BrowserTabView({ tab, isActive }: { tab: BrowserTab; isActive: boolean }) {
+  if (tab.discarded) {
+    return (
+      <div
+        className="browser-tab-discarded"
+        style={{ display: isActive ? 'flex' : 'none' }}
+      >
+        <AppIcon name="globe" size="sm" />
+        <span>Вкладка выгружена для экономии памяти — кликни по ней в списке, чтобы восстановить</span>
+      </div>
+    )
+  }
+  return <WebviewHost tab={tab} isActive={isActive} />
 }
 
 export default function BrowserPanel() {
-  const { tabs, activeTabId, urlDraft, setUrlDraft, setUrlFocused } = useBrowserStore(
-    useShallow(s => ({ tabs: s.tabs, activeTabId: s.activeTabId, urlDraft: s.urlDraft, setUrlDraft: s.setUrlDraft, setUrlFocused: s.setUrlFocused })),
+  const { tabs, activeTabId, urlDraft, urlFocused, setUrlDraft, setUrlFocused } = useBrowserStore(
+    useShallow(s => ({ tabs: s.tabs, activeTabId: s.activeTabId, urlDraft: s.urlDraft, urlFocused: s.urlFocused, setUrlDraft: s.setUrlDraft, setUrlFocused: s.setUrlFocused })),
   )
   /** Агент сейчас выполняет browser_* тул → бейдж «AI» в тулбаре. */
   const agentActiveTool = useBrowserStore(s => s.agentActiveTool)
@@ -142,10 +190,26 @@ export default function BrowserPanel() {
   }, [])
 
   // ── Черновик адресной строки следует за активным табом ──
+  // Пока инпут НЕ в фокусе — обновляем на каждый URL-пуш (навигация
+  // агентом, кнопками, ссылками, target=_blank). Раньше синкался только
+  // при ПУСТОМ черновике → после первой загрузки поле навсегда
+  // показывало стартовый google. В фокусе — не трогаем (юзер печатает).
   useEffect(() => {
-    if (!urlDraft) setUrlDraft(activeTab?.url && activeTab.url !== 'about:blank' ? activeTab.url : '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab?.url])
+    if (!urlFocused) {
+      setUrlDraft(activeTab?.url && activeTab.url !== 'about:blank' ? activeTab.url : '')
+    }
+  }, [activeTab?.url, urlFocused, setUrlDraft])
+
+  // ── Видимость браузера → main (мьют звука невидимых табов) ──
+  // Браузер виден = правая панель открыта + таб «Браузер» активен + есть
+  // активный таб браузера. Иначе (панель закрыта / другой таб панели) —
+  // звук гасится у всех webview: фоновые видео не орут из закрытой панели.
+  const panelOpen = useUIStore(s => s.agentPanelOpen)
+  const panelTab = useUIStore(s => s.agentPanelTab)
+  useEffect(() => {
+    const visible = panelOpen && panelTab === 'browser' ? (activeId ?? null) : null
+    window.syntee.browser.setVisibleTab(visible).catch(() => { /* ок */ })
+  }, [panelOpen, panelTab, activeId])
 
   const handleNavigate = useCallback(() => {
     const url = urlDraft.trim()
