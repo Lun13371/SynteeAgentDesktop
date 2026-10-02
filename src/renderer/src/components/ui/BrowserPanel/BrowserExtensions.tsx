@@ -36,6 +36,8 @@ export default function BrowserExtensionsPopover({ anchorEl, onClose, onChanged 
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  const [cacheSize, setCacheSize] = useState<number | null>(null)
+  const [cacheBusy, setCacheBusy] = useState(false)
   const popRef = useRef<HTMLDivElement>(null)
 
   const reload = useCallback(() => {
@@ -43,6 +45,26 @@ export default function BrowserExtensionsPopover({ anchorEl, onClose, onChanged 
   }, [])
 
   useEffect(() => { reload() }, [reload])
+
+  // Размер кэша сессии браузера (байты).
+  useEffect(() => {
+    window.syntee.browser.getCacheSize().then(setCacheSize).catch(() => setCacheSize(null))
+  }, [])
+
+  const handleClearCache = async () => {
+    if (cacheBusy) return
+    setCacheBusy(true)
+    try {
+      await window.syntee.browser.clearCache()
+      const size = await window.syntee.browser.getCacheSize().catch(() => 0)
+      setCacheSize(size)
+      setMessage({ kind: 'ok', text: 'Кэш браузера очищен' })
+    } catch {
+      setMessage({ kind: 'error', text: 'Не удалось очистить кэш' })
+    } finally {
+      setCacheBusy(false)
+    }
+  }
 
   // Позиция поповера от кнопки-якоря.
   useEffect(() => {
@@ -160,6 +182,20 @@ export default function BrowserExtensionsPopover({ anchorEl, onClose, onChanged 
           </button>
           <button className="browser-ext-pop__btn browser-ext-pop__btn--ghost" onClick={() => handleInstallLocal('folder')} disabled={busy}>
             Из папки
+          </button>
+        </div>
+
+        {/* Кэш сессии браузера: размер + очистка */}
+        <div className="browser-ext-pop__section browser-ext-pop__section--cache">
+          <span className="browser-ext-pop__cache-label" title="Дисковый кэш страниц встроенного браузера">
+            Кэш: {cacheSize === null ? '…' : `${(cacheSize / 1048576).toFixed(1)} МБ`}
+          </span>
+          <button
+            className="browser-ext-pop__btn browser-ext-pop__btn--ghost"
+            onClick={handleClearCache}
+            disabled={cacheBusy}
+          >
+            {cacheBusy ? '…' : 'Очистить'}
           </button>
         </div>
 

@@ -18,6 +18,9 @@ export interface BrowserTab {
   canGoBack: boolean
   canGoForward: boolean
   favicon?: string
+  /** Таб выгружен (idle-discard): webview-процесс убит ради памяти,
+   *  восстановится при выборе таба. */
+  discarded?: boolean
 }
 
 interface BrowserStore {

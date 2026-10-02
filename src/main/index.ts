@@ -13,6 +13,12 @@ app.setName('SynteeHelper')
 // с singleton-lock и данными живого инстанса юзера.
 app.setPath('userData', process.env.SYNTEE_USER_DATA_DIR || join(app.getPath('appData'), 'SynteeHelper'))
 
+// Лимит дискового кэша Chromium (512 МБ, все партишны: приложение +
+// встроенный браузер + spa-renderer). Без него кэш растёт по эвристике
+// свободного места — партишн браузера уже съел 155 МБ за вечер.
+// Свитч должен стоять до app ready.
+app.commandLine.appendSwitch('disk-cache-size', String(512 * 1024 * 1024))
+
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { DEFAULT_SETTINGS, DEFAULT_HOTKEYS } from '../shared/constants'

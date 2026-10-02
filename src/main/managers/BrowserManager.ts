@@ -38,6 +38,10 @@ export interface BrowserTabEntry {
   canGoBack: boolean
   canGoForward: boolean
   favicon?: string
+  /** Таб выгружен (idle-discard): webview-процесс убит ради памяти, запись
+   *  в реестре живёт; восстановится при выборе таба (webview монтируется
+   *  заново, registerTab перевешивает слушатели на новый guest). */
+  discarded?: boolean
 }
 
 /** Ответ browser_op для воркера (см. ai-worker.ts onBrowserAction). */
@@ -70,6 +74,17 @@ const CHROME_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
 
 class BrowserManagerImpl {
+  /** Лимит табов: каждый webview = отдельный renderer-процесс (50-200 МБ).
+   *  Агентский цикл tab_new не должен съесть всю RAM. */
+  private static readonly MAX_TABS = 12
+  /** Idle-discard: выгрузка фонового таба после N простоя. */
+  private static readonly DISCARD_AFTER_MS = 10 * 60_000
+  private static readonly DISCARD_CHECK_MS = 60_000
+  /** Агентская активность: троттлинг снят на N мс после последнего
+   *  browser-тула (серия navigate→snapshot должна рендериться на полной
+   *  скорости даже в скрытом табе). */
+  private static readonly AGENT_GRACE_MS = 20_000
+
   private tabs = new Map<string, BrowserTabEntry>()
   private win: BrowserWindow | null = null
   /** Ленивый геттер окна: главное окно создаётся ПОСЛЕ регистрации IPC
@@ -80,10 +95,38 @@ class BrowserManagerImpl {
   private winGetter: (() => BrowserWindow | null) | null = null
   /** Log-once: push пропущен из-за отсутствия окна (диагностика регрессий). */
   private pushSkipLogged = false
+  /** LRU: последнее использование таба (select/navigate/агент/просмотр). */
+  private lastUsed = new Map<string, number>()
+  /** Видимый таб (панель открыта + таб «Браузер» + этот таб активен);
+   *  null = браузер не виден. Управляет аудио-мьютом невидимых табов. */
+  private visibleTabId: string | null = null
+  /** До этого времени табы не троттлятся и не выгружаются (агент работает). */
+  private agentActiveUntil = 0
+  private agentThrottleTimer: ReturnType<typeof setTimeout> | null = null
+  private discardTimer: ReturnType<typeof setInterval> | null = null
+  /** Батчинг pushTabState: события страниц коалесцим раз в 100мс. */
+  private pushTimer: ReturnType<typeof setTimeout> | null = null
 
   /** @deprecated окно создаётся позже — использовать setWindowGetter. */
   setWindow(win: BrowserWindow | null): void {
     this.win = win
+  }
+
+  /** Settings-store (electron-store из main) — гейт mouseNavEnabled
+   *  для боковых кнопок мыши в webview. Прокидывается из browser.ipc. */
+  private settingsStore: { get: (key: string, def?: unknown) => unknown } | null = null
+
+  setSettingsStore(store: { get: (key: string, def?: unknown) => unknown }): void {
+    this.settingsStore = store
+  }
+
+  /** Инжект X1/X2-навигации в контекст страницы (см. attachGuestListeners). */
+  private injectSideButtonNav(wc: Electron.WebContents): void {
+    const enabled = this.settingsStore
+      ? this.settingsStore.get('mouseNavEnabled', true) !== false
+      : true
+    if (!enabled) return
+    wc.executeJavaScript(SIDE_BUTTON_SCRIPT, false).catch(() => { /* страница могла уйти — ок */ })
   }
 
   setWindowGetter(getter: () => BrowserWindow | null): void {
@@ -152,6 +195,7 @@ class BrowserManagerImpl {
 
   registerTab(tabId: string, webContentsId: number): void {
     const prev = this.tabs.get(tabId)
+    this.lastUsed.set(tabId, Date.now())
     if (prev && prev.webContentsId === webContentsId) {
       this.updateTab(tabId, { loading: false })
       return
@@ -169,15 +213,25 @@ class BrowserManagerImpl {
     this.attachGuestListeners(tabId, webContentsId)
     log('[browser] registerTab tabId=%s wcId=%d (total %d)', tabId, webContentsId, this.tabs.size)
     this.pushTabState()
+    this.startDiscardTimer()
   }
 
   unregisterTab(tabId: string): void {
+    this.lastUsed.delete(tabId)
     if (this.tabs.delete(tabId)) {
       // Закрыли активный — активируем первый оставшийся (иначе все webview
       // получают display:none → белый экран).
       if (this.activeTabId === tabId) {
-        this.activeTabId = this.getTabs()[0]?.tabId ?? null
+        const fallback = this.getTabs()[0] ?? null
+        this.activeTabId = fallback?.tabId ?? null
+        // Фолбэк может быть выгружен — восстанавливаем: активный таб должен
+        // быть живым (иначе wc()=null и тулы слепнут).
+        if (fallback?.discarded) {
+          fallback.discarded = false
+          this.lastUsed.set(fallback.tabId, Date.now())
+        }
       }
+      if (this.visibleTabId === tabId) this.visibleTabId = null
       log('[browser] unregisterTab tabId=%s (total %d)', tabId, this.tabs.size)
       this.pushTabState()
     }
@@ -187,7 +241,19 @@ class BrowserManagerImpl {
     const t = this.tabs.get(tabId)
     if (!t) return
     Object.assign(t, patch)
-    this.pushTabState()
+    this.schedulePush()
+  }
+
+  /** Батчинг пушей: события страниц идут пачками (did-navigate + title +
+   *  favicon + loading за секунду) — каждый пуш = IPC + ре-рендер панели.
+   *  Коалесцим в один пуш раз в 100мс (троттлинг с трейлингом). */
+  private schedulePush(): void {
+    if (this.pushTimer) return
+    this.pushTimer = setTimeout(() => {
+      this.pushTimer = null
+      this.pushTabState()
+    }, 100)
+    if (typeof this.pushTimer.unref === 'function') this.pushTimer.unref()
   }
 
   getTabs(): BrowserTabEntry[] {
@@ -205,6 +271,13 @@ class BrowserManagerImpl {
   private activeTabId: string | null = null
 
   setActiveTab(tabId: string): void {
+    const entry = this.tabs.get(tabId)
+    if (entry?.discarded) {
+      // Восстановление выгруженного таба: renderer смонтирует webview
+      // заново, registerTab перевешает слушатели на новый guest-процесс.
+      entry.discarded = false
+    }
+    this.lastUsed.set(tabId, Date.now())
     this.activeTabId = tabId
     this.pushTabState()
   }
@@ -245,15 +318,30 @@ class BrowserManagerImpl {
       const wc = webContents.fromId(webContentsId)
       if (!wc || wc.isDestroyed()) return
 
-      // Не тормозить таймеры страницы, когда панель скрыта (keep-alive прячет
-      // через display:none) — AI-действия должны работать в фоне.
-      try { wc.setBackgroundThrottling(false) } catch { /* ok */ }
+      // Троттлинг НЕ выключаем (раньше был setBackgroundThrottling(false)
+      // навсегда — скрытые табы жгли CPU на полную). Скрытые табы теперь
+      // дешёвые: таймеры/rAF замирают. Агентские операции снимают троттлинг
+      // временно (markAgentActivity), видимые табы Chromium не троттлит.
+
+      // Звук — только у видимого таба (панель открыта + таб активен).
+      try { wc.setAudioMuted(this.visibleTabId !== tabId) } catch { /* ok */ }
 
       // window.open / target=_blank → новый таб панели, не попап.
+      // Активируем его: юзер кликнул ссылку «в новой вкладке» и ожидает
+      // увидеть результат сразу (как в браузере); агентские window.open
+      // (JS попапы) тоже попадают в поле зрения юзера.
       wc.setWindowOpenHandler(({ url }) => {
-        this.newTab(url)
+        const newTabId = this.newTab(url)
+        this.setActiveTab(newTabId)
         return { action: 'deny' }
       })
+
+      // Боковые кнопки мыши (X1/X2) = назад/вперёд по истории СТРАНИЦЫ.
+      // События над webview уходят в guest-процесс — host-рендерер их не
+      // видит (App.tsx X1/X2-навигация по разделам не срабатывает), а
+      // Windows app-command гасится в MainWindow. Инжектим слушатель в
+      // контекст страницы на dom-ready: history.back() — как в браузере.
+      wc.on('dom-ready', () => this.injectSideButtonNav(wc))
 
       wc.on('did-start-loading', () => this.updateTab(tabId, { loading: true }))
       wc.on('did-stop-loading', () => {
@@ -281,6 +369,7 @@ class BrowserManagerImpl {
   // ── UI-операции (из renderer через browser.ipc) ─────────────────────────
 
   navigate(tabId: string, url: string): void {
+    this.lastUsed.set(tabId, Date.now())
     const target = normalizeUrl(url)
     const wc = this.wc(tabId)
     if (wc) {
@@ -307,6 +396,21 @@ class BrowserManagerImpl {
   reload(tabId: string): void { this.wc(tabId)?.reload() }
 
   newTab(url?: string): string {
+    // Лимит табов: каждый webview = отдельный renderer-процесс (50-200 МБ).
+    // Выгружаем самый давно неиспользуемый НЕ-активный таб (LRU).
+    if (this.tabs.size >= BrowserManagerImpl.MAX_TABS) {
+      let oldest: string | null = null
+      let oldestTs = Infinity
+      for (const t of this.tabs.values()) {
+        if (t.tabId === this.activeTabId) continue
+        const ts = this.lastUsed.get(t.tabId) ?? 0
+        if (ts < oldestTs) { oldestTs = ts; oldest = t.tabId }
+      }
+      if (oldest) {
+        log('[browser] MAX_TABS: evict oldest non-active tab=%s', oldest)
+        this.unregisterTab(oldest)
+      }
+    }
     const tabId = `bt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     // Таб создаётся в renderer (webview-элемент); здесь — только запись в
     // реестре-заготовке. Renderer при did-attach вызовет registerTab с этим
@@ -322,8 +426,10 @@ class BrowserManagerImpl {
       canGoBack: false,
       canGoForward: false,
     })
+    this.lastUsed.set(tabId, Date.now())
     if (!this.activeTabId) this.activeTabId = tabId
     this.pushTabState()
+    this.startDiscardTimer()
     return tabId
   }
 
@@ -332,10 +438,84 @@ class BrowserManagerImpl {
     return this.activeTabId
   }
 
+  // ── Оптимизация фоновой нагрузки ────────────────────────────────────────
+
+  /** Видимый таб (renderer: панель открыта + таб «Браузер» + этот таб
+   *  активен). null = браузер не виден → звук мьютится у всех табов. */
+  setVisibleTab(tabId: string | null): void {
+    if (this.visibleTabId === tabId) return
+    this.visibleTabId = tabId
+    if (tabId) this.lastUsed.set(tabId, Date.now())
+    for (const t of this.tabs.values()) {
+      if (t.webContentsId < 0) continue
+      try {
+        const wc = webContents.fromId(t.webContentsId)
+        if (wc && !wc.isDestroyed()) wc.setAudioMuted(t.tabId !== tabId)
+      } catch { /* ок */ }
+    }
+  }
+
+  /** Агентская browser-операция: снимаем троттлинг со всех табов на
+   *  AGENT_GRACE_MS (каждая новая операция продлевает окно). По истечении
+   *  троттлинг возвращается — скрытые табы снова дешёвые. Видимые табы
+   *  Chromium не троттлит в любом случае (снятие/возврат — no-op). */
+  markAgentActivity(): void {
+    this.agentActiveUntil = Date.now() + BrowserManagerImpl.AGENT_GRACE_MS
+    for (const t of this.tabs.values()) {
+      this.lastUsed.set(t.tabId, Date.now())
+      if (t.webContentsId < 0) continue
+      try {
+        const wc = webContents.fromId(t.webContentsId)
+        if (wc && !wc.isDestroyed()) wc.setBackgroundThrottling(false)
+      } catch { /* ок */ }
+    }
+    if (this.agentThrottleTimer) clearTimeout(this.agentThrottleTimer)
+    this.agentThrottleTimer = setTimeout(() => {
+      this.agentThrottleTimer = null
+      this.agentActiveUntil = 0
+      for (const t of this.tabs.values()) {
+        if (t.webContentsId < 0) continue
+        try {
+          const wc = webContents.fromId(t.webContentsId)
+          if (wc && !wc.isDestroyed()) wc.setBackgroundThrottling(true)
+        } catch { /* ок */ }
+      }
+    }, BrowserManagerImpl.AGENT_GRACE_MS)
+    if (typeof this.agentThrottleTimer.unref === 'function') this.agentThrottleTimer.unref()
+  }
+
+  /** Idle-discard: выгружаем фоновые табы после DISCARD_AFTER_MS простоя —
+   *  webview-процесс умирает (renderer прячет элемент), запись в реестре
+   *  живёт. Не трогаем: активный, видимый, недавно использованные и пока
+   *  агент работает с браузером. */
+  private discardIdleTabs(): void {
+    const now = Date.now()
+    if (now < this.agentActiveUntil) return
+    let changed = false
+    for (const t of this.tabs.values()) {
+      if (t.discarded) continue
+      if (t.tabId === this.activeTabId || t.tabId === this.visibleTabId) continue
+      const used = this.lastUsed.get(t.tabId) ?? now
+      if (now - used < BrowserManagerImpl.DISCARD_AFTER_MS) continue
+      t.discarded = true
+      changed = true
+      log('[browser] idle-discard tab=%s (idle %d min)', t.tabId, Math.round((now - used) / 60000))
+    }
+    if (changed) this.pushTabState()
+  }
+
+  private startDiscardTimer(): void {
+    if (this.discardTimer) return
+    this.discardTimer = setInterval(() => this.discardIdleTabs(), BrowserManagerImpl.DISCARD_CHECK_MS)
+    if (typeof this.discardTimer.unref === 'function') this.discardTimer.unref()
+  }
+
   // ── AI-операции (browser_op из воркера) ─────────────────────────────────
 
   /** Главная точка входа AI-операций. Гейтинг по browserMode чата. */
   async execute(chatId: string, p: BrowserOpPayload): Promise<BrowserOpResult> {
+    // Агентская активность: снять троттлинг + отложить idle-discard.
+    this.markAgentActivity()
     // request_access доступен всегда — это и есть путь включения.
     if (p.action === 'request_access') return this.handleRequestAccess(chatId, p.reason)
 
@@ -668,6 +848,28 @@ function sleep(ms: number): Promise<void> {
 function safe<T>(fn: () => T): T | null {
   try { return fn() } catch { return null }
 }
+
+// ── Инжект X1/X2 (боковые кнопки мыши) в контекст страницы ────────────────
+//
+// События над webview доставляются guest-процессу как обычные mouse-события
+// (button 3/4) — хост-рендерер их не получает. Слушатель на window страницы
+// зовёт history.back()/forward() — поведение как в настоящем браузере.
+// Флаг __syntee_sidebtn защищает от двойного инжекта (dom-ready может
+// стрелять повторно); при полной перезагрузке страницы флаг умирает вместе
+// с документом — инжект повторяется.
+const SIDE_BUTTON_SCRIPT = String.raw`
+(() => {
+  if (window.__syntee_sidebtn) return
+  window.__syntee_sidebtn = true
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 3) { e.preventDefault(); e.stopPropagation(); history.back() }
+    else if (e.button === 4) { e.preventDefault(); e.stopPropagation(); history.forward() }
+  }, true)
+  window.addEventListener('auxclick', (e) => {
+    if (e.button === 3 || e.button === 4) { e.preventDefault(); e.stopPropagation() }
+  }, true)
+})()
+`
 
 // ── Снапшот-скрипт: a11y-дерево с ref'ами (Playwright MCP-style) ──────────
 //

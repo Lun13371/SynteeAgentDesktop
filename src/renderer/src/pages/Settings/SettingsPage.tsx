@@ -1733,6 +1733,12 @@ const AppearanceSection = memo(function AppearanceSection({ settings, onSet }: {
                 <input type="color" className="settings-input" value={(settings['audioVisualizerColor'] as string) || '#4d9fff'} onChange={e => onSet('audioVisualizerColor', e.target.value)} />
               </Field>
             )}
+            <Field id="audioVisualizerAgc" label="Авто-чувствительность" description="Тихая музыка даёт такую же яркую реакцию, как громкая — усиление подстраивается автоматически">
+              <Toggle value={(settings['audioVisualizerAgc'] as boolean) ?? true} onChange={v => {
+                onSet('audioVisualizerAgc', v)
+                void window.syntee.audioVisualizer?.setAgc(v)
+              }} />
+            </Field>
             <Field id="audioVisualizerQuality" label="Производительность" description="WebGL2-шейдеры, как у анимированного фона">
               <span className="settings-audio-visualizer-status">WebGL2 · 60 FPS</span>
             </Field>
