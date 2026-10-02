@@ -395,6 +395,78 @@ declare const synteeAPI: {
         getSettings: () => Promise<import("../../shared/types").DotSettings>;
         setSettings: (patch: Partial<import("../../shared/types").DotSettings>) => Promise<import("../../shared/types").DotSettings>;
     };
+    browser: {
+        registerTab: (tabId: string, webContentsId: number) => Promise<boolean>;
+        unregisterTab: (tabId: string) => Promise<boolean>;
+        navigate: (tabId: string, url: string) => Promise<boolean>;
+        back: (tabId: string) => Promise<boolean>;
+        forward: (tabId: string) => Promise<boolean>;
+        reload: (tabId: string) => Promise<boolean>;
+        newTab: (url?: string) => Promise<string>;
+        closeTab: (tabId: string) => Promise<boolean>;
+        selectTab: (tabId: string) => Promise<boolean>;
+        getState: () => Promise<{
+            tabs: Array<{
+                tabId: string;
+                webContentsId: number;
+                url: string;
+                title: string;
+                loading: boolean;
+                canGoBack: boolean;
+                canGoForward: boolean;
+                favicon?: string;
+            }>;
+            activeTabId: string | null;
+        }>;
+        onTabState: (cb: (state: {
+            tabs: Array<{
+                tabId: string;
+                webContentsId: number;
+                url: string;
+                title: string;
+                loading: boolean;
+                canGoBack: boolean;
+                canGoForward: boolean;
+                favicon?: string;
+            }>;
+            activeTabId: string | null;
+        }) => void) => () => Electron.IpcRenderer;
+        onModeChanged: (cb: (info: {
+            chatId: string;
+            enabled: boolean;
+        }) => void) => () => Electron.IpcRenderer;
+        extList: () => Promise<Array<{
+            id: string;
+            name: string;
+            version: string;
+            description?: string;
+            source: "webstore" | "local";
+            enabled: boolean;
+            dir: string;
+        }>>;
+        extInstallWebStore: (input: string) => Promise<{
+            ok: boolean;
+            info?: {
+                id: string;
+                name: string;
+                version: string;
+            };
+            error?: string;
+            canceled?: boolean;
+        }>;
+        extInstallLocal: (mode: "file" | "folder") => Promise<{
+            ok: boolean;
+            info?: {
+                id: string;
+                name: string;
+                version: string;
+            };
+            error?: string;
+            canceled?: boolean;
+        }>;
+        extRemove: (extId: string) => Promise<boolean>;
+        extToggle: (extId: string, enabled: boolean) => Promise<boolean>;
+    };
     chat: {
         create: (incognito?: boolean, mode?: "code" | "work", projectId?: string, model?: {
             modelId?: string;
@@ -427,6 +499,8 @@ declare const synteeAPI: {
             planningMode?: boolean;
             askMode?: boolean;
             imageMode?: boolean;
+            /** Тумблер «Управление браузером»: browser_* тулы + request_access. */
+            browserMode?: boolean;
             mode?: "code" | "work";
             /** Single-select persona run mode (classic/architect/debugger/...).
              *  Orthogonal to planning/ask/image toggles. */
@@ -524,6 +598,8 @@ declare const synteeAPI: {
         setPlanningMode: (chatId: string, val: boolean) => Promise<any>;
         setImageMode: (chatId: string, val: boolean) => Promise<any>;
         setAskMode: (chatId: string, val: boolean) => Promise<any>;
+        getBrowserMode: (chatId: string) => Promise<boolean>;
+        setBrowserMode: (chatId: string, val: boolean) => Promise<any>;
         /** Single-select persona run mode (classic/architect/debugger/...). */
         getPersona: (chatId: string) => Promise<import("../../shared/modes").PersonaId>;
         setPersona: (chatId: string, persona: import("../../shared/modes").PersonaId) => Promise<any>;

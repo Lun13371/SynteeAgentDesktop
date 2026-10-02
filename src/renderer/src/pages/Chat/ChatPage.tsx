@@ -269,6 +269,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
   const [askMode, setAskMode] = useState(false)
+  // Тумблер «Управление браузером»: browser_* тулы для AI. Включается
+  // вручную (плюс-меню) или через подтверждение request_access от AI.
+  const [browserMode, setBrowserMode] = useState(false)
+  const browserModeRef = useRef(false)
   // Persona — single-select run mode (classic/architect/debugger/...).
   // Orthogonal to the three toggles above. Persisted per-chat in chats.persona.
   const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA)
@@ -311,6 +315,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
   useEffect(() => { askModeRef.current = askMode }, [askMode])
+  useEffect(() => { browserModeRef.current = browserMode }, [browserMode])
   useEffect(() => { personaRef.current = persona }, [persona])
 
   const [showContextRing, setShowContextRing] = useState(true)
@@ -639,6 +644,26 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (!currentChatId || isIncognito) return
     window.syntee.chat.setAskMode(currentChatId, v).catch(e => console.error('[askMode] IPC fail:', e))
   }, [currentChatId, isIncognito])
+  // Тумблер «Управление браузером»: пишет chats.browser_mode (main шлёт
+  // BROWSER_MODE_CHANGED — но локальный флаг обновляем сразу, без эха).
+  const handleBrowserModeChange = useCallback((v: boolean) => {
+    setBrowserMode(v)
+    browserModeRef.current = v
+    if (!currentChatId || isIncognito) return
+    window.syntee.chat.setBrowserMode(currentChatId, v).catch(e => console.error('[browserMode] IPC fail:', e))
+  }, [currentChatId, isIncognito])
+
+  // BROWSER_MODE_CHANGED из main: request_access подтверждён AI (диалог
+  // AgentConfirmDialog) или тумблер переключён из другого места — синкаем
+  // чип/тумблер, если событие для текущего чата.
+  useEffect(() => {
+    const off = window.syntee.browser.onModeChanged(({ chatId, enabled }) => {
+      if (chatId !== prevChatIdRef.current) return
+      setBrowserMode(enabled)
+      browserModeRef.current = enabled
+    })
+    return () => { off() }
+  }, [])
 
   // ── In-app hotkeys для переключения режимов чата ──────────────────────
   // Ctrl+1 — toggle Ask (режим чтения), Ctrl+2 — toggle Planning.
@@ -860,17 +885,19 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     // Обычный чат: грузим modes/draft/history/attachments из БД параллельно.
     // Сначала сбрасываем режимы в false синхронно — чтобы UI не показывал
     // вспышку режимов предыдущего чата пока async-load не завершится.
-    setPlanningMode(false); setImageMode(false); setAskMode(false)
+    setPlanningMode(false); setImageMode(false); setAskMode(false); setBrowserMode(false)
     planningModeRef.current = false; imageModeRef.current = false; askModeRef.current = false
+    browserModeRef.current = false
     let cancelled = false
     Promise.all([
       window.syntee.chat.getModes(currentChatId).catch(() => null),
+      window.syntee.chat.getBrowserMode(currentChatId).catch(() => null),
       window.syntee.chat.getDraft(currentChatId).catch(() => null),
       window.syntee.chat.getInputHistory(currentChatId).catch(() => null),
       window.syntee.draft.getAttachments(currentChatId).catch(() => null),
       window.syntee.chat.getPersona(currentChatId).catch(() => null),
       window.syntee.chat.getLastTurnChanges?.(currentChatId).catch(() => null),
-    ]).then(([modes, draftText, history, attachments, loadedPersona, lastChanges]) => {
+    ]).then(([modes, browserModeLoaded, draftText, history, attachments, loadedPersona, lastChanges]) => {
       if (cancelled || currentChatId !== prevChatIdRef.current) return
       useChatStore.getState().setLastTurnChanges(currentChatId, lastChanges ?? null)
       if (modes) {
@@ -880,6 +907,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
         planningModeRef.current = !!modes.planningMode
         imageModeRef.current = !!modes.imageMode
         askModeRef.current = !!modes.askMode
+      }
+      // Тумблер «Управление браузером» (chats.browser_mode).
+      if (typeof browserModeLoaded === 'boolean') {
+        setBrowserMode(browserModeLoaded)
+        browserModeRef.current = browserModeLoaded
       }
       const safePersona = isValidPersona(loadedPersona) ? loadedPersona : DEFAULT_PERSONA
       setPersonaState(safePersona)
@@ -911,7 +943,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       setInputHistory(dedup)
     }).catch(() => {
       if (cancelled) return
-      setDraft(''); setPlanningMode(false); setImageMode(false); setAskMode(false)
+      setDraft(''); setPlanningMode(false); setImageMode(false); setAskMode(false); setBrowserMode(false)
+      browserModeRef.current = false
       setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setInputHistory([])
       setDraftAttachments([]); draftAttachmentsRef.current = []
@@ -1837,6 +1870,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // /ask без тоггла — askMode true только для этого сообщения.
       askMode: askMode || slash?.command.name === 'ask',
       imageMode,
+      // Тумблер «Управление браузером»: browser_* тулы (main также читает
+      // chats.browser_mode — включение через request_access учитывается).
+      browserMode: browserModeRef.current,
       // persona из ref — мгновенно отражает актуальное значение (state
       // асинхронно). Важно для persona auto-suggest modal: после accept
       // повторный handleSend должен увидеть новую персону, а не старую.
@@ -2643,6 +2679,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onImageModeChange={handleImageModeChange}
               askMode={askMode}
               onAskModeChange={handleAskModeChange}
+              browserMode={browserMode}
+              onBrowserModeChange={handleBrowserModeChange}
               persona={persona}
               onPersonaChange={handlePersonaChange}
               workdir={currentWorkdir}

@@ -57,10 +57,11 @@ export interface AgentCallbacks {
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   /**
    * SPA-fallback для fetch_page: рендерит страницу через скрытый BrowserWindow
-   * (встроенный Chromium) в main-процессе. Возвращает HTML после JS-выполнения.
+   * (встроенный Chromium) в main-процессе. Возвращает структурный markdown
+   * (walker пробивает shadow DOM) + HTML для совместимости.
    * Round-trip worker → main → BrowserWindow → worker.
    */
-  onRenderPage?: (url: string, opts: { waitSelector?: string; timeoutMs?: number }) => Promise<{ html: string; title?: string; error?: string }>
+  onRenderPage?: (url: string, opts: { waitSelector?: string; timeoutMs?: number }) => Promise<{ html: string; title?: string; error?: string; text?: string; apiEndpoints?: string[] }>
   /** Логгер тулов с каскадами (fetch_page, search_images): стадии и диагностика. */
   onLog?: (msg: string) => void
   /** Начало раунда: tiktoken-оценка того, что уйдёт в запрос (system+history
@@ -204,6 +205,27 @@ export interface AgentCallbacks {
     icon?: string
     color?: string
   }) => Promise<{ success: boolean; error?: string; text?: string }>
+  /**
+   * browser_*-тулы + request_access: управление встроенным браузером.
+   * Round-trip в main-процесс (browser_op), где живёт BrowserManager с
+   * реестром webview-табов. imageBase64 — скриншот для vision-модели.
+   */
+  onBrowserAction?: (params: {
+    action:
+      | 'request_access' | 'navigate' | 'back' | 'forward' | 'reload'
+      | 'snapshot' | 'click' | 'type' | 'press_key' | 'scroll'
+      | 'screenshot' | 'tabs' | 'tab_new' | 'tab_select' | 'tab_close' | 'wait'
+    url?: string
+    ref?: string
+    text?: string
+    submit?: boolean
+    key?: string
+    direction?: 'up' | 'down'
+    amount?: number
+    tabId?: string
+    reason?: string
+    ms?: number
+  }) => Promise<{ success: boolean; output?: string; error?: string; enabled?: boolean; imageBase64?: string }>
 }
 
 export interface AgentSummaryDetails {

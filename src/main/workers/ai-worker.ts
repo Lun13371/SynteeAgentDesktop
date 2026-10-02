@@ -14,12 +14,17 @@ import { recordSessionCost, buildSnapshotFromReal } from '../../core/tokens/usag
 import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
+import { BROWSER_TOOL_SCHEMAS } from '../../core/tools/schemas/browser'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
 const askMode: boolean = !!(workerData as Record<string, unknown>).askMode
+// Тумблер «Управление браузером»: browser_* тулы в тулсете с самого старта
+// рана. Может быть включён ПОСРЕДИ рана (request_access → confirm) — тогда
+// onBrowserAction мутирует runTools (см. ниже), следующий раунд уже с тулами.
+const browserMode: boolean = !!(workerData as Record<string, unknown>).browserMode
 const workerPersona = (workerData as Record<string, unknown>).persona as import('../../shared/modes').PersonaId | undefined
 const workerPersonaInjection = ((workerData as Record<string, unknown>).personaInjection as string | undefined) ?? ''
 const workerMode: 'code' | 'work' = ((workerData as Record<string, unknown>).mode as 'code' | 'work') ?? 'code'
@@ -261,6 +266,29 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     if (enableTools) {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
+
+      // Мутабельный тулсет рана: request_access может включить browser-тулы
+      // ПОСРЕДИ рана (подтверждение юзера) — Agent держит ссылку на массив
+      // (toolSchemas ?? TOOL_SCHEMAS в каждом раунде), мутируем на месте,
+      // следующий раунд уже с browser_* тулами. Без пересборки рана.
+      const runTools: typeof getToolSchemas extends (...args: never[]) => infer R ? R : never =
+        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
+          planningMode,
+          askMode,
+          browserMode,
+          mode: workerMode,
+          mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
+          pluginTools: ((workerData as Record<string, unknown>).pluginTools as PluginToolRuntime[] | undefined) ?? [],
+        })
+      // Флип browser-режима посреди рана: request_access подтверждён →
+      // добавляем 15 browser-тулов, убираем request_access (нечего запрашивать).
+      const enableBrowserToolsMidRun = (): void => {
+        const names = new Set(runTools.map(t => (t as { function: { name: string } }).function.name))
+        if (names.has('browser_navigate')) return // уже включены
+        const idx = runTools.findIndex(t => (t as { function: { name: string } }).function.name === 'request_access')
+        if (idx >= 0) runTools.splice(idx, 1)
+        runTools.push(...BROWSER_TOOL_SCHEMAS)
+      }
 
       // Прокидываем chatId и колбэки рабочей памяти
       agent.chatId = chatId
@@ -584,6 +612,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                   html: (reply.html as string) ?? '',
                   title: (reply.title as string) ?? '',
                   error: reply.error as string | undefined,
+                  text: (reply.text as string) || undefined,
+                  apiEndpoints: (reply.apiEndpoints as string[]) || undefined,
                 })
               })
               send({
@@ -620,6 +650,27 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                   ?? { success: false, error: 'manage_dots: нет ответа от main-процесса' })
               })
               send({ type: 'manage_dots', chatId, msgId, replyId, payload })
+            })
+          },
+          onBrowserAction: (payload) => {
+            // Round-trip в main: BrowserManager.execute (реестр webview-табов,
+            // гейтинг browserMode, request_access → AgentConfirmDialog).
+            // При подтверждении request_access — мутируем runTools: browser-тулы
+            // появляются со следующего раунда ЭТОГО же рана (Agent держит
+            // ссылку на массив, пересобирать ничего не нужно).
+            return new Promise((resolve) => {
+              const replyId = `browser-reply-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              replyHandlers.set(replyId, (reply) => {
+                const result = (reply.result as { success: boolean; output?: string; error?: string; enabled?: boolean; imageBase64?: string })
+                  ?? { success: false, error: 'browser: нет ответа от main-процесса' }
+                // Флип режима посреди рана: request_access подтверждён →
+                // добавляем browser-тулы, убираем request_access.
+                if (result.enabled && payload.action === 'request_access') {
+                  enableBrowserToolsMidRun()
+                }
+                resolve(result)
+              })
+              send({ type: 'browser_op', chatId, msgId, replyId, payload })
             })
           },
           onTodoUpdate: (items) => {
@@ -789,13 +840,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           if (workerPersonaInjection) h = [...h, { role: 'system', content: workerPersonaInjection }]
           return h
         })(),
-        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
-          planningMode,
-          askMode,
-          mode: workerMode,
-          mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
-          pluginTools: ((workerData as Record<string, unknown>).pluginTools as PluginToolRuntime[] | undefined) ?? [],
-        }),        {
+        runTools,        {
           autoMemoryInterval: incognito ? 0 : (agentSettings.autoMemoryInterval ?? 5),
           readFileCache: agentSettings.readFileCache !== false,
           maxRepeatedToolCalls: agentSettings.maxRepeatedToolCalls ?? 3,

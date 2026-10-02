@@ -183,6 +183,9 @@ export function runInitialSchema(db: Database.Database): void {
   if (!chatCols.find(c => c.name === 'planning_mode')) db.prepare(`ALTER TABLE chats ADD COLUMN planning_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'image_mode'))    db.prepare(`ALTER TABLE chats ADD COLUMN image_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'ask_mode'))      db.prepare(`ALTER TABLE chats ADD COLUMN ask_mode INTEGER NOT NULL DEFAULT 0`).run()
+  // browser_mode — тумблер «Управление браузером» (browser_* тулы для AI).
+  // Включается вручную (плюс-меню) или через подтверждение request_access.
+  if (!chatCols.find(c => c.name === 'browser_mode'))  db.prepare(`ALTER TABLE chats ADD COLUMN browser_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'draft'))         db.prepare(`ALTER TABLE chats ADD COLUMN draft TEXT`).run()
   // persona — single-select run mode (classic/architect/debugger/...).
   // Orthogonal to planning_mode/image_mode/ask_mode toggles. TEXT, default

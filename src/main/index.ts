@@ -31,6 +31,9 @@ import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
 import { registerAgentIPC } from './ipc/agent.ipc'
 import { registerDotsIPC } from './ipc/dots.ipc'
+import { registerBrowserIPC } from './ipc/browser.ipc'
+import { browserManager } from './managers/BrowserManager'
+import { log } from '../core/logger'
 import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerNotesIPC } from './ipc/notes.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
@@ -165,6 +168,20 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 }
+
+// ── Краш-устойчивость main-процесса ────────────────────────────────────────
+// Node ≥15 по умолчанию роняет процесс на unhandledRejection. В Electron
+// benign-отклонения — норма (IPC, async-инициализация, гонки таймеров):
+// молчаливый выход приложения через ~15с после старта без единой строки в
+// логах. Логируем громко и живём дальше. uncaughtException уже обрабатывается
+// ниже (последняя линия защиты).
+process.on('unhandledRejection', (reason) => {
+  try {
+    console.error('[unhandledRejection]', reason)
+    log('[unhandledRejection] %s', reason instanceof Error ? `${reason.message}\n${reason.stack ?? ''}` : String(reason))
+  } catch { /* noop */ }
+  // НЕ вызываем flushAllActiveRuns — см. комментарий у uncaughtException ниже.
+})
 
 // Инициализируем store с дефолтными настройками.
 // Явно указываем generic <Record<string, unknown>> — без него TS выводит тип
@@ -312,6 +329,16 @@ app.whenReady().then(async () => {
   // Dots (always-on агенты): ПОСЛЕ registerChatIPC — DotManager будит Dot'ов
   // через programmatic chat:send (chatSendImpl установлен в registerChatIPC).
   registerDotsIPC(store, () => mainWindow.getWindow())
+  // Встроенный браузер (правая панель, webview): регистрация табов +
+  // browserMode чата + расширения. BrowserManager — ленивый геттер окна:
+  // окно создаётся ниже (mainWindow.create()), eager-значение здесь было бы
+  // null навсегда → pushTabState no-op → белый экран браузера.
+  registerBrowserIPC(store, () => mainWindow.getWindow())
+  browserManager.setWindowGetter(() => mainWindow.getWindow())
+  // Расширения браузера: автозагрузка установленных при старте.
+  import('./browser/extensions')
+    .then(({ loadExtensionsOnBoot }) => loadExtensionsOnBoot(store))
+    .catch(err => console.warn('[browser:ext] boot load failed:', err))
   registerMemoryIPC(store)
   registerNotesIPC(() => mainWindow.getWindow())
   registerProviderIPC(store)

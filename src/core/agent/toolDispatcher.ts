@@ -720,6 +720,79 @@ export class ToolDispatcher {
         const instructions = await callbacks.onGetSkill(skillName)
         return { success: true, output: instructions }
       }
+      // ── Браузер: 15 тулов + request_access → один раунд-трип browser_op ──
+      // Все кейсы маппятся в onBrowserAction (main: BrowserManager.execute).
+      // Гейтинг browserMode — в main (execute), не здесь: request_access
+      // доступен всегда, остальные возвращают подсказку вызвать request_access.
+      case 'request_access':
+      case 'browser_navigate':
+      case 'browser_back':
+      case 'browser_forward':
+      case 'browser_reload':
+      case 'browser_snapshot':
+      case 'browser_click':
+      case 'browser_type':
+      case 'browser_press_key':
+      case 'browser_scroll':
+      case 'browser_screenshot':
+      case 'browser_tabs_list':
+      case 'browser_tab_new':
+      case 'browser_tab_select':
+      case 'browser_tab_close':
+      case 'browser_wait': {
+        if (!callbacks?.onBrowserAction) {
+          return { success: false, output: '', error: 'browser tools unavailable (no browser backend)' }
+        }
+        const actionMap: Record<string, string> = {
+          request_access: 'request_access',
+          browser_navigate: 'navigate',
+          browser_back: 'back',
+          browser_forward: 'forward',
+          browser_reload: 'reload',
+          browser_snapshot: 'snapshot',
+          browser_click: 'click',
+          browser_type: 'type',
+          browser_press_key: 'press_key',
+          browser_scroll: 'scroll',
+          browser_screenshot: 'screenshot',
+          browser_tabs_list: 'tabs',
+          browser_tab_new: 'tab_new',
+          browser_tab_select: 'tab_select',
+          browser_tab_close: 'tab_close',
+          browser_wait: 'wait',
+        }
+        const action = actionMap[name]
+        if (!action) return { success: false, output: '', error: `Unknown browser tool: ${name}` }
+        try {
+          const result = await callbacks.onBrowserAction({
+            action: action as 'request_access' | 'navigate' | 'back' | 'forward' | 'reload' | 'snapshot' | 'click' | 'type' | 'press_key' | 'scroll' | 'screenshot' | 'tabs' | 'tab_new' | 'tab_select' | 'tab_close' | 'wait',
+            url: resolvedArgs.url as string | undefined,
+            ref: resolvedArgs.ref as string | undefined,
+            text: resolvedArgs.text as string | undefined,
+            submit: resolvedArgs.submit as boolean | undefined,
+            key: resolvedArgs.key as string | undefined,
+            direction: resolvedArgs.direction as 'up' | 'down' | undefined,
+            amount: resolvedArgs.amount as number | undefined,
+            tabId: resolvedArgs.tab_id as string | undefined,
+            reason: resolvedArgs.reason as string | undefined,
+            ms: resolvedArgs.ms as number | undefined,
+          })
+          if (!result.success) {
+            return { success: false, output: '', error: result.error ?? `browser ${action} failed` }
+          }
+          // Скриншот: PNG → imageParts (vision-пайплайн Agent'а, как analyze_image).
+          if (result.imageBase64) {
+            return {
+              success: true,
+              output: result.output ?? 'Screenshot captured.',
+              imageParts: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${result.imageBase64}` } }],
+            }
+          }
+          return { success: true, output: result.output ?? 'OK' }
+        } catch (e) {
+          return { success: false, output: '', error: (e as Error).message }
+        }
+      }
       default:
         if (name.startsWith('mcp__') && callbacks?.onMcpCall) {
           const result = await callbacks.onMcpCall(name, resolvedArgs)

@@ -18,6 +18,7 @@ import {
   type WorktreeInfo,
 } from './WorktreeIsolation'
 import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
+import { getChatBrowserMode } from '../../core/db/chats'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import { confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
 import { getNotificationManager } from './NotificationManager'
@@ -541,6 +542,8 @@ class AgentManager {
             projectId: context?.projectId,
             fastContextDbPath: context?.fastContextDbPath,
             fastContextWasmDir: context?.fastContextWasmDir,
+            // Тумблер «Управление браузером» чата — суб-агент наследует.
+            browserMode: getChatBrowserMode(record.chatId),
           },
           env: process.env,
         })
@@ -908,6 +911,8 @@ ${subModeOutro}`
                   replyId,
                   html: result.html,
                   title: result.title,
+                  text: result.text,
+                  apiEndpoints: result.apiEndpoints,
                   error: result.error,
                 })
               } catch (e: unknown) {
@@ -926,6 +931,52 @@ ${subModeOutro}`
                   replyId,
                   html: '',
                   error: errMsg,
+                })
+              }
+            })()
+            break
+          }
+
+          // ── browser_op: суб-агент вызывает browser-тулы (зеркало
+          // chat.ipc.ts). Гейтинг browserMode чата — в BrowserManager. ──
+          case 'browser_op': {
+            const replyId = msg.replyId as string
+            const browserChatId = record.chatId
+            ;(async () => {
+              try {
+                const { browserManager } = await import('./BrowserManager')
+                const payload = (msg.payload ?? {}) as {
+                  action?: string
+                  url?: string
+                  ref?: string
+                  text?: string
+                  submit?: boolean
+                  key?: string
+                  direction?: 'up' | 'down'
+                  amount?: number
+                  tabId?: string
+                  reason?: string
+                  ms?: number
+                }
+                const result = await browserManager.execute(browserChatId, {
+                  action: payload.action ?? '',
+                  url: payload.url,
+                  ref: payload.ref,
+                  text: payload.text,
+                  submit: payload.submit,
+                  key: payload.key,
+                  direction: payload.direction,
+                  amount: payload.amount,
+                  tabId: payload.tabId,
+                  reason: payload.reason,
+                  ms: payload.ms,
+                })
+                worker.postMessage({ type: 'browser_op_reply', replyId, result })
+              } catch (e: unknown) {
+                worker.postMessage({
+                  type: 'browser_op_reply',
+                  replyId,
+                  result: { success: false, error: e instanceof Error ? e.message : String(e) },
                 })
               }
             })()

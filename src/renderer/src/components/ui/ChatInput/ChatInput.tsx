@@ -66,6 +66,9 @@ interface ChatInputProps {
     *  planningMode имеет приоритет (он строже — требует <plan>). */
   askMode?: boolean
   onAskModeChange?: (v: boolean) => void
+  /** Тумблер «Управление браузером»: browser_* тулы для AI (правая панель). */
+  browserMode?: boolean
+  onBrowserModeChange?: (v: boolean) => void
   /** Single-select persona run mode (classic/architect/debugger/...).
    *  Orthogonal to the three toggles above — a radio choice, not a boolean. */
   persona?: PersonaId
@@ -123,6 +126,8 @@ function ChatInput({
   onImageModeChange,
   askMode = false,
   onAskModeChange,
+  browserMode = false,
+  onBrowserModeChange,
   persona = DEFAULT_PERSONA,
   onPersonaChange,
   rateLimitSec = 0,
@@ -823,6 +828,8 @@ function ChatInput({
         onImageModeChange={onImageModeChange}
         askMode={askMode}
         onAskModeChange={onAskModeChange}
+        browserMode={browserMode}
+        onBrowserModeChange={onBrowserModeChange}
         persona={persona}
         onPersonaChange={onPersonaChange}
         lang={lang}
@@ -886,6 +893,8 @@ function ChatInput({
             onImageModeChange={onImageModeChange}
             askMode={askMode}
             onAskModeChange={onAskModeChange}
+            browserMode={browserMode}
+            onBrowserModeChange={onBrowserModeChange}
             persona={persona}
             onPersonaChange={onPersonaChange}
             lang={lang}

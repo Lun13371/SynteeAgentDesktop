@@ -83,7 +83,30 @@ export class MainWindow {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: false,
+        // Встроенный браузер (правая панель): <webview> в DOM — весь React-UI
+        // рендерится поверх нативно (z-index работает), в отличие от
+        // WebContentsView-подхода. Гостевые webPreferences жёстко
+        // нормализуются в will-attach-webview ниже.
+        webviewTag: true,
       },
+    })
+
+    // ── webview-харденинг (BrowserPanel) ─────────────────────────────────
+    // will-attach-webview срабатывает ДО создания guest-процесса: гасим
+    // node-интеграцию и прочие опасные флаги независимо от атрибутов тега
+    // (вектор CVE-2026-102676 — guest мог включить nodeIntegrationInWorker).
+    this.win.webContents.on('will-attach-webview', (_event, webPreferences) => {
+      delete webPreferences.nodeIntegration
+      delete webPreferences.nodeIntegrationInWorker
+      delete webPreferences.webSecurity
+      webPreferences.nodeIntegration = false
+      webPreferences.nodeIntegrationInWorker = false
+      webPreferences.webSecurity = true
+      // Без preload у guest'а — контроль идёт из main через webContents API.
+      delete webPreferences.preload
+      // Попапы запрещены по умолчанию (allowpopups не включаем):
+      // window.open перехватывается setWindowOpenHandler в BrowserManager
+      // → новый таб панели.
     })
 
     // Открывать внешние ссылки в браузере
