@@ -94,6 +94,29 @@ function buildIterations(steps: ToolStep[]): Iteration[] {
   return iters
 }
 
+/** true, если в steps есть tool_call без парного результата. Параллельные
+ *  тулы (Promise.all в Agent.ts) завершаются по очереди: первый tool_result
+ *  встаёт последним шагом, пока остальные вызовы ещё выполняются. Используется
+ *  MessageBubble для isRunning тулчейна — «последний шаг = результат» больше
+ *  не означает «раунд завершён». Матчинг как в buildIterations: callId,
+ *  fallback toolName с потреблением результата (matched-Set). */
+export function hasUnfinishedCalls(steps: ToolStep[]): boolean {
+  const calls = steps.filter(s => s.type === 'tool_call')
+  if (calls.length === 0) return false
+  const results = steps.filter(s => s.type === 'tool_result')
+  const matched = new Set<string>()
+  for (const c of calls) {
+    const r = results.find(x =>
+      !matched.has(x.id) &&
+      ((c.callId && x.callId === c.callId) ||
+        (x.toolName === c.toolName && (!x.callId || x.callId === c.callId)))
+    )
+    if (!r) return true
+    matched.add(r.id)
+  }
+  return false
+}
+
 // ── Группировка последовательных итераций с одним toolName ──────────
 // Схлопываем длинные цепочки однотипных тулов (6 read_file подряд) в
 // одну раскрывающуюся группу. Только в финальном состоянии (!isRunning),
@@ -190,9 +213,15 @@ const LiveCommandOutput = memo(function LiveCommandOutput({ sessionId }: { sessi
     }
   }, [sessionId])
 
-  // Авто-скролл вниз при обновлении
+  // Авто-скролл вниз при обновлении — только если пользователь и так у низа.
+  // Раньше скроллили всегда: чтение середины вывода отрывалось потоком, а
+  // каждый scrollTop=scrollHeight форсил синхронный layout 50KB-<pre> на
+  // каждый rAF-апдейт → джанк во время долгих команд.
   useEffect(() => {
-    if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
+    const pre = preRef.current
+    if (!pre) return
+    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 48
+    if (nearBottom) pre.scrollTop = pre.scrollHeight
   }, [output])
 
   if (!output) return null
@@ -281,6 +310,22 @@ const IterationBlock = memo(function IterationBlock({
 
   const statusColor = failed ? '#f87171' : meta.color
 
+  // Тяжёлое тело (длинный вывод/diff): maxHeight-анимация framer-motion
+  // гоняет layout ВСЕГО поддерева (Prism-спаны, diff-строки) каждый кадр
+  // 0.22с → фриз при раскрытии больших результатов. Для тяжёлых тел
+  // анимируем только opacity (height сразу auto, один layout на монтирование),
+  // сворачивание/раскрытие мгновенное и без джанка.
+  const bodyLen = (iter.result?.content?.length ?? 0) + (iter.result?.diff?.length ?? 0)
+  const heavy = bodyLen > 3000
+
+  // Preview в свёрнутом заголовке: для run_command берём именно args.command
+  // (первое значение args может быть другим ключом), title показывает полный
+  // текст — раньше команду было не видно нигде: preview обрезан 80 символами,
+  // а в раскрытом теле аргументы показывались только в detailed-режиме.
+  const previewText = iter.call.toolName === 'run_command'
+    ? String(iter.call.toolArgs?.command ?? Object.values(iter.call.toolArgs ?? {})[0] ?? '')
+    : String(Object.values(iter.call.toolArgs ?? {})[0] ?? '')
+
   return (
     <div
       className={`tc2-iter${animateEntrance ? ' tc2-iter--enter' : ''}`}
@@ -334,8 +379,8 @@ const IterationBlock = memo(function IterationBlock({
 
 
           {iter.call.toolArgs && !open && (
-            <span className="tc2-iter-preview">
-              {truncate(String(Object.values(iter.call.toolArgs)[0] ?? ''))}
+            <span className="tc2-iter-preview" title={previewText}>
+              {truncate(previewText)}
             </span>
           )}
 
@@ -358,10 +403,12 @@ const IterationBlock = memo(function IterationBlock({
           {open && (
             <motion.div
               className="tc2-iter-details"
-              initial={{ maxHeight: 0, opacity: 0 }}
-              animate={{ maxHeight: 2000, opacity: 1 }}
-              exit={{ maxHeight: 0, opacity: 0 }}
-              transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              initial={heavy ? { opacity: 0 } : { maxHeight: 0, opacity: 0 }}
+              animate={heavy ? { opacity: 1 } : { maxHeight: 2000, opacity: 1 }}
+              exit={heavy ? { opacity: 0 } : { maxHeight: 0, opacity: 0 }}
+              transition={heavy
+                ? { duration: 0.12 }
+                : { duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
               style={{ overflow: 'hidden' }}
               onAnimationComplete={() => remeasure?.()}
             >
@@ -809,9 +856,13 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   const runStartTime = steps.length > 0 && steps[0]?.timestamp ? steps[0].timestamp : Date.now()
 
   // Видимое окно итераций (хвост + расширение к началу по клику).
+  // useMemo: стабильная ссылка массива — иначе groupedVisible пересчитывался
+  // на КАЖДЫЙ рендер (новый массив → новые group-объекты → ре-рендер групп),
+  // а при сдвиге окна (>ITERS_PAGE итераций) позиционные ключи групп
+  // ремонтировали GroupBlock и сбрасывали раскрытость.
   const visibleCount = Math.min(iters.length, ITERS_PAGE + itersExtra)
   const hiddenCount = iters.length - visibleCount
-  const visibleIters = iters.slice(hiddenCount)
+  const visibleIters = useMemo(() => iters.slice(hiddenCount), [iters, hiddenCount])
 
   // Группировка видимых итераций (только в финальном состоянии).
   const groupedVisible = useMemo(
@@ -910,7 +961,10 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
               if (item.type === 'group') {
                 return (
                   <GroupBlock
-                    key={`group-${vIdx}`}
+                    // Стабильный ключ по id первой итерации группы: индексный
+                    // ключ ремонтировал GroupBlock при сдвиге окна видимых
+                    // итераций → раскрытая группа схлопывалась.
+                    key={`group-${item.iters[0].id}`}
                     group={item}
                     index={vIdx}
                     mode={mode}

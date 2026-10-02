@@ -95,7 +95,7 @@ import type { Message, ToolOutputMode, Attachment } from '../../../../../shared/
 import { extractPlanSegments } from '../../../../../shared/planParser'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
-import ToolChain from '../ToolChain/ToolChain'
+import ToolChain, { hasUnfinishedCalls } from '../ToolChain/ToolChain'
 import TodoChecklist from '../TodoChecklist/TodoChecklist'
 import FastContextBlock, { type FastContextResultData } from '../FastContextBlock/FastContextBlock'
 import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
@@ -2032,6 +2032,13 @@ const MessageContent = memo(function MessageContent({
             {liveIters.map((iter, ii) => {
               const isLastIter = ii === liveIters.length - 1
               const lastStepIsResult = iter.steps[iter.steps.length - 1]?.type === 'tool_result'
+              // Параллельные тулы (Promise.all в Agent.ts): первый tool_result
+              // встаёт последним шагом, пока остальные вызовы ещё выполняются.
+              // Раньше isRunning падал в false по «последний шаг = результат» →
+              // тулчейн выглядел завершённым (таймер замерзал, спиннеры и бейджи
+              // «выполняется» исчезали, пачки одинаковых тулов схлопывались),
+              // хотя 2 из 3 тулов ещё работали.
+              const unfinished = hasUnfinishedCalls(iter.steps)
               return (
                 <div key={ii} className="message-segment">
                   {/* Thinking блок этой итерации — на своей позиции */}
@@ -2049,7 +2056,7 @@ const MessageContent = memo(function MessageContent({
                     <ToolChain
                       steps={iter.steps}
                       mode={toolOutputMode}
-                      isRunning={!!isStreaming && isLastIter && !lastStepIsResult}
+                      isRunning={!!isStreaming && isLastIter && (!lastStepIsResult || unfinished)}
                       toolProgress={isLastIter ? toolProgress : undefined}
                     />
                   )}
@@ -2103,8 +2110,11 @@ const MessageContent = memo(function MessageContent({
                         />
                       </div>
                     ))}
-                  {/* Пульс после тулчейна пока AI думает (ждёт следующего токена) */}
-                  {isStreaming && isLastIter && lastStepIsResult && !liveTextAfter && !liveThinking && (
+                  {/* Пульс после тулчейна пока AI думает (ждёт следующего токена).
+                      !unfinished: при параллельных тулах не показываем «ожидание»,
+                      пока остальные вызовы ещё выполняются — тулчейн сам крутит
+                      спиннеры. */}
+                  {isStreaming && isLastIter && lastStepIsResult && !unfinished && !liveTextAfter && !liveThinking && (
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
                   )}
                 </div>
