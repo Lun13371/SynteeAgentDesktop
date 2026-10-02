@@ -153,9 +153,18 @@ function ChatInput({
   // Превью вложения из чипов инпут-бара (модалка-лайтбокс)
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null)
   // ── Защищённые переменные (секреты) ──
-  // protectedVarsOpen — модалка управления; secretsCount — бейдж в + меню.
+  // protectedVarsOpen — модалка управления; secretsCount — бейдж в + меню
+  // (total); secretsEnabled — бейдж в статус-строке (только включённые:
+  // enabled = инжектится в system prompt).
   const [protectedVarsOpen, setProtectedVarsOpen] = useState(false)
   const [secretsCount, setSecretsCount] = useState(0)
+  const [secretsEnabled, setSecretsEnabled] = useState(0)
+  const refreshSecrets = useCallback(() => {
+    window.syntee.protectedVars.list().then(l => {
+      setSecretsCount(l.length)
+      setSecretsEnabled(l.filter(v => v.enabled).length)
+    }).catch(() => {})
+  }, [])
   // ── Пикер аргументов команды (многоуровневый enum-пикер) ──
   // argPickerCmd — команда, для которой показываем пикер (null = скрыт).
   // argPickerLevel — индекс текущего аргумента в cmd.arguments.
@@ -242,9 +251,9 @@ function ChatInput({
     window.syntee.agent.getPermissions().then((p: { agentPermissions?: { autoMode?: Partial<AutoModeSettings> } }) => {
       setGlobalAuto(p.agentPermissions?.autoMode ?? {})
     }).catch(() => {})
-    // Счётчик секретов для бейджа в + меню
-    window.syntee.protectedVars.list().then(l => setSecretsCount(l.length)).catch(() => {})
-  }, [])
+    // Счётчики секретов: бейдж в + меню (total) + бейдж в статус-строке (enabled)
+    refreshSecrets()
+  }, [refreshSecrets])
 
   // Проектный override разрешений — перезагружается при смене проекта чата
   useEffect(() => {
@@ -839,6 +848,8 @@ function ChatInput({
         reasoningValue={reasoningValue}
         onReasoningChange={onReasoningChange}
         onOpenProjectSettings={onOpenProjectSettings}
+        secretsEnabled={secretsEnabled}
+        onProtectedVarsClick={() => setProtectedVarsOpen(true)}
       />
 
       {rateLimitSec > 0 && (
@@ -980,9 +991,7 @@ function ChatInput({
       <ProtectedVarsModal
         open={protectedVarsOpen}
         onClose={() => setProtectedVarsOpen(false)}
-        onChanged={() => {
-          window.syntee.protectedVars.list().then(l => setSecretsCount(l.length)).catch(() => {})
-        }}
+        onChanged={refreshSecrets}
       />
     </div>
   )

@@ -84,6 +84,19 @@ class BrowserManagerImpl {
    *  browser-тула (серия navigate→snapshot должна рендериться на полной
    *  скорости даже в скрытом табе). */
   private static readonly AGENT_GRACE_MS = 20_000
+  /** Ожидание регистрации webview (мост через гонку авто-открытия панели):
+   *  первый browser-тул рана приходит в main раньше, чем панель успевает
+   *  смонтировать webview (did-attach ≈ 100-500мс). 4с — с запасом на
+   *  холодный старт; когда webview жив, ожидание не срабатывает вовсе. */
+  private static readonly WC_WAIT_MS = 4_000
+
+  /** AI-операции, которым нужен живой webContents активного таба.
+   *  Остальные (tabs/tab_new/tab_select/tab_close/wait/request_access)
+   *  работают с реестром и вебвью не требуют — их не ждём. */
+  private static readonly WC_ACTIONS = new Set([
+    'navigate', 'back', 'forward', 'reload', 'snapshot',
+    'click', 'type', 'press_key', 'scroll', 'screenshot',
+  ])
 
   private tabs = new Map<string, BrowserTabEntry>()
   private win: BrowserWindow | null = null
@@ -292,6 +305,27 @@ class BrowserManagerImpl {
       return wc
     } catch {
       return null
+    }
+  }
+
+  /** wc() с ожиданием регистрации webview. Два сценария, где wc()=null, но
+   *  webview ВОТ-ВОТ появится:
+   *  1) Гонка авто-открытия: useBrowserAutoOpen открывает панель по
+   *     tool_call-событию — тому же, что исполняет этот тул, — но монтирование
+   *     BrowserPanel + did-attach + registerTab занимают ~100-500мс, а тул
+   *     доходит до main за миллисекунды. Раньше первый browser_navigate рана
+   *  ВСЕГДА падал «No browser tab available», хотя панель уже открывалась.
+   *  2) Восстановление выгруженного таба: tab_select снимает discarded,
+   *     renderer перемонтирует WebviewHost → registerTab перевешивает entry
+   *     на новый webContentsId (старый уничтожен).
+   *  Поллинг 100мс; registerTab обновляет entry, wc() находит новый id. */
+  private async wcAwait(timeoutMs: number): Promise<Electron.WebContents | null> {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const wc = this.wc()
+      if (wc) return wc
+      if (Date.now() >= deadline) return null
+      await new Promise(r => setTimeout(r, 100))
     }
   }
 
@@ -525,6 +559,26 @@ class BrowserManagerImpl {
         success: false,
         error:
           'Browser control is disabled for this chat. Call request_access (capability: browser_control) with a reason to ask the user to enable it.',
+      }
+    }
+
+    // ── Мост через гонку авто-открытия панели ──────────────────────────────
+    // Для wc-зависимых операций: если активного webview нет — ждём его
+    // регистрации (см. wcAwait). markAgentActivity выше уже отложил
+    // idle-discard на время ожидания. Когда webview жив — проверка
+    // мгновенная, оверхеда нет; реально ждём только в холодных сценариях
+    // (панель ни разу не монтировалась в этой сессии / восстановление
+    // выгруженного таба). Закрытие правой панели webview НЕ убивает
+    // (keep-alive в RightPanel) — юзер, закрывший панель посреди рана,
+    // 4-секундных пауз не получит.
+    if (BrowserManagerImpl.WC_ACTIONS.has(p.action) && !this.wc()) {
+      const wc = await this.wcAwait(BrowserManagerImpl.WC_WAIT_MS)
+      if (!wc) {
+        return {
+          success: false,
+          error:
+            'No browser tab available (waited for the Browser panel to mount). Ask the user to open the Browser panel (right side), or create a tab with browser_tab_new and retry.',
+        }
       }
     }
 

@@ -388,14 +388,42 @@ interface Props {
 const NORMAL_LINES = 60
 const DETAILED_LINES = 500
 
+// Аргументы этих тулов показываем ВСЕГДА, не только в detailed-режиме:
+// для run_command полная команда — ключевая информация (что именно AI
+// выполнил). Раньше в normal-режиме команда была видна только обрезанным
+// 80-символьным preview в свёрнутом заголовке — раскрытие её прятало.
+const ALWAYS_SHOW_ARGS = new Set(['run_command'])
+
+// Полная команда run_command: без обрезки в 500 символов (длинные
+// PowerShell-однострочники) + кнопка копирования.
+const CommandArgValue = memo(function CommandArgValue({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+  const onCopy = () => {
+    void copyToClipboard(value).then(ok => {
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }
+    })
+  }
+  return (
+    <div className="trr-arg-cmd">
+      <pre className="trr-arg-val trr-arg-val--full">{value}</pre>
+      <button className="trr-copy-btn" onClick={onCopy} title="Копировать команду">
+        {copied ? '✓' : 'Копировать'}
+      </button>
+    </div>
+  )
+}, (prev, next) => prev.value === next.value)
+
 const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode }: Props) {
   const toolName = call.toolName ?? ''
   const content = result.content ?? ''
   const args = call.toolArgs ?? {}
   const initialLines = mode === 'detailed' ? DETAILED_LINES : NORMAL_LINES
 
-  // ── detailed: показываем аргументы ──
-  const showArgs = mode === 'detailed'
+  // ── detailed + ALWAYS_SHOW_ARGS: показываем аргументы ──
+  const showArgs = mode === 'detailed' || ALWAYS_SHOW_ARGS.has(toolName)
 
   return (
     <div className="trr-wrap">
@@ -406,7 +434,11 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
             {Object.entries(args).map(([k, v]) => (
               <div key={k} className="trr-arg-row">
                 <span className="trr-arg-key">{k}</span>
-                <pre className="trr-arg-val">{String(v).slice(0, 500)}</pre>
+                {toolName === 'run_command' && k === 'command' ? (
+                  <CommandArgValue value={String(v)} />
+                ) : (
+                  <pre className="trr-arg-val">{String(v).slice(0, 500)}</pre>
+                )}
               </div>
             ))}
           </div>

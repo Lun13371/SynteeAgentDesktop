@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useLayoutEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
@@ -42,6 +42,12 @@ interface ChatInputStatusRowProps {
   onReasoningChange?: (value: string) => void
   /** Колбэк открытия настроек проекта (hover-поповер на workdir-бейдже). */
   onOpenProjectSettings?: () => void
+  /** Кол-во АКТИВНЫХ (enabled) защищённых переменных — бейдж в статус-строке.
+   *  Показывается пока > 0 (в инкогнито секреты в промпт не попадают — бейдж
+   *  скрыт). Клик открывает модалку управления. */
+  secretsEnabled?: number
+  /** Открыть модалку защищённых переменных (клик по бейджу секретов). */
+  onProtectedVarsClick?: () => void
 }
 
 /**
@@ -75,7 +81,29 @@ export function ChatInputStatusRow({
   reasoningValue,
   onReasoningChange,
   onOpenProjectSettings,
+  secretsEnabled,
+  onProtectedVarsClick,
 }: ChatInputStatusRowProps) {
+  // ── Скролл бейджей: переполнение → горизонтальный скролл без скроллбара ──
+  // Бейджей может быть много (workdir + секреты + voice + queue + extensions +
+  // changes + 4 режимных + persona). Раньше flex-wrap гнал строку в несколько
+  // рядов. Теперь одна строка: скрытый скролл + маска-затухание на краях
+  // (классы вешаются только при реальном переполнении — см. ChatInput.css).
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+  const [scrolled, setScrolled] = useState(false)
+  const updateScrollState = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    setCanScrollRight(el.scrollWidth - el.clientWidth > 4 && el.scrollLeft < el.scrollWidth - el.clientWidth - 4)
+    setScrolled(el.scrollLeft > 4)
+  }, [])
+  // После каждого рендера: бейджи появляются/исчезают динамически (voice,
+  // очередь, изменения, режимы) — пересчитываем переполнение. Только чтения
+  // (scrollWidth/clientWidth/scrollLeft), без записей между ними — layout
+  // не трэшится. setState с теми же значениями — no-op (React бейлит).
+  useLayoutEffect(() => { updateScrollState() })
+
   // ── Hover-поповер на workdir-бейдже ──
   // При наведении на бейдж рабочей директории — выезжает аккуратная плашка
   // ВВЕРХ с кнопкой «Настроить проект». Нижние углы плашки квадратные
@@ -112,8 +140,22 @@ export function ChatInputStatusRow({
     return () => window.removeEventListener('resize', handler)
   }, [popoverOpen])
 
+  const fadeCls = canScrollRight && scrolled
+    ? ' chat-input-status-scroll--fade-both'
+    : canScrollRight
+      ? ' chat-input-status-scroll--fade-right'
+      : scrolled
+        ? ' chat-input-status-scroll--fade-left'
+        : ''
+
   return (
     <div className="chat-input-status-row">
+      <div className="chat-input-status-scroll-wrap">
+        <div
+          ref={scrollRef}
+          className={`chat-input-status-scroll${fadeCls}`}
+          onScroll={updateScrollState}
+        >
       <AnimatePresence>
         {workdir && (
           <motion.div
@@ -163,6 +205,30 @@ export function ChatInputStatusRow({
         </AnimatePresence>,
         document.body
       )}
+
+      {/* Бейдж защищённых переменных — активные (enabled) секреты. Пока > 0 —
+          всегда видно, что AI подставляет их в тулы. Клик — модалка управления.
+          В инкогнито скрыт: секреты в промпт не попадают (buildSystemPrompt). */}
+      <AnimatePresence>
+        {!!secretsEnabled && !isIncognito && (
+          <motion.div
+            className="chat-input-secrets-badge"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+            onClick={onProtectedVarsClick}
+            title={`Защищённые переменные: ${secretsEnabled} активных — AI подставляет их в тулы. Клик — управление.`}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <span>Секреты</span>
+            <span className="chat-input-secrets-badge-count">{secretsEnabled}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Бейдж голосового ввода — показывается во время записи/распознавания
           и во время анимированной печати распознанного текста. Пульсирует.
@@ -328,9 +394,12 @@ export function ChatInputStatusRow({
           )
         })()}
       </AnimatePresence>
+        </div>
+      </div>
 
-      {/* Правая группа: мышление + модель — прижаты к правому краю,
-          селектор мышления всегда слева от селектора модели. */}
+      {/* Правая группа: мышление + модель — вне скролл-зоны бейджей,
+          прижаты к правому краю, селектор мышления всегда слева от селектора
+          модели. Не скроллится — всегда на месте. */}
       {!isIncognito && mainModelId && (
         <div className="chat-input-status-right">
           {onReasoningChange && (
