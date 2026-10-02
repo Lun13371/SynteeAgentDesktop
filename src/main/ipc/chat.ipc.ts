@@ -14,6 +14,7 @@ import {
   getChatModel, setChatModel,
   getChatReasoning, setChatReasoning,
   getChatModes, setChatModes, setChatPlanningMode, setChatImageMode, setChatAskMode,
+  getChatBrowserMode,
   getChatPersona, setChatPersona,
   getChatDraft, setChatDraft, getUserMessageContents,
   setChatLastUsage, getChatLastUsage, clearChatLastUsage,
@@ -311,6 +312,9 @@ export interface ProgrammaticChatSendParams {
   planningMode?: boolean
   askMode?: boolean
   imageMode?: boolean
+  /** Тумблер «Управление браузером»: browser_* тулы (гейтится также
+   *  chats.browser_mode из БД — request_access пишет туда). */
+  browserMode?: boolean
   mode?: ChatMode
   oneShotSkill?: { name: string; instructions: string }
   oneShotAllowedTools?: string[]
@@ -365,6 +369,38 @@ export function flushAllActiveRuns(): void {
 
 
 /**
+ * Аварийная очистка после НЕОЖИДАННОГО падения runChatSend (throw вне
+ * штатных путей: исключение в getSystemPrompt, компакции, построении
+ * workerData и т.п.). Штатные ошибки (worker 'error'/'exit') чистят своё
+ * сами. Без этой очистки чат оставался «занятым» НАВСЕГДА: activeRunMeta
+ * не удалялся → каждый следующий chat:send молча уходил в очередь,
+ * UI крутил «работает», Стоп не работал, очередь не дрейнилась.
+ */
+function failRunCleanup(
+  win: BrowserWindow | null,
+  chatId: string,
+  assistantMsgId: string,
+  e: unknown,
+): void {
+  const message = e instanceof Error ? e.message : String(e)
+  log('[chat:send] runChatSend CRASHED chatId=%s: %s', chatId, message)
+  console.error('[chat:send] runChatSend CRASHED:', e)
+  // Воркер мог быть создан до падения — терминируем, не течём потоками.
+  const run = activeRuns.get(chatId)
+  if (run?.worker) {
+    ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
+    try { run.worker.terminate() } catch { /* уже мёртв */ }
+  }
+  activeRuns.delete(chatId)
+  activeRunMeta.delete(chatId)
+  emitRunStatus(win, chatId, 'error', assistantMsgId, message)
+  try {
+    win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, { chatId, error: message })
+  } catch { /* окно могло закрыться */ }
+  drainQueue(win, chatId)
+}
+
+/**
  * Запускает следующий chat:send из очереди chatId, если он есть.
  * Вызывается после терминального статуса предыдущего запуска (done/error/cancelled).
  */
@@ -381,9 +417,7 @@ function drainQueue(win: BrowserWindow | null, chatId: string) {
   activeRunMeta.set(chatId, { ...next.meta, startedAt: Date.now() })
   emitQueueUpdate(win, chatId)
   // Асинхронный запуск — ошибки внутри run() обрабатываются им самим.
-  void next.run().catch((e) => {
-    log('[chat:send] queued run failed chatId=%s: %s', chatId, (e as Error).message)
-  })
+  void next.run().catch((e) => failRunCleanup(win, chatId, next.meta.msgId, e))
 }
 
 // ─── Compact: helpers для разделителя сжатия контекста ──────────────────────
@@ -772,7 +806,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch { /* не ломаем промпт из-за секретов */ }
     }
 
-    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext, pluginSections, protectedVars })
+    // browserMode для промпта: тумблер чата из БД (params/browserMode-флаг
+    // отправки здесь недоступны — это отдельная функция с chatId-параметром;
+    // раньше здесь было !!params.browserMode || getChatBrowserMode(dbChatId) —
+    // ReferenceError, валивший КАЖДЫЙ chat:send).
+    const promptBrowserMode = chatId ? getChatBrowserMode(chatId) : false
+    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext, pluginSections, protectedVars })
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).
@@ -1266,6 +1305,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       attachments?: Attachment[]
       /** Реплай-цитаты — цитата для AI строится из userMsg.replyTo ниже. */
       replyTo?: ReplyTarget[]
+      /** Тумблер «Управление браузером»: browser_* тулы с первого раунда. */
+      browserMode?: boolean
     },
     win: BrowserWindow | null,
     chatMode: ChatMode,
@@ -2053,6 +2094,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         storeData,
         planningMode: effectivePlanningMode,
         askMode: effectiveAskMode,
+        // Тумблер «Управление браузером»: browser_* тулы с первого раунда.
+        // Включение посреди рана (request_access) — через мутацию тулсета
+        // в воркере (enableBrowserToolsMidRun).
+        browserMode: !!params.browserMode || getChatBrowserMode(params.chatId),
         workingMemory: currentWorkingMemory,
         mode: chatMode,
         catalogCachePath,
@@ -2751,6 +2796,8 @@ ${subModeOutro}`,
                 replyId,
                 html: result.html,
                 title: result.title,
+                text: result.text,
+                apiEndpoints: result.apiEndpoints,
                 error: result.error,
               })
             } catch (e: unknown) {
@@ -3280,7 +3327,49 @@ ${subModeOutro}`,
           break
         }
 
-
+        // ── Browser: browser_*-тулы + request_access (round-trip worker →
+        // BrowserManager). Гейтинг browserMode и confirm-диалог — в main.
+        case 'browser_op': {
+          ;(async () => {
+            try {
+              const { browserManager } = await import('../managers/BrowserManager')
+              const payload = (msg.payload ?? {}) as {
+                action?: string
+                url?: string
+                ref?: string
+                text?: string
+                submit?: boolean
+                key?: string
+                direction?: 'up' | 'down'
+                amount?: number
+                tabId?: string
+                reason?: string
+                ms?: number
+              }
+              const result = await browserManager.execute(params.chatId, {
+                action: payload.action ?? '',
+                url: payload.url,
+                ref: payload.ref,
+                text: payload.text,
+                submit: payload.submit,
+                key: payload.key,
+                direction: payload.direction,
+                amount: payload.amount,
+                tabId: payload.tabId,
+                reason: payload.reason,
+                ms: payload.ms,
+              })
+              worker.postMessage({ type: 'browser_op_reply', replyId: msg.replyId, result })
+            } catch (e) {
+              worker.postMessage({
+                type: 'browser_op_reply',
+                replyId: msg.replyId,
+                result: { success: false, error: (e as Error).message },
+              })
+            }
+          })()
+          break
+        }
 
         case 'context_usage':
           // Сохраняем последний real usage в БД — переживает перезапуск.
@@ -3923,6 +4012,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
      *  (из контекстного меню «Ответить»). Персистится в userMsg.replyTo → БД
      *  (reply_to); цитата для AI строится в runChatSend + messageToContextMessages. */
     replyTo?: ReplyTarget[]
+    /** Тумблер «Управление браузером»: browser_* тулы с первого раунда.
+     *  Дублируется chats.browser_mode из БД (main читает обе — request_access
+     *  включает режим посреди сессии и пишет в БД). */
+    browserMode?: boolean
   }): Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }> => {
     const win = mainWindow.getWindow()
 
@@ -4009,7 +4102,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // initChatSend(chatId) и показал live-пузырь с прогрессом обработки
     // вложений. Без этого пользователь видит пустой чат всё время обработки.
     void runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
-      .catch((e) => log('[chat:send] runChatSend failed chatId=%s: %s', params.chatId, (e as Error).message))
+      .catch((e) => failRunCleanup(win, params.chatId, assistantMsgId, e))
     return { userMsg, assistantMsgId }
   }
 
@@ -4095,7 +4188,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     activeRunMeta.set(sideChatId, { ...meta, startedAt: Date.now() })
     // Fire-and-forget (см. комментарий в chat:send выше).
     void runChatSend(sideParams, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
-      .catch((e) => log('[chat:sideSend] runChatSend failed chatId=%s: %s', sideChatId, (e as Error).message))
+      .catch((e) => failRunCleanup(win, sideChatId, assistantMsgId, e))
     return { userMsg, assistantMsgId }
   })
 
@@ -4175,13 +4268,19 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         emitQueueUpdate(win, chatId)
       } else {
         // Активного запуска нет — но могла быть очередь. Чистим её целиком.
-        if (chatQueues.has(chatId)) {
-          chatQueues.delete(chatId)
+        // ПЛЮС: чистим застрявший activeRunMeta (ран упал до создания
+        // run-объекта — failRunCleanup обычно чистит сам, но stop должен
+        // гарантированно освобождать слот) и шлём terminal 'cancelled',
+        // чтобы renderer сбросил live-state (defensive liveClear в
+        // терминальной ветке CHAT_RUN_STATUS). Без этого UI для
+        // queued/зависшего запроса никогда не получал терминального
+        // события и live-пузырь зависал — «Стоп не работает».
+        const hadQueue = chatQueues.has(chatId)
+        const hadMeta = activeRunMeta.has(chatId)
+        if (hadQueue) chatQueues.delete(chatId)
+        if (hadMeta) activeRunMeta.delete(chatId)
+        if (hadQueue || hadMeta) {
           emitQueueUpdate(win, chatId)
-          // Шлём terminal 'cancelled' чтобы renderer сбросил live-state
-          // (defensive liveClear в терминальной ветке CHAT_RUN_STATUS).
-          // Без этого UI для queued-запроса никогда не получал терминального
-          // события и live-пузырь зависал.
           emitRunStatus(win, chatId, 'cancelled')
         }
       }

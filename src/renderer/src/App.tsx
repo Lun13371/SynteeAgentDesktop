@@ -7,6 +7,7 @@ import { initExtensionsPushEvents, useExtensionsStore } from './store/extensions
 import { applyPluginThemeToDOM, isPluginThemeKey } from './utils/pluginTheme'
 import { setUiSoundsFlag, setSoundVolume, setSoundAssignmentsFlag } from './utils/sounds'
 import { useChatRunSubscription, initChatSend, enqueuePendingUserMsg } from './hooks/useChatRunSubscription'
+import { useBrowserAutoOpen } from './hooks/useBrowserAutoOpen'
 import { useAuthStore } from './store/auth.store'
 import { useNavStore } from './store/nav.store'
 import {
@@ -586,6 +587,10 @@ export default function App() {
   // Монтируется один раз — пишет в Zustand store по chatId, чтобы
   // параллельные чаты каждый имели свой LiveState.
   useChatRunSubscription()
+
+  // Авто-открытие панели браузера, когда агент вызывает browser_* тулы
+  // (и в момент подтверждения request_access) — юзер видит, что делает AI.
+  useBrowserAutoOpen()
 
   // ── Глобальный drag&drop файлов: preventDefault по всему окну ──
   // Без этого drop мимо инпут-бара заставляет Electron открыть файл как

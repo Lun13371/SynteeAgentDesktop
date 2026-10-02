@@ -30,9 +30,10 @@ export interface FetchPageOpts {
   maxChars?: number
   /**
    * SPA-рендер через скрытый BrowserWindow (Chromium) в main-процессе.
-   * Возвращает HTML после JS-выполнения.
+   * Возвращает структурный markdown (shadow-DOM walker) + HTML для
+   * совместимости + API-эндпоинты, замеченные при рендере.
    */
-  onRenderPage?: (url: string, opts: { waitSelector?: string; timeoutMs?: number }) => Promise<{ html: string; title?: string; error?: string }>
+  onRenderPage?: (url: string, opts: { waitSelector?: string; timeoutMs?: number }) => Promise<{ html: string; title?: string; error?: string; text?: string; apiEndpoints?: string[] }>
   /** Логгер каскада (диагностика стадий: direct → render → pdf). */
   onLog?: (msg: string) => void
 }
@@ -43,6 +44,8 @@ interface PageMeta {
   description: string
   ogImage: string
   favicon: string
+  /** JSON API-эндпоинты (fetch/XHR), замеченные при BW-рендере SPA-страницы. */
+  apiEndpoints?: string[]
 }
 
 // Универсальный CSS-селектор для SPA — матчит типичные SPA-контейнеры.
@@ -192,8 +195,15 @@ export async function fetchPage(url: string, opts: FetchPageOpts = {}): Promise<
         const meta = extractMeta(html, url)
         const text = readabilityClean(html)
 
-        // Хороший контент → return
-        if (text.length >= 200 && !isSpaShell(html, text.length)) {
+        // Хороший контент → return.
+        // «Подозрительно тонкий» детект: HTML большой, а чистки вышло мало
+        // (regex-readability не справилась со вложенной разметкой, или это
+        // challenge-страница) → BrowserWindow отрендерит нормально.
+        const suspiciouslyThin = html.length > 20000 && text.length < Math.max(1000, html.length / 50)
+        if (suspiciouslyThin) {
+          log('[fetch_page] suspiciously thin extraction (text=' + text.length + ' html=' + html.length + ') → BrowserWindow')
+        }
+        if (text.length >= 200 && !isSpaShell(html, text.length) && !suspiciouslyThin) {
           if (!domainStrategy.has(domain)) domainStrategy.set(domain, 'direct')
           const result = buildResult(text, meta, opts, maxChars)
           if (result.success) cacheSet(cacheKey, result.output)
@@ -235,8 +245,10 @@ export async function fetchPage(url: string, opts: FetchPageOpts = {}): Promise<
         timeoutMs: botBlocked ? 35000 : 25000,
       })
 
-      if (rendered.html && !rendered.error) {
-        const bwContent = htmlToText(rendered.html)
+      if ((rendered.text || rendered.html) && !rendered.error) {
+        // text — структурный markdown от shadow-DOM walker'а (предпочтителен);
+        // html — fallback для старого пути (regex-чистка)
+        const bwContent = rendered.text || (rendered.html ? htmlToText(rendered.html) : '')
         if (bwContent.length > 200) {
           domainStrategy.set(domain, 'render')
           const meta: PageMeta = {
@@ -245,6 +257,7 @@ export async function fetchPage(url: string, opts: FetchPageOpts = {}): Promise<
             description: '',
             ogImage: '',
             favicon: getFavicon(url),
+            apiEndpoints: rendered.apiEndpoints,
           }
           const result = buildResult(bwContent, meta, opts, maxChars)
           if (result.success) cacheSet(cacheKey, result.output)
@@ -467,12 +480,15 @@ function extractSection(md: string, sectionName: string): string | null {
   const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
   // ── Стратегия 1: Markdown # заголовки ──
+  // \n+ после заголовка: walker выдаёт заголовки с двойным переносом
+  // (\n\n) — с одиночным \n lookahead (?=\n#{1,3}) срабатывал на втором
+  // переносе с ПУСТОЙ секцией → «Section not found» на валидных секциях
   const mdRegex = new RegExp(
-    `(^|\\n)(#{1,3})\\s+${escaped}[^\\n]*\\n([\\s\\S]*?)(?=\\n#{1,3}\\s|$)`,
+    `(^|\\n)(#{1,3})\\s+${escaped}[^\\n]*\\n+([\\s\\S]*?)(?=\\n#{1,3}\\s|$)`,
     'i',
   )
   const mdMatch = mdRegex.exec(md)
-  if (mdMatch) return mdMatch[3].trim()
+  if (mdMatch && mdMatch[3].trim().length > 0) return mdMatch[3].trim()
 
   // ── Стратегия 2: HTML <h1>-<h3> заголовки (контент может быть HTML) ──
   const htmlRegex = new RegExp(
@@ -547,6 +563,11 @@ function formatFetchOutput(meta: PageMeta, body: string): string {
   if (meta.description) metaLines.push(`description: ${meta.description}`)
   if (meta.ogImage) metaLines.push(`og_image: ${meta.ogImage}`)
   if (meta.favicon) metaLines.push(`favicon: ${meta.favicon}`)
+  // API-эндпоинты SPA: AI может дёрнуть их напрямую fetch_page — JSON
+  // структурнее любого DOM-парсинга
+  if (meta.apiEndpoints?.length) {
+    metaLines.push(`api_endpoints: ${meta.apiEndpoints.join(' | ')}`)
+  }
   metaLines.push('---END_META---')
   return `${metaLines.join('\n')}\n\n${body}`
 }

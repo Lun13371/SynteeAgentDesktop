@@ -96,6 +96,11 @@ export interface SystemPromptParams {
   planningMode?: boolean
   /** Read-only mode: answers without code edits, without <plan> tag. */
   askMode?: boolean
+  /** Тумблер «Управление браузером»: browser_* тулы доступны модели.
+   *  false → в промпте секция про request_access (модель знает, что можно
+   *  попросить включение). Секция динамическая (per-chat) — не ломает
+   *  кэш статичного префикса. */
+  browserMode?: boolean
   /**
     * Persona — single-select run mode (classic/architect/debugger/...).
     * Orthogonal to planning/ask. 'classic' (or undefined) → no injection.
@@ -137,7 +142,7 @@ export interface SystemPromptParts {
  * SYSTEM_PROMPT_CACHE_BREAK (см. buildSystemPrompt).
  */
 export function buildSystemPromptParts(params: SystemPromptParams): SystemPromptParts {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -367,8 +372,31 @@ For processes, timelines, hierarchies and relationships use mermaid fenced block
 After executing tools, write the result to the user. Do not call tools again if the task is already solved.`
 
   // ─── ДИНАМИЧЕСКИЙ ХВОСТ (меняется каждый ход, НЕ кэшируется) ───────────────
+  const browserBlock = browserMode
+    ? `## Browser control — ENABLED
+
+You can drive the built-in browser (right panel, visible to the user) via browser_* tools.
+Workflow (Playwright-style):
+1. browser_navigate(url) → 2. browser_snapshot() → see the page as an accessibility tree
+   with [ref=eN] ids → 3. browser_click(ref) / browser_type(ref, text) → 4. re-snapshot
+   after any navigation (refs DIE on navigation — old refs are invalid).
+- browser_snapshot is your main way to "see" the page. browser_screenshot gives a PNG
+  (for visual analysis) — use when the tree is not enough; the panel must be visible.
+- The user watches the browser in real time — your actions are visible.
+- Multiple tabs: browser_tabs_list / browser_tab_new / browser_tab_select / browser_tab_close.
+- If a browser tool returns "no browser tab available" — the user hasn't opened the
+  Browser panel yet; tell them to open the Browser tab in the right panel.`
+    : `## Browser control — DISABLED
+
+A built-in browser exists (right panel), and you can request control over it: call
+request_access (capability: browser_control) with a short reason when the task needs
+web interaction (opening pages, clicking, filling forms, reading JS-heavy sites that
+fetch_page can't render). The user will confirm — if approved, browser_* tools appear
+immediately in this same run and you can continue the task with them. If declined,
+continue without browser tools.`
   const dynamicPart = `## Current session context
 Date and time: ${dateStr}.
+${browserBlock}
 ${memoryStatsBlock}
 ${graphStatsBlock}
 ${notesBlock}

@@ -28,6 +28,8 @@ interface ChatInputStatusRowProps {
   onImageModeChange?: (v: boolean) => void
   askMode?: boolean
   onAskModeChange?: (v: boolean) => void
+  browserMode?: boolean
+  onBrowserModeChange?: (v: boolean) => void
   persona?: PersonaId
   onPersonaChange?: (v: PersonaId) => void
   lang: 'ru' | 'en'
@@ -62,6 +64,8 @@ export function ChatInputStatusRow({
   onImageModeChange,
   askMode,
   onAskModeChange,
+  browserMode,
+  onBrowserModeChange,
   persona = DEFAULT_PERSONA,
   onPersonaChange,
   lang,
@@ -278,6 +282,26 @@ export function ChatInputStatusRow({
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
             <span>Ask — только чтение</span>
+            <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
+          </motion.div>
+        )}
+        {browserMode && (
+          <motion.div
+            className="chat-input-planning-badge chat-input-planning-badge--browser"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+            onClick={() => onBrowserModeChange?.(false)}
+            title={lang === 'en' ? 'Browser control: the agent can drive the built-in browser. Click to disable.' : 'Управление браузером: агент управляет встроенным браузером. Клик — выключить.'}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2"/>
+              <path d="M10 9l-5 3 5 3V9z"/>
+              <line x1="16" y1="9" x2="16" y2="15"/>
+              <line x1="19" y1="9" x2="19" y2="15"/>
+            </svg>
+            <span>{lang === 'en' ? 'Browser control' : 'Управление браузером'}</span>
             <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
           </motion.div>
         )}

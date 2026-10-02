@@ -13,6 +13,7 @@ import SessionChangesPanel from '../SessionChangesPanel/SessionChangesPanel'
 import SideChatPanel from '../SideChatPanel/SideChatPanel'
 import TerminalPanel from '../TerminalPanel/TerminalPanel'
 import NotesPanel from '../NotesPanel/NotesPanel'
+import BrowserPanel from '../BrowserPanel/BrowserPanel'
 import ChartPreviewPanel from './ChartPreviewPanel'
 import FileTabContextMenu from '../../layout/TitleBar/FileTabContextMenu'
 import { useUIStore, type RightPanelTab, type BuiltinRightPanelTab, PLUGIN_TAB_PREFIX, buildPluginTabId, parsePluginTabId } from '../../../store/ui.store'
@@ -44,6 +45,7 @@ const ALL_PANELS: Array<{ id: BuiltinRightPanelTab; label: string; icon: string;
   { id: 'session', label: 'Сессия', icon: 'history' },
   { id: 'notes', label: 'Заметки', icon: 'fileText' },
   { id: 'chart', label: 'График', icon: 'chart' },
+  { id: 'browser', label: 'Браузер', icon: 'appWindow' },
 ]
 
 const PANEL_META: Record<BuiltinRightPanelTab, { label: string; icon: string }> = {
@@ -55,6 +57,7 @@ const PANEL_META: Record<BuiltinRightPanelTab, { label: string; icon: string }> 
   session: { label: 'Сессия', icon: 'history' },
   notes: { label: 'Заметки', icon: 'fileText' },
   chart: { label: 'График', icon: 'chart' },
+  browser: { label: 'Браузер', icon: 'appWindow' },
 }
 
 function isRunningPlugin(p: PluginRuntime): boolean {
@@ -652,6 +655,9 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId 
                         )}
                         {panelKind === 'chart' && (
                           <ChartPreviewPanel />
+                        )}
+                        {panelKind === 'browser' && (
+                          <BrowserPanel />
                         )}
                         {panelKind.startsWith(PLUGIN_TAB_PREFIX) && (
                           <PluginRightPanelContent plugins={plugins} tabId={panelKind} />

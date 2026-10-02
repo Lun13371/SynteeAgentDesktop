@@ -17,6 +17,8 @@ interface ChatInputPlusMenuProps {
   onImageModeChange?: (v: boolean) => void
   askMode?: boolean
   onAskModeChange?: (v: boolean) => void
+  browserMode?: boolean
+  onBrowserModeChange?: (v: boolean) => void
   persona?: PersonaId
   onPersonaChange?: (v: PersonaId) => void
   lang: 'ru' | 'en'
@@ -37,6 +39,8 @@ export function ChatInputPlusMenu({
   onImageModeChange,
   askMode,
   onAskModeChange,
+  browserMode,
+  onBrowserModeChange,
   persona,
   onPersonaChange,
   lang,
@@ -178,7 +182,7 @@ export function ChatInputPlusMenu({
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                 </svg>
-                Ask — только чтение
+                {lang === 'en' ? 'Ask — read only' : 'Ask — только чтение'}
                 <motion.button
                   className={`plus-menu-toggle${askMode ? ' plus-menu-toggle--on' : ''}`}
                   onClick={e => { e.stopPropagation(); onAskModeChange?.(!askMode) }}
@@ -187,6 +191,26 @@ export function ChatInputPlusMenu({
                   <motion.span
                     className="plus-menu-toggle-thumb"
                     animate={{ x: askMode ? 16 : 2 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                  />
+                </motion.button>
+              </motion.div>
+              <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onBrowserModeChange?.(!browserMode) }} title={lang === 'en' ? 'Browser control: the agent gets browser_* tools to drive the built-in browser (right panel)' : 'Управление браузером: агент получает browser_*-тулы для управления встроенным браузером (правая панель)'}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2"/>
+                  <path d="M10 9l-5 3 5 3V9z"/>
+                  <line x1="16" y1="9" x2="16" y2="15"/>
+                  <line x1="19" y1="9" x2="19" y2="15"/>
+                </svg>
+                {lang === 'en' ? 'Browser control' : 'Управление браузером'}
+                <motion.button
+                  className={`plus-menu-toggle${browserMode ? ' plus-menu-toggle--on' : ''}`}
+                  onClick={e => { e.stopPropagation(); onBrowserModeChange?.(!browserMode) }}
+                  whileTap={{ scale: 0.93 }}
+                >
+                  <motion.span
+                    className="plus-menu-toggle-thumb"
+                    animate={{ x: browserMode ? 16 : 2 }}
                     transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                   />
                 </motion.button>

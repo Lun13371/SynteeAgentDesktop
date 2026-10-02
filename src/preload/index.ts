@@ -446,6 +446,58 @@ const synteeAPI = {
       ipcRenderer.invoke('dots:setSettings', patch) as Promise<import('../../shared/types').DotSettings>,
   },
 
+  // Встроенный браузер (правая панель, webview). Renderer хостит webview-
+  // элементы и регистрирует их в main; операции идут через BrowserManager.
+  browser: {
+    // Регистрация таба: did-attach → webContentsId guest-процесса.
+    registerTab: (tabId: string, webContentsId: number) =>
+      ipcRenderer.invoke('browser:registerTab', tabId, webContentsId) as Promise<boolean>,
+    unregisterTab: (tabId: string) =>
+      ipcRenderer.invoke('browser:unregisterTab', tabId) as Promise<boolean>,
+    // UI-навигация (адресная строка, кнопки).
+    navigate: (tabId: string, url: string) =>
+      ipcRenderer.invoke('browser:navigate', tabId, url) as Promise<boolean>,
+    back: (tabId: string) => ipcRenderer.invoke('browser:back', tabId) as Promise<boolean>,
+    forward: (tabId: string) => ipcRenderer.invoke('browser:forward', tabId) as Promise<boolean>,
+    reload: (tabId: string) => ipcRenderer.invoke('browser:reload', tabId) as Promise<boolean>,
+    // Табы: создание/закрытие/активация (main пушит BROWSER_TAB_STATE).
+    newTab: (url?: string) => ipcRenderer.invoke('browser:newTab', url) as Promise<string>,
+    closeTab: (tabId: string) => ipcRenderer.invoke('browser:closeTab', tabId) as Promise<boolean>,
+    selectTab: (tabId: string) => ipcRenderer.invoke('browser:selectTab', tabId) as Promise<boolean>,
+    getState: () => ipcRenderer.invoke('browser:getState') as Promise<{
+      tabs: Array<{ tabId: string; webContentsId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; favicon?: string }>
+      activeTabId: string | null
+    }>,
+    // Событие: состояние табов изменилось (URL/title/loading/favicon).
+    onTabState: (cb: (state: {
+      tabs: Array<{ tabId: string; webContentsId: number; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; favicon?: string }>
+      activeTabId: string | null
+    }) => void) => {
+      const listener = (_e: unknown, state: Parameters<typeof cb>[0]) => cb(state)
+      ipcRenderer.on('browser:tab-state', listener)
+      return () => ipcRenderer.removeListener('browser:tab-state', listener)
+    },
+    // Событие: browserMode чата переключён (тумблером или confirm'ом AI).
+    onModeChanged: (cb: (info: { chatId: string; enabled: boolean }) => void) => {
+      const listener = (_e: unknown, info: { chatId: string; enabled: boolean }) => cb(info)
+      ipcRenderer.on('browser:mode-changed', listener)
+      return () => ipcRenderer.removeListener('browser:mode-changed', listener)
+    },
+    // ── Расширения браузера ──
+    extList: () => ipcRenderer.invoke('browser:extensions:list') as Promise<Array<{
+      id: string; name: string; version: string; description?: string
+      source: 'webstore' | 'local'; enabled: boolean; dir: string
+    }>>,
+    extInstallWebStore: (input: string) => ipcRenderer.invoke('browser:extensions:installWebStore', input) as Promise<{
+      ok: boolean; info?: { id: string; name: string; version: string }; error?: string; canceled?: boolean
+    }>,
+    extInstallLocal: (mode: 'file' | 'folder') => ipcRenderer.invoke('browser:extensions:installLocal', mode) as Promise<{
+      ok: boolean; info?: { id: string; name: string; version: string }; error?: string; canceled?: boolean
+    }>,
+    extRemove: (extId: string) => ipcRenderer.invoke('browser:extensions:remove', extId) as Promise<boolean>,
+    extToggle: (extId: string, enabled: boolean) => ipcRenderer.invoke('browser:extensions:toggle', extId, enabled) as Promise<boolean>,
+  },
+
   // Чат
   chat: {
     create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string, model?: { modelId?: string; modelProvider?: string; reasoningValue?: string }) => ipcRenderer.invoke('chat:create', incognito, mode, projectId, model),
@@ -475,6 +527,8 @@ const synteeAPI = {
       planningMode?: boolean
       askMode?: boolean
       imageMode?: boolean
+      /** Тумблер «Управление браузером»: browser_* тулы + request_access. */
+      browserMode?: boolean
       mode?: 'code' | 'work'
       /** Single-select persona run mode (classic/architect/debugger/...).
        *  Orthogonal to planning/ask/image toggles. */
@@ -597,6 +651,9 @@ const synteeAPI = {
     setPlanningMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setPlanningMode', chatId, val),
     setImageMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setImageMode', chatId, val),
     setAskMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setAskMode', chatId, val),
+    // Тумблер «Управление браузером» (browser_* тулы для AI).
+    getBrowserMode: (chatId: string) => ipcRenderer.invoke('browser:getMode', chatId) as Promise<boolean>,
+    setBrowserMode: (chatId: string, val: boolean) => ipcRenderer.invoke('browser:setMode', chatId, val),
     /** Single-select persona run mode (classic/architect/debugger/...). */
     getPersona: (chatId: string) => ipcRenderer.invoke('chat:getPersona', chatId) as Promise<import('../../shared/modes').PersonaId>,
     setPersona: (chatId: string, persona: import('../../shared/modes').PersonaId) => ipcRenderer.invoke('chat:setPersona', chatId, persona),
