@@ -915,7 +915,9 @@ declare const synteeAPI: {
     skills: {
         getAll: (params?: {
             projectId?: string;
+            chatId?: string;
         }) => Promise<any>;
+        setFolderState: (params: import('../shared/types').SkillFolderUpdate) => Promise<any>;
         setState: (params: {
             skillId: string;
             state: unknown;
@@ -943,6 +945,7 @@ declare const synteeAPI: {
     mcp: {
         getAll: (params?: {
             projectId?: string;
+            chatId?: string;
         }) => Promise<any>;
         getActiveForChat: (params: {
             chatId: string;

@@ -193,6 +193,7 @@ export interface AgentCallbacks {
    * Round-trip в main-процесс, где живёт DotManager. Возвращает
    * готовый текстовый отчёт для модели (форматирование в main).
    */
+  onManageChats?: (params: import('../../shared/delegatedChats').ManageChatsParams) => Promise<import('../../shared/delegatedChats').ManageChatsResult>
   onManageDots?: (params: {
     action: 'create' | 'list' | 'get' | 'update' | 'delete' | 'wake'
     dotId?: string

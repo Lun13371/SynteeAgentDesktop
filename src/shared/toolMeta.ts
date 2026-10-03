@@ -52,6 +52,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // ── Агенты ──
   spawn_agent:    { label: 'Суб-агент',          icon: 'gitBranch',   color: '#4ade80' },
   get_agent_status:{ label: 'Статус агента',     icon: 'gitBranch',   color: '#4ade80' },
+  manage_chats:   { label: 'Делегирование в чат', icon: 'messageSquare', color: '#22d3ee' },
 
   // ── Память и знания ──
   think:          { label: 'Размышление',        icon: 'brain',       color: '#94a3b8' },

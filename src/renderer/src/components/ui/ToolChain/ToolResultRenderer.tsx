@@ -12,6 +12,8 @@ import docker from 'react-syntax-highlighter/dist/esm/languages/prism/docker'
 import type { ToolStep } from './ToolChain'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import { copyToClipboard } from '../../../utils/clipboard'
+import { tabActions } from '../../../store/tabs.store'
+import { useNavStore } from '../../../store/nav.store'
 import './ToolResultRenderer.css'
 
 // registerLanguage идемпотентен для нашего случая (перезапись тем же набором).
@@ -467,6 +469,23 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
 export default ToolResultRenderer
 
 function renderResult(toolName: string, content: string, args: Record<string, unknown>, initialLines: number) {
+  if (toolName === 'manage_chats') {
+    const data = tryParseJSON(content) as { chat_id?: string; title?: string; status?: string; content?: string; chats?: Array<{ chat_id: string; title: string; status?: string }> } | null
+    const chats = data?.chats ?? (data?.chat_id ? [{ chat_id: data.chat_id, title: data.title ?? 'Открыть чат', status: data.status }] : [])
+    return (
+      <div>
+        {chats.map(chat => (
+          <button key={chat.chat_id} className="trr-expand-btn" onClick={() => {
+            useNavStore.getState().setMainPage('chat')
+            tabActions.selectChat?.(chat.chat_id)
+          }}>
+            {chat.title}{chat.status ? ` · ${chat.status}` : ''} ↗
+          </button>
+        ))}
+        <ChunkedPre content={data?.content ?? content} initialLines={initialLines} />
+      </div>
+    )
+  }
   // read_file → code с подсветкой
   if (toolName === 'read_file' || toolName === 'read_files') {
     const path = String(args.path ?? args.file_path ?? '')
