@@ -11,10 +11,11 @@
 // position:absolute; bottom:0 — враппер .dot-chat-input-wrap ОБЯЗАН иметь
 // position:relative, иначе инпут вырывается из слота и перекрывает ленту
 // сообщений (клики по зоне инпута уходили в скролл-контейнер).
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { v4 as uuid } from 'uuid'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
+import VirtualMessageList from '../../components/ui/VirtualMessageList/VirtualMessageList'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import { useChatStore } from '../../store/chat.store'
@@ -23,7 +24,11 @@ import { initChatSend } from '../../hooks/useChatRunSubscription'
 import { useContextCounter } from '../../hooks/useContextCounter'
 import { IPC_EVENTS } from '../../../../shared/constants'
 import type { Dot, DotRun, Message } from '../../../../shared/types'
+import { mergeTail, prependOlder } from '../../utils/messageWindow'
 import { DotBlob } from './DotBlob'
+
+// Размер страницы истории Dot-чата (как в ChatPage/SplitChatPane).
+const DOT_PAGE_SIZE = 50
 
 function fmtTime(ts: number): string {
   const d = new Date(ts)
@@ -89,6 +94,7 @@ export function DotChat({
 }) {
   const chatId = dot.chatId
   const [messages, setMessages] = useState<Message[]>([])
+  const [hasOlder, setHasOlder] = useState(false)
   const [draft, setDraft] = useState('')
   const [showRuns, setShowRuns] = useState(false)
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null)
@@ -97,6 +103,23 @@ export function DotChat({
   // Корень .dot-chat (для --dot-input-h) и слот инпута (для ResizeObserver).
   const rootRef = useRef<HTMLDivElement>(null)
   const inputHostRef = useRef<HTMLDivElement>(null)
+
+  // ── Пагинация истории ──────────────────────────────────────────────
+  // Раньше на каждый wake/silent-ран тянулась ВСЯ история (chat.getMessages) и
+  // заменяла ленту целиком. Теперь грузим только последнюю страницу
+  // (getMessagesPage) и подгружаем старые вверх по скроллу — доступ к прошлому
+  // сохраняется, но мегабайты истории не гоняются по IPC на каждый ран.
+  const loadingOlderRef = useRef(false)
+  // Какой chatId сейчас реально загружен в окно (null — идёт загрузка/смена).
+  // Защищает loadOlder от курсора по сообщениям ещё предыдущего Dot'а.
+  const loadedChatRef = useRef<string | null>(null)
+  // Монотонный счётчик «эпохи» загрузки: растёт при смене чата/первичной
+  // загрузке. Ответы с устаревшей эпохой отбрасываются (защита от гонок при
+  // быстром переключении Dot'ов — иначе лента одного Dot'а утекала бы в другой).
+  const reqSeqRef = useRef(0)
+  const tailSeqRef = useRef(0)
+  const deletedIdsRef = useRef(new Set<string>())
+  const prependingRef = useRef<{ oldScrollHeight: number; oldScrollTop: number } | null>(null)
 
   // Эффективная модель Dot'а: персональная → глобальная Dots → основная.
   const dotsSettings = useDotsStore(s => s.settings)
@@ -108,26 +131,70 @@ export function DotChat({
       : 'Основная модель чата (main)'
 
   // Live-статус чата Dot'а (глобальная подписка пишет для всех чатов).
-  const live = useChatStore(s => s.liveByChat[chatId])
-  const isTyping = !!live?.isTyping
-  const runStatus = useChatStore(s => s.runStatusByChat[chatId])
+  // Узкие селекторы: раньше `s => s.liveByChat[chatId]` возвращал НОВЫЙ объект
+  // на каждом токен-флаше (каждые ~50мс) → весь DotChat (≈470 строк) ре-рендерился
+  // 20×/сек. Теперь подписка только на примитивы (bool/string): во время стрима
+  // DotChat не ре-рендерится вообще. Сам live-текст читает MessageBubble напрямую
+  // из стора (по message.chatId) — см. MessageBubble.tsx.
+  const isTyping = useChatStore(s => s.liveByChat[chatId]?.isTyping ?? false)
+  const runStatusStatus = useChatStore(s => s.runStatusByChat[chatId]?.status)
 
-  // Загрузка ленты (вызывается и из IPC-колбэков ниже)
-  const load = useCallback(async () => {
+  // Тихий refresh хвоста: тянем последнюю страницу и МЕРЖИМ в окно, не теряя
+  // уже подгруженные старые сообщения. Вызывается на running / run finished.
+  const refreshTail = useCallback(async () => {
+    const seq = reqSeqRef.current
+    const tailSeq = ++tailSeqRef.current
     try {
-      const msgs = await window.syntee.chat.getMessages(chatId) as Message[]
-      setMessages(msgs ?? [])
+      const res = await window.syntee.chat.getMessagesPage(chatId, DOT_PAGE_SIZE) as { messages: Message[]; hasMore: boolean }
+      if (seq !== reqSeqRef.current || tailSeq !== tailSeqRef.current) return
+      setMessages(prev => mergeTail(prev, res.messages.filter(m => !deletedIdsRef.current.has(m.id)))
+        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)))
     } catch { /* ignore */ }
   }, [chatId])
 
-  // Первичная загрузка: .then-паттерн (setState в колбэке промиса, не в теле эффекта)
+  // Первичная загрузка: ПОСЛЕДНЯЯ страница (не вся история). .then-паттерн
+  // (setState — в колбэке промиса, не в теле эффекта).
   useEffect(() => {
     let cancelled = false
-    window.syntee.chat.getMessages(chatId)
-      .then((msgs: Message[]) => { if (!cancelled) setMessages(msgs ?? []) })
+    reqSeqRef.current++
+    tailSeqRef.current++
+    deletedIdsRef.current.clear()
+    pinnedRef.current = true
+    prependingRef.current = null
+    const seq = reqSeqRef.current
+    loadedChatRef.current = null
+    loadingOlderRef.current = false
+    window.syntee.chat.getMessagesPage(chatId, DOT_PAGE_SIZE)
+      .then((res: { messages: Message[]; hasMore: boolean }) => {
+        if (cancelled || seq !== reqSeqRef.current) return
+        loadedChatRef.current = chatId
+        setMessages(res.messages)
+        setHasOlder(res.hasMore)
+      })
       .catch(() => {})
     return () => { cancelled = true }
   }, [chatId])
+
+  // Догрузка более старых сообщений вверх (reverse-infinite scroll).
+  const loadOlder = useCallback(async () => {
+    if (loadingOlderRef.current || !hasOlder || loadedChatRef.current !== chatId) return
+    const oldest = messages[0]
+    if (!oldest) return
+    const el = scrollRef.current
+    if (el) prependingRef.current = { oldScrollHeight: el.scrollHeight, oldScrollTop: el.scrollTop }
+    loadingOlderRef.current = true
+    const seq = reqSeqRef.current
+    try {
+      const res = await window.syntee.chat.getMessagesPage(chatId, DOT_PAGE_SIZE, oldest.createdAt, oldest.id) as { messages: Message[]; hasMore: boolean }
+      if (seq !== reqSeqRef.current) return
+      setMessages(prev => prependOlder(prev, res.messages.filter(m => !deletedIdsRef.current.has(m.id))))
+      setHasOlder(res.hasMore)
+    } catch {
+      if (seq === reqSeqRef.current) prependingRef.current = null
+    } finally {
+      if (seq === reqSeqRef.current) loadingOlderRef.current = false
+    }
+  }, [chatId, hasOlder, messages])
 
   // Webhook URL (для чипа в шапке)
   useEffect(() => {
@@ -154,39 +221,77 @@ export function DotChat({
   useEffect(() => {
     const offDone = window.syntee.on(IPC_EVENTS.CHAT_STREAM_DONE, (...args: unknown[]) => {
       const data = args[0] as { chatId: string; message: Message }
-      if (data.chatId !== chatId) return
+      if (data.chatId !== chatId || deletedIdsRef.current.has(data.message.id)) return
       setMessages(prev =>
         prev.some(m => m.id === data.message.id) ? prev : [...prev, data.message])
     })
     const offStatus = window.syntee.on(IPC_EVENTS.CHAT_RUN_STATUS, (...args: unknown[]) => {
       const data = args[0] as { chatId: string; status: string }
       if (data.chatId !== chatId) return
-      // 'running' — проснулось что-то новое (wake или наш send): перечитываем
-      // ленту (wake-сообщение сохраняется в main до статуса running).
-      if (data.status === 'running') void load()
+      // 'running' — проснулось что-то новое (wake или наш send): тихо
+      // обновляем хвост ленты (wake-сообщение сохраняется в main до running).
+      if (data.status === 'running') void refreshTail()
     })
     const offRun = window.syntee.on(IPC_EVENTS.DOTS_RUN_FINISHED, (...args: unknown[]) => {
-      const p = (args[0] ?? {}) as { chatId?: string }
+      const p = (args[0] ?? {}) as { chatId?: string; deletedMessageIds?: string[] }
       if (p.chatId !== chatId) return
-      // silent-ран удалил пару сообщений — перечитываем ленту из БД.
-      void load()
+      // A paged merge cannot infer deletions from a missing tail ID.
+      // Remove the exact silent-run pair before refreshing the new tail.
+      if (p.deletedMessageIds?.length) {
+        for (const id of p.deletedMessageIds) deletedIdsRef.current.add(id)
+        setMessages(prev => prev.filter(m => !deletedIdsRef.current.has(m.id)))
+      }
+      void refreshTail()
     })
     return () => { offDone(); offStatus(); offRun() }
-  }, [chatId, load])
+  }, [chatId, refreshTail])
 
-  // Автоскролл при новых сообщениях/токенах (если закреплено)
+  // Автоскролл при новых сообщениях (если закреплено).
   useEffect(() => {
     if (!pinnedRef.current) return
     const el = scrollRef.current
     if (!el) return
     requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
-  }, [messages.length, live?.text, live?.steps?.length])
+  }, [messages.length])
+
+  // Автоскролл на росте live-текста/шагов — через ПОДПИСКУ на стор, без
+  // ре-рендера DotChat. Раньше это были deps [live?.text, live?.steps?.length],
+  // из-за чего компонент ре-рендерился на каждом токене стрима.
+  useEffect(() => {
+    const unsub = useChatStore.subscribe((state, prev) => {
+      const cur = state.liveByChat[chatId]
+      const old = prev.liveByChat[chatId]
+      if (!cur || cur === old) return
+      const grew = cur.isTyping !== old?.isTyping
+        || (cur.text?.length ?? 0) !== (old?.text?.length ?? 0)
+        || (cur.steps?.length ?? 0) !== (old?.steps?.length ?? 0)
+      if (!grew || !pinnedRef.current) return
+      const el = scrollRef.current
+      if (!el) return
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+    })
+    return unsub
+  }, [chatId])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  }, [])
+    // Reverse-infinite scroll: у верхнего края и есть ещё старые → грузим.
+    if (el.scrollTop < 40 && hasOlder && !loadingOlderRef.current) void loadOlder()
+  }, [hasOlder, loadOlder])
+
+  // Компенсация скролла после prepend старых сообщений: визуальная позиция
+  // чтения сохраняется (иначе список «уезжает» вниз).
+  useLayoutEffect(() => {
+    const snap = prependingRef.current
+    if (!snap) return
+    prependingRef.current = null
+    const el = scrollRef.current
+    if (!el) return
+    const delta = el.scrollHeight - snap.oldScrollHeight
+    if (delta > 0) el.scrollTop = snap.oldScrollTop + delta
+  }, [messages.length])
 
   // Отправка: тот же chat:send, что в ChatPage (упрощённо: без slash/вложений).
   const handleSend = useCallback(async (text: string) => {
@@ -209,8 +314,9 @@ export function DotChat({
         mode: 'work',
       }) as { queued?: boolean }
       if (!result?.queued) {
-        setMessages(prev => [...prev, userMsg])
-        initChatSend(chatId)
+        if (loadedChatRef.current !== chatId) return
+        setMessages(prev => prev.some(m => m.id === userMsg.id) ? prev : [...prev, userMsg])
+        if (useChatStore.getState().runStatusByChat[chatId]?.status === 'running') initChatSend(chatId)
       }
       // queued: main поставит в очередь; сообщение появится по 'running'.
     } catch (e) {
@@ -236,7 +342,7 @@ export function DotChat({
     } as Message]
   }, [messages, isTyping, chatId])
 
-  const isGenerating = isTyping || runStatus?.status === 'queued' || runStatus?.status === 'running'
+  const isGenerating = isTyping || runStatusStatus === 'queued' || runStatusStatus === 'running'
 
   // Контекст-счётчик для ContextRing — тот же хук, что в ChatPage:
   // кольцо в инпут-баре показывает реальный контекст чата Dot'а и кликается.
@@ -396,7 +502,8 @@ export function DotChat({
               </div>
             </div>
           )}
-          {displayMessages.map((msg, i) => {
+          <VirtualMessageList items={displayMessages} scrollRef={scrollRef} pinnedRef={pinnedRef}
+            scope={chatId} gap={6} estimatedSize={160} renderItem={(msg, i, firstMount) => {
             const isLive = msg.id === 'live-streaming-bubble'
             const wake = wakeInfo(msg)
             if (wake && !isLive) {
@@ -405,7 +512,7 @@ export function DotChat({
                 <motion.div
                   key={msg.id}
                   className="dot-wake-sep"
-                  initial={{ opacity: 0, y: -4 }}
+                  initial={firstMount ? { opacity: 0, y: -4 } : false}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.22, ease: 'easeOut' }}
                 >
@@ -424,11 +531,11 @@ export function DotChat({
                 message={msg}
                 isStreaming={isLive && isTyping}
                 isWaiting={isLive && isTyping}
-                shouldAnimate={i >= displayMessages.length - 3}
+                shouldAnimate={firstMount && i >= displayMessages.length - 3}
                 editorAvailable={!isLive}
               />
             )
-          })}
+          }} />
         </div>
       </div>
 
