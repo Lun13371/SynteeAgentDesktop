@@ -14,6 +14,8 @@ export function attachRendererRecovery(win: BrowserWindow, load: () => Promise<v
   let lastFailure = 0
   let prompting = false
   let stopped = false
+  let bootGeneration = 0
+  let watchingBoot = false
   const alive = () => !stopped && !win.isDestroyed() && !wc.isDestroyed()
   const record = (message: string) => {
     console.error('[renderer-recovery]', message)
@@ -35,6 +37,8 @@ export function attachRendererRecovery(win: BrowserWindow, load: () => Promise<v
     const message = error instanceof Error ? error.message : String(error)
     record(message)
     clearBootTimer()
+    watchingBoot = false
+    bootGeneration++
     // did-fail-load и rejected loadPromise могут описывать один и тот же сбой.
     if (retryTimer || prompting) return
     if (Date.now() - lastFailure > 60_000) attempts = 0
@@ -86,24 +90,40 @@ export function attachRendererRecovery(win: BrowserWindow, load: () => Promise<v
     // Не перезагружаем занятой UI: диагностика без потери введённого текста.
     record('Main window unresponsive')
   })
-  wc.on('did-start-loading', () => {
+  const armBootCheck = (message: string) => {
     clearBootTimer()
-    bootTimer = setTimeout(() => failed('Main frame loading timed out after 30s'), 30_000)
-  })
-  wc.on('did-finish-load', () => {
-    clearBootTimer()
-    // did-finish-load не гарантирует загрузку ES modules / монтирование React.
-    // RootErrorBoundary не работает, если main.tsx так и не исполнился.
+    const generation = bootGeneration
     bootTimer = setTimeout(() => {
       bootTimer = undefined
-      if (!alive()) return
+      if (!alive() || !watchingBoot || generation !== bootGeneration) return
+      // Загрузка вложенного контента может продолжаться после запуска React.
+      // Сам loading-флаг не является доказательством неисправности UI.
       void wc.executeJavaScript(`(() => {
         const root = document.getElementById('root');
         return !root || root.children.length === 0 || !!document.getElementById('boot-splash');
       })()`).then(blank => {
-        if (blank) failed('Renderer loaded but React did not mount after 30s')
-      }).catch(failed)
+        if (!alive() || !watchingBoot || generation !== bootGeneration) return
+        watchingBoot = false
+        if (blank) failed(message)
+      }).catch(error => {
+        if (!alive() || generation !== bootGeneration) return
+        // Не перезагружаем UI только из-за ошибки диагностического запроса.
+        record(`Boot readiness check failed: ${String(error)}`)
+      })
     }, 30_000)
+  }
+  wc.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    // did-start-loading относится ко всему webContents, включая subframes.
+    // SPA/hash-навигация и guest браузера не запускают watchdog главного UI.
+    if (!isMainFrame || isInPlace) return
+    bootGeneration++
+    watchingBoot = true
+    armBootCheck('Main frame loading timed out after 30s')
+  })
+  wc.on('did-frame-finish-load', (_event, isMainFrame) => {
+    if (!isMainFrame || !watchingBoot) return
+    // Не ждём did-finish-load: вложенный frame может грузиться бесконечно.
+    armBootCheck('Renderer loaded but React did not mount after 30s')
   })
   win.once('closed', () => {
     stopped = true

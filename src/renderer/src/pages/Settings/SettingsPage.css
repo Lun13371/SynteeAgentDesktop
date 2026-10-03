@@ -6,30 +6,53 @@
   overflow: hidden;
 }
 
-/* Обёртка страницы (Настройки/Память/Мессенджер/Dots) — App.tsx.
-   Должна занимать всё доступное место поверх page-host (chat).
-   z-index: 2 — поверх chat (z-index: auto/0) и под модалками (z-index: 10+).
-
-   ВАЖНО: страницы монтируются/размонтируются СИНХРОННО (в App.tsx нет
-   AnimatePresence — см. комментарий там). Вход анимируется ТОЛЬКО этой
-   CSS-анимацией; exit-анимации нет вообще, поэтому «зомби-слой» (невидимая
-   страница поверх чата, перехватывающая клики) физически невозможен.
-   animation без fill-mode: после 0.2s элемент возвращается к базовым стилям
-   (opacity 1, transform none) — без постоянного transform/containing-block. */
+/* Never transform/clone live descendants (canvas, virtualizers, editors,
+   fixed-position menus). Chromium animates composited pixels of content only. */
 .page-motion-host {
   position: absolute;
   inset: 0;
   display: flex;
   flex: 1;
   overflow: hidden;
-  will-change: transform, opacity, filter;
   z-index: 2;
-  transform-origin: center center;
-  animation: page-host-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
-@keyframes page-host-in {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
+html[data-syntee-page-transition] { view-transition-name: none; }
+/* Name only the OLD frame. Incoming DOM remains visible and hit-testable. */
+html[data-syntee-page-capture] .rp-chat-area {
+  view-transition-name: syntee-page;
+}
+/* The native top-layer is visual only. Explicitly exclude all pseudo-elements
+   from hit-testing so the dock and new chat input stay clickable during exit. */
+html[data-syntee-page-transition]::view-transition,
+html[data-syntee-page-transition]::view-transition-group(*),
+html[data-syntee-page-transition]::view-transition-image-pair(*),
+html[data-syntee-page-transition]::view-transition-old(*),
+html[data-syntee-page-transition]::view-transition-new(*) {
+  pointer-events: none;
+}
+::view-transition-group(syntee-page) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+::view-transition-old(syntee-page) {
+  mix-blend-mode: normal;
+  animation: syntee-page-out 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+html[data-syntee-page-transition="close"]::view-transition-old(syntee-page) {
+  animation-name: syntee-page-close;
+}
+@keyframes syntee-page-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes syntee-page-close {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(syntee-page),
+  ::view-transition-old(syntee-page),
+  ::view-transition-new(syntee-page) { animation: none !important; }
 }
 
 /* ── Блок статуса модели Whisper (Настройки → Голос) ── */
