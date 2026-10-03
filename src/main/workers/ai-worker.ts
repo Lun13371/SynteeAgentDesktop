@@ -288,6 +288,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
           pluginTools: ((workerData as Record<string, unknown>).pluginTools as PluginToolRuntime[] | undefined) ?? [],
         })
+      // Delegated chats are main-process ordinary chats, not sub-agent jobs.
+      // AgentManager does not expose this backend to sub-agents.
+      if (isSubAgent) {
+        const index = runTools.findIndex(t => t.function.name === 'manage_chats')
+        if (index >= 0) runTools.splice(index, 1)
+      }
       // Флип browser-режима посреди рана: request_access подтверждён →
       // добавляем 15 browser-тулов, убираем request_access (нечего запрашивать).
       const enableBrowserToolsMidRun = (): void => {
@@ -685,6 +691,22 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 resolve(reply.status as { status: string; currentStep?: string; stepsCount: number } | null)
               })
               send({ type: 'get_agent_status', chatId, msgId, replyId, agent_id: agentId })
+            })
+          },
+          onManageChats: (payload) => {
+            return new Promise((resolve) => {
+              const replyId = `chats-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+              const timer = setTimeout(() => {
+                replyHandlers.delete(replyId)
+                resolve({ success: false, output: '', error: 'manage_chats timed out; the request may have been accepted. Use list/status before retrying create/send.' })
+              }, 30000)
+              replyHandlers.set(replyId, (reply) => {
+                clearTimeout(timer)
+                resolve((reply.result as import('../../shared/delegatedChats').ManageChatsResult)
+                  ?? { success: false, output: '', error: 'manage_chats: no response from main' })
+              })
+              send({ type: 'manage_chats', chatId, msgId, replyId, payload,
+                allowedTools: runTools.map(t => t.function.name) })
             })
           },
           onManageDots: (payload) => {

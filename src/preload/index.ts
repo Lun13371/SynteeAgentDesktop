@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { SkillFolderUpdate } from '../shared/types'
 
 // Типизированный API bridge для renderer
 const synteeAPI = {
@@ -964,9 +965,10 @@ const synteeAPI = {
   // reload — сбросить кэш и перечитать .md с диска.
   // getActive — активные скиллы для конкретного чата (для бейджа).
   skills: {
-    getAll: (params?: { projectId?: string }) => ipcRenderer.invoke('skills:getAll', params),
+    getAll: (params?: { projectId?: string; chatId?: string }) => ipcRenderer.invoke('skills:getAll', params),
     setState: (params: { skillId: string; state: unknown; source: 'builtin' | 'user' | 'project' }) =>
       ipcRenderer.invoke('skills:setState', params),
+    setFolderState: (params: SkillFolderUpdate) => ipcRenderer.invoke('skills:setFolderState', params),
     reload: () => ipcRenderer.invoke('skills:reload'),
     getActive: (params: { chatId: string; isIncognito?: boolean }) =>
       ipcRenderer.invoke('skills:getActive', params),
@@ -990,7 +992,7 @@ const synteeAPI = {
   // setServerState — enabled/scope сервера.
   // setToolState — per-tool enabled/requireApproval.
   mcp: {
-    getAll: (params?: { projectId?: string }) => ipcRenderer.invoke('mcp:getAll', params),
+    getAll: (params?: { projectId?: string; chatId?: string }) => ipcRenderer.invoke('mcp:getAll', params),
     getActiveForChat: (params: { chatId: string; isIncognito?: boolean }) =>
       ipcRenderer.invoke('mcp:getActiveForChat', params),
     save: (config: unknown) => ipcRenderer.invoke('mcp:save', config),

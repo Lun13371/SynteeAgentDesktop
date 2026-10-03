@@ -1308,6 +1308,7 @@ export class Agent {
           const noTruncTool = fn.name === 'search_code' || fn.name === 'get_file_outline'
             || fn.name === 'read_file' || fn.name === 'read_files'
             || fn.name === 'spawn_agent'
+            || fn.name === 'manage_chats' // Own bounded output + offset pagination; preserve valid JSON.
             || fn.name === 'fetch_page'  // своя обрезка по maxChars (default 50000) с сообщением
             // Плагинные и MCP-тулы — НЕ обрезаем вообще: автор тула сам
             // отвечает за размер вывода (plugin_docs отдаёт секции доков

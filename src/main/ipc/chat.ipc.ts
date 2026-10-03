@@ -65,6 +65,7 @@ import { existsSync } from 'fs'
 import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
 import { getSkillManager } from '../../core/skills/skillManager'
+import { getSkillInstructions } from '../../core/skills/skillInstructions'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import { getPluginManager } from '../../core/plugins/pluginManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult, ReplyTarget } from '../../shared/types'
@@ -82,6 +83,8 @@ import { registerProjectsIPC } from './projects.ipc'
 import { registerCheckpointIPC } from './chatCheckpoint.ipc'
 import { registerForkIPC } from './chatFork.ipc'
 import { cleanupOrphanDraftFiles } from './mentions.ipc'
+import { executeManageChats, initializeDelegatedChats } from '../services/delegatedChats'
+import { getDelegatedRequest } from '../../core/db/delegatedChats'
 
 // ── Pending attachment paths ─────────────────────────────────────────────────
 // Пути вложений отправок, чьи user-сообщения ещё НЕ сохранены в БД:
@@ -310,6 +313,8 @@ export interface ProgrammaticChatSendParams {
   slashCommand?: { name: string; args: string }
   incognito?: boolean
   userMsgId?: string
+  /** Reserved ID for delegated requests, persisted before asynchronous startup. */
+  assistantMsgId?: string
   planningMode?: boolean
   askMode?: boolean
   imageMode?: boolean
@@ -324,6 +329,9 @@ export interface ProgrammaticChatSendParams {
   attachments?: Attachment[]
   replyTo?: ReplyTarget[]
 }
+// Request-scoped cancellation during async preparation, before a Worker exists.
+const cancelledDelegatedStarts = new Set<string>()
+let chatStopImpl: ((chatId: string, requestId: string) => boolean) | null = null
 let chatSendImpl: ((params: ProgrammaticChatSendParams) => Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }>) | null = null
 
 /** Отправить сообщение в чат из main-процесса (DotManager: пробуждение Dot'ов). */
@@ -383,6 +391,20 @@ function failRunCleanup(
   assistantMsgId: string,
   e: unknown,
 ): void {
+  if (cancelledDelegatedStarts.delete(assistantMsgId)) {
+    const cancelledRun = activeRuns.get(chatId)
+    if (cancelledRun?.msgId === assistantMsgId) {
+      cancelledRun.doneSent = true // worker exit must not finalize a cancelled preparation as error
+      if (cancelledRun.streamCheckpointTimer) clearInterval(cancelledRun.streamCheckpointTimer)
+      if (cancelledRun.uiFlushTimer) clearTimeout(cancelledRun.uiFlushTimer)
+      void cancelledRun.worker?.terminate()
+      activeRuns.delete(chatId)
+    }
+    if (activeRunMeta.get(chatId)?.msgId === assistantMsgId) activeRunMeta.delete(chatId)
+    emitRunStatus(win, chatId, 'cancelled', assistantMsgId)
+    drainQueue(win, chatId)
+    return
+  }
   const message = e instanceof Error ? e.message : String(e)
   log('[chat:send] runChatSend CRASHED chatId=%s: %s', chatId, message)
   console.error('[chat:send] runChatSend CRASHED:', e)
@@ -887,7 +909,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Skills
     lines.push('')
     lines.push('## Skills')
-    lines.push('Skills — это инструкции в системном промпте, которым ты следуешь. Это не тулы: их не нужно вызывать, они влияют на твоё поведение автоматически. Используй get_skill(name) чтобы получить инструкции конкретного скилла.')
+    lines.push('Skills — инструкции для подходящих задач. Сначала вызови get_skill(name или точный id), затем следуй инструкциям. Папки содержат вложенные скиллы и связанные материалы; get_skill возвращает базовую папку для относительных ссылок.')
     try {
       const wctx = (() => {
         try { return getChatWorkdirContext(chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
@@ -911,13 +933,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         if (active.length > 0) {
           lines.push(`Активные (${active.length}):`)
           for (const s of active) {
-            lines.push(`- **${s.name}** [${s.source}]: ${s.description || '(без описания)'}`)
+            lines.push(`- **${s.name}** [${s.source}] (id: ${s.id}; путь: ${s.relativePath ?? s.filePath}): ${s.description || '(без описания)'}`)
           }
         }
         if (inactive.length > 0) {
           lines.push(`Неактивные (${inactive.length}, можно включить в Настройки → Расширения):`)
           for (const s of inactive) {
-            lines.push(`- ${s.name} [${s.source}]: ${s.description || '(без описания)'}`)
+            lines.push(`- ${s.name} [${s.source}] (id: ${s.id}; путь: ${s.relativePath ?? s.filePath}): ${s.description || '(без описания)'}`)
           }
         }
       }
@@ -1388,6 +1410,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // диалога сломается при перезаходе в чат.
     userMsg.createdAt = Date.now()
     if (!params.incognito) saveMessage(userMsg)
+    if (!params.incognito && getDelegatedRequest(params.chatId, assistantMsgId)) {
+      win?.webContents.send('chat:delegated-message', { message: slimMessageForUI(userMsg) })
+    }
 
     // ── Очистка осиротевших файлов черновика ──────────────────────────────
     // СТРОГО после saveMessage(userMsg): пути вложений этой отправки уже в
@@ -2098,6 +2123,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // построения истории — для маскировки tool-результатов) и переиспользуется
     // здесь для workerData.
 
+    if (cancelledDelegatedStarts.has(assistantMsgId)) throw new Error('Delegated request cancelled during preparation')
     const worker = new Worker(workerPath, {
       workerData: {
         storeData,
@@ -2645,6 +2671,39 @@ ${subModeOutro}`,
           break
         }
 
+        case 'manage_chats': {
+          void (async () => {
+            // Trust run context, not model-provided IDs or permission overrides.
+            if (run.doneSent || activeRuns.get(params.chatId) !== run) return
+            const requestedTools = Array.isArray(msg.allowedTools) ? msg.allowedTools as string[] : []
+            const allowedTools = sideToolSchemas.map(t => t.function.name)
+            // request_access can enable browser tools in this worker during the run.
+            if (getChatBrowserMode(params.chatId)) {
+              for (const name of requestedTools) {
+                if (name.startsWith('browser_') && !allowedTools.includes(name)) allowedTools.push(name)
+              }
+            }
+            const result = await executeManageChats(msg.payload as import('../../shared/delegatedChats').ManageChatsParams, {
+              chatId: params.chatId,
+              modelId: mainAssignment?.modelId,
+              providerId: mainAssignment?.providerId,
+              reasoningValue: storeData.reasoningValue as string | undefined,
+              planningMode: effectivePlanningMode,
+              askMode: effectiveAskMode,
+              allowedTools,
+              incognito: !!params.incognito,
+            }, {
+              send: sendChatMessageProgrammatic,
+              stop: (chatId, requestId) => chatStopImpl?.(chatId, requestId) ?? false,
+              changed: (chatId) => win?.webContents.send('chat:delegated-changed', { chatId }),
+            })
+            if (!run.doneSent) worker.postMessage({ type: 'manage_chats_reply', replyId: msg.replyId, result })
+          })().catch(e => {
+            if (!run.doneSent) worker.postMessage({ type: 'manage_chats_reply', replyId: msg.replyId,
+              result: { success: false, output: '', error: String(e) } })
+          })
+          break
+        }
         // ── Dots: manage_dots-тул агента (round-trip worker → DotManager) ──
         // Форматирование отчёта здесь же, в main — воркер получает готовый text.
         case 'manage_dots': {
@@ -3013,20 +3072,11 @@ ${subModeOutro}`,
                 projectWorkdir: workdir,
                 projectId: skillProjectId,
               })
-              const skill = allSkills.find(s => s.name === skillName)
-              if (!skill) {
-                worker.postMessage({
-                  type: 'get_skill_reply',
-                  replyId: msg.replyId,
-                  instructions: `Скилл "${skillName}" не найден. Доступные: ${allSkills.map(s => s.name).join(', ') || 'нет'}`,
-                })
-              } else {
-                worker.postMessage({
-                  type: 'get_skill_reply',
-                  replyId: msg.replyId,
-                  instructions: `# ${skill.name}\n${skill.description ? `Описание: ${skill.description}\n\n` : ''}${skill.instructions}`,
-                })
-              }
+              worker.postMessage({
+                type: 'get_skill_reply',
+                replyId: msg.replyId,
+                instructions: getSkillInstructions(allSkills, skillName),
+              })
             } catch (e) {
               worker.postMessage({
                 type: 'get_skill_reply',
@@ -3600,6 +3650,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       planningMode: effectivePlanningMode,
       askMode: effectiveAskMode,
       imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
+      browserMode: !!params.browserMode || getChatBrowserMode(params.chatId),
       mode: chatMode,
       mcpTools: params.incognito ? undefined : mcpTools,
       pluginTools: params.incognito ? undefined : pluginTools,
@@ -3726,6 +3777,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       }
     }
 
+    if (cancelledDelegatedStarts.has(assistantMsgId) || run.doneSent) {
+      void worker.terminate()
+      if (cancelledDelegatedStarts.has(assistantMsgId)) throw new Error('Delegated request cancelled during preparation')
+      return { userMsg, assistantMsgId }
+    }
     worker.postMessage({
       chatId: params.chatId,
       msgId: assistantMsgId,
@@ -4029,6 +4085,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     slashCommand?: { name: string; args: string }
     incognito?: boolean
     userMsgId?: string
+    assistantMsgId?: string
     planningMode?: boolean
     askMode?: boolean
     imageMode?: boolean
@@ -4082,7 +4139,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       replyTo: params.replyTo,
     }
     const history = params.incognito ? [] : getMessagesCached(params.chatId)
-    const assistantMsgId = uuid()
+    const assistantMsgId = params.assistantMsgId ?? uuid()
 
     // Регистрируем пути вложений этой отправки как pending — защита от
     // cleanupOrphanDraftFiles: пока userMsg не сохранён в БД (для queued-
@@ -4121,7 +4178,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       log('[chat:send] chatId=%s уже работает (или идёт сжатие) — ставим в очередь', params.chatId)
       emitRunStatus(win, params.chatId, 'queued', assistantMsgId)
       const queued: QueuedSend = {
-        run: async () => { await runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow) },
+        // Read history when the queued task actually starts: it must see the
+        // previous answer, which did not exist at enqueue time.
+        run: async () => { await runChatSend(params, win, chatMode, agentSettings, userMsg,
+          params.incognito ? [] : getMessagesCached(params.chatId), assistantMsgId) },
         meta,
       }
       const q = chatQueues.get(params.chatId) ?? []
@@ -4139,14 +4199,16 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // результат немедленно, чтобы renderer вызвал addMessage(userMsg) +
     // initChatSend(chatId) и показал live-пузырь с прогрессом обработки
     // вложений. Без этого пользователь видит пустой чат всё время обработки.
-    void runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId, store, mainWindow)
+    void runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId)
       .catch((e) => failRunCleanup(win, params.chatId, assistantMsgId, e))
     return { userMsg, assistantMsgId }
   }
 
   // Programmatic-API для main-модулей (DotManager) + IPC-регистрация.
   chatSendImpl = chatSendHandler
-  ipcMain.handle('chat:send', (_, params: Parameters<typeof chatSendHandler>[0]) => chatSendHandler(params))
+  initializeDelegatedChats()
+  // Reserved response IDs are main-only; renderer may not overwrite stored messages.
+  ipcMain.handle('chat:send', (_, params: Parameters<typeof chatSendHandler>[0]) => chatSendHandler({ ...params, assistantMsgId: undefined }))
 
   // ── chat:sideSend — отправка сообщения в параллельный доп-чат (side chat).
   //    Side-чат эфемерный: incognito (не пишется в БД), хранится только в
@@ -4265,9 +4327,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   // ── chat:stop — остановка активного запуска. Если передан chatId,
   //    останавливаем только этот чат (новое поведение для параллельных чатов).
   //    Если chatId не передан — backward compat: останавливаем все активные.
-  ipcMain.handle('chat:stop', (_, chatId?: string) => {
-    const win = mainWindow.getWindow()
-    const stopRun = (run: ActiveRun) => {
+  const stopRun = (run: ActiveRun) => {
+      const win = mainWindow.getWindow()
       // Прерываем обработку вложений если она ещё идёт (воркер ещё не создан).
       // Без этого chat:stop во время "Подготовки файлов" не прерывает
       // processAttachmentsAndStream — Promise.all висит на analyzeImage.
@@ -4294,7 +4355,32 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // на 'cancelled' давало рандомный бейдж «Отменено» в сайдбаре на чате,
       // который по факту завершился штатно (пусть и досрочно).
       if (!run.doneSent) emitRunStatus(win, run.chatId, 'cancelled', run.msgId)
+  }
+  chatStopImpl = (chatId, requestId) => {
+    const win = mainWindow.getWindow()
+    const queue = chatQueues.get(chatId)
+    const index = queue?.findIndex(item => item.meta.msgId === requestId) ?? -1
+    if (queue && index >= 0) {
+      queue.splice(index, 1)
+      if (!queue.length) chatQueues.delete(chatId)
+      emitQueueUpdate(win, chatId)
+      // Do not emit a chat-wide terminal event: another request may still run.
+      return true
     }
+    const run = activeRuns.get(chatId)
+    if (run?.msgId !== requestId) {
+      if (activeRunMeta.get(chatId)?.msgId !== requestId) return false
+      cancelledDelegatedStarts.add(requestId)
+      // Keep the slot reserved until preparation observes cancellation.
+      emitRunStatus(win, chatId, 'cancelled', requestId)
+      return true
+    }
+    stopRun(run)
+    emitQueueUpdate(win, chatId)
+    return true
+  }
+  ipcMain.handle('chat:stop', (_, chatId?: string) => {
+    const win = mainWindow.getWindow()
     if (chatId) {
       const run = activeRuns.get(chatId)
       if (run) {

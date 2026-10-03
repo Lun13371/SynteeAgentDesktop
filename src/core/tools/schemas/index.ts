@@ -12,6 +12,7 @@ import { MEMORY_TOOL_SCHEMAS } from './memory'
 import { EXTENSIONS_TOOL_SCHEMAS } from './extensions'
 import { VISION_TOOL_SCHEMAS } from './vision'
 import { DOTS_TOOL_SCHEMAS } from './dots'
+import { CHAT_TOOL_SCHEMAS } from './chats'
 import { BROWSER_TOOL_SCHEMAS, REQUEST_ACCESS_SCHEMA } from './browser'
 
 export const TOOL_SCHEMAS = [
@@ -25,6 +26,7 @@ export const TOOL_SCHEMAS = [
   ...EXTENSIONS_TOOL_SCHEMAS,
   ...VISION_TOOL_SCHEMAS,
   ...DOTS_TOOL_SCHEMAS,
+  ...CHAT_TOOL_SCHEMAS,
   ...BROWSER_TOOL_SCHEMAS,
   // Реестр — полный список для TOOL_BY_NAME; в конкретный тулсет чата
   // request_access попадает через names (когда browserMode ВЫКЛ).
@@ -123,6 +125,7 @@ export function getToolSchemas(options: {
     'analyze_image',
     'spawn_agent',
     'get_agent_status',
+    'manage_chats',
     'list_extensions',
     'get_skill',
     // Универсальный тул запроса доступа к выключенным возможностям

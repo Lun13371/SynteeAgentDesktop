@@ -721,6 +721,13 @@ export class ToolDispatcher {
         const instructions = await callbacks.onGetSkill(skillName)
         return { success: true, output: instructions }
       }
+      case 'manage_chats': {
+        if (!callbacks?.onManageChats) return { success: false, output: '', error: 'manage_chats unavailable in this context' }
+        if (dryRun && ['create', 'send', 'stop'].includes(String(resolvedArgs.action))) {
+          return { success: true, output: '[DRY RUN] No chat/task was created, sent or stopped.' }
+        }
+        return callbacks.onManageChats(resolvedArgs as unknown as import('../../shared/delegatedChats').ManageChatsParams)
+      }
       // ── Браузер: 15 тулов + request_access → один раунд-трип browser_op ──
       // Все кейсы маппятся в onBrowserAction (main: BrowserManager.execute).
       // Гейтинг browserMode — в main (execute), не здесь: request_access
