@@ -28,6 +28,7 @@ import { startSystemAudioVisualizer } from './utils/systemAudioVisualizer'
 import { startThemeScheduler } from './utils/themeScheduler'
 import type { CustomTheme, Chat as ChatType, Message } from '../../shared/types'
 import ChatPage from './pages/Chat/ChatPage'
+import PageTransitionHost from './components/ui/PageTransitionHost/PageTransitionHost'
 // ── Lazy loading страниц — каждая страница грузится отдельным chunk'ом
 // только при открытии. Это убирает d3-force graph, Settings-компоненты,
 // Messenger и Login из основного бандла → минус ~200-400MB RAM.
@@ -1629,46 +1630,16 @@ export default function App() {
             />
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}>
               <div className="rp-chat-area">
-                {/* ChatPage держится всегда смонтированным (keep-alive):
-                    сайдбар/virtualizer не ре-инициализируются при переключении
-                    вкладок → нет лага при возврате в чат. Скрываем через
-                    visibility:hidden (сохраняет размеры для virtualizer). */}
-                <div className={`page-host ${mainPage === 'chat' ? '' : 'page-host--hidden'}`}>
-                  <ChatPage embedded />
-                </div>
-                {/* Страницы рендерятся СИНХРОННО (mount/unmount) — БЕЗ
-                    AnimatePresence. Почему: exit-анимация framer-motion не
-                    гарантирует завершения. AnimatePresence удаляет уходящего
-                    ребёнка только когда ВСЕ зарегистрированные в его
-                    PresenceChild motion-элементы поддерева вызовут safeToRemove
-                    (use-presence.mjs), а у части из них завершение зависит от
-                    layout-проекции (MeasureLayout: safeToRemove зовётся только
-                    по animationComplete/onExitComplete проекции) или от портала
-                    в body. Достаточно одного незавершившегося — и
-                    AnimatePresence НИКОГДА не удаляет страницу: невидимый
-                    .page-motion-host (z-index 2, absolute inset 0) остаётся
-                    поверх чата, перехватывает клики и фокус — инпут основного
-                    чата «мертвеет», а набор уходит в скрытый инпут Dot'а
-                    («зомби-слой»). Инцидент уже был (f8a70f4: убрали exit),
-                    рецидив вернулся вместе с exit-анимациями (026d9cf) и
-                    проявился на странице Dots: в её поддереве появились
-                    motion-элементы с layout (DotCard layout="position", группы
-                    списка) + порталы ChatInput/ContextRing/MessageBubble.
-                    Поэтому выход — мгновенный unmount (застревать нечему), а
-                    вход анимируется CSS (@keyframes page-host-in в
-                    SettingsPage.css) — тот же паттерн, что у секций Настроек.
-                    key={mainPage} — ремоунт при смене страницы, чтобы
-                    CSS-анимация входа проигрывалась заново. */}
-                {mainPage !== 'chat' && (
-                  <div key={mainPage} className="page-motion-host">
-                    <Suspense fallback={<BootScreen status="Загрузка…" />}>
-                      {mainPage === 'settings' ? <SettingsPage />
-                        : mainPage === 'memory' ? <MemoryPage />
-                        : mainPage === 'messenger' ? <MessengerPage />
-                        : <DotsPage />}
-                    </Suspense>
-                  </div>
-                )}
+                {/* Chromium transitions rendered pixels, not cloned DOM or a
+                    retained motion tree. Page portals unmount; chat stays alive. */}
+                <PageTransitionHost page={mainPage} chat={<ChatPage embedded />}>
+                  <Suspense fallback={<BootScreen status="Загрузка…" />}>
+                    {mainPage === 'settings' ? <SettingsPage />
+                      : mainPage === 'memory' ? <MemoryPage />
+                      : mainPage === 'messenger' ? <MessengerPage />
+                      : mainPage === 'dots' ? <DotsPage /> : null}
+                  </Suspense>
+                </PageTransitionHost>
                 {/* Полноэкранные страницы плагинов (slot 'page') — оверлей
                     поверх keep-alive ChatPage внутри зоны контента. */}
                 <PluginPageHost />
