@@ -3,6 +3,7 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import type Store from 'electron-store'
 import { WINDOW_SIZES } from '../../shared/constants'
+import { attachRendererRecovery } from './rendererRecovery'
 
 interface SavedBounds {
   x: number
@@ -185,12 +186,20 @@ export class MainWindow {
       this.win.maximize()
     }
 
-    // Загружаем renderer
+    // Подписки восстановления ДО первой навигации (иначе пропустим сбой старта).
+    const loadRenderer = (): Promise<void> => {
+      if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+        return wc.loadURL(process.env['ELECTRON_RENDERER_URL'])
+      }
+      return wc.loadFile(join(__dirname, '../renderer/index.html'))
+    }
+    const recovery = attachRendererRecovery(this.win, loadRenderer)
+
+    // Загружаем renderer; rejected loadPromise тоже обрабатываем.
+    void loadRenderer().catch(recovery.failed)
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      this.win.loadURL(process.env['ELECTRON_RENDERER_URL'])
       this.win.webContents.openDevTools()
     } else {
-      this.win.loadFile(join(__dirname, '../renderer/index.html'))
       // В дебаг режиме открываем DevTools
       if (process.argv.includes('--inspect') || process.argv.some(a => a.startsWith('--inspect='))) {
         this.win.webContents.openDevTools({ mode: 'detach' })

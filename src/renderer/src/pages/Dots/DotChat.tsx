@@ -3,11 +3,16 @@
 // useChatRunSubscription (App.tsx) пишет liveByChat[chatId] для ВСЕХ чатов,
 // MessageBubble читает live-текст по message.chatId.
 //
+// Wake-сообщения рендерятся ТАЙМЛАЙН-СЕПАРАТОРАМИ (как «новый день» в
+// мессенджерах), а не пузырём пользователя: wake — системное событие,
+// «Пробуждение по расписанию» пузырём юзера сбивает (будто ты это сказал).
+//
 // ВАЖНО (баг-фикс): ChatInput рендерит корень .chat-input-wrap с
 // position:absolute; bottom:0 — враппер .dot-chat-input-wrap ОБЯЗАН иметь
 // position:relative, иначе инпут вырывается из слота и перекрывает ленту
 // сообщений (клики по зоне инпута уходили в скролл-контейнер).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { v4 as uuid } from 'uuid'
 import MessageBubble from '../../components/ui/MessageBubble/MessageBubble'
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
@@ -26,6 +31,51 @@ function fmtTime(ts: number): string {
   const sameDay = d.toDateString() === now.toDateString()
   const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   return sameDay ? hm : `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${hm}`
+}
+
+/** Wake-сообщения: user-пузырь с displayContent от DotManager.
+ *  Сохранённый content = displayContent («Пробуждение по расписанию» и
+ *  т.п.) — по нему и распознаём (см. chatSendHandler: content = displayContent ?? content). */
+const WAKE_LABELS: Array<{ match: string; icon: string; label: string }> = [
+  { match: 'Пробуждение по расписанию', icon: 'clock', label: 'Расписание' },
+  { match: 'Пробуждение по интервалу', icon: 'clock', label: 'Интервал' },
+  { match: 'Пробуждение по webhook', icon: 'link', label: 'Webhook' },
+  { match: 'Пробуждение: изменились файлы', icon: 'folder', label: 'Изменились файлы' },
+  { match: 'Ручное пробуждение', icon: 'zap', label: 'Ручное пробуждение' },
+]
+
+function wakeInfo(msg: Message): { icon: string; label: string } | null {
+  if (msg.role !== 'user') return null
+  const hit = WAKE_LABELS.find(w => msg.content === w.match || msg.content.startsWith(w.match))
+  return hit ? { icon: hit.icon, label: hit.label } : null
+}
+
+/** Sparkline активности за 7 дней: столбик = число ранов в день. */
+function ActivitySpark({ runs }: { runs: DotRun[] }) {
+  const days = useMemo(() => {
+    const out: Array<{ label: string; count: number }> = []
+    const now = new Date()
+    now.setHours(0, 0, 0, 0)
+    for (let i = 6; i >= 0; i--) {
+      const start = now.getTime() - i * 86_400_000
+      const count = runs.filter(r => r.startedAt >= start && r.startedAt < start + 86_400_000).length
+      out.push({ label: String(new Date(start).getDate()), count })
+    }
+    return out
+  }, [runs])
+  const max = Math.max(1, ...days.map(d => d.count))
+  return (
+    <div className="dot-spark" title="Раны за последние 7 дней">
+      {days.map((d, i) => (
+        <div
+          key={i}
+          className={`dot-spark-bar${d.count > 0 ? ' dot-spark-bar--on' : ''}`}
+          style={{ height: `${Math.max(8, Math.round((d.count / max) * 100))}%` }}
+          title={`${d.count} ран(ов)`}
+        />
+      ))}
+    </div>
+  )
 }
 
 export function DotChat({
@@ -172,7 +222,7 @@ export function DotChat({
     window.syntee.chat.stop(chatId).catch(() => {})
   }, [chatId])
 
-  // Лента + live-пузырь
+  // Лента: wake-сообщения → сепараторы, остальные → пузыри + live-пузырь.
   const displayMessages = useMemo(() => {
     if (!isTyping) return messages
     return [...messages, {
@@ -199,16 +249,27 @@ export function DotChat({
     isRunning: isGenerating,
   })
 
+  // Сводка для панели истории.
+  const s = dot.state
+  const quietPct = s.runCount > 0 ? Math.round((s.silentCount / s.runCount) * 100) : null
+
   return (
     <div className="dot-chat" ref={rootRef}>
+      {/* Цветная полоска Dot'а сверху — визуальная привязка чата к капле */}
+      <div className="dot-chat-strip" style={{ background: dot.color }} />
+
       {/* Шапка чата Dot'а */}
       <div className="dot-chat-header">
-        <DotBlob color={dot.color} icon={dot.icon} status={dot.state.status} size={32} />
+        <DotBlob color={dot.color} icon={dot.icon} status={s.status} size={32} />
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="dot-chat-header-name">{dot.name}</div>
-          <div className="dot-chat-header-purpose" title={dot.purpose}>{dot.purpose}</div>
+          <div
+            className="dot-chat-header-purpose"
+            title={`${dot.purpose}${modelTitle ? `\n${modelTitle}` : ''}`}
+          >
+            {modelId || 'осн. модель'}
+          </div>
         </div>
-        <span className="dot-chat-model" title={modelTitle}>{modelId || 'осн. модель'}</span>
         {webhookUrl && (
           <button
             type="button"
@@ -218,7 +279,7 @@ export function DotChat({
               navigator.clipboard?.writeText(webhookUrl).catch(() => {})
             }}
           >
-            <AppIcon name="link" size="xs" /> Webhook
+            <AppIcon name="link" size="xs" />
           </button>
         )}
         <button
@@ -233,47 +294,102 @@ export function DotChat({
           type="button"
           className="dots-header-btn dots-header-btn--primary"
           onClick={onWake}
-          disabled={dot.state.status === 'running' || !dot.enabled}
+          disabled={s.status === 'running' || !dot.enabled}
           title="Разбудить Dot’а сейчас"
         >
           <AppIcon name="zap" size="xs" /> Разбудить
         </button>
       </div>
 
-      {/* История ранов */}
-      {showRuns && (
-        <div className="dot-runs">
-          <div className="dot-runs-title">История пробуждений</div>
-          {runs.length === 0 && (
-            <div className="dot-run-row">
-              <span className="dot-run-summary">Ещё ни одного пробуждения</span>
-            </div>
-          )}
-          {runs.map(r => (
-            <div key={r.id} className="dot-run-row">
-              <span className={`dot-run-badge dot-run-badge--${r.status}`}>
-                {r.status === 'report' ? 'отчёт' : r.status === 'silent' ? 'тихо' : r.status === 'running' ? 'работа' : r.status === 'error' ? 'ошибка' : 'стоп'}
-              </span>
-              <div className="dot-run-info">
-                <div className="dot-run-summary" title={r.summary}>
-                  {r.summary || (r.status === 'silent' ? 'изменений не найдено' : '—')}
-                </div>
-                <div className="dot-run-time">
-                  {fmtTime(r.startedAt)} · {r.trigger}
-                  {r.completionTokens ? ` · ${r.completionTokens} ток.` : ''}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Панель истории: slide-in справа — сводка + sparkline + раны.
+          Exit — только числовые значения + tween (см. урок про exit). */}
+      <AnimatePresence>
+        {showRuns && (
+          <motion.div
+            className="dot-runs-panel"
+            initial={{ opacity: 0, x: 26 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 26 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+          >
+          <div className="dot-runs-panel-head">
+            <div className="dot-runs-title">История пробуждений</div>
+            <button
+              type="button"
+              className="dot-card-action"
+              title="Закрыть"
+              onClick={() => setShowRuns(false)}
+            >
+              <AppIcon name="x" size="xs" />
+            </button>
+          </div>
 
-      {/* Лента сообщений (наследованный рендер) */}
+          {/* Сводка: счётчики + активность за 7 дней */}
+          <div className="dot-runs-stats">
+            <div className="dot-runs-stat">
+              <span className="dot-runs-stat-num">{s.runCount}</span>
+              <span className="dot-runs-stat-label">всего</span>
+            </div>
+            <div className="dot-runs-stat">
+              <span className="dot-runs-stat-num dot-runs-stat-num--report">{s.reportCount}</span>
+              <span className="dot-runs-stat-label">отчётов</span>
+            </div>
+            <div className="dot-runs-stat">
+              <span className="dot-runs-stat-num">{s.silentCount}</span>
+              <span className="dot-runs-stat-label">тихих{quietPct !== null ? ` · ${quietPct}%` : ''}</span>
+            </div>
+            <div className="dot-runs-stat">
+              <span className="dot-runs-stat-num dot-runs-stat-num--error">{s.errorCount}</span>
+              <span className="dot-runs-stat-label">ошибок</span>
+            </div>
+          </div>
+          <ActivitySpark runs={runs} />
+
+          <div className="dot-runs-list">
+            {runs.length === 0 && (
+              <div className="dot-run-row">
+                <span className="dot-run-summary">Ещё ни одного пробуждения</span>
+              </div>
+            )}
+            {runs.map((r, idx) => (
+              <motion.div
+                key={r.id}
+                className="dot-run-row"
+                initial={{ opacity: 0, x: 8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.18, delay: Math.min(idx * 0.02, 0.2), ease: 'easeOut' }}
+              >
+                <span className={`dot-run-badge dot-run-badge--${r.status}`}>
+                  {r.status === 'report' ? 'отчёт' : r.status === 'silent' ? 'тихо' : r.status === 'running' ? 'работа' : r.status === 'error' ? 'ошибка' : 'стоп'}
+                </span>
+                <div className="dot-run-info">
+                  <div className="dot-run-summary" title={r.summary}>
+                    {r.summary || (r.status === 'silent' ? 'изменений не найдено' : '—')}
+                  </div>
+                  <div className="dot-run-time">
+                    {fmtTime(r.startedAt)} · {r.trigger}
+                    {r.completionTokens ? ` · ${r.completionTokens} ток.` : ''}
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Лента сообщений (наследованный рендер + wake-сепараторы) */}
       <div className="dot-chat-messages" ref={scrollRef} onScroll={handleScroll}>
         <div className="dot-chat-messages-inner">
           {displayMessages.length === 0 && !isTyping && (
             <div className="dot-chat-empty">
-              <DotBlob color={dot.color} icon={dot.icon} status="sleeping" size={64} />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.86 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <DotBlob color={dot.color} icon={dot.icon} status="sleeping" size={64} />
+              </motion.div>
               <div className="dot-chat-empty-title">{dot.name} ещё спит</div>
               <div className="dot-chat-empty-text">
                 Нажми «Разбудить» — или напиши ему: он ответит и запомнит контекст задачи.
@@ -282,6 +398,26 @@ export function DotChat({
           )}
           {displayMessages.map((msg, i) => {
             const isLive = msg.id === 'live-streaming-bubble'
+            const wake = wakeInfo(msg)
+            if (wake && !isLive) {
+              // Wake-сообщение → таймлайн-сепаратор (не пузырь пользователя).
+              return (
+                <motion.div
+                  key={msg.id}
+                  className="dot-wake-sep"
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.22, ease: 'easeOut' }}
+                >
+                  <span className="dot-wake-sep-line" />
+                  <span className="dot-wake-sep-label">
+                    <AppIcon name={wake.icon as 'clock'} size="xs" />
+                    {wake.label} · {fmtTime(msg.createdAt)}
+                  </span>
+                  <span className="dot-wake-sep-line" />
+                </motion.div>
+              )
+            }
             return (
               <MessageBubble
                 key={msg.id}
@@ -295,6 +431,22 @@ export function DotChat({
           })}
         </div>
       </div>
+
+      {/* Индикатор работы над инпутом */}
+      <AnimatePresence>
+        {isGenerating && (
+          <motion.div
+            className="dot-chat-running"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+          >
+            <span className="dot-chat-running-dot" style={{ background: dot.color }} />
+            Dot работает…
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Инпут-бар (наследованный ChatInput) — паттерн ChatPage: слот с
           display:contents, корень .chat-input-wrap абсолютный и пинится к

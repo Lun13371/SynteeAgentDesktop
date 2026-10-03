@@ -36,6 +36,7 @@ import { SECRET_PLACEHOLDER_PREFIX, SECRET_PLACEHOLDER_SUFFIX } from '../prompts
 export class ToolDispatcher {
   private store: Store
   workdir?: string
+  modelRole: 'main' | 'subagent' = 'main'
   /** userData path — для fallback-поиска картинок-вложений в draft-attachments,
    *  когда AI вызывает analyze_image с именем файла-вложения (без полного пути). */
   userDataPath?: string
@@ -386,7 +387,7 @@ export class ToolDispatcher {
         // Распознавание картинки с диска: прямой пас (imageParts) для
         // vision-способной основной модели, иначе — описание от vision-модели.
         // userDataPath — для fallback-поиска картинок-вложений в draft-attachments.
-        return analyzeImageFile(resolvedArgs as { path: string; question?: string }, this.store, this.workdir, this.userDataPath)
+        return analyzeImageFile(resolvedArgs as { path: string; question?: string }, this.store, this.workdir, this.userDataPath, this.modelRole)
       case 'read_files': {
         const rfResult = await readFiles(resolvedArgs.paths as string[], this.workdir)
         if (rfResult.success) {

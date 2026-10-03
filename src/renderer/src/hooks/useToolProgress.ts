@@ -124,7 +124,7 @@ export function useToolProgress() {
     // группировка в итерации по textBefore/thinking.
     const offStep = window.syntee.on('agent:step', (step: {
       type: string; toolName?: string; toolArgs?: Record<string, unknown>
-      content: string; success?: boolean; imageUrl?: string
+      content: string; success?: boolean; imageUrl?: string; imagePaths?: string[]
       msgId?: string; callId?: string; pendingCallId?: string; chatId?: string
       diff?: string
     }) => {
@@ -285,6 +285,7 @@ export function useToolProgress() {
           content: step.content, success: step.success,
           timestamp: Date.now(), imageUrl: step.imageUrl,
           diff: step.diff,
+          imagePaths: step.imagePaths,
           callId: step.callId,
         }
         buf.steps.push(newStep)

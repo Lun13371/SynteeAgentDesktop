@@ -419,6 +419,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 success: step.success,
                 timestamp: Date.now(),
                 imageUrl: step.imageUrl,
+                imagePaths: step.imagePaths,
                 diff: (step as { diff?: string }).diff,
                 callId: step.callId,
               }

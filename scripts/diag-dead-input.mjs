@@ -112,6 +112,24 @@ async function main() {
   })()`)
   console.log('DURING (dots open):', JSON.stringify(during))
 
+  // ── Шаг 1.5: открыть чат Dot'а (репорт «инпут основного чата мёртв именно
+  // при открытом DotChat»). Кликаем первую карточку Dot'а — монтируется DotChat
+  // со своим ChatInput (порталы ChatInputPlusMenu/ContextRing/StatusRow).
+  const dotOpen = await evalJs(`(() => {
+    const card = document.querySelector('.dot-card')
+    if (!card) return { ok: false, reason: 'no dot cards (создай Dot для проверки)' }
+    card.click()
+    return { ok: true, cards: document.querySelectorAll('.dot-card').length }
+  })()`)
+  console.log('CLICK DOT CARD:', JSON.stringify(dotOpen))
+  await sleep(1500)
+  const dotChat = await evalJs(`(() => ({
+    dotChat: !!document.querySelector('.dot-chat'),
+    dotInput: !!document.querySelector('.dot-chat .chat-input-wrap'),
+    motionHosts: document.querySelectorAll('.page-motion-host').length,
+  }))()`)
+  console.log('DOT CHAT OPEN:', JSON.stringify(dotChat))
+
   // ── Шаг 2: клик по кнопке Dots снова (закрыть страницу) ──
   const clicked2 = await evalJs(`(() => {
     const btns = [...document.querySelectorAll('.titlebar-right button, .titlebar-right [role=button]')]

@@ -363,9 +363,8 @@ export function ChatInputStatusRow({
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="4" width="20" height="16" rx="2"/>
-              <path d="M10 9l-5 3 5 3V9z"/>
-              <line x1="16" y1="9" x2="16" y2="15"/>
-              <line x1="19" y1="9" x2="19" y2="15"/>
+              <path d="M2 8h20"/>
+              <path d="m9.5 10 3.2 8 1.1-3.3 3.3-1.1z"/>
             </svg>
             <span>{lang === 'en' ? 'Browser control' : 'Управление браузером'}</span>
             <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>

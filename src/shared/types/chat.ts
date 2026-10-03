@@ -51,6 +51,7 @@ export interface ToolStep {
   success?: boolean
   timestamp: number
   imageUrl?: string  // путь к сгенерированному изображению
+  imagePaths?: string[]  // absolute raster paths for visual tool history
   diff?: string      // unified diff для edit_file
   callId?: string    // ID tool_call для связи call→result (реконструкция истории)
   /** Имя MCP-сервера для MCP-тулов (mcp__server__tool). undefined для встроенных. */

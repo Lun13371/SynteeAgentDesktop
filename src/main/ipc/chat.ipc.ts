@@ -24,6 +24,7 @@ import {
   getCheckpoints, pruneOldCheckpoints, deleteMessageById, editMessageContent, setMessageHidden,
   saveStreamingBuffer, deleteStreamingBuffer,
   logAgentAction,
+  getDotByChatId,
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { saveMemoryItem, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit, searchAllSources } from '../../core/memory/MemoryStore'
@@ -3777,6 +3778,19 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     return { ...res, messages: slimMessagesForUI(res.messages) }
   })
   ipcMain.handle('chat:delete', (_, chatId: string) => {
+    // Dots: чат Dot'а удалили из сайдбара основного чата — каскадом удаляем
+    // и самого Dot'а (иначе он останется сиротой: каждый wake-ран будет
+    // падать на несуществующем чате). Динамический импорт — как в
+    // manage_dots (статический импорт DotManager создаёт цикл).
+    try {
+      const dot = getDotByChatId(chatId)
+      if (dot) {
+        void import('../managers/DotManager').then(m => {
+          m.dotManager.deleteDot(dot.id)
+          log('[chat:delete] каскад: удалён Dot "%s" вместе с чатом', dot.name)
+        })
+      }
+    } catch { /* dots-таблица недоступна — удаляем просто чат */ }
     // Если в удаляемом чате работает воркер — убиваем его и чистим очередь.
     const run = activeRuns.get(chatId)
     if (run) {

@@ -1,5 +1,7 @@
 ﻿import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
+import { agentModelSupportsVision } from '../ai/visionSupport'
+import { hydrateToolImageContent } from '../ai/toolImageHistory'
 import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, normalizeCommandKey } from './commandSafety'
 import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, isWebSourceTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
 import type { ProjectPermissionOverride, ApprovalAllowlistEntry, AllowScope } from '../../shared/types'
@@ -227,6 +229,7 @@ export class Agent {
   }
 
   syncToolDispatcher(): void {
+    this.toolDispatcher.modelRole = this.role
     this.toolDispatcher.workdir = this.workdir
     this.toolDispatcher.userDataPath = this.userDataPath
     this.toolDispatcher.projectId = this.projectId
@@ -262,17 +265,18 @@ export class Agent {
     maxSteps = 8,
     signal?: AbortSignal,
     systemPrompt?: string,
-    history?: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string; thinking_blocks?: Array<{ thinking: string; signature: string }>; reasoning_content?: string }>,
+    history?: Array<{ role: string; content: string; imagePaths?: string[]; tool_calls?: unknown[]; tool_call_id?: string; name?: string; thinking_blocks?: Array<{ thinking: string; signature: string }>; reasoning_content?: string }>,
     toolSchemas?: typeof TOOL_SCHEMAS,
     options?: AgentRuntimeOptions
   ): Promise<void> {
     const EFFECTIVE_MAX_STEPS = 1024
     void maxSteps
+    const supportsVision = agentModelSupportsVision(this.store, this.role)
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt || FALLBACK_SYSTEM_PROMPT },
       ...(history ?? []).map(m => ({
         role: m.role,
-        content: m.content,
+        content: m.role === 'tool' ? hydrateToolImageContent(m, supportsVision) : m.content,
         ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.name ? { name: m.name } : {}),
@@ -394,10 +398,8 @@ export class Agent {
     // раундов подряд останавливаемся с onError.
     let consecutiveErrors = 0
     const MAX_CONSECUTIVE_ERRORS = 3
-    // Фолбэк для analyze_image прямого паса: если провайдер отклонил
-    // multipart tool-сообщение (400) — вырезаем image-части из tool-сообщений
-    // и ретраим раунд. Один раз за ран (флаг), иначе цикл 400→strip→400.
-    let strippedImageToolParts = false
+    // Visual tool results are adapted by AIClient for each API. Never remove
+    // pixels on a 400: that could turn a failed analysis into a false success.
 
     for (let step = 0; ; step++) {
       if (signal?.aborted) {
@@ -1348,6 +1350,7 @@ export class Agent {
             content: imageUrl ? 'Изображение сгенерировано' : this.toolDispatcher.maskSecretValuesInText(result.output || result.error || ''),
             success: result.success,
             imageUrl,
+            imagePaths: result.imagePaths,
             diff: (result as { diff?: string }).diff,
             callId,
             hidden: isHiddenTool || !!(result as { hidden?: boolean }).hidden,
@@ -1403,10 +1406,9 @@ export class Agent {
             name: item.fn.name,
             // analyze_image прямой пас: если тул вернул imageParts (основная
             // модель vision-capable) — отдаём картинку прямо в tool-сообщении
-            // как multipart content (image_url-блоки + текст), ровно как
-            // вложения в user-сообщении выше. Текстовая часть остаётся
-            // фолбэком: если провайдер отклонит multipart tool-сообщение (400),
-            // catch ниже вырезает image-части и ретраит раунд.
+            // как multipart content. AIClient сохраняет эти блоки для
+            // Anthropic, а для OpenAI/Responses переносит пиксели в user
+            // ПОСЛЕ всех парных tool-результатов раунда.
             content: r?.imageParts?.length
               ? [...r.imageParts, { type: 'text' as const, text: r.contentForAI }]
               : r?.contentForAI ?? '',
@@ -1504,25 +1506,8 @@ export class Agent {
           ))
           return
         }
-        // 400 + multipart tool-сообщения (analyze_image прямой пас): не все
-        // OpenAI-совместимые провайдеры принимают image-блоки в content
-        // tool-сообщений. Фолбэк: вырезаем image-части (текст остаётся),
-        // ретраим раунд. Один раз за ран — если 400 не из-за картинок,
-        // ретрай просто попадёт в generic 4xx-ветку ниже.
-        if (status === 400 && !strippedImageToolParts &&
-            messages.some(m => m.role === 'tool' && Array.isArray(m.content))) {
-          strippedImageToolParts = true
-          for (const m of messages) {
-            if (m.role === 'tool' && Array.isArray(m.content)) {
-              const text = m.content.filter(p => p.type === 'text').map(p => (p as { text: string }).text).join('\n')
-              m.content = `${text}\n[The attached image was removed: the provider rejected image parts in tool messages. If the image content is essential, tell the user this provider cannot receive images in tool results.]`
-            }
-          }
-          console.log('[Agent] 400 + multipart tool-сообщения — images flattened to text, retrying')
-          log('[Agent] 400 + multipart tool-сообщения — images flattened to text, retrying')
-          callbacks.onStep({ type: 'tool_result', toolName: '_error', content: 'Provider rejected images in tool results — flattened to text, retrying.', success: false })
-          continue
-        }
+        // Do not strip images on 400. AIClient already uses the API's supported
+        // visual-input format; preserve the provider error instead of losing pixels.
         if (status >= 400 && status < 500 && status !== 429) {
           console.log('[Agent] 4xx branch: status=%s', status)
           // 401/403/404 — конфиг/авторизация, нет смысла продолжать

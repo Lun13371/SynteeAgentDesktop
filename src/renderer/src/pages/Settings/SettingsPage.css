@@ -6,11 +6,16 @@
   overflow: hidden;
 }
 
-/* Обёртка для анимации появления/исчезновения страницы (App.tsx AnimatePresence).
+/* Обёртка страницы (Настройки/Память/Мессенджер/Dots) — App.tsx.
    Должна занимать всё доступное место поверх page-host (chat).
    z-index: 2 — поверх chat (z-index: auto/0) и под модалками (z-index: 10+).
-   pointer-events:none на exit — framer-motion ставит inline, CSS тут только
-   для начального состояния. */
+
+   ВАЖНО: страницы монтируются/размонтируются СИНХРОННО (в App.tsx нет
+   AnimatePresence — см. комментарий там). Вход анимируется ТОЛЬКО этой
+   CSS-анимацией; exit-анимации нет вообще, поэтому «зомби-слой» (невидимая
+   страница поверх чата, перехватывающая клики) физически невозможен.
+   animation без fill-mode: после 0.2s элемент возвращается к базовым стилям
+   (opacity 1, transform none) — без постоянного transform/containing-block. */
 .page-motion-host {
   position: absolute;
   inset: 0;
@@ -20,6 +25,11 @@
   will-change: transform, opacity, filter;
   z-index: 2;
   transform-origin: center center;
+  animation: page-host-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes page-host-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /* ── Блок статуса модели Whisper (Настройки → Голос) ── */

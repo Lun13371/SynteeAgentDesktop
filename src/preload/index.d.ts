@@ -390,8 +390,10 @@ declare const synteeAPI: {
         }>;
         runNow: (dotId: string) => Promise<{
             ok: boolean;
+            reason?: string;
         }>;
         getRuns: (dotId: string, limit?: number) => Promise<import("../../shared/types").DotRun[]>;
+        unreadCounts: (pairs: Array<{ dotId: string; since: number }>) => Promise<Record<string, number>>;
         getWebhookUrl: (dotId: string) => Promise<string | null>;
         getSettings: () => Promise<import("../../shared/types").DotSettings>;
         setSettings: (patch: Partial<import("../../shared/types").DotSettings>) => Promise<import("../../shared/types").DotSettings>;
