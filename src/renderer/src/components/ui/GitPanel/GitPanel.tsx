@@ -74,6 +74,13 @@ interface BranchInfo {
 
 interface GitPanelProps {
   workdir: string | null
+  /**
+   * Панель РЕАЛЬНО видима: mainPage === 'chat' + панель открыта + активен таб
+   * Git + файловый таб не перекрывает контент + документ виден. Git-поллинг
+   * (и первичная загрузка) идёт ТОЛЬКО при true; при появлении видимости —
+   * мгновенный refresh. Скрытая панель сохраняет последний контент.
+   */
+  visible?: boolean
 }
 
 interface FileTreeNode {
@@ -109,6 +116,47 @@ function getFileBadge(file: GitFileStatus): { label: string; cls: string; title:
   if (idx === 'U' || wt === 'U') return { label: 'U', cls: 'git-status-unmerged', title: 'Unmerged' }
   const meta = STATUS_META[idx] ?? STATUS_META[wt] ?? STATUS_META[' ']
   return { label: meta.label, cls: meta.cls, title: file.raw }
+}
+
+// ── Дедуп идентичных git-данных ─────────────────────────────────────────
+// 30s-поллинг часто возвращает те же status/log/diffStats. Если писать их
+// в state как новые объекты/массивы, ссылки меняются → memo-строки дерева
+// (GitTreeRow: prev.diffStats === next.diffStats) ре-рендерятся на каждый
+// тик впустую. Сравниваем по содержимому и сохраняем прежнюю identity.
+function sameGitStatus(a: GitStatus | null, b: GitStatus): boolean {
+  if (!a) return false
+  if (a.branch !== b.branch || a.ahead !== b.ahead || a.behind !== b.behind || a.clean !== b.clean) return false
+  if (a.files.length !== b.files.length) return false
+  for (let i = 0; i < a.files.length; i++) {
+    const x = a.files[i]
+    const y = b.files[i]
+    if (x.path !== y.path || x.indexStatus !== y.indexStatus || x.worktreeStatus !== y.worktreeStatus || x.raw !== y.raw) return false
+  }
+  return true
+}
+
+function sameGitLog(a: GitLogEntry[], b: GitLogEntry[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (x.hash !== y.hash || x.shortHash !== y.shortHash || x.author !== y.author || x.date !== y.date || x.message !== y.message) return false
+  }
+  return true
+}
+
+function sameDiffStats(
+  a: Record<string, { added: number; deleted: number }>,
+  b: Record<string, { added: number; deleted: number }>,
+): boolean {
+  const ak = Object.keys(a)
+  if (ak.length !== Object.keys(b).length) return false
+  for (const k of ak) {
+    const x = a[k]
+    const y = b[k]
+    if (!y || x.added !== y.added || x.deleted !== y.deleted) return false
+  }
+  return true
 }
 
 function buildFileTree(files: GitFileStatus[]): FileTreeNode[] {
@@ -599,7 +647,7 @@ function groupByStatus(files: GitFileStatus[]): StatusGroups {
   return { staged, unstaged, untracked }
 }
 
-export default function GitPanel({ workdir }: GitPanelProps) {
+export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [log, setLog] = useState<GitLogEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -637,9 +685,14 @@ export default function GitPanel({ workdir }: GitPanelProps) {
   const branchDropdownRef = useRef<HTMLDivElement>(null)
   const actionMenuRef = useRef<HTMLDivElement>(null)
   const treeScrollRef = useRef<HTMLDivElement>(null)
+  // Защита от наслаивания: пока refresh в полёте, поллинг не запускает новый.
+  const refreshInFlightRef = useRef(false)
+  const refreshRequestedRef = useRef(false)
 
   const refresh = useCallback(async () => {
     if (!workdir) return
+    if (refreshInFlightRef.current) { refreshRequestedRef.current = true; return }
+    refreshInFlightRef.current = true
     setLoading(true)
     setError(null)
     setNotARepo(false)
@@ -659,15 +712,18 @@ export default function GitPanel({ workdir }: GitPanelProps) {
         setError(statusResult.error ?? 'Failed to load git status')
         return
       }
-      setStatus({
-        branch: statusResult.branch,
-        ahead: statusResult.ahead,
-        behind: statusResult.behind,
-        files: statusResult.files,
-        clean: statusResult.clean,
+      setStatus(prev => {
+        const next: GitStatus = {
+          branch: statusResult.branch,
+          ahead: statusResult.ahead,
+          behind: statusResult.behind,
+          files: statusResult.files,
+          clean: statusResult.clean,
+        }
+        return sameGitStatus(prev, next) ? prev : next
       })
       if (logResult.success) {
-        setLog(logResult.entries)
+        setLog(prev => sameGitLog(prev, logResult.entries) ? prev : logResult.entries)
       }
 
       // Загружаем diff stats (+X -Y) для каждого изменённого файла
@@ -680,32 +736,37 @@ export default function GitPanel({ workdir }: GitPanelProps) {
             for (const s of statResult.stats) {
               map[s.path] = { added: s.added, deleted: s.deleted }
             }
-            setDiffStats(map)
+            setDiffStats(prev => sameDiffStats(prev, map) ? prev : map)
           }
         } catch { /* ok — stats optional */ }
       } else {
-        setDiffStats({})
+        setDiffStats(prev => (Object.keys(prev).length === 0 ? prev : {}))
       }
     } catch (e) {
       setError(String((e as Error)?.message ?? e))
     } finally {
+      refreshInFlightRef.current = false
       setLoading(false)
+      if (refreshRequestedRef.current) {
+        refreshRequestedRef.current = false
+        queueMicrotask(() => { void refresh() })
+      }
     }
   }, [workdir])
 
+  // Git-поллинг и первичная загрузка — ТОЛЬКО когда панель реально видима
+  // (visible от RightPanel: mainPage chat + панель открыта + активен таб Git
+  // + файловый таб не перекрывает контент + документ виден). Стали видимыми →
+  // мгновенный refresh, затем каждые 30s. Скрытая панель сохраняет последний
+  // контент и не дёргает git. refreshInFlightRef не даёт поллингу наслаиваться
+  // поверх уже идущего refresh (медленный git не копит вызовы).
   useEffect(() => {
-    if (workdir) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      refresh()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workdir])
-
-  useEffect(() => {
-    if (!workdir) return
-    const interval = setInterval(refresh, 30_000)
+    if (!workdir || !visible) return
+    const poll = () => { void refresh() }
+    poll()
+    const interval = setInterval(poll, 30_000)
     return () => clearInterval(interval)
-  }, [workdir, refresh])
+  }, [workdir, visible, refresh])
 
   // Закрытие branch dropdown по клику вне
   useEffect(() => {

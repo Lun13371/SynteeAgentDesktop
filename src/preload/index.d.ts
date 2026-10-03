@@ -393,7 +393,10 @@ declare const synteeAPI: {
             reason?: string;
         }>;
         getRuns: (dotId: string, limit?: number) => Promise<import("../../shared/types").DotRun[]>;
-        unreadCounts: (pairs: Array<{ dotId: string; since: number }>) => Promise<Record<string, number>>;
+        unreadCounts: (pairs: Array<{
+            dotId: string;
+            since: number;
+        }>) => Promise<Record<string, number>>;
         getWebhookUrl: (dotId: string) => Promise<string | null>;
         getSettings: () => Promise<import("../../shared/types").DotSettings>;
         setSettings: (patch: Partial<import("../../shared/types").DotSettings>) => Promise<import("../../shared/types").DotSettings>;
@@ -418,9 +421,13 @@ declare const synteeAPI: {
                 canGoBack: boolean;
                 canGoForward: boolean;
                 favicon?: string;
+                discarded?: boolean;
             }>;
             activeTabId: string | null;
         }>;
+        setVisibleTab: (tabId: string | null) => Promise<boolean>;
+        getCacheSize: () => Promise<number>;
+        clearCache: () => Promise<boolean>;
         onTabState: (cb: (state: {
             tabs: Array<{
                 tabId: string;
@@ -431,6 +438,7 @@ declare const synteeAPI: {
                 canGoBack: boolean;
                 canGoForward: boolean;
                 favicon?: string;
+                discarded?: boolean;
             }>;
             activeTabId: string | null;
         }) => void) => () => Electron.IpcRenderer;
@@ -776,6 +784,9 @@ declare const synteeAPI: {
         kill: (sessionId: string) => Promise<any>;
         consumePreMount: (sessionId: string) => Promise<any>;
         getMeta: (sessionId: string) => Promise<any>;
+        attach: (sessionId: string) => Promise<any>;
+        detach: (sessionId: string) => void;
+        ack: (sessionId: string, bytes: number) => void;
     };
     fs: {
         getWorkdir: (chatId: string) => Promise<any>;
@@ -793,7 +804,9 @@ declare const synteeAPI: {
             root: string;
             query: string;
             maxResults?: number;
+            scopeId?: string;
         }) => Promise<any>;
+        cancelSearch: (scopeId: string) => void;
         writeFile: (params: {
             root: string;
             relPath: string;

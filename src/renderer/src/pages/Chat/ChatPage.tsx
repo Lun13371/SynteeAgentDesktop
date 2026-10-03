@@ -584,7 +584,17 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // compactingSummariesRef и показываются в compacting-индикаторе (внизу
   // чата) как live-markdown. При start-сигнале — сброс, при chunk —
   // аккумуляция. Только для manual /compact (авто-компакция стрим не шлёт).
+  const compactingCurrentChatIdRef = useRef(currentChatId)
+  compactingCurrentChatIdRef.current = currentChatId
   useEffect(() => {
+    // Coalesce chunks arriving within one display frame. Text stays in the
+    // per-chat Map immediately; only redundant React commits are deferred.
+    let frame = 0
+    const publish = () => {
+      frame = 0
+const chatId = compactingCurrentChatIdRef.current
+      setCompactingSummary(chatId ? compactingSummariesRef.current.get(chatId) ?? '' : '')
+    }
     const off = window.syntee.on('chat:compact-stream', (data: unknown) => {
       const d = data as { chatId: string; chunk?: string; start?: boolean }
       // Без фильтра по currentChatId: стрим может идти в чат, который
@@ -592,21 +602,25 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // резюме показалось целиком.
       if (d.start) {
         compactingSummariesRef.current.delete(d.chatId)
-        if (d.chatId === currentChatId) setCompactingSummary('')
+        if (d.chatId === currentChatId) {
+          if (frame) cancelAnimationFrame(frame)
+          frame = 0
+          setCompactingSummary('')
+        }
         return
       }
       if (d.chunk) {
         const next = (compactingSummariesRef.current.get(d.chatId) ?? '') + d.chunk
         compactingSummariesRef.current.set(d.chatId, next)
-        if (d.chatId === currentChatId) setCompactingSummary(next)
+        if (compactingCurrentChatIdRef.current === d.chatId && !frame) frame = requestAnimationFrame(publish)
       }
     })
-    return () => { off() }
+    return () => { off(); if (frame) cancelAnimationFrame(frame) }
   }, [currentChatId])
 
   // Смена чата — показываем накопленное резюме сжимаемого чата (если
   // вернулись в него), иначе пусто. Сама Map чистится по завершении /compact.
-  useEffect(() => { setCompactingSummary(compactingSummariesRef.current.get(currentChatId) ?? '') }, [currentChatId])
+  useEffect(() => {     setCompactingSummary(currentChatId ? compactingSummariesRef.current.get(currentChatId) ?? '' : '') }, [currentChatId])
 
   // Смена чата — очищаем множество анимированных id, чтобы сообщения нового
   // чата анимировались при появлении (как при полном перемонте раньше).
@@ -2135,6 +2149,11 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     if (!currentChatId || isIncognito) return undefined
     return chats.find(c => c.id === currentChatId)?.workdir
   }, [chats, currentChatId, isIncognito])
+  const currentProject = useMemo(() => currentWorkdir
+    ? projects.find(p => p.workdir === currentWorkdir) : undefined, [projects, currentWorkdir])
+  const handleOpenProjectSettings = useCallback(() => {
+    if (currentProject) setSettingsModalProject(currentProject)
+  }, [currentProject])
 
   // ── Загрузка кастомных slash-команд (из .md-файлов) ──
   // Грузим при mount и при смене workdir (проектные команды из .syntee/commands/).
@@ -2690,12 +2709,9 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
               onAttachmentsChange={handleAttachmentsChange}
               lastTurnChanges={badgeChanges}
               badgeLive={badgeLive}
-              onOpenProjectSettings={currentWorkdir ? () => {
-                const project = projects.find(p => p.workdir === currentWorkdir)
-                if (project) setSettingsModalProject(project)
-              } : undefined}
-              projectId={currentWorkdir ? (projects.find(p => p.workdir === currentWorkdir)?.id ?? null) : null}
-              projectName={currentWorkdir ? projects.find(p => p.workdir === currentWorkdir)?.name : undefined}
+              onOpenProjectSettings={currentWorkdir ? handleOpenProjectSettings : undefined}
+              projectId={currentProject?.id ?? null}
+              projectName={currentProject?.name}
             />
           </div>
 

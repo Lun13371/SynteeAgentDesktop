@@ -874,7 +874,7 @@ const synteeAPI = {
   },
 
   // PTY-терминал (xterm.js + node-pty). create/write/resize/kill — invoke;
-  // стриминг данных — через on('pty:data'/'pty:exit'). Сессии per-chat.
+  // стриминг данных — через on('pty:data'/'pty:premount'/'pty:exit'). Сессии per-chat.
   pty: {
     detectShells: () => ipcRenderer.invoke('pty:detectShells'),
     create: (params: { chatId: string; shell: string; cwd?: string; source?: 'user' | 'agent'; title?: string }) =>
@@ -885,6 +885,11 @@ const synteeAPI = {
     kill: (sessionId: string) => ipcRenderer.invoke('pty:kill', sessionId),
     consumePreMount: (sessionId: string) => ipcRenderer.invoke('pty:consumePreMount', sessionId),
     getMeta: (sessionId: string) => ipcRenderer.invoke('pty:getMeta', sessionId),
+    // Consumer-протокол стриминга: attach (получить pre-mount snapshot
+    // событием 'pty:premount'), detach (xterm уничтожен), ack (поглощено N байт).
+    attach: (sessionId: string) => ipcRenderer.invoke('pty:attach', sessionId),
+    detach: (sessionId: string) => { ipcRenderer.send('pty:detach', sessionId) },
+    ack: (sessionId: string, bytes: number) => { ipcRenderer.send('pty:ack', sessionId, bytes) },
   },
 
   // Файловый просмотрщик/редактор для правой панели и основной области
@@ -894,8 +899,9 @@ const synteeAPI = {
       ipcRenderer.invoke('fs:listDirectory', params),
     readFile: (params: { root: string; relPath: string; maxBytes?: number }) =>
       ipcRenderer.invoke('fs:readFile', params),
-    searchFiles: (params: { root: string; query: string; maxResults?: number }) =>
+    searchFiles: (params: { root: string; query: string; maxResults?: number; scopeId?: string }) =>
       ipcRenderer.invoke('fs:searchFiles', params),
+    cancelSearch: (scopeId: string) => ipcRenderer.send('fs:cancelSearch', scopeId),
     writeFile: (params: { root: string; relPath: string; content: string }) =>
       ipcRenderer.invoke('fs:writeFile', params),
     checkFilesExist: (params: { root: string; relPaths: string[] }) =>

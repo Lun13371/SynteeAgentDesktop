@@ -343,8 +343,15 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
   const accent = useUIStore(s => s.accentColor)
   const gradient = useUIStore(s => s.accentGradient)
   const frameRef = useRef<AudioFrame | null>(null)
+  // wakeRef: покадровый rAF-цикл останавливается в полной тишине (см. draw).
+  // Приход нового аудио-кадра (или demo-кадра) будит цикл — иначе после
+  // «засыпания» звук не отрисовался бы до следующего кадра.
+  const wakeRef = useRef<(() => void) | null>(null)
 
-  useEffect(() => subscribeAudioVisualizer(frame => { frameRef.current = frame }, demo), [demo])
+  useEffect(() => subscribeAudioVisualizer(frame => {
+    frameRef.current = frame
+    wakeRef.current?.()
+  }, demo), [demo])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -437,17 +444,24 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
     let last = t0
     let raf = 0
     let lost = false
+    // В тишине кадр полностью прозрачен (soundGate=0). Чтобы не жечь rAF
+    // каждый display-кадр на пустом канвасе, дожидаемся полного «успокоения»
+    // сглаживания ниже гейта, один раз стираем канвас и останавливаем цикл.
+    // Будит его wake() при приходе нового аудио-кадра.
+    const GATE = 0.015          // порог гейта рендерера: sm.level < GATE => кадр прозрачен
+    const SETTLE_EPS = 0.0004   // порог «успокоения» уровня (дельта за кадр)
+    let clearedSilent = false   // канвас уже стёрт для текущей тишины
     const onLost = (e: Event) => { e.preventDefault(); lost = true; cancelAnimationFrame(raf) }
     canvas.addEventListener('webglcontextlost', onLost)
 
     const draw = (now: number) => {
       if (lost) return
-      raf = requestAnimationFrame(draw)
       const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000))
       last = now
 
       // сглаживание входных данных (кадры ~30 FPS -> шейдер 60 FPS)
       const frame = frameRef.current
+      const prevLevel = sm.level
       sm.level = toward(shape((frame?.level ?? 0) * tuning.gain), sm.level, 0.55, 0.16)
       sm.bass = toward(shape((frame?.bass ?? 0) * tuning.gain), sm.bass, 0.6, 0.2)
       sm.mid = toward(shape((frame?.mid ?? 0) * tuning.gain), sm.mid, 0.55, 0.18)
@@ -471,12 +485,26 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
       beat *= Math.exp(-dt * 5)
 
       // ТИШИНА: soundGate()=0 во всех пресетах => весь кадр полностью
-      // прозрачен. Чистим канвас и пропускаем шейдерный проход целиком —
-      // вывод побитово тот же (прозрачный кадр), GPU в простое.
+      // прозрачен. Стираем последний видимый кадр ОДИН раз, и как только
+      // сглаживание успокоилось ниже гейта — останавливаем rAF (не жжём
+      // display-кадры). Фаза u_time сохраняется: t0 и now не сбрасываются.
+      if (sm.level < GATE) {
+        if (!clearedSilent) {
+          gl.viewport(0, 0, canvas.width, canvas.height)
+          gl.clearColor(0, 0, 0, 0)
+          gl.clear(gl.COLOR_BUFFER_BIT)
+          clearedSilent = true
+        }
+        if (Math.abs(sm.level - prevLevel) < SETTLE_EPS) { raf = 0; return }
+        raf = requestAnimationFrame(draw)
+        return
+      }
+      clearedSilent = false
+
+      // активный кадр: чистим каждый раз (нужно для корректного blend)
       gl.viewport(0, 0, canvas.width, canvas.height)
       gl.clearColor(0, 0, 0, 0)
       gl.clear(gl.COLOR_BUFFER_BIT)
-      if (sm.level < 0.015) return
 
       // инпут-бокс в GL-координатах (y вверх)
       const sideD = layout.side * dpr
@@ -504,10 +532,21 @@ export function AudioVisualizerLayer({ demo = false }: AudioVisualizerLayerProps
       if (loc['u_seed']) gl.uniform1f(loc['u_seed'], seed)
       if (loc['u_dpr']) gl.uniform1f(loc['u_dpr'], dpr)
       gl.drawArrays(gl.TRIANGLES, 0, 3)
+      raf = requestAnimationFrame(draw)
     }
+
+    // wake: перезапуск остановленного цикла при приходе нового аудио-кадра
+    // (в т.ч. demo). Пока цикл жив (raf != 0) — no-op.
+    const wake = () => {
+      if (lost || raf) return
+      last = performance.now()
+      raf = requestAnimationFrame(draw)
+    }
+    wakeRef.current = wake
     raf = requestAnimationFrame(draw)
 
     return () => {
+      wakeRef.current = null
       cancelAnimationFrame(raf)
       observer.disconnect()
       canvas.removeEventListener('webglcontextlost', onLost)

@@ -625,9 +625,12 @@ export default function App() {
     // нужно для ChatInput и других компонентов, которые читают настройки
     // через useSettingsStore (sttProvider, sttModelSize, groqApiKey и т.д.).
     // Без этого settings = {} → все селекторы возвращают undefined → fallback.
-    useSettingsStore.getState().load().catch((e) => console.error('[settings] load failed:', e))
+    const settingsLoad = useSettingsStore.getState().load()
     const applyVisualSettings = async () => {
       try {
+        await settingsLoad
+        const snapshot = useSettingsStore.getState().settings
+        const readSetting = (key: string) => snapshot[key]
         const [theme, bgStyle, msgAnim, accentColor, animatedBg,
           avatarStyle, showTime, userMarkdown, uiSounds, sendEffect,
           fontFamily, fontMono, customFontsList, savedPanelWidth, savedPanelOpen, savedPanelTab,
@@ -638,45 +641,20 @@ export default function App() {
           soundVolume, soundAssignments, mouseNavEnabled,
           favoriteThemes, fontSizeUI, fontSizeChat,
           systemThemeSync, systemSyncDark, systemSyncLight] = await Promise.all([
-          window.syntee.settings.get('theme'),
-          window.syntee.settings.get('bgStyle'),
-          window.syntee.settings.get('msgAnim'),
-          window.syntee.settings.get('accentColor'),
-          window.syntee.settings.get('animatedBackground'),
-          window.syntee.settings.get('avatarStyle'),
-          window.syntee.settings.get('showTime'),
-          window.syntee.settings.get('userMarkdown'),
-          window.syntee.settings.get('uiSounds'),
-          window.syntee.settings.get('sendEffect'),
-          window.syntee.settings.get('fontFamily'),
-          window.syntee.settings.get('fontMono'),
-          window.syntee.fonts.list(),
-          window.syntee.settings.get('agentPanelWidth'),
-          window.syntee.settings.get('agentPanelOpen'),
-          window.syntee.settings.get('agentPanelTab'),
-          window.syntee.settings.get('agentPanelExpanded'),
-          window.syntee.settings.get('glassBlur'),
-          window.syntee.settings.get('density'),
-          window.syntee.settings.get('accentGradient'),
-          window.syntee.settings.get('rainbowAccent'),
-          window.syntee.settings.get('bgImage'),
-          window.syntee.settings.get('bgImageEnabled'),
-          window.syntee.settings.get('animatedBgOpacity'),
-          window.syntee.settings.get('animatedBgSpeed'),
-          window.syntee.settings.get('bgStyleParams'),
-          window.syntee.settings.get('customThemes'),
-          window.syntee.settings.get('activeCustomThemeId'),
-          window.syntee.settings.get('themeSchedule'),
-          window.syntee.settings.get('recentAccents'),
-          window.syntee.settings.get('soundVolume'),
-          window.syntee.settings.get('soundAssignments'),
-          window.syntee.settings.get('mouseNavEnabled'),
-          window.syntee.settings.get('favoriteThemes'),
-          window.syntee.settings.get('fontSizeUI'),
-          window.syntee.settings.get('fontSizeChat'),
-          window.syntee.settings.get('systemThemeSync'),
-          window.syntee.settings.get('systemSyncDark'),
-          window.syntee.settings.get('systemSyncLight'),
+          readSetting('theme'), readSetting('bgStyle'), readSetting('msgAnim'),
+          readSetting('accentColor'), readSetting('animatedBackground'),
+          readSetting('avatarStyle'), readSetting('showTime'), readSetting('userMarkdown'),
+          readSetting('uiSounds'), readSetting('sendEffect'), readSetting('fontFamily'),
+          readSetting('fontMono'), window.syntee.fonts.list(),
+          readSetting('agentPanelWidth'), readSetting('agentPanelOpen'), readSetting('agentPanelTab'),
+          readSetting('agentPanelExpanded'), readSetting('glassBlur'), readSetting('density'),
+          readSetting('accentGradient'), readSetting('rainbowAccent'), readSetting('bgImage'),
+          readSetting('bgImageEnabled'), readSetting('animatedBgOpacity'), readSetting('animatedBgSpeed'),
+          readSetting('bgStyleParams'), readSetting('customThemes'), readSetting('activeCustomThemeId'),
+          readSetting('themeSchedule'), readSetting('recentAccents'), readSetting('soundVolume'),
+          readSetting('soundAssignments'), readSetting('mouseNavEnabled'), readSetting('favoriteThemes'),
+          readSetting('fontSizeUI'), readSetting('fontSizeChat'), readSetting('systemThemeSync'),
+          readSetting('systemSyncDark'), readSetting('systemSyncLight'),
         ])
         const st = useUIStore.getState()
         // Тема плагина (plugin:{pluginId}:{name}) — ставим базу + переменные
@@ -783,6 +761,9 @@ export default function App() {
   // «Подключить» в настройках. Теперь, если визуализация включена, захват
   // стартует сам: сохранённое устройство → устройство по умолчанию.
   useEffect(() => {
+    // Только главное окно владеет общим WASAPI-захватом. Aux-окна
+    // загружают App тоже, но не должны перезапускать этот singleton.
+    if (getRoute() !== 'chat') return
     let cancelled = false
     const autoConnect = async () => {
       try { await useSettingsStore.getState().load() } catch { /* настройки не загрузились — не стартуем */ }

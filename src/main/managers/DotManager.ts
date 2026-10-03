@@ -247,6 +247,7 @@ class DotManager {
       this.stopTriggers(id)
       if (updated.enabled && this.getSettings().enabled) this.startTriggers(updated)
     }
+    this.pruneSharedTriggers()
     this.broadcast(IPC_EVENTS.DOTS_CHANGED)
     return this.withState(updated ?? dot)
   }
@@ -257,6 +258,7 @@ class DotManager {
     if (!dot) return
     this.stopTriggers(id)
     this.dots.delete(id)
+    this.pruneSharedTriggers()
     // Останавливаем активный wake-ран: воркер продолжает стримить в уже
     // удалённый чат (жечь токены в никуда). Механика — как chat:stop.
     this.abortChatRun(dot.chatId)
@@ -329,8 +331,24 @@ class DotManager {
     if (t) { clearTimeout(t); this.intervalTimers.delete(dotId) }
     this.nextRunAt.delete(dotId)
     this.stopFsWatch(dotId)
-    // cron-тикер и webhook-сервер общие — не останавливаем (могут быть
-    // другие Dot'ы); ленивая очистка не критична.
+    // Общие триггеры пересчитываются ПОСЛЕ update/delete, чтобы не
+    // закрывать сервер между stopTriggers/startTriggers того же Dot'а.
+  }
+
+  private pruneSharedTriggers(): void {
+    const enabled = this.getSettings().enabled
+    let needsCron = false
+    let needsWebhook = false
+    for (const dot of this.dots.values()) {
+      if (!enabled || !dot.enabled) continue
+      needsCron ||= dot.schedule?.kind === 'cron'
+      needsWebhook ||= !!dot.webhookEnabled
+    }
+    if (!needsCron && this.cronTicker) {
+      clearInterval(this.cronTicker)
+      this.cronTicker = null
+    }
+    if (!needsWebhook) this.stopWebhookServer()
   }
 
   private scheduleInterval(dot: DotConfig, ms: number): void {
@@ -639,6 +657,7 @@ class DotManager {
       finishDotRun(pending.runId, 'cancelled')
     } else {
       // done → механика молчания
+      const deletedMessageIds: string[] = []
       const msg = getMessageById(pending.assistantMsgId)
       const text = (msg?.content ?? '').trim()
       // Пустой ответ = нечего сообщать: считаем тихим (иначе летело
@@ -646,8 +665,8 @@ class DotManager {
       if (!text || isSilentReply(text)) {
         // Тихий ран: удаляем пару сообщений из чата — пользователь не
         // должен видеть «я проснулся, всё без изменений».
-        try { deleteMessageById(pending.userMsgId) } catch { /* ignore */ }
-        try { deleteMessageById(pending.assistantMsgId) } catch { /* ignore */ }
+        try { deleteMessageById(pending.userMsgId); deletedMessageIds.push(pending.userMsgId) } catch { /* ignore */ }
+        try { deleteMessageById(pending.assistantMsgId); deletedMessageIds.push(pending.assistantMsgId) } catch { /* ignore */ }
         finishDotRun(pending.runId, 'silent')
         log('[dots] Dot "%s": тихий ран (SILENT)', dot.name)
       } else {
@@ -660,7 +679,7 @@ class DotManager {
         log('[dots] Dot "%s": report (%d симв.)', dot.name, text.length)
       }
       // DotChat перезагружает ленту (silent удалил сообщения, report добавил).
-      this.broadcast(IPC_EVENTS.DOTS_RUN_FINISHED, { chatId, dotId: dot.id, status })
+      this.broadcast(IPC_EVENTS.DOTS_RUN_FINISHED, { chatId, dotId: dot.id, status, deletedMessageIds })
     }
     this.broadcast(IPC_EVENTS.DOTS_STATE)
   }
@@ -765,6 +784,7 @@ class DotManager {
       if (patch.enabled) this.startAll()
       else this.stopAll()
     }
+    this.pruneSharedTriggers()
     this.broadcast(IPC_EVENTS.DOTS_CHANGED)
     return next
   }

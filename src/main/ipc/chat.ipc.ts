@@ -388,6 +388,14 @@ function failRunCleanup(
   console.error('[chat:send] runChatSend CRASHED:', e)
   // Воркер мог быть создан до падения — терминируем, не течём потоками.
   const run = activeRuns.get(chatId)
+  if (run?.streamCheckpointTimer) {
+    clearInterval(run.streamCheckpointTimer)
+    run.streamCheckpointTimer = null
+  }
+  if (run?.uiFlushTimer) {
+    clearTimeout(run.uiFlushTimer)
+    run.uiFlushTimer = null
+  }
   if (run?.worker) {
     ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
     try { run.worker.terminate() } catch { /* уже мёртв */ }
