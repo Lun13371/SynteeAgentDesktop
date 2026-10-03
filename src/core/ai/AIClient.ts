@@ -14,6 +14,7 @@ import type { Provider, ModelParams, ReasoningOptionSpec } from '../../shared/ty
 import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
 import { chatWithToolsAnthropic } from './anthropicNative'
+import { routeToolImagesToUser } from './toolImageMessages'
 import { computeContextSnapshot } from '../tokens/usageTracker'
 import type { ContextCountedInfo } from '../agent/types'
 
@@ -206,10 +207,11 @@ export class AIClient {
     model: string,
     role: string,
   ): { reasoning?: { supported: boolean; levels: string[] }; reasoningOptions?: ReasoningOptionSpec[] } | null {
-    const gw = getGatewayModelsCache().find(m => m.id === model)
-    if (gw) return gw
     const providerId = this.getProviderInfoForRole(role)?.provider.id
     if (!providerId) return null
+    if (providerId === 'syntee-gateway') {
+      return getGatewayModelsCache().find(m => m.id === model) ?? null
+    }
     const cat = getCatalogModel(providerId, model)
     return cat?.reasoningOptions ? { reasoningOptions: cat.reasoningOptions } : null
   }
@@ -391,12 +393,10 @@ export class AIClient {
     }
 
     // Берём reasoning параметры из store (выбраны пользователем в UI).
-    // Для gateway-моделей уровни мышления приходят из /v1/models (meta.reasoning),
-    // для остальных — спеки models.dev (reasoning_options).
+    // Уровень проверяется по целевой модели: совпадение либо ближайший ниже.
+    // Это также адаптирует общий reasoningValue для модели суб-агента.
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
-    const reasoningExtra = reasoningValue
-      ? buildReasoningParams(reasoningValue, this.getReasoningMeta(model, modelType))
-      : {}
+    const reasoningExtra = buildReasoningParams(reasoningValue, this.getReasoningMeta(model, modelType))
 
     // ── Модели только с Responses API (muse-spark и runtime-выявленные) ─────
     // Известные модели идут в /responses сразу; остальные определяются
@@ -660,12 +660,10 @@ export class AIClient {
     if (systemPrompt) allMessages.push({ role: 'system', content: systemPrompt })
     allMessages.push(...messages)
 
-    // Reasoning-параметры — как в streamChat: для моделей без reasoning-спек
-    // buildReasoningParams вернёт {} (fast/summary-модели не затрагиваются).
+    // Reasoning-параметры — как в streamChat: валидируем по целевой модели.
+    // Для моделей без reasoning-спек buildReasoningParams вернёт {}.
     const reasoningValue = (this.store.get('reasoningValue') as string) || ''
-    const reasoningExtra = reasoningValue
-      ? buildReasoningParams(reasoningValue, this.getReasoningMeta(model, modelType))
-      : {}
+    const reasoningExtra = buildReasoningParams(reasoningValue, this.getReasoningMeta(model, modelType))
 
     // ── Модели только с Responses API (muse-spark и runtime-выявленные) ─────
     if (this.usesResponsesApi(model, modelType)) {
@@ -831,13 +829,14 @@ export class AIClient {
     const systemMsg = messages[0]?.role === 'system' ? messages[0] : undefined
     const rest = systemMsg ? messages.slice(1) : messages
     const input: AnyItem[] = []
-    for (const m of rest) {
+    // Also safe for direct callers: never serialize visual payloads as JSON text.
+    for (const m of routeToolImagesToUser(rest)) {
       // Результат тула (role:'tool') → function_call_output
       if (m.role === 'tool' && m.tool_call_id) {
         input.push({
           type: 'function_call_output',
           call_id: m.tool_call_id,
-          output: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          output: typeof m.content === 'string' ? m.content : m.content.filter(p => p.type === 'text').map(p => p.text ?? '').join('\n'),
         })
         continue
       }
@@ -863,7 +862,7 @@ export class AIClient {
         const parts: AnyItem[] = []
         for (const p of m.content) {
           if (p.type === 'text' && p.text) parts.push({ type: 'input_text', text: p.text })
-          else if (p.type === 'image_url' && p.image_url?.url) parts.push({ type: 'input_image', image_url: p.image_url.url })
+          else if (p.type === 'image_url' && p.image_url?.url) parts.push({ type: 'input_image', image_url: p.image_url.url, detail: p.image_url.detail ?? 'auto' })
         }
         input.push({ role: m.role, content: parts })
       }
@@ -1077,6 +1076,10 @@ export class AIClient {
         { onToken, onRateLimit, onRetry, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted }
       )
     }
+
+    // Native Anthropic above supports images inside tool_result. OpenAI-compatible
+    // endpoints require visual input in user messages; keep tool pairs intact.
+    messages = routeToolImagesToUser(messages)
 
     // OpenAI-совместимый путь (включая syntee-gateway через JWT)
     let client = providerInfo

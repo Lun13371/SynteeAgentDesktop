@@ -68,6 +68,9 @@ export interface DotState {
   /** Следующее плановое пробуждение (cron/interval). */
   nextRunAt?: number
   lastError?: string
+  /** Последний отчёт (status='report') — превью для карточки списка
+   *  и маркер unread: report новее lastSeen = «есть новое». */
+  lastReport?: { at: number; summary: string }
   /** Счётчики за всё время. */
   runCount: number
   reportCount: number

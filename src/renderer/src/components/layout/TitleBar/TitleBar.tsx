@@ -8,7 +8,7 @@ import { useTerminalStore } from '../../../store/terminal.store'
 import { useAuthStore } from '../../../store/auth.store'
 import { useBillingStore } from '../../../store/billing.store'
 import { useMessengerStore } from '../../../store/messenger.store'
-import { useDotsStore } from '../../../store/dots.store'
+import { useDotsStore, pluralDots } from '../../../store/dots.store'
 import { useUpdateStore, selectUpdateAvailable } from '../../../store/update.store'
 import { springHover, whileHoverSm, whileTapSm } from '../../../utils/motionPresets'
 import './TitleBar.css'
@@ -50,7 +50,6 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
   // Селектор возвращает число → ре-рендер только при изменении счётчика.
   // Стор глобально инициализирован в App.tsx (страница Dots может быть закрыта).
   const runningDots = useDotsStore(s => s.dots.reduce((n, d) => n + (d.state?.status === 'running' ? 1 : 0), 0))
-
   // Индикатор дневного лимита — кольцевой прогресс вокруг аватара.
   const dailyLimitTotal = planUsage?.plan?.daily_token_limit ?? 0
   const dailyLimitPct = planUsage && dailyLimitTotal > 0
@@ -79,7 +78,7 @@ export default function TitleBar({ onSettingsClick, onAgentClick, onMemoryClick,
             {runningDots > 0 && (
               <span
                 className="titlebar-dots-badge"
-                title={runningDots === 1 ? '1 Dot работает сейчас' : `${runningDots} Dot'ов работают сейчас`}
+                title={`${pluralDots(runningDots)} ${runningDots === 1 ? 'работает' : 'работают'} сейчас`}
               >
                 {runningDots}
               </span>

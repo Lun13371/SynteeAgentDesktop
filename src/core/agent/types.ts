@@ -12,6 +12,8 @@ export interface AgentStep {
   content: string
   success?: boolean
   imageUrl?: string
+  /** Saved raster paths for restoring visual tool results (no base64 in DB). */
+  imagePaths?: string[]
   diff?: string
   callId?: string
   hidden?: boolean

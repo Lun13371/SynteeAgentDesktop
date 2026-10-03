@@ -1,12 +1,14 @@
 // ── DotWizard: создание/редактирование Dot'а ─────────────────────────────
-// Задача-в-фокусе: имя + задача сразу, остальное (расписание, наблюдение,
-// webhook, правила, модель) — в сворачиваемом блоке «Триггеры и настройки».
+// Задача-в-фокусе + ТРИГГЕРЫ на первом экране (расписание — суть Dot'а,
+// не «продвинутая» настройка: дот без будильника = мёртвый дот).
+// Внешность (имя/иконка/цвет) и правила — в сворачиваемом блоке ниже.
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import AppIcon, { type IconName } from '../../components/ui/AppIcon/AppIcon'
 import ModelSelector from '../../components/ui/ModelSelector/ModelSelector'
 import { useToast } from '../../components/ui/Toast/Toast'
 import { DOT_ICON_PRESETS, DOT_COLOR_PRESETS, type Dot, type DotConfig } from '../../../../shared/types'
+import type { DotTemplate } from '../../store/dots.store'
 import { DotBlob } from './DotBlob'
 
 interface WizardState {
@@ -37,34 +39,111 @@ const INITIAL: WizardState = {
   modelProvider: null,
 }
 
-export function DotWizard({ dot, onClose }: { dot?: Dot | null; onClose: () => void }) {
+/** Опции интервала (сек). 60с — осознанно: минимум DotManager/manage_dots
+ *  и удобно для быстрых тестов; UI раньше начинался с 5 мин. */
+const INTERVAL_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '60', label: 'каждую минуту' },
+  { value: '300', label: 'каждые 5 минут' },
+  { value: '900', label: 'каждые 15 минут' },
+  { value: '3600', label: 'каждый час' },
+  { value: '10800', label: 'каждые 3 часа' },
+  { value: '21600', label: 'каждые 6 часов' },
+  { value: '43200', label: 'каждые 12 часов' },
+  { value: '86400', label: 'раз в день' },
+]
+
+/** Человекочитаемый интервал для значений вне пресетов (Dot, созданный
+ *  агентом через manage_dots, может иметь любой интервал ≥ 60с). */
+function fmtIntervalValue(secStr: string): string {
+  const sec = Number(secStr)
+  if (!Number.isFinite(sec) || sec < 60) return `каждые ${secStr} с`
+  if (sec < 3600) {
+    const min = Math.round(sec / 60)
+    return `каждые ${min} мин`
+  }
+  const h = sec / 3600
+  return `каждые ${Number.isInteger(h) ? h : h.toFixed(1)} ч`
+}
+
+/** Примеры-подсказки для поля задачи: клик вставляет текст в поле. */
+const TASK_EXAMPLES = [
+  { label: 'цена', text: 'Проверяй цену на [товар] в [магазине]. Если упала ниже [цели] — сообщи. Иначе молчи.' },
+  { label: 'дайджест', text: 'Собери короткий дайджест главных новостей за день: 5–7 пунктов по 1–2 предложения. Если ничего значимого — промолчи.' },
+  { label: 'папка', text: 'Следи за изменениями в наблюдаемой папке. Сообщай о новых и удалённых файлах. Тривиальные изменения (кэш, временные файлы) игнорируй.' },
+]
+
+/** Варианты триггера — сегмент-чипы (первый экран визарда). */
+const TRIGGER_CHIPS: Array<{ kind: 'schedule' | 'manual'; icon: string; label: string }> = [
+  { kind: 'schedule', icon: 'clock', label: 'Расписание' },
+  { kind: 'manual', icon: 'zap', label: 'Вручную' },
+]
+
+export function DotWizard({
+  dot,
+  template,
+  onClose,
+}: {
+  dot?: Dot | null
+  /** Предзаполнение из шаблона пустого состояния. */
+  template?: DotTemplate | null
+  onClose: () => void
+}) {
   const { add: toast } = useToast()
-  const [st, setSt] = useState<WizardState>(() => dot ? {
-    name: dot.name,
-    icon: dot.icon,
-    color: dot.color,
-    purpose: dot.purpose,
-    rules: dot.rules ?? '',
-    scheduleKind: dot.schedule?.kind ?? 'none',
-    scheduleValue: dot.schedule?.value ?? '3600',
-    watchPaths: (dot.watchPaths ?? []).join('\n'),
-    webhookEnabled: !!dot.webhookEnabled,
-    modelId: dot.modelId ?? null,
-    modelProvider: dot.modelProvider ?? null,
-  } : INITIAL)
+  const [st, setSt] = useState<WizardState>(() => {
+    if (dot) {
+      return {
+        name: dot.name,
+        icon: dot.icon,
+        color: dot.color,
+        purpose: dot.purpose,
+        rules: dot.rules ?? '',
+        scheduleKind: dot.schedule?.kind ?? 'none',
+        scheduleValue: dot.schedule?.value ?? '3600',
+        watchPaths: (dot.watchPaths ?? []).join('\n'),
+        webhookEnabled: !!dot.webhookEnabled,
+        modelId: dot.modelId ?? null,
+        modelProvider: dot.modelProvider ?? null,
+      }
+    }
+    // Шаблон: задача + триггер + внешность предзаполнены.
+    if (template) {
+      return {
+        ...INITIAL,
+        name: template.name ?? '',
+        icon: template.icon ?? 'eye',
+        purpose: template.purpose,
+        scheduleKind: template.scheduleKind ?? 'none',
+        scheduleValue: template.scheduleValue ?? '3600',
+      }
+    }
+    return INITIAL
+  })
   const [advanced, setAdvanced] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const nameInputRef = useRef<HTMLInputElement>(null)
   const set = (patch: Partial<WizardState>) => setSt(s => ({ ...s, ...patch }))
 
+  // Guard от случайной потери данных: клик по оверлею закрывает только
+  // «чистую» форму (ничего не введено при создании / не изменено при
+  // правке). Esc закрывает всегда — это осознанное действие.
+  const pristine = dot
+    ? (st.name === dot.name && st.purpose === dot.purpose && st.rules === (dot.rules ?? '')
+      && st.icon === dot.icon && st.color === dot.color
+      && st.scheduleKind === (dot.schedule?.kind ?? 'none')
+      && st.scheduleValue === (dot.schedule?.value ?? '3600')
+      && st.watchPaths === (dot.watchPaths ?? []).join('\n')
+      && st.webhookEnabled === !!dot.webhookEnabled)
+    : (!st.name.trim() && !st.purpose.trim() && !st.rules.trim()
+      && st.scheduleKind === 'none' && !st.watchPaths.trim() && !st.webhookEnabled)
+
   // Esc — закрыть. Фокус в имя — только при создании (не воруем фокус при правке).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
-    if (!dot) nameInputRef.current?.focus()
+    if (!dot && !template) nameInputRef.current?.focus()
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, dot])
+  }, [onClose, dot, template])
 
   const validate = (): string => {
     if (!st.name.trim()) return 'Придумай имя Dot’у'
@@ -122,7 +201,7 @@ export function DotWizard({ dot, onClose }: { dot?: Dot | null; onClose: () => v
   }
 
   return (
-    <div className="dot-wizard-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="dot-wizard-overlay" onMouseDown={e => { if (e.target === e.currentTarget && pristine) onClose() }}>
       <motion.div
         className="dot-wizard"
         initial={{ opacity: 0, scale: 0.96, y: 10 }}
@@ -136,22 +215,6 @@ export function DotWizard({ dot, onClose }: { dot?: Dot | null; onClose: () => v
           </div>
         </div>
 
-        {/* Имя + превью капли */}
-        <div className="dot-wizard-field">
-          <span className="dot-wizard-label">Имя</span>
-          <div className="dot-wizard-row" style={{ alignItems: 'center' }}>
-            <DotBlob color={st.color} icon={st.icon} size={44} />
-            <input
-              ref={nameInputRef}
-              className={`dot-wizard-input${error && !st.name.trim() ? ' dot-wizard-input--invalid' : ''}`}
-              value={st.name}
-              onChange={e => set({ name: e.target.value })}
-              placeholder="Наблюдатель за ценами"
-              maxLength={40}
-            />
-          </div>
-        </div>
-
         {/* Задача — главный фокус визарда */}
         <div className="dot-wizard-field">
           <span className="dot-wizard-label">Задача</span>
@@ -162,76 +225,153 @@ export function DotWizard({ dot, onClose }: { dot?: Dot | null; onClose: () => v
             placeholder="Опиши одним абзацем, что Dot должен делать при каждом пробуждении. Например: «Проверяй цену на RTX 5090 в DNS. Если упадёт ниже 150 000 ₽ — сообщи. Иначе молчи»."
             maxLength={2000}
           />
+          {/* Примеры-подсказки: клик вставляет текст в поле */}
+          <div className="dot-wizard-examples">
+            <span className="dot-wizard-examples-label">примеры:</span>
+            {TASK_EXAMPLES.map(ex => (
+              <button
+                key={ex.label}
+                type="button"
+                className="dot-wizard-example-chip"
+                onClick={() => set({ purpose: ex.text })}
+              >
+                {ex.label}
+              </button>
+            ))}
+          </div>
           <span className="dot-wizard-hint">
             Это попадает в системный промпт каждого пробуждения. Пиши конкретно: что проверять и что считать «изменением».
           </span>
         </div>
 
-        {/* Иконка + цвет */}
-        <div className="dot-wizard-row">
-          <div className="dot-wizard-field">
-            <span className="dot-wizard-label">Иконка</span>
-            <div className="dot-wizard-icons">
-              {DOT_ICON_PRESETS.map(ic => (
-                <button
-                  key={ic}
-                  type="button"
-                  className={`dot-wizard-icon-btn${st.icon === ic ? ' dot-wizard-icon-btn--active' : ''}`}
-                  style={st.icon === ic ? { borderColor: st.color, color: st.color } : undefined}
-                  onClick={() => set({ icon: ic })}
-                >
-                  <AppIcon name={ic as IconName} size="sm" />
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="dot-wizard-field">
-            <span className="dot-wizard-label">Цвет</span>
-            <div className="dot-wizard-colors">
-              {DOT_COLOR_PRESETS.map(c => (
-                <button
-                  key={c}
-                  type="button"
-                  className={`dot-wizard-color${st.color === c ? ' dot-wizard-color--active' : ''}`}
-                  style={{ background: c }}
-                  onClick={() => set({ color: c })}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Модель — видна сразу; подпись и селектор в одну строку */}
+        {/* Триггеры — на первом экране: расписание = суть Dot'а */}
         <div className="dot-wizard-field">
-          <div className="dot-wizard-model-row">
-            <span className="dot-wizard-label">Модель</span>
-            <ModelSelector
-              modelId={st.modelId ?? ''}
-              providerId={st.modelProvider ?? undefined}
-              onChange={(modelId, providerId) => void set({ modelId, modelProvider: providerId })}
-            />
+          <span className="dot-wizard-label">Когда будить</span>
+          <div className="dot-wizard-chips">
+            {TRIGGER_CHIPS.map(c => {
+              const active = c.kind === 'schedule'
+                ? st.scheduleKind !== 'none'
+                : st.scheduleKind === 'none' && !st.watchPaths.trim() && !st.webhookEnabled
+              return (
+                <button
+                  key={c.kind}
+                  type="button"
+                  className={`dot-wizard-chip${active ? ' dot-wizard-chip--active' : ''}`}
+                  style={active ? { borderColor: st.color, color: st.color } : undefined}
+                  onClick={() => set({ scheduleKind: c.kind === 'schedule' ? 'interval' : 'none' })}
+                >
+                  <AppIcon name={c.icon as IconName} size="xs" />
+                  <span>{c.label}</span>
+                </button>
+              )
+            })}
+            <button
+              type="button"
+              className={`dot-wizard-chip${st.watchPaths.trim() ? ' dot-wizard-chip--active' : ''}`}
+              style={st.watchPaths.trim() ? { borderColor: st.color, color: st.color } : undefined}
+              onClick={() => setAdvanced(true)}
+              title="Изменения файлов будят Dot'а (настройки — ниже в блоке)"
+            >
+              <AppIcon name="folder" size="xs" />
+              <span>Файлы</span>
+            </button>
+            <button
+              type="button"
+              className={`dot-wizard-chip${st.webhookEnabled ? ' dot-wizard-chip--active' : ''}`}
+              style={st.webhookEnabled ? { borderColor: st.color, color: st.color } : undefined}
+              onClick={() => set({ webhookEnabled: !st.webhookEnabled })}
+              title="POST-запрос на локальный URL будит Dot'а"
+            >
+              <AppIcon name="link" size="xs" />
+              <span>Webhook</span>
+            </button>
           </div>
-          <span className="dot-wizard-hint">
-            Пусто = глобальная модель Dots (или main). Фоновые проверки не требуют топ-модели.
-          </span>
+
+          {/* Инлайн-настройка выбранного триггера */}
+          {st.scheduleKind === 'interval' && (
+            <motion.div
+              key="trigger-interval"
+              className="dot-wizard-trigger-config"
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              <select
+                className="dot-wizard-input"
+                value={st.scheduleValue}
+                onChange={e => set({ scheduleValue: e.target.value })}
+              >
+                {/* Значение вне пресетов (создано агентом) — показываем
+                    отдельной опцией, иначе селект пустой. */}
+                {!INTERVAL_OPTIONS.some(o => o.value === st.scheduleValue) && (
+                  <option value={st.scheduleValue}>{fmtIntervalValue(st.scheduleValue)}</option>
+                )}
+                {INTERVAL_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="dot-wizard-cron-switch"
+                onClick={() => set({ scheduleKind: 'cron', scheduleValue: '0 9 * * *' })}
+              >
+                нужно точное время? → cron
+              </button>
+            </motion.div>
+          )}
+          {st.scheduleKind === 'cron' && (
+            <motion.div
+              key="trigger-cron"
+              className="dot-wizard-trigger-config"
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              <input
+                className="dot-wizard-input"
+                value={st.scheduleValue}
+                onChange={e => set({ scheduleValue: e.target.value })}
+                placeholder="0 9 * * * (каждый день в 9:00)"
+              />
+              <button
+                type="button"
+                className="dot-wizard-cron-switch"
+                onClick={() => set({ scheduleKind: 'interval', scheduleValue: '3600' })}
+              >
+                ← интервал
+              </button>
+              <span className="dot-wizard-hint">5 полей: минута час день месяц день-недели. «0 9 * * 1-5» = будни в 9:00.</span>
+            </motion.div>
+          )}
+          {st.webhookEnabled && (
+            <motion.div
+              key="trigger-webhook"
+              className="dot-wizard-trigger-config"
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              <span className="dot-wizard-hint">
+                {'URL появится в чате Dot’а после сохранения (кнопка-ссылка в шапке).'}
+              </span>
+            </motion.div>
+          )}
         </div>
 
-        {/* Триггеры и настройки — сворачиваемый блок */}
+        {/* Внешность и правила — сворачиваемый блок */}
         <button
           type="button"
           className="dot-wizard-advanced-toggle"
           onClick={() => setAdvanced(v => !v)}
         >
           <AppIcon name={advanced ? 'chevronDown' : 'chevronRight'} size="xs" />
-          <span>Триггеры и настройки</span>
+          <span>Внешность, файлы и правила</span>
           <span className="dot-wizard-advanced-summary">
-            {st.scheduleKind === 'none' && !st.watchPaths.trim() && !st.webhookEnabled
-              ? 'только ручные пробуждения'
-              : [
-                st.scheduleKind === 'interval' ? 'интервал' : st.scheduleKind === 'cron' ? 'cron' : null,
-                st.watchPaths.trim() ? 'файлы' : null,
-                st.webhookEnabled ? 'webhook' : null,
-              ].filter(Boolean).join(' + ') || 'настроено'}
+            {[
+              st.name.trim() || null,
+              st.watchPaths.trim() ? `${st.watchPaths.trim().split('\n').filter(Boolean).length} путь(ей)` : null,
+              st.rules.trim() ? 'правила' : null,
+            ].filter(Boolean).join(' · ') || 'имя, иконка, цвет'}
           </span>
         </button>
 
@@ -241,45 +381,69 @@ export function DotWizard({ dot, onClose }: { dot?: Dot | null; onClose: () => v
             textarea растёт), работает в обе стороны, и модалка скроллится. */}
         <div className={`dot-wizard-advanced-wrap${advanced ? ' dot-wizard-advanced-wrap--open' : ''}`}>
           <div className="dot-wizard-advanced">
-            {/* Расписание */}
+            {/* Имя + превью капли */}
             <div className="dot-wizard-field">
-              <span className="dot-wizard-label">Расписание пробуждения</span>
-              <div className="dot-wizard-row">
-                <select
-                  className="dot-wizard-input"
-                  value={st.scheduleKind}
-                  onChange={e => set({ scheduleKind: e.target.value as WizardState['scheduleKind'] })}
-                >
-                  <option value="none">Без расписания</option>
-                  <option value="interval">По интервалу</option>
-                  <option value="cron">Cron</option>
-                </select>
-                {st.scheduleKind === 'interval' && (
-                  <select
-                    className="dot-wizard-input"
-                    value={st.scheduleValue}
-                    onChange={e => set({ scheduleValue: e.target.value })}
-                  >
-                    <option value="300">каждые 5 минут</option>
-                    <option value="900">каждые 15 минут</option>
-                    <option value="3600">каждый час</option>
-                    <option value="10800">каждые 3 часа</option>
-                    <option value="43200">каждые 12 часов</option>
-                    <option value="86400">раз в день</option>
-                  </select>
-                )}
-                {st.scheduleKind === 'cron' && (
-                  <input
-                    className="dot-wizard-input"
-                    value={st.scheduleValue}
-                    onChange={e => set({ scheduleValue: e.target.value })}
-                    placeholder="0 9 * * * (каждый день в 9:00)"
-                  />
-                )}
+              <span className="dot-wizard-label">Имя</span>
+              <div className="dot-wizard-row" style={{ alignItems: 'center' }}>
+                <DotBlob color={st.color} icon={st.icon} size={44} />
+                <input
+                  ref={nameInputRef}
+                  className={`dot-wizard-input${error && !st.name.trim() ? ' dot-wizard-input--invalid' : ''}`}
+                  value={st.name}
+                  onChange={e => set({ name: e.target.value })}
+                  placeholder="Наблюдатель за ценами"
+                  maxLength={40}
+                />
               </div>
-              {st.scheduleKind === 'cron' && (
-                <span className="dot-wizard-hint">5 полей: минута час день месяц день-недели. «0 9 * * 1-5» = будни в 9:00.</span>
-              )}
+            </div>
+
+            {/* Иконка + цвет */}
+            <div className="dot-wizard-row">
+              <div className="dot-wizard-field">
+                <span className="dot-wizard-label">Иконка</span>
+                <div className="dot-wizard-icons">
+                  {DOT_ICON_PRESETS.map(ic => (
+                    <button
+                      key={ic}
+                      type="button"
+                      className={`dot-wizard-icon-btn${st.icon === ic ? ' dot-wizard-icon-btn--active' : ''}`}
+                      style={st.icon === ic ? { borderColor: st.color, color: st.color } : undefined}
+                      onClick={() => set({ icon: ic })}
+                    >
+                      <AppIcon name={ic as IconName} size="sm" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="dot-wizard-field">
+                <span className="dot-wizard-label">Цвет</span>
+                <div className="dot-wizard-colors">
+                  {DOT_COLOR_PRESETS.map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      className={`dot-wizard-color${st.color === c ? ' dot-wizard-color--active' : ''}`}
+                      style={{ background: c }}
+                      onClick={() => set({ color: c })}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Модель — видна сразу; подпись и селектор в одну строку */}
+            <div className="dot-wizard-field">
+              <div className="dot-wizard-model-row">
+                <span className="dot-wizard-label">Модель</span>
+                <ModelSelector
+                  modelId={st.modelId ?? ''}
+                  providerId={st.modelProvider ?? undefined}
+                  onChange={(modelId, providerId) => void set({ modelId, modelProvider: providerId })}
+                />
+              </div>
+              <span className="dot-wizard-hint">
+                Пусто = глобальная модель Dots (или main). Фоновые проверки не требуют топ-модели.
+              </span>
             </div>
 
             {/* Наблюдение за файлами */}
@@ -293,22 +457,6 @@ export function DotWizard({ dot, onClose }: { dot?: Dot | null; onClose: () => v
                 placeholder={'C:\\Projects\\notes\nD:\\Downloads'}
               />
               <span className="dot-wizard-hint">По одному пути на строку. Изменения будят Dot’а (с дебаунсом 3с).</span>
-            </div>
-
-            {/* Webhook */}
-            <div className="dot-wizard-field">
-              <div className="dots-settings-row">
-                <div>
-                  <span className="dots-settings-label">Webhook-триггер</span>
-                  <div className="dots-settings-hint">POST-запрос на локальный URL будит Dot’а</div>
-                </div>
-                <button
-                  type="button"
-                  className={`dots-toggle${st.webhookEnabled ? ' dots-toggle--on' : ''}`}
-                  onClick={() => set({ webhookEnabled: !st.webhookEnabled })}
-                  aria-label="Webhook"
-                />
-              </div>
             </div>
 
             {/* Правила */}

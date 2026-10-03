@@ -23,9 +23,11 @@ import {
   createChat, renameChat, deleteChat, setChatModel,
   createDot, getAllDots, getDotById, updateDot, deleteDot as deleteDotRow,
   startDotRun, finishDotRun, getDotRunStats, getLastDotRun, getDotRuns,
+  getLastDotReport, getDotReportCountSince,
+  repairStaleDotRuns,
   getMessageById, deleteMessageById,
 } from '../../core/db'
-import { runStatusListeners, activeRuns } from '../ipc/chatShared'
+import { runStatusListeners, activeRuns, emitRunStatus } from '../ipc/chatShared'
 import { sendChatMessageProgrammatic } from '../ipc/chat.ipc'
 import { getNotificationManager } from './NotificationManager'
 import { IPC_EVENTS } from '../../shared/constants'
@@ -44,11 +46,26 @@ const WEBHOOK_MAX_BODY = 1_048_576
 const FS_DEBOUNCE_MS = 3_000
 /** Минимальный интервал между fs-пробуждениями одного Dot'а (мс). */
 const FS_MIN_GAP_MS = 30_000
+/** Минимальный интервал между webhook-пробуждениями одного Dot'а (мс) —
+ *  защита от спама POST-запросами (каждое пробуждение = LLM-вызов). */
+const WEBHOOK_MIN_GAP_MS = 10_000
+/** Окно догоняющих пробуждений: пропущенная матча cron старше этого не
+ *  догоняется (приложение было закрыто слишком давно — новость устарела). */
+const CATCHUP_WINDOW_MS = 24 * 3600_000
+/** Задержка перед запуском отложенного (queued) wake после освобождения чата. */
+const QUEUED_WAKE_DELAY_MS = 1_500
 
 /** Что передаётся в wakeUp как контекст триггера. */
 export interface WakeContext {
   /** Изменённые пути (fs-триггер) / тело webhook'а и т.п. */
   detail?: string
+}
+
+/** Результат wakeUp: ok=false + причина, если пробуждение пропущено. */
+export interface WakeResult {
+  ok: boolean
+  /** 'not_found' | 'disabled' | 'globally_disabled' | 'busy' */
+  reason?: string
 }
 
 interface PendingWake {
@@ -57,6 +74,13 @@ interface PendingWake {
   userMsgId: string
   assistantMsgId: string
   trigger: DotTrigger
+}
+
+/** Отложенное пробуждение (чат занят — разбудим, когда освободится). */
+interface QueuedWake {
+  dotId: string
+  trigger: DotTrigger
+  ctx?: WakeContext
 }
 
 class DotManager {
@@ -72,9 +96,19 @@ class DotManager {
   /** fs.watch-наблюдатели: dotId → watchers[]. */
   private fsWatchers = new Map<string, FSWatcher[]>()
   /** Дебаунс fs-событий: dotId → { timer, paths }. */
-  private fsDebounce = new Map<string, { timer: NodeJS.Timeout; paths: Set<string>; lastWake: number }>()
+  private fsDebounce = new Map<string, { timer: NodeJS.Timeout; paths: Set<string> }>()
+  /** Последнее fs-пробуждение: dotId → ts. Живёт ОТДЕЛЬНО от fsDebounce
+   *  (entry дебаунса удаляется после batch — иначе lastWake обнуляется и
+   *  мин-гэп между пробуждениями никогда не срабатывает). */
+  private fsLastWake = new Map<string, number>()
+  /** Последнее webhook-пробуждение: dotId → ts (rate-limit). */
+  private webhookLastWake = new Map<string, number>()
   /** Единый webhook-сервер (поднимается лениво). */
   private webhookServer: http.Server | null = null
+  /** Webhook-сервер реально слушает порт (false = не поднят/упал). */
+  private webhookListening = false
+  /** Отложенные пробуждения: chatId → wake (чат занят пользователем/раном). */
+  private queuedWakes = new Map<string, QueuedWake>()
   /** Активные wake-раны: chatId → pending. */
   private activeWakeRuns = new Map<string, PendingWake>()
   private listenerAttached = false
@@ -84,6 +118,14 @@ class DotManager {
   init(store: Store, getWindow: () => BrowserWindow | null): void {
     this.store = store
     this.getWindow = getWindow
+    // Ремонт «застрявших» ранов: приложение могло закрыться во время
+    // wake-рана — строка в dot_runs осталась status='running' навсегда.
+    try {
+      const repaired = repairStaleDotRuns()
+      if (repaired > 0) log('[dots] init: отремонтировано %d зависших ранов', repaired)
+    } catch (e) {
+      log('[dots] init: ремонт dot_runs не удался: %s', (e as Error).message)
+    }
     try {
       for (const d of getAllDots()) this.dots.set(d.id, d)
     } catch (e) {
@@ -93,7 +135,10 @@ class DotManager {
       runStatusListeners.add(this.onRunStatus)
       this.listenerAttached = true
     }
-    if (this.getSettings().enabled) this.startAll()
+    if (this.getSettings().enabled) {
+      this.startAll()
+      this.catchUpMissedCron()
+    }
     log('[dots] init: %d dot(ов) загружено', this.dots.size)
   }
 
@@ -115,6 +160,7 @@ class DotManager {
     for (const t of this.intervalTimers.values()) clearTimeout(t)
     this.intervalTimers.clear()
     this.nextRunAt.clear()
+    this.queuedWakes.clear()
     this.stopAllFsWatchers()
     this.stopWebhookServer()
   }
@@ -205,16 +251,57 @@ class DotManager {
     return this.withState(updated ?? dot)
   }
 
-  /** Удалить Dot (+ его чат). */
+  /** Удалить Dot (+ его чат). Активный wake-ран останавливается. */
   deleteDot(id: string): void {
     const dot = this.dots.get(id)
     if (!dot) return
     this.stopTriggers(id)
     this.dots.delete(id)
+    // Останавливаем активный wake-ран: воркер продолжает стримить в уже
+    // удалённый чат (жечь токены в никуда). Механика — как chat:stop.
+    this.abortChatRun(dot.chatId)
+    this.queuedWakes.delete(dot.chatId)
+    this.fsLastWake.delete(id)
+    this.webhookLastWake.delete(id)
     deleteDotRow(id)
     try { deleteChat(dot.chatId) } catch { /* чат мог быть уже удалён */ }
     this.broadcast(IPC_EVENTS.DOTS_CHANGED)
     log('[dots] удалён Dot "%s" (%s)', dot.name, id)
+  }
+
+  /** Удалить Dot по chatId (каскад из chat:delete — чат Dot'а удалили из
+   *  сайдбара). Возвращает true, если Dot был найден и удалён. */
+  deleteDotByChatId(chatId: string): boolean {
+    for (const dot of this.dots.values()) {
+      if (dot.chatId === chatId) {
+        this.deleteDot(dot.id)
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Остановить активный ран в чате Dot'а (воркер + очередь статусов).
+   * Минимальная версия chat:stop: чат всё равно удаляется — сохранять
+   * частичный ответ не нужно, достаточно корректно погасить воркер.
+   */
+  private abortChatRun(chatId: string): void {
+    const run = activeRuns.get(chatId)
+    if (!run) return
+    try {
+      if (run.attachmentAbort) run.attachmentAbort.abort()
+      if (run.streamCheckpointTimer) {
+        clearInterval(run.streamCheckpointTimer)
+        run.streamCheckpointTimer = null
+      }
+      ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
+      run.worker.terminate()
+      run.doneSent = true
+    } catch { /* воркер уже мёртв */ }
+    activeRuns.delete(chatId)
+    // Статус 'cancelled' с msgId рана: onRunStatus почистит activeWakeRuns.
+    emitRunStatus(this.getWindow?.() ?? null, chatId, 'cancelled', run.msgId)
   }
 
   // ── Триггеры ──────────────────────────────────────────────────────────
@@ -319,7 +406,7 @@ class DotManager {
     if (!dot?.enabled || !this.getSettings().enabled) return
     let d = this.fsDebounce.get(dotId)
     if (!d) {
-      d = { timer: null as unknown as NodeJS.Timeout, paths: new Set(), lastWake: 0 }
+      d = { timer: null as unknown as NodeJS.Timeout, paths: new Set() }
       this.fsDebounce.set(dotId, d)
     }
     d.paths.add(path)
@@ -329,8 +416,14 @@ class DotManager {
       if (!entry) return
       this.fsDebounce.delete(dotId)
       // Минимальный гэп: редактор может дёргать файлы сотнями событий.
-      if (Date.now() - entry.lastWake < FS_MIN_GAP_MS) return
-      entry.lastWake = Date.now()
+      // lastWake живёт в отдельной персистентной мапе — иначе каждый новый
+      // batch обнулял его и гэп никогда не срабатывал (будил каждые 3с).
+      const lastWake = this.fsLastWake.get(dotId) ?? 0
+      if (Date.now() - lastWake < FS_MIN_GAP_MS) {
+        log('[dots] fs: мин-гэп %dс — batch из %d путей пропущен', FS_MIN_GAP_MS / 1000, entry.paths.size)
+        return
+      }
+      this.fsLastWake.set(dotId, Date.now())
       const paths = [...entry.paths].slice(0, 20).join('\n')
       this.wakeUp(dotId, 'fs', { detail: `Изменились наблюдаемые файлы:\n${paths}` })
     }, FS_DEBOUNCE_MS)
@@ -374,6 +467,14 @@ class DotManager {
           return
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
+        // Rate-limit: спам POST-запросами = последовательные LLM-вызовы.
+        const lastWake = this.webhookLastWake.get(dot.id) ?? 0
+        if (Date.now() - lastWake < WEBHOOK_MIN_GAP_MS) {
+          res.end('{"ok":true,"skipped":"rate-limited"}')
+          log('[dots] webhook(%s): rate-limit — пробуждение пропущено', dot.name)
+          return
+        }
+        this.webhookLastWake.set(dot.id, Date.now())
         res.end('{"ok":true}')
         // Пробуждение — асинхронно, после ответа клиенту.
         const bodyPreview = body.slice(0, 500)
@@ -386,7 +487,9 @@ class DotManager {
     this.webhookServer.once('error', e => {
       log('[dots] webhook-сервер на порту %d не поднялся: %s', DOTS_WEBHOOK_PORT, (e as Error).message)
       this.webhookServer = null
+      this.webhookListening = false
     })
+    this.webhookServer.once('listening', () => { this.webhookListening = true })
     this.webhookServer.listen(DOTS_WEBHOOK_PORT, '127.0.0.1')
     log('[dots] webhook-сервер слушает http://127.0.0.1:%d/dot/{id}', DOTS_WEBHOOK_PORT)
   }
@@ -396,34 +499,48 @@ class DotManager {
       try { this.webhookServer.close() } catch { /* ignore */ }
       this.webhookServer = null
     }
+    this.webhookListening = false
   }
 
-  /** URL webhook'а Dot'а (для показа в UI). */
+  /** URL webhook'а Dot'а (для показа в UI). null, если сервер не слушает —
+   *  UI не должен показывать мёртвый URL (порт занят другим процессом). */
   getWebhookUrl(dotId: string): string | null {
     const dot = this.dots.get(dotId)
-    if (!dot?.webhookEnabled) return null
+    if (!dot?.webhookEnabled || !this.webhookListening) return null
     return `http://127.0.0.1:${DOTS_WEBHOOK_PORT}/dot/${dot.id}${dot.webhookSecret ? `?secret=${dot.webhookSecret}` : ''}`
   }
 
   // ── Пробуждение (сердце фичи) ─────────────────────────────────────────
 
   /** Ручное пробуждение (кнопка «Разбудить» / dots:runNow). */
-  runNow(dotId: string): void {
-    this.wakeUp(dotId, 'manual')
+  runNow(dotId: string): WakeResult {
+    return this.wakeUp(dotId, 'manual')
   }
 
   /**
    * Разбудить Dot'а: agent-run в его чате с read-only тулами.
-   * Если Dot уже работает или с ним говорит пользователь — тихо пропускаем.
+   * Если Dot уже работает — тихо пропускаем. Если с ним говорит пользователь
+   * (чат занят) — НЕ теряем пробуждение: кладём в очередь и разбудим, когда
+   * чат освободится (догоняющий запуск для cron/interval/fs/webhook).
+   * Возвращает результат — ручной запуск сообщает пользователю причину пропуска.
    */
-  wakeUp(dotId: string, trigger: DotTrigger, ctx?: WakeContext): void {
+  wakeUp(dotId: string, trigger: DotTrigger, ctx?: WakeContext): WakeResult {
     const dot = this.dots.get(dotId)
-    if (!dot) return
-    if (!dot.enabled || !this.getSettings().enabled) return
-    if (this.activeWakeRuns.has(dot.chatId)) return
+    if (!dot) return { ok: false, reason: 'not_found' }
+    if (!dot.enabled) return { ok: false, reason: 'disabled' }
+    if (!this.getSettings().enabled) return { ok: false, reason: 'globally_disabled' }
+    if (this.activeWakeRuns.has(dot.chatId)) return { ok: false, reason: 'busy' }
     if (activeRuns.has(dot.chatId)) {
-      log('[dots] wakeUp(%s): чат занят (пользователь/ран) — пропускаем', dot.name)
-      return
+      // Чат занят пользовательским запросом. Ручной запуск просто отклоняем
+      // (кнопка и так залочена), плановые триггеры — откладываем.
+      if (trigger === 'manual') {
+        log('[dots] wakeUp(%s): чат занят — ручной запуск отклонён', dot.name)
+        return { ok: false, reason: 'busy' }
+      }
+      log('[dots] wakeUp(%s): чат занят — пробуждение отложено в очередь', dot.name)
+      this.queuedWakes.set(dot.chatId, { dotId: dot.id, trigger, ctx })
+      this.broadcast(IPC_EVENTS.DOTS_STATE)
+      return { ok: true }
     }
 
     const run = startDotRun(dotId, trigger)
@@ -457,6 +574,39 @@ class DotManager {
       finishDotRun(run.id, 'error', (e as Error).message)
       this.broadcast(IPC_EVENTS.DOTS_STATE)
     })
+    return { ok: true }
+  }
+
+  /**
+   * Догоняющие пробуждения при старте: расписание сработало, пока
+   * приложение было закрыто — обычный wake пропущен навсегда. Догоняем,
+   * если последняя прошедшая матча cron новее последнего рана и не старше
+   * 24ч. Новые Dot'ы (ни одного рана) не догоняем — ждём плановой матчи.
+   */
+  private catchUpMissedCron(): void {
+    const now = Date.now()
+    let stagger = 0
+    for (const dot of this.dots.values()) {
+      if (!dot.enabled || dot.schedule?.kind !== 'cron') continue
+      try {
+        const last = getLastDotRun(dot.id)
+        if (!last) continue
+        const missedAt = lastCronMatch(dot.schedule.value)
+        if (missedAt > last.startedAt && now - missedAt < CATCHUP_WINDOW_MS) {
+          const delay = stagger
+          stagger += 3_000
+          const t = setTimeout(() => {
+            const fresh = this.dots.get(dot.id)
+            if (!fresh?.enabled || !this.getSettings().enabled) return
+            log('[dots] catch-up: Dot "%s" — пропущенная матча %s', dot.name, new Date(missedAt).toLocaleString())
+            this.wakeUp(dot.id, 'cron', {
+              detail: 'Догоняющее пробуждение: расписание сработало, пока приложение было закрыто. Проверь, не произошло ли что-то важное за это время.',
+            })
+          }, delay)
+          t.unref?.()
+        }
+      } catch { /* битый cron — уже провалидирован при создании */ }
+    }
   }
 
   /** Слушатель статусов ранов: ловим завершение wake-рана Dot'а. */
@@ -466,6 +616,11 @@ class DotManager {
     msgId?: string,
     error?: string,
   ): void => {
+    // Чат освободился (терминальный статус ЛЮБОГО рана — пользовательского
+    // или wake) — запускаем отложенное пробуждение, если оно копилось.
+    if (status === 'done' || status === 'error' || status === 'cancelled') {
+      this.drainQueuedWake(chatId)
+    }
     const pending = this.activeWakeRuns.get(chatId)
     if (!pending) return
     if (status !== 'done' && status !== 'error' && status !== 'cancelled') return
@@ -486,7 +641,9 @@ class DotManager {
       // done → механика молчания
       const msg = getMessageById(pending.assistantMsgId)
       const text = (msg?.content ?? '').trim()
-      if (isSilentReply(text)) {
+      // Пустой ответ = нечего сообщать: считаем тихим (иначе летело
+      // уведомление «Есть обновление» с пустым телом).
+      if (!text || isSilentReply(text)) {
         // Тихий ран: удаляем пару сообщений из чата — пользователь не
         // должен видеть «я проснулся, всё без изменений».
         try { deleteMessageById(pending.userMsgId) } catch { /* ignore */ }
@@ -506,6 +663,22 @@ class DotManager {
       this.broadcast(IPC_EVENTS.DOTS_RUN_FINISHED, { chatId, dotId: dot.id, status })
     }
     this.broadcast(IPC_EVENTS.DOTS_STATE)
+  }
+
+  /** Запустить отложенное пробуждение (чат освободился после терминального
+   *  статуса любого рана — пользовательского или wake). Задержка даёт UI
+   *  мгновение спокойствия; wakeUp сам перепоставит в очередь, если чат
+   *  снова занят (пользователь продолжил писать). */
+  private drainQueuedWake(chatId: string): void {
+    const queued = this.queuedWakes.get(chatId)
+    if (!queued) return
+    this.queuedWakes.delete(chatId)
+    const t = setTimeout(() => {
+      const dot = this.dots.get(queued.dotId)
+      if (!dot?.enabled || dot.chatId !== chatId || !this.getSettings().enabled) return
+      this.wakeUp(queued.dotId, queued.trigger, queued.ctx)
+    }, QUEUED_WAKE_DELAY_MS)
+    t.unref?.()
   }
 
   /** Уведомление о пробуждении (только если включены уведомления Dots). */
@@ -611,6 +784,7 @@ class DotManager {
   private withState(dot: DotConfig): Dot {
     const stats = getDotRunStats(dot.id)
     const last = getLastDotRun(dot.id)
+    const lastReport = getLastDotReport(dot.id)
     const isRunning = this.activeWakeRuns.has(dot.chatId)
     let status: DotState['status']
     if (!dot.enabled) status = 'disabled'
@@ -625,6 +799,9 @@ class DotManager {
         lastRunTrigger: last?.trigger,
         nextRunAt: dot.enabled ? this.nextRunAt.get(dot.id) : undefined,
         lastError: last?.status === 'error' ? last.summary : undefined,
+        lastReport: lastReport
+          ? { at: lastReport.startedAt, summary: (lastReport.summary ?? '').slice(0, 140) }
+          : undefined,
         ...stats,
       },
     }
@@ -637,6 +814,18 @@ class DotManager {
     } catch {
       return []
     }
+  }
+
+  /** Unread-счётчики: сколько отчётов у каждого Dot'а после его lastSeen.
+   *  Renderer хранит lastSeen локально (localStorage) и спрашивает пачкой —
+   *  один IPC на весь список вместо N запросов. */
+  getUnreadCounts(pairs: Array<{ dotId: string; since: number }>): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const p of pairs) {
+      if (!this.dots.has(p.dotId)) continue
+      try { out[p.dotId] = getDotReportCountSince(p.dotId, p.since) } catch { out[p.dotId] = 0 }
+    }
+    return out
   }
 
   // ── Broadcast ─────────────────────────────────────────────────────────
@@ -671,6 +860,23 @@ function nextCronMatch(expr: string): number {
     d.setMinutes(d.getMinutes() + 1)
   }
   return Date.now() + 60_000
+}
+
+/** Последняя прошедшая матча cron-выражения (≤ now, для catch-up).
+ *  Идём назад от текущей минуты; не нашли за 24ч (например, «29 февраля»)
+ *  — считаем, что матчи не было. */
+function lastCronMatch(expr: string): number {
+  const d = new Date()
+  d.setSeconds(0, 0)
+  for (let i = 0; i < 24 * 60; i++) {
+    try {
+      if (matchesCronExpression(expr, d)) return d.getTime()
+    } catch {
+      return 0
+    }
+    d.setMinutes(d.getMinutes() - 1)
+  }
+  return 0
 }
 
 export const dotManager = new DotManager()

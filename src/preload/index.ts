@@ -438,9 +438,11 @@ const synteeAPI = {
     update: (dotId: string, patch: Partial<import('../../shared/types').DotConfig>) =>
       ipcRenderer.invoke('dots:update', dotId, patch) as Promise<{ ok: boolean; dot?: import('../../shared/types').Dot; error?: string }>,
     delete: (dotId: string) => ipcRenderer.invoke('dots:delete', dotId) as Promise<{ ok: boolean }>,
-    runNow: (dotId: string) => ipcRenderer.invoke('dots:runNow', dotId) as Promise<{ ok: boolean }>,
+    runNow: (dotId: string) => ipcRenderer.invoke('dots:runNow', dotId) as Promise<{ ok: boolean; reason?: string }>,
     getRuns: (dotId: string, limit?: number) =>
       ipcRenderer.invoke('dots:getRuns', dotId, limit) as Promise<import('../../shared/types').DotRun[]>,
+    unreadCounts: (pairs: Array<{ dotId: string; since: number }>) =>
+      ipcRenderer.invoke('dots:unreadCounts', pairs) as Promise<Record<string, number>>,
     getWebhookUrl: (dotId: string) => ipcRenderer.invoke('dots:getWebhookUrl', dotId) as Promise<string | null>,
     getSettings: () => ipcRenderer.invoke('dots:getSettings') as Promise<import('../../shared/types').DotSettings>,
     setSettings: (patch: Partial<import('../../shared/types').DotSettings>) =>

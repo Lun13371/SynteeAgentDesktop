@@ -212,8 +212,46 @@ export function getLastDotRun(dotId: string): DotRun | null {
   return row ? rowToRun(row) : null
 }
 
+/** Последний ОТЧЁТ Dot'а (status='report') — для превью в карточке списка:
+ *  «что Dot сказал в последний раз» важнее статуса последнего рана
+ *  (последним мог быть тихий ран или ошибка). */
+export function getLastDotReport(dotId: string): DotRun | null {
+  const row = getDB()
+    .prepare(`SELECT * FROM dot_runs WHERE dot_id = ? AND status = 'report' ORDER BY started_at DESC LIMIT 1`)
+    .get(dotId) as DotRunRow | undefined
+  return row ? rowToRun(row) : null
+}
+
+/** Число отчётов после ts — для unread-бейджей (renderer хранит lastSeen
+ *  в localStorage и спрашивает пачкой: «сколько нового у каждого Dot'а?»). */
+export function getDotReportCountSince(dotId: string, since: number): number {
+  const row = getDB()
+    .prepare(`SELECT COUNT(*) as n FROM dot_runs WHERE dot_id = ? AND status = 'report' AND started_at > ?`)
+    .get(dotId, since) as { n: number } | undefined
+  return row?.n ?? 0
+}
+
 /** Найти Dot по chatId (для привязки run-статусов чата к Dot'у). */
 export function getDotByChatId(chatId: string): DotConfig | null {
   const row = getDB().prepare(`SELECT * FROM dots WHERE chat_id = ?`).get(chatId) as DotRow | undefined
   return row ? rowToConfig(row) : null
+}
+
+/**
+ * Ремонт «застрявших» ранов после рестарта: если приложение закрылось/упало
+ * во время wake-рана, строка в dot_runs навсегда остаётся status='running'
+ * (воркеры worker_threads убиты рестартом процесса, продолжить их нельзя).
+ * Помечаем 'cancelled' с понятной причиной — история не врёт вечной «работе».
+ * Вызывается из DotManager.init() ДО загрузки конфигов. Возвращает число
+ * отремонтированных строк (для лога).
+ */
+export function repairStaleDotRuns(): number {
+  const info = getDB().prepare(`
+    UPDATE dot_runs
+    SET status = 'cancelled',
+        finished_at = ?,
+        summary = COALESCE(summary, 'приложение перезапущено во время рана')
+    WHERE status = 'running'
+  `).run(Date.now())
+  return info.changes
 }

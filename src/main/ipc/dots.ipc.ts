@@ -54,15 +54,24 @@ export function registerDotsIPC(store: Store, getWindow: () => BrowserWindow | n
     return { ok: true }
   })
 
-  // Разбудить вручную (кнопка «Разбудить»).
+  // Разбудить вручную (кнопка «Разбудить»). Возвращает результат: если
+  // пробуждение пропущено (Dot выключен / глобальная пауза / чат занят) —
+  // reason, чтобы UI показал честный тост вместо «разбужен».
   ipcMain.handle('dots:runNow', (_e, dotId: string) => {
-    dotManager.runNow(dotId)
-    return { ok: true }
+    try {
+      return dotManager.runNow(dotId)
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
+    }
   })
 
   // История пробуждений Dot'а.
   ipcMain.handle('dots:getRuns', (_e, dotId: string, limit?: number) =>
     dotManager.getRuns(dotId, limit ?? 20))
+
+  // Unread-счётчики пачкой: [{dotId, since}] → {dotId: nОтчётовПослеSince}.
+  ipcMain.handle('dots:unreadCounts', (_e, pairs: Array<{ dotId: string; since: number }>) =>
+    dotManager.getUnreadCounts(Array.isArray(pairs) ? pairs : []))
 
   // Webhook-URL Dot'а (для копирования в UI).
   ipcMain.handle('dots:getWebhookUrl', (_e, dotId: string) => dotManager.getWebhookUrl(dotId))

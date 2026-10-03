@@ -888,17 +888,24 @@ export default function App() {
     return () => { off() }
   }, [])
 
-  // Dots: тост при пробуждении Dot'а по триггеру (cron/interval/watch/webhook) —
+  // Dots: тост при пробуждении Dot'а по триггеру (cron/interval/fs/webhook) —
   // иначе пользователь не видит, что таймеры срабатывают (report-уведомления
   // показываются только при неактивном окне, silent-раны молчат by design).
   // manual не тостим — кнопка «Разбудить» уже даёт фидбек в DotsPage.
+  // Троттлинг: Dot с коротким интервалом иначе тостит каждое пробуждение —
+  // не чаще раза в 10 мин на Dot (уведомления работают независимо).
   useEffect(() => {
+    const lastToast = new Map<string, number>()
     const off = window.syntee.on(IPC_EVENTS.DOTS_WAKE, (...args: unknown[]) => {
-      const p = (args[0] ?? {}) as { name?: string; trigger?: string }
+      const p = (args[0] ?? {}) as { dotId?: string; name?: string; trigger?: string }
       if (!p.name || p.trigger === 'manual') return
+      const key = p.dotId ?? p.name
+      const now = Date.now()
+      if (now - (lastToast.get(key) ?? 0) < 10 * 60_000) return
+      lastToast.set(key, now)
       const trig = p.trigger === 'cron' ? 'расписание'
         : p.trigger === 'interval' ? 'интервал'
-        : p.trigger === 'watch' ? 'изменения файлов'
+        : p.trigger === 'fs' ? 'изменения файлов'
         : p.trigger === 'webhook' ? 'webhook'
         : 'триггер'
       useToast.getState().add(`Dot «${p.name}» проснулся — ${trig}`, 'info', 4000)
@@ -1007,11 +1014,20 @@ export default function App() {
     return () => { off() }
   }, [])
 
-  // Открыть существующий чат по id (из результатов поиска Spotlight).
+  // Открыть существующий чат по id (Spotlight-поиск / уведомления Dot'ов).
+  // Если чат принадлежит Dot'у — ведём на страницу Dots с выбранным Dot'ом
+  // (уведомление «Dot проснулся» → «Открыть чат» открывает его дом, а не
+  // обычный чат в сайдбаре).
   useEffect(() => {
     const off = window.syntee.on('nav:open-chat', (chatId: unknown) => {
       const id = String(chatId ?? '')
       if (!id) return
+      const dot = useDotsStore.getState().dots.find(d => d.chatId === id)
+      if (dot) {
+        useNavStore.getState().toggleMainPage('dots')
+        useDotsStore.getState().selectDot(dot.id)
+        return
+      }
       useNavStore.getState().toggleMainPage('chat')
       const st = useChatStore.getState()
       st.setCurrentChat(id)
@@ -1639,70 +1655,39 @@ export default function App() {
                 <div className={`page-host ${mainPage === 'chat' ? '' : 'page-host--hidden'}`}>
                   <ChatPage embedded />
                 </div>
-                {/* Exit-анимация страниц — безопасная: только числовые значения
-                    (opacity/scale) + явный pointerEvents:'none'. pointer-events
-                    отключается МГНОВЕННО на старте exit — даже если анимация
-                    зависнет, уходящая страница физически не сможет перехватить
-                    клики. Tween 0.18s (не spring) завершается всегда по таймеру,
-                    spring на exit раньше мог не «успокоиться» → зомби-слой. */}
-                <AnimatePresence>
-              {mainPage === 'settings' && (
-                <motion.div
-                  key="settings-page"
-                  className="page-motion-host"
-                  initial={{ opacity: 0, scale: 0.92 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
-                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
-                >
-                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
-                        <SettingsPage />
-                      </Suspense>
-                    </motion.div>
-                  )}
-                  {mainPage === 'memory' && (
-                <motion.div
-                  key="memory-page"
-                  className="page-motion-host"
-                  initial={{ opacity: 0, scale: 0.92 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
-                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
-                >
-                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
-                        <MemoryPage />
-                      </Suspense>
-                    </motion.div>
-                  )}
-                  {mainPage === 'messenger' && (
-<motion.div
-                  key="messenger-page"
-                  className="page-motion-host"
-                  initial={{ opacity: 0, scale: 0.92 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
-                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
-                >
-                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
-                        <MessengerPage />
-                      </Suspense>
-                    </motion.div>
-                  )}
-                  {mainPage === 'dots' && (
-<motion.div
-                  key="dots-page"
-                  className="page-motion-host"
-                  initial={{ opacity: 0, scale: 0.92 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96, pointerEvents: 'none', transition: { duration: 0.18, ease: 'easeIn' } }}
-                  transition={{ type: 'spring', stiffness: 340, damping: 30, opacity: { duration: 0.2 } }}
-                >
-                      <Suspense fallback={<BootScreen status="Загрузка…" />}>
-                        <DotsPage />
-                      </Suspense>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                {/* Страницы рендерятся СИНХРОННО (mount/unmount) — БЕЗ
+                    AnimatePresence. Почему: exit-анимация framer-motion не
+                    гарантирует завершения. AnimatePresence удаляет уходящего
+                    ребёнка только когда ВСЕ зарегистрированные в его
+                    PresenceChild motion-элементы поддерева вызовут safeToRemove
+                    (use-presence.mjs), а у части из них завершение зависит от
+                    layout-проекции (MeasureLayout: safeToRemove зовётся только
+                    по animationComplete/onExitComplete проекции) или от портала
+                    в body. Достаточно одного незавершившегося — и
+                    AnimatePresence НИКОГДА не удаляет страницу: невидимый
+                    .page-motion-host (z-index 2, absolute inset 0) остаётся
+                    поверх чата, перехватывает клики и фокус — инпут основного
+                    чата «мертвеет», а набор уходит в скрытый инпут Dot'а
+                    («зомби-слой»). Инцидент уже был (f8a70f4: убрали exit),
+                    рецидив вернулся вместе с exit-анимациями (026d9cf) и
+                    проявился на странице Dots: в её поддереве появились
+                    motion-элементы с layout (DotCard layout="position", группы
+                    списка) + порталы ChatInput/ContextRing/MessageBubble.
+                    Поэтому выход — мгновенный unmount (застревать нечему), а
+                    вход анимируется CSS (@keyframes page-host-in в
+                    SettingsPage.css) — тот же паттерн, что у секций Настроек.
+                    key={mainPage} — ремоунт при смене страницы, чтобы
+                    CSS-анимация входа проигрывалась заново. */}
+                {mainPage !== 'chat' && (
+                  <div key={mainPage} className="page-motion-host">
+                    <Suspense fallback={<BootScreen status="Загрузка…" />}>
+                      {mainPage === 'settings' ? <SettingsPage />
+                        : mainPage === 'memory' ? <MemoryPage />
+                        : mainPage === 'messenger' ? <MessengerPage />
+                        : <DotsPage />}
+                    </Suspense>
+                  </div>
+                )}
                 {/* Полноэкранные страницы плагинов (slot 'page') — оверлей
                     поверх keep-alive ChatPage внутри зоны контента. */}
                 <PluginPageHost />

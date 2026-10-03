@@ -79,7 +79,7 @@ import { initPluginManager, getPluginManager } from '../core/plugins/pluginManag
 import { migrateGlobalMcpToFile } from '../core/mcp/mcpConfig'
 import { ptyManager } from './managers/PtyManager'
 import { ipcMain, clipboard, protocol } from 'electron'
-import { readFileSync, statSync } from 'fs'
+import { appendFileSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { extname } from 'path'
 
 // ── syntee-plugin:// протокол (UI плагинов в sandboxed iframe) ───────────
@@ -187,6 +187,22 @@ process.on('unhandledRejection', (reason) => {
     log('[unhandledRejection] %s', reason instanceof Error ? `${reason.message}\n${reason.stack ?? ''}` : String(reason))
   } catch { /* noop */ }
   // НЕ вызываем flushAllActiveRuns — см. комментарий у uncaughtException ниже.
+})
+
+// Chromium utility/GPU сбои не являются Node exceptions. Пишем отдельно
+// по дням в userData: следующий запуск не затирает диагностику сбоя.
+app.on('child-process-gone', (_event, details) => {
+  const message = `[chromium-process-gone] ${JSON.stringify(details)}`
+  console.error(message)
+  log(message)
+  try {
+    const dir = join(app.getPath('userData'), 'logs')
+    mkdirSync(dir, { recursive: true })
+    const date = new Date().toISOString()
+    appendFileSync(join(dir, `chromium-${date.slice(0, 10)}.log`), `[${date}] ${message}\n`)
+  } catch { /* best-effort диагностика */ }
+  // Network Service Chromium перезапускает сам. Не reload здорового UI:
+  // это потеряет черновик и не исправит причину падения utility-процесса.
 })
 
 // Инициализируем store с дефолтными настройками.
@@ -429,6 +445,15 @@ app.whenReady().then(async () => {
   // (overlay/voice/spotlight/trayMenu) создаются лениво при первом
   // show() — это экономит ~4 renderer-процесса и сотни МБ RAM в фоне.
   const main = mainWindow.create()
+  // Подписываемся сразу, ДО warmup/first-run await: ready-to-show одноразовый
+  // и мог пройти, пока мы инициализировали фоновые сервисы.
+  main.once('ready-to-show', () => {
+    main.show()
+    const devtools = process.env.NODE_ENV === 'development'
+      || process.env.ELECTRON_ENABLE_DEVTOOLS === '1'
+      || process.argv.includes('--devtools')
+    if (devtools) main.webContents.openDevTools({ mode: 'detach' })
+  })
 
   // Прикрепляем listeners на главное окно (теперь оно создано).
   notificationManager.attachWindowListeners()
@@ -480,16 +505,7 @@ app.whenReady().then(async () => {
     await onFirstRun()
   }
 
-  // Показываем главное окно
-  main.once('ready-to-show', () => {
-    main.show()
-    const devtools = process.env.NODE_ENV === 'development'
-      || process.env.ELECTRON_ENABLE_DEVTOOLS === '1'
-      || process.argv.includes('--devtools')
-    if (devtools) {
-      main.webContents.openDevTools({ mode: 'detach' })
-    }
-  })
+  // Показ окна подписан сразу после create(), выше.
 })
 
 async function onFirstRun(): Promise<void> {

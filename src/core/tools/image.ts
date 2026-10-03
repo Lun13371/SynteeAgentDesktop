@@ -8,7 +8,7 @@ import type { Provider, ModelParams } from '../../shared/types'
 import { getIdentityHeaders } from '../../shared/constants'
 import { isImageMime, mimeFromExt } from '../../shared/mentions'
 import { AIClient } from '../ai/AIClient'
-import { mainModelSupportsVision } from '../ai/visionSupport'
+import { agentModelSupportsVision } from '../ai/visionSupport'
 import { resolveToolPath, type ToolResult } from './_shared'
 
 export async function generateImage(
@@ -166,7 +166,7 @@ async function saveB64Image(b64: string, userDataPath?: string): Promise<{ path:
 //
 // Механика — ПОЛНЫЙ ПАРИТЕТ с attachment-flow (chat.ipc.ts
 // processAttachmentsAndStream), решение принимает та же эвристика
-// (core/ai/visionSupport.ts mainModelSupportsVision):
+// (core/ai/visionSupport.ts agentModelSupportsVision), с учётом роли рана:
 //
 //  1. Основная модель vision-capable → ПРЯМОЙ ПАС: картинка возвращается
 //     в imageParts, Agent встраивает её в tool-сообщение как multipart
@@ -183,6 +183,7 @@ export async function analyzeImageFile(
   store: Store,
   workdir?: string,
   userDataPath?: string,
+  role: 'main' | 'subagent' = 'main',
 ): Promise<ToolResult> {
   let absPath = resolveToolPath(args.path, workdir)
   if (!existsSync(absPath)) {
@@ -220,12 +221,11 @@ export async function analyzeImageFile(
   // ── Ветка 1: основная модель видит сама → прямой пас ──
   // Никаких правил форматирования — только факт «картинка приложена» +
   // вопрос юзера если есть. Модель отвечает, отталкиваясь от запроса.
-  if (mainModelSupportsVision(store)) {
+  if (agentModelSupportsVision(store, role)) {
     return {
       success: true,
-      output: question
-        ? `Изображение «${args.path}» приложено к этому результату. Ответь на вопрос пользователя: "${question.slice(0, 500)}"`
-        : `Изображение «${args.path}» приложено к этому результату.`,
+      output: `Изображение «${args.path}» подготовлено для визуального анализа основной моделью (это не готовое описание).${question ? `\nВопрос: ${question.slice(0, 500)}` : ''}`,
+      imagePaths: [absPath],
       imageParts: [{ type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: 'high' } }],
     }
   }

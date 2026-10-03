@@ -198,9 +198,8 @@ export function ChatInputPlusMenu({
               <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onBrowserModeChange?.(!browserMode) }} title={lang === 'en' ? 'Browser control: the agent gets browser_* tools to drive the built-in browser (right panel)' : 'Управление браузером: агент получает browser_*-тулы для управления встроенным браузером (правая панель)'}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="4" width="20" height="16" rx="2"/>
-                  <path d="M10 9l-5 3 5 3V9z"/>
-                  <line x1="16" y1="9" x2="16" y2="15"/>
-                  <line x1="19" y1="9" x2="19" y2="15"/>
+                  <path d="M2 8h20"/>
+                  <path d="m9.5 10 3.2 8 1.1-3.3 3.3-1.1z"/>
                 </svg>
                 {lang === 'en' ? 'Browser control' : 'Управление браузером'}
                 <motion.button
