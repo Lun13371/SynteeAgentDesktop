@@ -93,6 +93,24 @@ export function DotCard({
     return () => { if (confirmTimer.current) clearTimeout(confirmTimer.current) }
   }, [confirmDelete])
 
+  // Меню «⋯»: включить/выключить, настроить, удалить. Закрытие по клику
+  // вне меню и по Escape.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
+
   // Превью последнего отчёта: ошибка > отчёт > «молчал» > «ещё не просыпался».
   const preview = s.status === 'error' && s.lastError
     ? { text: s.lastError, cls: 'dot-card-preview--error' }
@@ -172,46 +190,73 @@ export function DotCard({
           </span>
         </div>
       </div>
+      {/* Действия: на карточке только «Разбудить» (главное), остальное —
+          в меню «⋯»: 4 кнопки в ряд съедали треть карточки и шумели. */}
       <div className="dot-card-actions" onClick={e => e.stopPropagation()}>
         <button
           type="button"
-          className="dot-card-action"
+          className="dot-card-action dot-card-action--wake"
           title={s.status === 'running' ? 'Dot уже работает' : 'Разбудить сейчас'}
           disabled={s.status === 'running' || !dot.enabled}
           onClick={onWake}
         >
           <AppIcon name="zap" size="xs" />
         </button>
-        <button
-          type="button"
-          className={`dot-card-action${dot.enabled ? '' : ' dot-card-action--power-off'}`}
-          title={dot.enabled ? 'Выключить Dot’а (пауза триггеров)' : 'Включить Dot’а'}
-          onClick={onToggle}
-        >
-          <AppIcon name="power" size="xs" />
-        </button>
-        <button type="button" className="dot-card-action" title="Настроить" onClick={onEdit}>
-          <AppIcon name="settings" size="xs" />
-        </button>
-        {confirmDelete ? (
+        <div className="dot-card-menu-wrap" ref={menuRef}>
           <button
             type="button"
-            className="dot-card-action dot-card-action--confirm"
-            title="Точно удалить"
-            onClick={() => { setConfirmDelete(false); onDelete() }}
+            className={`dot-card-action${menuOpen ? ' dot-card-action--open' : ''}`}
+            title="Ещё"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(v => !v)}
           >
-            <AppIcon name="check" size="xs" />
+            <AppIcon name="moreHorizontal" size="xs" />
           </button>
-        ) : (
-          <button
-            type="button"
-            className="dot-card-action dot-card-action--danger"
-            title="Удалить Dot’а"
-            onClick={() => setConfirmDelete(true)}
-          >
-            <AppIcon name="trash" size="xs" />
-          </button>
-        )}
+          {menuOpen && (
+            <div className="dot-card-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="dot-card-menu-item"
+                onClick={() => { setMenuOpen(false); onToggle() }}
+              >
+                <AppIcon name="power" size="xs" />
+                {dot.enabled ? 'Выключить (пауза)' : 'Включить'}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="dot-card-menu-item"
+                onClick={() => { setMenuOpen(false); onEdit() }}
+              >
+                <AppIcon name="settings" size="xs" />
+                Настроить
+              </button>
+              {confirmDelete ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="dot-card-menu-item dot-card-menu-item--danger"
+                  onClick={() => { setMenuOpen(false); setConfirmDelete(false); onDelete() }}
+                >
+                  <AppIcon name="check" size="xs" />
+                  Точно удалить?
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="dot-card-menu-item dot-card-menu-item--danger"
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  <AppIcon name="trash" size="xs" />
+                  Удалить…
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   )

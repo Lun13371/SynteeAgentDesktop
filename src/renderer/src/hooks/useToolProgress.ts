@@ -127,6 +127,9 @@ export function useToolProgress() {
       content: string; success?: boolean; imageUrl?: string; imagePaths?: string[]
       msgId?: string; callId?: string; pendingCallId?: string; chatId?: string
       diff?: string
+      // Native analyze_image lifecycle: 'tool_result' несёт pending, отдельный
+      // 'tool_result_update' (тот же callId) — responded/failed + findings.
+      visualAnalysis?: { status: 'pending' | 'responded' | 'failed'; findings?: string }
     }) => {
       if (!step.chatId) return
       const chatId = step.chatId
@@ -287,6 +290,7 @@ export function useToolProgress() {
           diff: step.diff,
           imagePaths: step.imagePaths,
           callId: step.callId,
+          visualAnalysis: step.visualAnalysis,
         }
         buf.steps.push(newStep)
         if (buf.iters.length === 0) {
@@ -368,6 +372,51 @@ export function useToolProgress() {
             isTyping: true,
           })
         }
+      } else if (step.type === 'tool_result_update') {
+        // Native analyze_image lifecycle: обновление уже показанного result.
+        // Immutable-замена по callId (fallback — toolName) в buf.steps и во
+        // ВСЕХ buf.iters — НЕ добавляем новый шаг и НЕ создаём итерацию, иначе
+        // получим дубль карточки и осиротевшую итерацию.
+        const va = step.visualAnalysis
+        const matchesResult = (s: ToolStep): boolean => {
+          if (s.type !== 'tool_result') return false
+          if (step.callId) return s.callId === step.callId
+          return s.toolName === step.toolName
+        }
+        let changed = false
+        const nextSteps = buf.steps.map(s => {
+          if (!matchesResult(s)) return s
+          changed = true
+          return {
+            ...s,
+            visualAnalysis: va ?? s.visualAnalysis,
+            success: step.success !== undefined ? step.success : s.success,
+          }
+        })
+        const nextIters = buf.iters.map(iter => {
+          let iterChanged = false
+          const steps = iter.steps.map(s => {
+            if (!matchesResult(s)) return s
+            iterChanged = true
+            changed = true
+            return {
+              ...s,
+              visualAnalysis: va ?? s.visualAnalysis,
+              success: step.success !== undefined ? step.success : s.success,
+            }
+          })
+          return iterChanged ? { ...iter, steps } : iter
+        })
+        // Если исходный result ещё не пришёл в renderer — нечего обновлять.
+        if (!changed) return
+        buf.steps = nextSteps
+        buf.iters = nextIters
+        liveSet(chatId, {
+          steps: [...buf.steps],
+          iters: [...buf.iters],
+          isAgentRunning: true,
+          isTyping: true,
+        })
       }
     })
 

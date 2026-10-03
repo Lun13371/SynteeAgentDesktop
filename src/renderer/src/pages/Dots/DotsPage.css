@@ -4,6 +4,10 @@
    Тема — CSS-переменные приложения (--bg-*, --border, --accent...). */
 
 .dots-page {
+  /* Семантический «опасный» цвет страницы (в теме нет danger-переменной):
+     задаётся один раз здесь, ниже используется через var(--dot-danger).
+     В светлых темах цвет автоматически затемняется — контраст сохраняется. */
+  --dot-danger: light-dark(#e5484d, #ff6b6b);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -13,39 +17,71 @@
   background: var(--bg-primary, transparent);
 }
 
-/* ── Шапка страницы (компактная) ── */
+/* ── Шапка страницы ── */
+/* Обёртка: держит поповер настроек привязанным к низу шапки. */
+.dots-header-zone {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 20;
+}
+
 .dots-header {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 14px 7px;
+  gap: 11px;
+  padding: 11px 16px 10px;
   border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.18));
-  flex-shrink: 0;
+  position: relative;
+  /* Тихий глоу акцентом по верху — «дорогая» глубина без картинок. */
+  background:
+    radial-gradient(120% 180% at 0% 0%,
+      color-mix(in srgb, var(--accent) 9%, transparent) 0%,
+      transparent 62%);
+}
+
+/* Тонкая акцентная линия по нижней кромке шапки */
+.dots-header::after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--accent) 45%, transparent),
+    transparent 70%);
+  pointer-events: none;
 }
 
 .dots-header-icon {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: var(--accent-subtle, rgba(127, 127, 127, 0.1));
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background:
+    linear-gradient(150deg,
+      color-mix(in srgb, var(--accent) 22%, transparent),
+      color-mix(in srgb, var(--accent) 6%, transparent));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
   color: var(--accent, #7c6cff);
+  box-shadow: 0 4px 14px -8px color-mix(in srgb, var(--accent) 80%, transparent);
 }
 
 .dots-header-text { min-width: 0 }
 
 .dots-header-title {
-  font-size: 13.5px;
+  font-size: 14.5px;
   font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
 }
 
 .dots-header-sub {
   font-size: 10.5px;
   color: var(--text-muted, rgba(128, 128, 128, 0.9));
-  margin-top: 0;
+  margin-top: 1px;
   line-height: 1.3;
   display: flex;
   align-items: center;
@@ -58,57 +94,76 @@
 /* Мини-статчипы шапки: иконка + число + подпись (кто работает / спит / ждёт) */
 .dots-stat-chips {
   gap: 5px;
-  margin-top: 2px;
+  margin-top: 3px;
 }
 
 .dots-stat-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 1px 8px 1px 7px;
+  padding: 2px 9px 2px 7px;
   border-radius: var(--radius-pill, 999px);
   border: 1px solid var(--border, rgba(128, 128, 128, 0.18));
   background: var(--overlay-2, rgba(128, 128, 128, 0.05));
   font-size: 10.5px;
-  line-height: 1.7;
+  line-height: 1.55;
   color: var(--text-secondary, rgba(160, 160, 160, 1));
   white-space: nowrap;
-  transition: border-color 0.18s ease, background 0.18s ease;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.dots-stat-chip:hover {
+  background: var(--overlay-3, rgba(128, 128, 128, 0.09));
+  color: var(--text-primary, #fff);
 }
 
 .dots-stat-chip .app-icon { color: currentColor }
 
-.dots-stat-chip-num { font-weight: 700; color: var(--text-primary, #fff) }
+.dots-stat-chip-num {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, #fff);
+}
 
 .dots-stat-chip--accent {
-  border-color: color-mix(in srgb, var(--accent, #7c6cff) 38%, transparent);
-  background: color-mix(in srgb, var(--accent, #7c6cff) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent, #7c6cff);
 }
 
 .dots-stat-chip--accent .dots-stat-chip-num { color: var(--accent, #7c6cff) }
 
 .dots-stat-chip--danger {
-  border-color: color-mix(in srgb, #ff6b6b 42%, transparent);
-  background: color-mix(in srgb, #ff6b6b 12%, transparent);
-  color: #ff6b6b;
+  border-color: color-mix(in srgb, var(--dot-danger) 42%, transparent);
+  background: color-mix(in srgb, var(--dot-danger) 12%, transparent);
+  color: var(--dot-danger);
 }
 
-.dots-stat-chip--danger .dots-stat-chip-num { color: #ff6b6b }
+.dots-stat-chip--danger .dots-stat-chip-num { color: var(--dot-danger) }
 
 /* Пульсирующая точка «работает» — живёт внутри статчипа */
 .dots-header-live-dot {
+  position: relative;
   width: 7px;
   height: 7px;
   flex-shrink: 0;
   border-radius: 50%;
   background: var(--accent, #7c6cff);
-  animation: dot-live-pulse 1.8s ease-in-out infinite;
+}
+
+/* Мягкая волна вокруг точки — «дышит», не мигает */
+.dots-header-live-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent, #7c6cff);
+  animation: dot-live-pulse 1.8s ease-out infinite;
 }
 
 @keyframes dot-live-pulse {
-  0%, 100% { opacity: 0.5; transform: scale(0.85) }
-  50% { opacity: 1; transform: scale(1.1) }
+  0% { opacity: 0.55; transform: scale(1) }
+  100% { opacity: 0; transform: scale(2.6) }
 }
 
 .dots-header-spacer { flex: 1 }
@@ -117,49 +172,64 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
-  border-radius: 8px;
+  padding: 6px 12px;
+  border-radius: 9px;
   border: 1px solid var(--border, rgba(128, 128, 128, 0.2));
-  background: transparent;
+  background: var(--overlay-1, rgba(128, 128, 128, 0.03));
   color: var(--text-secondary, rgba(128, 128, 128, 1));
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 550;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition:
+    background 0.16s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.16s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.16s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.16s ease,
+    transform 0.1s ease;
   flex-shrink: 0;
 }
 
 .dots-header-btn:hover {
-  background: var(--overlay-2, rgba(128, 128, 128, 0.08));
+  background: var(--overlay-3, rgba(128, 128, 128, 0.09));
+  border-color: var(--border-strong, rgba(128, 128, 128, 0.3));
   color: var(--text-primary, #fff);
+  box-shadow: 0 6px 16px -10px rgba(var(--shadow-rgb, 0, 0, 0), 0.9);
 }
+
+.dots-header-btn:active { transform: scale(0.97) }
 
 .dots-header-btn:disabled {
   opacity: 0.45;
   cursor: default;
+  box-shadow: none;
 }
 
 .dots-header-btn--primary {
   background: var(--accent-bg, var(--accent, #7c6cff));
   color: var(--on-accent, #fff);
   border-color: transparent;
+  box-shadow: 0 6px 18px -9px color-mix(in srgb, var(--accent) 90%, transparent);
 }
 
 .dots-header-btn--primary:hover {
   background: var(--accent-hover, var(--accent, #7c6cff));
   color: var(--on-accent-strong, #fff);
+  border-color: transparent;
+  box-shadow: 0 8px 22px -8px color-mix(in srgb, var(--accent) 95%, transparent);
 }
 
 .dots-header-btn--active {
   color: var(--accent, #7c6cff);
-  border-color: var(--accent, #7c6cff);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 /* Фокус-состояния (клавиатурная навигация) — везде одинаковые */
 .dots-header-btn:focus-visible,
 .dots-template:focus-visible,
 .dot-card-action:focus-visible,
-.dots-toggle:focus-visible {
+.dots-toggle:focus-visible,
+.dots-search-input:focus-visible {
   outline: 2px solid var(--accent, #7c6cff);
   outline-offset: 2px;
 }
@@ -182,18 +252,114 @@
   overflow: hidden;
 }
 
-/* ── Список Dot'ов (эстетика сайдбара) ── */
-.dots-list {
-  width: 292px;
+/* ── Левая колонка — «мессенджерный» сайдбар ──
+   Поиск сверху (фикс), под ним — скроллящаяся лента Dot'ов. */
+.dots-sidebar {
+  width: 288px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   border-right: 1px solid var(--border, rgba(128, 128, 128, 0.18));
-  overflow-y: auto;
-  padding: 8px;
-  gap: 4px;
   background: var(--bg-secondary, transparent);
+}
+
+/* Поиск по ленте */
+.dots-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 10px 10px 2px;
+  flex-shrink: 0;
+}
+
+.dots-search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--text-muted, rgba(128, 128, 128, 0.9));
+  pointer-events: none;
+  transition: color 0.16s ease;
+}
+
+.dots-search-input {
+  width: 100%;
+  padding: 7px 28px 7px 30px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.2));
+  background: var(--overlay-1, rgba(128, 128, 128, 0.04));
+  color: var(--text-primary, #fff);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.dots-search-input::placeholder { color: var(--text-muted, rgba(128, 128, 128, 0.9)) }
+
+.dots-search-input:hover { background: var(--overlay-2, rgba(128, 128, 128, 0.06)) }
+
+.dots-search-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--overlay-2, rgba(128, 128, 128, 0.06));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.dots-search:focus-within .dots-search-icon { color: var(--accent, #7c6cff) }
+
+.dots-search-clear {
+  position: absolute;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted, rgba(128, 128, 128, 0.9));
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.dots-search-clear:hover {
+  background: var(--overlay-4, rgba(128, 128, 128, 0.14));
+  color: var(--text-primary, #fff);
+}
+
+/* Лента Dot'ов (скроллится) */
+.dots-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 8px 10px;
+  gap: 3px;
   scrollbar-gutter: stable;
+}
+
+/* Пусто после поиска */
+.dots-list-nores {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 34px 16px;
+  text-align: center;
+}
+
+.dots-list-nores-icon { color: var(--text-muted, rgba(128, 128, 128, 0.55)) }
+
+.dots-list-nores-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary, rgba(160, 160, 160, 1));
+}
+
+.dots-list-nores-text {
+  font-size: 11px;
+  color: var(--text-muted, rgba(128, 128, 128, 0.9));
 }
 
 /* ── Скроллбары: тонкие, без стрелок, проявляются на hover ── */
@@ -235,20 +401,23 @@
   flex-direction: column;
   gap: 2px;
 }
-.dots-group + .dots-group { margin-top: 8px }
+.dots-group + .dots-group { margin-top: 10px }
 
 .dots-group-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px 3px;
-  font-size: 10.5px;
+  padding: 7px 8px 5px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
   color: var(--text-muted, rgba(128, 128, 128, 0.9));
   position: sticky;
-  top: 0;
+  top: -8px;
+  margin: 0 -8px;
+  padding-left: 16px;
+  padding-right: 16px;
   background: var(--bg-secondary, transparent);
   z-index: 5;
 }
@@ -256,10 +425,12 @@
 .dots-group-count {
   font-size: 10px;
   font-weight: 600;
-  color: var(--text-muted, rgba(128, 128, 128, 0.7));
+  color: var(--text-muted, rgba(128, 128, 128, 0.75));
   background: var(--overlay-3, rgba(128, 128, 128, 0.12));
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.16));
   border-radius: 6px;
-  padding: 1px 6px;
+  padding: 0 6px;
+  line-height: 1.5;
 }
 
 /* Skeleton карточек при загрузке */
@@ -364,21 +535,24 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 9px 10px;
-  border-radius: 10px;
+  padding: 10px 11px;
+  border-radius: 11px;
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
   text-align: left;
   width: 100%;
   position: relative;
-  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.22s ease;
 }
 
 /* Hover: подъём делает framer (whileHover y), CSS — свечение цвета Dot'а */
 .dot-card:hover {
   background: var(--overlay-2, rgba(128, 128, 128, 0.07));
-  box-shadow: 0 10px 22px -12px color-mix(in srgb, var(--dot-color) 85%, transparent);
+  border-color: var(--border, rgba(128, 128, 128, 0.16));
 }
 
 .dot-card:focus-visible {
@@ -386,14 +560,21 @@
   outline-offset: -1px;
 }
 
+/* Активная карточка — «выбранная» с мягкой подложкой и полоской слева */
 .dot-card--selected {
-  background: color-mix(in srgb, var(--dot-color) 12%, transparent);
-  border-color: color-mix(in srgb, var(--dot-color) 40%, transparent);
+  background:
+    linear-gradient(100deg,
+      color-mix(in srgb, var(--dot-color) 16%, transparent),
+      color-mix(in srgb, var(--dot-color) 6%, transparent));
+  border-color: color-mix(in srgb, var(--dot-color) 42%, transparent);
 }
 
 .dot-card--selected:hover {
-  box-shadow: 0 10px 24px -12px color-mix(in srgb, var(--dot-color) 95%, transparent);
+  box-shadow: 0 12px 26px -14px color-mix(in srgb, var(--dot-color) 95%, transparent);
 }
+
+.dot-card--disabled { opacity: 0.5 }
+.dot-card--disabled:hover { opacity: 0.72 }
 
 .dot-card--selected::before {
   /* Акцентная полоска слева — цветом самого Dot'а */
@@ -405,10 +586,12 @@
   width: 3px;
   border-radius: 2px;
   background: var(--dot-color);
+  animation: dot-card-rail-in 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.dot-card--disabled {
-  opacity: 0.55;
+@keyframes dot-card-rail-in {
+  from { transform: scaleY(0.3); opacity: 0 }
+  to { transform: scaleY(1); opacity: 1 }
 }
 
 /* Аватар: капля + статус-точка + unread-бейдж */
@@ -442,7 +625,7 @@
   animation: dot-status-pulse 1.6s ease-in-out infinite;
 }
 
-.dot-status-dot--error { background: #ff6b6b }
+.dot-status-dot--error { background: var(--dot-danger) }
 
 @keyframes dot-status-pulse {
   0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, var(--dot-color, #7c6cff) 45%, transparent) }
@@ -465,7 +648,7 @@
   line-height: 16px;
   text-align: center;
   z-index: 3;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 1px 4px rgba(var(--shadow-rgb, 0, 0, 0), 0.45);
 }
 
 .dot-card-info {
@@ -513,7 +696,7 @@
 
 .dot-card-preview--unread { color: var(--text-primary, #fff); font-weight: 500 }
 .dot-card-preview--muted { color: var(--text-muted, rgba(128, 128, 128, 0.75)); font-style: italic }
-.dot-card-preview--error { color: #ff6b6b }
+.dot-card-preview--error { color: var(--dot-danger) }
 
 .dot-card-meta {
   display: flex;
@@ -549,8 +732,9 @@
   display: flex;
   gap: 2px;
   opacity: 0;
-  transform: translateY(-2px);
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transform: translateY(-2px) scale(0.94);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
   flex-shrink: 0;
   margin-top: 2px;
 }
@@ -559,7 +743,8 @@
 .dot-card--selected .dot-card-actions,
 .dot-card:focus-within .dot-card-actions {
   opacity: 1;
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
 }
 
 .dot-card-action {
@@ -578,7 +763,7 @@
 .dot-card-action:active { transform: scale(0.9) }
 
 .dot-card-action:hover {
-  background: var(--overlay-3, rgba(128, 128, 128, 0.12));
+  background: var(--overlay-4, rgba(128, 128, 128, 0.14));
   color: var(--text-primary, #fff);
 }
 
@@ -587,12 +772,82 @@
   cursor: default;
 }
 
-.dot-card-action--danger:hover { color: #ff6b6b }
-.dot-card-action--confirm { color: #ff6b6b; background: rgba(255, 107, 107, 0.12) }
-/* Тумблер вкл/выкл: выключенный Dot — иконка питания тусклая; hover —
-   акцент (включить) вместо нейтрального. */
-.dot-card-action--power-off { color: var(--text-muted, rgba(128, 128, 128, 0.6)) }
-.dot-card-action--power-off:hover { color: var(--accent, #7c6cff) }
+.dot-card-action--danger:hover { color: var(--dot-danger) }
+.dot-card-action--confirm {
+  color: var(--dot-danger);
+  background: color-mix(in srgb, var(--dot-danger) 14%, transparent);
+}
+/* Кнопка «Разбудить» — главное действие карточки: чуть заметнее остальных */
+.dot-card-action--wake { color: var(--accent, #7c6cff) }
+.dot-card-action--wake:hover {
+  background: color-mix(in srgb, var(--accent, #7c6cff) 16%, transparent);
+  color: var(--accent, #7c6cff);
+}
+.dot-card-action--open {
+  opacity: 1 !important;
+  background: var(--overlay-4, rgba(128, 128, 128, 0.14));
+  color: var(--text-primary, #fff);
+}
+
+/* ── Меню «⋯» карточки: включить/настроить/удалить ── */
+.dot-card-menu-wrap { position: relative }
+
+.dot-card-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 168px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-elevated, var(--bg-secondary, #1e1e24));
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.22));
+  border-radius: 11px;
+  box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.2);
+  animation: dot-card-menu-in 0.14s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: top right;
+}
+
+@keyframes dot-card-menu-in {
+  from { opacity: 0; transform: scale(0.94) translateY(-3px) }
+  to { opacity: 1; transform: scale(1) translateY(0) }
+}
+
+.dot-card-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-secondary, rgba(170, 170, 170, 1));
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+
+.dot-card-menu-item:hover {
+  background: var(--overlay-3, rgba(128, 128, 128, 0.12));
+  color: var(--text-primary, #fff);
+}
+
+.dot-card-menu-item--danger:hover {
+  background: color-mix(in srgb, var(--dot-danger) 12%, transparent);
+  color: var(--dot-danger);
+}
+
+.dot-card-menu-item:focus-visible {
+  outline: 2px solid var(--accent, #7c6cff);
+  outline-offset: -2px;
+}
 
 /* ── Капля-аватар ── */
 .dot-blob {
@@ -1002,7 +1257,7 @@
 }
 
 .dot-wizard-input--invalid {
-  border-color: #ff6b6b;
+  border-color: var(--dot-danger);
 }
 
 .dot-wizard-hint {
@@ -1148,13 +1403,13 @@
 
 .dot-wizard-error {
   font-size: 12px;
-  color: #ff6b6b;
+  color: var(--dot-danger);
 }
 
 /* ── Настройки Dots (поповер) ── */
 .dots-settings {
   position: absolute;
-  top: 46px;
+  top: calc(100% + 8px);
   right: 14px;
   z-index: 100;
   width: 300px;
@@ -1280,8 +1535,8 @@
   line-height: 1.1;
 }
 
-.dot-runs-stat-num--report { color: #39c48f }
-.dot-runs-stat-num--error { color: #ff6b6b }
+.dot-runs-stat-num--report { color: light-dark(#1d9a6c, #39c48f) }
+.dot-runs-stat-num--error { color: var(--dot-danger) }
 
 .dot-runs-stat-label {
   font-size: 9.5px;
@@ -1339,9 +1594,15 @@
   margin-top: 1px;
 }
 
-.dot-run-badge--report { background: rgba(57, 196, 143, 0.15); color: #39c48f }
+.dot-run-badge--report {
+  background: color-mix(in srgb, light-dark(#1d9a6c, #39c48f) 15%, transparent);
+  color: light-dark(#1d9a6c, #39c48f);
+}
 .dot-run-badge--silent { background: var(--overlay-3, rgba(128, 128, 128, 0.12)); color: var(--text-muted, #888) }
-.dot-run-badge--error { background: rgba(255, 107, 107, 0.15); color: #ff6b6b }
+.dot-run-badge--error {
+  background: color-mix(in srgb, var(--dot-danger) 15%, transparent);
+  color: var(--dot-danger);
+}
 .dot-run-badge--running { background: var(--accent-subtle, rgba(127, 127, 127, 0.12)); color: var(--accent, #7c6cff) }
 .dot-run-badge--cancelled { background: var(--overlay-3, rgba(128, 128, 128, 0.12)); color: var(--text-muted, #888) }
 
@@ -1365,6 +1626,15 @@
 
 /* ── Доступность: уважаем prefers-reduced-motion (системная настройка) ── */
 @media (prefers-reduced-motion: reduce) {
+  .dots-page *,
+  .dots-page *::before,
+  .dots-page *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
   .dots-header-live-dot,
   .dot-status-dot--running,
   .dot-card-skeleton-avatar,

@@ -56,6 +56,16 @@ export interface ToolStep {
   callId?: string    // ID tool_call для связи call→result (реконструкция истории)
   /** Имя MCP-сервера для MCP-тулов (mcp__server__tool). undefined для встроенных. */
   serverName?: string
+  /** Native analyze_image lifecycle (основная модель получает пиксели напрямую).
+   *  Исходный tool_result помечается 'pending' — пиксели уже отданы модели, но
+   *  визуальный ответ ещё не пришёл. Позже приходит отдельный tool_result_update
+   *  с тем же callId: 'responded' (ответ получен, findings — текст визуального
+   *  ответа) или 'failed' (визуальный анализ не удался). Персистентный 'pending'
+   *  (прогон остановлен/упал) означает незавершённый анализ. */
+  visualAnalysis?: {
+    status: 'pending' | 'responded' | 'failed'
+    findings?: string
+  }
 }
 
 export interface ReplyTarget {

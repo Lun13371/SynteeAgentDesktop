@@ -14,7 +14,7 @@ import type { Provider, ModelParams, ReasoningOptionSpec } from '../../shared/ty
 import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
 import { chatWithToolsAnthropic } from './anthropicNative'
-import { routeToolImagesToUser } from './toolImageMessages'
+import { routeToolImagesToUser, summarizeImagePayload } from './toolImageMessages'
 import { computeContextSnapshot } from '../tokens/usageTracker'
 import type { ContextCountedInfo } from '../agent/types'
 
@@ -868,6 +868,10 @@ export class AIClient {
       }
     }
 
+    const responseImages = input.reduce((count, item) => count + (Array.isArray(item.content)
+      ? item.content.filter((part: AnyItem) => part.type === 'input_image').length : 0), 0)
+    if (responseImages) log('[vision:send]', { model, api: 'responses', format: 'input_image', images: responseImages })
+
     // 2. Chat-tools → responses-tools (плоский формат)
     const responsesTools = (tools as Array<{ type?: string; function?: { name?: string; description?: string; parameters?: unknown } }>)
       .filter(t => t?.function?.name)
@@ -1065,6 +1069,8 @@ export class AIClient {
     // Срабатывает когда провайдер имеет type='anthropic' или baseUrl=api.anthropic.com.
     // OnlySQ-прокси больше не используется; gateway-провайдер идёт через JWT.
     if (providerInfo && isAnthropicProvider(providerInfo.provider)) {
+      const visualPayload = summarizeImagePayload(messages)
+      if (visualPayload.images) log('[vision:send]', { model, provider: providerInfo.provider.id, api: 'anthropic', format: 'image/source', ...visualPayload })
       const anthropicApiKey = isGateway ? gatewayToken! : providerInfo.apiKey
       const anthropicClient = new Anthropic({
         apiKey: anthropicApiKey,
@@ -1079,7 +1085,17 @@ export class AIClient {
 
     // Native Anthropic above supports images inside tool_result. OpenAI-compatible
     // endpoints require visual input in user messages; keep tool pairs intact.
+    const originalVisualPayload = summarizeImagePayload(messages)
     messages = routeToolImagesToUser(messages)
+    const routedVisualPayload = summarizeImagePayload(messages)
+    if (routedVisualPayload.images !== originalVisualPayload.images) {
+      throw new Error('Visual payload routing lost image blocks; refusing to continue with text only.')
+    }
+    if (routedVisualPayload.images) log('[vision:send]', {
+      model, provider: providerInfo?.provider.id ?? 'default',
+      api: this.usesResponsesApi(model, resolvedRole) ? 'responses' : 'chat-completions',
+      format: 'user/image_url', ...routedVisualPayload,
+    })
 
     // OpenAI-совместимый путь (включая syntee-gateway через JWT)
     let client = providerInfo

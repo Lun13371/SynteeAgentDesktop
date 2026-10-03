@@ -6,7 +6,7 @@ export interface AgentStep {
   // tool_call_pending — модель только начала генерировать этот вызов (имя
   // уже известно, аргументы ещё стримятся) — ранний сигнал для UI, чтобы
   // блок тула появлялся сразу, а не после долгой генерации большого diff/content.
-  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'answer'
+  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'tool_result_update' | 'answer'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -14,6 +14,8 @@ export interface AgentStep {
   imageUrl?: string
   /** Saved raster paths for restoring visual tool results (no base64 in DB). */
   imagePaths?: string[]
+  /** Loading pixels is distinct from receiving the model's next response. */
+  visualAnalysis?: { status: 'pending' | 'responded' | 'failed'; findings?: string }
   diff?: string
   callId?: string
   hidden?: boolean

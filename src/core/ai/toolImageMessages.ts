@@ -7,6 +7,26 @@ export interface ImageContentPart {
   image_url?: { url: string; detail?: string }
 }
 
+/** Metadata only: never expose base64, image URLs, or text to logs. */
+export function summarizeImagePayload(messages: Array<{ role: string; content: string | ImageContentPart[] }>): {
+  images: number; byRole: Record<string, number>; mimeTypes: string[]
+} {
+  let images = 0
+  const byRole: Record<string, number> = {}
+  const mimeTypes = new Set<string>()
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue
+    for (const part of message.content) {
+      if (part.type !== 'image_url' || !part.image_url?.url) continue
+      images++
+      byRole[message.role] = (byRole[message.role] ?? 0) + 1
+      const mime = part.image_url.url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/)?.[1]
+      mimeTypes.add(mime ?? 'remote')
+    }
+  }
+  return { images, byRole, mimeTypes: [...mimeTypes] }
+}
+
 export function routeToolImagesToUser<T extends {
   role: string
   content: string | ImageContentPart[]

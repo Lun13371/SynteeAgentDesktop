@@ -84,6 +84,14 @@ setGatewayTokenRefresher(() => new Promise<string | null>((resolve) => {
   send({ type: 'gateway_token_refresh', replyId })
 }))
 
+// Native analyze_image lifecycle (см. shared/types ToolStep.visualAnalysis).
+// Основная модель получает пиксели напрямую; исходный tool_result помечается
+// 'pending', а отдельный tool_result_update приносит 'responded'/'failed'.
+type VisualAnalysis = {
+  status: 'pending' | 'responded' | 'failed'
+  findings?: string
+}
+
 function send(msg: Record<string, unknown>) {
   parentPort?.postMessage(msg)
 }
@@ -422,6 +430,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 imagePaths: step.imagePaths,
                 diff: (step as { diff?: string }).diff,
                 callId: step.callId,
+                // Native analyze_image: исходный result помечен 'pending' —
+                // пиксели уже отданы основной модели, визуальный ответ ждём
+                // отдельным tool_result_update (persist вместе с шагом).
+                visualAnalysis: (step as { visualAnalysis?: VisualAnalysis }).visualAnalysis,
               }
               collectedSteps.push(ts)
               currentIterSteps.push(ts)
@@ -433,6 +445,41 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               // значение придёт на onContextCounted следующего раунда и
               // onContextUpdate (конец текущего) — обе через единую
               // computeContextSnapshot на актуальном массиве messages.
+
+            } else if ((step as { type: string }).type === 'tool_result_update') {
+              // Native analyze_image: приходит ПОСЛЕ исходного tool_result (в
+              // одном из следующих раундов). НЕ добавляем новый шаг и НЕ
+              // создаём итерацию — обновляем существующий result in-place.
+              // Объект result разделяется по ссылке между collectedSteps,
+              // currentIterSteps и steps уже зафлашенных collectedIters,
+              // поэтому мутация видна во всех местах (дублей не появляется).
+              const upd = step as unknown as {
+                type: string
+                toolName?: string
+                callId?: string
+                content?: string
+                success?: boolean
+                visualAnalysis?: VisualAnalysis
+              }
+              const matches = (s: unknown): boolean => {
+                const t = s as { type?: string; callId?: string; toolName?: string }
+                if (!t || t.type !== 'tool_result') return false
+                if (upd.callId) return t.callId === upd.callId
+                return t.toolName === upd.toolName
+              }
+              const apply = (s: unknown): boolean => {
+                if (!matches(s)) return false
+                const t = s as { content?: string; success?: boolean; visualAnalysis?: VisualAnalysis }
+                if (upd.visualAnalysis) t.visualAnalysis = upd.visualAnalysis
+                if (upd.success !== undefined) t.success = upd.success
+                if (upd.content) t.content = upd.content
+                return true
+              }
+              for (const s of collectedSteps) apply(s)
+              for (const s of currentIterSteps) apply(s)
+              for (const it of collectedIters) for (const s of it.steps) apply(s)
+              // Форвардим в renderer — там immutable-замена по callId.
+              send({ type: 'step', chatId, msgId, step })
 
             } else if (step.type === 'thought') {
               // Fallback — reasoning не стримился, пришёл одним блоком
