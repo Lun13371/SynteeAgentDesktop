@@ -2056,7 +2056,7 @@ const MessageContent = memo(function MessageContent({
                     <ToolChain
                       steps={iter.steps}
                       mode={toolOutputMode}
-                      isRunning={!!isStreaming && isLastIter && (!lastStepIsResult || unfinished)}
+                      isRunning={!!isStreaming && (iter.steps.some(s => s.visualAnalysis?.status === 'pending') || (isLastIter && (!lastStepIsResult || unfinished)))}
                       toolProgress={isLastIter ? toolProgress : undefined}
                     />
                   )}

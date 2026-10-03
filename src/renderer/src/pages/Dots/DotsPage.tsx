@@ -64,6 +64,9 @@ export default function DotsPage() {
   const { selectDot, loadRuns, setSettings, setWizard } = useDotsStore.getState()
 
   const [showSettings, setShowSettings] = useState(false)
+  // Поиск по ленте Dot'ов (имя + задача). Фильтрует ТОЛЬКО список —
+  // сводка в шапке всегда считается по всем Dot'ам.
+  const [query, setQuery] = useState('')
   // Минутный тикер: «через 5 мин»/«3 мин назад» на карточках тикают,
   // а не замирают до следующего DOTS_STATE-события.
   const [, setTick] = useState(0)
@@ -122,12 +125,21 @@ export default function DotsPage() {
     [dots, wizard.dotId],
   )
 
+  // Поиск: фильтруем ленту по имени и задаче. Сводка в шапке — по всем Dot'ам.
+  const filteredDots = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return dots
+    return dots.filter(d =>
+      d.name.toLowerCase().includes(q) || (d.purpose ?? '').toLowerCase().includes(q),
+    )
+  }, [dots, query])
+
   // Группировка: Работают → Спят → Выключены; внутри — по свежести отчёта.
   const groups = useMemo(() => {
     const running: Dot[] = []
     const sleeping: Dot[] = []
     const disabled: Dot[] = []
-    for (const d of dots) {
+    for (const d of filteredDots) {
       if (d.state.status === 'running') running.push(d)
       else if (!d.enabled || d.state.status === 'disabled') disabled.push(d)
       else sleeping.push(d)
@@ -141,7 +153,7 @@ export default function DotsPage() {
       { key: 'sleeping', title: 'Спят', dots: sleeping },
       { key: 'disabled', title: 'Выключены', dots: disabled },
     ].filter(g => g.dots.length > 0)
-  }, [dots])
+  }, [filteredDots])
 
   const runningCount = dots.filter(d => d.state.status === 'running').length
   const sleepingCount = dots.filter(d => d.enabled && d.state.status !== 'running').length
@@ -228,7 +240,10 @@ export default function DotsPage() {
 
   return (
     <div className="dots-page">
-      {/* Шапка: живая сводка вместо сухого счётчика */}
+      {/* Шапка: живая сводка вместо сухого счётчика.
+          .dots-header-zone — relative-обёртка, чтобы поповер настроек
+          прилипал к низу шапки (top:100%) независимо от её высоты. */}
+      <div className="dots-header-zone">
       <div className="dots-header">
         <div className="dots-header-icon">
           <AppIcon name="orbit" size="md" />
@@ -331,74 +346,113 @@ export default function DotsPage() {
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
 
       {/* Тело: список + чат */}
       <div className="dots-body">
-        <div className="dots-list">
-          {/* Skeleton при загрузке */}
-          {!loaded && [0, 1, 2].map(i => (
-            <div key={`sk-${i}`} className="dot-card-skeleton">
-              <div className="dot-card-skeleton-avatar" />
-              <div className="dot-card-skeleton-lines">
-                <div className="dot-card-skeleton-line" style={{ width: '62%' }} />
-                <div className="dot-card-skeleton-line" style={{ width: '88%' }} />
-                <div className="dot-card-skeleton-line" style={{ width: '40%' }} />
-              </div>
-            </div>
-          ))}
-
-          {loaded && dots.length === 0 && (
-            <div className="dots-list-empty">
-              <DotBlob color="#7c6cff" icon="bot" status="sleeping" size={56} />
-              <div className="dots-list-empty-title">Пока пусто</div>
-              <div className="dots-list-empty-text">
-                Создай Dot’а с нуля — или начни с готового шаблона:
-              </div>
-              <div className="dots-templates">
-                {DOT_TEMPLATES.map(t => (
-                  <button
-                    key={t.label}
-                    type="button"
-                    className="dots-template"
-                    onClick={() => setWizard(true, undefined, t)}
-                  >
-                    <AppIcon name={(t.icon ?? 'bot') as 'bot'} size="xs" />
-                    <span>{t.label}</span>
-                  </button>
-                ))}
-              </div>
+        {/* Левая колонка — «мессенджерный» сайдбар: поиск + лента Dot'ов */}
+        <div className="dots-sidebar">
+          {/* Поиск показываем только когда есть что искать */}
+          {dots.length > 0 && (
+            <div className="dots-search">
+              <AppIcon name="search" size="xs" className="dots-search-icon" />
+              <input
+                className="dots-search-input"
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Поиск Dot’ов…"
+                spellCheck={false}
+                aria-label="Поиск Dot’ов"
+              />
+              {query && (
+                <button
+                  type="button"
+                  className="dots-search-clear"
+                  title="Очистить"
+                  onClick={() => setQuery('')}
+                >
+                  <AppIcon name="x" size="xs" />
+                </button>
+              )}
             </div>
           )}
 
-          {groups.map(g => (
-            <motion.div
-              key={g.key}
-              layout
-              className="dots-group"
-              exit={{ opacity: 0, y: -6, transition: { duration: 0.15, ease: 'easeOut' } }}
-            >
-              <div className="dots-group-title">
-                {g.title}
-                <span className="dots-group-count">{g.dots.length}</span>
+          <div className="dots-list">
+            {/* Skeleton при загрузке */}
+            {!loaded && [0, 1, 2].map(i => (
+              <div key={`sk-${i}`} className="dot-card-skeleton">
+                <div className="dot-card-skeleton-avatar" />
+                <div className="dot-card-skeleton-lines">
+                  <div className="dot-card-skeleton-line" style={{ width: '62%' }} />
+                  <div className="dot-card-skeleton-line" style={{ width: '88%' }} />
+                  <div className="dot-card-skeleton-line" style={{ width: '40%' }} />
+                </div>
               </div>
-              <AnimatePresence>
-                {g.dots.map((dot, i) => (
-                  <DotCard
-                    key={dot.id}
-                    dot={dot}
-                    index={i}
-                    selected={dot.id === selectedDotId}
-                    unread={unreadByDot[dot.id] ?? 0}
-                    onSelect={() => selectDot(dot.id)}
-                    onWake={() => handleWake(dot)}
-                    onToggle={() => handleToggle(dot)}
-                    onEdit={() => setWizard(true, dot.id)}
-                    onDelete={() => handleDelete(dot)}
-                  />
-                ))}
-              </AnimatePresence>
-            </motion.div>
-          ))}
+            ))}
+
+            {loaded && dots.length === 0 && (
+              <div className="dots-list-empty">
+                <DotBlob color="#7c6cff" icon="bot" status="sleeping" size={56} />
+                <div className="dots-list-empty-title">Пока пусто</div>
+                <div className="dots-list-empty-text">
+                  Создай Dot’а с нуля — или начни с готового шаблона:
+                </div>
+                <div className="dots-templates">
+                  {DOT_TEMPLATES.map(t => (
+                    <button
+                      key={t.label}
+                      type="button"
+                      className="dots-template"
+                      onClick={() => setWizard(true, undefined, t)}
+                    >
+                      <AppIcon name={(t.icon ?? 'bot') as 'bot'} size="xs" />
+                      <span>{t.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Есть Dot'ы, но поиск ничего не нашёл */}
+            {loaded && dots.length > 0 && filteredDots.length === 0 && (
+              <div className="dots-list-nores">
+                <AppIcon name="search" size="lg" className="dots-list-nores-icon" />
+                <div className="dots-list-nores-title">Ничего не найдено</div>
+                <div className="dots-list-nores-text">Попробуй другое имя или задачу</div>
+              </div>
+            )}
+
+            {groups.map(g => (
+              <motion.div
+                key={g.key}
+                layout
+                className="dots-group"
+                exit={{ opacity: 0, y: -6, transition: { duration: 0.15, ease: 'easeOut' } }}
+              >
+                <div className="dots-group-title">
+                  {g.title}
+                  <span className="dots-group-count">{g.dots.length}</span>
+                </div>
+                <AnimatePresence>
+                  {g.dots.map((dot, i) => (
+                    <DotCard
+                      key={dot.id}
+                      dot={dot}
+                      index={i}
+                      selected={dot.id === selectedDotId}
+                      unread={unreadByDot[dot.id] ?? 0}
+                      onSelect={() => selectDot(dot.id)}
+                      onWake={() => handleWake(dot)}
+                      onToggle={() => handleToggle(dot)}
+                      onEdit={() => setWizard(true, dot.id)}
+                      onDelete={() => handleDelete(dot)}
+                    />
+                  ))}
+                </AnimatePresence>
+              </motion.div>
+            ))}
+          </div>
         </div>
 
         {/* Правая панель: чат выбранного Dot'а ↔ пустое состояние.

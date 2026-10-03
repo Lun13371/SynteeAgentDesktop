@@ -2,6 +2,7 @@
 import { AIClient } from '../ai/AIClient'
 import { agentModelSupportsVision } from '../ai/visionSupport'
 import { hydrateToolImageContent } from '../ai/toolImageHistory'
+import { NativeImageAnalysis } from './nativeImageAnalysis'
 import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, normalizeCommandKey } from './commandSafety'
 import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, isWebSourceTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
 import type { ProjectPermissionOverride, ApprovalAllowlistEntry, AllowScope } from '../../shared/types'
@@ -398,11 +399,25 @@ export class Agent {
     // раундов подряд останавливаемся с onError.
     let consecutiveErrors = 0
     const MAX_CONSECUTIVE_ERRORS = 3
+    const nativeImageAnalysis = new NativeImageAnalysis()
+    const runCallbacks = callbacks
+    callbacks = {
+      ...runCallbacks,
+      onDone: (answer, details) => {
+        nativeImageAnalysis.fail('Визуальный анализ прерван: ответ модели не получен.', runCallbacks.onStep)
+        runCallbacks.onDone(answer, details)
+      },
+      onError: (error) => {
+        nativeImageAnalysis.fail(`Визуальный анализ не завершён: ${error.message}`, runCallbacks.onStep)
+        runCallbacks.onError(error)
+      },
+    }
     // Visual tool results are adapted by AIClient for each API. Never remove
     // pixels on a 400: that could turn a failed analysis into a false success.
 
     for (let step = 0; ; step++) {
       if (signal?.aborted) {
+        nativeImageAnalysis.fail('Визуальный анализ остановлен до получения ответа модели.', callbacks.onStep)
         callbacks.onDone('')
         return
       }
@@ -515,6 +530,7 @@ export class Agent {
 
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
+          nativeImageAnalysis.respond(this.toolDispatcher.maskSecretValuesInText(answer), false, callbacks.onStep)
           console.log('[Agent] no tool_calls: answer=%d chars, reasoning=%s', answer.length, response.reasoning ? `${response.reasoning.length} chars` : 'none')
 
           // ── Защита от пустого ответа после reasoning ──
@@ -604,6 +620,7 @@ export class Agent {
           return
         }
 
+        nativeImageAnalysis.respond(this.toolDispatcher.maskSecretValuesInText(response.content || ''), true, callbacks.onStep)
         messages.push({
           role: 'assistant',
           content: response.content || '',
@@ -1340,6 +1357,9 @@ export class Agent {
             }
           }
 
+          const nativeVisualHandoff = fn.name === 'analyze_image' && result.success && !!result.imageParts?.length
+          const visibleToolContent = imageUrl ? 'Изображение сгенерировано' : this.toolDispatcher.maskSecretValuesInText(result.output || result.error || '')
+          if (nativeVisualHandoff) nativeImageAnalysis.add(callId, visibleToolContent, result.imagePaths)
           callbacks.onStep({
             type: 'tool_result',
             toolName: fn.name,
@@ -1347,8 +1367,9 @@ export class Agent {
             // обратно в контекст модели на следующих ходах
             // (chatContextHelpers.messageToContextMessages). Маскируем ЗДЕСЬ,
             // иначе история возвращает модели сырые значения секретов.
-            content: imageUrl ? 'Изображение сгенерировано' : this.toolDispatcher.maskSecretValuesInText(result.output || result.error || ''),
+            content: visibleToolContent,
             success: result.success,
+            ...(nativeVisualHandoff ? { visualAnalysis: { status: 'pending' as const } } : {}),
             imageUrl,
             imagePaths: result.imagePaths,
             diff: (result as { diff?: string }).diff,
@@ -1415,6 +1436,11 @@ export class Agent {
           })
         }
 
+        if (nativeImageAnalysis.size) {
+          // Only after ALL paired tool results: never interrupt call/result groups.
+          messages.push({ role: 'user', content: nativeImageAnalysis.instruction() })
+        }
+
         if (autoMemoryInterval > 0 && (step + 1) % autoMemoryInterval === 0) {
           flushWorkingMemory(`Intermediate progress after ${step + 1} agent steps`)
         }
@@ -1461,6 +1487,7 @@ export class Agent {
           (error?.message ?? String(err)).slice(0, 200),
           consecutiveErrors + 1, MAX_CONSECUTIVE_ERRORS)
         if (error?.name === 'AbortError' || signal?.aborted) {
+          nativeImageAnalysis.fail('Визуальный анализ остановлен до получения ответа модели.', callbacks.onStep)
           callbacks.onDone('')
           return
         }

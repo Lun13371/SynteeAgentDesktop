@@ -2322,7 +2322,21 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // onToolCallStarted), заменяется настоящим tool_call через
           // pendingCallId матчинг на фронтенде. Не персистим в bufferedSteps —
           // иначе попал бы в БД как "фантомный" шаг (зеркало ai-worker.ts:273-280).
-          if (rawStep.type !== 'tool_call_pending') {
+          if (rawStep.type === 'tool_result_update') {
+            // Mirror the worker's in-place update for checkpoints/Stop/quit paths.
+            // Never persist an update event as a new tool result/iteration.
+            const apply = (saved: unknown) => {
+              const result = saved as Record<string, unknown>
+              if (result.type !== 'tool_result' || !rawStep.callId || result.callId !== rawStep.callId) return
+              if (rawStep.visualAnalysis) result.visualAnalysis = rawStep.visualAnalysis
+              if (rawStep.imagePaths) result.imagePaths = rawStep.imagePaths
+              if (rawStep.success !== undefined) result.success = rawStep.success
+            }
+            run.bufferedSteps.forEach(apply)
+            run.currentIterSteps.forEach(apply)
+            run.closedIters.forEach(iter => (iter as { steps: unknown[] }).steps.forEach(apply))
+            run.checkpointDirty = true
+          } else if (rawStep.type !== 'tool_call_pending') {
             // Полноценный ToolStep (с id/timestamp) — раньше в bufferedSteps
             // попадал сырой step без id/timestamp, что ломало React-ключи в
             // ToolChain и было неконсистентно с ts-объектами воркера.
@@ -2335,6 +2349,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               success: rawStep.success,
               timestamp: Date.now(),
               imageUrl: rawStep.imageUrl,
+              imagePaths: rawStep.imagePaths,
+              visualAnalysis: rawStep.visualAnalysis,
               diff: rawStep.diff,
               callId: rawStep.callId,
               pendingCallId: rawStep.pendingCallId,
