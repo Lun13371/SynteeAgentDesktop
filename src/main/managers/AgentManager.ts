@@ -26,6 +26,46 @@ import { getNotificationManager } from './NotificationManager'
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
 /**
+ * §roles — резолвит эффективную модель+провайдера для суб-агента.
+ *
+ * Приоритет: role-specific (`subagent:<id>`) > явный/унаследованный opts.model
+ * > generic `subagent` > `main`. Пустой modelId в назначении = «не
+ * переопределять» (уровень пропускается). Возвращает undefined, если ни один
+ * уровень не задаёт модель — тогда AIClient сам упадёт на 'main'.
+ */
+function resolveSubagentModelAssignment(
+  assignments: Array<{ role: string; modelId: string; providerId: string }> | undefined,
+  roleId: string,
+  explicitModel?: string,
+): { modelId: string; providerId: string } | undefined {
+  const list = assignments ?? []
+  const find = (role: string): { role: string; modelId: string; providerId: string } | undefined =>
+    list.find(a => a.role === role)
+
+  const roleSpecific = find(`subagent:${roleId}`)
+  const generic = find('subagent')
+  const main = find('main')
+
+  // Уровень, задавший модель: role-specific > opts.model > generic > main.
+  // Пустой modelId = «не переопределять» (уровень пропускается).
+  const chosen = roleSpecific?.modelId
+    ? roleSpecific
+    : explicitModel
+      ? { role: '', modelId: explicitModel, providerId: '' }
+      : generic?.modelId
+        ? generic
+        : main?.modelId
+          ? main
+          : undefined
+
+  if (!chosen) return undefined
+
+  // Провайдера берём у выбранного уровня; если пуст — наследуем generic/main.
+  const providerId = chosen.providerId || generic?.providerId || main?.providerId || ''
+  return { modelId: chosen.modelId, providerId }
+}
+
+/**
  * Режим изоляции файлов суб-агента.
  * - 'none'     — писать в workdir родителя (shared). Sequential суб-агент видит
  *                WIP родителя; безопасно только при отсутствии параллелизма.
@@ -411,19 +451,35 @@ class AgentManager {
       return { summary: '', error: `Достигнут лимит параллельных агентов (${maxParallel}). Подождите завершения текущих.` }
     }
 
-    const model = opts.model ||
-      (opts.storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
-        ?.find(a => a.role === 'subagent')?.modelId ||
-      (opts.storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
-        ?.find(a => a.role === 'main')?.modelId ||
-      'claude-sonnet-4-6'
+    // §roles — роль резолвится ДО модели: role-specific назначение
+    // `subagent:<id>` приоритетнее opts.model / generic subagent / main.
+    const roleDef = getSubagentRole(opts.role)
+    const resolvedAssignment = resolveSubagentModelAssignment(
+      opts.storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined,
+      roleDef.id,
+      opts.model,
+    )
+    const model = resolvedAssignment?.modelId || ''
+
+    // §roles — прокидываем резолвленное назначение в storeData суб-агента под
+    // ключом 'subagent': именно его читают AIClient (getModel /
+    // getProviderInfoForRole) и getModelContextWindow(storeData, 'subagent').
+    // Копируем storeData/assignments, чтобы не мутировать родительский прогон.
+    const parentAssignments =
+      (opts.storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
+    const subStoreData: Record<string, unknown> = {
+      ...opts.storeData,
+      modelAssignments: [
+        ...parentAssignments.filter(a => a.role !== 'subagent'),
+        ...(resolvedAssignment ? [{ role: 'subagent', ...resolvedAssignment }] : []),
+      ],
+    }
 
     // Резолвим режим изоляции синхронно — в той же секции, что и agents.set,
     // чтобы getRunningCountByWorkdir был атомарным с регистрацией записи.
     // isGitRepo проверяется позже в _runWorker (асинхронно); если не-git —
     // fallback на 'none' там.
     const workdir = opts.context?.workdir
-    const roleDef = getSubagentRole(opts.role)
     // Isolation: явный override > context > role default > 'auto'.
     // Read-only роли (researcher/deep-researcher/reviewer) → 'none' (безопасно),
     // пишущие (editor/implementer) → 'worktree' (защита от гонок).
@@ -449,14 +505,14 @@ class AgentManager {
       createdAt: Date.now(),
       workdir,
       isolationMode,
-      role: opts.role ?? 'implementer',
+      role: roleDef.id,
     }
 
     this.agents.set(opts.id, record)
     this.persist(record)
     this.broadcast('agent:update', record)
 
-    return this._runWorker(record, opts.storeData, opts.context, opts.approvalMode)
+    return this._runWorker(record, subStoreData, opts.context, opts.approvalMode)
   }
 
   private async _runWorker(
@@ -518,9 +574,23 @@ class AgentManager {
     // Токен для воркера — с авто-refresh (сам воркер рефрешить не может:
     // electron-store/tokenStore в worker_threads недоступны).
     const gatewayToken = await getGatewayAuthToken().catch(() => getAccessToken())
+    if (record.status === 'cancelled') return { summary: '', error: 'Суб-агент отменен пользователем' }
 
-    return new Promise((resolve) => {
+    return new Promise((resolvePromise) => {
       const workerPath = join(__dirname, 'ai-worker.js')
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+      const pendingRequests = new Map<string, 'confirm' | 'question'>()
+      const resolve = (result: { summary: string; error?: string }) => {
+        if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = undefined }
+        this.resolvers.delete(record.id)
+        for (const [reqId, kind] of pendingRequests) {
+          if (kind === 'confirm') confirmCallbacks.delete(reqId)
+          else questionCallbacks.delete(reqId)
+          ipcMain.removeAllListeners(`agent:${kind}:response:${reqId}`)
+        }
+        pendingRequests.clear()
+        resolvePromise(result)
+      }
       this.resolvers.set(record.id, resolve)
 
       let worker: Worker
@@ -559,22 +629,44 @@ class AgentManager {
 
       record.status = 'running'
       this.workers.set(record.id, worker)
+      // A parent turn must not wait forever for a delegated job. This is an
+      // outer safety net; individual tools and the worker still have their
+      // own timeouts. Keep it long enough for genuine implementation tasks.
+      timeoutTimer = setTimeout(() => {
+        if (record.status !== 'running') return
+        record.status = 'error'
+        record.error = 'Суб-агент превысил общий лимит времени (60 минут)'
+        record.finishedAt = Date.now()
+        void worker.terminate().then(async () => {
+          record.summary = buildSubagentSummary(record.result.trim(), undefined)
+          if (record.worktreeInfo && record.workdir) await this.finalizeWorktreeOnError(record)
+        }).catch(() => {
+          if (record.worktreeInfo) record.summary += `\nWorktree сохранён: ${record.worktreeInfo.worktreePath}`
+        }).finally(() => {
+          this.workers.delete(record.id)
+          this.persistNow(record)
+          this.broadcast('agent:update', record)
+          resolve({ summary: record.summary, error: record.error })
+        })
+      }, 60 * 60 * 1000)
       this.persist(record)
       this.broadcast('agent:update', record)
 
-      const agentSettings = (storeData.agentSettings as Record<string, unknown> | undefined) ?? {
-        maxSteps: 20,
-        approvalMode: 'auto',
-        toolOutputMode: 'normal',
-        enableThinking: false,
+      const agentSettings: Record<string, unknown> = {
+        approvalMode: 'auto', toolOutputMode: 'normal', enableThinking: false,
+        ...((storeData.agentSettings as Record<string, unknown> | undefined) ?? {}),
       }
       // §1.10 — позволяем суб-агенту иметь свой approval режим
       if (approvalModeOverride) {
         agentSettings.approvalMode = approvalModeOverride
       }
-      // §roles — maxSteps: единый потолок 1024 для всех ролей (как у main agent).
-      // Раньше был per-role лимит, но это искусственно ограничивало суб-агентов.
-      agentSettings.maxSteps = 1024
+      // §roles — keep sub-agent runs bounded. The previous hard-coded 1024
+      // made a delegation potentially run for a very long time. Respect an
+      // explicit setting, otherwise use a practical default for one-shot work.
+      const configuredMaxSteps = Number(agentSettings.subagentMaxSteps)
+      agentSettings.maxSteps = Number.isFinite(configuredMaxSteps) && configuredMaxSteps > 0
+        ? Math.min(1024, Math.floor(configuredMaxSteps))
+        : 256
       // §roles — tool filtering: отдаём только тулы из role allowlist.
       // Пустой allowlist (implementer) = полный набор (обратная совместимость).
       // MCP tools (префикс mcp__) всегда проходят.
@@ -583,12 +675,13 @@ class AgentManager {
       // вложенных саб-агентов — только основной агент имеет этот тул.
       // manage_dots тоже: round-trip идёт через message-handler основного
       // чат-воркера, которого у саб-агента нет — тул бы завис.
-      const NO_NESTED_TOOLS = new Set(['spawn_agent', 'get_agent_status', 'manage_dots'])
+      const NO_NESTED_TOOLS = new Set(['spawn_agent', 'get_agent_status', 'manage_dots', 'manage_chats', 'get_main_chat_messages'])
       const fullSchemas = getToolSchemas({ mode: record.mode })
       const effectiveToolSchemas = (roleDef.allowedTools.length > 0
         ? fullSchemas.filter(s => {
             const name = (s as { function: { name: string } }).function.name
-            return name.startsWith('mcp__') || roleDef.allowedTools.includes(name)
+            // Unknown external tools cannot safely bypass a read-only role.
+            return roleDef.allowedTools.includes(name)
           })
         : fullSchemas
       ).filter(s => !NO_NESTED_TOOLS.has((s as { function: { name: string } }).function.name))
@@ -609,7 +702,7 @@ class AgentManager {
 Не включай рассуждения, только результат.`
       // §roles — fallback systemPrompt с role injection (когда context?.systemPrompt
       // не передан, т.е. chat.ipc.ts не сформировал промпт).
-      const fallbackRoleInjection = roleDef.id !== 'implementer' ? `\n${roleDef.systemPromptInjection}\n` : ''
+      const fallbackRoleInjection = `\n${roleDef.systemPromptInjection}\n`
       const fallbackRoleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''
       const fallbackSystemPrompt = `Ты суб-агент${fallbackRoleLabel}. Твоя задача: ${record.task}
 
@@ -633,9 +726,15 @@ ${subModeOutro}`
         workingMemory: context?.workingMemory ?? '',
         toolSchemas: effectiveToolSchemas,
         subagentRole,
+        // §roles — резолвленная модель/провайдер суб-агента: используется
+        // воркером для учёта стоимости сессии (recordSessionCost).
+        modelId: record.model || undefined,
+        providerId: (storeData.modelAssignments as Array<{ role: string; providerId: string }> | undefined)
+          ?.find(a => a.role === 'subagent')?.providerId || undefined,
       })
 
       worker.on('message', (msg: Record<string, unknown>) => {
+        if (record.status !== 'running') return
         switch (msg.type) {
           // Worker поймал 401 от gateway и просит свежий JWT (сам рефрешить
           // не может — electron-store в worker недоступен). Отвечаем токеном
@@ -712,6 +811,7 @@ ${subModeOutro}`
             break
           }
           case 'done': {
+            if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = undefined }
             // Персистим round-robin индекс ключей провайдера, обновлённый суб-агентом
             if (msg.updatedProviders && this.store) {
               this.store.set('providers', msg.updatedProviders)
@@ -720,9 +820,7 @@ ${subModeOutro}`
             if (msg.fileCacheUpdates) {
               mergeFileCache(record.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
             }
-            // §изоляция — фиксируем факт cancel до перезаписи status. Если cancel
-            // уже discard'нул worktree, merge не запускаем (race: terminate → 'done').
-            const wasCancelled = record.status === 'cancelled'
+            // Cancelled/timed-out workers are filtered at the message boundary.
             record.status = 'done'
             record.finishedAt = Date.now()
             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
@@ -734,7 +832,7 @@ ${subModeOutro}`
             this.resolvers.delete(record.id)
             // §изоляция — merge-back worktree в родительский workdir (сериализованно
             // per workdir). Отменённый суб-агент уже discard'нут cancel() — не трогаем.
-            if (record.worktreeInfo && record.workdir && !wasCancelled) {
+            if (record.worktreeInfo && record.workdir) {
               ;(async () => {
                 try {
                   const mergeResult = await this.serializedMerge(record.workdir!, record.worktreeInfo!)
@@ -760,8 +858,9 @@ ${subModeOutro}`
              }
              break
            }
-            case 'error': {
-             // Персистим round-robin если суб-агент успел его обновить перед ошибкой
+             case 'error': {
+              if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = undefined }
+              // Персистим round-robin если суб-агент успел его обновить перед ошибкой
              if (msg.updatedProviders && this.store) {
                this.store.set('providers', msg.updatedProviders)
              }
@@ -804,7 +903,11 @@ ${subModeOutro}`
           // висит вечно → суб-агент зависает на await onConfirm.
           case 'confirm': {
             const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
+            pendingRequests.set(reqId, 'confirm')
             confirmCallbacks.set(reqId, (approved: boolean, always?: string) => {
+              pendingRequests.delete(reqId)
+              ipcMain.removeAllListeners(`agent:confirm:response:${reqId}`)
+              if (record.status !== 'running') return
               worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always })
             })
             ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean, always?: string) => {
@@ -844,7 +947,11 @@ ${subModeOutro}`
           case 'question': {
             const reqId = msg.reqId as string
             const questions = msg.questions as import('../../shared/types').QuestionSpec[]
+            pendingRequests.set(reqId, 'question')
             questionCallbacks.set(reqId, (answers: import('../../shared/types').QuestionAnswer[]) => {
+              pendingRequests.delete(reqId)
+              ipcMain.removeAllListeners(`agent:question:response:${reqId}`)
+              if (record.status !== 'running') return
               worker.postMessage({ type: 'question_reply', replyId: `question-reply-${reqId}`, answers })
             })
             ipcMain.once(`agent:question:response:${reqId}`, (_e, answers: import('../../shared/types').QuestionAnswer[]) => {
@@ -986,6 +1093,9 @@ ${subModeOutro}`
       })
 
       worker.on('error', (e) => {
+        if (record.status !== 'running') return
+        if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = undefined }
+        record.summary = buildSubagentSummary(record.result.trim(), undefined)
         record.status = 'error'
         record.error = e.message
         record.finishedAt = Date.now()
@@ -1009,6 +1119,7 @@ ${subModeOutro}`
 
       worker.on('exit', (code) => {
         if (record.status === 'running') {
+          if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = undefined }
           record.status = code === 0 ? 'done' : 'error'
           record.error = code !== 0 ? `Worker завершился с кодом ${code}` : undefined
           record.finishedAt = Date.now()
@@ -1040,6 +1151,7 @@ ${subModeOutro}`
       this.workers.delete(id)
     }
     if (record) {
+      // The outer timeout also checks status, so cancellation is idempotent.
       record.status = 'cancelled'
       record.finishedAt = Date.now()
       this.persistNow(record)

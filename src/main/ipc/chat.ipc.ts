@@ -2608,7 +2608,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 - Используй минимальное количество tool calls. Не повторяй уже сделанные действия.
 - Не читай файлы «для полноты картины» — только те, что нужны для задачи.
 - Как только задача выполнена — сразу давай финальный ответ, не продолжай исследовать.`
-            const subModeOutro = `Финальный ответ дай кратко (максимум 15 строк):
+            const subModeOutro = `Финальный ответ дай по существу, без искусственного ограничения длины:
 - что найдено или сделано
 - какие файлы важны (пути + ключевые строки)
 - какие есть риски или следующий шаг
@@ -2616,7 +2616,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             // §roles — role injection в system prompt суб-агента
             const roleDef = getSubagentRole(msg.role as string | undefined)
             const roleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''
-            const roleInjection = roleDef.id !== 'implementer' ? `\n${roleDef.systemPromptInjection}\n` : ''
+            // Every role, including the default implementer, must receive its
+            // specialized instructions. Previously implementer was omitted,
+            // making its role prompt effectively dead code.
             const spawnResult = await agentManager.spawn({
               id: msg.id as string,
               parentId: msg.msgId as string,
@@ -2630,8 +2632,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               storeData,
               context: {
                 systemPrompt: `Ты суб-агент${roleLabel}. Твоя задача: ${msg.task as string}
-${roleInjection}
-Контекст родителя:
+\n${roleDef.systemPromptInjection}
+\nКонтекст родителя:
 ${parentSummary ? `${parentSummary}\n\n` : ''}${parentWorkingMemory ? `Рабочая память:\n${parentWorkingMemory}` : 'Рабочая память отсутствует.'}
 
 ${subModeIntro}
