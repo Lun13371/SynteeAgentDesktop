@@ -1,5 +1,7 @@
 // ── AI Providers & Models ───────────────────────────────────────────────
 
+import type { SubagentRoleId } from '../subagent-roles'
+
 export type ProviderType =
   | 'openai' | 'anthropic' | 'google' | 'groq' | 'cerebras' | 'mistral'
   | 'ollama' | 'cohere' | 'together' | 'fireworks' | 'deepseek'
@@ -74,7 +76,10 @@ export type ModelRole =
   | 'embedding'   // векторный поиск / память
   | 'memory'      // анализ памяти
   | 'summary'     // авто-заголовки чатов
-  | 'subagent'    // суб-агенты
+  | 'subagent'    // суб-агенты (generic fallback)
+  // Per-subagent-role overrides: `subagent:researcher`, `subagent:editor`, ...
+  // Пустой modelId в назначении = «не переопределять» (наследуется generic/main).
+  | `subagent:${SubagentRoleId}`
 
 export interface ModelAssignment {
   role: ModelRole

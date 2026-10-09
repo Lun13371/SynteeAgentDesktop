@@ -270,8 +270,11 @@ export class Agent {
     toolSchemas?: typeof TOOL_SCHEMAS,
     options?: AgentRuntimeOptions
   ): Promise<void> {
-    const EFFECTIVE_MAX_STEPS = 1024
-    void maxSteps
+    // Preserve the main agent's existing ceiling; only delegated jobs use
+    // the caller's bounded budget. Never let NaN/Infinity disable the limit.
+    const EFFECTIVE_MAX_STEPS = this.role === 'subagent'
+      ? (Number.isFinite(maxSteps) ? Math.max(1, Math.min(1024, Math.floor(maxSteps))) : 256)
+      : 1024
     const supportsVision = agentModelSupportsVision(this.store, this.role)
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt || FALLBACK_SYSTEM_PROMPT },

@@ -15,6 +15,7 @@ import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
 import { chatWithToolsAnthropic } from './anthropicNative'
 import { routeToolImagesToUser, summarizeImagePayload } from './toolImageMessages'
+import { repairToolCallHistory } from './toolCallHistory'
 import { computeContextSnapshot } from '../tokens/usageTracker'
 import type { ContextCountedInfo } from '../agent/types'
 
@@ -994,6 +995,9 @@ export class AIClient {
     // Agent.ts матчит этот ранний сигнал с финальным tool_call.
     onToolCallStarted?: (index: number, toolName: string) => void,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean; thinking_blocks?: Array<{ thinking: string; signature: string }> }> {
+    // Slicing inherited history/compaction may leave orphan tool outputs.
+    // Repair before both API paths, including gateways converting to Responses.
+    messages = repairToolCallHistory(messages)
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'

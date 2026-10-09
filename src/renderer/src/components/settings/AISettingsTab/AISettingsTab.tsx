@@ -10,7 +10,17 @@ import { useGatewayModelsStore } from '../../../store/gatewayModels.store'
 import { whileHoverBtn, whileTapBtn, whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverWide, whileTapWide, springHover } from '../../../utils/motionPresets'
 import './AISettingsTab.css'
 
-const ROLE_META: Record<ModelRole, { label: string; desc: string; icon: string; filterCaps?: ModelCapability[] }> = {
+type BaseModelRole = Exclude<ModelRole, `subagent:${string}`>
+
+const SUBAGENT_MODEL_META = [
+  { id: 'researcher', label: 'Исследователь', desc: 'Изучение кода и файлов без изменений' },
+  { id: 'deep-researcher', label: 'Глубокий исследователь', desc: 'Исследование кода, поиск в интернете и документации' },
+  { id: 'editor', label: 'Редактор', desc: 'Изменение файлов без запуска команд' },
+  { id: 'implementer', label: 'Исполнитель', desc: 'Полная реализация: файлы, команды и тесты' },
+  { id: 'reviewer', label: 'Ревьюер', desc: 'Проверка кода, поиск ошибок и рисков' },
+] as const
+
+const ROLE_META: Record<BaseModelRole, { label: string; desc: string; icon: string; filterCaps?: ModelCapability[] }> = {
   main:        { label: 'Основной чат',     desc: 'Для всех сообщений в чате',        icon: 'bot' },
   fast:        { label: 'Быстрые ответы',   desc: 'Автоназвания, короткие задачи',    icon: 'zap' },
   fastContext: { label: 'Быстрый контекст', desc: 'Tree-sitter retrieval + LLM сборка контекста по проекту', icon: 'compass', filterCaps: ['tools', 'code'] },
@@ -31,6 +41,7 @@ export default function AISettingsTab() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [allModels, setAllModels] = useState<ModelMeta[]>([])
   const [assignments, setAssignments] = useState<ModelAssignment[]>([])
+  const [subagentModelsOpen, setSubagentModelsOpen] = useState(false)
   const [params, setParams] = useState<ModelParams>({ systemPrompt: '', streaming: true, anonymousUserAgent: false })
   const [configuring, setConfiguring] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<Partial<Provider>>({})
@@ -592,13 +603,13 @@ export default function AISettingsTab() {
         <div className="ai-assignments">
           <p className="ai-assignments-hint">Назначьте модели для каждой роли. Модели берутся из настроенных провайдеров.</p>
           <div className="ai-assignments-grid">
-            {(Object.keys(ROLE_META) as ModelRole[]).map((role, i) => {
+            {(Object.keys(ROLE_META) as BaseModelRole[]).map((role, i) => {
               const meta = ROLE_META[role]
               const current = assignments.find(a => a.role === role)
               return (
                 <motion.div
                   key={role}
-                  className="assignment-row glass"
+                  className={`assignment-row glass${role === 'subagent' ? ' assignment-row--subagent' : ''}`}
                   initial={{ opacity: 0, y: 16 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ type: 'spring', stiffness: 380, damping: 28, delay: i * 0.04 }}
@@ -622,10 +633,65 @@ export default function AISettingsTab() {
                       sharedProviders={providers}
                     />
                   </div>
+                  {role === 'subagent' && (
+                    <div className="subagent-inline-settings">
+                      <button
+                        type="button"
+                        className="subagent-inline-summary"
+                        aria-expanded={subagentModelsOpen}
+                        aria-controls="subagent-model-options"
+                        onClick={() => setSubagentModelsOpen(open => !open)}
+                      >
+                        <AppIcon name="settings" size="xs" tone="accent" />
+                        <span className="subagent-inline-summary-label">Модели по типам суб-агентов</span>
+                        <AppIcon name="chevronDown" size="xs" className="subagent-models-chevron" />
+                      </button>
+                      <AnimatePresence initial={false}>
+                        {subagentModelsOpen && (
+                          <motion.div
+                            id="subagent-model-options"
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+                            style={{ overflow: 'hidden' }}
+                          >
+                      <div className="subagent-models-body">
+                        <p className="ai-assignments-hint">Если модель не выбрана отдельно, используется общая модель суб-агентов.</p>
+                        {SUBAGENT_MODEL_META.map(meta => {
+                          const subRole: ModelRole = `subagent:${meta.id}`
+                          const subCurrent = assignments.find(a => a.role === subRole)
+                          return (
+                            <div key={subRole} className="subagent-model-row">
+                              <div className="subagent-role-info">
+                                <div className="assignment-label">{meta.label}</div>
+                                <div className="assignment-desc">{meta.desc}</div>
+                              </div>
+                              <div className="assignment-picker">
+                                <ModelPicker
+                                  value={subCurrent?.modelId || ''}
+                                  providerId={subCurrent?.providerId || ''}
+                                  onChange={(modelId, pid) => setAssignment(subRole, modelId, pid)}
+                                  placeholder="Общая модель суб-агентов"
+                                  sharedModels={allModels}
+                                  sharedProviders={providers}
+                                />
+                                {subCurrent?.modelId && <button className="subagent-model-reset" onClick={() => setAssignment(subRole, '', '')}>Сбросить</button>}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
                 </motion.div>
               )
             })}
           </div>
+
 
           {/* ── Генерация изображений ── */}
           <motion.div
