@@ -1,6 +1,7 @@
 // ── Tool schemas barrel: combines all domain schemas + helpers ──────────
 
 import type { McpToolRuntime, PluginToolRuntime } from '../../../shared/types'
+import { filterToolSchemas, type ToolSettings } from '../../../shared/toolSettings'
 import { isReadonlyPersona, getPersonaAllowedTools } from '../../../shared/modes'
 import { READ_TOOL_SCHEMAS } from './read'
 import { EDIT_TOOL_SCHEMAS } from './edit'
@@ -11,6 +12,7 @@ import { PLAN_TOOL_SCHEMAS } from './plan'
 import { MEMORY_TOOL_SCHEMAS } from './memory'
 import { EXTENSIONS_TOOL_SCHEMAS } from './extensions'
 import { VISION_TOOL_SCHEMAS } from './vision'
+import { MEDIA_TOOL_SCHEMAS } from './media'
 import { DOTS_TOOL_SCHEMAS } from './dots'
 import { CHAT_TOOL_SCHEMAS } from './chats'
 import { BROWSER_TOOL_SCHEMAS, REQUEST_ACCESS_SCHEMA } from './browser'
@@ -25,6 +27,7 @@ export const TOOL_SCHEMAS = [
   ...MEMORY_TOOL_SCHEMAS,
   ...EXTENSIONS_TOOL_SCHEMAS,
   ...VISION_TOOL_SCHEMAS,
+  ...MEDIA_TOOL_SCHEMAS,
   ...DOTS_TOOL_SCHEMAS,
   ...CHAT_TOOL_SCHEMAS,
   ...BROWSER_TOOL_SCHEMAS,
@@ -44,7 +47,7 @@ function pickTools(names: string[]) {
     .filter((schema): schema is NonNullable<typeof schema> => schema !== undefined)
 }
 
-export function getToolSchemas(options: {
+export function getToolSchemas(options: Partial<ToolSettings> & {
   planningMode?: boolean
   askMode?: boolean
   webMode?: boolean
@@ -123,6 +126,8 @@ export function getToolSchemas(options: {
     // a vision-capable main model, or described by the auxiliary vision
     // model — the same routing as chat attachments.
     'analyze_image',
+    'analyze_video',
+    'analyze_audio',
     'spawn_agent',
     'get_agent_status',
     'manage_chats',
@@ -202,7 +207,11 @@ export function getToolSchemas(options: {
   void webMode
   void multiAgentMode
 
-  const schemas = pickTools(names)
+  // Subtract only AFTER mode/persona/access gating. Never restore restricted core tools.
+  const schemas = filterToolSchemas(pickTools(names), {
+    customToolsEnabled: options.customToolsEnabled === true,
+    disabledTools: options.disabledTools ?? [],
+  })
 
   // MCP tools — convert to OpenAI function schema and append.
   // Name: mcp__{serverName}__{toolName}, description from the MCP server.

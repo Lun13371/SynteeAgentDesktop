@@ -20,6 +20,29 @@
 
 import type { ProjectInstructions } from './projectInstructions'
 import type { Skill, PluginPromptInfo } from '../../shared/types'
+import { isToolDisabled, type ToolSettings } from '../../shared/toolSettings'
+
+/** Strip only built-in tool guidance, never project/skill/plugin instructions. */
+export function sanitizeToolInstructions(prompt: string, settings: ToolSettings): string {
+  const disabled = settings.disabledTools.filter(name => isToolDisabled(name, settings))
+  if (!disabled.length) return prompt
+  const mentionsDisabled = (text: string) => {
+    const tokens = new Set(text.split(/[^a-zA-Z0-9_]+/))
+    return disabled.some(name => tokens.has(name))
+  }
+  const guidanceSections = /^(Tools|Long-term memory|Sub-agents|Sub-agent roles|Large and ambiguous tasks|Browser control)/
+  const sections = prompt.split(/(?=^## )/m)
+  const cleaned = sections.map(section => {
+    const heading = section.match(/^## (.+)/)?.[1] ?? ''
+    if (!guidanceSections.test(heading)) return section
+    if (!mentionsDisabled(section)) return section
+    // Tool-specific sections (memory/delegation/browser) become misleading as a
+    // whole; generic Tools guidance retains the paragraphs that still apply.
+    if (!heading.startsWith('Tools')) return ''
+    return section.split(/\n\n/).filter(paragraph => !mentionsDisabled(paragraph)).join('\n\n') + '\n\n'
+  }).join('')
+  return cleaned + `\n\n## Tool availability\nDisabled by the user's tool settings: ${disabled.join(', ')}. Do not call these tools or require them in your workflow. Use only tools in the supplied schemas; if a tool is unavailable, use an available alternative or explain the limitation. These settings do not grant tools restricted by mode, persona, role, or access permissions.\n`
+}
 import {
   buildCodeModeBlock,
   buildSkillsBlock,

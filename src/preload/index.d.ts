@@ -1,3 +1,4 @@
+import type { SkillFolderUpdate } from '../shared/types';
 declare const synteeAPI: {
     window: {
         hide: () => Promise<any>;
@@ -917,12 +918,12 @@ declare const synteeAPI: {
             projectId?: string;
             chatId?: string;
         }) => Promise<any>;
-        setFolderState: (params: import('../shared/types').SkillFolderUpdate) => Promise<any>;
         setState: (params: {
             skillId: string;
             state: unknown;
             source: "builtin" | "user" | "project";
         }) => Promise<any>;
+        setFolderState: (params: SkillFolderUpdate) => Promise<any>;
         reload: () => Promise<any>;
         getActive: (params: {
             chatId: string;

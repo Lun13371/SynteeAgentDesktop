@@ -3,6 +3,7 @@ import { join, resolve } from 'path'
 import { app } from 'electron'
 import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync, readFileSync, statSync } from 'fs'
 import type Store from 'electron-store'
+import { DEFAULT_TOOL_SETTINGS, normalizeDisabledTools } from '../../shared/toolSettings'
 import { getActivityManager } from '../managers/ActivityManager'
 import { getPluginManager } from '../../core/plugins/pluginManager'
 import type { MainWindow } from '../windows/MainWindow'
@@ -73,13 +74,15 @@ function applyAutostart(enabled: boolean): boolean {
 }
 
 function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
-  ipcMain.handle('settings:get', (_, key: string) => store.get(key))
+  ipcMain.handle('settings:get', (_, key: string) => store.get(key, DEFAULT_TOOL_SETTINGS[key as keyof typeof DEFAULT_TOOL_SETTINGS]))
   ipcMain.handle('settings:set', (_, key: string, value: unknown) => {
     // Автозагрузка: применяем в ОС ДО сохранения настройки — если реестр
     // недоступен, чекбокс не должен показывать ложное «включено».
     if (key === 'autostart') {
       if (!applyAutostart(Boolean(value))) return
     }
+    if (key === 'customToolsEnabled') value = value === true
+    if (key === 'disabledTools') value = normalizeDisabledTools(value)
     store.set(key, value)
     // Сброс кэша ActivityManager при изменении его настройки
     if (key === 'activityMonitor') {
@@ -91,7 +94,7 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
       hotkeyManager?.reload()
     }
   })
-  ipcMain.handle('settings:getAll', () => store.store)
+  ipcMain.handle('settings:getAll', () => ({ ...DEFAULT_TOOL_SETTINGS, ...store.store }))
   // Живой опрос реального состояния автозагрузки из реестра Windows
   ipcMain.handle('settings:autostartStatus', () => getAutostartState())
   ipcMain.handle('settings:reset', () => { store.clear(); return true })

@@ -235,12 +235,18 @@ export function computeContextSnapshot(
     systemPrompt?: string
     currentMsgTokens?: number
     includeToolSchemas?: boolean
+    /** Exact schemas sent to the model (including enabled external tools). */
+    toolSchemas?: unknown[]
     toolResultTokens?: number
   } = {},
 ): UsageSnapshot {
   const historyTokens = estimateMessagesTokensFull(messages)
   const systemPromptTokens = opts.systemPrompt ? estimateTokens(opts.systemPrompt) + 4 : 0
-  const toolSchemasTokens = opts.includeToolSchemas === true ? TOOL_SCHEMAS_OVERHEAD : 0
+  const toolSchemasTokens = opts.includeToolSchemas === true
+    ? opts.toolSchemas !== undefined
+      ? (opts.toolSchemas.length ? estimateTokens(JSON.stringify(opts.toolSchemas)) : 0)
+      : TOOL_SCHEMAS_OVERHEAD
+    : 0
   const currentMsgTokens = opts.currentMsgTokens ?? 0
   const toolResultTokens = opts.toolResultTokens ?? 0
 

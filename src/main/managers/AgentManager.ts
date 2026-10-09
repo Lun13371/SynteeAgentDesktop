@@ -597,7 +597,11 @@ class AgentManager {
       try {
         worker = new Worker(workerPath, {
           workerData: {
-            storeData,
+            storeData: {
+              ...storeData,
+              customToolsEnabled: this.store?.get('customToolsEnabled', false) === true,
+              disabledTools: this.store?.get('disabledTools', []) ?? [],
+            },
             isSubAgent: true,
             mode: record.mode,
             // Снапшот кэша gateway-моделей — worker не может фетчить сам
@@ -676,7 +680,11 @@ class AgentManager {
       // manage_dots тоже: round-trip идёт через message-handler основного
       // чат-воркера, которого у саб-агента нет — тул бы завис.
       const NO_NESTED_TOOLS = new Set(['spawn_agent', 'get_agent_status', 'manage_dots', 'manage_chats', 'get_main_chat_messages'])
-      const fullSchemas = getToolSchemas({ mode: record.mode })
+      const fullSchemas = getToolSchemas({
+        mode: record.mode,
+        customToolsEnabled: this.store?.get('customToolsEnabled', false) === true,
+        disabledTools: (this.store?.get('disabledTools', []) ?? []) as string[],
+      })
       const effectiveToolSchemas = (roleDef.allowedTools.length > 0
         ? fullSchemas.filter(s => {
             const name = (s as { function: { name: string } }).function.name

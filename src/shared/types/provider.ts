@@ -29,7 +29,7 @@ export interface Provider {
   anonymous?: boolean
 }
 
-export type ModelCapability = 'vision' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt' | 'image_gen'
+export type ModelCapability = 'vision' | 'video' | 'audio_input' | 'audio_output' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt' | 'image_gen'
 
 /**
  * Спека режима мышления из каталога models.dev (поле reasoning_options).
@@ -58,6 +58,10 @@ export interface ModelMeta {
   outputPrice?: number     // $ за 1M output токенов
   speed: ModelSpeed
   capabilities: ModelCapability[]
+  /** Raw catalog/provider modalities. Undefined = legacy metadata; [] = explicitly none.
+   * Metadata describes the model, not endpoint/adapter transport support. */
+  inputModalities?: string[]
+  outputModalities?: string[]
   description?: string
   isCustom?: boolean       // добавлена пользователем вручную
   /** Режимы мышления (reasoning_effort) — из /v1/models Syntee-Gateway. */
@@ -71,6 +75,8 @@ export type ModelRole =
   | 'fast'        // быстрые ответы, автотайтлы
   | 'fastContext' // fast context retrieval (tree-sitter + fast LLM)
   | 'vision'      // анализ изображений
+  | 'video'       // анализ видео с текстовым ответом (не генерация)
+  | 'audio'       // анализ аудио с текстовым ответом (не TTS)
   | 'stt'         // speech-to-text
   | 'tts'         // text-to-speech
   | 'embedding'   // векторный поиск / память

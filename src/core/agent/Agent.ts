@@ -37,6 +37,8 @@ import {
 import { validateAndCoerceArgs } from './validateArgs'
 import { ToolDispatcher } from './toolDispatcher'
 import { jsonrepair } from 'jsonrepair'
+import { filterToolSchemas, getToolSettings, isToolDisabled } from '../../shared/toolSettings'
+import { sanitizeToolInstructions } from '../prompts/buildSystemPrompt'
 
 // Тулы, которые НЕ блокируются hard block при parse-failure loop guard —
 // они не деструктивны (идемпотентны, не меняют файлы/систему).
@@ -275,9 +277,12 @@ export class Agent {
     const EFFECTIVE_MAX_STEPS = this.role === 'subagent'
       ? (Number.isFinite(maxSteps) ? Math.max(1, Math.min(1024, Math.floor(maxSteps))) : 256)
       : 1024
+    this.toolDispatcher.mediaSignal = signal
     const supportsVision = agentModelSupportsVision(this.store, this.role)
+    const toolSettings = getToolSettings(this.store)
+    const sanitizedSystemPrompt = sanitizeToolInstructions(systemPrompt || FALLBACK_SYSTEM_PROMPT, toolSettings)
     const messages: AgentMessage[] = [
-      { role: 'system', content: systemPrompt || FALLBACK_SYSTEM_PROMPT },
+      { role: 'system', content: sanitizedSystemPrompt },
       ...(history ?? []).map(m => ({
         role: m.role,
         content: m.role === 'tool' ? hydrateToolImageContent(m, supportsVision) : m.content,
@@ -347,7 +352,13 @@ export class Agent {
       this.undoStack = this.undoStack.slice(-50)
     }
     const ctxSettings = getContextSettings(this.store.get('contextSettings') as Partial<import('../context/contextManager').ContextSettings> ?? {})
-    const activeSchemas = (toolSchemas ?? TOOL_SCHEMAS) as Array<{ function: { name: string; parameters?: { required?: string[] } } }>
+    const activeSchemas = (toolSchemas ?? [...TOOL_SCHEMAS]) as unknown as Array<{
+      type: 'function'; function: { name: string; description?: string; parameters?: { type?: string; required?: string[]; properties?: Record<string, unknown> } }
+    }>
+    // Keep the worker's array identity: request_access appends permitted browser
+    // schemas mid-run. Never mutate the global registry when no override is supplied.
+    const filteredSchemas = filterToolSchemas(activeSchemas, toolSettings)
+    activeSchemas.splice(0, activeSchemas.length, ...filteredSchemas)
     const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
     const maxRepeatedToolCalls = Math.max(2, options?.maxRepeatedToolCalls ?? 3)
     const maxRepeatedErrors = Math.max(2, options?.maxRepeatedErrors ?? 2)
@@ -447,8 +458,8 @@ export class Agent {
 
       try {
         callbacks.onStatus?.('Waiting for response...')
-        console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
-        log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, (toolSchemas ?? TOOL_SCHEMAS).length)
+        console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, activeSchemas.length)
+        log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, activeSchemas.length)
         // Защитный таймаут по бездействию на раунд chatWithTools. Если
         // провайдер принял запрос, но stream завис (TCP open, нет данных) —
         // for-await(chunk) висит вечно, signal не abort'ится, "Ожидаю
@@ -482,7 +493,7 @@ export class Agent {
           response = await Promise.race([
             this.client.chatWithTools(
               messages,
-              toolSchemas ?? TOOL_SCHEMAS,
+              activeSchemas as typeof TOOL_SCHEMAS,
               signal,
               this.role,
               (token) => { resetInactivityTimer(); callbacks.onStep({ type: 'answer', content: token }) },
@@ -505,7 +516,7 @@ export class Agent {
               (index, rawToolName) => {
                 const normalizedName = normalizeToolName(rawToolName, activeSchemas)
                 const isHidden = normalizedName === 'think' || normalizedName === 'update_working_memory' || normalizedName === 'update_todo'
-                if (isHidden) return
+                if (isHidden || isToolDisabled(normalizedName, getToolSettings(this.store))) return
                 callbacks.onStep({
                   type: 'tool_call_pending',
                   toolName: normalizedName,
@@ -771,6 +782,15 @@ export class Agent {
         const executeCall = async (item: NormalizedToolCall) => {
           const { callId, fn, isHiddenTool, pendingCallId, parseError } = item
           let args = item.args
+          // Defense in depth: settings can change after schemas were built, and
+          // provider/history/parallel calls can still name unavailable builtins.
+          // Reject before approval, status, or execution callbacks are reached.
+          if (isToolDisabled(fn.name, getToolSettings(this.store))) {
+            const blockedMsg = `Tool "${fn.name}" is disabled in your settings and was not executed.`
+            resultMap.set(callId, { contentForAI: blockedMsg, callId, name: fn.name })
+            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockedMsg, success: false, callId, hidden: isHiddenTool })
+            return
+          }
           // Ключ loop-guard для сброса при успешном выполнении (Fix 3).
           // Если тул успешно выполнился — счётчик guard-хитов для этого
           // fingerprint сбрасывается: модель вышла из лупа, не нужно
@@ -1468,6 +1488,7 @@ export class Agent {
           const snap = computeContextSnapshot(rest, Number.MAX_SAFE_INTEGER, {
             systemPrompt: systemMsg?.content as string | undefined,
             includeToolSchemas: true,
+            toolSchemas: activeSchemas,
           })
           callbacks.onContextUpdate({
             promptTokens: snap.estimated,
