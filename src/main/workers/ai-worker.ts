@@ -15,6 +15,7 @@ import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { BROWSER_TOOL_SCHEMAS } from '../../core/tools/schemas/browser'
+import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
@@ -279,8 +280,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // ПОСРЕДИ рана (подтверждение юзера) — Agent держит ссылку на массив
       // (toolSchemas ?? TOOL_SCHEMAS в каждом раунде), мутируем на месте,
       // следующий раунд уже с browser_* тулами. Без пересборки рана.
-      const runTools: typeof getToolSchemas extends (...args: never[]) => infer R ? R : never =
-        (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
+      const toolSettings = getToolSettings(fakeStore)
+      const initialToolSchemas = (toolSchemas as typeof getToolSchemas extends (...args: never[]) => infer R ? R : never) ?? getToolSchemas({
+          customToolsEnabled: toolSettings.customToolsEnabled,
+          disabledTools: toolSettings.disabledTools,
           planningMode,
           askMode,
           browserMode,
@@ -288,6 +291,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
           pluginTools: ((workerData as Record<string, unknown>).pluginTools as PluginToolRuntime[] | undefined) ?? [],
         })
+      const runTools = filterToolSchemas(initialToolSchemas, toolSettings)
       // Delegated chats are main-process ordinary chats, not sub-agent jobs.
       // AgentManager does not expose this backend to sub-agents.
       if (isSubAgent) {
@@ -297,11 +301,16 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // Флип browser-режима посреди рана: request_access подтверждён →
       // добавляем 15 browser-тулов, убираем request_access (нечего запрашивать).
       const enableBrowserToolsMidRun = (): void => {
-        const names = new Set(runTools.map(t => (t as { function: { name: string } }).function.name))
-        if (names.has('browser_navigate')) return // уже включены
-        const idx = runTools.findIndex(t => (t as { function: { name: string } }).function.name === 'request_access')
-        if (idx >= 0) runTools.splice(idx, 1)
-        runTools.push(...BROWSER_TOOL_SCHEMAS)
+        const names = new Set(runTools.map(t => t.function.name))
+        const idx = runTools.findIndex(t => t.function.name === 'request_access')
+        // Custom role/side-chat allowlists cannot gain tools through this route.
+        if (idx < 0 || toolSchemas) return
+        const permitted = new Set(getToolSchemas({
+          planningMode, askMode, persona: workerPersona, browserMode: true,
+          ...toolSettings,
+        }).map(t => t.function.name))
+        runTools.splice(idx, 1)
+        runTools.push(...BROWSER_TOOL_SCHEMAS.filter(t => permitted.has(t.function.name) && !names.has(t.function.name)))
       }
 
       // Прокидываем chatId и колбэки рабочей памяти

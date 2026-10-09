@@ -40,6 +40,7 @@ import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom, hydrateCommands } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import { stripAttachTokens } from '../../../../shared/attachmentMarkdown'
+import { attachmentKindFromMime, mimeFromExt } from '../../../../shared/mentions'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment, ReplyTarget } from '../../../../shared/types'
 
 // ── Самолечение draft-вложений с битым path ────────────────────────────────
@@ -1775,13 +1776,13 @@ const chatId = compactingCurrentChatIdRef.current
           // сужение role: у Message есть 'system', у реплай-цели — нет
           role: r.role === 'user' ? 'user' as const : 'assistant' as const,
           content: r.content,
-          attachmentsCount: r.attachments?.filter(a => (a.kind === 'file' || a.kind === 'image') && a.path).length || undefined,
+          attachmentsCount: r.attachments?.filter(a => (a.kind === 'file' || a.kind === 'image' || a.kind === 'audio' || a.kind === 'video') && a.path).length || undefined,
         }))
       : undefined
     const replyAttachments: Attachment[] = []
     for (const r of replyTo) {
       for (const a of r.attachments ?? []) {
-        if ((a.kind === 'file' || a.kind === 'image') && a.path) {
+        if ((a.kind === 'file' || a.kind === 'image' || a.kind === 'audio' || a.kind === 'video') && a.path) {
           replyAttachments.push({ ...a, id: uuid(), source: 'reply' })
         }
       }
@@ -1981,9 +1982,12 @@ const chatId = compactingCurrentChatIdRef.current
         if (Array.isArray(d.attachments) && d.attachments.length > 0) {
           const extra: Attachment[] = d.attachments.slice(0, 10).map(a => ({
             id: uuid(),
-            kind: a.kind === 'image' ? 'image' : 'file',
+            kind: a.kind === 'image' || a.kind === 'audio' || a.kind === 'video'
+              ? a.kind
+              : attachmentKindFromMime(mimeFromExt(a.path)),
             name: a.name || a.path.split(/[\\/]/).pop() || 'file',
             path: a.path,
+            mime: mimeFromExt(a.path),
             source: 'dialog' as const,
             attachedAt: Date.now(),
           }))

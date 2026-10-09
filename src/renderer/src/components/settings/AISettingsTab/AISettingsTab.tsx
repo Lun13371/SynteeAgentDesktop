@@ -24,7 +24,9 @@ const ROLE_META: Record<BaseModelRole, { label: string; desc: string; icon: stri
   main:        { label: 'Основной чат',     desc: 'Для всех сообщений в чате',        icon: 'bot' },
   fast:        { label: 'Быстрые ответы',   desc: 'Автоназвания, короткие задачи',    icon: 'zap' },
   fastContext: { label: 'Быстрый контекст', desc: 'Tree-sitter retrieval + LLM сборка контекста по проекту', icon: 'compass', filterCaps: ['tools', 'code'] },
-  vision:      { label: 'Vision / Картинки',desc: 'Анализ изображений и скриншотов',  icon: 'eye', filterCaps: ['vision'] },
+  vision:      { label: 'Vision / Картинки',desc: 'Анализ изображений; metadata модели, не гарантия поддержки транспортом', icon: 'eye', filterCaps: ['vision'] },
+  video:       { label: 'Видео',            desc: 'Анализ входного видео; metadata модели, не гарантия поддержки транспортом', icon: 'camera', filterCaps: ['video'] },
+  audio:       { label: 'Аудио-анализ',     desc: 'Анализ входного аудио с текстовым ответом; metadata, не гарантия поддержки транспортом', icon: 'mic', filterCaps: ['audio_input'] },
   stt:         { label: 'Голос → Текст',    desc: 'Распознавание речи',               icon: 'mic',        filterCaps: ['stt'] },
   subagent:    { label: 'Суб-агенты',       desc: 'Модель для дочерних агентов',      icon: 'git-branch' },
   tts:         { label: 'Текст → Голос',    desc: 'Озвучивание ответов',              icon: 'volume',     filterCaps: ['tts'] },
@@ -628,6 +630,7 @@ export default function AISettingsTab() {
                       providerId={current?.providerId || ''}
                       onChange={(modelId, pid) => setAssignment(role, modelId, pid)}
                       filterCaps={meta.filterCaps}
+                      filterRole={role === 'vision' || role === 'video' || role === 'audio' || role === 'stt' || role === 'tts' ? role : undefined}
                       placeholder="Не выбрано"
                       sharedModels={allModels}
                       sharedProviders={providers}

@@ -11,7 +11,7 @@ import { createHash } from 'crypto'
 import {
   runCommand, readFile, writeFile, listDirectory,
   findFiles,
-  searchWeb, getSystemInfo, generateImage, analyzeImageFile,
+  searchWeb, getSystemInfo, generateImage, analyzeImageFile, analyzeVideoFile, analyzeAudioFile,
   readFiles, searchCode, analyzeProject,
   fetchPage, searchImages, getDiagnostics,
   type SearchImagesOpts,
@@ -37,6 +37,8 @@ export class ToolDispatcher {
   private store: Store
   workdir?: string
   modelRole: 'main' | 'subagent' = 'main'
+  /** Set to the current run signal by Agent before dispatching auxiliary media. */
+  mediaSignal?: AbortSignal
   /** userData path — для fallback-поиска картинок-вложений в draft-attachments,
    *  когда AI вызывает analyze_image с именем файла-вложения (без полного пути). */
   userDataPath?: string
@@ -383,6 +385,12 @@ export class ToolDispatcher {
           gatewayToken: this.gatewayToken,
           userDataPath: this.userDataPath,
         })
+      case 'analyze_video':
+        if (dryRun) return { success: true, output: '[DRY RUN] Video analysis not requested; no file uploaded.' }
+        return analyzeVideoFile(resolvedArgs as { path: string; question?: string }, this.store, this.workdir, { signal: this.mediaSignal, modelRole: this.modelRole })
+      case 'analyze_audio':
+        if (dryRun) return { success: true, output: '[DRY RUN] Audio analysis not requested; no file uploaded.' }
+        return analyzeAudioFile(resolvedArgs as { path: string; question?: string; task?: 'analyze' | 'transcribe' }, this.store, this.workdir, { signal: this.mediaSignal, modelRole: this.modelRole })
       case 'analyze_image':
         // Распознавание картинки с диска: прямой пас (imageParts) для
         // vision-способной основной модели, иначе — описание от vision-модели.

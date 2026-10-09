@@ -45,6 +45,8 @@ import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatew
 import { getToolSchemas, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
 import { extractFinalPlan, stripPlanTags } from '../../shared/planParser'
 import { stripAttachTokens } from '../../shared/attachmentMarkdown'
+import { getToolSettings, isToolDisabled } from '../../shared/toolSettings'
+import { mimeFromExt } from '../../shared/mentions'
 import { IPC_EVENTS } from '../../shared/constants'
 import type { Dot, DotConfig } from '../../shared/types'
 import { getNotificationManager } from '../managers/NotificationManager'
@@ -1190,6 +1192,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           const idx = processedFiles.length
           imageAtts.push({ att, index: idx })
           processedFiles.push({ name: att.name, kind: att.kind, status: 'image_described', size: st.size, description: '' })
+        } else if (att.kind === 'video' || att.kind === 'audio' || /^(video|audio)\//.test(att.mime || mimeFromExt(att.path))) {
+          const mediaKind = att.kind === 'video' || (att.mime || mimeFromExt(att.path)).startsWith('video/') ? 'video' : 'audio'
+          const toolName = mediaKind === 'video' ? 'analyze_video' : 'analyze_audio'
+          const disabled = isToolDisabled(toolName, getToolSettings(store))
+          const detail = disabled
+            ? `${toolName} выключен в настройках — содержимое не проанализировано.`
+            : `Используй ${toolName} с этим локальным путём и вопросом пользователя; содержимое ещё не проанализировано. Нужна назначенная модель и поддерживаемый транспорт.`
+          textBlocks.push(`[Прикреплён ${mediaKind === 'video' ? 'видеофайл' : 'аудиофайл'}: ${att.name}] (${(st.size / 1024).toFixed(1)} KB, путь: ${att.path})\n${detail}`)
+          processedFiles.push({ name: att.name, kind: mediaKind, status: 'binary_path', size: st.size, detail })
         } else {
           // Текстовый или бинарный файл
           const mime = att.mime || ''
@@ -1347,13 +1358,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     assistantMsgId: string,
   ): Promise<{ userMsg: Message; assistantMsgId: string }> {
     const storeData: Record<string, unknown> = {}
-    const storeKeys = [
-      'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-      'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'integrations',
-      'voiceId', 'embeddingModel',
-      'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
-      'contextSettings',
-    ]
+      const storeKeys = [
+        'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'integrations',
+        'voiceId', 'embeddingModel',
+        'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
+        'contextSettings',
+        'customToolsEnabled', 'disabledTools',
+      ]
     for (const k of storeKeys) {
       const v = store.get(k)
       if (v !== undefined) storeData[k] = v
@@ -3649,6 +3661,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       : undefined
 
     let sideToolSchemas = getToolSchemas({
+      customToolsEnabled: store.get('customToolsEnabled', false) === true,
+      disabledTools: store.get('disabledTools', []) as string[],
       planningMode: effectivePlanningMode,
       askMode: effectiveAskMode,
       imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
