@@ -107,7 +107,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     'find_files',
     'search_code',
     'list_directory',
-    'think',
     'update_working_memory',
     'update_todo',
     'ask_user',

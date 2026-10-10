@@ -36,6 +36,7 @@
 import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getDB } from '../db/handle'
+import { getMemorySettings } from './globalMemorySettings'
 import {
   getReadyE5Embedder,
   disposeE5Embedder,
@@ -408,14 +409,29 @@ function memoryScopeWhere(
   projectId: string | undefined,
   crossProject = false,
 ): { where: string; args: unknown[] } {
-  if (crossProject) return { where: `1=1`, args: [] }
-  if (scope === 'global') return { where: `mi.scope = 'global'`, args: [] }
+  const settings = getMemorySettings()
+  const globalEnabled = settings.enabled && settings.global
+  if (!settings.enabled) return { where: `0=1`, args: [] }
+  if (crossProject) {
+    const allowed: string[] = []
+    if (settings.global) allowed.push(`mi.scope = 'global'`)
+    if (settings.project) allowed.push(`mi.scope = 'project'`)
+    if (settings.chat) allowed.push(`mi.scope = 'chat'`)
+    return { where: allowed.length ? `(${allowed.join(' OR ')})` : `0=1`, args: [] }
+  }
+  if (scope === 'global') return { where: globalEnabled ? `mi.scope = 'global'` : `0=1`, args: [] }
   if ((scope === 'project' || scope === 'chat') && projectId) {
-    return { where: `mi.scope = 'project' AND mi.project_id = ?`, args: [projectId] }
+    return { where: (scope === 'project' ? settings.project : settings.chat) ? `mi.scope = 'project' AND mi.project_id = ?` : `0=1`, args: [projectId] }
   }
   // 'all' (default) / 'project'|'chat' без projectId — как в searchMemory
+  const allowedDefault: string[] = []
+  if (settings.global) allowedDefault.push(`mi.scope = 'global'`)
+  if (settings.project) allowedDefault.push(`mi.scope = 'project'`)
+  if (settings.chat) allowedDefault.push(`mi.scope = 'chat'`)
   return {
-    where: `(mi.scope = 'global' OR (mi.scope = 'project' AND mi.project_id = ?))`,
+    where: allowedDefault.length
+      ? `(${allowedDefault.join(' OR ')}) AND (mi.project_id = ? OR mi.scope = 'global')`
+      : `0=1`,
     args: [projectId ?? '__none__'],
   }
 }

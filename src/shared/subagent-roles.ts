@@ -44,7 +44,7 @@ export interface SubagentRoleDef {
 
 const READ_TOOLS = [
   'read_file', 'read_files', 'find_files', 'search_code', 'list_directory',
-  'think', 'get_fast_context', 'analyze_project', 'get_diagnostics',
+  'get_fast_context', 'analyze_project', 'get_diagnostics',
   'recall_memory',
 ] as const
 

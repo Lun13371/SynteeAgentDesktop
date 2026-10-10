@@ -164,6 +164,11 @@ export const DEFAULT_SETTINGS = {
   // Per-project переопределение разрешений: { [projectId]: ProjectPermissionOverride }
   projectPermissions: {} as Record<string, import('./types').ProjectPermissionOverride>,
   backupEnabled: true,
+  memoryEnabled: true,
+  globalMemoryEnabled: true,
+  projectMemoryEnabled: true,
+  chatMemoryEnabled: true,
+  autoMemoryEnabled: true,
   backupPath: '',
   agentPanelWidth: 420,
   agentPanelOpen: false,

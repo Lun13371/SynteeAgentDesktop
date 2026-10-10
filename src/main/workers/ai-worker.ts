@@ -391,7 +391,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             })
           },
           onStep: (step) => {
-            // Скрытые тулы (think, update_working_memory) — не шлём в UI
+            // Скрытые тулы (update_todo, update_working_memory) — не шлём в UI
             if (step.hidden) {
               return
             }
