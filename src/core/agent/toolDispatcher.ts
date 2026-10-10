@@ -766,7 +766,50 @@ export class ToolDispatcher {
       case 'browser_tab_new':
       case 'browser_tab_select':
       case 'browser_tab_close':
+      case 'browser_wait_for':
+      case 'browser_fill':
+      case 'browser_double_click':
+      case 'browser_right_click':
+      case 'browser_hover':
+      case 'browser_focus':
+      case 'browser_select_option':
+      case 'browser_check':
+      case 'browser_uncheck':
+      case 'browser_drag':
+      case 'browser_frames':
+      case 'browser_accessibility':
+      case 'browser_evaluate':
+      case 'browser_add_script':
+      case 'browser_add_style':
+      case 'browser_console':
+      case 'browser_errors':
+      case 'browser_network':
+      case 'browser_dialog':
+      case 'browser_downloads':
+      case 'browser_upload':
+      case 'browser_cookies':
+      case 'browser_storage':
+      case 'browser_set_user_agent':
+      case 'browser_zoom':
+      case 'browser_trace_start':
+      case 'browser_trace_stop':
+      case 'browser_performance':
+      case 'browser_permissions':
+      case 'browser_clear_cache':
       case 'browser_wait': {
+        // Even diagnostic browser tools can attach a debugger or change page state.
+        if (dryRun) return { success: true, output: '[DRY RUN] Browser operation was not executed.' }
+        if (callbacks?.signal?.aborted) return { success: false, output: '', error: 'Browser operation aborted.' }
+        // Secret interpolation in arbitrary page code would expose credentials to
+        // the visited site. Do not silently reuse the general tool substitution.
+        if (['browser_evaluate', 'browser_add_script', 'browser_wait_for'].includes(name)) {
+          const source = String(resolvedArgs.source ?? (resolvedArgs.condition === 'function' ? resolvedArgs.value : '') ?? '')
+          for (const secret of this.secretValues?.values() ?? []) {
+            if (secret.length >= 2 && source.includes(secret)) {
+              return { success: false, output: '', error: 'Protected secrets cannot be interpolated into arbitrary browser JavaScript.' }
+            }
+          }
+        }
         if (!callbacks?.onBrowserAction) {
           return { success: false, output: '', error: 'browser tools unavailable (no browser backend)' }
         }
@@ -788,24 +831,31 @@ export class ToolDispatcher {
           browser_tab_close: 'tab_close',
           browser_wait: 'wait',
         }
-        const action = actionMap[name]
-        if (!action) return { success: false, output: '', error: `Unknown browser tool: ${name}` }
+        const action = actionMap[name] ?? name.replace(/^browser_/, '')
         try {
           const result = await callbacks.onBrowserAction({
-            action: action as 'request_access' | 'navigate' | 'back' | 'forward' | 'reload' | 'snapshot' | 'click' | 'type' | 'press_key' | 'scroll' | 'screenshot' | 'tabs' | 'tab_new' | 'tab_select' | 'tab_close' | 'wait',
+            action,
+            args: resolvedArgs,
+            timeoutMs: resolvedArgs.timeout_ms as number | undefined,
+            frameId: resolvedArgs.frame_id as number | undefined,
+            snapshotId: resolvedArgs.snapshot_id as string | undefined,
+            locator: resolvedArgs.locator as Parameters<NonNullable<AgentCallbacks['onBrowserAction']>>[0]['locator'],
+            selector: resolvedArgs.selector as string | undefined,
+            value: resolvedArgs.value as string | number | undefined,
+            source: resolvedArgs.source as string | undefined,
             url: resolvedArgs.url as string | undefined,
             ref: resolvedArgs.ref as string | undefined,
             text: resolvedArgs.text as string | undefined,
             submit: resolvedArgs.submit as boolean | undefined,
             key: resolvedArgs.key as string | undefined,
-            direction: resolvedArgs.direction as 'up' | 'down' | undefined,
+            direction: resolvedArgs.direction as 'up' | 'down' | 'left' | 'right' | undefined,
             amount: resolvedArgs.amount as number | undefined,
             tabId: resolvedArgs.tab_id as string | undefined,
             reason: resolvedArgs.reason as string | undefined,
             ms: resolvedArgs.ms as number | undefined,
           })
           if (!result.success) {
-            return { success: false, output: '', error: result.error ?? `browser ${action} failed` }
+            return { success: false, output: '', error: this.maskSecretValuesInText(result.error ?? `browser ${action} failed`) }
           }
           // Скриншот: PNG → imageParts (vision-пайплайн Agent'а, как analyze_image).
           if (result.imageBase64) {
@@ -815,9 +865,9 @@ export class ToolDispatcher {
               imageParts: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${result.imageBase64}` } }],
             }
           }
-          return { success: true, output: result.output ?? 'OK' }
+          return { success: true, output: this.maskSecretValuesInText(result.output ?? 'OK') }
         } catch (e) {
-          return { success: false, output: '', error: (e as Error).message }
+          return { success: false, output: '', error: this.maskSecretValuesInText((e as Error).message) }
         }
       }
       default:

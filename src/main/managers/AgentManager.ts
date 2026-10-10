@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import { Worker } from 'worker_threads'
+import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
 import { join } from 'path'
 import type Store from 'electron-store'
 import type { ChatMode } from '../../shared/types'
@@ -25,6 +26,7 @@ import { getNotificationManager } from './NotificationManager'
 import { searchAllSources, saveMemoryItem, type SaveMemoryInput } from '../../core/memory/MemoryStore'
 import { bumpMemoryHit } from '../../core/memory/store/utils'
 import { getMemorySettings, getGlobalMemoryEnabled } from '../../core/memory/globalMemorySettings'
+import { persistApprovalGrant } from '../services/approvalAllowlist'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -480,6 +482,7 @@ class AgentManager {
       (opts.storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
     const subStoreData: Record<string, unknown> = {
       ...opts.storeData,
+      chatApprovalAllowlist: this.store?.get('chatApprovalAllowlist', {}) ?? opts.storeData.chatApprovalAllowlist,
       modelAssignments: [
         ...parentAssignments.filter(a => a.role !== 'subagent'),
         ...(resolvedAssignment ? [{ role: 'subagent', ...resolvedAssignment }] : []),
@@ -604,12 +607,14 @@ class AgentManager {
       }
       this.resolvers.set(record.id, resolve)
 
+      const browserMode = getChatBrowserMode(record.chatId)
       let worker: Worker
       try {
         worker = new Worker(workerPath, {
           workerData: {
             storeData: {
               ...storeData,
+              chatApprovalAllowlist: this.store?.get('chatApprovalAllowlist', {}) ?? storeData.chatApprovalAllowlist,
               customToolsEnabled: this.store?.get('customToolsEnabled', false) === true,
               disabledTools: this.store?.get('disabledTools', []) ?? [],
             },
@@ -628,7 +633,7 @@ class AgentManager {
             fastContextDbPath: context?.fastContextDbPath,
             fastContextWasmDir: context?.fastContextWasmDir,
             // Тумблер «Управление браузером» чата — суб-агент наследует.
-            browserMode: getChatBrowserMode(record.chatId),
+            browserMode,
           },
           env: process.env,
         })
@@ -642,6 +647,11 @@ class AgentManager {
         return
       }
 
+      attachBrowserWorkerBroker(worker, async (payload, signal) => {
+        const { browserManager } = await import('./BrowserManager')
+        if (signal.aborted || record.status !== 'running') return { success: false, error: 'Browser run stopped.' }
+        return browserManager.execute(record.chatId, { ...payload, action: String(payload.action ?? '') } as Parameters<typeof browserManager.execute>[1], signal)
+      })
       record.status = 'running'
       this.workers.set(record.id, worker)
       // A parent turn must not wait forever for a delegated job. This is an
@@ -652,6 +662,7 @@ class AgentManager {
         record.status = 'error'
         record.error = 'Суб-агент превысил общий лимит времени (60 минут)'
         record.finishedAt = Date.now()
+        disposeBrowserWorkerBroker(worker)
         void worker.terminate().then(async () => {
           record.summary = buildSubagentSummary(record.result.trim(), undefined)
           if (record.worktreeInfo && record.workdir) await this.finalizeWorktreeOnError(record)
@@ -693,6 +704,7 @@ class AgentManager {
       const NO_NESTED_TOOLS = new Set(['spawn_agent', 'get_agent_status', 'manage_dots', 'manage_chats', 'get_main_chat_messages'])
       const fullSchemas = getToolSchemas({
         mode: record.mode,
+        browserMode,
         customToolsEnabled: this.store?.get('customToolsEnabled', false) === true,
         disabledTools: (this.store?.get('disabledTools', []) ?? []) as string[],
       })
@@ -847,6 +859,7 @@ ${subModeOutro}`
             // проекта (worktree не создался), а не в изолированной копии.
             if (record.isolationFallback) this.appendIsolationFallbackNote(record)
             this.workers.delete(record.id)
+            disposeBrowserWorkerBroker(worker)
             worker.terminate()
             this.resolvers.delete(record.id)
             // §изоляция — merge-back worktree в родительский workdir (сериализованно
@@ -895,6 +908,7 @@ ${subModeOutro}`
             record.summary = buildSubagentSummary(record.result.trim(), msg.agentSummary)
             if (record.isolationFallback) this.appendIsolationFallbackNote(record)
             this.workers.delete(record.id)
+            disposeBrowserWorkerBroker(worker)
             worker.terminate()
             this.resolvers.delete(record.id)
              // §изоляция — при ошибке суб-агент мог успеть сделать полезные
@@ -992,15 +1006,16 @@ ${subModeOutro}`
           case 'confirm': {
             const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
             pendingRequests.set(reqId, 'confirm')
-            confirmCallbacks.set(reqId, (approved: boolean, always?: string) => {
+            confirmCallbacks.set(reqId, (approved: boolean, always?: string, toolWide?: boolean) => {
+              const grant = this.store ? persistApprovalGrant(this.store, { toolName, args, chatId: record.chatId, approved, always, toolWide, role: 'subagent' }) : undefined
               pendingRequests.delete(reqId)
               ipcMain.removeAllListeners(`agent:confirm:response:${reqId}`)
               if (record.status !== 'running') return
-              worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always })
+              worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always: grant?.scope, match: grant?.match })
             })
-            ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean, always?: string) => {
+            ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean, always?: string, toolWide?: boolean) => {
               const cb = confirmCallbacks.get(reqId)
-              if (cb) { confirmCallbacks.delete(reqId); cb(approved, always) }
+              if (cb) { confirmCallbacks.delete(reqId); cb(approved, always, toolWide) }
             })
             const win = this.windowGetter?.()
             const target = Array.isArray(win) ? win[0] : win
@@ -1134,49 +1149,10 @@ ${subModeOutro}`
 
           // ── browser_op: суб-агент вызывает browser-тулы (зеркало
           // chat.ipc.ts). Гейтинг browserMode чата — в BrowserManager. ──
-          case 'browser_op': {
-            const replyId = msg.replyId as string
-            const browserChatId = record.chatId
-            ;(async () => {
-              try {
-                const { browserManager } = await import('./BrowserManager')
-                const payload = (msg.payload ?? {}) as {
-                  action?: string
-                  url?: string
-                  ref?: string
-                  text?: string
-                  submit?: boolean
-                  key?: string
-                  direction?: 'up' | 'down'
-                  amount?: number
-                  tabId?: string
-                  reason?: string
-                  ms?: number
-                }
-                const result = await browserManager.execute(browserChatId, {
-                  action: payload.action ?? '',
-                  url: payload.url,
-                  ref: payload.ref,
-                  text: payload.text,
-                  submit: payload.submit,
-                  key: payload.key,
-                  direction: payload.direction,
-                  amount: payload.amount,
-                  tabId: payload.tabId,
-                  reason: payload.reason,
-                  ms: payload.ms,
-                })
-                worker.postMessage({ type: 'browser_op_reply', replyId, result })
-              } catch (e: unknown) {
-                worker.postMessage({
-                  type: 'browser_op_reply',
-                  replyId,
-                  result: { success: false, error: e instanceof Error ? e.message : String(e) },
-                })
-              }
-            })()
+          case 'browser_op':
+          case 'browser_op_cancel':
+            // Handled by the same scoped broker as ordinary chat workers.
             break
-          }
         }
       })
 
@@ -1188,6 +1164,7 @@ ${subModeOutro}`
         record.error = e.message
         record.finishedAt = Date.now()
         this.workers.delete(record.id)
+        disposeBrowserWorkerBroker(worker)
         worker.terminate()
         // §изоляция — при crash worker'а правки не выбрасываем молча:
         // есть изменения → сохраняем worktree + note в summary.
@@ -1235,6 +1212,8 @@ ${subModeOutro}`
     const worker = this.workers.get(id)
     const record = this.agents.get(id)
     if (worker) {
+      disposeBrowserWorkerBroker(worker)
+      try { worker.postMessage({ type: 'abort_run' }) } catch { /* worker already stopped */ }
       worker.terminate()
       this.workers.delete(id)
     }

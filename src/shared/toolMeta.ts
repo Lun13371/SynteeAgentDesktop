@@ -144,5 +144,8 @@ export function getToolMeta(name?: string, serverName?: string): ResolvedToolMet
       plugin: pluginParsed.pluginId,
     }
   }
+  if (name.startsWith('browser_') && !TOOL_META[name]) {
+    return { label: name.slice('browser_'.length).replace(/_/g, ' '), icon: 'globe', color: '#38bdf8' }
+  }
   return TOOL_META[name] || { ...FALLBACK_META, label: name }
 }

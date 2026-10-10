@@ -3,7 +3,7 @@ import { AIClient } from '../ai/AIClient'
 import { agentModelSupportsVision } from '../ai/visionSupport'
 import { hydrateToolImageContent } from '../ai/toolImageHistory'
 import { NativeImageAnalysis } from './nativeImageAnalysis'
-import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, normalizeCommandKey } from './commandSafety'
+import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, actionAllowlistKey } from './commandSafety'
 import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, isWebSourceTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
 import type { ProjectPermissionOverride, ApprovalAllowlistEntry, AllowScope } from '../../shared/types'
 import { updateStructuredMemory } from '../context/structuredMemory'
@@ -142,6 +142,7 @@ export class Agent {
   // §allowlist — сессионная память одобрений: нормализованные ключи
   // `tool|command-or-path`, не спрашиваем повторно в рамках этого чата.
   private sessionAllowed = new Set<string>()
+  private sessionAllowedTools = new Set<string>()
 
   // §injection — сколько вызовов тулов осталось в окне эскалации после
   // подозрительного контента (prompt injection guard). >0 → мутирующие
@@ -176,59 +177,24 @@ export class Agent {
 
   /** Ключ сессионной памяти для тула и args (команда или нормализованный путь). */
   private allowlistKey(toolName: string, args: Record<string, unknown>): string {
-    if (toolName === 'run_command') return `run_command|${normalizeCommandKey(String(args.command ?? ''))}`
-    if (toolName === 'write_file' || toolName === 'edit_file') {
-      const p = String(args.path ?? '').toLowerCase().replace(/\//g, '\\').replace(/\\+$/, '')
-      return `${toolName}|${p}`
-    }
-    return `${toolName}|${JSON.stringify(args).slice(0, 200)}`
+    return actionAllowlistKey(toolName, args)
   }
 
   /** Разрешено ли действие allowlist'ом (сессия + store: глобально + проект). */
   private isActionAllowlisted(toolName: string, args: Record<string, unknown>): boolean {
-    const agentPerms = (this.store.get('agentPermissions') as {
-      approvalAllowlist?: ApprovalAllowlistEntry[]
-    } | undefined) ?? {}
-    const projectPerms = (this.store.get('projectPermissions') as
-      Record<string, ProjectPermissionOverride> | undefined) ?? {}
-    const projEntries = this.role === 'main' && this.projectId
-      ? projectPerms[this.projectId]?.approvalAllowlist
-      : undefined
-    const entries = [...(agentPerms.approvalAllowlist ?? []), ...(projEntries ?? [])]
-    return isAllowlisted(toolName, args, { entries, sessionKeys: this.sessionAllowed })
+    const agentPerms = (this.store.get('agentPermissions') as { approvalAllowlist?: ApprovalAllowlistEntry[] } | undefined) ?? {}
+    const projectPerms = (this.store.get('projectPermissions') as Record<string, ProjectPermissionOverride> | undefined) ?? {}
+    const chatPerms = (this.store.get('chatApprovalAllowlist') as Record<string, ApprovalAllowlistEntry[]> | undefined) ?? {}
+    const projEntries = this.role === 'main' && this.projectId ? projectPerms[this.projectId]?.approvalAllowlist : undefined
+    const entries = [...(agentPerms.approvalAllowlist ?? []), ...(projEntries ?? []), ...(this.chatId ? chatPerms[this.chatId] ?? [] : [])]
+    return this.sessionAllowedTools.has(toolName) || isAllowlisted(toolName, args, { entries, sessionKeys: this.sessionAllowed })
   }
 
-  /** Записывает одобрение в выбранный scope (session / project / global). */
-  private recordAllowlist(toolName: string, args: Record<string, unknown>, scope: AllowScope): void {
-    try {
-      if (scope === 'session') {
-        this.sessionAllowed.add(this.allowlistKey(toolName, args))
-        return
-      }
-      const pattern = toolName === 'run_command'
-        ? normalizeCommandKey(String(args.command ?? ''))
-        : String(args.path ?? '')
-      if (!pattern) return
-      const entry: ApprovalAllowlistEntry = { tool: toolName, pattern, scope, createdAt: Date.now() }
-      if (scope === 'project' && this.role === 'main' && this.projectId) {
-        const projectPerms = (this.store.get('projectPermissions') as
-          Record<string, ProjectPermissionOverride> | undefined) ?? {}
-        const cur = projectPerms[this.projectId] ?? {}
-        const list = [...(cur.approvalAllowlist ?? []), entry].slice(-200)
-        this.store.set('projectPermissions', {
-          ...projectPerms,
-          [this.projectId]: { ...cur, approvalAllowlist: list },
-        })
-      } else {
-        const agentPerms = (this.store.get('agentPermissions') as
-          Record<string, unknown> | undefined) ?? {}
-        const list = [...((agentPerms.approvalAllowlist as ApprovalAllowlistEntry[] | undefined) ?? []), entry].slice(-200)
-        this.store.set('agentPermissions', { ...agentPerms, approvalAllowlist: list })
-      }
-      log('[Agent] allowlist: записано %s scope=%s pattern="%s"', toolName, scope, pattern)
-    } catch (e) {
-      log('[Agent] allowlist: ошибка записи — %s', e instanceof Error ? e.message : String(e))
-    }
+  /** Main process owns durable grants; worker only tracks this-run session grants. */
+  private recordAllowlist(toolName: string, args: Record<string, unknown>, scope: AllowScope, match: 'action' | 'tool' = 'action'): void {
+    if (match === 'tool') this.sessionAllowedTools.add(toolName)
+    else this.sessionAllowed.add(this.allowlistKey(toolName, args))
+    void scope
   }
 
   syncToolDispatcher(): void {
@@ -1156,8 +1122,9 @@ export class Agent {
             }
             // §allowlist — «Всегда разрешать» из диалога: записываем в scope
             const always = typeof decision === 'object' && decision ? decision.always : undefined
-            if (always && approval.level !== 'dangerous') {
-              this.recordAllowlist(fn.name, args, always)
+            const match = typeof decision === 'object' && decision ? decision.match : undefined
+            if (always && approval.level !== 'dangerous' && approval.level !== 'blocked') {
+              this.recordAllowlist(fn.name, args, always, match)
             }
           }
 

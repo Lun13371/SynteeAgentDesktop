@@ -8,7 +8,8 @@
 
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
-import { browserManager } from '../managers/BrowserManager'
+import { browserManager, setBrowserExtras } from '../managers/BrowserManager'
+import { BrowserExtras } from '../browser/BrowserExtras'
 import { IPC_EVENTS } from '../../shared/constants'
 import { getChatBrowserMode, setChatBrowserMode } from '../../core/db/chats'
 import {
@@ -21,6 +22,7 @@ import {
 import type Store from 'electron-store'
 
 export function registerBrowserIPC(store: Store, getWindow: () => BrowserWindow | null): void {
+  setBrowserExtras(BrowserExtras)
   // Settings-store: гейт mouseNavEnabled для X1/X2-навигации в webview
   // (инжектится в страницы, см. BrowserManager.injectSideButtonNav).
   browserManager.setSettingsStore(store)

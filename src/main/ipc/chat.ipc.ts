@@ -1,5 +1,6 @@
 import { ipcMain, BrowserWindow, app } from 'electron'
 import { Worker } from 'worker_threads'
+import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
 import * as path from 'path'
 import type Store from 'electron-store'
 import { agentManager } from '../managers/AgentManager'
@@ -54,6 +55,7 @@ import { mimeFromExt } from '../../shared/mentions'
 import { IPC_EVENTS } from '../../shared/constants'
 import type { Dot, DotConfig } from '../../shared/types'
 import { getNotificationManager } from '../managers/NotificationManager'
+import { persistApprovalGrant } from '../services/approvalAllowlist'
 import { getActivityManager } from '../managers/ActivityManager'
 
 import { v4 as uuid } from 'uuid'
@@ -423,6 +425,7 @@ function failRunCleanup(
       cancelledRun.doneSent = true // worker exit must not finalize a cancelled preparation as error
       if (cancelledRun.streamCheckpointTimer) clearInterval(cancelledRun.streamCheckpointTimer)
       if (cancelledRun.uiFlushTimer) clearTimeout(cancelledRun.uiFlushTimer)
+      disposeBrowserWorkerBroker(cancelledRun.worker)
       void cancelledRun.worker?.terminate()
       activeRuns.delete(chatId)
     }
@@ -448,6 +451,7 @@ function failRunCleanup(
   }
   if (run?.worker) {
     ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
+    disposeBrowserWorkerBroker(run.worker)
     try { run.worker.terminate() } catch { /* уже мёртв */ }
   }
   activeRuns.delete(chatId)
@@ -1360,6 +1364,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   async function runChatSend(
     params: {
       chatId: string
+      projectId?: string
       content: string
       displayContent?: string
       slashCommand?: { name: string; args: string }
@@ -1416,7 +1421,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'integrations',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
         'contextSettings',
@@ -2256,6 +2261,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       },
       env: process.env,
     })
+    attachBrowserWorkerBroker(worker, async (payload, signal) => {
+      const { browserManager } = await import('../managers/BrowserManager')
+      if (signal.aborted || run.doneSent) return { success: false, error: 'Browser run stopped.' }
+      // Preserve args, locator, frame/snapshot ids and all future backend fields.
+      // BrowserManager owns action gating and live access revocation.
+      return browserManager.execute(params.chatId, { ...payload, action: String(payload.action ?? '') } as Parameters<typeof browserManager.execute>[1], signal)
+    })
     run.worker = worker
     activeRuns.set(params.chatId, run)
 
@@ -2581,13 +2593,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           const { reqId, toolName, args } = msg as { reqId: string; toolName: string; args: Record<string, unknown>; dangerLevel?: string; dangerReason?: string; previewDiff?: string }
           // Регистрируем callback в глобальной Map — NotificationManager
           // вызовет resolveConfirm() напрямую (тот же процесс, без IPC).
-          confirmCallbacks.set(reqId, (approved: boolean, always?: string) => {
-            worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always })
+          confirmCallbacks.set(reqId, (approved: boolean, always?: string, toolWide?: boolean) => {
+            const grant = persistApprovalGrant(store, { toolName, args, chatId: params.chatId, projectId: fastContextProjectId, workdir: chatWorkdir, approved, always, toolWide })
+            worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always: grant?.scope, match: grant?.match })
           })
           // ipcMain.once — для главного окна (AgentConfirmDialog шлёт через ipcRenderer.send)
-          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean, always?: string) => {
+          ipcMain.once(`agent:confirm:response:${reqId}`, (_, approved: boolean, always?: string, toolWide?: boolean) => {
             const cb = confirmCallbacks.get(reqId)
-            if (cb) { confirmCallbacks.delete(reqId); cb(approved, always) }
+            if (cb) { confirmCallbacks.delete(reqId); cb(approved, always, toolWide) }
           })
           win?.webContents.send('agent:confirm', {
             reqId, toolName, args,
@@ -3557,47 +3570,10 @@ ${subModeOutro}`,
 
         // ── Browser: browser_*-тулы + request_access (round-trip worker →
         // BrowserManager). Гейтинг browserMode и confirm-диалог — в main.
-        case 'browser_op': {
-          ;(async () => {
-            try {
-              const { browserManager } = await import('../managers/BrowserManager')
-              const payload = (msg.payload ?? {}) as {
-                action?: string
-                url?: string
-                ref?: string
-                text?: string
-                submit?: boolean
-                key?: string
-                direction?: 'up' | 'down'
-                amount?: number
-                tabId?: string
-                reason?: string
-                ms?: number
-              }
-              const result = await browserManager.execute(params.chatId, {
-                action: payload.action ?? '',
-                url: payload.url,
-                ref: payload.ref,
-                text: payload.text,
-                submit: payload.submit,
-                key: payload.key,
-                direction: payload.direction,
-                amount: payload.amount,
-                tabId: payload.tabId,
-                reason: payload.reason,
-                ms: payload.ms,
-              })
-              worker.postMessage({ type: 'browser_op_reply', replyId: msg.replyId, result })
-            } catch (e) {
-              worker.postMessage({
-                type: 'browser_op_reply',
-                replyId: msg.replyId,
-                result: { success: false, error: (e as Error).message },
-              })
-            }
-          })()
+        case 'browser_op':
+        case 'browser_op_cancel':
+          // Handled by the scoped browser broker attached to this worker.
           break
-        }
 
         case 'context_usage':
           // Сохраняем последний real usage в БД — переживает перезапуск.
@@ -3667,6 +3643,7 @@ ${subModeOutro}`,
           )
           // Воркер своё отработал — убиваем поток, иначе течёт ~40-120МБ на каждый запрос
           ;(worker as unknown as { _terminated?: boolean })._terminated = true
+          disposeBrowserWorkerBroker(worker)
           worker.terminate()
           break
 
@@ -3751,6 +3728,7 @@ ${subModeOutro}`,
           })
           // Воркер упал — убиваем поток, не течём памятью
           ;(worker as unknown as { _terminated?: boolean })._terminated = true
+          disposeBrowserWorkerBroker(worker)
           worker.terminate()
           break
         }
@@ -3934,6 +3912,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     }
 
     if (cancelledDelegatedStarts.has(assistantMsgId) || run.doneSent) {
+      disposeBrowserWorkerBroker(worker)
       void worker.terminate()
       if (cancelledDelegatedStarts.has(assistantMsgId)) throw new Error('Delegated request cancelled during preparation')
       return { userMsg, assistantMsgId }
@@ -4110,6 +4089,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         run.streamCheckpointTimer = null
       }
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
+      disposeBrowserWorkerBroker(run.worker)
       run.worker.terminate()
       run.doneSent = true
       activeRuns.delete(chatId)
@@ -4185,7 +4165,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'integrations',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
         'contextSettings',
@@ -4569,6 +4549,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         clearInterval(run.streamCheckpointTimer)
         run.streamCheckpointTimer = null
       }
+      disposeBrowserWorkerBroker(run.worker)
+      try { run.worker.postMessage({ type: 'abort_run' }) } catch { /* worker already stopped */ }
       ;(run.worker as unknown as { _terminated?: boolean })._terminated = true
       run.worker.terminate()
       // Прерываем agent PTY: Ctrl+C + очистка pending. Без этого сессия
@@ -4757,7 +4739,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'integrations',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
         'contextSettings',

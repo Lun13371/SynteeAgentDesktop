@@ -15,7 +15,7 @@ import { VISION_TOOL_SCHEMAS } from './vision'
 import { MEDIA_TOOL_SCHEMAS } from './media'
 import { DOTS_TOOL_SCHEMAS } from './dots'
 import { CHAT_TOOL_SCHEMAS } from './chats'
-import { BROWSER_TOOL_SCHEMAS, REQUEST_ACCESS_SCHEMA } from './browser'
+import { BROWSER_TOOL_SCHEMAS, BROWSER_RESEARCH_TOOL_NAMES, REQUEST_ACCESS_SCHEMA } from './browser'
 import { TASK_SUMMARY_TOOL_SCHEMAS } from './taskSummary'
 
 export const TOOL_SCHEMAS = [
@@ -143,24 +143,9 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   if (!browserMode) {
     names.push('request_access')
   } else {
-    // Управление браузером: 15 тулов (Playwright MCP-style).
-    names.push(
-      'browser_navigate',
-      'browser_back',
-      'browser_forward',
-      'browser_reload',
-      'browser_snapshot',
-      'browser_click',
-      'browser_type',
-      'browser_press_key',
-      'browser_scroll',
-      'browser_screenshot',
-      'browser_tabs_list',
-      'browser_tab_new',
-      'browser_tab_select',
-      'browser_tab_close',
-      'browser_wait',
-    )
+    const researchOnly = planningMode || askMode || !!(persona && isReadonlyPersona(persona))
+    names.push(...BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
+      .filter(name => !researchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name)))
   }
 
   if (personaAllowed) {
@@ -209,8 +194,19 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   void webMode
   void multiAgentMode
 
+  // Browser access remains orthogonal to personas. Research modes can navigate
+  // and inspect, but cannot enter data, execute JS, upload or modify private state.
+  const browserResearchOnly = planningMode || askMode || !!(persona && isReadonlyPersona(persona))
+  const browserNames = browserMode
+    ? BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
+      .filter(name => !browserResearchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name))
+    : ['request_access']
+  const finalNames = [...new Set([
+    ...names.filter(name => !name.startsWith('browser_') && name !== 'request_access'),
+    ...browserNames,
+  ])]
   // Subtract only AFTER mode/persona/access gating. Never restore restricted core tools.
-  const schemas = filterToolSchemas(pickTools(names), {
+  const schemas = filterToolSchemas(pickTools(finalNames), {
     customToolsEnabled: options.customToolsEnabled === true,
     disabledTools: options.disabledTools ?? [],
   })
