@@ -250,6 +250,9 @@ Narrow via sources param: ["memory","messages"] etc.
 ✅ Good: title "Auth via JWT", content "Decided JWT with refresh rotation. Access 15min, refresh 7d. httpOnly cookies. Files: src/auth/jwt.ts"
 ❌ Bad: title "Fact", content "the user said something" (no details, no title)
 
+## Task summary artifacts
+When you create a user-facing deliverable (document, image, site, useful link), call publish_result once with its title, kind and absolute file path or http/https URL. Do not publish every source file you edit; those are tracked separately.
+
 ## Todo plans (update_todo)
 
 The update_todo tool creates a checklist of the task plan that is visible to the user.

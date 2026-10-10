@@ -510,6 +510,13 @@ const synteeAPI = {
   },
 
   // Чат
+  taskSummary: {
+    onChanged: (cb: (event: { chatId: string; state: import('../shared/types/taskSummary').TaskSummaryState }) => void) => { const handler=(_e: unknown,event: {chatId:string;state:import('../shared/types/taskSummary').TaskSummaryState})=>cb(event); ipcRenderer.on('task-summary:changed',handler); return ()=>ipcRenderer.removeListener('task-summary:changed',handler) },
+    get: (chatId: string) => ipcRenderer.invoke('task-summary:get', chatId) as Promise<import('../shared/types/taskSummary').TaskSummaryState>,
+    update: (chatId: string, patch: import('../shared/types/taskSummary').TaskSummaryPatch) => ipcRenderer.invoke('task-summary:update', chatId, patch) as Promise<import('../shared/types/taskSummary').TaskSummaryState>,
+    addPin: (chatId: string, text: string, messageId?: string) => ipcRenderer.invoke('task-summary:addPin', chatId, text, messageId) as Promise<import('../shared/types/taskSummary').TaskSummaryState>,
+    removePin: (chatId: string, id: string) => ipcRenderer.invoke('task-summary:removePin', chatId, id) as Promise<import('../shared/types/taskSummary').TaskSummaryState>,
+  },
   chat: {
     create: (incognito?: boolean, mode?: 'code' | 'work', projectId?: string, model?: { modelId?: string; modelProvider?: string; reasoningValue?: string }) => ipcRenderer.invoke('chat:create', incognito, mode, projectId, model),
     getAll: () => ipcRenderer.invoke('chat:getAll'),

@@ -25,6 +25,8 @@ import {
   saveStreamingBuffer, deleteStreamingBuffer,
   logAgentAction,
   getDotByChatId,
+  getTaskSummaryState, updateTaskSummaryState, addTaskSummaryPin, removeTaskSummaryPin, getMessageById,
+  createTaskSummary, upsertTaskSummary, recoverInterruptedTaskSummaries,
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { saveMemoryItem, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit, searchAllSources } from '../../core/memory/MemoryStore'
@@ -80,15 +82,21 @@ import { getMessagesCached, recoverStreamingBuffersForChat } from './historyCach
 import {
   confirmCallbacks, questionCallbacks,
   activeRuns, lastActiveChatId, setLastActiveChatId, compactRuns, activeRunMeta,
-  chatQueues, autoRecallInjectedKeys, scheduleIdleExtraction, cancelIdleExtraction, emitRunStatus, getChatTitleForNotif,
+  chatQueues, autoRecallInjectedKeys, scheduleIdleExtraction, cancelIdleExtraction, emitRunStatus, getChatTitleForNotif, runStatusListeners,
   type ActiveRun, type QueuedSend,
 } from './chatShared'
 import { registerProjectsIPC } from './projects.ipc'
 import { registerCheckpointIPC } from './chatCheckpoint.ipc'
 import { registerForkIPC } from './chatFork.ipc'
 import { cleanupOrphanDraftFiles } from './mentions.ipc'
-import { executeManageChats, initializeDelegatedChats } from '../services/delegatedChats'
-import { getDelegatedRequest } from '../../core/db/delegatedChats'
+import { executeManageChats, initializeDelegatedChats, requestState } from '../services/delegatedChats'
+import { getDelegatedRequest, listDelegatedRequests, listDelegatedChatCreations, ownsDelegatedChat, getDelegationChat } from '../../core/db/delegatedChats'
+import { classifyDiagnosticOutcome, isExplicitTaskContinuation, isVerificationCommand } from '../../shared/types/taskSummary'
+import type { TaskSummary, TaskSummaryParticipant } from '../../shared/types/taskSummary'
+
+// Installed by registerChatIPC; all events must include authoritative participants.
+let broadcastTaskSummary: ((chatId: string, state: ReturnType<typeof getTaskSummaryState>) => void) | undefined
+let refreshDelegationSummary: ((chatId: string, requestId: string) => void) | undefined
 
 // ── Pending attachment paths ─────────────────────────────────────────────────
 // Пути вложений отправок, чьи user-сообщения ещё НЕ сохранены в БД:
@@ -395,6 +403,20 @@ function failRunCleanup(
   assistantMsgId: string,
   e: unknown,
 ): void {
+  // If setup failed before the worker's terminal event, close only a summary
+  // explicitly associated with this assistant message. Incognito runs never create one.
+  const closeSummary = (status: 'error' | 'cancelled', detail: string) => {
+    try {
+      const state = getTaskSummaryState(chatId)
+      const task = state.tasks.find(item => item.status === 'running' && item.messageIds.includes(assistantMsgId))
+      if (!task) return
+      task.status = status
+      task.updatedAt = Date.now()
+      task.summary = detail.slice(0, 500)
+      const next = upsertTaskSummary(task)
+      broadcastTaskSummary?.(chatId, next)
+    } catch (summaryError) { log('[task-summary] terminal update failed: %s', (summaryError as Error).message) }
+  }
   if (cancelledDelegatedStarts.delete(assistantMsgId)) {
     const cancelledRun = activeRuns.get(chatId)
     if (cancelledRun?.msgId === assistantMsgId) {
@@ -405,6 +427,7 @@ function failRunCleanup(
       activeRuns.delete(chatId)
     }
     if (activeRunMeta.get(chatId)?.msgId === assistantMsgId) activeRunMeta.delete(chatId)
+    closeSummary('cancelled', 'Работа остановлена до запуска агента')
     emitRunStatus(win, chatId, 'cancelled', assistantMsgId)
     drainQueue(win, chatId)
     return
@@ -412,6 +435,7 @@ function failRunCleanup(
   const message = e instanceof Error ? e.message : String(e)
   log('[chat:send] runChatSend CRASHED chatId=%s: %s', chatId, message)
   console.error('[chat:send] runChatSend CRASHED:', e)
+  closeSummary('error', message)
   // Воркер мог быть создан до падения — терминируем, не течём потоками.
   const run = activeRuns.get(chatId)
   if (run?.streamCheckpointTimer) {
@@ -601,6 +625,7 @@ function resolveTreeSitterWasmDir(): string {
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
+  recoverInterruptedTaskSummaries()
   setGlobalMemorySettingsStore(store)
 
   // Fast Context: инициализируем main-процессное connection к БД для watcher'а
@@ -1373,6 +1398,21 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     history: Message[],
     assistantMsgId: string,
   ): Promise<{ userMsg: Message; assistantMsgId: string }> {
+    let summaryTaskId: string | undefined
+    if (!params.incognito && !params.sideChatParentId) {
+      try {
+        const state = getTaskSummaryState(params.chatId)
+        const latest = state.tasks[0]
+        const continuation = !state.newTaskRequested && latest && latest.status !== 'running' && isExplicitTaskContinuation(params.content)
+        let task = continuation ? latest : undefined
+        if (!task) task = createTaskSummary(params.chatId, params.content.trim().replace(/\s+/g, ' ').slice(0, 90) || 'Задача', assistantMsgId)
+        else if (!task.messageIds.includes(assistantMsgId)) task.messageIds.push(assistantMsgId)
+        task.status = 'running'; task.updatedAt = Date.now(); summaryTaskId = task.id
+        upsertTaskSummary(task)
+        updateTaskSummaryState(params.chatId, { newTaskRequested: false, selectedTaskId: task.id })
+        emitTaskSummary(params.chatId, getTaskSummaryState(params.chatId))
+      } catch (e) { log('[task-summary] start failed: %s', (e as Error).message) }
+    }
     const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
@@ -1861,6 +1901,28 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
 
       const todoArr = (todo as Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }> | undefined)
+      if (summaryTaskId) {
+        const state = getTaskSummaryState(params.chatId); const task = state.tasks.find(t => t.id === summaryTaskId)
+        if (task) {
+          task.status = finishReason === 'done' ? 'done' : finishReason === 'stopped' ? 'cancelled' : 'error'
+          task.updatedAt = Date.now()
+          const finalTodo = todoArr?.length ? todoArr : run.bufferedTodo.length ? run.bufferedTodo : task.todo
+          task.todo = finalTodo.slice(0, 100).map(item => ({ text: String(item.text).slice(0, 300), status: item.status }))
+          const completed = task.todo.filter(item => item.status === 'done').map(item => item.text)
+          task.remaining = task.todo.filter(item => item.status === 'pending' || item.status === 'in_progress').map(item => item.text).join('; ').slice(0, 500) || undefined
+          const facts = [
+            completed.length ? `Сделано: ${completed.slice(0, 8).join('; ')}` : '',
+            task.results.length ? `Результаты: ${task.results.slice(0, 5).map(item => item.title).join('; ')}` : '',
+            task.checks.length ? `Проверки: ${task.checks.slice(0, 5).map(item => `${item.title} — ${item.status === 'passed' ? 'пройдена' : item.status === 'failed' ? 'ошибка' : 'не подтверждена'}`).join('; ')}` : '',
+            task.changes.length ? `Изменено файлов: ${new Set(task.changes.map(item => item.path)).size}` : '',
+            task.remaining ? `Осталось: ${task.remaining}` : '',
+          ].filter(Boolean)
+          task.summary = (facts.join('. ') || (task.status === 'cancelled' ? 'Работа остановлена; выполненные действия сохранены.' : 'Нет структурированных событий результата.')).slice(0, 1200)
+          task.messageIds = task.messageIds.slice(-200)
+          const next = upsertTaskSummary(task)
+          emitTaskSummary(params.chatId, next)
+        }
+      }
       // Санитизация steps перед сохранением: ensureToolResults добивает
       // синтетический tool_result для любого tool_call без парного result.
       // Без этого при error/падении воркера сохраняется битая история
@@ -2372,6 +2434,40 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // зафиксироваться раньше, чем придёт tool_call.
           flushUiTokens()
           const rawStep = msg.step as Record<string, unknown>
+          if (summaryTaskId && rawStep.type === 'tool_result' && ['publish_result', 'get_diagnostics', 'run_command'].includes(String(rawStep.toolName)) && msg.msgId === assistantMsgId && typeof rawStep.content === 'string') {
+            const state = getTaskSummaryState(params.chatId); const task = state.tasks.find(t => t.id === summaryTaskId)
+            if (task) {
+              const output = rawStep.content.slice(0, 4000)
+              if (rawStep.toolName === 'publish_result' && rawStep.success === true) {
+                try {
+                  const parsed = JSON.parse(output) as { taskSummaryResult?: { title?: string; kind?: 'file'|'url'|'image'; target?: string } }
+                  const result = parsed.taskSummaryResult
+                  if (typeof result?.title === 'string' && typeof result.target === 'string' && ['file', 'url', 'image'].includes(result.kind ?? '')) {
+                    task.results = task.results.filter(item => item.target !== result.target)
+                    task.results.unshift({ id: uuid(), title: result.title.slice(0, 120), kind: result.kind!, target: result.target.slice(0, 2000), messageId: assistantMsgId })
+                  }
+                } catch { /* malformed publication is not an artifact */ }
+              }
+              const toolName=String(rawStep.toolName||'')
+              if (toolName === 'get_diagnostics') {
+                const unknown = /DIAGNOSTICS_UNKNOWN|check DID NOT run completely|не удалось определить/i.test(output)
+                const errorCount = output.match(/Found\s+(\d+)\s+errors?/i)?.[1]
+                const hasErrors = (errorCount !== undefined && Number(errorCount) > 0) || /\[.+\] ERROR /i.test(output)
+                const status = classifyDiagnosticOutcome({ supported: !unknown, completed: rawStep.success === true && !unknown, executionFailed: unknown, findingsFailed: hasErrors })
+                task.checks.unshift({ id: uuid(), title: 'Диагностика', status, detail: output.replace(/DIAGNOSTICS_UNKNOWN:\s*/g, '').slice(0, 6000), messageId: assistantMsgId })
+              }
+              if (toolName === 'run_command') {
+                const args = run.toolCallArgsCache.get(String(rawStep.callId || ''))?.args
+                const command = String(args?.command || '')
+                if (isVerificationCommand(command)) {
+                  const exitCode = output.match(/^\[exit: (-?\d+)\]/m)?.[1]
+                  const status = exitCode === undefined ? 'unknown' : Number(exitCode) === 0 && rawStep.success === true ? 'passed' : 'failed'
+                  task.checks.unshift({ id: uuid(), title: command.slice(0, 100), status, detail: output.slice(-6000), messageId: assistantMsgId })
+                }
+              }
+              task.results=task.results.slice(0,30); task.checks=task.checks.slice(0,30); task.updatedAt=Date.now(); const next=upsertTaskSummary(task); broadcastTaskSummary?.(params.chatId, next)
+            }
+          }
           // tool_call_pending — временный ранний сигнал для UI (см. Agent.ts
           // onToolCallStarted), заменяется настоящим tool_call через
           // pendingCallId матчинг на фронтенде. Не персистим в bufferedSteps —
@@ -2411,6 +2507,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               serverName: rawStep.serverName,
             }
             run.bufferedSteps.push(ts)
+            if (summaryTaskId && rawStep.type === 'tool_result' && rawStep.success === true && (rawStep.toolName === 'edit_file' || rawStep.toolName === 'write_file') && msg.msgId === assistantMsgId) {
+              const state = getTaskSummaryState(params.chatId); const task = state.tasks.find(t => t.id === summaryTaskId); const args=run.toolCallArgsCache.get(String(rawStep.callId||''))?.args; const rel=typeof args?.path==='string'?args.path:''
+              if(task && rel){ const diff=typeof rawStep.diff==='string'?rawStep.diff:typeof rawStep.content==='string'?rawStep.content:''; const existing=task.changes.find(c=>c.path===rel); if(existing){ existing.diff=[existing.diff,diff].filter(Boolean).join('\n\n--- subsequent patch ---\n\n').slice(-12000)||undefined; existing.messageId=assistantMsgId; task.changes=task.changes.filter(c=>c!==existing); task.changes.unshift(existing) } else task.changes.unshift({path:rel.slice(0,500),diff:diff.slice(-12000)||undefined,messageId:assistantMsgId}); task.changes=task.changes.slice(0,50); task.updatedAt=Date.now(); const next=upsertTaskSummary(task); broadcastTaskSummary?.(params.chatId, next) }
+            }
             run.checkpointDirty = true
             // Реконструкция итераций (зеркало ai-worker.ts:282-330):
             // tool_call начинает новую итерацию (захватывая pendingTextAfter/
@@ -2471,6 +2571,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // маршрутизировать шаг в нужный чат (раньше фильтрация шла по msgId
           // в локальном стейте ChatPage — не работало для параллельных чатов).
           win?.webContents.send('agent:step', { ...(msg.step as object), msgId: msg.msgId, chatId: msg.chatId })
+          refreshDelegationSummary?.(params.chatId, assistantMsgId)
           // Форвард в ActivityManager (overlay-информер активности)
           getActivityManager()?.onStep({ ...(msg.step as object), msgId: msg.msgId, chatId: msg.chatId })
           break
@@ -2556,6 +2657,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         case 'todo_update':
           run.bufferedTodo = msg.items as typeof run.bufferedTodo
           run.checkpointDirty = true
+          if (summaryTaskId && msg.msgId === assistantMsgId) {
+            const state = getTaskSummaryState(params.chatId); const task = state.tasks.find(t => t.id === summaryTaskId)
+            if (task) { task.todo = run.bufferedTodo.slice(0, 100).map(x => ({ text: String(x.text).slice(0, 300), status: x.status })); task.updatedAt = Date.now(); const next = upsertTaskSummary(task); broadcastTaskSummary?.(params.chatId, next) }
+          }
           win?.webContents.send('agent:todo', { msgId: msg.msgId, chatId: msg.chatId, items: msg.items })
           break
 
@@ -2715,6 +2820,7 @@ ${subModeOutro}`,
             }
             const result = await executeManageChats(msg.payload as import('../../shared/delegatedChats').ManageChatsParams, {
               chatId: params.chatId,
+              sourceMessageId: assistantMsgId,
               modelId: mainAssignment?.modelId,
               providerId: mainAssignment?.providerId,
               reasoningValue: storeData.reasoningValue as string | undefined,
@@ -2725,7 +2831,10 @@ ${subModeOutro}`,
             }, {
               send: sendChatMessageProgrammatic,
               stop: (chatId, requestId) => chatStopImpl?.(chatId, requestId) ?? false,
-              changed: (chatId) => win?.webContents.send('chat:delegated-changed', { chatId }),
+              changed: (chatId) => {
+                win?.webContents.send('chat:delegated-changed', { chatId })
+                if (summaryTaskId) broadcastTaskSummary?.(params.chatId, getTaskSummaryState(params.chatId))
+              },
             })
             if (!run.doneSent) worker.postMessage({ type: 'manage_chats_reply', replyId: msg.replyId, result })
           })().catch(e => {
@@ -3541,7 +3650,7 @@ ${subModeOutro}`,
             mergeFileCache(params.chatId, msg.fileCacheUpdates as Record<string, unknown> as never)
           }
           sendDone(
-            (msg.fullText as string) || run.bufferedText,
+            ((msg.fullText as string) || run.bufferedText).trim() ? ((msg.fullText as string) || run.bufferedText) : '⚠ **Ошибка:** провайдер завершил ответ без текста.',
             (msg.thinkingText as string) || run.bufferedThinking || undefined,
             (msg.thinkingMs as number) || run.bufferedThinkingMs,
             (msg.collectedSteps as unknown[]) || run.bufferedSteps,
@@ -3554,6 +3663,7 @@ ${subModeOutro}`,
               cacheReadTokens: msg.cacheReadTokens as number | undefined,
               cacheWriteTokens: msg.cacheWriteTokens as number | undefined,
             },
+            ((msg.fullText as string) || run.bufferedText).trim() ? 'done' : 'error',
           )
           // Воркер своё отработал — убиваем поток, иначе течёт ~40-120МБ на каждый запрос
           ;(worker as unknown as { _terminated?: boolean })._terminated = true
@@ -3615,6 +3725,7 @@ ${subModeOutro}`,
             }
             if (!params.incognito) saveMessage(errorAssistantMsg)
             run.doneSent = true
+            if (summaryTaskId) { const state=getTaskSummaryState(params.chatId); const task=state.tasks.find(t=>t.id===summaryTaskId); if(task){task.status='error';task.updatedAt=Date.now();task.summary='Запуск завершился ошибкой';const next=upsertTaskSummary(task);broadcastTaskSummary?.(params.chatId, next)} }
             // Сливаем накопленные UI-токены (могли остаться thinking-токены).
             flushUiTokens()
             if (activeRuns.get(params.chatId) === run) activeRuns.delete(params.chatId)
@@ -3857,6 +3968,81 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   })
 
   ipcMain.handle('chat:getAll', () => getAllChats())
+  const validChatId = (id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length <= 128 && !!getDB().prepare('SELECT 1 FROM chats WHERE id=? AND is_incognito=0').get(id)
+  const hydrateTaskSummary = (chatId: string, task: TaskSummary): TaskSummary => {
+    const messageIds = new Set(task.messageIds)
+    const participants: TaskSummaryParticipant[] = []
+    for (const agent of agentManager.getAll()) {
+      if (agent.chatId !== chatId || !agent.parentId || !messageIds.has(agent.parentId)) continue
+      const safeSummary = (agent.summary || agent.result || '').replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, '').slice(0, 6000)
+              const status = agent.status === 'pending' ? 'starting' : agent.status as TaskSummaryParticipant['status']
+        participants.push({ id: `agent:${agent.id}`, kind: 'subagent', title: agent.role || agent.task.slice(0, 120), task: agent.task.slice(0, 6000), status, createdAt: agent.createdAt, finishedAt: agent.finishedAt, model: agent.model || undefined, role: agent.role || undefined, stepsCount: agent.steps.length, toolCallsCount: agent.steps.filter(s => s.type === 'tool_call').length, summary: safeSummary || undefined, error: agent.error?.slice(0, 1000), agentId: agent.id, sourceMessageId: agent.parentId })
+    }
+    for (const request of listDelegatedRequests(chatId)) {
+      const sourceMessageId = request.sourceMessageId ?? ''
+      const child = getDelegationChat(request.chatId)
+      if (!messageIds.has(sourceMessageId) || !request.task || request.sourceChatId !== chatId || !ownsDelegatedChat(chatId, request.chatId) || !child || child.isIncognito) continue
+      // requestState reconciles queued/running records against the authoritative
+      // queue/run/message state. Do not render the stale row status here.
+      const currentState = requestState(request.chatId, request.requestId)
+      const status = currentState?.status && currentState.status !== 'idle' ? currentState.status : request.status
+      const resultMessage = ['done', 'error', 'cancelled', 'interrupted'].includes(status) ? getMessageById(request.requestId) : undefined
+      const clean = resultMessage?.content?.replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, '').slice(0, 6000)
+      const liveSteps = activeRuns.get(request.chatId)?.msgId === request.requestId ? activeRuns.get(request.chatId)?.bufferedSteps : undefined
+      const childSteps = (liveSteps ?? resultMessage?.toolSteps ?? []) as Array<{ type?: string }>
+      const updatedRequest = getDelegatedRequest(request.chatId, request.requestId) ?? request
+      const titleRow = getDB().prepare('SELECT title FROM chats WHERE id=? AND is_incognito=0').get(request.chatId) as { title?: string } | undefined
+      const model = getChatModel(request.chatId)
+      participants.push({ id: `chat:${request.requestId}`, kind: 'chat', title: titleRow?.title || 'Связанный чат', task: request.task.slice(0, 6000), status: status as TaskSummaryParticipant['status'], createdAt: request.createdAt, finishedAt: ['done','error','cancelled','interrupted'].includes(status) ? updatedRequest.updatedAt : undefined, model: model?.modelId, stepsCount: childSteps.length, toolCallsCount: childSteps.filter(step => step.type === 'tool_call').length, summary: clean, error: updatedRequest.error?.slice(0, 1000), chatId: request.chatId, requestId: request.requestId, sourceMessageId, readAt: updatedRequest.readAt })
+    }
+    for (const creation of listDelegatedChatCreations(chatId)) {
+      if (!messageIds.has(creation.sourceMessageId) || participants.some(item => item.kind === 'chat' && item.chatId === creation.chatId)) continue
+      participants.push({ id: `created:${creation.chatId}`, kind: 'chat', title: creation.title, task: 'Чат создан без поручения в этой задаче.', status: 'idle', chatId: creation.chatId, sourceMessageId: creation.sourceMessageId, createdAt: creation.createdAt })
+    }
+    return { ...task, participants: participants.slice(-50) }
+  }
+  const hydrateState = (chatId: string, state: ReturnType<typeof getTaskSummaryState>) => ({ ...state, tasks: state.tasks.map(task => hydrateTaskSummary(chatId, task)) })
+  const emitTaskSummary = (chatId: string, state: ReturnType<typeof getTaskSummaryState>) => { const hydrated = hydrateState(chatId, state); mainWindow.getWindow()?.webContents.send(IPC_EVENTS.TASK_SUMMARY_CHANGED, { chatId, state: hydrated }); return hydrated }
+  broadcastTaskSummary = emitTaskSummary
+  initializeDelegatedChats() // Persist child status before observers hydrate its parent.
+  const participantTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const refreshParticipants = (chatId: string) => {
+    if (!validChatId(chatId) || participantTimers.has(chatId)) return
+    participantTimers.set(chatId, setTimeout(() => {
+      participantTimers.delete(chatId)
+      if (validChatId(chatId)) emitTaskSummary(chatId, getTaskSummaryState(chatId))
+    }, 180))
+  }
+  refreshDelegationSummary = (childChatId, requestId) => {
+    const request = getDelegatedRequest(childChatId, requestId)
+    if (request?.sourceMessageId && validChatId(request.sourceChatId)) refreshParticipants(request.sourceChatId)
+  }
+  agentManager.registerWindowGetter(() => mainWindow.getWindow())
+  agentManager.onUpdate(agent => {
+    // AgentManager is authoritative for both live and terminal subagent state.
+    // Hydration is keyed by parent message, never by title/time.
+    if (!agent.parentId) return
+    const taskState = getTaskSummaryState(agent.chatId)
+    if (taskState.tasks.some(task => task.messageIds.includes(agent.parentId!))) refreshParticipants(agent.chatId)
+  })
+  runStatusListeners.add((childChatId, status, requestId) => {
+    if (!requestId || status === 'compacting') return
+    const request = getDelegatedRequest(childChatId, requestId)
+    if (!request || request.sourceChatId === childChatId) return
+    const taskState = getTaskSummaryState(request.sourceChatId)
+    if (request.sourceMessageId && taskState.tasks.some(task => task.messageIds.includes(request.sourceMessageId!))) refreshParticipants(request.sourceChatId)
+  })
+  ipcMain.handle('task-summary:get', (_e, chatId: unknown) => validChatId(chatId) ? hydrateState(chatId, getTaskSummaryState(chatId)) : { tasks: [], pinned: false, manualPins: [] })
+  ipcMain.handle('task-summary:update', (_e, chatId: unknown, patch: unknown) => {
+    if (!validChatId(chatId) || !patch || typeof patch !== 'object' || Array.isArray(patch)) return { tasks: [], pinned: false, manualPins: [] }
+    const p=patch as Record<string,unknown>; if(Object.keys(p).some(k=>!['pinned','selectedTaskId','newTaskRequested'].includes(k)) || (p.pinned!==undefined&&typeof p.pinned!=='boolean') || (p.newTaskRequested!==undefined&&typeof p.newTaskRequested!=='boolean') || (p.selectedTaskId!==undefined&&(typeof p.selectedTaskId!=='string'||p.selectedTaskId.length>128))) return getTaskSummaryState(chatId)
+    return emitTaskSummary(chatId,updateTaskSummaryState(chatId,p as import('../../shared/types/taskSummary').TaskSummaryPatch))
+  })
+  ipcMain.handle('task-summary:addPin', (_e, chatId: unknown, text: unknown, messageId?: unknown) => {
+    if (!validChatId(chatId) || typeof text!=='string' || !text.trim() || text.length>500 || (messageId!==undefined && (typeof messageId!=='string' || !getDB().prepare('SELECT 1 FROM messages WHERE id=? AND chat_id=?').get(messageId,chatId)))) return { tasks: [], pinned: false, manualPins: [] }
+    return emitTaskSummary(chatId,addTaskSummaryPin(chatId,text.trim(),messageId as string|undefined))
+  })
+  ipcMain.handle('task-summary:removePin', (_e, chatId: unknown, id: unknown) => !validChatId(chatId)||typeof id!=='string' ? {tasks:[],pinned:false,manualPins:[]} : emitTaskSummary(chatId,removeTaskSummaryPin(chatId,id)))
   // ── Активный чат (для Spotlight "спросить в текущем") ───────────────────
   // Renderer шлёт chat:setActive при каждой смене currentChatId в zustand.
   // Spotlight (отдельное BrowserWindow) спрашивает chat:getActive чтобы
