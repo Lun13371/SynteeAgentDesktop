@@ -4,6 +4,9 @@ import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../cor
 import * as path from 'path'
 import type Store from 'electron-store'
 import { agentManager } from '../managers/AgentManager'
+import { assertContextChat, getContextPreferences, setContextPreferences, filterContextHistory, setContextMessageHidden, setContextMessagePinned } from '../../core/db/contextControls'
+import { invalidateHistoryCache } from './historyCache'
+import type { ContextInspection, ContextPreferences } from '../../shared/types/contextControls'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import {
   createChat, getAllChats, getMessages, getMessagesPage, saveMessage,
@@ -27,6 +30,7 @@ import {
   logAgentAction,
   getDotByChatId,
   getTaskSummaryState, updateTaskSummaryState, addTaskSummaryPin, removeTaskSummaryPin, getMessageById,
+  getChatGoal, setChatGoal,
   createTaskSummary, upsertTaskSummary, recoverInterruptedTaskSummaries,
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
@@ -67,11 +71,12 @@ import {
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
-import { setFastContextPaths } from '../../core/context/fastContextWatcher'
+import { setFastContextPaths, registerProjectWorkdir } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import { existsSync } from 'fs'
 import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
+import { perfMark, perfEvent, perfPhase, perfPhaseAsync } from '../../core/performanceDiagnostics'
 import { getSkillManager } from '../../core/skills/skillManager'
 import { getSkillInstructions } from '../../core/skills/skillInstructions'
 import { getMcpManager } from '../../core/mcp/McpManager'
@@ -80,7 +85,7 @@ import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, Attac
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { messageToContextMessages, formatReplyQuote } from './chatContextHelpers'
 import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
-import { getMessagesCached, recoverStreamingBuffersForChat } from './historyCache'
+import { getMessagesCached, getMessagesAfterLatestCompactCached, recoverStreamingBuffersForChat } from './historyCache'
 import {
   confirmCallbacks, questionCallbacks,
   activeRuns, lastActiveChatId, setLastActiveChatId, compactRuns, activeRunMeta,
@@ -584,18 +589,19 @@ function deleteMiddleMessagesFromDB(history: Message[], keepFirst: number, keepL
  *
  * Если divider'а нет (первая компакция ещё не было) — live = вся история.
  */
+// Legacy in-memory filter for caller-owned ephemeral histories (side/incognito).
+// Keep its divider boundary semantics while applying context visibility.
 function getLiveMessages(history: Message[]): Message[] {
-  let lastCompactionAt = 0
-  for (const msg of history) {
-    if (msg.slashCommand?.name === 'compact' && msg.createdAt > lastCompactionAt) {
-      lastCompactionAt = msg.createdAt
+  let latestDividerAt = -Infinity
+  for (const message of history) {
+    if (message.role === 'system' && message.slashCommand?.name === 'compact') {
+      latestDividerAt = Math.max(latestDividerAt, message.createdAt)
     }
   }
-  // hiddenFromContext: сообщения, скрытые редактором чата, не попадают в
-  // AI-контекст (промпт, счётчик контекста, компакция). Пользователь видит
-  // их в UI (затемнёнными), модель — нет.
-  if (lastCompactionAt === 0) return history.filter(m => !m.hiddenFromContext)
-  return history.filter(m => m.createdAt > lastCompactionAt && m.slashCommand?.name !== 'compact' && !m.hiddenFromContext)
+  return history.filter(message =>
+    !(message.role === 'system' && message.slashCommand?.name === 'compact')
+    && message.createdAt > latestDividerAt,
+  )
 }
 
 /**
@@ -630,6 +636,11 @@ function resolveTreeSitterWasmDir(): string {
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
   recoverInterruptedTaskSummaries()
+  const broadcastGoal = (chatId: string, goal: import('../../shared/types/goal').ChatGoal | null): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('goal:updated', { chatId, goal })
+    }
+  }
   setGlobalMemorySettingsStore(store)
 
   // Fast Context: инициализируем main-процессное connection к БД для watcher'а
@@ -659,7 +670,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
   } catch { /* БД ещё пуста — ок */ }
 
-  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, planningMode?: boolean, askMode?: boolean): Promise<string> => {
+  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, planningMode?: boolean, askMode?: boolean, inspection?: Pick<ContextInspection, 'sources' | 'files'>): Promise<string> => {
+    const contextPrefs = getContextPreferences(chatId)
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
     let workingMemory = ''
@@ -701,10 +713,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           const code = String(e?.code ?? e?.errno ?? '')
           const isBusy = code === '5' || code === '6' || e?.message?.toLowerCase().includes('database is locked') || e?.message?.toLowerCase().includes('sqlite_busy')
           if (isBusy && attempt < 3) {
-            // sync sleep is not possible; use Atomics.wait for a real blocking sleep
-            const ms = 50 * attempt
-            try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } catch { /* SharedArrayBuffer may be unavailable */ }
-            continue
+            // Не блокируем Electron main process на время retry. Atomics.wait
+            // останавливал весь IPC/UI на 50–100мс при каждом SQLITE_BUSY,
+            // что особенно заметно на HDD и во время фоновой индексации.
+            // Для prompt-контекста безопаснее сразу использовать fallback:
+            // следующий send перечитает данные после освобождения SQLite.
+            console.warn(`[getSystemPrompt] ${label} busy — using fallback without blocking retry`)
+            return fallback
           }
           console.warn(`[getSystemPrompt] ${label} failed (attempt ${attempt}): ${e?.message ?? e}`)
           log('[getSystemPrompt] %s failed: %s', label, (e?.message ?? String(e)).slice(0, 200))
@@ -884,13 +899,26 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // раньше здесь было !!params.browserMode || getChatBrowserMode(dbChatId) —
     // ReferenceError, валивший КАЖДЫЙ chat:send).
     const promptBrowserMode = chatId ? getChatBrowserMode(chatId) : false
-    let systemPrompt = buildSystemPrompt({ userName, memoryContext, memoryStats, graphStats, workingMemory: mergedWorkingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, notesInfo, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext, pluginSections, protectedVars })
+    // Source controls affect actual builder inputs, not just inspector labels.
+    const sources = contextPrefs.sources
+    const includedFiles = projectInstructions.filter(file => sources.instructions && sources.projectFiles && !contextPrefs.excludedFiles.includes(file.source))
+    if (inspection) {
+      inspection.files = projectInstructions.map(file => ({ source: file.source, characters: file.content.length, included: includedFiles.includes(file) }))
+      inspection.sources = [
+        { key: 'instructions', label: 'Дополнительные инструкции', enabled: sources.instructions, detail: 'Custom system prompt, инструкции проекта и статические секции плагинов. Базовые правила и режимы остаются.', characters: (customSystemPrompt?.length ?? 0) + projectInstructions.reduce((n, f) => n + f.content.length, 0) + pluginSections.reduce((n, f) => n + f.content.length, 0) },
+        { key: 'projectFiles', label: 'Контекст проекта и файлы', enabled: sources.projectFiles, detail: 'Скан проекта, файлы инструкций и живой контекст плагинов. Workdir и доступ к файлам остаются.', characters: (projectContext?.length ?? 0) + projectInstructions.reduce((n, f) => n + f.content.length, 0) + pluginContext.reduce((n, f) => n + f.content.length, 0) },
+        { key: 'memory', label: 'Память в system prompt', enabled: sources.memory && getMemorySettings().enabled, detail: 'Curated memory, working memory, summary, граф и заметки. Явные вызовы recall_memory не блокируются.', characters: memoryContext.length + mergedWorkingMemory.length },
+        { key: 'history', label: 'История сообщений', enabled: sources.history, detail: 'После последнего сжатия. Закреплённые сообщения включаются даже при выключенной истории.', characters: 0 },
+        { key: 'tools', label: 'История инструментов', enabled: sources.tools, detail: 'Прошлые tool calls и результаты. Доступность инструментов текущего запуска не меняется.', characters: 0 },
+      ]
+    }
+    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, notesInfo: sources.memory ? notesInfo : undefined, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).
-    if (!isIncognito) {
+    if (!isIncognito && !inspection && contextPrefs.sources.instructions) {
       try {
-        systemPrompt = await getPluginManager().runPromptHook(chatId, systemPrompt)
+        systemPrompt = await perfPhaseAsync('chat.system_prompt.plugin_hook', () => getPluginManager().runPromptHook(chatId, systemPrompt))
       } catch { /* ignore */ }
     }
 
@@ -898,6 +926,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       systemPrompt += '\n\n## Memory — DISABLED by user\nAll Syntee memory is OFF. Do not read or write global, project, chat, working, summary, or recall memory. Do not claim memory is enabled or available.\n'
     } else if (!getGlobalMemoryEnabled()) {
       systemPrompt += '\n\n## Global memory — DISABLED by user\nGlobal long-term memory is OFF. Do not claim it is enabled or available.\n'
+    }
+    if (!isIncognito && chatId) {
+      const goal = getChatGoal(chatId)
+      if (goal && ['running', 'paused', 'blocked'].includes(goal.status)) {
+        systemPrompt += `\n\n## ACTIVE USER GOAL (persistent)\nObjective: ${goal.objective}\nCompletion criteria: ${goal.criteria.join('; ')}\nConstraints: ${goal.constraints.join('; ')}\nProgress: ${goal.progress.slice(-12).join(' | ')}\nStep budget: ${goal.steps}/${goal.maxSteps}. Do not claim completion without concrete evidence. Stop for blockers or approvals; never bypass tool permissions. Goal status: ${goal.status}.`
+      }
     }
     return systemPrompt
 
@@ -1473,8 +1507,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const dbChatId = params.sideChatParentId ?? params.chatId
     let currentWorkingMemory = ''
     let storedSummary = ''
-    try { currentWorkingMemory = getWorkingMemory(dbChatId) } catch { /* ok */ }
-    try { storedSummary = getChatSummary(dbChatId) } catch { /* ok */ }
+    if (getContextPreferences(dbChatId).sources.memory) {
+      try { currentWorkingMemory = getWorkingMemory(dbChatId) } catch { /* ok */ }
+      try { storedSummary = getChatSummary(dbChatId) } catch { /* ok */ }
+    }
 
     // Обновляем createdAt на момент реального старта. Для queued-запросов
     // userMsg.createdAt был зафиксирован в chat:send при отправке (до очереди),
@@ -1558,7 +1594,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // messageId тегируется здесь (на flatMap), чтобы compaction-логика могла
     // вычислить boundary (createdAt граничного Message) для divider'а без
     // удаления из БД.
-    const liveMessages = getLiveMessages(history)
+    // Full history is retained for UI/export/undo, but AI only needs the live
+    // tail after the latest compact divider. Preserve the original ASC order.
+    const historyStarted = perfMark()
+    // Ephemeral side/incognito sends must use their caller-provided history;
+    // persistent sends query scoped DB history and exclude the user row saved above.
+    const liveMessages = params.incognito
+      ? getLiveMessages(history)
+      : filterContextHistory(params.chatId, getMessagesAfterLatestCompactCached(params.chatId, userMsg.id), userMsg.id)
+    perfEvent('chat.history.load', perfMark() - historyStarted)
     const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
       messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),
     )
@@ -1612,7 +1656,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         return result
       }
 
-      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, false)
+      const result = await perfPhaseAsync('chat.rolling_window', () => applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, false), { messageCount: rawHistory.length })
       if (result.compressed) {
         // Сброс dedup-кэша auto-recall: после компакции модель теряет старый
         // контекст (старые сообщения заменены summary), старые auto-recall
@@ -1687,8 +1731,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // so getChatSummary() returned empty and the agent started the
           // next round with no memory of the conversation. Now both writes
           // commit together or not at all.
-          const tokensBefore = estimateMessagesTokens(rawHistory)
-          const tokensAfter = estimateMessagesTokens(result.messages)
+          const tokensBefore = perfPhase('chat.token_calc.before', () => estimateMessagesTokens(rawHistory), { messageCount: rawHistory.length })
+          const tokensAfter = perfPhase('chat.token_calc.after', () => estimateMessagesTokens(result.messages), { messageCount: result.messages.length })
           const firstTailMsgId = result.messages.find(m => m.messageId)?.messageId
           const boundaryMsg = firstTailMsgId ? liveMessages.find(m => m.id === firstTailMsgId) : undefined
           const dividerCreatedAt = boundaryMsg ? boundaryMsg.createdAt - 1 : (userMsg.createdAt - 1)
@@ -1733,9 +1777,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
     }
 
+    // Freeze prompt inputs once per run so estimate and worker startup use the
+    // same snapshot even if settings/memory change between asynchronous phases.
+    const sendSystemPrompt = params.sideChatParentId
+      ? undefined
+      : await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)
     if (ctxSettings.tokenCounterEnabled) {
       const contextWindow = getModelContextWindow(storeData)
-      const sysPrompt = await getSystemPrompt(dbChatId, params.incognito, undefined, effectivePlanningMode, effectiveAskMode)
+      const sysPrompt = sendSystemPrompt
       const currentMsgTokens = estimateTokens(params.content)
       const snapshot = buildSnapshotFromEstimate(processedHistory, contextWindow, {
         systemPrompt: sysPrompt,
@@ -2285,7 +2334,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch { /* плагины недоступны — не роняем чат */ }
     }
 
-    // ── Периодический checkpoint стриминга в БД (каждые 3 сек) ──
+    // ── Периодический checkpoint стриминга в БД (каждые 8 сек) ──
     // При жёстком краше процесса (SIGSEGV, kill -9, OOM, BSOD) ни before-quit,
     // ни worker.on('exit'), ни uncaughtException не гарантированно срабатывают.
     // Без этого таймера весь накопленный bufferedText/steps/thinking живёт
@@ -2295,6 +2344,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // переиндексация всего content) → фризы main на слабых машинах.
     // Финальный sendDone пишет полную версию в messages и удаляет буфер;
     // после краша буфер переносится в messages при загрузке чата (краш-рекавери).
+    // 8 секунд заметно снижают sync SQLite/JSON пики на слабых дисках,
+    // сохраняя recovery почти в реальном времени.
     run.streamCheckpointTimer = setInterval(() => {
       if (run.doneSent) return
       // Dirty-flag: пропускаем запись если с последнего checkpoint'а
@@ -2332,7 +2383,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch (e) {
         log('[streamCheckpoint] failed chatId=%s: %s', params.chatId, (e as Error).message)
       }
-    }, 3000)
+    }, 8000)
     // unref — таймер не держит процесс alive при выходе
     if (typeof run.streamCheckpointTimer.unref === 'function') run.streamCheckpointTimer.unref()
 
@@ -3831,7 +3882,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // FTS по messages не эхал только что сохранённое текущее сообщение.
     let systemPrompt = sideSystemPrompt
     if (!systemPrompt) {
-      systemPrompt = await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)
+      // Reuse the prompt built for this send's context estimate. This is scoped
+      // to the run (no cross-send cache; plugins/secrets remain live-read).
+      systemPrompt = sendSystemPrompt
     }
 
     // ── Auto-recall: всегда запускается (даже при sideSystemPrompt) ──
@@ -3841,7 +3894,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // C1: keyword extraction из user message вместо raw text.
     // D3: cross-project fallback если project-scope дал 0 результатов.
     const isFirstMessage = processedHistory.length === 0
-    if (!params.incognito && effectiveContent.trim().length > (isFirstMessage ? 10 : 20)) {
+    if (!params.incognito && getContextPreferences(dbChatId).sources.memory && effectiveContent.trim().length > (isFirstMessage ? 10 : 20)) {
       try {
         let autoRecallProjectId: string | undefined
         const wctx = (() => { try { return getChatWorkdirContext(dbChatId) } catch { return null } })()
@@ -3917,7 +3970,42 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       if (cancelledDelegatedStarts.has(assistantMsgId)) throw new Error('Delegated request cancelled during preparation')
       return { userMsg, assistantMsgId }
     }
+    // Goal runtime transport is scoped to this worker/run; no new UI send or IPC handler.
+    const runtimeGoal = !params.incognito ? getChatGoal(params.chatId) : null
+    // Only explicit /goal launches autonomous continuation. Ordinary questions
+    // may reference the pinned objective but must retain normal chat semantics.
+    const activeGoal = params.slashCommand?.name === 'goal' && runtimeGoal?.status === 'running' ? runtimeGoal : null
+    let goalRevision = activeGoal?.updatedAt
+    worker.on('message', (event: Record<string, unknown>) => {
+      if (event.type !== 'goal_progress' || !activeGoal) return
+      try {
+        const current = getChatGoal(params.chatId)
+        const next = event.goal as import('../../shared/types/goal').ChatGoal | undefined
+        // Never resurrect a goal stopped/replaced/edited by the user mid-run.
+        if (!current || current.id !== activeGoal.id || current.status !== 'running' || current.updatedAt !== goalRevision) {
+          worker.postMessage({ type: 'abort_run' })
+          return
+        }
+        if (!next || next.id !== current.id || next.chatId !== params.chatId) return
+        const saved = setChatGoal({ ...current, status: next.status, steps: next.steps,
+          progress: next.progress, evidence: next.evidence, blocker: next.blocker })
+        goalRevision = saved?.updatedAt
+        broadcastGoal(params.chatId, saved)
+      } catch (error) {
+        log('[goal-runtime] persistence failed: %s', String(error))
+        worker.postMessage({ type: 'abort_run' })
+      }
+    })
+    worker.once('exit', () => {
+      if (!activeGoal) return
+      const current = getChatGoal(params.chatId)
+      if (current?.id === activeGoal.id && current.status === 'running' && current.updatedAt === goalRevision) {
+        const saved = setChatGoal({ ...current, status: 'paused', blocker: 'Worker interrupted; inspect side effects before explicit resume' })
+        broadcastGoal(params.chatId, saved)
+      }
+    })
     worker.postMessage({
+      goal: activeGoal,
       chatId: params.chatId,
       msgId: assistantMsgId,
       // effectiveContent — с инлайн-блоками из processAttachmentsAndStream
@@ -4114,6 +4202,14 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   ipcMain.handle('chat:editMessage', (_, messageId: string, content: string, iterTexts?: string[]) =>
     editMessageContent(messageId, content, iterTexts))
   ipcMain.handle('chat:setMessageHidden', (_, messageId: string, hidden: boolean) => setMessageHidden(messageId, hidden))
+  ipcMain.handle('goal:get', (_, chatId: string) => getChatGoal(chatId))
+  ipcMain.handle('goal:set', (_, chatId: string, goal: import('../../shared/types/goal').ChatGoal | null) => {
+    if (typeof chatId !== 'string' || !chatId.trim()) throw new Error('Некорректный чат')
+    if (goal && (goal.chatId !== chatId || !goal.objective?.trim() || !Array.isArray(goal.criteria) || !Array.isArray(goal.constraints) || !Array.isArray(goal.progress) || !Array.isArray(goal.evidence) || !['running', 'paused', 'blocked', 'completed', 'unverified', 'stopped', 'limit'].includes(goal.status))) throw new Error('Некорректная цель')
+    const saved = setChatGoal(goal, chatId)
+    broadcastGoal(chatId, saved)
+    return saved
+  })
   ipcMain.handle('chat:deleteMessage', (_, messageId: string) => { deleteMessageById(messageId); return true })
 
   // ── Per-chat UI state: режимы инпут-бара, черновик, история ввода ──
@@ -4152,6 +4248,46 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     return true
   })
   ipcMain.handle('chat:getInputHistory', (_, chatId: string) => getUserMessageContents(chatId))
+
+  ipcMain.handle('context:getPreferences', (_, chatId: string) => {
+    assertContextChat(chatId)
+    return getContextPreferences(chatId)
+  })
+  ipcMain.handle('context:setPreferences', (_, chatId: string, patch: Partial<ContextPreferences>) => {
+    const result = setContextPreferences(chatId, patch)
+    invalidateHistoryCache(chatId)
+    clearChatLastUsage(chatId)
+    return result
+  })
+  ipcMain.handle('context:setMessageHidden', (_, chatId: string, messageId: string, hidden: boolean) => {
+    const result = setContextMessageHidden(chatId, messageId, hidden)
+    invalidateHistoryCache(chatId)
+    clearChatLastUsage(chatId)
+    return result
+  })
+  ipcMain.handle('context:setMessagePinned', (_, chatId: string, messageId: string, pinned: boolean) => {
+    const result = setContextMessagePinned(chatId, messageId, pinned)
+    invalidateHistoryCache(chatId)
+    clearChatLastUsage(chatId)
+    return result
+  })
+  ipcMain.handle('context:inspect', async (_, chatId: string): Promise<ContextInspection> => {
+    assertContextChat(chatId)
+    const preferences = getContextPreferences(chatId)
+    const inspection: ContextInspection = { preferences, sources: [], files: [], messages: [] }
+    await getSystemPrompt(chatId, false, undefined, undefined, undefined, inspection)
+    const included = filterContextHistory(chatId, getMessagesAfterLatestCompactCached(chatId))
+    const ids = new Set(included.map(m => m.id))
+    inspection.messages = getMessagesCached(chatId).map(m => ({
+      id: m.id, role: m.role, preview: (m.content || '').slice(0, 350),
+      isPinned: !!m.isPinned, isHidden: !!m.hiddenFromContext, included: ids.has(m.id),
+    }))
+    const historySource = inspection.sources.find(s => s.key === 'history')!
+    historySource.characters = included.reduce((n, m) => n + m.content.length, 0)
+    const toolsSource = inspection.sources.find(s => s.key === 'tools')!
+    toolsSource.characters = included.reduce((n, m) => n + (m.toolSteps ? JSON.stringify(m.toolSteps).length : 0), 0)
+    return inspection
+  })
 
   // ── context:calculate — пересчёт контекста чата без отправки сообщения.
   //    Вызывается renderer-хуком useContextCounter при смене activeChatId,
@@ -4198,8 +4334,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // Загружаем историю (как в chat:send) — для incognito-чатов она пуста.
       // Live-подмножество: сообщения после последнего divider'а (старые
       // summarized не грузятся в модель — их заменяет summary в system prompt).
-      const history = getMessagesCached(chatId)
-      const liveMessages = getLiveMessages(history)
+      const liveMessages = filterContextHistory(chatId, getMessagesAfterLatestCompactCached(chatId))
       const rawHistory: ChatMessage[] = liveMessages.flatMap(messageToContextMessages)
 
       // Priority 1: последний реальный usage от провайдера (переживает перезапуск).
@@ -4215,6 +4350,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // ПОЗЖЕ последнего ответа модели — usage устарел, используем свежий
       // tiktoken-estimate и очищаем last_usage в БД (самоисцеление для чатов,
       // сжатых до ввода clearChatLastUsage при compaction).
+      const history = getMessagesCached(chatId)
       const lastCompactionAt = history.reduce((max, msg) => {
         if (msg.slashCommand?.name === 'compact' && msg.createdAt > max) return msg.createdAt
         return max
@@ -4349,7 +4485,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       attachments: attachments.length > 0 ? attachments : undefined,
       replyTo: params.replyTo,
     }
-    const history = params.incognito ? [] : getMessagesCached(params.chatId)
+    const history = params.incognito ? [] : getMessagesAfterLatestCompactCached(params.chatId, userMsg.id)
     const assistantMsgId = params.assistantMsgId ?? uuid()
 
     // Регистрируем пути вложений этой отправки как pending — защита от
@@ -4392,7 +4528,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         // Read history when the queued task actually starts: it must see the
         // previous answer, which did not exist at enqueue time.
         run: async () => { await runChatSend(params, win, chatMode, agentSettings, userMsg,
-          params.incognito ? [] : getMessagesCached(params.chatId), assistantMsgId) },
+          params.incognito ? [] : getMessagesAfterLatestCompactCached(params.chatId, userMsg.id), assistantMsgId) },
         meta,
       }
       const q = chatQueues.get(params.chatId) ?? []
@@ -4750,9 +4886,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       }
       const ctxSettings = getContextSettings(storeData)
 
+      // Manual compaction still needs full-history statistics for UI.
       const history = getMessagesCached(chatId)
-      // Live-подмножество: сообщения после последнего divider'а (как в chat:send).
-      // messageId тегируется для вычисления boundary divider'а.
       const liveMessages = getLiveMessages(history)
       const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
         messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),

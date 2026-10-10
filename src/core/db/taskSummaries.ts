@@ -2,6 +2,7 @@ import { getDB } from './handle'
 import { v4 as uuid } from 'uuid'
 import { ensureTaskSummaryStateRow } from '../../shared/types/taskSummary'
 import type { TaskSummary, TaskSummaryState, TaskSummaryPatch } from '../../shared/types/taskSummary'
+import type { ChatGoal } from '../../shared/types/goal'
 
 let initializedFor: ReturnType<typeof getDB> | undefined
 
@@ -12,6 +13,11 @@ function ensureSchema(): void {
     CREATE TABLE IF NOT EXISTS task_summary_state (
       chat_id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
       state TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS chat_goals (
+      chat_id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+      data TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS task_summaries (
       id TEXT PRIMARY KEY,
@@ -53,6 +59,32 @@ function writeState(chatId: string, state: TaskSummaryState): void {
     manualPins: state.manualPins.slice(0, 50),
     newTaskRequested: state.newTaskRequested === true,
   }))
+}
+
+export function getChatGoal(chatId: string): ChatGoal | null {
+  ensureSchema()
+  const row = getDB().prepare('SELECT data FROM chat_goals WHERE chat_id = ?').get(chatId) as { data: string } | undefined
+  if (!row) return null
+  try {
+    const goal = JSON.parse(row.data) as ChatGoal
+    return goal
+  } catch { return null }
+}
+
+export function setChatGoal(goal: ChatGoal | null, chatId?: string): ChatGoal | null {
+  ensureSchema()
+  const id = goal?.chatId ?? chatId
+  if (!id) return null
+  if (!goal) { getDB().prepare('DELETE FROM chat_goals WHERE chat_id = ?').run(id); return null }
+  const maxSteps = Number.isFinite(goal.maxSteps) ? Math.max(1, Math.min(12, Math.floor(goal.maxSteps))) : 8
+  const steps = Number.isFinite(goal.steps) ? Math.max(0, Math.min(Math.floor(goal.steps), maxSteps)) : 0
+  // A strict revision even for multiple writes in one millisecond: pause/resume
+  // must invalidate an old worker snapshot, not accidentally reuse its revision.
+  const previousRevision = getChatGoal(id)?.updatedAt ?? 0
+  const updatedAt = Math.max(Date.now(), Number.isFinite(previousRevision) ? previousRevision + 1 : 0)
+  const safe: ChatGoal = { ...goal, objective: goal.objective.slice(0, 2000), criteria: goal.criteria.slice(0, 20), constraints: goal.constraints.slice(0, 20), progress: goal.progress.slice(-100), evidence: goal.evidence.slice(-50), steps, maxSteps, updatedAt }
+  getDB().prepare('INSERT INTO chat_goals(chat_id, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at').run(id, JSON.stringify(safe), safe.updatedAt)
+  return safe
 }
 
 export function getTaskSummaryState(chatId: string): TaskSummaryState {
@@ -122,6 +154,16 @@ export function recoverInterruptedTaskSummaries(): void {
   ensureSchema()
   const db = getDB()
   db.transaction(() => {
+    const goals = db.prepare('SELECT chat_id, data FROM chat_goals').all() as { chat_id: string; data: string }[]
+    for (const row of goals) {
+      try {
+        const goal = JSON.parse(row.data) as ChatGoal
+        if (goal.status !== 'running') continue
+        goal.status = 'paused'
+        goal.blocker = 'Прервано перезапуском; проверь состояние и явно возобнови через /goal'
+        setChatGoal(goal)
+      } catch { /* ignore corrupt goal rows */ }
+    }
     const rows = db.prepare('SELECT id, chat_id, data FROM task_summaries').all() as { id: string; chat_id: string; data: string }[]
     for (const row of rows) {
       try {

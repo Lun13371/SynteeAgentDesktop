@@ -24,8 +24,10 @@
 
 import { ipcMain, webContents, session, app, dialog, BrowserWindow } from 'electron'
 import { join } from 'path'
+import { rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { log } from '../../core/logger'
-import { BROWSER_PARTITION, IPC_EVENTS } from '../../shared/constants'
+import { BROWSER_PARTITION, DEFAULT_BROWSER_PROFILE_ID, IPC_EVENTS } from '../../shared/constants'
 import { getChatBrowserMode, setChatBrowserMode } from '../../core/db/chats'
 import { domAction, inspect, condition, isChildFrame, locate, refInfo, snapshot, clampTimeout, resolveFrame } from '../browser/pageAutomation'
 import { createHash } from 'node:crypto'
@@ -45,6 +47,7 @@ export interface BrowserTabEntry {
    *  в реестре живёт; восстановится при выборе таба (webview монтируется
    *  заново, registerTab перевешивает слушатели на новый guest). */
   discarded?: boolean
+  partition?: string
 }
 
 /** Ответ browser_op для воркера (см. ai-worker.ts onBrowserAction). */
@@ -143,6 +146,76 @@ class BrowserManagerImpl {
 
   private tabs = new Map<string, BrowserTabEntry>()
   private win: BrowserWindow | null = null
+  private profileId = DEFAULT_BROWSER_PROFILE_ID
+  /** IDs remain retired until the old renderer unmounts after deletion. */
+  private readonly retiredTabIds = new Set<string>()
+  private profileStore: { get: (key: string, def?: unknown) => unknown; set: (key: string, value: unknown) => void } | null = null
+
+  setProfileStore(store: { get: (key: string, def?: unknown) => unknown; set: (key: string, value: unknown) => void }): void {
+    this.profileStore = store
+  }
+
+  getProfileId(): string { return this.profileId }
+  getPartition(): string { return this.profileId === DEFAULT_BROWSER_PROFILE_ID ? BROWSER_PARTITION : `persist:syntee-browser-${this.profileId}` }
+
+  listProfiles(): Array<{ id: string; name: string }> {
+    const profiles = this.profileStore?.get('browser.profiles', [{ id: DEFAULT_BROWSER_PROFILE_ID, name: 'Личный' }]) as Array<{ id: string; name: string }>
+    return Array.isArray(profiles) && profiles.length ? profiles : [{ id: DEFAULT_BROWSER_PROFILE_ID, name: 'Личный' }]
+  }
+
+  createProfile(name: string): { id: string; name: string } {
+    const profile = { id: `profile-${randomUUID().slice(0, 8)}`, name: name.trim().slice(0, 40) || 'Новый профиль' }
+    const profiles = this.listProfiles()
+    this.profileStore?.set('browser.profiles', [...profiles, profile])
+    return profile
+  }
+
+  async deleteProfile(id: string, userDataPath: string): Promise<{ activeId: string }> {
+    if (typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,100}$/.test(id)) throw new Error('Некорректный идентификатор профиля.')
+    if (id === DEFAULT_BROWSER_PROFILE_ID) throw new Error('Профиль «Личный» нельзя удалить.')
+    const profiles = this.listProfiles()
+    if (!profiles.some(profile => profile.id === id)) throw new Error('Профиль не найден.')
+
+    // Retire all current tabs before switching, so old renderer callbacks cannot
+    // register guests into the replacement profile.
+    if (this.profileId === id) {
+      const oldTabs = [...this.tabs.values()]
+      for (const tab of oldTabs) {
+        this.retiredTabIds.add(tab.tabId)
+        this.unregisterTab(tab.tabId)
+        if (tab.webContentsId > 0) {
+          try { webContents.fromId(tab.webContentsId)?.close() } catch { /* already gone */ }
+        }
+      }
+      this.tabs.clear(); this.activeTabId = null
+    }
+    if (this.profileId === id) {
+      const fallback = profiles.find(profile => profile.id === DEFAULT_BROWSER_PROFILE_ID) ?? { id: DEFAULT_BROWSER_PROFILE_ID, name: 'Личный' }
+      this.profileId = fallback.id
+      this.newTab()
+    }
+
+    this.profileStore?.set('browser.profiles', profiles.filter(profile => profile.id !== id))
+    const partition = `persist:syntee-browser-${id}`
+    try {
+      const profileSession = session.fromPartition(partition)
+      await profileSession.clearStorageData()
+      await profileSession.clearCache()
+    } catch (error) { log('[browser] profile storage cleanup failed: %s', (error as Error).message) }
+    const importFile = join(userDataPath, 'browser-imports', `${id}.json`)
+    try { await rm(importFile, { force: true }) } catch (error) { throw new Error(`Не удалось удалить импортированные данные: ${(error as Error).message}`) }
+    this.pushTabState()
+    return { activeId: this.profileId }
+  }
+
+  async switchProfile(id: string): Promise<boolean> {
+    if (!this.listProfiles().some(p => p.id === id) || id === this.profileId) return false
+    for (const tab of [...this.tabs.keys()]) this.unregisterTab(tab)
+    this.tabs.clear(); this.activeTabId = null; this.profileId = id
+    this.newTab()
+    this.pushTabState()
+    return true
+  }
   /** Ленивый геттер окна: главное окно создаётся ПОСЛЕ регистрации IPC
    *  (main/index.ts: mainWindow.create() в конце whenReady). Eager
    *  setWindow(mainWindow.getWindow()) до create() передавал null НАВСЕГДА —
@@ -206,7 +279,7 @@ class BrowserManagerImpl {
    *  автоматически подхватывает. Chrome-подобный UA — для сайтов и для
    *  скачивания CRX из Chrome Web Store. */
   getSession(): Electron.Session {
-    const ses = session.fromPartition(BROWSER_PARTITION)
+    const ses = session.fromPartition(this.getPartition())
     if (!(ses as unknown as { __synteeUaSet?: boolean }).__synteeUaSet) {
       try { ses.setUserAgent(CHROME_UA) } catch { /* ok */ }
       ;(ses as unknown as { __synteeUaSet?: boolean }).__synteeUaSet = true
@@ -258,6 +331,9 @@ class BrowserManagerImpl {
   }
 
   registerTab(tabId: string, webContentsId: number): void {
+    // A late did-attach from a webview belonging to a deleted profile must
+    // never resurrect that tab in the new profile.
+    if (this.retiredTabIds.has(tabId)) return
     const prev = this.tabs.get(tabId)
     this.lastUsed.set(tabId, Date.now())
     if (prev && prev.webContentsId === webContentsId) {
@@ -279,6 +355,7 @@ class BrowserManagerImpl {
       loading: false,
       canGoBack: false,
       canGoForward: false,
+      partition: this.getPartition(),
     })
     this.attachGuestListeners(tabId, webContentsId)
     log('[browser] registerTab tabId=%s wcId=%d (total %d)', tabId, webContentsId, this.tabs.size)
@@ -542,6 +619,7 @@ class BrowserManagerImpl {
       loading: true,
       canGoBack: false,
       canGoForward: false,
+      partition: this.getPartition(),
     })
     this.lastUsed.set(tabId, Date.now())
     if (!this.activeTabId) this.activeTabId = tabId

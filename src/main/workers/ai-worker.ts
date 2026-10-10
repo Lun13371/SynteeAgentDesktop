@@ -305,23 +305,34 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         if (index >= 0) runTools.splice(index, 1)
       }
       // Флип browser-режима посреди рана: request_access подтверждён →
-      // добавляем 15 browser-тулов, убираем request_access (нечего запрашивать).
-      const enableBrowserToolsMidRun = (): void => {
+      // добавляем browser-тулы и убираем request_access (повторно запрашивать
+      // доступ уже не нужно). Важно: обычный main-chat тоже передаёт сюда
+      // toolSchemas как явный snapshot, поэтому нельзя использовать наличие
+      // toolSchemas как запрет на расширение. Сам факт наличия request_access
+      // является разрешением на это расширение; side-chat/one-shot allowlists,
+      // где request_access отсутствует, сюда не попадут.
+      const enableBrowserToolsMidRun = (): number => {
         const names = new Set(runTools.map(t => t.function.name))
         const idx = runTools.findIndex(t => t.function.name === 'request_access')
-        // Custom role/side-chat allowlists cannot gain tools through this route.
-        if (idx < 0 || toolSchemas) return
+        if (idx < 0) return 0
         const permitted = filterToolSchemas(getToolSchemas({
           planningMode, askMode, persona: workerPersona, browserMode: true,
           mode: workerMode, ...toolSettings,
         }), toolSettings)
+        const browserSchemas = permitted.filter(t => t.function.name.startsWith('browser_') && !names.has(t.function.name))
         runTools.splice(idx, 1)
-        // Only browser schemas produced by the policy helper may be added.
-        runTools.push(...permitted.filter(t => t.function.name.startsWith('browser_') && !names.has(t.function.name)))
+        runTools.push(...browserSchemas)
+        console.log('[ai-worker] browser access granted mid-run: added %d browser tools (total=%d)', browserSchemas.length, runTools.length)
+        return browserSchemas.length
       }
 
       // Прокидываем chatId и колбэки рабочей памяти
       agent.chatId = chatId
+      const runGoal = msg.goal as import('../../shared/types/goal').ChatGoal | undefined
+      if (!incognito && !isSubAgent && runGoal?.chatId === chatId && runGoal.status === 'running') {
+        agent.goal = runGoal
+        agent.onGoalProgress = goal => send({ type: 'goal_progress', goal })
+      }
       // workdir чата (новые Code-чаты после фичи workdir; undefined для
       // Work-режима и старых чатов — поведение остаётся прежним).
       agent.workdir = (workerData as Record<string, unknown>).workdir as string | undefined
@@ -743,7 +754,18 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onBrowserAction: async (payload) => {
             const result = await requestBrowserOperation(payload, replyHandlers, send, runAbort.signal)
             if (!runAbort.signal.aborted && result.success && result.enabled && payload.action === 'request_access') {
-              enableBrowserToolsMidRun()
+              const added = enableBrowserToolsMidRun()
+              if (added === 0) {
+                return {
+                  success: false,
+                  enabled: false,
+                  error: 'Browser access was confirmed, but no browser tools could be added to this run. Start a normal chat (not a restricted side chat/one-shot run) and try again.',
+                }
+              }
+              return {
+                ...result,
+                output: `Browser control ENABLED. Added ${added} browser tools to the current run. Continue using them immediately.`,
+              }
             }
             return result
           },

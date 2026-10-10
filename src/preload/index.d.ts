@@ -403,6 +403,20 @@ declare const synteeAPI: {
         setSettings: (patch: Partial<import("../../shared/types").DotSettings>) => Promise<import("../../shared/types").DotSettings>;
     };
     browser: {
+        importSources: () => Promise<import("../shared/browserImport").BrowserImportSource[]>;
+        importData: (options: import("../shared/browserImport").BrowserImportOptions) => Promise<import("../shared/browserImport").BrowserImportResult>;
+        importedData: (profileId: string, kind: "bookmarks" | "history", query: string, offset: number) => Promise<import("../shared/browserImport").BrowserDataPage>;
+        chromeProfiles: () => Promise<{
+            available: boolean;
+            profiles: Array<{
+                id: string;
+                name: string;
+            }>;
+        }>;
+        chromeOpen: (profileId: string, url?: string) => Promise<{
+            ok: boolean;
+            error?: string;
+        }>;
         registerTab: (tabId: string, webContentsId: number) => Promise<boolean>;
         unregisterTab: (tabId: string) => Promise<boolean>;
         navigate: (tabId: string, url: string) => Promise<boolean>;
@@ -412,6 +426,21 @@ declare const synteeAPI: {
         newTab: (url?: string) => Promise<string>;
         closeTab: (tabId: string) => Promise<boolean>;
         selectTab: (tabId: string) => Promise<boolean>;
+        profilesList: () => Promise<{
+            profiles: Array<{
+                id: string;
+                name: string;
+            }>;
+            activeId: string;
+        }>;
+        profilesCreate: (name: string) => Promise<{
+            id: string;
+            name: string;
+        }>;
+        profilesSwitch: (id: string) => Promise<boolean>;
+        profilesDelete: (id: string) => Promise<{
+            activeId: string;
+        }>;
         getState: () => Promise<{
             tabs: Array<{
                 tabId: string;
@@ -423,6 +452,7 @@ declare const synteeAPI: {
                 canGoForward: boolean;
                 favicon?: string;
                 discarded?: boolean;
+                partition?: string;
             }>;
             activeTabId: string | null;
         }>;
@@ -440,6 +470,7 @@ declare const synteeAPI: {
                 canGoForward: boolean;
                 favicon?: string;
                 discarded?: boolean;
+                partition?: string;
             }>;
             activeTabId: string | null;
         }) => void) => () => Electron.IpcRenderer;
@@ -478,6 +509,10 @@ declare const synteeAPI: {
         }>;
         extRemove: (extId: string) => Promise<boolean>;
         extToggle: (extId: string, enabled: boolean) => Promise<boolean>;
+    };
+    goal: {
+        get: (chatId: string) => Promise<import("../shared/types/goal").ChatGoal | null>;
+        set: (chatId: string, goal: import("../shared/types/goal").ChatGoal | null) => Promise<import("../shared/types/goal").ChatGoal | null>;
     };
     taskSummary: {
         onChanged: (cb: (event: {
@@ -741,10 +776,15 @@ declare const synteeAPI: {
         getAll: () => Promise<any>;
         save: (provider: unknown) => Promise<any>;
         delete: (id: string) => Promise<any>;
-        testKey: (providerId: string) => Promise<any>;
+        testKey: (providerId: string, provider?: unknown) => Promise<any>;
         fetchModels: (providerId: string) => Promise<any>;
     };
     context: {
+        inspect: (chatId: string) => Promise<import("../shared/types/contextControls").ContextInspection>;
+        getPreferences: (chatId: string) => Promise<import("../shared/types/contextControls").ContextPreferences>;
+        setPreferences: (chatId: string, patch: Partial<import("../shared/types/contextControls").ContextPreferences>) => Promise<import("../shared/types/contextControls").ContextPreferences>;
+        setMessageHidden: (chatId: string, messageId: string, hidden: boolean) => Promise<boolean>;
+        setMessagePinned: (chatId: string, messageId: string, pinned: boolean) => Promise<boolean>;
         estimateInput: (params: {
             text: string;
         }) => Promise<any>;

@@ -1,7 +1,7 @@
 import { ipcMain, nativeTheme, webContents } from 'electron'
 import { join, resolve } from 'path'
 import { app } from 'electron'
-import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync, readFileSync, statSync } from 'fs'
+import { promises as fs } from 'fs'
 import type Store from 'electron-store'
 import { DEFAULT_TOOL_SETTINGS, normalizeDisabledTools } from '../../shared/toolSettings'
 import { getActivityManager } from '../managers/ActivityManager'
@@ -120,10 +120,10 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
 
   ipcMain.handle('bgImage:save', async (_, data: Uint8Array, ext: string) => {
     try {
-      if (!existsSync(bgDir)) mkdirSync(bgDir, { recursive: true })
+      await fs.mkdir(bgDir, { recursive: true })
       const filename = `bg-${Date.now()}.${ext || 'png'}`
       const filepath = join(bgDir, filename)
-      writeFileSync(filepath, Buffer.from(data))
+      await fs.writeFile(filepath, Buffer.from(data))
       return `bg-images://${filename}`
     } catch (e) {
       console.error('[bgImage:save]', e)
@@ -133,16 +133,18 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
 
   ipcMain.handle('bgImage:list', async () => {
     try {
-      if (!existsSync(bgDir)) return []
-      return readdirSync(bgDir)
+      const files = await fs.readdir(bgDir).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === 'ENOENT') return []
+        throw e
+      })
+      const entries = await Promise.all(files
         .filter(f => !f.startsWith('.'))
-        .map(f => {
-          const filepath = join(bgDir, f)
+        .map(async f => {
           let size = 0, mtime = 0
-          try { const st = statSync(filepath); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
+          try { const st = await fs.stat(join(bgDir, f)); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
           return { src: `bg-images://${f}`, name: f, size, mtime }
-        })
-        .sort((a, b) => b.mtime - a.mtime)
+        }))
+      return entries.sort((a, b) => b.mtime - a.mtime)
     } catch (e) {
       console.error('[bgImage:list]', e)
       return []
@@ -154,8 +156,8 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
       if (!src || !src.startsWith('bg-images://')) return false
       const filename = src.replace('bg-images://', '')
       const filepath = safeBgPath(filename)
-      if (!filepath || !existsSync(filepath)) return false
-      unlinkSync(filepath)
+      if (!filepath) return false
+      await fs.unlink(filepath)
       return true
     } catch (e) {
       console.error('[bgImage:delete]', e)
@@ -167,9 +169,9 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     if (!src || !src.startsWith('bg-images://')) return null
     try {
       const filename = src.replace('bg-images://', '')
-      const filepath = join(bgDir, filename)
-      if (!existsSync(filepath)) return null
-      const buf = readFileSync(filepath)
+      const filepath = safeBgPath(filename)
+      if (!filepath) return null
+      const buf = await fs.readFile(filepath)
       const base64 = buf.toString('base64')
       // Определяем mime по расширению
       const ext = filename.split('.').pop()?.toLowerCase() || 'png'
@@ -186,9 +188,12 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
 
   ipcMain.handle('bgImage:clear', async () => {
     try {
-      if (!existsSync(bgDir)) return true
-      for (const f of readdirSync(bgDir)) {
-        unlinkSync(join(bgDir, f))
+      const files = await fs.readdir(bgDir).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === 'ENOENT') return []
+        throw e
+      })
+      for (const f of files) {
+        await fs.unlink(join(bgDir, f))
       }
       return true
     } catch { return false }
@@ -219,7 +224,7 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
 
   ipcMain.handle('sound:save', async (_, data: Uint8Array, ext: string, originalName?: string) => {
     try {
-      if (!existsSync(soundDir)) mkdirSync(soundDir, { recursive: true })
+      await fs.mkdir(soundDir, { recursive: true })
       const safeExt = (ext || 'mp3').toLowerCase().replace(/[^a-z0-9]/g, '')
       // Имя файла: из оригинала (sanitized) или timestamp
       let base = `sound-${Date.now()}`
@@ -228,7 +233,7 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
       }
       const filename = `${base}-${Date.now()}.${safeExt}`
       const filepath = join(soundDir, filename)
-      writeFileSync(filepath, Buffer.from(data))
+      await fs.writeFile(filepath, Buffer.from(data))
       return `custom://${filename}`
     } catch (e) {
       console.error('[sound:save]', e)
@@ -238,16 +243,18 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
 
   ipcMain.handle('sound:list', async () => {
     try {
-      if (!existsSync(soundDir)) return []
-      return readdirSync(soundDir)
+      const files = await fs.readdir(soundDir).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === 'ENOENT') return []
+        throw e
+      })
+      const entries = await Promise.all(files
         .filter(f => !f.startsWith('.'))
-        .map(f => {
-          const filepath = join(soundDir, f)
+        .map(async f => {
           let size = 0, mtime = 0
-          try { const st = statSync(filepath); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
+          try { const st = await fs.stat(join(soundDir, f)); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
           return { id: `custom://${f}`, name: f, size, mtime }
-        })
-        .sort((a, b) => b.mtime - a.mtime)
+        }))
+      return entries.sort((a, b) => b.mtime - a.mtime)
     } catch (e) {
       console.error('[sound:list]', e)
       return []
@@ -259,8 +266,8 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     try {
       const filename = id.replace('custom://', '')
       const filepath = safeSoundPath(filename)
-      if (!filepath || !existsSync(filepath)) return null
-      const buf = readFileSync(filepath)
+      if (!filepath) return null
+      const buf = await fs.readFile(filepath)
       const base64 = buf.toString('base64')
       const ext = filename.split('.').pop()?.toLowerCase() || 'mp3'
       return `data:${extToMime(ext)};base64,${base64}`
@@ -275,8 +282,8 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
       if (!id || !id.startsWith('custom://')) return false
       const filename = id.replace('custom://', '')
       const filepath = safeSoundPath(filename)
-      if (!filepath || !existsSync(filepath)) return false
-      unlinkSync(filepath)
+      if (!filepath) return false
+      await fs.unlink(filepath)
       return true
     } catch (e) {
       console.error('[sound:delete]', e)
@@ -387,10 +394,10 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
       const res = await fetch(url)
       if (!res.ok) return null
       const buf = Buffer.from(await res.arrayBuffer())
-      if (!existsSync(soundDir)) mkdirSync(soundDir, { recursive: true })
+      await fs.mkdir(soundDir, { recursive: true })
       const base = title.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9а-яА-Я_-]/g, '_').slice(0, 40) || `sound-${Date.now()}`
       const filename_local = `${base}-${Date.now()}.mp3`
-      writeFileSync(join(soundDir, filename_local), buf)
+      await fs.writeFile(join(soundDir, filename_local), buf)
       return `custom://${filename_local}`
     } catch (e) {
       console.error('[sound:saveRemote]', e)
@@ -423,12 +430,12 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     try {
       const ext = fontExt(filename)
       if (!FONT_EXTS.includes(ext)) return null
-      if (!existsSync(fontDir)) mkdirSync(fontDir, { recursive: true })
+      await fs.mkdir(fontDir, { recursive: true })
       // Sanitize filename: убираем путь, оставляем имя + расширение
       const safeName = filename.replace(/[^a-zA-Z0-9а-яА-Я._-]/g, '_').slice(0, 60)
       const finalName = `${Date.now()}-${safeName}`
       const filepath = join(fontDir, finalName)
-      writeFileSync(filepath, Buffer.from(data))
+      await fs.writeFile(filepath, Buffer.from(data))
       return `custom-fonts://${finalName}`
     } catch (e) {
       console.error('[font:import]', e)
@@ -438,16 +445,18 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
 
   ipcMain.handle('font:list', async () => {
     try {
-      if (!existsSync(fontDir)) return []
-      return readdirSync(fontDir)
+      const files = await fs.readdir(fontDir).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === 'ENOENT') return []
+        throw e
+      })
+      const entries = await Promise.all(files
         .filter(f => !f.startsWith('.') && FONT_EXTS.includes(fontExt(f)))
-        .map(f => {
-          const filepath = join(fontDir, f)
+        .map(async f => {
           let size = 0, mtime = 0
-          try { const st = statSync(filepath); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
+          try { const st = await fs.stat(join(fontDir, f)); size = st.size; mtime = st.mtimeMs } catch { /* ok */ }
           return { id: `custom-fonts://${f}`, name: f, size, mtime }
-        })
-        .sort((a, b) => b.mtime - a.mtime)
+        }))
+      return entries.sort((a, b) => b.mtime - a.mtime)
     } catch (e) {
       console.error('[font:list]', e)
       return []
@@ -459,8 +468,8 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
       if (!id || !id.startsWith('custom-fonts://')) return false
       const filename = id.replace('custom-fonts://', '')
       const filepath = safeFontPath(filename)
-      if (!filepath || !existsSync(filepath)) return false
-      unlinkSync(filepath)
+      if (!filepath) return false
+      await fs.unlink(filepath)
       return true
     } catch (e) {
       console.error('[font:delete]', e)
@@ -474,8 +483,8 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     try {
       const filename = id.replace('custom-fonts://', '')
       const filepath = safeFontPath(filename)
-      if (!filepath || !existsSync(filepath)) return null
-      const buf = readFileSync(filepath)
+      if (!filepath) return null
+      const buf = await fs.readFile(filepath)
       const base64 = buf.toString('base64')
       const ext = fontExt(filename)
       const mime = ext === 'woff2' ? 'font/woff2'

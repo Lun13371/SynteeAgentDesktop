@@ -338,6 +338,8 @@ export const IPC_EVENTS = {
  *  от сессии приложения: свои куки/логины/расширения, переживает рестарт.
  *  Расширения (electron-chrome-extensions) грузятся именно в неё. */
 export const BROWSER_PARTITION = 'persist:syntee-browser'
+/** Старый partition дефолтного профиля. Новые профили получают отдельные сессии. */
+export const DEFAULT_BROWSER_PROFILE_ID = 'default'
 
 // ── Plugins: iframe-мост ─────────────────────────────────────────────────
 /** Прямые host-методы, доступные iframe-панелям плагинов через
