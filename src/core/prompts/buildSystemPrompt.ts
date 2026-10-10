@@ -212,10 +212,7 @@ ${modeBlock}
 ## Planning and reasoning
 
 If a task requires multiple steps:
-- first sketch a plan (use built-in reasoning for step-by-step thinking — it is visible
-  to the user in the thoughts block)
-- use the think tool only when you need to pin down an explicit step checklist in the
-  conversation context; do not duplicate in think what is already in reasoning
+- first sketch a plan using built-in reasoning, visible to the user in the thoughts block
 - start with the cheapest actions: find, read, understand
 - only after that proceed to changes or commands
 

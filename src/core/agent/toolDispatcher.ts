@@ -662,11 +662,6 @@ export class ToolDispatcher {
           return { success: false, output: '', error: (e as Error).message }
         }
       }
-      case 'think': {
-        const thought = resolvedArgs.thought as string
-        if (!thought) return { success: false, output: '', error: 'thought is required' }
-        return { success: true, output: 'OK. Continue with the plan.', hidden: true }
-      }
       case 'update_todo': {
         const items = (resolvedArgs.items as Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>) ?? []
         if (callbacks?.onTodoUpdate) callbacks.onTodoUpdate(items)

@@ -29,6 +29,7 @@ import {
 } from '../../core/memory/graphStore'
 import { buildProjectGraph } from '../../core/memory/graphBuilder'
 import { startSemanticIndexer } from '../../core/memory/semanticIndex'
+import { setGlobalMemorySettingsStore } from '../../core/memory/globalMemorySettings'
 
 /**
  * IPC для UI MemoryPage. Переработано на MemoryStore (Фаза 2).
@@ -38,6 +39,9 @@ import { startSemanticIndexer } from '../../core/memory/semanticIndex'
  * для явного «запомни X» (будет заменён в Фазе 3 на LLM-extractor).
  */
 export function registerMemoryIPC(_store: Store): void {
+  // Keep direct MemoryStore/legacy extractor calls fail-closed until chat IPC
+  // registration (and make initialization order harmless).
+  setGlobalMemorySettingsStore(_store)
   // Forget policy: при старте app чистим устаревшие записи. decay-prune
   // удаляет low-importance/non-accessed memory_items (pinned защищены),
   // pruneOldAgentLogs — agent_logs старше 14 дней,

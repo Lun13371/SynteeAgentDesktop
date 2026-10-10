@@ -515,7 +515,7 @@ export class Agent {
               callbacks.onThinkingDone,
               (index, rawToolName) => {
                 const normalizedName = normalizeToolName(rawToolName, activeSchemas)
-                const isHidden = normalizedName === 'think' || normalizedName === 'update_working_memory' || normalizedName === 'update_todo'
+                const isHidden = normalizedName === 'update_working_memory' || normalizedName === 'update_todo'
                 if (isHidden || isToolDisabled(normalizedName, getToolSettings(this.store))) return
                 callbacks.onStep({
                   type: 'tool_call_pending',
@@ -774,7 +774,7 @@ export class Agent {
             // блок навсегда остаётся в UI без результата (ai-worker.ts не шлёт
             // hidden tool_result), и оставшийся "сирота" забирает чужую ошибку
             // через fallback-матчинг в ToolChain.tsx.
-            isHiddenTool: normalizedName === 'think' || normalizedName === 'update_working_memory' || normalizedName === 'update_todo',
+            isHiddenTool: normalizedName === 'update_working_memory' || normalizedName === 'update_todo',
             pendingCallId,
           }
         })

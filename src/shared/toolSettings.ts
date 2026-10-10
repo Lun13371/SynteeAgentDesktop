@@ -6,7 +6,7 @@ export interface ToolSettings {
 export const DEFAULT_TOOL_SETTINGS: ToolSettings = { customToolsEnabled: false, disabledTools: [] }
 export const PROTECTED_CORE_TOOLS = [
   'read_file', 'read_files', 'find_files', 'search_code', 'list_directory',
-  'edit_file', 'write_file', 'run_command', 'get_diagnostics', 'think',
+  'edit_file', 'write_file', 'run_command', 'get_diagnostics',
   'update_todo', 'update_working_memory', 'ask_user', 'request_access',
 ] as const
 const coreTools = new Set<string>(PROTECTED_CORE_TOOLS)

@@ -28,9 +28,11 @@ import {
 } from '../../core/db'
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { saveMemoryItem, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit, searchAllSources } from '../../core/memory/MemoryStore'
+import { getGlobalMemoryEnabled, getMemorySettings } from '../../core/memory/globalMemorySettings'
 import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } from '../../core/db/notes'
 
 import { onCompactionTrigger } from '../../core/memory/extractor'
+import { setGlobalMemorySettingsStore } from '../../core/memory/globalMemorySettings'
 import { incrementalUpdateDecision, incrementalUpdateConversation, buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats } from '../../core/memory/graphStore'
 import { buildSystemPrompt, SYSTEM_PROMPT_CACHE_BREAK } from '../../core/prompts/buildSystemPrompt'
@@ -599,6 +601,7 @@ function resolveTreeSitterWasmDir(): string {
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
+  setGlobalMemorySettingsStore(store)
 
   // Fast Context: инициализируем main-процессное connection к БД для watcher'а
   // (getFastContextStats/recordHistory/graph sync читают из main). Worker
@@ -697,9 +700,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
     // Curated memory summary: top global user_facts + top project_decisions.
     // Replaces the full getAllMemoriesForContext dump — ~400 token budget.
-    memoryContext = withRetrySync('buildCuratedSummary', () => buildCuratedSummary(promptProjectId), '')
-    workingMemory = withRetrySync('workingMemory', () => chatId ? getWorkingMemory(chatId) : '', '')
-    summary = withRetrySync('chatSummary', () => chatId ? getChatSummary(chatId) : '', '')
+    memoryContext = getMemorySettings().enabled
+      ? withRetrySync('buildCuratedSummary', () => buildCuratedSummary(promptProjectId), '')
+      : ''
+    workingMemory = getMemorySettings().enabled
+      ? withRetrySync('workingMemory', () => chatId ? getWorkingMemory(chatId) : '', '')
+      : ''
+    summary = getMemorySettings().enabled
+      ? withRetrySync('chatSummary', () => chatId ? getChatSummary(chatId) : '', '')
+      : ''
 
     // Live-read project instructions: авто-дискавери AGENTS.md/CLAUDE.md +
     // кастомные .md файлы из настроек проекта. mtime-кэш — повторные вызовы дёшевы.
@@ -774,8 +783,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     const customSystemPrompt = (store.get('modelParams') as { systemPrompt?: string } | undefined)?.systemPrompt
 
     // Memory counters for the system prompt — the agent sees how much memory it has.
-    let memoryStats: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> } | undefined
-    memoryStats = withRetrySync('memoryStats', () => getMemoryStatsForProject(promptProjectId), undefined)
+    const memoryStats: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> } | undefined =
+      getMemorySettings().enabled
+        ? withRetrySync('memoryStats', () => getMemoryStatsForProject(promptProjectId), undefined)
+        : undefined
 
     // Knowledge graph stats — the agent sees the project structure.
     let graphStats: ReturnType<typeof getGraphStats> | undefined
@@ -854,6 +865,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       } catch { /* ignore */ }
     }
 
+    if (!getMemorySettings().enabled) {
+      systemPrompt += '\n\n## Memory — DISABLED by user\nAll Syntee memory is OFF. Do not read or write global, project, chat, working, summary, or recall memory. Do not claim memory is enabled or available.\n'
+    } else if (!getGlobalMemoryEnabled()) {
+      systemPrompt += '\n\n## Global memory — DISABLED by user\nGlobal long-term memory is OFF. Do not claim it is enabled or available.\n'
+    }
     return systemPrompt
 
   }
@@ -2420,13 +2436,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           }
           // Фаза 4: логирование tool-вызовов в agent_logs для outcome-extraction.
           // tool_call — кэшируем args по callId; tool_result — пишем запись в БД
-          // с args (из кэша) + result/error. Скрытые тулы (think/update_working_memory/
+          // с args (из кэша) + result/error. Скрытые тулы (update_working_memory/
           // update_todo) не логируем — они не tool actions в смысле agent_outcome.
           if (!params.incognito) {
             const stepType = rawStep.type as string
             const stepToolName = rawStep.toolName as string | undefined
             const stepCallId = rawStep.callId as string | undefined
-            const HIDDEN_TOOLS = new Set(['think', 'update_working_memory', 'update_todo'])
+            const HIDDEN_TOOLS = new Set(['update_working_memory', 'update_todo'])
             if (stepToolName && !HIDDEN_TOOLS.has(stepToolName)) {
               if (stepType === 'tool_call' && stepCallId) {
                 run.toolCallArgsCache.set(stepCallId, {
@@ -3168,6 +3184,10 @@ ${subModeOutro}`,
         case 'save_memory': {
           ;(async () => {
             try {
+              if (!getMemorySettings().enabled || (!getGlobalMemoryEnabled() && (msg.scope === 'global' || (!msg.scope && !msg.projectId)))) {
+                worker.postMessage({ type: 'save_memory_reply', replyId: msg.replyId, success: false, error: 'Глобальная память выключена' })
+                return
+              }
               const item = await saveMemoryItem({
                 title: msg.title as string,
                 content: msg.content as string,
@@ -3232,10 +3252,20 @@ ${subModeOutro}`,
         case 'recall_memory': {
           ;(async () => {
             try {
+              const requestedScope = msg.scope as 'global' | 'project' | 'all' | undefined
+              if (!getMemorySettings().enabled) {
+                worker.postMessage({ type: 'recall_memory_reply', replyId: msg.replyId, success: false, results: [], error: 'Память Syntee выключена пользователем: чтение запрещено.' })
+                return
+              }
+              if (!getGlobalMemoryEnabled() && requestedScope === 'global') {
+                worker.postMessage({ type: 'recall_memory_reply', replyId: msg.replyId, success: false, results: [], error: 'Глобальная память выключена пользователем: чтение запрещено. Проектная память — отдельная область.' })
+                return
+              }
+              const effectiveScope = requestedScope
               const results = await searchAllSources({
                 query: msg.query as string,
                 kind: msg.kind as 'user_fact' | 'project_decision' | 'convention' | 'conversation' | 'agent_outcome' | undefined,
-                scope: msg.scope as 'global' | 'project' | 'all' | undefined,
+                scope: effectiveScope,
                 projectId: msg.projectId as string | undefined,
                 limit: msg.limit as number | undefined,
                 sources: msg.sources as 'all' | ('memory' | 'messages' | 'summaries' | 'agent_logs' | 'pinned')[] | undefined,
@@ -3683,7 +3713,6 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         'find_files',
         'search_code',
         'get_fast_context',
-        'think',
         'update_todo',
       ])
       sideToolSchemas = sideToolSchemas.filter(
@@ -3692,10 +3721,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       sideToolSchemas.push(GET_MAIN_CHAT_MESSAGES_SCHEMA as any)
     } else if (params.oneShotAllowedTools && params.oneShotAllowedTools.length > 0) {
       // Кастомная команда с allowed-tools — фильтруем schemas до разрешённого списка.
-      // think/update_todo/update_working_memory/save_memory/recall_memory/ask_user
+      // update_todo/update_working_memory/save_memory/recall_memory/ask_user
       // всегда доступны (управляющие тулы, не violating read-only).
       const ALLOWED_ALWAYS = new Set([
-        'think', 'update_todo', 'update_working_memory',
+        'update_todo', 'update_working_memory',
         'save_memory', 'recall_memory', 'ask_user',
         'list_extensions', 'get_skill',
       ])
