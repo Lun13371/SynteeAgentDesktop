@@ -14,7 +14,7 @@ import { recordSessionCost, buildSnapshotFromReal } from '../../core/tokens/usag
 import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
-import { BROWSER_TOOL_SCHEMAS } from '../../core/tools/schemas/browser'
+import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
@@ -51,6 +51,7 @@ const replyHandlers = new Map<string, (msg: Record<string, unknown>) => void>()
 
 // Флаг — агент уже запущен (стартовое сообщение обработано)
 let agentStarted = false
+const runAbort = new AbortController()
 
 // set() мутирует локальную копию storeData — иначе API key round-robin
 // (AIClient.getClientForRole -> getNextApiKey -> store.set('providers', ...))
@@ -99,6 +100,10 @@ function send(msg: Record<string, unknown>) {
 
 // ЕДИНЫЙ handler — все входящие сообщения через один on('message')
 parentPort?.on('message', async (msg: Record<string, unknown>) => {
+  if (msg.type === 'abort_run') {
+    runAbort.abort()
+    return
+  }
   // --- Reply от main (spawn_agent_reply, get_agent_status_reply) ---
   if (msg.replyId) {
     const handler = replyHandlers.get(msg.replyId as string)
@@ -286,6 +291,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           disabledTools: toolSettings.disabledTools,
           planningMode,
           askMode,
+          persona: workerPersona,
           browserMode,
           mode: workerMode,
           mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
@@ -305,12 +311,13 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         const idx = runTools.findIndex(t => t.function.name === 'request_access')
         // Custom role/side-chat allowlists cannot gain tools through this route.
         if (idx < 0 || toolSchemas) return
-        const permitted = new Set(getToolSchemas({
+        const permitted = filterToolSchemas(getToolSchemas({
           planningMode, askMode, persona: workerPersona, browserMode: true,
-          ...toolSettings,
-        }).map(t => t.function.name))
+          mode: workerMode, ...toolSettings,
+        }), toolSettings)
         runTools.splice(idx, 1)
-        runTools.push(...BROWSER_TOOL_SCHEMAS.filter(t => permitted.has(t.function.name) && !names.has(t.function.name)))
+        // Only browser schemas produced by the policy helper may be added.
+        runTools.push(...permitted.filter(t => t.function.name.startsWith('browser_') && !names.has(t.function.name)))
       }
 
       // Прокидываем chatId и колбэки рабочей памяти
@@ -379,6 +386,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       await agent.run(
         content,
         {
+          signal: runAbort.signal,
           onContextCounted: (info) => {
             const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
             const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
@@ -617,6 +625,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 resolve({
                   approved: (reply as { approved?: boolean }).approved === true,
                   always: (reply as { always?: 'session' | 'project' | 'global' }).always,
+                  match: (reply as { match?: 'action' | 'tool' }).match,
                 })
               })
               // Единый источник правды: классификация из commandSafety (§1.4)
@@ -731,26 +740,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'manage_dots', chatId, msgId, replyId, payload })
             })
           },
-          onBrowserAction: (payload) => {
-            // Round-trip в main: BrowserManager.execute (реестр webview-табов,
-            // гейтинг browserMode, request_access → AgentConfirmDialog).
-            // При подтверждении request_access — мутируем runTools: browser-тулы
-            // появляются со следующего раунда ЭТОГО же рана (Agent держит
-            // ссылку на массив, пересобирать ничего не нужно).
-            return new Promise((resolve) => {
-              const replyId = `browser-reply-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              replyHandlers.set(replyId, (reply) => {
-                const result = (reply.result as { success: boolean; output?: string; error?: string; enabled?: boolean; imageBase64?: string })
-                  ?? { success: false, error: 'browser: нет ответа от main-процесса' }
-                // Флип режима посреди рана: request_access подтверждён →
-                // добавляем browser-тулы, убираем request_access.
-                if (result.enabled && payload.action === 'request_access') {
-                  enableBrowserToolsMidRun()
-                }
-                resolve(result)
-              })
-              send({ type: 'browser_op', chatId, msgId, replyId, payload })
-            })
+          onBrowserAction: async (payload) => {
+            const result = await requestBrowserOperation(payload, replyHandlers, send, runAbort.signal)
+            if (!runAbort.signal.aborted && result.success && result.enabled && payload.action === 'request_access') {
+              enableBrowserToolsMidRun()
+            }
+            return result
           },
           onTodoUpdate: (items) => {
             send({ type: 'todo_update', chatId, msgId, items })
@@ -902,7 +897,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           },
         },
         agentSettings.maxSteps,
-        undefined,
+        runAbort.signal,
         systemPrompt,
         // Инъекция режимного промпта в КОНЕЦ history (последний элемент перед
         // новым user-сообщением) — максимальный вес у LLM. Раньше инъекция

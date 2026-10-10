@@ -69,8 +69,10 @@ const WebviewHost = memo(function WebviewHost({ tab, isActive }: { tab: BrowserT
         return // ещё не attached — ждём did-attach/dom-ready
       }
       registered.current = true
-      window.syntee.browser.registerTab(tab.tabId, wcId).catch(e =>
-        console.error('[BrowserPanel] registerTab failed:', e))
+      window.syntee.browser.registerTab(tab.tabId, wcId).catch(e => {
+        registered.current = false // Allow dom-ready to retry a failed attach request.
+        console.error('[BrowserPanel] registerTab failed:', e)
+      })
     }
 
     // did-attach стреляет раньше dom-ready (guest создан) — регистрируем
@@ -89,17 +91,17 @@ const WebviewHost = memo(function WebviewHost({ tab, isActive }: { tab: BrowserT
         // запись остаётся (восстановится при tab_select). При обычном
         // закрытии таб уже удалён из реестра (browser:closeTab) — повторный
         // unregister в main это no-op.
-        if (!tab.discarded) {
+        // IPC pushes clone tab objects; the effect closure is NOT updated when
+        // main mutates an entry. Read the current store before removing the tab.
+        const latest = useBrowserStore.getState().tabs.find(t => t.tabId === tab.tabId)
+        if (!latest?.discarded) {
           window.syntee.browser.unregisterTab(tab.tabId).catch(() => { /* ok */ })
         }
         registered.current = false
       }
     }
-    // tab.discarded НЕ в deps НАМЕРЕННО: cleanup должен читать СВЕЖЕЕ
-    // значение (main мутирует entry на месте) в момент анмаунта — webview
-    // уходит из-за discard, а запись таба обязана выжить. Deps по
-    // discarded перевесили бы слушатели в середине цикла discard/restore.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Cleanup reads discarded from the store, not the captured tab object.
+    // Changing discarded in deps would unregister mid discard/restore cycle.
   }, [tab.tabId])
 
   return (

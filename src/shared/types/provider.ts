@@ -157,6 +157,8 @@ export type AllowScope = 'session' | 'project' | 'global'
 export interface ApprovalAllowlistEntry {
   tool: string
   pattern: string
+  /** 'tool' grants every safe/warn invocation of this exact tool; absent means action-specific. */
+  match?: 'action' | 'tool'
   scope: AllowScope
   createdAt: number
 }

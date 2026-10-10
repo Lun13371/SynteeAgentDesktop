@@ -714,7 +714,7 @@ declare const synteeAPI: {
             previewDiff?: string;
         }) => void) => (_: unknown, data: unknown) => void;
         offConfirm: (wrapper: (...args: unknown[]) => void) => void;
-        confirmResponse: (reqId: string, approved: boolean, always?: "session" | "project" | "global") => void;
+        confirmResponse: (reqId: string, approved: boolean, always?: "session" | "project" | "global", toolWide?: boolean) => void;
         onConfirmDismiss: (cb: (reqId: string) => void) => () => Electron.IpcRenderer;
         onQuestion: (cb: (data: {
             reqId: string;

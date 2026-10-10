@@ -39,6 +39,17 @@ export const OPTIONAL_TOOL_GROUPS = [
     ['browser_scroll', 'Прокрутка'], ['browser_screenshot', 'Снимок страницы'],
     ['browser_tabs_list', 'Список вкладок'], ['browser_tab_new', 'Новая вкладка'],
     ['browser_tab_select', 'Выбор вкладки'], ['browser_tab_close', 'Закрытие вкладки'], ['browser_wait', 'Ожидание'],
+    ['browser_fill', 'Замена текста'], ['browser_double_click', 'Двойной клик'], ['browser_right_click', 'Правый клик'],
+    ['browser_hover', 'Наведение'], ['browser_focus', 'Фокус'], ['browser_select_option', 'Выбор опции'],
+    ['browser_check', 'Включение флажка'], ['browser_uncheck', 'Выключение флажка'], ['browser_drag', 'Перетаскивание'],
+    ['browser_wait_for', 'Ожидание условия'], ['browser_frames', 'Фреймы'], ['browser_accessibility', 'Дерево доступности Chromium'],
+    ['browser_evaluate', 'Выполнение JavaScript'], ['browser_add_script', 'Инжект скрипта'], ['browser_add_style', 'Инжект CSS'],
+    ['browser_console', 'Консоль'], ['browser_errors', 'Ошибки страницы'], ['browser_network', 'Сетевые события'],
+    ['browser_dialog', 'Диалоги'], ['browser_downloads', 'Скачивания'], ['browser_upload', 'Загрузка файлов'],
+    ['browser_cookies', 'Cookies'], ['browser_storage', 'Хранилище страницы'],
+    ['browser_set_user_agent', 'User agent'], ['browser_zoom', 'Масштаб'],
+    ['browser_trace_start', 'Начало трассировки'], ['browser_trace_stop', 'Завершение трассировки'],
+    ['browser_performance', 'Производительность'], ['browser_permissions', 'Разрешения сайта'], ['browser_clear_cache', 'Очистка кэша'],
   ]) },
 ]
 export function normalizeDisabledTools(value: unknown): string[] {
