@@ -375,12 +375,14 @@ export function registerProviderIPC(store: Store): void {
     store.set('cachedModels', cached)
   })
 
-  ipcMain.handle('providers:testKey', async (_e, providerId: string) => {
+  ipcMain.handle('providers:testKey', async (_e, providerId: string, draft?: Provider) => {
     const list = store.get('providers', []) as Provider[]
-    const provider = list.find(p => p.id === providerId)
+    const provider = draft?.id === providerId ? draft : list.find(p => p.id === providerId)
     if (!provider) return { ok: false, error: 'Провайдер не найден' }
     try {
-      const res = await fetch(`${provider.baseUrl}/models`, {
+      const url = provider.baseUrl.replace(/\/$/, '') + (provider.modelsEndpoint || '/models')
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(15000),
         headers: {
           'Authorization': `Bearer ${provider.apiKey}`,
           'x-api-key': provider.apiKey,

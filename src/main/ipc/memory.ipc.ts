@@ -28,7 +28,8 @@ import {
   type GetGraphOptions,
 } from '../../core/memory/graphStore'
 import { buildProjectGraph } from '../../core/memory/graphBuilder'
-import { startSemanticIndexer } from '../../core/memory/semanticIndex'
+import { startSemanticIndexer, setSemanticIndexerForegroundPredicate } from '../../core/memory/semanticIndex'
+import { activeRuns, activeRunMeta, compactRuns } from './chatShared'
 import { setGlobalMemorySettingsStore } from '../../core/memory/globalMemorySettings'
 
 /**
@@ -65,6 +66,9 @@ export function registerMemoryIPC(_store: Store): void {
   // лениво при первом использовании), далее периодически каждые
   // REINDEX_INTERVAL_MS. Остановка — stopSemanticIndexer() в before-quit.
   // Если E5 недоступна — просто пропускает циклы, TF-IDF/FTS поиск не затронут.
+  // activeRunMeta covers pre-worker send preparation; compactRuns covers
+  // manual compaction, both of which also compete for CPU/SQLite.
+  setSemanticIndexerForegroundPredicate(() => activeRuns.size > 0 || activeRunMeta.size > 0 || compactRuns.size > 0)
   startSemanticIndexer()
 
   // Список с фильтрами (замена memory:getAll)

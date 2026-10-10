@@ -308,8 +308,9 @@ export class ToolDispatcher {
         return findFiles(resolvedArgs.pattern as string, resolvedArgs.path as string, { maxResults: resolvedArgs.max_results as number | undefined, workdir: this.workdir })
       case 'get_diagnostics':
         return getDiagnostics(
-          (resolvedArgs.cwd as string | undefined) ?? this.workdir,
+          resolve(this.workdir ?? process.cwd(), (resolvedArgs.path ?? resolvedArgs.cwd ?? '.') as string),
           resolvedArgs.files as string[] | undefined,
+          { offset: resolvedArgs.offset as number | undefined, limit: resolvedArgs.limit as number | undefined, max_chars: resolvedArgs.max_chars as number | undefined },
         )
       case 'fetch_page':
         return fetchPage(resolvedArgs.url as string, {

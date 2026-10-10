@@ -16,11 +16,15 @@
 // Расширения (фаза 4): кнопка-пазл в тулбаре → ExtensionsPopover.
 
 import { useEffect, useRef, useState, useCallback, memo } from 'react'
+import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import AppIcon from '../AppIcon/AppIcon'
 import { useBrowserStore, type BrowserTab } from '../../../store/browser.store'
 import { useUIStore } from '../../../store/ui.store'
 import BrowserExtensionsPopover from './BrowserExtensions'
+import BrowserImportDialog from './BrowserImportDialog'
+import BrowserCreateProfileDialog from './BrowserCreateProfileDialog'
+import BrowserDeleteProfileDialog from './BrowserDeleteProfileDialog'
 import type { WebviewElement } from './webview.d'
 import './BrowserPanel.css'
 
@@ -109,7 +113,7 @@ const WebviewHost = memo(function WebviewHost({ tab, isActive }: { tab: BrowserT
       ref={ref}
       className="browser-webview"
       // eslint-disable-next-line react/no-unknown-property -- Electron webview-атрибуты (custom element)
-      partition="persist:syntee-browser"
+      partition={tab.partition ?? 'persist:syntee-browser'}
       // Без allowpopups webview блокирует target=_blank / window.open НА
       // УРОВНЕ КОНТЕНТА — setWindowOpenHandler в main даже не вызывается
       // (ссылки «открыть в новой вкладке» молча не открывались). С атрибутом
@@ -156,6 +160,17 @@ export default function BrowserPanel() {
   /** Агент сейчас выполняет browser_* тул → бейдж «AI» в тулбаре. */
   const agentActiveTool = useBrowserStore(s => s.agentActiveTool)
   const [extOpen, setExtOpen] = useState(false)
+  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([])
+  const [activeProfileId, setActiveProfileId] = useState('default')
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [createProfileOpen, setCreateProfileOpen] = useState(false)
+  const [deleteProfile, setDeleteProfile] = useState<{ id: string; name: string } | null>(null)
+  const [dataDialog, setDataDialog] = useState<'import' | 'bookmarks' | 'history' | null>(null)
+  const [chromeOpen, setChromeOpen] = useState(false)
+  const [chromeState, setChromeState] = useState<{ available: boolean; profiles: Array<{ id: string; name: string }> } | null>(null)
+  const [chromeLoading, setChromeLoading] = useState(false)
+  const [chromeBusy, setChromeBusy] = useState(false)
+  const [chromeError, setChromeError] = useState<string | null>(null)
   /** Якорь поповера расширений — элемент кнопки (ставится в onClick, не в render). */
   const [extAnchor, setExtAnchor] = useState<HTMLButtonElement | null>(null)
   const urlInputRef = useRef<HTMLInputElement>(null)
@@ -165,6 +180,37 @@ export default function BrowserPanel() {
   // получают display:none → белый экран).
   const activeId = activeTabId ?? tabs[0]?.tabId ?? null
   const activeTab = tabs.find(t => t.tabId === activeId) ?? null
+
+  // ── Профили браузера ──
+  useEffect(() => {
+    window.syntee.browser.profilesList().then(s => { setProfiles(s.profiles); setActiveProfileId(s.activeId) }).catch(() => { /* ok */ })
+  }, [])
+
+  const switchProfile = useCallback(async (id: string) => {
+    if (id === activeProfileId) { setProfileOpen(false); return }
+    if (await window.syntee.browser.profilesSwitch(id)) {
+      setActiveProfileId(id); setProfileOpen(false)
+      const state = await window.syntee.browser.getState()
+      useBrowserStore.getState().setTabs(state.tabs, state.activeTabId)
+    }
+  }, [activeProfileId])
+
+  const createProfile = useCallback(async (name: string) => {
+    const profile = await window.syntee.browser.profilesCreate(name)
+    setProfiles(current => [...current, profile])
+    await switchProfile(profile.id)
+  }, [switchProfile])
+
+  const confirmDeleteProfile = useCallback(async () => {
+    if (!deleteProfile || deleteProfile.id === 'default') return
+    const result = await window.syntee.browser.profilesDelete(deleteProfile.id)
+    const state = await window.syntee.browser.profilesList()
+    setProfiles(state.profiles)
+    setActiveProfileId(result.activeId)
+    setDeleteProfile(null)
+    const tabsState = await window.syntee.browser.getState()
+    useBrowserStore.getState().setTabs(tabsState.tabs, tabsState.activeTabId)
+  }, [deleteProfile])
 
   // ── Подписка на push состояния табов из main ──
   useEffect(() => {
@@ -223,6 +269,23 @@ export default function BrowserPanel() {
   const handleNewTab = useCallback(() => {
     window.syntee.browser.newTab().catch(() => { /* ok */ })
   }, [])
+
+  const openChromeDialog = useCallback(async () => {
+    setProfileOpen(false); setChromeOpen(true); setChromeLoading(true); setChromeError(null)
+    try { setChromeState(await window.syntee.browser.chromeProfiles()) } catch (e) { setChromeError(e instanceof Error ? e.message : 'Не удалось найти Chrome') }
+    finally { setChromeLoading(false) }
+  }, [])
+  const launchChrome = useCallback(async (profileId: string) => {
+    setChromeBusy(true); setChromeError(null)
+    try {
+      let safeUrl: string | undefined
+      try { if (activeTab?.url && ['http:', 'https:'].includes(new URL(activeTab.url).protocol)) safeUrl = activeTab.url } catch { /* about:blank or invalid draft */ }
+      const result = await window.syntee.browser.chromeOpen(profileId, safeUrl)
+      if (!result.ok) setChromeError(result.error || 'Не удалось открыть Chrome')
+      else setChromeOpen(false)
+    } catch (e) { setChromeError(e instanceof Error ? e.message : 'Не удалось открыть Chrome') }
+    finally { setChromeBusy(false) }
+  }, [activeTab])
 
   const handleCloseTab = useCallback((tabId: string) => {
     window.syntee.browser.closeTab(tabId).catch(() => { /* ok */ })
@@ -289,10 +352,37 @@ export default function BrowserPanel() {
           />
         </div>
 
+        <div className="browser-profile-wrap">
+          <button className="browser-profile-btn" onClick={() => setProfileOpen(v => !v)} title="Профиль браузера">
+            <AppIcon name="user" size="xs" />
+            <span>{profiles.find(p => p.id === activeProfileId)?.name ?? 'Личный'}</span>
+          </button>
+          {profileOpen && (
+            <div className="browser-profile-menu">
+              {profiles.map(profile => (
+                <div key={profile.id} className="browser-profile-row">
+                  <button className={profile.id === activeProfileId ? 'is-active' : ''} onClick={() => switchProfile(profile.id)}>
+                    {profile.id === activeProfileId ? '✓ ' : ''}{profile.name}
+                  </button>
+                  {profile.id !== 'default' && <button type="button" title={`Удалить профиль ${profile.name}`} onClick={() => { setProfileOpen(false); setDeleteProfile(profile) }}>×</button>}
+                </div>
+              ))}
+              <div className="browser-profile-divider" />
+              <button onClick={() => { setProfileOpen(false); setCreateProfileOpen(true) }}>＋ Создать пустой профиль</button>
+              {activeProfileId !== 'default' && (
+                <button onClick={() => { setProfileOpen(false); setDeleteProfile(profiles.find(p => p.id === activeProfileId) ?? null) }}>Удалить профиль</button>
+              )}
+              <button onClick={openChromeDialog}>🌐 Использовать оригинальный Chrome</button>
+              <button onClick={() => { setProfileOpen(false); setDataDialog('import') }}>↓ Импортировать из Chrome / Edge</button>
+              <div className="browser-profile-divider" />
+              <button onClick={() => { setProfileOpen(false); setDataDialog('bookmarks') }}>Импортированные закладки</button>
+              <button onClick={() => { setProfileOpen(false); setDataDialog('history') }}>Импортированная история</button>
+            </div>
+          )}
+        </div>
         <button
           className="browser-nav-btn"
           onClick={e => {
-            // Якорь поповера — сам элемент кнопки (в обработчике, не в render).
             setExtAnchor(e.currentTarget)
             setExtOpen(v => !v)
           }}
@@ -343,6 +433,41 @@ export default function BrowserPanel() {
           <BrowserTabView key={t.tabId} tab={t} isActive={t.tabId === activeId} />
         ))}
       </div>
+
+      {createProfileOpen && (
+        <BrowserCreateProfileDialog onClose={() => setCreateProfileOpen(false)} onCreate={createProfile} />
+      )}
+      {deleteProfile && (
+        <BrowserDeleteProfileDialog profile={deleteProfile} onClose={() => setDeleteProfile(null)} onDelete={confirmDeleteProfile} />
+      )}
+      {chromeOpen && createPortal(
+        <div className="browser-chrome-modal" role="dialog" aria-modal="true">
+          <div className="browser-chrome-modal__card">
+            <h3>Использовать оригинальный Chrome</h3>
+            <p>Откроется внешнее окно настоящего Chrome. Авторизации оригинального профиля сохраняются; управление Syntee к нему не подключено.</p>
+            {chromeLoading && <p>Поиск профилей…</p>}
+            {!chromeLoading && chromeState && !chromeState.available && <p>Chrome не найден в стандартных папках Windows.</p>}
+            {!chromeLoading && chromeState?.profiles.map(profile => (
+              <button key={profile.id} disabled={chromeBusy} onClick={() => launchChrome(profile.id)}>{chromeBusy ? 'Открытие…' : profile.name}</button>
+            ))}
+            {chromeError && <p role="alert">{chromeError}</p>}
+            <button type="button" disabled={chromeBusy} onClick={() => setChromeOpen(false)}>Отмена</button>
+          </div>
+        </div>, document.body,
+      )}
+
+      {dataDialog && (
+        <BrowserImportDialog
+          mode={dataDialog}
+          profileId={activeProfileId}
+          onClose={() => setDataDialog(null)}
+          onImported={async profile => {
+            const state = await window.syntee.browser.profilesList()
+            setProfiles(state.profiles)
+            await switchProfile(profile.id)
+          }}
+        />
+      )}
 
       {/* ── Поповер расширений (portal — поверх webview) ── */}
       {extOpen && (
