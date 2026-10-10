@@ -55,7 +55,7 @@ export function formatDiagnosticsOutput({
           ]
         : []
     const body = [
-      `${failures.length} diagnostic command(s) failed — the check DID NOT run completely. Cannot claim the project is clean.`,
+      `DIAGNOSTICS_UNKNOWN: ${failures.length} diagnostic command(s) failed — the check DID NOT run completely. Cannot claim the project is clean.`,
       detectedLine,
       ...failLines,
       '',

@@ -63,9 +63,9 @@ export async function getDiagnostics(
 
   if (applicableProviders.length === 0) {
     return {
-      success: true,
+      success: false,
       output:
-        'No supported language toolchain detected in this project. ' +
+        'DIAGNOSTICS_UNKNOWN: No supported language toolchain detected in this project. ' +
         'Use run_command to run your project\'s linter/type-checker manually.',
     }
   }

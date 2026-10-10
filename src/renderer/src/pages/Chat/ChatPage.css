@@ -42,11 +42,31 @@
 .chat-topright-actions {
   position: absolute;
   top: 10px;
-  right: 14px;
+  right: 10px;
+  left: 10px;
   z-index: 40;
   display: flex;
-  align-items: flex-start;
+  justify-content: flex-end;
+  align-items: center;
   gap: 6px;
+  height: 24px;
+  pointer-events: none;
+}
+.chat-topright-actions > * { pointer-events: auto; flex-shrink: 0; }
+/* Popovers share the toolbar's right edge, never enlarge its flex items. */
+.chat-topright-actions .syntee-task-summary { position: static; }
+.chat-topright-actions .syntee-task-summary__panel {
+  right: 0;
+  top: 30px;
+  width: min(350px, 100%);
+}
+.chat-topright-actions .chat-files__popover {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  width: min(380px, 100%);
+  max-width: 100%;
+  margin-top: 0;
 }
 /* ChatFilesPopover внутри кластера: из absolute → static (позиционирует кластер) */
 .chat-topright-actions .chat-files {

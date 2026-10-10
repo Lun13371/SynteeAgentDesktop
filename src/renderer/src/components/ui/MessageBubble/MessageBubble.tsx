@@ -11,6 +11,7 @@ import type { PluginUiWidgetPayload } from '@shared/types/plugin'
 import { formatTokens, formatTokensFull, formatDuration } from '@shared/format'
 import { normalizeMathDelimiters, containsMathMarkers } from '@shared/mathNormalize'
 import PluginIframe from '../PluginSlot/PluginIframe'
+import { useToast } from '../Toast/Toast'
 import { collectMarkdownRenderers, collectMessageContextMenu, collectMessageTags, getPluginsExt } from '../../../utils/pluginExtApi'
 import { useExtensionsStore } from '../../../store/extensions.store'
 import { usePluginPanelStore } from '../../../store/pluginPanel.store'
@@ -2286,6 +2287,21 @@ const MessageContent = memo(function MessageContent({
               <>
                 <IconButton icon="copy" label="Копировать" className="msg-action-btn" onClick={onCopy} />
                 <IconButton icon="pin" label="Закрепить" className="msg-action-btn" onClick={() => onPin?.(message.id)} />
+                {!isLiveBubble && message.chatId && message.content?.trim() && useChatStore.getState().chats.some(chat => chat.id === message.chatId && !chat.isIncognito) && (
+                  <IconButton icon="pin" label="Добавить в сводку" className="msg-action-btn" onClick={() => {
+                    // A task-summary note only: does not pin context or write memory.
+                    const chat = useChatStore.getState().chats.find(chat => chat.id === message.chatId)
+                    if (!chat || chat.isIncognito) return
+                    const note = message.content.replace(/<thinking>[\s\S]*?(?:<\/thinking>|$)/gi, '').trim().slice(0, 500)
+                    if (!note) return
+                    void window.syntee.taskSummary.addPin(message.chatId, note, message.id)
+                      .then(state => {
+                        if (!state.manualPins.some(pin => pin.messageId === message.id)) throw new Error('Note was not saved')
+                        useToast.getState().add('Добавлено в сводку задачи', 'success')
+                      })
+                      .catch(() => useToast.getState().add('Не удалось добавить сообщение в сводку', 'error'))
+                  }} />
+                )}
                 {onReply && <IconButton icon="reply" label="Ответить" className="msg-action-btn" onClick={onReply} />}
                 {isUser && onRewind && <IconButton icon="rewind" label="Откатить к этому сообщению" className="msg-action-btn" onClick={onRewind} />}
                 {!isUser && <IconButton icon="volume" label="Озвучить" className="msg-action-btn" onClick={onReadAloud} />}

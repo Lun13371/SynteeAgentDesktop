@@ -5,7 +5,7 @@
 // The Agent class creates a ToolDispatcher and delegates executeTool calls.
 
 import type Store from 'electron-store'
-import { resolve } from 'path'
+import { resolve, isAbsolute } from 'path'
 import { statSync, existsSync } from 'fs'
 import { createHash } from 'crypto'
 import {
@@ -497,6 +497,22 @@ export class ToolDispatcher {
           success: true,
           output: `Agent ${agentId}: status=${status.status}, steps=${status.stepsCount}${status.currentStep ? `, current=${status.currentStep}` : ''}`,
         }
+      }
+      case 'publish_result': {
+        const target = resolvedArgs.target as string
+        const kind = resolvedArgs.kind as string
+        const title = resolvedArgs.title as string
+        if (typeof title !== 'string' || !title.trim() || typeof target !== 'string' || !target || target.length > 2000 || !this.chatId) return { success: false, output: '', error: 'Valid title, target (up to 2000 characters) and chat context are required' }
+        if (kind === 'url') {
+          let url: URL
+          try { url = new URL(target) } catch { return { success: false, output: '', error: 'invalid URL' } }
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') return { success: false, output: '', error: 'Only http/https URLs are allowed' }
+        } else if (kind === 'file' || kind === 'image') {
+          try {
+            if (!isAbsolute(target) || !statSync(target).isFile()) return { success: false, output: '', error: 'File target must be an existing absolute file path' }
+          } catch { return { success: false, output: '', error: 'File target is unavailable' } }
+        } else return { success: false, output: '', error: 'invalid result kind' }
+        return { success: true, output: JSON.stringify({ taskSummaryResult: { title: title.slice(0,120), kind, target } }) }
       }
       case 'update_working_memory': {
         const content = resolvedArgs.content as string

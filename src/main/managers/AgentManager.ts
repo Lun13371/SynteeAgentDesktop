@@ -22,6 +22,9 @@ import { getChatBrowserMode } from '../../core/db/chats'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import { confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
 import { getNotificationManager } from './NotificationManager'
+import { searchAllSources, saveMemoryItem, type SaveMemoryInput } from '../../core/memory/MemoryStore'
+import { bumpMemoryHit } from '../../core/memory/store/utils'
+import { getMemorySettings, getGlobalMemoryEnabled } from '../../core/memory/globalMemorySettings'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -336,6 +339,13 @@ class AgentManager {
     this.windowGetter = getter
   }
 
+  onUpdate(listener: (record: AgentRecord) => void): () => void {
+    this.updateListeners.add(listener)
+    return () => this.updateListeners.delete(listener)
+  }
+
+  private updateListeners = new Set<(record: AgentRecord) => void>()
+
   /**
    * @deprecated использовать registerWindowGetter. Оставлен для обратной
    * совместимости — сразу регистрирует окно как константный getter.
@@ -345,6 +355,7 @@ class AgentManager {
   }
 
   private broadcast(channel: string, payload: unknown) {
+    if (channel === 'agent:update' && payload && typeof payload === 'object') for (const listener of this.updateListeners) { try { listener(payload as AgentRecord) } catch { /* UI observers are isolated */ } }
     const target = this.windowGetter?.()
     if (!target) return
     const wins = Array.isArray(target) ? target : [target]
@@ -905,6 +916,75 @@ ${subModeOutro}`
              }
              break
            }
+
+          // Like recall, saves must be serviced in main and always receive a reply.
+          case 'save_memory': {
+            const replyId = msg.replyId as string
+            ;(async () => {
+              try {
+                if (!getMemorySettings().enabled) {
+                  worker.postMessage({ type: 'save_memory_reply', replyId, success: false, error: 'Память выключена.' })
+                  return
+                }
+                const item = await saveMemoryItem({
+                  title: msg.title as string,
+                  content: msg.content as string,
+                  kind: msg.kind as SaveMemoryInput['kind'],
+                  scope: msg.scope as SaveMemoryInput['scope'],
+                  key: msg.key as string | undefined,
+                  category: msg.category as string | undefined,
+                  importance: msg.importance as number | undefined,
+                  projectId: msg.projectId as string | undefined,
+                  chatId: msg.chatId as string | undefined,
+                  source: 'agent_tool',
+                })
+                worker.postMessage({ type: 'save_memory_reply', replyId, success: true, id: item.id })
+              } catch (e) {
+                worker.postMessage({ type: 'save_memory_reply', replyId, success: false, error: e instanceof Error ? e.message : String(e) })
+              }
+            })()
+            break
+          }
+
+          // Recall runs in main: the worker thread has no initialized DB/settings
+          // store. Always answer the request, including disabled/search failure.
+          case 'recall_memory': {
+            const replyId = msg.replyId as string
+            ;(async () => {
+              try {
+                const scope = msg.scope as 'global' | 'project' | 'all' | undefined
+                if (!getMemorySettings().enabled) {
+                  worker.postMessage({ type: 'recall_memory_reply', replyId, success: false, results: [], error: 'Память выключена.' })
+                  return
+                }
+                if (!getGlobalMemoryEnabled() && scope === 'global') {
+                  worker.postMessage({ type: 'recall_memory_reply', replyId, success: false, results: [], error: 'Глобальная память выключена.' })
+                  return
+                }
+                const results = await searchAllSources({
+                  query: msg.query as string,
+                  kind: msg.kind as never,
+                  scope,
+                  projectId: msg.projectId as string | undefined,
+                  limit: msg.limit as number | undefined,
+                  sources: msg.sources as never,
+                  crossProject: msg.crossProject as boolean | undefined,
+                })
+                try {
+                  const ids = results.filter(r => r.source === 'memory' && r.item?.id).map(r => r.item!.id)
+                  if (ids.length) bumpMemoryHit(ids)
+                } catch (e) { console.warn('[AgentManager] recall feedback failed:', e) }
+                worker.postMessage({ type: 'recall_memory_reply', replyId, success: true, results: results.map(r => ({
+                  source: r.source, title: r.item?.title ?? null, content: r.content, score: r.score,
+                  kind: r.item?.kind, scope: r.item?.scope, key: r.item?.key ?? null,
+                  chatId: r.chatId, chatTitle: r.chatTitle, messageId: r.messageId, role: r.role, date: r.date,
+                })) })
+              } catch (e) {
+                worker.postMessage({ type: 'recall_memory_reply', replyId, success: false, results: [], error: e instanceof Error ? e.message : String(e) })
+              }
+            })()
+            break
+          }
 
           // ── confirm: суб-агент запрашивает разрешение на dangerous-тул ──
           // Зеркало chat.ipc.ts:1981-2015. Без этого case worker Promise

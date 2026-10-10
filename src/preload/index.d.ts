@@ -479,6 +479,16 @@ declare const synteeAPI: {
         extRemove: (extId: string) => Promise<boolean>;
         extToggle: (extId: string, enabled: boolean) => Promise<boolean>;
     };
+    taskSummary: {
+        onChanged: (cb: (event: {
+            chatId: string;
+            state: import("../shared/types/taskSummary").TaskSummaryState;
+        }) => void) => () => Electron.IpcRenderer;
+        get: (chatId: string) => Promise<import("../shared/types/taskSummary").TaskSummaryState>;
+        update: (chatId: string, patch: import("../shared/types/taskSummary").TaskSummaryPatch) => Promise<import("../shared/types/taskSummary").TaskSummaryState>;
+        addPin: (chatId: string, text: string, messageId?: string) => Promise<import("../shared/types/taskSummary").TaskSummaryState>;
+        removePin: (chatId: string, id: string) => Promise<import("../shared/types/taskSummary").TaskSummaryState>;
+    };
     chat: {
         create: (incognito?: boolean, mode?: "code" | "work", projectId?: string, model?: {
             modelId?: string;

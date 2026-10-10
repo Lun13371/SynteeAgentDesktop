@@ -19,6 +19,7 @@ import { ChatRemeasureContext } from '../../components/ui/MessageBubble/remeasur
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import { useChatEditor } from '../../hooks/useChatEditor'
 import LiveTodoBar from '../../components/ui/LiveTodoBar/LiveTodoBar'
+import TaskSummary from '../../components/ui/TaskSummary/TaskSummary'
 import ChatFilesPopover from '../../components/ui/ChatFilesPopover/ChatFilesPopover'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
@@ -189,6 +190,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const liveMsgId = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.msgId : undefined) ?? null
   const liveToolProgress = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.toolProgress : undefined) ?? EMPTY_TOOL_PROGRESS
   const liveRateLimitSec = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.rateLimitSec : 0) ?? 0
+  const liveAgentStatus = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.agentStatus : null)
   // hasLiveText — boolean: true пока live.text непустой. Примитив →
   // Object.is → НЕ ре-рендерит когда текст растёт (true → true).
   // Ре-рендер только при переходе empty→non-empty и обратно.
@@ -2387,6 +2389,13 @@ const chatId = compactingCurrentChatIdRef.current
   // всплеск remeasure-вызовов (раскрытие нескольких тул-блоков подряд) в один
   // замер на следующем кадре вместо N синхронных reflow-циклов.
   const remeasureRafRef = useRef<number | null>(null)
+  const navigateToSummaryMessage = useCallback((messageId: string) => {
+    const index = displayMessages.findIndex(message => message.id === messageId)
+    if (index >= 0) {
+      virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
+      requestAnimationFrame(() => document.querySelector(`[data-msg-id="${CSS.escape(messageId)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+    }
+  }, [displayMessages, virtualizer])
   const requestRemeasure = useCallback(() => {
     if (remeasureRafRef.current !== null) return
     remeasureRafRef.current = requestAnimationFrame(() => {
@@ -2423,20 +2432,27 @@ const chatId = compactingCurrentChatIdRef.current
           onExtensionInstalled={handleExtensionInstalled}
         />
         <main className="chat-main">
-          <LiveTodoBar items={overlayTodo} active={overlayActive} />
+          {isIncognito || !currentChatId || liveTodo.length === 0 ? <LiveTodoBar items={overlayTodo} active={overlayActive} /> : null}
 
-          {/* ── Кластер в правом верхнем углу: пилюля «файлы в чате» +
-              ОТДЕЛЬНАЯ кнопка редактора чата (inline-правка сообщений). ── */}
+          {/* ── Кластер в правом верхнем углу: сводка задачи + файлы + редактор ── */}
           <div className="chat-topright-actions">
+            {!isIncognito && currentChatId && <TaskSummary
+              key={currentChatId}
+              chatId={currentChatId}
+              workdir={currentWorkdir}
+              live={isTyping || isAgentRunning}
+              liveStatus={liveAgentStatus ?? undefined}
+              liveTodo={liveTodo}
+              onNavigateMessage={navigateToSummaryMessage}
+              onInsert={value => { setDraft(value); handleDraftChange(value) }}
+            />}
             <ChatFilesPopover messages={messages} workdir={currentWorkdir} />
             {!isIncognito && currentChatId && (
               <button
                 type="button"
                 className={`chat-editor-fab${editorMode ? ' chat-editor-fab--active' : ''}`}
                 onClick={() => { if (!editorMode) useChatStore.getState().enterEditorMode(currentChatId) }}
-                title={editorMode
-                  ? 'Редактор активен — изменения применяются на плашке сверху'
-                  : 'Редактор чата: правка текста, скрытие из контекста, удаление сообщений'}
+                title={editorMode ? 'Редактор активен — изменения применяются на плашке сверху' : 'Редактор чата: правка текста, скрытие из контекста, удаление сообщений'}
                 aria-label="Редактор чата"
                 aria-pressed={editorMode}
               >
@@ -2445,6 +2461,7 @@ const chatId = compactingCurrentChatIdRef.current
             )}
           </div>
 
+          {/* Дополнительные действия уже объединены со сводкой выше. */}
           {/* ── Редактор чата: плашка режима inline-правки ──
               Появляется при editorMode: чипсы-счётчики изменений по типам
               (правки / скрыто / удалено) + применить/отменить.

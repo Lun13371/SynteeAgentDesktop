@@ -237,6 +237,7 @@ export const IPC_EVENTS = {
   CHAT_STREAM_DONE: 'chat:stream:done',
   CHAT_STREAM_ERROR: 'chat:stream:error',
   CHAT_RUN_STATUS: 'chat:run:status',
+  TASK_SUMMARY_CHANGED: 'task-summary:changed',
   CHAT_QUEUE_UPDATED: 'chat:queue:updated',
   CHAT_CHECKPOINT_CREATED: 'chat:checkpoint:created',
   CHAT_REWOUND: 'chat:rewound',
