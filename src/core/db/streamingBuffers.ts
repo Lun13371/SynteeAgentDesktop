@@ -20,11 +20,14 @@ export interface StreamingBufferRow {
 
 export function saveStreamingBuffer(messageId: string, chatId: string, payloadJson: string): void {
   const started = perfMark()
+  const payloadBytes = Buffer.byteLength(payloadJson, 'utf8')
   getDB().prepare(`
     INSERT OR REPLACE INTO streaming_buffers (message_id, chat_id, payload, updated_at)
     VALUES (?, ?, ?, ?)
   `).run(messageId, chatId, payloadJson, Date.now())
-  perfEvent('db.streaming_buffer.save', perfMark() - started)
+  perfEvent('db.streaming_buffer.save', perfMark() - started, {
+    payloadBytes,
+  })
 }
 
 export function getStreamingBuffer(messageId: string): StreamingBufferRow | null {

@@ -39,6 +39,7 @@ export function registerPtyIPC(mainWindow: MainWindow): void {
   })
 
   ipcMain.handle('pty:write', (_, sessionId: string, data: string) => {
+    if (typeof data !== 'string' || data.length > 256 * 1024) return
     ptyManager.write(sessionId, data)
   })
 

@@ -31,6 +31,10 @@ const _tokenCache = new Map<string, { tokens: number; bytes: number }>()
 const TOKEN_CACHE_MAX_ENTRIES = 500
 const TOKEN_CACHE_MAX_BYTES = 4 * 1024 * 1024
 let _tokenCacheBytes = 0
+const _messageTokenCache = new Map<string, { tokens: number; bytes: number }>()
+const MESSAGE_TOKEN_CACHE_MAX_ENTRIES = 1_000
+const MESSAGE_TOKEN_CACHE_MAX_BYTES = 8 * 1024 * 1024
+let _messageTokenCacheBytes = 0
 const _utf8Encoder = new TextEncoder()
 
 /** Exact-text LRU. UTF-8 byte accounting bounds retained text independently of entry count. */
@@ -69,6 +73,8 @@ export function estimateTokens(text: string): number {
 export function clearTokenCountCache(): void {
   _tokenCache.clear()
   _tokenCacheBytes = 0
+  _messageTokenCache.clear()
+  _messageTokenCacheBytes = 0
 }
 
 type MessageLike = {
@@ -89,21 +95,61 @@ type MessageLike = {
  *
  * Теперь единая функция используется всеми эмиттерами context_usage.
  */
-export function estimateMessagesTokensFull(messages: Array<MessageLike>): number {
-  return messages.reduce((sum, m) => {
-    const contentStr = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => 'text' in p ? (p as { text: string }).text : '').join('') : '')
-    let n = estimateTokens(contentStr || '') + 4  // +4 служебных (role/разделители)
-    // tool_calls (assistant): {id, type:'function', function:{name, arguments(JSON)}}
-    if (m.tool_calls && Array.isArray(m.tool_calls)) {
-      for (const tc of m.tool_calls as Array<Record<string, unknown>>) {
-        try { n += estimateTokens(JSON.stringify(tc)) } catch { /* ok */ }
-      }
+function estimateMessageTokens(m: MessageLike): number {
+  const contentStr = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => 'text' in p ? (p as { text: string }).text : '').join('') : '')
+  let n = estimateTokens(contentStr || '') + 4 // +4 служебных (role/разделители)
+  if (m.tool_calls && Array.isArray(m.tool_calls)) {
+    for (const tc of m.tool_calls as Array<Record<string, unknown>>) {
+      try { n += estimateTokens(JSON.stringify(tc)) } catch { /* ok */ }
     }
-    // role:'tool' сообщения: tool_call_id + name
-    if (m.tool_call_id) n += estimateTokens(m.tool_call_id)
-    if (m.name) n += estimateTokens(m.name)
-    return sum + n
-  }, 0)
+  }
+  if (m.tool_call_id) n += estimateTokens(m.tool_call_id)
+  if (m.name) n += estimateTokens(m.name)
+  return n
+}
+
+/** Stable message-level fingerprint; bounded cache avoids retaining message objects. */
+function messageTokenFingerprint(m: MessageLike): string {
+  let content = ''
+  if (typeof m.content === 'string') content = m.content
+  else if (Array.isArray(m.content)) {
+    content = m.content.map(p => {
+      let image = ''
+      try { image = p.image_url ? JSON.stringify(p.image_url) : '' } catch { image = String(p.image_url) }
+      return `${p.type}:${p.text ?? ''}:${image}`
+    }).join('|')
+  }
+  let toolCalls = ''
+  try { toolCalls = m.tool_calls ? JSON.stringify(m.tool_calls) : '' } catch { toolCalls = String(m.tool_calls) }
+  return JSON.stringify([1, m.role, content, toolCalls, m.tool_call_id ?? '', m.name ?? ''])
+}
+
+function getCachedMessageTokens(m: MessageLike): number {
+  const fingerprint = messageTokenFingerprint(m)
+  const cached = _messageTokenCache.get(fingerprint)
+  if (cached) {
+    _messageTokenCache.delete(fingerprint)
+    _messageTokenCache.set(fingerprint, cached)
+    return cached.tokens
+  }
+  const tokens = estimateMessageTokens(m)
+  const bytes = _utf8Encoder.encode(fingerprint).byteLength
+  if (bytes <= MESSAGE_TOKEN_CACHE_MAX_BYTES) {
+    while (_messageTokenCache.size >= MESSAGE_TOKEN_CACHE_MAX_ENTRIES || _messageTokenCacheBytes + bytes > MESSAGE_TOKEN_CACHE_MAX_BYTES) {
+      const oldest = _messageTokenCache.keys().next().value
+      if (oldest === undefined) break
+      const entry = _messageTokenCache.get(oldest)!
+      _messageTokenCache.delete(oldest)
+      _messageTokenCacheBytes -= entry.bytes
+    }
+    _messageTokenCache.set(fingerprint, { tokens, bytes })
+    _messageTokenCacheBytes += bytes
+  }
+  return tokens
+}
+
+export function estimateMessagesTokensFull(messages: Array<MessageLike>): number {
+  return messages.reduce((sum, m) => sum + getCachedMessageTokens(m), 0)
 }
 
 /** Тонкая обёртка над estimateMessagesTokensFull (обратная совместимость). */

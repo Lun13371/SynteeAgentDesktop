@@ -4,7 +4,7 @@ title Syntee Helper - Release Build
 color 0F
 
 set LAUNCHER_DIR=C:\Projects\syntee-launcher
-set CLIENT_DIR=C:\Projects\SynteeHelper
+set "CLIENT_DIR=%~dp0"
 
 echo.
 echo  ============================================================
@@ -223,7 +223,7 @@ echo  +----------------------------------------------------------+
 echo.
 echo  +----------------------------------------------------------+
 echo  ^| 2. Syntee Helper-%NEW_VER%-x64.zip                      ^|
-echo  ^|    Path: C:\Projects\SynteeHelper\dist\                   ^|
+echo  ^|    Path: %CLIENT_DIR%dist\                         ^|
 echo  ^|    Size: ~400 MB                                          ^|
 echo  ^|    WHERE: Syntee Gateway Admin -> Releases -> Upload      ^|
 echo  ^|    This is the client the launcher downloads on install   ^|
@@ -244,7 +244,7 @@ echo    1. Open: https://panel.syntee.fun
 echo    2. Go to: Releases
 echo    3. Click "Upload New Release"
 echo    4. Select the zip file from:
-echo       C:\Projects\SynteeHelper\dist\
+echo       %CLIENT_DIR%dist\
 echo    5. Fill in:
 echo       - Version:   %NEW_VER%
 echo       - Channel:   stable

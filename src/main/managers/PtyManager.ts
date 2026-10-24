@@ -50,7 +50,8 @@ interface PendingExec {
   /** Скомпилированный регекс — создаётся один раз, не на каждый чанк. */
   markerRe: RegExp
   buf: string
-  resolve: (r: { output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }) => void
+  truncated: boolean
+  resolve: (r: { output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean; truncated?: boolean }) => void
   timer: NodeJS.Timeout
   /** Буфер для фильтрации маркеров из display-потока (pty:data → xterm). */
   displayBuf: string
@@ -96,6 +97,22 @@ const DEFAULT_ROWS = 24
  *  Без этого команда с мегабайтами вывода + открытие панели = синхронный
  *  term.write(весь_буфер) → фриз рендерера на секунды. */
 const PRE_MOUNT_BUF_CAP = 256 * 1024
+/** Maximum AI-facing output retained per exec (UTF-16 chars). Keep both the
+ * beginning (command context) and tail (errors/completion context). */
+const PENDING_EXEC_BUF_CAP = 512 * 1024
+const PENDING_EXEC_HEAD_CHARS = 64 * 1024
+const EXEC_TRUNCATION_MARKER = '\n[…PTY output truncated; showing beginning and end…]\n'
+
+function capPendingOutput(output: string): string {
+  if (output.length <= PENDING_EXEC_BUF_CAP) return output
+  const tailChars = PENDING_EXEC_BUF_CAP - PENDING_EXEC_HEAD_CHARS
+  return output.slice(0, PENDING_EXEC_HEAD_CHARS) + output.slice(-tailChars)
+}
+
+function pendingExecOutput(p: PendingExec, output = p.buf): string {
+  const clipped = capPendingOutput(output)
+  return p.truncated ? `${clipped}${EXEC_TRUNCATION_MARKER}` : clipped
+}
 
 let cachedShells: ShellInfo[] | null = null
 
@@ -341,7 +358,7 @@ class PtyManager {
         const p = session.pending
         clearTimeout(p.timer)
         session.pending = null
-        p.resolve({ output: p.buf, exitCode: exitCode ?? 1, timedOut: false })
+        p.resolve({ output: pendingExecOutput(p), exitCode: exitCode ?? 1, timedOut: false, truncated: p.truncated })
       }
       // Отложенный cleanup: через 30с убираем dead-сессию из Map.
       // Даёт UI время показать финальный вывод, но не утекает бесконечно.
@@ -402,6 +419,7 @@ class PtyManager {
   private feedExec(session: PtySession, data: string): void {
     const p = session.pending
     if (!p) return
+    const previousLength = p.buf.length
     p.buf += data
 
     // ── Срез эха команды из AI-вывода ──────────────────────────────
@@ -433,20 +451,30 @@ class PtyManager {
     // если маркер разрезан между чанками. Маркер ~30 chars, backfill 128.
     // Раньше было p.buf.match(new RegExp(...)) на КАЖДОМ чанке по ВЕСЬ буфер
     // → O(n²) для команды с N чанков вывода → блокировка main process.
-    const backfill = Math.min(128, p.buf.length - data.length)
-    const searchStart = Math.max(0, p.buf.length - data.length - backfill)
+    const backfill = Math.min(128, Math.max(0, previousLength))
+    const searchStart = Math.max(0, previousLength - backfill)
     const m = p.markerRe.exec(p.buf.slice(searchStart))
-    if (!m || m.index === undefined) return
-    const actualIndex = searchStart + m.index
-    const exitCode = Number(m[1])
-    // Обрезаем вывод до маркера (маркер не должен попасть в результат AI)
-    const output = p.buf.slice(0, actualIndex)
-    // Маркеры уже отфильтрованы из display-потока (filterDisplayData),
-    // старый cleanup через \r\x1b[A\x1b[J больше не нужен — он ломал вывод
-    // при разной ширине терминала и wrap-е строк.
-    // Резолв через wrapper — он же чистит timer/pending (см. execInSession).
-    p.resolve({ output, exitCode, timedOut: false })
+    if (m && m.index !== undefined) {
+      const actualIndex = searchStart + m.index
+      const exitCode = Number(m[1])
+      // Completion marker is matched before applying the cap, even if one
+      // unusually large PTY chunk contains more than the retained window.
+      const rawOutput = p.buf.slice(0, actualIndex)
+      if (rawOutput.length > PENDING_EXEC_BUF_CAP) p.truncated = true
+      p.resolve({ output: pendingExecOutput(p, rawOutput), exitCode, timedOut: false, truncated: p.truncated })
+      return
+    }
+
+    // Retain a small prefix and a large rolling tail so diagnostics and recent
+    // errors survive noisy commands. The display batcher receives original
+    // chunks independently and is intentionally untouched.
+    if (p.buf.length > PENDING_EXEC_BUF_CAP) {
+      p.buf = capPendingOutput(p.buf)
+      p.truncated = true
+    }
   }
+
+  // Pending output clipping is applied in feedExec before retaining each chunk.
 
   /** Экранирует путь для cd-команды в зависимости от шелла. */
   private buildCdCommand(shell: ShellType, cwd: string): string | null {
@@ -467,7 +495,7 @@ class PtyManager {
     command: string,
     timeoutSec: number,
     cwd?: string,
-  ): Promise<{ output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }> {
+  ): Promise<{ output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean; truncated?: boolean }> {
     const session = this.sessions.get(sessionId)
     if (!session) return { output: '', exitCode: 1 }
     if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
@@ -481,7 +509,7 @@ class PtyManager {
       await new Promise<void>(r => setTimeout(r, 1000))
       if (session.dead) return { output: '[shell process exited]', exitCode: 1 }
       if (session.pending) {
-        const partial = session.pending.buf ?? ''
+        const partial = pendingExecOutput(session.pending)
         try { session.proc.kill() } catch { /* already dead */ }
         session.dead = true
         session.pending = null
@@ -535,7 +563,7 @@ class PtyManager {
       // Единый выход — гарантирует что resolve позвется ровно один раз
       // (dbl-resolve возможен: feedExec по маркеру + timeout-fallback),
       // и чистит ВСЕ таймеры + session.pending.
-      const settle = (r: { output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean }) => {
+      const settle = (r: { output: string; exitCode: number; timedOut?: boolean; interrupted?: boolean; truncated?: boolean }) => {
         if (settled) return
         settled = true
         if (killTimer) { clearTimeout(killTimer); killTimer = undefined }
@@ -564,7 +592,7 @@ class PtyManager {
           if (settled) return
           // Сохраняем partial output — то, что команда успела напечатать
           // до таймаута (раньше это терялось — AI видел пустую строку).
-          const partial = session.pending?.buf ?? ''
+          const partial = session.pending ? pendingExecOutput(session.pending) : ''
           // НЕ kill — сессия остаётся живой. Shell-busy recovery на следующей
           // команде сделает kill если Ctrl+C не поможет.
           settle({ output: partial, exitCode: 1, timedOut: true })
@@ -579,7 +607,7 @@ class PtyManager {
       }
       const cmdFirstLine = command.split(/\r?\n/)[0].trim()
       session.pending = {
-        markerId, markerRe: new RegExp(`${markerId}:(\\d+)`), buf: '',
+        markerId, markerRe: new RegExp(`${markerId}:(\\d+)`), buf: '', truncated: false,
         resolve: settle, timer, displayBuf: '',
         cmdFirstLine, echoStripped: false,
       }
@@ -617,7 +645,7 @@ class PtyManager {
       clearTimeout(s.pending.timer)
       const p = s.pending
       s.pending = null
-      p.resolve({ output: p.buf, exitCode: 1, timedOut: false })
+      p.resolve({ output: pendingExecOutput(p), exitCode: 1, timedOut: false, truncated: p.truncated })
     }
     // Чистим interrupting-таймер если был
     if (s.interruptTimer) {
@@ -663,10 +691,11 @@ class PtyManager {
       // Резолвим Promise иначе worker виснет на await onShellExec.
       // Раньше relied solely on worker.terminate() — но если interrupt
       // вызван без terminate (future-proof), Promise завис бы навсегда.
-      const partial = s.pending.buf ?? ''
+      const partial = pendingExecOutput(s.pending)
       const resolve = s.pending.resolve
+      const truncated = s.pending.truncated
       s.pending = null
-      resolve({ output: partial, exitCode: 1, timedOut: false, interrupted: true })
+      resolve({ output: partial, exitCode: 1, timedOut: false, interrupted: true, truncated })
       // Устанавливаем interrupting-флаг с 3с kill-fallback.
       // Если за 3с в onData придут новые данные — interrupting снимется
       // (шелл вернулся к промпту). Если нет — kill.

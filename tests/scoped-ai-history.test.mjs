@@ -47,7 +47,7 @@ test('persistent scoped SQL excludes just-saved current user and retains system 
 })
 
 test('send path uses ephemeral supplied history and persistent exclusion; send prompt is snapshotted once', () => {
-  assert.match(chatSource, /params\.incognito\s*\?\s*getLiveMessages\(history\)\s*:\s*getMessagesAfterLatestCompactCached\(params\.chatId, userMsg\.id\)/)
+  assert.match(chatSource, /params\.incognito\s*\?\s*getLiveMessages\(history\)\s*:\s*filterContextHistory\(params\.chatId,\s*getMessagesAfterLatestCompactCached\(params\.chatId, userMsg\.id\),\s*userMsg\.id\)/)
   assert.equal((chatSource.match(/const sendSystemPrompt = params\.sideChatParentId[\s\S]{0,100}await getSystemPrompt\(/g) ?? []).length, 1)
   assert.match(chatSource, /systemPrompt = sendSystemPrompt/)
 })

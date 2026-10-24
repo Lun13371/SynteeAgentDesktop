@@ -53,6 +53,9 @@ export function getMessagesCached(chatId: string): Message[] {
   const version = _chatVersions.get(chatId) ?? 0
   const cached = _historyCache.get(chatId)
   if (cached && cached.version === version) {
+    // Real LRU: a hit becomes most recently used.
+    _historyCache.delete(chatId)
+    _historyCache.set(chatId, cached)
     return cached.messages
   }
   // Cache miss → читаем из БД, кэшируем

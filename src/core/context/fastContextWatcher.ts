@@ -58,6 +58,20 @@ export function setFastContextPaths(dbPath: string, wasmDir: string): void {
 let _worker: Worker | null = null
 let _workerJobId = 0
 const _workerPending = new Map<string, { resolve: () => void; reject: (e: Error) => void; projectId: string }>()
+let _foregroundBusy = false
+
+/**
+ * Кооперативный сигнал для worker'а: активный чат не блокирует SQLite и не
+ * прерывает транзакции, но low-priority indexing jobs уступают CPU/диск.
+ * Не создаём worker только ради сигнала — состояние будет передано при старте.
+ */
+export function setForegroundBusy(busy: boolean): void {
+  if (_foregroundBusy === busy) return
+  _foregroundBusy = busy
+  try { _worker?.postMessage({ type: 'foregroundBusy', busy }) } catch { /* worker завершается */ }
+}
+
+export function isForegroundBusy(): boolean { return _foregroundBusy }
 
 function ensureWorker(): Worker {
   if (_worker) return _worker
@@ -71,6 +85,9 @@ function ensureWorker(): Worker {
       fastContextWasmDir: _fastContextWasmDir,
     },
   })
+  // Replay the latest state in case the worker was restarted while a chat was
+  // already running. This is a hint only; no DB work is performed here.
+  _worker.postMessage({ type: 'foregroundBusy', busy: _foregroundBusy })
   _worker.on('message', (msg: Record<string, unknown>) => {
     const type = msg.type as string
     const jobId = msg.jobId as string | undefined
@@ -286,6 +303,11 @@ async function processQueue(): Promise<void> {
 }
 
 function enqueueIndex(job: Omit<QueuedJob, 'resolve' | 'reject'>): Promise<void> {
+  // Prewarm is disposable background work: if an equivalent scan is already
+  // waiting, coalesce it. Never coalesce explicit/reindex requests.
+  if (job.isPrewarm && _indexQueue.some(item => item.projectId === job.projectId && item.isPrewarm)) {
+    return Promise.resolve()
+  }
   return new Promise<void>((resolve, reject) => {
     _queuedProjects.add(job.projectId)
     _indexQueue.push({ ...job, resolve, reject })

@@ -29,7 +29,7 @@ import { randomUUID } from 'node:crypto'
 import { log } from '../../core/logger'
 import { BROWSER_PARTITION, DEFAULT_BROWSER_PROFILE_ID, IPC_EVENTS } from '../../shared/constants'
 import { getChatBrowserMode, setChatBrowserMode } from '../../core/db/chats'
-import { domAction, inspect, condition, isChildFrame, locate, refInfo, snapshot, clampTimeout, resolveFrame } from '../browser/pageAutomation'
+import { domAction, inspect, condition, isChildFrame, locate, refInfo, snapshot, clampTimeout, resolveFrame, limitSnapshotResult } from '../browser/pageAutomation'
 import { createHash } from 'node:crypto'
 import { BrowserExtras as defaultBrowserExtras } from '../browser/BrowserExtras'
 
@@ -133,6 +133,9 @@ class BrowserManagerImpl {
    *  смонтировать webview (did-attach ≈ 100-500мс). 4с — с запасом на
    *  холодный старт; когда webview жив, ожидание не срабатывает вовсе. */
   private static readonly WC_WAIT_MS = 4_000
+  /** At most this many active + queued AI operations per tab. */
+  private static readonly MAX_OPERATIONS_PER_TAB = 16
+  /** Snapshot size is bounded centrally by pageAutomation.limitSnapshotResult. */
 
   /** AI-операции, которым нужен живой webContents активного таба.
    *  Остальные (tabs/tab_new/tab_select/tab_close/wait/request_access)
@@ -709,25 +712,35 @@ class BrowserManagerImpl {
 
   /** Главная точка входа AI-операций. Гейтинг по browserMode чата. */
   private readonly operationQueues = new Map<string, Promise<void>>()
+  /** Includes queued requests and in-flight work, even if its caller timed out. */
+  private readonly operationCounts = new Map<string, number>()
 
   private readonly activeOperations = new Map<string, Set<AbortController>>()
   private readonly persistentScripts = new Map<number, Set<string>>()
 
   async execute(chatId: string, p: BrowserOpPayload, signal?: AbortSignal): Promise<BrowserOpResult> {
     const tabId = p.tabId ?? this.activeTabId ?? ''
+    const queueKey = tabId || `chat:${chatId || 'global'}`
+    const queuedCount = this.operationCounts.get(queueKey) ?? 0
+    // Closing must remain available as an escape hatch even if a page dialog
+    // has filled the queue. Other operations fail fast instead of accumulating.
+    if (p.action !== 'tab_close' && queuedCount >= BrowserManagerImpl.MAX_OPERATIONS_PER_TAB) {
+      return { success: false, error: `Browser operation queue is full for ${tabId ? `tab ${tabId}` : 'this chat'} (limit ${BrowserManagerImpl.MAX_OPERATIONS_PER_TAB}). Wait for pending operations to finish and retry.` }
+    }
+    if (p.action !== 'tab_close') this.operationCounts.set(queueKey, queuedCount + 1)
     const timeoutMs = clampTimeout(p.timeoutMs, ['request_access', 'evaluate', 'add_script', 'add_style', 'click', 'type', 'fill', 'press_key', 'upload', 'cookies', 'storage', 'dialog', 'permissions'].includes(p.action) ? 120_000 : 30_000)
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) controller.abort()
     const timer = setTimeout(abort, timeoutMs)
-    const set = this.activeOperations.get(tabId) ?? new Set<AbortController>()
-    set.add(controller); this.activeOperations.set(tabId, set)
+    const set = this.activeOperations.get(queueKey) ?? new Set<AbortController>()
+    set.add(controller); this.activeOperations.set(queueKey, set)
     // Closing a tab cannot wait behind an operation blocked on a page dialog.
     if (p.action === 'tab_close') {
       for (const c of set) if (c !== controller) c.abort()
     }
-    const previous = p.action === 'tab_close' ? Promise.resolve() : this.operationQueues.get(tabId) ?? Promise.resolve()
+    const previous = p.action === 'tab_close' ? Promise.resolve() : this.operationQueues.get(queueKey) ?? Promise.resolve()
     const task = previous.then(async () => {
       guard(controller.signal)
       return this.executeQueued(chatId, { ...p, tabId }, controller.signal, tabId)
@@ -735,12 +748,17 @@ class BrowserManagerImpl {
     // Quarantine the underlying task until it drains; a timeout does NOT unlock
     // the tab while an uncancellable Electron/CDP request is still in flight.
     const tail = task.then(() => undefined)
-    if (p.action !== 'tab_close') this.operationQueues.set(tabId, tail)
+    if (p.action !== 'tab_close') this.operationQueues.set(queueKey, tail)
     const cleanup = () => {
       clearTimeout(timer); signal?.removeEventListener('abort', abort)
       set.delete(controller)
-      if (!set.size && this.activeOperations.get(tabId) === set) this.activeOperations.delete(tabId)
-      if (this.operationQueues.get(tabId) === tail) this.operationQueues.delete(tabId)
+      if (!set.size && this.activeOperations.get(queueKey) === set) this.activeOperations.delete(queueKey)
+      if (p.action !== 'tab_close') {
+        const remaining = Math.max(0, (this.operationCounts.get(queueKey) ?? 1) - 1)
+        if (remaining) this.operationCounts.set(queueKey, remaining)
+        else this.operationCounts.delete(queueKey)
+      }
+      if (this.operationQueues.get(queueKey) === tail) this.operationQueues.delete(queueKey)
     }
     void task.finally(cleanup)
     try {
@@ -1055,7 +1073,9 @@ class BrowserManagerImpl {
     }
     const url = safe(() => wc.getURL()) ?? ''
     const title = safe(() => wc.getTitle()) ?? ''
-    return { success: true, output: `Page: ${title}\nURL: ${url}\n\n${tree}` }
+    // Keep the final envelope bounded too: title/URL and future metadata must
+    // not bypass the pageAutomation snapshot limit.
+    return { success: true, output: limitSnapshotResult(`Page: ${title}\nURL: ${url}\n\n${tree}`) }
   }
 
   private async opClick(chatId: string, p: BrowserOpPayload, wc: Electron.WebContents | null, signal: AbortSignal): Promise<BrowserOpResult> {
@@ -1205,11 +1225,16 @@ class BrowserManagerImpl {
       if (image.isEmpty()) {
         return { success: false, error: 'Screenshot failed: the page is not visible (browser panel hidden?). Open the Browser panel and retry.' }
       }
-      const base64 = image.toPNG().toString('base64')
+      const png = image.toPNG()
+      const maxPngBytes = 12 * 1024 * 1024
+      if (png.byteLength > maxPngBytes) {
+        return { success: false, error: `Screenshot is too large (${Math.round(png.byteLength / 1024 / 1024)} MB PNG; limit ${maxPngBytes / 1024 / 1024} MB). Use a smaller clip or viewport.` }
+      }
+      const base64 = png.toString('base64')
       return {
         success: true,
         imageBase64: base64,
-        output: `Screenshot captured (${Math.round(base64.length * 0.75 / 1024)} KB PNG).`,
+        output: `Screenshot captured (${Math.round(png.byteLength / 1024)} KB PNG).`,
       }
     } catch (e) {
       return { success: false, error: `Screenshot failed: ${(e as Error).message}` }
