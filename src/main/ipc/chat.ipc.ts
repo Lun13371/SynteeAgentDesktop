@@ -1458,7 +1458,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
-        'contextSettings',
+        'contextSettings', 'codeModeEnabled',
         'customToolsEnabled', 'disabledTools',
       ]
     for (const k of storeKeys) {
@@ -2542,6 +2542,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               const result = saved as Record<string, unknown>
               if (result.type !== 'tool_result' || !rawStep.callId || result.callId !== rawStep.callId) return
               if (rawStep.visualAnalysis) result.visualAnalysis = rawStep.visualAnalysis
+              if (rawStep.codeMode) result.codeMode = rawStep.codeMode
               if (rawStep.imagePaths) result.imagePaths = rawStep.imagePaths
               if (rawStep.success !== undefined) result.success = rawStep.success
             }
@@ -2568,6 +2569,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               callId: rawStep.callId,
               pendingCallId: rawStep.pendingCallId,
               serverName: rawStep.serverName,
+              codeMode: rawStep.codeMode,
             }
             run.bufferedSteps.push(ts)
             if (summaryTaskId && rawStep.type === 'tool_result' && rawStep.success === true && (rawStep.toolName === 'edit_file' || rawStep.toolName === 'write_file') && msg.msgId === assistantMsgId) {
@@ -4301,7 +4303,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations', 'codeModeEnabled',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
         'contextSettings',
@@ -4875,7 +4877,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations', 'codeModeEnabled',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
         'contextSettings',

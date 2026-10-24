@@ -66,6 +66,16 @@ export interface ToolStep {
     status: 'pending' | 'responded' | 'failed'
     findings?: string
   }
+  /** Детали экспериментального TypeScript Code Mode для execute_code. */
+  codeMode?: {
+    code: string
+    trace?: Array<{
+      name: string
+      args: unknown
+      result: string
+      status: 'success' | 'failure'
+    }>
+  }
 }
 
 export interface ReplyTarget {

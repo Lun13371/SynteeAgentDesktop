@@ -161,6 +161,7 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   { section: 'agent', id: 'autoMemoryInterval', label: 'Автосохранение рабочей памяти', keywords: ['память', 'автосохранение'] },
   { section: 'agent', id: 'maxRepeatedToolCalls', label: 'Повтор tool-call', keywords: ['зацикливание', 'повтор'] },
   { section: 'agent', id: 'maxRepeatedErrors', label: 'Повтор одной ошибки', keywords: ['ошибка', 'повтор'] },
+  { section: 'agent', id: 'codeModeEnabled', label: 'TypeScript Code Mode', keywords: ['code mode', 'код', 'экспериментальный', 'typescript', 'скрипт'] },
   { section: 'tools', id: 'customToolsEnabled', label: 'Дополнительные инструменты', keywords: ['tools', 'встроенные'] },
   // Безопасность
   { section: 'security', id: 'approvalMode', label: 'Режим подтверждения действий', keywords: ['подтверждение', 'approval', 'авто', 'спрашивать'] },
@@ -169,6 +170,7 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   { section: 'security', id: 'autoAskGitPush', label: 'Git push', keywords: ['git', 'push', 'отправка'] },
   { section: 'security', id: 'autoAskNetwork', label: 'Сетевые команды', keywords: ['сеть', 'install', 'curl', 'npm'] },
   { section: 'security', id: 'autoAskOutsideWorkdir', label: 'Вне папки проекта', keywords: ['workdir', 'вне', 'папка'] },
+  { section: 'security', id: 'autoCodeModePolicy', label: 'Code Mode в авто-режиме', keywords: ['code mode', 'typescript', 'скрипт', 'авто', 'подтверждение'] },
   { section: 'security', id: 'forbiddenPaths', label: 'Запрещённые папки', keywords: ['папки', 'запрет', 'пути'] },
   // Интеграции
   { section: 'integrations', id: 'tavilyKey', label: 'Tavily API ключ', keywords: ['тавли', 'поиск', 'tavily'] },
@@ -2586,6 +2588,10 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
       </SectionTitle>
 
       <Group id="agent-behavior" icon="bot" title="Поведение">
+        <Field id="codeModeEnabled" label="TypeScript Code Mode" description="Экспериментальный режим: агент сможет объединять несколько вызовов инструментов в одну TypeScript-программу. Само включение настройки не меняет доступные инструменты и правила подтверждения.">
+          <Toggle value={Boolean(settings['codeModeEnabled'])} onChange={v => onSet('codeModeEnabled', v)} />
+        </Field>
+
         <Field id="enableThinking" label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />
@@ -2732,6 +2738,22 @@ const SecuritySection = memo(function SecuritySection({ settings, onSet }: { set
 
         <Field id="autoAskOutsideWorkdir" label="Вне папки проекта" description="Правка файлов и команды вне workdir чата — спрашивать в авто-режиме">
           <Toggle value={autoPerms.askOutsideWorkdir} onChange={v => setAutoPerm({ askOutsideWorkdir: v })} />
+        </Field>
+
+        <Field id="autoCodeModePolicy" label="Code Mode: внутренние вызовы" description="Определяет, как спрашивать разрешение для инструментов, вызванных TypeScript-программой">
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {([
+              { v: 'inherit', l: 'Обычная политика' },
+              { v: 'ask', l: 'Спрашивать' },
+              { v: 'read-only', l: 'Только чтение' },
+            ] as const).map(o => (
+              <button
+                key={o.v}
+                className={`settings-chip-btn ${autoPerms.codeModePolicy === o.v ? 'settings-chip-btn--active' : ''}`}
+                onClick={() => setAutoPerm({ codeModePolicy: o.v })}
+              >{o.l}</button>
+            ))}
+          </div>
         </Field>
       </Group>
 

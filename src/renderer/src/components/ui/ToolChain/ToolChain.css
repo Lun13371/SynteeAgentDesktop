@@ -551,9 +551,32 @@
 .tc2-code-block {
   background: var(--bg-tertiary);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 8px;
   border: 1px solid var(--border);
+  margin: 8px 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 11px/1.45 var(--font-mono);
+  color: var(--text-secondary);
 }
+.tc2-code-details summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  user-select: none;
+}
+.tc2-code-trace { display: grid; gap: 4px; }
+.tc2-code-trace-row {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 18px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  font: 11px/1.35 var(--font-mono);
+  color: var(--text-secondary);
+}
+.tc2-code-trace-row--failure { color: #f87171; }
 .tc2-arg-row {
   display: flex;
   gap: 8px;
