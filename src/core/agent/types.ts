@@ -25,6 +25,8 @@ export interface AgentStep {
   // генерации (см. onToolCallStarted) — фронтенд заменяет pending-карточку
   // на настоящую вместо создания второго блока.
   pendingCallId?: string
+  /** Code Mode execution source and internal tool trace, rendered by expandable tool UI. */
+  codeMode?: { code: string; trace: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }> }
 }
 
 export interface ContextCountedInfo {

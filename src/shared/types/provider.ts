@@ -132,6 +132,8 @@ export interface AutoModeSettings {
   networkPolicy: NetworkPolicy
   /** Файловые тулы (write/edit) и run_command с cwd вне папки проекта. */
   askOutsideWorkdir: boolean
+  /** Политика внутренних вызовов TypeScript Code Mode в авто-режиме. */
+  codeModePolicy: 'inherit' | 'ask' | 'read-only'
 }
 
 export const DEFAULT_AUTO_MODE_SETTINGS: AutoModeSettings = {
@@ -140,6 +142,7 @@ export const DEFAULT_AUTO_MODE_SETTINGS: AutoModeSettings = {
   askGitPush: true,
   networkPolicy: 'smart',
   askOutsideWorkdir: true,
+  codeModePolicy: 'inherit',
 }
 
 /** Куда пишет панель настроек защиты: глобальный store или override проекта. */

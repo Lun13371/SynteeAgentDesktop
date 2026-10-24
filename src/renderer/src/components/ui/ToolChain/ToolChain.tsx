@@ -35,6 +35,10 @@ export interface ToolStep {
     status: 'pending' | 'responded' | 'failed'
     findings?: string
   }
+  codeMode?: {
+    code: string
+    trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }>
+  }
 }
 
 // Группируем шаги: каждая итерация = один вызов тула + его результат
@@ -164,9 +168,28 @@ function truncate(s: string, n = 80) {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
 
-function formatArg(v: unknown): string {
-  if (typeof v === 'string') return v
-  return JSON.stringify(v, null, 2)
+function CodeModeDetails({ details }: { details: NonNullable<ToolStep['codeMode']> }) {
+  const trace = details.trace ?? []
+  return (
+    <div className="tc2-section">
+      <div className="tc2-section-title" style={{ color: '#a78bfa' }}>TypeScript Code Mode</div>
+      <details className="tc2-code-details">
+        <summary>Показать программу и внутренние вызовы ({trace.length})</summary>
+        <pre className="tc2-code-block">{details.code}</pre>
+        {trace.length > 0 && (
+          <div className="tc2-code-trace">
+            {trace.map((entry, index) => (
+              <div key={`${entry.name}-${index}`} className={`tc2-code-trace-row tc2-code-trace-row--${entry.status}`}>
+                <code>{entry.name}</code>
+                <span>{entry.status === 'success' ? '✓' : '✗'}</span>
+                <span>{entry.result}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
+    </div>
+  )
 }
 
 // ANSI-стрипинг для renderer (нельзя импортировать из _shared.ts — там Node-зависимости).
@@ -393,7 +416,7 @@ const IterationBlock = memo(function IterationBlock({
           {iter.call.toolName && !meta.isMcp && (
             <code className="tc2-iter-name">{iter.call.toolName}</code>
           )}
-          {iter.call.toolName === 'spawn_agent' && iter.call.toolArgs?.role && (
+          {iter.call.toolName === 'spawn_agent' && typeof iter.call.toolArgs?.role === 'string' && (
             <span
               className="tc2-iter-role-badge"
               style={{ color: getSubagentRole(iter.call.toolArgs.role as string).color }}
@@ -446,6 +469,9 @@ const IterationBlock = memo(function IterationBlock({
 
 
               {iter.result && mode !== 'compact' && (() => {
+                if (iter.result.codeMode) {
+                  return <CodeModeDetails details={iter.result.codeMode} />
+                }
                 // ask_user — рендер вопросов и ответов пользователя
                 if (iter.call.toolName === 'ask_user' && iter.call.toolArgs?.questions) {
                   const questions = iter.call.toolArgs.questions as Array<{

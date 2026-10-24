@@ -435,6 +435,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 imageUrl: step.imageUrl,
                 callId: step.callId,
                 pendingCallId: step.pendingCallId,
+                codeMode: (step as { codeMode?: unknown }).codeMode,
               }
               collectedSteps.push(ts)
               if (pendingTextAfter.trim() || pendingThinking) {
@@ -468,6 +469,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 // пиксели уже отданы основной модели, визуальный ответ ждём
                 // отдельным tool_result_update (persist вместе с шагом).
                 visualAnalysis: (step as { visualAnalysis?: VisualAnalysis }).visualAnalysis,
+                codeMode: (step as { codeMode?: unknown }).codeMode,
               }
               collectedSteps.push(ts)
               currentIterSteps.push(ts)
@@ -629,7 +631,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           },
           approvalMode: agentSettings.approvalMode as never,
           onConfirm: (toolName, args) => {
-            return new Promise(async (resolve) => {
+            return new Promise((resolve) => {
               const reqId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
               replyHandlers.set(`confirm-reply-${reqId}`, (reply) => {
                 // §allowlist — решение может содержать always (scope «Всегда разрешать»)
@@ -653,23 +655,26 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 ...(projForbidden ?? []),
               ]
               const classification = classifyTool(toolName, args, { forbiddenPaths, workdir: agent?.workdir })
-              // Diff-превью для файловых тулов (§4.1) — dryRun без записи
-              let previewDiff = ''
-              try {
-                if (toolName === 'write_file') {
-                  const r = await writeFile(args.path as string, args.content as string, { dryRun: true })
-                  previewDiff = r.diff ?? ''
-                } else if (toolName === 'edit_file') {
-                  const r = await editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun: true })
-                  previewDiff = r.diff ?? ''
-                }
-              } catch { /* превью опционально */ }
-              send({
-                type: 'confirm', chatId, msgId, reqId, toolName, args,
-                dangerLevel: classification.level,
-                dangerReason: classification.reason,
-                previewDiff,
-              })
+              // Diff-превью для файловых тулов (§4.1) — dryRun без записи.
+              // IIFE сохраняет async preview, но не делает executor Promise async.
+              void (async () => {
+                let previewDiff = ''
+                try {
+                  if (toolName === 'write_file') {
+                    const r = await writeFile(args.path as string, args.content as string, { dryRun: true })
+                    previewDiff = r.diff ?? ''
+                  } else if (toolName === 'edit_file') {
+                    const r = await editFile({ ...(args as Parameters<typeof editFile>[0]), dryRun: true })
+                    previewDiff = r.diff ?? ''
+                  }
+                } catch { /* превью опционально */ }
+                send({
+                  type: 'confirm', chatId, msgId, reqId, toolName, args,
+                  dangerLevel: classification.level,
+                  dangerReason: classification.reason,
+                  previewDiff,
+                })
+              })()
             })
           },
           onSpawnAgent: (opts) => {

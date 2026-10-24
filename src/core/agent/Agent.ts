@@ -41,6 +41,21 @@ import { GoalRuntime } from './goalRuntime'
 import type { ChatGoal } from '../../shared/types/goal'
 import { filterToolSchemas, getToolSettings, isToolDisabled } from '../../shared/toolSettings'
 import { sanitizeToolInstructions } from '../prompts/buildSystemPrompt'
+import { executeCode, EphemeralArtifactStore } from '../codeMode'
+import type { CodeTraceEntry } from '../codeMode'
+
+// Ограниченное хранилище Code Mode живёт в worker-процессе, а записи изолированы chatId.
+// Если worker завершён, артефакты очищаются вместе с ним.
+const CODE_MODE_ARTIFACTS = new EphemeralArtifactStore()
+
+const EXECUTE_CODE_SCHEMA = {
+  type: 'function' as const,
+  function: {
+    name: 'execute_code',
+    description: 'For multi-step tasks, write a fresh isolated TypeScript program. Hybrid choice: use normal tools for simple actions, execute_code to orchestrate several permitted tools and aggregate results without sending intermediate results to the model. No imports, Node APIs, timers, or network. tools.call(name,args) or tools.<tool_name>(args) returns {success, output, error?}; output is the raw formatted tool output. Internal tool calls use the current allowed tools and all normal permissions/approvals. A denial/block stops this program. artifacts.save(value), load(id), list(), delete(id) store JSON artifacts scoped to this chat between runs. Body is async and its return value is the final output.',
+    parameters: { type: 'object', properties: { code: { type: 'string', description: 'TypeScript body of an async function; use return for the final result.' } }, required: ['code'], additionalProperties: false },
+  },
+}
 
 // Тулы, которые НЕ блокируются hard block при parse-failure loop guard —
 // они не деструктивны (идемпотентны, не меняют файлы/систему).
@@ -357,6 +372,13 @@ export class Agent {
     // schemas mid-run. Never mutate the global registry when no override is supplied.
     const filteredSchemas = filterToolSchemas(activeSchemas, toolSettings)
     activeSchemas.splice(0, activeSchemas.length, ...filteredSchemas)
+    const codeModeEnabled = this.store.get('codeModeEnabled') === true
+    if (codeModeEnabled && !activeSchemas.some(s => s.function.name === 'execute_code')) activeSchemas.push(EXECUTE_CODE_SCHEMA)
+    if (!codeModeEnabled) {
+      const index = activeSchemas.findIndex(s => s.function.name === 'execute_code')
+      if (index >= 0) activeSchemas.splice(index, 1)
+    }
+    const artifacts = CODE_MODE_ARTIFACTS
     const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
     const maxRepeatedToolCalls = Math.max(2, options?.maxRepeatedToolCalls ?? 3)
     const maxRepeatedErrors = Math.max(2, options?.maxRepeatedErrors ?? 2)
@@ -413,8 +435,10 @@ export class Agent {
     const MAX_CONSECUTIVE_ERRORS = 3
     const nativeImageAnalysis = new NativeImageAnalysis()
     const runCallbacks = callbacks
+    let codeModeInternalCallDepth = 0
     callbacks = {
       ...runCallbacks,
+      onStep: (event) => { if (codeModeInternalCallDepth === 0) runCallbacks.onStep(event) },
       onDone: (answer, details) => {
         if (goalRuntime?.active) goalRuntime.stop(callerSignal?.aborted ? 'paused' : 'unverified', callerSignal?.aborted ? 'Stopped by user; explicit resume required' : 'Run ended without verified completion')
         nativeImageAnalysis.fail('Визуальный анализ прерван: ответ модели не получен.', runCallbacks.onStep)
@@ -585,10 +609,10 @@ export class Agent {
                 content: '',
                 ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
               })
-              messages.push({
-                role: 'user',
-                content: '[empty-reasoning-retry] Your previous answer contained only reasoning but no final answer. Give a brief answer to the task without re-reasoning.',
-              })
+                messages.push({
+                  role: 'user',
+                  content: '[empty-reasoning-retry] Your previous answer contained only reasoning but no final answer. Give a brief answer to the task without re-reasoning.',
+                })
               continue
             }
             // Если уже дважды пытались — завершаем с пустым ответом
@@ -800,7 +824,7 @@ export class Agent {
           }
         })
 
-        const executeCall = async (item: NormalizedToolCall) => {
+        const executeCall = async (item: NormalizedToolCall): Promise<void> => {
           const { callId, fn, isHiddenTool, pendingCallId, parseError } = item
           if (goalRuntime && !goalRuntime.reserveTool()) {
             if (goalRuntime.active) goalRuntime.stop('limit', 'Goal tool-call or time budget exhausted')
@@ -882,7 +906,7 @@ export class Agent {
                 const loopMsg = alternation
                   ? `Loop guard: you are alternating ${fingerprint.toolName} with another tool in a loop (${fpCount} recent calls, 2 unique). Change strategy: analyze what is already done and choose a different approach.`
                   : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
-                messages.push({
+                if (codeModeInternalCallDepth === 0) messages.push({
                   role: 'user',
                   content: hardBlock
                     ? `${loopMsg}\n\nATTENTION: tool "${fn.name}" is blocked for this run() after ${guardHits} loop-guard warnings (${guardHits * maxRepeatedToolCalls} actual calls). It was NOT executed. Change strategy or ask the user.`
@@ -943,7 +967,7 @@ export class Agent {
 
               if (shouldHardBlock) {
                 const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${parseFailCount} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
-                messages.push({ role: 'user', content: hardStopMsg })
+                if (codeModeInternalCallDepth === 0) messages.push({ role: 'user', content: hardStopMsg })
                 resultMap.set(callId, {
                   contentForAI: `${hardStopMsg}\n\nLast parse error: ${parseError.message}\nYou sent (first 200 chars): ${parseError.snippet}`,
                   callId,
@@ -970,7 +994,7 @@ export class Agent {
                 // т.к. ремонт провалился), но модель НЕ блокируется —
                 // может retry с другим JSON в следующем раунде.
                 const softMsg = `Loop guard (soft): ${fn.name} produced invalid JSON ${parseFailCount} times. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure all string values are properly quoted (e.g. "mode": "str_replace", not "mode": str_replace).`
-                messages.push({ role: 'user', content: softMsg })
+                if (codeModeInternalCallDepth === 0) messages.push({ role: 'user', content: softMsg })
                 resultMap.set(callId, {
                   contentForAI: softMsg,
                   callId,
@@ -1100,11 +1124,29 @@ export class Agent {
           const autoSettings = resolveAutoModeSettings(agentPerms, projOverride)
           const forbiddenPaths = mergeForbiddenPaths(agentPerms.forbiddenPaths, projOverride)
 
+          // Code Mode does not get a separate execution path: nested calls still
+          // use this exact approval decision. Its optional policy only adds a
+          // stricter boundary in Auto mode; it never weakens normal approvals.
+          const codeModePolicy = autoSettings.codeModePolicy
+          const codeModeInternal = codeModeInternalCallDepth > 0
           const approval = needsApproval(fn.name, args, mode, {
             auto: autoSettings,
             forbiddenPaths,
             workdir: this.workdir,
           })
+          if (codeModeInternal && mode === 'auto' && codeModePolicy === 'ask' && !isHiddenTool
+            && approval.level !== 'blocked' && approval.level !== 'dangerous') {
+            approval.confirm = true
+            if (!approval.reason) approval.reason = 'Внутренний вызов TypeScript Code Mode — требуется подтверждение'
+          }
+          if (codeModeInternal && codeModePolicy === 'read-only'
+            && fn.name !== 'read_file' && fn.name !== 'read_files' && fn.name !== 'find_files'
+            && fn.name !== 'search_code' && fn.name !== 'list_directory' && fn.name !== 'get_fast_context'
+            && fn.name !== 'analyze_project' && fn.name !== 'get_diagnostics'
+            && fn.name !== 'recall_memory' && fn.name !== 'get_system_info') {
+            approval.block = true
+            approval.reason = 'Code Mode настроен только для чтения и анализа'
+          }
           // §allowlist — «Всегда разрешать»: пропускаем подтверждение, если
           // действие в allowlist. DANGEROUS-уровень allowlist'ом не покрывается
           // (кнопка в диалоге для dangerous скрыта, но проверим и здесь).
@@ -1203,7 +1245,47 @@ export class Agent {
           console.log('[Agent] exec tool: %s callId=%s (step=%d)', fn.name, callId, step)
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
+          let codeTrace: CodeTraceEntry[] | undefined
           try {
+            if (fn.name === 'execute_code') {
+              const code = typeof args.code === 'string' ? args.code : ''
+              const codeAbort = new AbortController()
+              const forwardAbort = () => codeAbort.abort()
+              if (signal?.aborted) codeAbort.abort()
+              else signal?.addEventListener('abort', forwardAbort, { once: true })
+              let codeResult: Awaited<ReturnType<typeof executeCode>>
+              try { codeResult = await executeCode({
+                code, chatId: this.chatId, signal: codeAbort.signal,
+                artifacts,
+                sanitizeTrace: value => this.toolDispatcher.maskSecretValuesInText(JSON.stringify(value ?? null)),
+                callTool: async (toolName, toolArgs, childSignal) => {
+                  if (childSignal?.aborted || signal?.aborted) return { success: false, output: '', error: 'Execution aborted' }
+                  const allowedSchemas = new Set(activeSchemas.map(s => s.function.name))
+                  if (toolName === 'execute_code' || !allowedSchemas.has(toolName)) return { success: false, output: '', error: `Tool "${toolName}" is unavailable in the current run.` }
+                  const internalId = `code-${callId}-${Math.random().toString(36).slice(2, 9)}`
+                  const internalItem = {
+                    callId: internalId,
+                    call: { id: internalId, type: 'function', function: { name: toolName, arguments: JSON.stringify(toolArgs ?? {}) } },
+                    fn: { name: toolName, arguments: JSON.stringify(toolArgs ?? {}) },
+                    args: (toolArgs && typeof toolArgs === 'object' ? toolArgs : {}) as Record<string, unknown>,
+                    parseError: undefined,
+                    isHiddenTool: false,
+                    pendingCallId: undefined,
+                  } as unknown as NormalizedToolCall
+                  codeModeInternalCallDepth++
+                  try { await executeCall(internalItem) }
+                  finally { codeModeInternalCallDepth-- }
+                  const internalResult = resultMap.get(internalId)
+                  if (!internalResult) return { success: false, output: '', error: signal?.aborted ? 'Execution aborted' : 'Tool was blocked or cancelled.' }
+                  const text = internalResult.contentForAI
+                  const blocked = /(?:Action blocked|Rejected by the user|Действие отклонено пользователем|Approval required; tool not executed|unavailable in the current run|Permission block|Permission denied|blocked by loop guard|Hard loop guard|Loop guard|is disabled|unavailable in the current mode|not available in the current mode)/i.test(text)
+                  if (blocked) codeAbort.abort()
+                  return { success: !blocked, output: text, ...(blocked ? { error: text } : {}) }
+                },
+              }) } finally { signal?.removeEventListener('abort', forwardAbort) }
+              codeTrace = codeResult.trace
+              result = { success: codeResult.success, output: codeResult.output, error: codeResult.error }
+            } else {
             const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId)
             if (fn.name === 'spawn_agent') {
               // spawn_agent — блокирующий вызов до полного завершения суб-агента
@@ -1225,6 +1307,7 @@ export class Agent {
                 setTimeout(() => reject(new Error(`Tool ${fn.name} exceeded the execution timeout (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}s). The MCP server may be hung or the transport is blocked.`)), MAX_TOOL_TIMEOUT_MS)
               })
               result = await Promise.race([toolPromise, timeoutPromise])
+            }
             }
           } catch (toolErr) {
             // Раньше throw из executeTool протекал в outer try/catch и
@@ -1401,7 +1484,7 @@ export class Agent {
             const repeatedErrors = this.recentErrorFingerprints.length >= maxRepeatedErrors &&
               this.recentErrorFingerprints.every(entry => entry === errorFingerprint)
             if (repeatedErrors) {
-              messages.push({
+              if (codeModeInternalCallDepth === 0) messages.push({
                 role: 'user',
                 content: `Loop guard: ${fn.name} produced the same error ${maxRepeatedErrors} times. Do not retry it unchanged. Use a different tool or explain the blocker.`,
               })
@@ -1439,6 +1522,7 @@ export class Agent {
             callId,
             hidden: isHiddenTool || !!(result as { hidden?: boolean }).hidden,
             serverName: extractMcpServerName(fn.name),
+            ...(fn.name === 'execute_code' ? { codeMode: { code: String(args.code ?? ''), trace: codeTrace ?? [] } } : {}),
           })
 
           // analyze_image прямой пас: тул может вернуть imageParts (картинка
@@ -1453,8 +1537,8 @@ export class Agent {
           })
         }
 
-        const parallelCalls = normalizedCalls.filter((item) => !isSequentialTool(item.fn.name))
-        const sequentialCalls = normalizedCalls.filter((item) => isSequentialTool(item.fn.name))
+        const parallelCalls = normalizedCalls.filter((item) => item.fn.name !== 'execute_code' && !isSequentialTool(item.fn.name))
+        const sequentialCalls = normalizedCalls.filter((item) => item.fn.name === 'execute_code' || isSequentialTool(item.fn.name))
 
         if (goalRuntime) {
           // Serial evidence ordering: a concurrent read cannot verify a mutation.
