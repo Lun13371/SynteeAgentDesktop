@@ -4,7 +4,7 @@ title Syntee Helper - DEV Build
 color 0A
 
 set LAUNCHER_DIR=C:\Projects\syntee-launcher
-set CLIENT_DIR=C:\Projects\SynteeHelper
+set "CLIENT_DIR=%~dp0"
 set GATEWAY_RELEASES=C:\Projects\Syntee-Gateway\backend\data\releases\stable
 set PG_CONTAINER=syntee-gateway-postgres-1
 set PG_USER=syntee

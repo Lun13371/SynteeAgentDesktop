@@ -9,7 +9,7 @@ import { invalidateHistoryCache } from './historyCache'
 import type { ContextInspection, ContextPreferences } from '../../shared/types/contextControls'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import {
-  createChat, getAllChats, getMessages, getMessagesPage, saveMessage,
+  createChat, getAllChats, getMessages, getMessagesPage, saveMessage, saveMessageAndDeleteStreamingBuffer,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB, getDB,
   archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
   DEFAULT_CHAT_TITLE,
@@ -71,7 +71,7 @@ import {
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
-import { setFastContextPaths, registerProjectWorkdir } from '../../core/context/fastContextWatcher'
+import { setFastContextPaths, registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import { existsSync } from 'fs'
 import { ptyManager } from '../managers/PtyManager'
@@ -116,6 +116,53 @@ let refreshDelegationSummary: ((chatId: string, requestId: string) => void) | un
 // и отбрасываются — чтобы файлы-сироты не «спасались» вечно.
 const PENDING_ATTACH_TTL_MS = 30 * 60_000
 const pendingAttachmentPaths = new Map<string, Map<string, number>>()
+
+// Short-lived cache for auto-recall only. Explicit recall_memory must always
+// execute a fresh search and update its hit feedback as before.
+const AUTO_RECALL_CACHE_TTL_MS = 5_000
+const AUTO_RECALL_CACHE_CAP = 64
+const AUTO_RECALL_CACHE_VERSION = 1
+const autoRecallCache = new Map<string, { expiresAt: number; results: Awaited<ReturnType<typeof searchAllSources>> }>()
+let autoRecallCacheGeneration = 0
+
+/** Invalidate only the short-lived automatic recall cache after a new message
+ * enters the searchable corpus. Explicit recall never uses this cache. */
+function invalidateAutoRecallCache(): void {
+  autoRecallCacheGeneration++
+  autoRecallCache.clear()
+}
+
+async function searchAutoRecallCached(params: Parameters<typeof searchAllSources>[0]): Promise<Awaited<ReturnType<typeof searchAllSources>>> {
+  const sources = params.sources === 'all' || params.sources == null ? 'all' : [...params.sources].sort().join(',')
+  const key = JSON.stringify({
+    version: AUTO_RECALL_CACHE_VERSION,
+    generation: autoRecallCacheGeneration,
+    project: params.projectId ?? '',
+    scope: params.scope ?? 'all',
+    kind: params.kind ?? '',
+    sources,
+    crossProject: !!params.crossProject,
+    limit: params.limit ?? 20,
+    minScore: params.minScore ?? 0.01,
+    query: params.query,
+  })
+  const now = Date.now()
+  const cached = autoRecallCache.get(key)
+  if (cached && cached.expiresAt > now) {
+    autoRecallCache.delete(key)
+    autoRecallCache.set(key, cached)
+    return cached.results.map(result => ({ ...result, item: result.item ? { ...result.item } : undefined }))
+  }
+  if (cached) autoRecallCache.delete(key)
+  const results = await searchAllSources(params)
+  while (autoRecallCache.size >= AUTO_RECALL_CACHE_CAP) {
+    const oldest = autoRecallCache.keys().next().value
+    if (oldest === undefined) break
+    autoRecallCache.delete(oldest)
+  }
+  autoRecallCache.set(key, { expiresAt: Date.now() + AUTO_RECALL_CACHE_TTL_MS, results })
+  return results.map(result => ({ ...result, item: result.item ? { ...result.item } : undefined }))
+}
 
 // ── Auto-recall helpers ─────────────────────────────────────────────────────
 
@@ -353,6 +400,11 @@ const cancelledDelegatedStarts = new Set<string>()
 let chatStopImpl: ((chatId: string, requestId: string) => boolean) | null = null
 let chatSendImpl: ((params: ProgrammaticChatSendParams) => Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }>) | null = null
 
+/** Обновляет дешёвый сигнал для fast-context worker после изменения chat state. */
+function updateForegroundBusy(): void {
+  setForegroundBusy(activeRuns.size > 0 || activeRunMeta.size > 0 || compactRuns.size > 0)
+}
+
 /** Отправить сообщение в чат из main-процесса (DotManager: пробуждение Dot'ов). */
 export function sendChatMessageProgrammatic(params: ProgrammaticChatSendParams): Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }> {
   if (!chatSendImpl) {
@@ -364,7 +416,7 @@ export function sendChatMessageProgrammatic(params: ProgrammaticChatSendParams):
 /**
  * Флешит все активные стримящиеся запуски в БД — вызывается при before-quit/will-quit.
  * Каждый ActiveRun, у которого есть накопленный текст/шаги, сохраняется через
- * sendDone (saveMessage UPSERT — идемпотентен). Воркеры terminate'ятся отдельно.
+ * sendDone (saveMessage с заменой строки по id — идемпотентен). Воркеры terminate'ятся отдельно.
  * Без этого при резком выходе частичный ответ ассистента терялся бы.
  */
 export function flushAllActiveRuns(): void {
@@ -435,6 +487,7 @@ function failRunCleanup(
       activeRuns.delete(chatId)
     }
     if (activeRunMeta.get(chatId)?.msgId === assistantMsgId) activeRunMeta.delete(chatId)
+    updateForegroundBusy()
     closeSummary('cancelled', 'Работа остановлена до запуска агента')
     emitRunStatus(win, chatId, 'cancelled', assistantMsgId)
     drainQueue(win, chatId)
@@ -461,6 +514,7 @@ function failRunCleanup(
   }
   activeRuns.delete(chatId)
   activeRunMeta.delete(chatId)
+  updateForegroundBusy()
   emitRunStatus(win, chatId, 'error', assistantMsgId, message)
   try {
     win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, { chatId, error: message })
@@ -483,6 +537,7 @@ function drainQueue(win: BrowserWindow | null, chatId: string) {
   // Переносим meta из очереди в activeRunMeta — запрос стартовал.
   // Добавляем startedAt для UI (отображение длительности выполнения).
   activeRunMeta.set(chatId, { ...next.meta, startedAt: Date.now() })
+  updateForegroundBusy()
   emitQueueUpdate(win, chatId)
   // Асинхронный запуск — ошибки внутри run() обрабатываются им самим.
   void next.run().catch((e) => failRunCleanup(win, chatId, next.meta.msgId, e))
@@ -1518,7 +1573,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // created_at ASC) поставит user2/user3 перед assistant1 — порядок
     // диалога сломается при перезаходе в чат.
     userMsg.createdAt = Date.now()
-    if (!params.incognito) saveMessage(userMsg)
+    if (!params.incognito) {
+      saveMessage(userMsg)
+      invalidateAutoRecallCache()
+    }
     if (!params.incognito && getDelegatedRequest(params.chatId, assistantMsgId)) {
       win?.webContents.send('chat:delegated-message', { message: slimMessageForUI(userMsg) })
     }
@@ -1936,6 +1994,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
       // Сбрасываем meta активного запуска — UI очереди уберёт Running-карточку.
       activeRunMeta.delete(params.chatId)
+      updateForegroundBusy()
 
       // Planning-режим: извлекаем <plan>-блок из ответа и сохраняем в файл.
       // Тул save_plan удалён — модель пишет план прямо в ответе, обёрнутый в
@@ -2043,11 +2102,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         finishReason,
       }
 
-      if (!params.incognito) saveMessage(assistantMsg)
-      // Буфер стриминга отработал: финальная полная версия записана в messages.
-      // Удаляем, чтобы краш-рекавери (historyCache) при следующей загрузке чата
-      // не восстановил устаревшую частичную копию поверх финальной.
-      deleteStreamingBuffer(assistantMsgId)
+      if (!params.incognito) {
+        // Commit final row and recovery-buffer removal together. The message
+        // cache/chat touch callback runs after the transaction in the DB helper.
+        saveMessageAndDeleteStreamingBuffer(assistantMsg)
+        invalidateAutoRecallCache()
+      } else {
+        deleteStreamingBuffer(assistantMsgId)
+      }
       if (!params.incognito) {
         // Fast-path: regex-извлечение для явного «запомни X» / «меня зовут X»
         // (мгновенно, без LLM). Фаза 3 добавляет LLM-extract на idle/compaction.
@@ -2319,6 +2381,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     })
     run.worker = worker
     activeRuns.set(params.chatId, run)
+    updateForegroundBusy()
 
     // Plugins: хук chat:message — fire-and-forget, не блокирует чат.
     // Инкогнито-чаты не отправляются плагинам (приватность).
@@ -3375,6 +3438,7 @@ ${subModeOutro}`,
                 projectId: msg.projectId as string | undefined,
                 chatId: msg.chatId as string | undefined,
               })
+              invalidateAutoRecallCache()
               // Knowledge graph: heuristic extract из project_decision/convention
               if ((item.kind === 'project_decision' || item.kind === 'convention') && item.projectId) {
                 try {
@@ -3760,6 +3824,7 @@ ${subModeOutro}`,
             flushUiTokens()
             if (activeRuns.get(params.chatId) === run) activeRuns.delete(params.chatId)
             activeRunMeta.delete(params.chatId)
+            updateForegroundBusy()
             win?.webContents.send(IPC_EVENTS.CHAT_STREAM_DONE, {
               chatId: params.chatId,
               msgId: assistantMsgId,
@@ -3908,7 +3973,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         // C1: keyword extraction — убирает stopwords, оставляет значимые термины
         const recallQuery = extractRecallKeywords(effectiveContent.slice(0, 500))
 
-        let results = await searchAllSources({
+        let results = await searchAutoRecallCached({
           query: recallQuery,
           projectId: autoRecallProjectId,
           limit: isFirstMessage ? 10 : 5,
@@ -3917,7 +3982,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
 
         // D3: cross-project fallback — если project-scope дал 0, ищем глобально
         if (results.length === 0 && autoRecallProjectId) {
-          results = await searchAllSources({
+          results = await searchAutoRecallCached({
             query: recallQuery,
             crossProject: true,
             limit: isFirstMessage ? 10 : 5,
@@ -4185,6 +4250,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       activeRuns.delete(chatId)
     }
     activeRunMeta.delete(chatId)
+    updateForegroundBusy()
     chatQueues.delete(chatId)
     autoRecallInjectedKeys.delete(chatId)
     cancelIdleExtraction(chatId)
@@ -4543,6 +4609,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
 
     // Слот свободен — стартуем сразу. Запоминаем meta как активный запуск.
     activeRunMeta.set(params.chatId, { ...meta, startedAt: Date.now() })
+    updateForegroundBusy()
     // Fire-and-forget: runChatSend await-ит processAttachmentsAndStream
     // (vision-модель, чтение файлов — секунды), но chat:send должен вернуть
     // результат немедленно, чтобы renderer вызвал addMessage(userMsg) +
@@ -4912,6 +4979,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // байт-идентичным состоянию до компакции.
       const controller = new AbortController()
       compactRuns.set(chatId, controller)
+      updateForegroundBusy()
       // Статус для сайдбара/табов: чат «сжимает контекст» (спиннер в списке
       // чатов). Терминальный статус эмитится в finally ниже.
       emitRunStatus(mainWindow.getWindow(), chatId, 'compacting')
@@ -5122,6 +5190,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // Всегда убираем AbortController из map — даже на cancel/error/early-return.
       // Без этого повторный /compact после cancel думал бы что он ещё активен.
       compactRuns.delete(chatId)
+      updateForegroundBusy()
       // Терминальный статус для сайдбара (гасим «compacting»-спиннер, ставим
       // бейдж ✓/✗/— как unread). Эмитим ПОСЛЕ compactRuns.delete, чтобы
       // renderer не видел «compacting» у уже свободного чата.

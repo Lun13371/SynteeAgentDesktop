@@ -2,6 +2,16 @@ import { randomUUID } from 'node:crypto'
 import type { WebContents, WebFrameMain } from 'electron'
 import type { BrowserOpPayload } from '../managers/BrowserManager'
 export interface ElementPoint { x: number; y: number; width: number; height: number }
+export const MAX_PAGE_SNAPSHOT_CHARS = 128 * 1024
+const SNAPSHOT_TRUNCATION_MARKER = '\n[…snapshot truncated; showing beginning and end…]\n'
+
+export function limitSnapshotResult(value: string): string {
+  if (value.length <= MAX_PAGE_SNAPSHOT_CHARS) return value
+  const marker = SNAPSHOT_TRUNCATION_MARKER
+  const retained = MAX_PAGE_SNAPSHOT_CHARS - marker.length
+  const head = Math.floor(retained / 2)
+  return `${value.slice(0, head)}${marker}${value.slice(-(retained - head))}`
+}
 export function resolveFrame(wc: WebContents, id?: number): WebFrameMain {
   const frame = id === undefined ? wc.mainFrame : wc.mainFrame.framesInSubtree.find(f => f.routingId === id)
   if (!frame) throw new Error('Requested frame is unavailable.')
@@ -17,7 +27,10 @@ async function run(wc: WebContents, p: BrowserOpPayload, action: string, signal?
   guard(signal)
   return result
 }
-export async function snapshot(wc: WebContents, p: BrowserOpPayload, signal?: AbortSignal): Promise<string> { return run(wc, p, 'snapshot', signal) }
+export async function snapshot(wc: WebContents, p: BrowserOpPayload, signal?: AbortSignal): Promise<string> {
+  const result = await run(wc, p, 'snapshot', signal)
+  return limitSnapshotResult(typeof result === 'string' ? result : String(result ?? ''))
+}
 export async function locate(wc: WebContents, p: BrowserOpPayload, signal?: AbortSignal): Promise<ElementPoint | null> {
   // Two consecutive samples guard against moving targets. Re-resolve each sample.
   for (let i = 0; i < 12; i++) {

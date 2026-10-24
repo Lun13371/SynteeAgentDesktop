@@ -33,6 +33,9 @@ export function initDB(): void {
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  // Keep the main connection fail-fast on contention. Async callers handle
+  // SQLITE_BUSY without sleeping the Electron main thread; a native busy
+  // timeout would block this synchronous connection while waiting.
   // ── Performance PRAGMA ──────────────────────────────────────────────
   // cache_size = -64000 → 64MB page-cache (default 2MB). Ускоряет все
   // запросы на больших чатах (тысячи сообщений, FTS-поиск, getMessagesPage).

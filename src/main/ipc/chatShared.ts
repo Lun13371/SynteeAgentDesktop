@@ -128,10 +128,10 @@ export interface ActiveRun {
   }
   // ── Периодический checkpoint стриминга в БД ──
   // Таймер сохраняет накопленный bufferedText/steps/thinking в БД каждые
-  // 3 секунды (saveMessage UPSERT — идемпотентен). При жёстком краше
+  // 8 секунд (отдельная streaming_buffers строка без FTS-trigger). При жёстком краше
   // процесса (SIGSEGV, kill -9, OOM) ни before-quit, ни worker.on('exit')
   // не срабатывают — теряется весь прогресс. С таймером максимум потерь
-  // = 3 секунды стриминга. Очищается в sendDone.
+  // ≈ 8 секунд стриминга. Очищается в sendDone.
   streamCheckpointTimer: ReturnType<typeof setInterval> | null
   // ── Dirty-flag для checkpoint-таймера ──
   // true = с последнего checkpoint'а пришли новые токены/шаги/thinking.

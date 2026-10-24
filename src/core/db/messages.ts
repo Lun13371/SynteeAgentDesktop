@@ -14,7 +14,8 @@ import { deleteStreamingBuffer, deleteStreamingBuffersForChat } from './streamin
 let _onMessageSaved: ((chatId: string) => void) | null = null
 export function setMessageSavedCallback(cb: (chatId: string) => void): void { _onMessageSaved = cb }
 
-export function saveMessage(msg: Message): void {
+/** Write the message row only. Callers own the surrounding transaction and side effects. */
+function writeMessageRow(msg: Message): void {
   getDB().prepare(`
     INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, tool_calls_count, thinking_blocks, finish_reason, streaming_ms, reply_to)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -41,8 +42,30 @@ export function saveMessage(msg: Message): void {
     msg.streamingMs ?? null,
     msg.replyTo ? JSON.stringify(msg.replyTo) : null,
   )
-  touchChat(msg.chatId)
-  _onMessageSaved?.(msg.chatId)
+}
+
+function notifyMessageSaved(chatId: string): void {
+  touchChat(chatId)
+  _onMessageSaved?.(chatId)
+}
+
+export function saveMessage(msg: Message): void {
+  writeMessageRow(msg)
+  notifyMessageSaved(msg.chatId)
+}
+
+/**
+ * Atomically publish a final streaming message and remove its recovery buffer.
+ * Only database statements run in the transaction; chat/cache callbacks stay
+ * outside so a callback failure cannot roll back or poison the DB operation.
+ */
+export function saveMessageAndDeleteStreamingBuffer(msg: Message): void {
+  const db = getDB()
+  db.transaction(() => {
+    writeMessageRow(msg)
+    db.prepare('DELETE FROM streaming_buffers WHERE message_id = ?').run(msg.id)
+  })()
+  notifyMessageSaved(msg.chatId)
 }
 
 type MessageRow = Message & {

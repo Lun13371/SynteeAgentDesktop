@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 title Syntee Helper - Clean Build Caches
 color 0E
 
-set CLIENT_DIR=C:\Projects\SynteeHelper
+set "CLIENT_DIR=%~dp0"
 
 echo.
 echo  ============================================================

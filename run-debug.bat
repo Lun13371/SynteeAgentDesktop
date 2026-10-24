@@ -1,6 +1,17 @@
 @echo off
-cd /d C:\Projects\SynteeHelper
+set "PROJECT_DIR=%~dp0"
+cd /d "%PROJECT_DIR%"
 echo Building Syntee Helper (debug)...
+
+if not exist "node_modules\electron-vite\bin\electron-vite.js" (
+    echo Dependencies are missing. Installing npm packages...
+    call npm install
+    if errorlevel 1 (
+        echo DEPENDENCY INSTALL FAILED
+        pause
+        exit /b 1
+    )
+)
 
 REM ── Syntee-Gateway endpoints (dev) ──
 REM API_URL — куда main-процесс стучится за /v1/* и /api/user/* (backend FastAPI).

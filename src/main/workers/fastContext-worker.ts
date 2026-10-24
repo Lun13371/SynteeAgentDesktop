@@ -14,6 +14,7 @@
  *   { type: 'stopWatching', projectId }
  *   { type: 'index', jobId, projectId, workdir, changedPaths?, isFull, isPrewarm, settings }
  *   { type: 'reindex', jobId, projectId, workdir, ... }
+ *   { type: 'foregroundBusy', busy } — кооперативная уступка активному чату
  *
  * Сообщения worker → main:
  *   { type: 'progress', jobId, projectId, progress }
@@ -88,26 +89,45 @@ const _watchStates = new Map<string, WatchState>()
 // fs events and the periodic safety-net can arrive while an earlier index/graph
 // sync is still running. Keep one heavy job per project; otherwise a large
 // checkout can create overlapping tree-sitter + SQLite work in this worker.
+type ProjectJobKind = 'explicit' | 'prewarm' | 'watcher' | 'safety'
 interface ProjectQueue {
   running: boolean
   safetyQueued: boolean
-  jobs: Array<{ kind: 'explicit' | 'watcher' | 'safety'; queuedAt: number; run: () => Promise<void> }>
+  watcherQueued: boolean
+  prewarmQueued: boolean
+  jobs: Array<{ kind: ProjectJobKind; queuedAt: number; run: () => Promise<void> }>
 }
 const _projectQueues = new Map<string, ProjectQueue>()
 let _watchJobCounter = 0
 
-function enqueueProjectJob(projectId: string, kind: 'explicit' | 'watcher' | 'safety', job: () => Promise<void>): void {
+// This is deliberately a one-way, cooperative hint. It never touches SQLite
+// state or interrupts a transaction; low-priority work only waits before the
+// next job/batch. The main process updates it from chat lifecycle events.
+let _foregroundBusy = false
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+function setForegroundBusy(busy: boolean): void {
+  _foregroundBusy = busy
+}
+async function waitForForegroundIdle(): Promise<void> {
+  while (_foregroundBusy) await sleep(250)
+}
+
+function enqueueProjectJob(projectId: string, kind: ProjectJobKind, job: () => Promise<void>): void {
   let queue = _projectQueues.get(projectId)
   if (!queue) {
-    queue = { running: false, safetyQueued: false, jobs: [] }
+    queue = { running: false, safetyQueued: false, watcherQueued: false, prewarmQueued: false, jobs: [] }
     _projectQueues.set(projectId, queue)
   }
+  // Coalesce only stale/background work. Explicit user reindex jobs are never
+  // removed or replaced by this deduplication.
   if (kind === 'safety' && queue.safetyQueued) return
+  if (kind === 'prewarm' && queue.prewarmQueued) return
+  if (kind === 'watcher' && queue.watcherQueued) return
   if (kind === 'safety') queue.safetyQueued = true
-  if (kind === 'watcher') {
-    const pending = queue.jobs.find(item => item.kind === 'watcher')
-    if (pending) return
-  }
+  if (kind === 'prewarm') queue.prewarmQueued = true
+  if (kind === 'watcher') queue.watcherQueued = true
   queue.jobs.push({ kind, queuedAt: perfMark(), run: job })
   if (!queue.running) void drainProjectQueue(projectId, queue)
 }
@@ -116,8 +136,23 @@ async function drainProjectQueue(projectId: string, queue: ProjectQueue): Promis
   queue.running = true
   try {
     while (queue.jobs.length > 0) {
-      const job = queue.jobs.shift()!
+      // Explicit reindex always wins. While the foreground is busy, leave
+      // prewarm/safety/watcher jobs queued and let explicit work through.
+      let jobIndex = queue.jobs.findIndex(item => item.kind === 'explicit')
+      if (jobIndex < 0 && _foregroundBusy) {
+        await sleep(250)
+        continue
+      }
+      if (jobIndex < 0) jobIndex = 0
+      const job = queue.jobs.splice(jobIndex, 1)[0]
+      if (job.kind !== 'explicit' && _foregroundBusy) {
+        queue.jobs.unshift(job)
+        await sleep(250)
+        continue
+      }
       if (job.kind === 'safety') queue.safetyQueued = false
+      if (job.kind === 'watcher') queue.watcherQueued = false
+      if (job.kind === 'prewarm') queue.prewarmQueued = false
       const jobStarted = perfMark()
       perfEvent('fast_context.queue_wait', jobStarted - job.queuedAt, { kind: job.kind })
       try {
@@ -253,9 +288,11 @@ async function doWatcherIndex(
   try {
     const filesChanged = await buildOrUpdateIndex(
       projectId, workdir, uniquePaths, undefined,
-      { skipEmbeddings: true, settings, ...SOFT_MODES.incremental },
+      { skipEmbeddings: true, settings, ...SOFT_MODES.incremental, waitForIdle: waitForForegroundIdle },
     )
-    // Graph sync
+    // Graph sync is also background work; never start its transaction while
+    // foreground is busy. The wait is outside the transaction itself.
+    await waitForForegroundIdle()
     if (filesChanged >= 0) {
       try {
         const db = getDB()
@@ -277,6 +314,9 @@ async function doSafetyNetScan(
   projectId: string, workdir: string, ignoreDirs: Set<string>, settings: IndexingSettings,
 ): Promise<void> {
   enqueueProjectJob(projectId, 'safety', async () => {
+  // A safety scan is disposable background work. Wait outside any DB
+  // transaction so active chat can use main SQLite without interruption.
+  await waitForForegroundIdle()
   const jobId = `safety-${++_watchJobCounter}`
   const startedAt = Date.now()
   let changedCount = 0
@@ -332,8 +372,9 @@ async function doSafetyNetScan(
 
     const filesChanged = await buildOrUpdateIndex(
       projectId, workdir, changed, undefined,
-      { skipEmbeddings: true, settings, ...SOFT_MODES.incremental },
+      { skipEmbeddings: true, settings, ...SOFT_MODES.incremental, waitForIdle: waitForForegroundIdle },
     )
+    await waitForForegroundIdle()
     if (filesChanged >= 0) {
       try {
         const db = getDB()
@@ -356,7 +397,7 @@ async function doSafetyNetScan(
 }
 
 interface IndexJobMsg {
-  type: 'index' | 'reindex' | 'startWatching' | 'stopWatching'
+  type: 'index' | 'reindex' | 'startWatching' | 'stopWatching' | 'foregroundBusy'
   jobId: string
   projectId: string
   workdir: string
@@ -365,9 +406,16 @@ interface IndexJobMsg {
   isPrewarm: boolean
   settings: IndexingSettings
   ignoreDirs?: string[]
+  busy?: boolean
+  /** Full scan requested by the safety net, not by the user. */
+  isBackground?: boolean
 }
 
 parentPort?.on('message', async (msg: IndexJobMsg) => {
+  if (msg.type === 'foregroundBusy') {
+    setForegroundBusy(msg.busy === true)
+    return
+  }
   // ── Watcher control: start/stop fs.watch в worker thread ──
   if (msg.type === 'startWatching') {
     startFsWatch(msg.projectId, msg.workdir, msg.ignoreDirs ?? [], msg.settings)
@@ -381,7 +429,8 @@ parentPort?.on('message', async (msg: IndexJobMsg) => {
   const { jobId, projectId, workdir, changedPaths, isFull, isPrewarm, settings } = msg
   const startedAt = Date.now()
 
-  enqueueProjectJob(projectId, 'explicit', async () => {
+  const isSafetyReindex = msg.type === 'index' && isFull && !isPrewarm
+  enqueueProjectJob(projectId, isPrewarm ? 'prewarm' : isSafetyReindex ? 'safety' : 'explicit', async () => {
   const mode = isPrewarm ? SOFT_MODES.prewarm
     : msg.type === 'reindex' ? SOFT_MODES.reindex
     : SOFT_MODES.incremental
@@ -427,6 +476,7 @@ parentPort?.on('message', async (msg: IndexJobMsg) => {
         batchDelayMs: mode.batchDelayMs,
         skipReferencesAboveBytes: mode.skipReferencesAboveBytes,
         skipGraphRankAboveN: mode.skipGraphRankAboveN,
+        waitForIdle: msg.type === 'index' ? waitForForegroundIdle : undefined,
       },
     )
     // Отменяем pending throttle-таймер, шлём финальный progress done.
@@ -440,7 +490,10 @@ parentPort?.on('message', async (msg: IndexJobMsg) => {
     //   - changedPaths задан и < 200 → incremental (только changed файлы)
     //   - changedPaths пуст/не задан  → full sync (prewarm/reindex)
     // Всё в одной транзакции — быстрее на порядки.
+    // Background jobs wait before opening the SQLite write transaction; an
+    // explicit user reindex remains available and is never paused here.
     if (filesChanged >= 0) {
+      if (msg.type === 'index') await waitForForegroundIdle()
       try {
         const db = getDB()
         const tx = db.transaction(() => incrementalUpdateFastContext(projectId, changedPaths))

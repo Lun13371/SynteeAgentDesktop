@@ -158,6 +158,8 @@ export async function buildOrUpdateIndex(
     skipReferencesAboveBytes?: number
     /** Пропустить computeGraphRank если файлов в индексе больше этого числа. */
     skipGraphRankAboveN?: number
+    /** Кооперативно дождаться свободного foreground до следующего безопасного шага. */
+    waitForIdle?: () => Promise<void>
   } = {},
 ): Promise<number> {
   if (!existsSync(workdir)) return 0
@@ -178,6 +180,7 @@ export async function buildOrUpdateIndex(
   // (вызывается из watcher). Иначе — full scan.
   if (changedPaths && changedPaths.length > 0) {
     for (const p of changedPaths) {
+      await opts.waitForIdle?.()
       try {
         const sFile = await stat(p)
         if (!sFile.isFile()) continue
@@ -255,6 +258,7 @@ export async function buildOrUpdateIndex(
     // задан batchDelayMs) чтобы не блокировать поток на больших репо.
     const BATCH_SIZE = batchSize
     for (let i = 0; i < toIndex.length; i += BATCH_SIZE) {
+      await opts.waitForIdle?.()
       const batch = toIndex.slice(i, i + BATCH_SIZE)
       const results = await Promise.allSettled(
         batch.map(f => (f.lang === 'markdown' || f.lang === 'config'
