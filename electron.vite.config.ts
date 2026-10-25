@@ -141,7 +141,7 @@ export default defineConfig({
           'whisper-worker': resolve('src/main/workers/whisper-worker.ts'),
           'plugin-host': resolve('src/core/plugins/pluginHost.ts'),
         },
-        external: ['web-tree-sitter', 'better-sqlite3', '@huggingface/transformers', 'onnxruntime-node'],
+        external: ['better-sqlite3', '@huggingface/transformers', 'onnxruntime-node'],
       },
     },
     resolve: {

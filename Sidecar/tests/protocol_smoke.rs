@@ -17,10 +17,71 @@ fn capabilities_expose_rust_watcher_commands() {
         dispatch(Request { id: json!(1), method: "capabilities".to_owned(), params: json!({}) })
             .unwrap();
     let methods = outcome.result["methods"].as_array().unwrap();
-    for method in ["startWatching", "stopWatching", "foregroundBusy", "status", "shutdown"] {
+    for method in [
+        "startWatching",
+        "stopWatching",
+        "foregroundBusy",
+        "status",
+        "tokensCount",
+        "tokensCountBatch",
+        "tokensTruncate",
+        "symbols",
+        "shutdown",
+    ] {
         assert!(methods.iter().any(|value| value == method));
     }
-    assert_eq!(outcome.result["parserBackend"], "rust-lexical-structural-parser");
+    assert_eq!(outcome.result["parserBackend"], "tree-sitter (native) + lexical fallback");
+}
+
+#[test]
+fn tokens_methods_match_cl100k_and_truncate() {
+    let counted = dispatch(Request {
+        id: json!(1),
+        method: "tokensCount".to_owned(),
+        params: json!({"text": "Hello, world!"}),
+    })
+    .unwrap();
+    assert_eq!(counted.result["tokens"], 4);
+
+    let batch = dispatch(Request {
+        id: json!(2),
+        method: "tokensCountBatch".to_owned(),
+        params: json!({"texts": ["", "hello world"]}),
+    })
+    .unwrap();
+    assert_eq!(batch.result["tokens"], json!([0, 2]));
+
+    let truncated = dispatch(Request {
+        id: json!(3),
+        method: "tokensTruncate".to_owned(),
+        params: json!({"text": "one two three four five six", "maxTokens": 3}),
+    })
+    .unwrap();
+    assert_eq!(truncated.result["truncated"], true);
+    assert!(truncated.result["tokens"].as_u64().unwrap() <= 3);
+}
+
+#[test]
+fn symbols_use_tree_sitter_for_supported_languages() {
+    let root = std::env::temp_dir().join(format!("syntee-sidecar-symbols-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("store.ts");
+    std::fs::write(&file, "export class Store {\n  async load() {}\n}\n").unwrap();
+
+    let outcome = dispatch(Request {
+        id: json!(1),
+        method: "symbols".to_owned(),
+        params: json!({"path": file, "skipReferences": true}),
+    })
+    .unwrap();
+    assert_eq!(outcome.result["parser"], "tree-sitter");
+    assert_eq!(outcome.result["language"], "typescript");
+    let definitions = outcome.result["definitions"].as_array().unwrap();
+    assert!(definitions.iter().any(|d| d["name"] == "Store" && d["kind"] == "class"));
+    assert!(definitions.iter().any(|d| d["name"] == "load" && d["parentName"] == "Store"));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

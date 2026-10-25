@@ -4,11 +4,15 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::ast;
 use crate::config::{IndexOptions, PROTOCOL_VERSION};
 use crate::error::{Result, SidecarError};
 use crate::indexer::Indexer;
+use crate::language::language_for_path;
 use crate::protocol::Request;
 use crate::search::SearchOptions;
+use crate::symbols::extract_symbols;
+use crate::tokens;
 use crate::watcher::WatchManager;
 
 pub struct CommandOutcome {
@@ -75,6 +79,35 @@ struct BusyParams {
     busy: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct TokensCountParams {
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokensBatchParams {
+    texts: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokensTruncateParams {
+    text: String,
+    max_tokens: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SymbolsParams {
+    path: PathBuf,
+    /// Pre-read source. When absent the sidecar reads the file itself, which
+    /// keeps a caller that already has the text from paying for a second read.
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    skip_references: bool,
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct HealthParams {
@@ -118,9 +151,13 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                     "stopWatching",
                     "foregroundBusy",
                     "status",
+                    "tokensCount",
+                    "tokensCountBatch",
+                    "tokensTruncate",
+                    "symbols",
                     "shutdown",
                 ],
-                parser_backend: "rust-lexical-structural-parser",
+                parser_backend: "tree-sitter (native) + lexical fallback",
             })?,
             shutdown: false,
         }),
@@ -175,6 +212,76 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
             Ok(CommandOutcome { result: watcher().foreground_busy(params.busy), shutdown: false })
         }
         "status" => Ok(CommandOutcome { result: watcher().status(), shutdown: false }),
+        "tokensCount" => {
+            let params: TokensCountParams = parse_params(request.params)?;
+            Ok(CommandOutcome {
+                result: json!({ "tokens": tokens::count(&params.text) }),
+                shutdown: false,
+            })
+        }
+        "tokensCountBatch" => {
+            let params: TokensBatchParams = parse_params(request.params)?;
+            Ok(CommandOutcome {
+                result: json!({ "tokens": tokens::count_batch(&params.texts) }),
+                shutdown: false,
+            })
+        }
+        "tokensTruncate" => {
+            let params: TokensTruncateParams = parse_params(request.params)?;
+            if params.text.len() > tokens::MAX_TRUNCATE_CHARS {
+                return Err(SidecarError::InvalidRequest(format!(
+                    "text exceeds {} characters",
+                    tokens::MAX_TRUNCATE_CHARS
+                )));
+            }
+            let truncation = tokens::truncate(&params.text, params.max_tokens);
+            Ok(CommandOutcome {
+                result: json!({
+                    "text": truncation.text,
+                    "tokens": truncation.tokens,
+                    "truncated": truncation.truncated,
+                }),
+                shutdown: false,
+            })
+        }
+        "symbols" => {
+            let params: SymbolsParams = parse_params(request.params)?;
+            let language = language_for_path(&params.path);
+            let Some(language) = language else {
+                return Ok(CommandOutcome {
+                    result: json!({
+                        "definitions": [],
+                        "imports": [],
+                        "references": [],
+                        "language": null,
+                        "parser": null,
+                        "supported": false,
+                    }),
+                    shutdown: false,
+                });
+            };
+            let source = match params.content {
+                Some(content) => content,
+                None => std::fs::read_to_string(&params.path).map_err(SidecarError::Io)?,
+            };
+            // Native tree-sitter where a grammar exists; the lexical scanner is
+            // the fallback for formats no Rust grammar covers (markdown, yaml, …).
+            let (symbols, parser) = match ast::extract(&source, language, params.skip_references) {
+                Some(symbols) => (symbols, "tree-sitter"),
+                None => (extract_symbols(&source, language, params.skip_references), "lexical"),
+            };
+            Ok(CommandOutcome {
+                result: json!({
+                    "definitions": symbols.definitions,
+                    "imports": symbols.imports,
+                    "references": symbols.references,
+                    "language": language,
+                    "parser": parser,
+                    "supported": true,
+                }),
+                shutdown: false,
+            })
+        }
         "shutdown" => {
             watcher().shutdown()?;
             Ok(CommandOutcome { result: json!({ "status": "shutting_down" }), shutdown: true })

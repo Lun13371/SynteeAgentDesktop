@@ -518,6 +518,87 @@ export async function sidecarHealth(): Promise<SidecarHealthResult> {
   return { ok: result.ok !== false && dbReady, ...result, dbReady } as SidecarHealthResult
 }
 
+// ─── Token counting (cl100k_base in Rust) ───────────────────────────────────
+//
+// Token counting used to be pure-JS BPE on the main thread: 200-300k tokens of
+// history cost 0.5-2s of blocked IPC. The sidecar owns the same cl100k_base
+// tables natively, so the heavy callers ask it instead. These are deliberately
+// *not* wrapped in requestWithRecovery: a token count is a hot-path, best-effort
+// number and the caller already has a cheap JS fallback. Failing fast beats
+// adding a restart backoff to a request that happens on every send.
+
+/** Timeout for token requests. Larger than typical because batches can be big. */
+const TOKENS_TIMEOUT_MS = 15_000
+
+export async function sidecarTokensCount(text: string): Promise<number> {
+  if (!text) return 0
+  const result = await request('tokensCount', { text }, TOKENS_TIMEOUT_MS)
+  return typeof result.tokens === 'number' ? result.tokens : 0
+}
+
+/** Count many strings in one round-trip. Returns null when the reply is unusable. */
+export async function sidecarTokensCountBatch(texts: string[]): Promise<number[] | null> {
+  if (texts.length === 0) return []
+  const result = await request('tokensCountBatch', { texts }, TOKENS_TIMEOUT_MS)
+  if (!Array.isArray(result.tokens) || result.tokens.length !== texts.length) return null
+  return result.tokens.map(value => (typeof value === 'number' ? value : 0))
+}
+
+export interface SidecarTruncation {
+  text: string
+  tokens: number
+  truncated: boolean
+}
+
+export async function sidecarTokensTruncate(text: string, maxTokens: number): Promise<SidecarTruncation> {
+  const result = await request('tokensTruncate', { text, maxTokens }, TOKENS_TIMEOUT_MS)
+  return {
+    text: typeof result.text === 'string' ? result.text : '',
+    tokens: typeof result.tokens === 'number' ? result.tokens : 0,
+    truncated: result.truncated === true,
+  }
+}
+
+// ─── Symbol extraction (native tree-sitter in Rust) ─────────────────────────
+
+export interface SidecarSymbolsResult {
+  definitions: SidecarDefinition[]
+  imports: string[]
+  references: string[]
+  language: string | null
+  /** 'tree-sitter' | 'lexical' | null — which backend parsed the file. */
+  parser: string | null
+  /** False when the language has no parser at all (caller should fall back). */
+  supported: boolean
+}
+
+export async function sidecarSymbols(
+  path: string,
+  content?: string,
+  opts: { skipReferences?: boolean } = {},
+): Promise<SidecarSymbolsResult> {
+  const params: JsonRecord = { path, skipReferences: opts.skipReferences === true }
+  // Passing the text we already read avoids a second read of the same file.
+  if (typeof content === 'string') params.content = content
+  const result = await requestWithRecovery('symbols', { params })
+  const rawDefinitions = Array.isArray(result.definitions) ? result.definitions : []
+  return {
+    definitions: rawDefinitions.flatMap(value => {
+      const normalized = normalizeDefinition(value)
+      return normalized ? [normalized] : []
+    }),
+    imports: Array.isArray(result.imports)
+      ? result.imports.filter((value): value is string => typeof value === 'string')
+      : [],
+    references: Array.isArray(result.references)
+      ? result.references.filter((value): value is string => typeof value === 'string')
+      : [],
+    language: typeof result.language === 'string' ? result.language : null,
+    parser: typeof result.parser === 'string' ? result.parser : null,
+    supported: result.supported !== false,
+  }
+}
+
 /** Best-effort graceful shutdown; safe to call more than once. */
 export async function shutdownSidecar(): Promise<void> {
   shuttingDown = true

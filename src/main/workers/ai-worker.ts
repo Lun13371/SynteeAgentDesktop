@@ -16,8 +16,8 @@ import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
-import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import { teardownSidecar } from '../../core/context/fastContext/sidecarClient'
+import { installRustTokenCounter } from '../../core/tokens/rustTokenCounter'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
 const storeData: Record<string, unknown> = workerData.storeData
@@ -359,17 +359,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         agent.secretValues = new Map(Object.entries(secretValuesRaw))
       }
 
-      // Fast Context: инициализация worker-local SQLite connection и пути к WASM.
-      // Worker не имеет доступа к electron app / main-процессной БД — открываем
-      // своё connection к тому же файлу (WAL mode → concurrent safe).
-      const fcDbPath = (workerData as Record<string, unknown>).fastContextDbPath as string | undefined
-      const fcWasmDir = (workerData as Record<string, unknown>).fastContextWasmDir as string | undefined
-      if (fcDbPath) {
-        try { initFastContextDb(fcDbPath) } catch (e) { console.warn('[ai-worker] initFastContextDb FAILED:', e) }
-      }
-      if (fcWasmDir) {
-        try { initFastContextWasmDir(fcWasmDir) } catch (e) { console.warn('[ai-worker] initFastContextWasmDir FAILED:', e) }
-      }
+      // This thread owns its own sidecar child; point token counting at it so
+      // BPE work stays off the worker's event loop as well.
+      try { installRustTokenCounter() } catch (e) { console.warn('[ai-worker] installRustTokenCounter FAILED:', e) }
       // Incognito-чаты (side chat) не пишут рабочую память — не ставим
       // callback, Agent сам короткозит через проверку !this.onUpdateWorkingMemory.
       if (!incognito) {

@@ -21,9 +21,6 @@ tmp_out.txt
 # dist/index.js — entry плагина, пишется руками и обязан быть в гите.
 !resources/builtin-plugins/*/dist/
 !resources/builtin-plugins/*/dist/**
-# tree-sitter WASM files копируются через scripts/copy-tree-sitter-wasms.js (postinstall)
-resources/tree-sitter/*.wasm
-
 # Go launcher binary — built separately in ../syntee-launcher, copied here
 # before running build:win so the NSIS installer can ship it.
 resources/syntee-launcher.exe

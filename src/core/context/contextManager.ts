@@ -7,10 +7,11 @@
 // (encoder кэширован в одном месте, без дублирования)
 
 export {
-  estimateTokens, estimateMessagesTokens, TOOL_SCHEMAS_OVERHEAD,
+  estimateTokens, estimateMessagesTokens, estimateMessagesTokensAsync,
+  truncateToTokensAsync, TOOL_SCHEMAS_OVERHEAD,
   getHardLimitTokens, getHardLimitTargetTokens, ROLLING_TRIGGER_PCT,
 } from '../tokens/usageTracker'
-import { estimateTokens, estimateMessagesTokens, TOOL_SCHEMAS_OVERHEAD } from '../tokens/usageTracker'
+import { estimateTokens, estimateMessagesTokens, estimateMessagesTokensAsync, truncateToTokensAsync, TOOL_SCHEMAS_OVERHEAD } from '../tokens/usageTracker'
 import { getCatalogModel } from '../tokens/modelCatalog'
 
 // ─── OVERHEAD: реальные постоянные расходы контекста ─────────────────────────
@@ -382,7 +383,9 @@ export async function applyRollingWindowAsync(
   forceCompress?: boolean,
   compactMode?: 'full' | 'last',
 ): Promise<CompressResult> {
-  const totalTokens = estimateMessagesTokens(messages)
+  // Exact count, computed in Rust when the sidecar is up: this is the full
+  // history, the single most expensive BPE call in the send path.
+  const totalTokens = await estimateMessagesTokensAsync(messages)
   const limitTokens = settings.contextLimitTokens
   const triggerTokens = Math.floor(limitTokens * settings.rollingTriggerPct / 100)
 
@@ -464,17 +467,12 @@ export async function applyRollingWindowAsync(
   // (было 4000 — увеличено для сохранения больше деталей длинных диалогов).
   // Транкейт по словам, чтобы не разрезать токен посередине.
   const SUMMARY_MAX_TOKENS = 6000
-  if (estimateTokens(summaryContent) > SUMMARY_MAX_TOKENS) {
-    const words = summaryContent.split(/\s+/)
-    let truncated = ''
-    let curTokens = 0
-    for (const w of words) {
-      const wTokens = estimateTokens(w)
-      if (curTokens + wTokens > SUMMARY_MAX_TOKENS) break
-      truncated += (truncated ? ' ' : '') + w
-      curTokens += wTokens
-    }
-    summaryContent = truncated + '\n[…резюме обрезано до ~6000 токенов]'
+  // One native truncate instead of re-encoding every word: the old loop ran a
+  // BPE encode per word, which thrashed the 500-entry token cache and blocked
+  // the thread for the whole summary.
+  const cappedSummary = await truncateToTokensAsync(summaryContent, SUMMARY_MAX_TOKENS)
+  if (cappedSummary.truncated) {
+    summaryContent = cappedSummary.text + '\n[…резюме обрезано до ~6000 токенов]'
   }
 
   // summaryMsg НЕ добавляется в messages — summary живёт только в system

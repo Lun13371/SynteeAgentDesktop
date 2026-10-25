@@ -157,6 +157,119 @@ export function estimateMessagesTokens(messages: Array<{ role: string; content: 
   return estimateMessagesTokensFull(messages as MessageLike[])
 }
 
+// ─── Remote (Rust) token counting ─────────────────────────────────────────────
+//
+// `js-tiktoken` is a pure-JS BPE: encoding a 200-300k-token history costs
+// 0.5-2s of CPU on whatever thread calls it. When that thread is the main
+// process it blocks IPC and rendering.
+//
+// The Rust sidecar ships the same cl100k_base tables natively, so the heavy
+// callers ask it instead. The counter is *injected* rather than imported so this
+// module stays free of node built-ins — the renderer pulls DEFAULT_CONTEXT_SETTINGS
+// out of contextManager, which imports this file.
+//
+// Behaviour when no counter is installed (renderer, tests, sidecar missing):
+// every async helper transparently falls back to the synchronous JS estimate.
+// Counts are identical either way, only the thread that does the work changes.
+
+export interface RemoteTokenCounter {
+  /** Exact counts for many strings in one round-trip; null when unavailable. */
+  countBatch(texts: string[]): Promise<number[] | null>
+  truncate(text: string, maxTokens: number): Promise<{ text: string; tokens: number; truncated: boolean }>
+}
+
+let _remoteCounter: RemoteTokenCounter | null = null
+
+/** Installed by the main process / ai-worker once the sidecar client is ready. */
+export function setRemoteTokenCounter(counter: RemoteTokenCounter | null): void {
+  _remoteCounter = counter
+}
+
+export function hasRemoteTokenCounter(): boolean {
+  return _remoteCounter !== null
+}
+
+/** All strings that contribute tokens to one message, in a stable order. */
+function messageTokenParts(m: MessageLike): string[] {
+  const contentStr = typeof m.content === 'string'
+    ? m.content
+    : (Array.isArray(m.content) ? m.content.map(p => 'text' in p ? (p as { text: string }).text : '').join('') : '')
+  const parts: string[] = [contentStr || '']
+  if (m.tool_calls && Array.isArray(m.tool_calls)) {
+    for (const tc of m.tool_calls as Array<Record<string, unknown>>) {
+      try { parts.push(JSON.stringify(tc)) } catch { /* unserializable tool call — same as sync path */ }
+    }
+  }
+  if (m.tool_call_id) parts.push(m.tool_call_id)
+  if (m.name) parts.push(m.name)
+  return parts
+}
+
+/**
+ * Same result as estimateMessagesTokensFull, but the BPE work happens in Rust
+ * off the calling thread. Falls back to the synchronous estimate when the
+ * sidecar is unavailable or returns a malformed batch.
+ */
+export async function estimateMessagesTokensAsync(messages: Array<MessageLike>): Promise<number> {
+  if (messages.length === 0) return 0
+  const counter = _remoteCounter
+  if (!counter) return estimateMessagesTokensFull(messages)
+
+  const parts: string[] = []
+  const starts: number[] = []
+  for (const message of messages) {
+    starts.push(parts.length)
+    parts.push(...messageTokenParts(message))
+  }
+  starts.push(parts.length)
+
+  let counts: number[] | null
+  try {
+    counts = await counter.countBatch(parts)
+  } catch {
+    counts = null
+  }
+  if (!counts || counts.length !== parts.length) return estimateMessagesTokensFull(messages)
+
+  let total = 0
+  for (let i = 0; i < messages.length; i++) {
+    let sum = 0
+    for (let j = starts[i]; j < starts[i + 1]; j++) sum += counts[j]
+    total += sum + 4 // +4 служебных (role/разделители)
+  }
+  return total
+}
+
+/**
+ * Cut text to a token budget without splitting a word. Prefers the Rust
+ * implementation; the JS path is only used when the sidecar is unavailable.
+ */
+export async function truncateToTokensAsync(
+  text: string,
+  maxTokens: number,
+): Promise<{ text: string; tokens: number; truncated: boolean }> {
+  const counter = _remoteCounter
+  if (counter) {
+    try {
+      const result = await counter.truncate(text, maxTokens)
+      // Trim a partially cut trailing word so the summary does not end mid-word.
+      const trimmed = result.truncated ? result.text.replace(/\s+\S*$/, '') : result.text
+      return { text: trimmed, tokens: result.tokens, truncated: result.truncated }
+    } catch { /* fall through to the JS path */ }
+  }
+  if (estimateTokens(text) <= maxTokens) return { text, tokens: estimateTokens(text), truncated: false }
+  const words = text.split(/\s+/)
+  let out = ''
+  let used = 0
+  for (const word of words) {
+    const cost = estimateTokens(word)
+    if (used + cost > maxTokens) break
+    out += (out ? ' ' : '') + word
+    used += cost
+  }
+  return { text: out, tokens: used, truncated: true }
+}
+
 // ─── Единые пороги компакции контекста ────────────────────────────────────────
 // Раньше Agent.ts (аварийный клапан dropOldestRoundsIfOverflow) и
 // chat.ipc.ts (applyRollingWindowAsync) считали пороги по-разному и от разных

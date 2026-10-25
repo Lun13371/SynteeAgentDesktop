@@ -1,7 +1,7 @@
 import { existsSync } from 'fs'
 import { readFile as fsReadFile, stat as fsStat } from 'fs/promises'
 import { resolveToolPath, isBinaryFile, formatSize, type ToolResult } from './_shared'
-import { extractSymbolsFromSource, type SymbolDef } from '../context/fastContext'
+import { sidecarSymbols, type SidecarDefinition } from '../context/fastContext/sidecarClient'
 
 const MAX_READ_FILE_SIZE = 20 * 1024 * 1024  // 20MB — больше не читаем целиком в память
 
@@ -86,11 +86,11 @@ export async function readFile(path: string, offset?: number, limit?: number, wo
 }
 
 // ── get_file_outline — структура файла (функции/классы/экспорты) ──────────
-// Использует tree-sitter (через fastContext.extractSymbolsFromSource) для
-// точной навигации: функции/методы/классы/интерфейсы/imports с номерами
-// строк. Покрывает 20+ языков (js/ts/tsx/py/rs/go/c/cpp/java/cs/rb/php/
-// swift/kt/scala/lua/bash/dart/elixir). Для неподдерживаемых языков —
-// regex-fallback (улучшенный: plain-методы класса, React-компоненты).
+// Парсинг — в Rust sidecar (нативные грамматики tree-sitter): тот же AST-обход,
+// но в отдельном процессе и без загрузки WASM-грамматик в main/worker.
+// Покрытие: js/ts/tsx/py/rs/go/c/cpp/java/cs/rb/php/bash/json; для остальных
+// языков sidecar отдаёт lexical-разбор, а при полном отсутствии парсера —
+// работает regex-fallback ниже.
 export async function getFileOutline(filePath: string, alreadyReadContent?: string): Promise<ToolResult> {
   if (!existsSync(filePath)) return { success: false, output: '', error: 'File not found: ' + filePath }
   try {
@@ -98,13 +98,17 @@ export async function getFileOutline(filePath: string, alreadyReadContent?: stri
     const lines = content.split('\n')
     const totalLines = lines.length
 
-    // 1. tree-sitter (точный AST-обход) — покрывает 20+ языков
-    const symbols = await extractSymbolsFromSource(filePath, content)
-    if (symbols && (symbols.definitions.length || symbols.imports.length)) {
+    // 1. Rust sidecar (tree-sitter или lexical). Недоступность sidecar не
+    // ломает outline — просто уходим в regex-путь.
+    let symbols: Awaited<ReturnType<typeof sidecarSymbols>> | null = null
+    try {
+      symbols = await sidecarSymbols(filePath, content)
+    } catch { /* sidecar недоступен — ниже regex-fallback */ }
+    if (symbols && symbols.supported && (symbols.definitions.length || symbols.imports.length)) {
       return renderOutlineFromSymbols(filePath, totalLines, symbols.definitions, symbols.imports)
     }
 
-    // 2. Regex-fallback — для языков без tree-sitter грамматики (.vue/.svelte/.css/.md/.sql/.yml/...)
+    // 2. Regex-fallback — для языков без грамматики (.vue/.svelte/.css/.md/.sql/.yml/...)
     const regexOutline = renderOutlineRegex(filePath, lines)
     if (regexOutline) {
       return { success: true, output: regexOutline }
@@ -121,7 +125,7 @@ export async function getFileOutline(filePath: string, alreadyReadContent?: stri
   }
 }
 
-function renderOutlineFromSymbols(filePath: string, totalLines: number, definitions: SymbolDef[], imports: string[]): ToolResult {
+function renderOutlineFromSymbols(filePath: string, totalLines: number, definitions: SidecarDefinition[], imports: string[]): ToolResult {
   const outline: string[] = [`[Outline: ${filePath} | ${totalLines} lines]`]
   if (imports.length) {
     outline.push(`  imports(${imports.length}): ${imports.slice(0, 5).join(', ')}${imports.length > 5 ? ` +${imports.length - 5}` : ''}`)

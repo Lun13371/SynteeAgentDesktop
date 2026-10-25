@@ -20,7 +20,7 @@ import {
 import {
   getContextSettings,
 } from '../context/contextManager'
-import { runFastContext, bumpRelevanceBoost, type FastContextResult } from '../context/fastContext'
+import { runFastContext, type FastContextResult } from '../context/fastContext'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import type { DiffEntry } from '../context/structuredMemory'
 import type { AgentCallbacks, AgentSummaryDetails } from './types'
@@ -281,9 +281,6 @@ export class ToolDispatcher {
         if (result.success) {
           try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
           this.updateReadFileMaxLine(absPath, result.output)
-          const rbProjectId = this.projectId
-            ?? `fc:${createHash('sha1').update(resolve(this.workdir ?? process.cwd())).digest('hex').slice(0, 16)}`
-          bumpRelevanceBoost(rbProjectId, filePath, 1)
           if (this.readFileCacheEnabled) this.readFileCache.set(cacheKey, result.output)
           if (this.readFileCacheEnabled) {
             try {

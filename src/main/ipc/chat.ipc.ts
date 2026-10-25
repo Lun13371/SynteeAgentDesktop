@@ -64,7 +64,7 @@ import { getActivityManager } from '../managers/ActivityManager'
 
 import { v4 as uuid } from 'uuid'
 import {
-  applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokens,
+  applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokensAsync,
   getModelContextWindow,
   type ChatMessage,
 } from '../../core/context/contextManager'
@@ -72,8 +72,6 @@ import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, reset
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
-import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
-import { existsSync } from 'fs'
 import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
 import { perfMark, perfEvent, perfPhase, perfPhaseAsync } from '../../core/performanceDiagnostics'
@@ -659,35 +657,6 @@ function getLiveMessages(history: Message[]): Message[] {
   )
 }
 
-/**
- * Резолвит директорию с tree-sitter .wasm файлами.
- * Порядок кандидатов:
- *   1. <cwd>/resources/tree-sitter — dev режим (process.cwd() = project root)
- *   2. <appPath>/resources/tree-sitter — packaged (если appPath НЕ out/main)
- *      или <appPath>/../../resources/tree-sitter — если appPath = out/main (dev build)
- *   3. process.resourcesPath/tree-sitter — packaged electron-builder extraResources
- *   4. process.resourcesPath/resources/tree-sitter — альтернативный layout
- */
-function resolveTreeSitterWasmDir(): string {
-  const candidates: string[] = [
-    path.join(process.cwd(), 'resources', 'tree-sitter'),
-  ]
-  try {
-    const appPath = app.getAppPath()
-    if (/[\\/]out[\\/]main$/.test(appPath)) {
-      candidates.push(path.join(appPath, '..', '..', 'resources', 'tree-sitter'))
-    } else {
-      candidates.push(path.join(appPath, 'resources', 'tree-sitter'))
-    }
-  } catch { /* app недоступен — ok */ }
-  candidates.push(path.join(process.resourcesPath ?? '', 'tree-sitter'))
-  candidates.push(path.join(process.resourcesPath ?? '', 'resources', 'tree-sitter'))
-  for (const c of candidates) {
-    try { if (existsSync(path.join(c, 'tree-sitter.wasm')) || existsSync(path.join(c, 'web-tree-sitter.wasm'))) return c } catch { /* ignore */ }
-  }
-  return candidates[0]
-}
-
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB()
   recoverInterruptedTaskSummaries()
@@ -698,16 +667,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   }
   setGlobalMemorySettingsStore(store)
 
-  // Fast Context: main открывает своё connection к БД для чтения статуса/истории.
-  // Индексацию и поиск делает Rust sidecar в своей таблице (WAL → concurrent safe).
-  const fastContextDbPath = path.join(app.getPath('userData'), 'syntee.db')
-  const fastContextWasmDir = resolveTreeSitterWasmDir()
-  try {
-    initFastContextDb(fastContextDbPath)
-    initFastContextWasmDir(fastContextWasmDir)
-  } catch (e) {
-    log('[registerChatIPC] fast context init failed: %s', (e as Error).message)
-  }
+  // Fast Context: индексацию, поиск и парсинг делает Rust sidecar в своей
+  // таблице (WAL → concurrent safe). В main-процессе connection к БД больше
+  // не нужен: статус приходит из sidecar через fastContext.ipc.
 
   // Watcher стартует ТОЛЬКО для активного проекта (через setActiveProject из
   // fastContext.ipc при активации чата). Раньше здесь был цикл по всем проектам —
@@ -1785,8 +1747,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // so getChatSummary() returned empty and the agent started the
           // next round with no memory of the conversation. Now both writes
           // commit together or not at all.
-          const tokensBefore = perfPhase('chat.token_calc.before', () => estimateMessagesTokens(rawHistory), { messageCount: rawHistory.length })
-          const tokensAfter = perfPhase('chat.token_calc.after', () => estimateMessagesTokens(result.messages), { messageCount: result.messages.length })
+          const tokensBefore = await perfPhaseAsync('chat.token_calc.before', () => estimateMessagesTokensAsync(rawHistory), { messageCount: rawHistory.length })
+          const tokensAfter = await perfPhaseAsync('chat.token_calc.after', () => estimateMessagesTokensAsync(result.messages), { messageCount: result.messages.length })
           const firstTailMsgId = result.messages.find(m => m.messageId)?.messageId
           const boundaryMsg = firstTailMsgId ? liveMessages.find(m => m.id === firstTailMsgId) : undefined
           const dividerCreatedAt = boundaryMsg ? boundaryMsg.createdAt - 1 : (userMsg.createdAt - 1)
@@ -2311,10 +2273,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // Пути для fast context (worker не имеет доступа к electron app):
     //   dbPath   — абсолютный путь к syntee.db (worker открывает своё connection, WAL safe)
     //   wasmDir  — директория с tree-sitter .wasm файлами
-    const fastContextDbPath = path.join(app.getPath('userData'), 'syntee.db')
-    // В dev: <project>/resources/tree-sitter, в prod: process.resourcesPath/resources/tree-sitter
-    const fastContextWasmDir = resolveTreeSitterWasmDir()
-
     // ── Применение one-shot параметров кастомной команды ──
     // oneShotSkill инъектирует инструкции скилла в system prompt.
     // oneShotAllowedTools фильтрует schemas до указанного списка.
@@ -2355,8 +2313,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         userDataPath: app.getPath('userData'),
         verificationCommand,
         projectId: fastContextProjectId,
-        fastContextDbPath,
-        fastContextWasmDir,
         mcpTools,
         mcpApprovalMap,
         pluginTools,
@@ -2901,8 +2857,6 @@ ${subModeOutro}`,
                 mode: chatMode,
                 workdir: chatWorkdir,
                 projectId: fastContextProjectId,
-                fastContextDbPath,
-                fastContextWasmDir,
               },
             })
             worker.postMessage({
@@ -5034,7 +4988,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // адаптирует keepLast/keepFirst для коротких историй, чтобы middle
       // был непустым. Если совсем нечего сжимать (1-2 сообщения) —
       // вернёт compressed=false → сообщим пользователю.
-      const tokensBefore = estimateMessagesTokens(rawHistory)
+      const tokensBefore = await estimateMessagesTokensAsync(rawHistory)
       const compactMode = mode === 'last' ? 'last' : 'full'
       const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true, compactMode)
       if (!result.compressed) {
@@ -5042,7 +4996,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         return { error: 'Недостаточно сообщений для сжатия (нужно больше 2).' }
       }
 
-      const tokensAfter = estimateMessagesTokens(result.messages)
+      const tokensAfter = await estimateMessagesTokensAsync(result.messages)
 
       // ═══════ Guard от user-initiated cancel ═══════
       // Если пользователь нажал Stop во время LLM-стрима summaryFn,

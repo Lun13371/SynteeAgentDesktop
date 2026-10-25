@@ -1,3 +1,4 @@
+pub mod ast;
 pub mod commands;
 pub mod config;
 pub mod db;
@@ -9,5 +10,6 @@ pub mod protocol;
 pub mod runtime;
 pub mod search;
 pub mod symbols;
+pub mod tokens;
 pub mod walker;
 pub mod watcher;

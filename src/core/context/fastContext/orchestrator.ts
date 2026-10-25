@@ -1,10 +1,10 @@
 import { sep } from 'path'
 import type Store from 'electron-store'
-import { getIndexSettings, type ProgressCallback } from './indexer'
+import { getIndexSettings, type ProgressCallback } from './settings'
 import { buildContentSnippets } from './retriever'
 import { summarizeWithLLM, type FastContextFile, type FastContextResult } from './annotator'
 import { sidecarIndex, sidecarSearch, SidecarError } from './sidecarClient'
-import type { SymbolDef } from './symbols'
+import type { SymbolDef } from './types'
 
 // ─── Orchestrator ───────────────────────────────────────────────────────────
 //
