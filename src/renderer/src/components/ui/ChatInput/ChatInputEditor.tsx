@@ -84,6 +84,89 @@ function placeCaretEnd(el: HTMLElement): void {
   sel.addRange(range)
 }
 
+/**
+ * Порог, до которого вставка идёт НАТИВНЫМ путём (execCommand). До него
+ * editing-пайплайн Blink отрабатывает за единицы миллисекунд и заодно кладёт
+ * вставку в undo-стек (Ctrl+Z после вставки работает как раньше).
+ * Выше — окно подвешивается на секунды, там вставляем напрямую.
+ */
+const NATIVE_PASTE_MAX_CHARS = 32_768
+
+/**
+ * Вставка plain-текста на каретку.
+ *
+ * Возвращает true, если текст вставлен ПРЯМОЙ мутацией DOM — тогда нативного
+ * `input`-event не было и вызывающая сторона обязана сама позвать emitChange().
+ *
+ * - мелкий текст → document.execCommand('insertText'): нативный путь, undo и
+ *   каретка как раньше;
+ * - крупный текст → insertPlainText: на сотнях КБ execCommand подвешивает окно.
+ */
+function pastePlainText(el: HTMLElement, text: string): boolean {
+  if (!text) return false
+  if (text.length <= NATIVE_PASTE_MAX_CHARS) {
+    document.execCommand('insertText', false, text)
+    return false
+  }
+  insertPlainText(el, text)
+  return true
+}
+
+/**
+ * Вставляет plain-текст на каретку ОДНИМ текстовым узлом (замена
+ * document.execCommand('insertText')).
+ *
+ * Почему не execCommand: для больших вставок (десятки-сотни КБ) Blink гонит
+ * их через полный editing-пайплайн — undo-стек, нормализация, разбор на
+ * строки/блоки и инвалидация layout на каждой мутации. На мегабайтном тексте
+ * это фриз окна на секунды. Прямая вставка Text-узла даёт тот же результат:
+ * у редактора `white-space: pre-wrap`, поэтому `\n` рисуется как перенос —
+ * ровно так же, как в уже восстановленных из черновика текстовых узлах
+ * (rebuild-эффект делает то же самое).
+ *
+ * ВАЖНО: нативный `input`-event при этом НЕ возникает — вызывающая сторона
+ * обязана сама позвать emitChange(), иначе value/черновик не обновится.
+ */
+function insertPlainText(el: HTMLElement, text: string): void {
+  if (!text) return
+  el.focus()
+  const sel = window.getSelection()
+  let range: Range | null = null
+  if (sel && sel.rangeCount > 0) {
+    const r = sel.getRangeAt(0)
+    // Вставляем только если выделение целиком внутри редактора (иначе —
+    // фолбэк в конец, как делал execCommand при отсутствии фокуса).
+    if (el.contains(r.startContainer) && el.contains(r.endContainer)) range = r
+  }
+  if (!range) {
+    el.appendChild(document.createTextNode(text))
+    placeCaretEnd(el)
+    return
+  }
+  // Каретка/начало выделения внутри чипа (contenteditable=false): вставка
+  // «внутрь чипа» развалила бы его разметку — переносим точку вставки за чип.
+  const host = range.startContainer.nodeType === Node.ELEMENT_NODE
+    ? (range.startContainer as HTMLElement)
+    : range.startContainer.parentElement
+  const chip = host && host !== el ? host.closest('.ce-attach, .ce-reply') : null
+  if (chip && el.contains(chip)) {
+    const fixed = document.createRange()
+    fixed.setStartAfter(chip)
+    if (range.collapsed) fixed.collapse(true)
+    else fixed.setEnd(range.endContainer, range.endOffset) // выделение после чипа сохраняем
+    range = fixed
+  }
+  range.deleteContents()
+  const node = document.createTextNode(text)
+  range.insertNode(node)
+  // Каретка в конец вставленного текста.
+  const caret = document.createRange()
+  caret.setStart(node, node.length)
+  caret.collapse(true)
+  sel?.removeAllRanges()
+  sel?.addRange(caret)
+}
+
 /** Позиция каретки в сериализованном тексте (для @mention/slash-детекта). */
 function getCaretOffsetIn(el: HTMLElement): number {
   const sel = window.getSelection()
@@ -542,19 +625,22 @@ export function ChatInputEditor({
     e.preventDefault()
     const text = e.clipboardData?.getData('text/plain') ?? ''
     if (!text) return
+    const el = editorRef.current
+    if (!el) return
     // Copy из сообщения содержит ![name](file://...) / [name](file://...) —
     // восстанавливаем вложения чипами, сами ссылки из текста вырезаем.
     if (onPasteLinks && text.includes('](file://')) {
       const stripped = text
         .replace(/!?[ \t]*\[[^\]]*\]\(file:\/\/[^)]+\)[ \t]*/g, '')
         .replace(/[ \t]{2,}/g, ' ')
-      if (stripped.trim()) {
-        document.execCommand('insertText', false, stripped.trim() + ' ')
-      }
+      const toInsert = stripped.trim() ? stripped.trim() + ' ' : ''
+      if (toInsert && pastePlainText(el, toInsert)) emitChange()
       onPasteLinks(text)
       return
     }
-    document.execCommand('insertText', false, text)
+    // Мелкий текст — нативный execCommand (undo как раньше), крупный —
+    // прямая вставка узла без editing-пайплайна: см. pastePlainText.
+    if (pastePlainText(el, text)) emitChange()
   }
 
   // ── Drop: файлы не вставляем сами (браузер вставил бы <img>/<a>) —
@@ -564,7 +650,9 @@ export function ChatInputEditor({
     e.preventDefault()
     if (e.dataTransfer.types.includes('Files')) return
     const text = e.dataTransfer.getData('text/plain')
-    if (text) document.execCommand('insertText', false, text)
+    const el = editorRef.current
+    if (!text || !el) return
+    if (pastePlainText(el, text)) emitChange()
   }
 
   return (

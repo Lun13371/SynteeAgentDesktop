@@ -851,10 +851,16 @@ const chatId = compactingCurrentChatIdRef.current
     draftRef.current = text
     if (currentChatId && !isIncognito) {
       if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current)
+      // Крупный черновик (вставленный лог/JSON на сотни КБ) пишем реже:
+      // UPDATE chats с мегабайтной строкой занимает main-процесс (он
+      // однопоточный), и сразу после вставки это лишний фриз. Данные не
+      // теряются — при смене чата/размонтировании draft сохраняется
+      // синхронно в эффекте ниже.
+      const delay = text.length > 50_000 ? 1500 : 300
       draftSaveTimerRef.current = setTimeout(() => {
         window.syntee.chat.setDraft(currentChatId, text).catch(() => {})
         draftSaveTimerRef.current = null
-      }, 300)
+      }, delay)
     }
   }, [currentChatId, isIncognito])
 

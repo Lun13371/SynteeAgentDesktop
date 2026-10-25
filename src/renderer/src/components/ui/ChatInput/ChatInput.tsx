@@ -6,7 +6,7 @@ import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewM
 import { ProtectedVarsModal } from '../ProtectedVarsModal/ProtectedVarsModal'
 import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
-import { findMentionTokenAtCaret, mentionToAttachment } from '../../../../../shared/mentions'
+import { findMentionTokenNearCaret, mentionToAttachment } from '../../../../../shared/mentions'
 import type { Attachment, MentionItem, ApprovalMode, AutoModeSettings, LastTurnChanges, ProjectPermissionOverride } from '../../../../../shared/types'
 import { DEFAULT_PERSONA, type PersonaId } from '../../../../../shared/modes'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
@@ -114,6 +114,18 @@ interface ChatInputProps {
 // изменениях виртуализатора — без memo инпут-бар (1000+ строк JSX,
 // mirror-рендер draft'а, ModelSelector) перерисовывался бы каждый раз.
 // Пропсы стабилизированы в ChatPage (useCallback-хендлеры).
+
+// ── Пороги «крупного ввода» ────────────────────────────────────────────────
+// В инпут можно вставить лог/JSON/base64 на сотни КБ. Линейные проходы по
+// такому тексту на каждый ввод (slash-фильтр, разбор аргументов команды,
+// @mention-скан, plugin-autocomplete через IPC) не нужны и заметно подвешивают
+// окно — ограничиваем их. Всё это влияет только на всплывающие меню, текст и
+// черновик обрабатываются как раньше.
+const SLASH_MAX_CHARS = 512        // слэш-команда длиннее — уже не команда
+const ARG_PICKER_MAX_CHARS = 8192  // пикер аргументов живёт на коротком вводе
+const MENTION_SCAN_CHARS = 512     // окно поиска @токена перед кареткой
+const PLUGIN_AUTO_MAX_CHARS = 4096 // автокомплит плагинов не шлём мегабайты
+
 function ChatInput({
   chatId,
   onSend, onSteer, disabled, isIncognito,
@@ -239,6 +251,14 @@ function ChatInput({
   // отфильтрованы при первом же вводе (они и раньше были невидимыми).
   const handleEditorUserInput = useCallback((text: string) => {
     if (!onAttachmentsChange) return
+    // Быстрый выход: в тексте нет токенов вложений → ids заведомо пуст.
+    // Раньше matchAll гонялся по ВСЕЙ строке на каждый ввод: после вставки
+    // мегабайтного текста это лишний проход по нему. Поведение то же —
+    // при пустом ids фильтр оставляет [] (вложения-сироты удаляются).
+    if (!text.includes('[[attach:')) {
+      if (attachments.length > 0) onAttachmentsChange([])
+      return
+    }
     const ids = new Set(Array.from(text.matchAll(new RegExp(ATTACH_TOKEN_RE.source, 'g'))).map(m => m[1]))
     if (attachments.some(a => !ids.has(a.id))) {
       onAttachmentsChange(attachments.filter(a => ids.has(a.id)))
@@ -316,6 +336,13 @@ function ChatInput({
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
+    // Крупный текст (вставленный лог/JSON): высота всё равно упирается в
+    // max-height 200px, а замер через height:'auto' + scrollHeight — это два
+    // полных layout'а содержимого подряд. Сразу ставим предел.
+    if (value.length > 50_000) {
+      el.style.height = '200px'
+      return
+    }
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }, [value])
@@ -332,10 +359,13 @@ function ChatInput({
     // следующий ArrowUp продолжил бы с устаревшего индекса.
     historyIdxRef.current = null
     onChangeValue(text)
-    // Показываем меню только если строка начинается с / и нет пробелов после команды
-    const firstWord = text.split(' ')[0]
-    if (text.startsWith('/') && !text.includes(' ')) {
-      const cmds = filterCommands(firstWord, customCommands)
+    // Показываем меню только если строка начинается с / и нет пробелов после
+    // команды. Длину ограничиваем: после вставки мегабайтного текста фильтр
+    // команд по всей строке не нужен (и команда такой длины не бывает).
+    if (text.startsWith('/') && text.length <= SLASH_MAX_CHARS && !text.includes(' ')) {
+      // Пробелов в строке нет → firstWord совпадает с text целиком
+      // (раньше ради этого значения делался split(' ') по всей строке).
+      const cmds = filterCommands(text, customCommands)
       setSlashCmds(cmds)
       setSlashIdx(0)
     } else {
@@ -346,7 +376,11 @@ function ChatInput({
     // Если argPicker активен — фильтруем choices текущего уровня по
     // последнему вводимому токену-префиксу. Если юзер ушёл из формата
     // /cmd или превысил уровень — закрываем пикер.
-    if (argPickerCmd) {
+    // Слишком длинный текст (вставка) — пикер закрываем: разбор /cmd args
+    // по сотням КБ не имеет смысла.
+    if (argPickerCmd && text.length > ARG_PICKER_MAX_CHARS) {
+      closeArgPicker()
+    } else if (argPickerCmd) {
       const cmd = argPickerCmd
       // Slice-подход (а не regex m[2]) — \s* жадно съедает trailing-пробел,
       // из-за чего для `/cmd choice ` rest терял финальный пробел и уровень
@@ -380,8 +414,12 @@ function ChatInput({
     }
 
     // ── @mention-детект: парсим токен у каретки ──
+    // Сканируем ОКНО перед кареткой, а не всю строку (findMentionTokenNearCaret):
+    // после вставки сотен КБ проход назад до пробела по всему тексту на каждый
+    // ввод — лишний фриз. Индексы возвращаются абсолютные — по ним selectMention
+    // заменяет токен в value; поведение для обычного текста идентично прежнему.
     const caretPos = editorApiRef.current?.getCaretOffset() ?? text.length
-    const token = findMentionTokenAtCaret(text, caretPos)
+    const token = findMentionTokenNearCaret(text, caretPos, MENTION_SCAN_CHARS)
     mentionTokenRef.current = token
     if (token) {
       // Активное @mention-меню — закрываем autocomplete-провайдер плагинов
@@ -567,7 +605,7 @@ function ChatInput({
     const text = value.trim()
     const ext = getPluginsExt()
     if (!ext.autocomplete) return
-    if (!text || text.startsWith('/') || argPickerCmd) { setPluginAuto(null); return }
+    if (!text || text.startsWith('/') || argPickerCmd || text.length > PLUGIN_AUTO_MAX_CHARS) { setPluginAuto(null); return }
     const reqId = ++pluginAutoReqRef.current
     const timer = setTimeout(async () => {
       try {
