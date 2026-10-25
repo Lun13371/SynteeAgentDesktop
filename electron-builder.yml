@@ -41,6 +41,13 @@ extraResources:
       - "**/*"
       - "!syntee-launcher.exe"
       - "!installer.nsh"
+      - "!sidecar/**"
+  # Optional Rust Fast Context backend. The directory may be empty in dev or
+  # when the sidecar is not built; TypeScript remains the default backend.
+  - from: resources/sidecar/
+    to: sidecar/
+    filter:
+      - "**/*"
 
 win:
   target:

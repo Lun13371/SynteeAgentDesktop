@@ -71,7 +71,7 @@ import {
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
-import { setFastContextPaths, registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
+import { registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
 import { existsSync } from 'fs'
 import { ptyManager } from '../managers/PtyManager'
@@ -698,17 +698,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
   }
   setGlobalMemorySettingsStore(store)
 
-  // Fast Context: инициализируем main-процессное connection к БД для watcher'а
-  // (getFastContextStats/recordHistory/graph sync читают из main). Worker
-  // открывает своё отдельное connection через initFastContextDb в fastContext-worker.
-  // WAL mode → все работают concurrently с одним файлом.
+  // Fast Context: main открывает своё connection к БД для чтения статуса/истории.
+  // Индексацию и поиск делает Rust sidecar в своей таблице (WAL → concurrent safe).
   const fastContextDbPath = path.join(app.getPath('userData'), 'syntee.db')
   const fastContextWasmDir = resolveTreeSitterWasmDir()
   try {
     initFastContextDb(fastContextDbPath)
     initFastContextWasmDir(fastContextWasmDir)
-    // Передаём пути в watcher — нужны для спавна worker_thread.
-    setFastContextPaths(fastContextDbPath, fastContextWasmDir)
   } catch (e) {
     log('[registerChatIPC] fast context init failed: %s', (e as Error).message)
   }

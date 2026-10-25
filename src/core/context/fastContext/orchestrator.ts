@@ -1,15 +1,17 @@
 import { sep } from 'path'
 import type Store from 'electron-store'
-import { getEmbedder, setUseNeuralEmbeddings, type Embedding } from '../embeddings'
-import { buildOrUpdateIndex, getIndexSettings, type ProgressCallback } from './indexer'
-import { localGetIndexCount, localGetIndexFingerprint } from './state'
-import { buildRepoMapSlice, buildContentSnippets } from './retriever'
+import { getIndexSettings, type ProgressCallback } from './indexer'
+import { buildContentSnippets } from './retriever'
 import { summarizeWithLLM, type FastContextFile, type FastContextResult } from './annotator'
+import { sidecarIndex, sidecarSearch, SidecarError } from './sidecarClient'
+import type { SymbolDef } from './symbols'
 
 // ─── Orchestrator ───────────────────────────────────────────────────────────
-
-const RECONCILE_TTL_MS = 30_000
-const lastReconcileAt = new Map<string, { workdir: string; at: number; count: number; updatedAt: number }>()
+//
+// The Rust sidecar is the only Fast Context backend. There is deliberately no
+// TypeScript indexing/search fallback: a missing or broken sidecar must surface
+// as a typed error instead of silently switching to a second implementation
+// with different indexing rules and ranking.
 
 /**
  * Главная точка входа — вызывается тулзой get_fast_context.
@@ -27,47 +29,67 @@ export async function runFastContext(
   const maxFiles = opts.maxFiles ?? 50
   const maxTokens = opts.maxTokens ?? 8000
 
-  // Читаем настройки индексации из store и применяем neural-режим.
-  // setUseNeuralEmbeddings переключает embedder: ONNX/MiniLM vs TF-IDF.
+  // Читаем настройки индексации из store (лимиты, ignoreDirs).
   const idxSettings = getIndexSettings(store)
-  setUseNeuralEmbeddings(idxSettings.neuralEmbeddings)
 
-  // The fast-context vector layout is stable across worker restarts.
-
-  // Reconcile once per TTL; the background watcher keeps a warm index current
-  // between calls, while this periodic full walk remains a recovery safety net.
-  const fingerprint = localGetIndexFingerprint(projectId)
-  const lastReconcile = lastReconcileAt.get(projectId)
-  const skipFileWalk = !!lastReconcile
-    && lastReconcile.workdir === workdir
-    && lastReconcile.count === fingerprint.count
-    && lastReconcile.updatedAt === fingerprint.updatedAt
-    && Date.now() - lastReconcile.at < RECONCILE_TTL_MS
-  onProgress?.({ stage: 'indexing', detail: skipFileWalk ? 'Индекс актуален' : 'Сканирование файлов', filesProcessed: 0, filesTotal: 0 })
-  await buildOrUpdateIndex(projectId, workdir, undefined, onProgress, { settings: idxSettings, skipFileWalk })
-  if (!skipFileWalk) {
-    const updatedFingerprint = localGetIndexFingerprint(projectId)
-    lastReconcileAt.set(projectId, { workdir, at: Date.now(), ...updatedFingerprint })
+  onProgress?.({ stage: 'indexing', detail: 'Сканирование файлов (Rust)', filesProcessed: 0, filesTotal: 0 })
+  let sidecarIndexResult: Awaited<ReturnType<typeof sidecarIndex>>
+  try {
+    sidecarIndexResult = await sidecarIndex(projectId, workdir, {
+      maxFiles: idxSettings.maxFilesPerProject,
+      maxFileSizeKb: idxSettings.maxFileSizeKb,
+      ignoreDirs: idxSettings.ignoreDirs,
+    })
+    // A file cap intentionally indexes a deterministic subset. It is usable for
+    // retrieval; only actual walk/read errors make the index unsafe to trust.
+    if (sidecarIndexResult.hadErrors === true || (sidecarIndexResult.complete === false && !sidecarIndexResult.hitCap)) {
+      const reasons = [
+        sidecarIndexResult.hadErrors ? 'one or more files could not be read' : null,
+        sidecarIndexResult.complete === false && !sidecarIndexResult.hitCap
+          ? 'index walk did not complete'
+          : null,
+      ].filter((reason): reason is string => reason !== null)
+      throw new SidecarError('index_unavailable', `Rust sidecar index is incomplete: ${reasons.join('; ')}`)
+    }
+    if (sidecarIndexResult.hitCap) {
+      onProgress?.({
+        stage: 'indexing',
+        detail: `Индексирована часть проекта: ${sidecarIndexResult.filesFound ?? idxSettings.maxFilesPerProject} файлов (лимит ${idxSettings.maxFilesPerProject})`,
+        filesProcessed: sidecarIndexResult.filesFound,
+        filesTotal: idxSettings.maxFilesPerProject,
+      })
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    onProgress?.({ stage: 'error', detail: `Rust Fast Context недоступен: ${message}` })
+    throw error instanceof SidecarError ? error : new SidecarError('unavailable', message)
   }
-  // buildOrUpdateIndex возвращает число ИЗМЕНЁННЫХ файлов; общее число в
-  // индексе для «Поиск по N файлам» берём дешёвым COUNT(*).
-  const indexedCount = localGetIndexCount(projectId)
 
   // Stage 2: retrieving
-  onProgress?.({ stage: 'retrieving', detail: `Поиск по ${indexedCount} файлам`, filesProcessed: 0, filesTotal: 0 })
-  // Semantic: embed query для cosine similarity vs file embeddings
-  let queryEmb: Embedding | null = null
+  const walkedCount = sidecarIndexResult.filesFound ?? 0
+  onProgress?.({ stage: 'retrieving', detail: `Поиск по ${walkedCount} файлам`, filesProcessed: 0, filesTotal: 0 })
+  let sidecarResult: Awaited<ReturnType<typeof sidecarSearch>>
   try {
-    const embedder = await getEmbedder()
-    queryEmb = await (embedder.stableEmbed ?? embedder.embed)(query)
-  } catch { /* embeddings опциональны — lexical-only fallback */ }
-  const { slice, topFiles } = buildRepoMapSlice(projectId, query, maxFiles, maxTokens, queryEmb)
+    sidecarResult = await sidecarSearch(projectId, query, maxFiles, maxTokens)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    onProgress?.({ stage: 'error', detail: `Rust Fast Context search недоступен: ${message}` })
+    throw error instanceof SidecarError ? error : new SidecarError('unavailable', message)
+  }
+
+  const slice: string = sidecarResult.slice
+  const topFiles: Array<{ path: string; score: number; definitions: SymbolDef[] }> = sidecarResult.topFiles
+
+  // Real index size: rows in the Rust index, not just this walk's file count.
+  const indexedCount = sidecarResult.indexedFilesCount ?? sidecarIndexResult.filesFound ?? 0
 
   if (topFiles.length === 0) {
     onProgress?.({ stage: 'done', detail: 'Ничего не найдено' })
     return {
       files: [],
-      summary: 'Не найдено релевантных файлов по запросу. Возможно индекс пуст или запрос не matches ни одному символу.',
+      summary: indexedCount === 0
+        ? 'Индекс Fast Context пуст: проиндексировано 0 файлов. Проверьте workdir проекта и настройки индексации.'
+        : 'Не найдено релевантных файлов по запросу. Индекс содержит файлы, но ни один не совпал с запросом.',
       ms: Date.now() - startedAt,
       indexedFilesCount: indexedCount,
     }

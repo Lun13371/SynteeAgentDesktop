@@ -12,6 +12,9 @@ app.setName('SynteeHelper')
 // позволяет поднять второй инстанс с отдельным userData, не конфликтуя
 // с singleton-lock и данными живого инстанса юзера.
 app.setPath('userData', process.env.SYNTEE_USER_DATA_DIR || join(app.getPath('appData'), 'SynteeHelper'))
+// Fast Context Sidecar получает тот же путь через env: его клиент также
+// используется из worker_threads, где импорт Electron ненадёжен.
+process.env.SYNTEE_DB_PATH = join(app.getPath('userData'), 'syntee.db')
 
 // Лимит дискового кэша Chromium (512 МБ, все партишны: приложение +
 // встроенный браузер + spa-renderer). Без него кэш растёт по эвристике
@@ -47,6 +50,9 @@ import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
 import { stopAllWatchers as stopAllFastContextWatchers } from '../core/context/fastContextWatcher'
+import {
+  shutdownSidecar, sidecarHealth, addSidecarFailureHandler,
+} from '../core/context/fastContext/sidecarClient'
 import { stopSemanticIndexer } from '../core/memory/semanticIndex'
 import { registerFsIPC } from './ipc/fs.ipc'
 import { registerGitIPC } from './ipc/git.ipc'
@@ -245,6 +251,27 @@ let notificationManager: ReturnType<typeof initNotificationManager>
 let activityManager: ReturnType<typeof initActivityManager>
 let trayManager: TrayManager
 let hotkeyManager: HotkeyManager
+let sidecarAppRestarted = false
+
+function maybeRestartForSidecarFailure(): void {
+  // The marker survives app.relaunch(), so a broken binary cannot cause an
+  // endless Electron restart loop. The user must remove/repair the flag before
+  // another automatic relaunch is allowed.
+  if (
+    process.env.SYNTEE_SIDECAR_RESTART_APP !== '1'
+    || sidecarAppRestarted
+    || process.env.SYNTEE_SIDECAR_RESTARTED === '1'
+  ) return
+  sidecarAppRestarted = true
+  process.env.SYNTEE_SIDECAR_RESTARTED = '1'
+  log('[fast-context] restarting Electron once after Rust sidecar failure')
+  try {
+    app.relaunch({ args: process.argv.slice(1) })
+    app.exit(0)
+  } catch (error) {
+    log('[fast-context] Electron restart failed: %s', error instanceof Error ? error.message : String(error))
+  }
+}
 
 app.whenReady().then(async () => {
   configurePerformanceDiagnostics(join(app.getPath('userData'), 'logs'))
@@ -378,6 +405,19 @@ app.whenReady().then(async () => {
   registerMarketplaceIPC(store)
   registerPtyIPC(mainWindow)
   registerFastContextIPC(store, () => mainWindow.getWindow())
+  // Fast Context runs exclusively on the Rust sidecar; a failure is reported,
+  // never silently replaced by another backend.
+  addSidecarFailureHandler(error => {
+    log('[fast-context] Rust sidecar unavailable (%s): %s', error.code, error.message)
+    maybeRestartForSidecarFailure()
+  })
+  try {
+    const health = await sidecarHealth()
+    if (!health.ok) throw new Error('Rust sidecar health check returned not-ok')
+    log('[fast-context] Rust sidecar ready')
+  } catch (error) {
+    log('[fast-context] Rust sidecar startup unavailable: %s', error instanceof Error ? error.message : String(error))
+  }
   registerCommandsIPC()
   registerMentionsIPC()
   // Защищённые переменные (секреты юзера → system prompt)
@@ -580,6 +620,9 @@ app.on('before-quit', () => {
   import('./tools/spaRenderer')
     .then(({ destroySpaPool }) => destroySpaPool())
     .catch(() => { /* spaRenderer опционален */ })
+  // Optional Fast Context sidecar: ask it to exit cleanly before Electron
+  // tears down stdio; an absent/crashed sidecar is harmless.
+  void shutdownSidecar()
 })
 
 app.on('will-quit', () => {
@@ -589,6 +632,7 @@ app.on('will-quit', () => {
   hotkeyManager?.unregisterAll()
   // Плагины: graceful stop процессов + флеш KV-хранилищ.
   try { getPluginManager().shutdownAll() } catch { /* ok — best-effort */ }
+  void shutdownSidecar()
 })
 
 app.on('activate', () => {
