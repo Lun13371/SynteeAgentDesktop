@@ -29,6 +29,9 @@ resources/syntee-launcher.exe
 # Keep only resources/sidecar/.gitkeep in source control.
 resources/sidecar/*.exe
 resources/sidecar/*.exe.old
+# A running app locks the binary; staging a new one renames the old copy aside.
+resources/sidecar/*.exe.locked
+resources/sidecar/*.exe.locked?
 
 # Compiled TypeScript output (electron-vite outputs alongside sources)
 src/**/*.js

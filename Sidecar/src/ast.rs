@@ -11,14 +11,19 @@
 //! (markdown, yaml, toml, …) keeps the lexical scanner in `symbols.rs`, so the
 //! module reports `None` instead of pretending to understand the file.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use tree_sitter::{Language, Node, Parser};
 
 use crate::symbols::{FileSymbols, SymbolDef};
 
-/// Node kinds that represent a definition. Mirrors the list the TypeScript
-/// extractor used, so outlines keep the same vocabulary across languages.
+/// Node kinds that represent a definition.
+///
+/// Two entries are deliberately absent: `arrow_function` and
+/// `function_expression`. Their `name` field is the *first parameter*, so
+/// `const load = async (id) => {}` used to be reported as a definition called
+/// `id`. The `variable_declarator` that wraps them carries the real name.
 const DEFINITION_NODE_TYPES: &[&str] = &[
     // functions / methods
     "function_declaration",
@@ -27,8 +32,6 @@ const DEFINITION_NODE_TYPES: &[&str] = &[
     "method_definition",
     "method_declaration",
     "function_declarator",
-    "arrow_function",
-    "function_expression",
     // classes / structs / interfaces / traits
     "class_declaration",
     "class_definition",
@@ -55,12 +58,23 @@ const DEFINITION_NODE_TYPES: &[&str] = &[
     "namespace_declaration",
     "package_declaration",
     "package_clause",
-    // variables (top-level / exports)
+    // variables and fields
     "variable_declaration",
     "lexical_declaration",
+    "variable_declarator",
     "const_declaration",
     "const_item",
     "static_variable_declaration",
+    "static_item",
+    "let_declaration",
+    "init_declarator",
+    "field_declaration",
+    "public_field_definition",
+    "property_declaration",
+    // go
+    "type_spec",
+    "const_spec",
+    "var_spec",
     // misc
     "constructor_declaration",
     "destructor_declaration",
@@ -265,52 +279,93 @@ pub fn supports(language_name: &str) -> bool {
     language(language_name).is_some()
 }
 
+thread_local! {
+    /// One parser per language per thread. `Parser::new()` + `set_language` on
+    /// every file is cheap per call but adds up over a full index pass.
+    static PARSERS: RefCell<HashMap<String, Parser>> = RefCell::new(HashMap::new());
+}
+
 /// Parse `source` and extract definitions/imports/references.
 ///
 /// Returns `None` when the language has no native grammar or the parser cannot
 /// be created; an empty `FileSymbols` is a valid "parsed, found nothing".
 pub fn extract(source: &str, language_name: &str, skip_references: bool) -> Option<FileSymbols> {
     let grammar = language(language_name)?;
-    let mut parser = Parser::new();
-    parser.set_language(&grammar).ok()?;
-    let tree = parser.parse(source, None)?;
-    let mut symbols = walk(&tree, source);
-    if !skip_references {
-        symbols.references = collect_references(source, &symbols.definitions);
-    }
-    symbols.imports.truncate(100);
-    Some(symbols)
+    PARSERS.with(|cell| -> Option<FileSymbols> {
+        let mut parsers = cell.borrow_mut();
+        if !parsers.contains_key(language_name) {
+            let mut parser = Parser::new();
+            parser.set_language(&grammar).ok()?;
+            parsers.insert(language_name.to_owned(), parser);
+        }
+        let parser = parsers.get_mut(language_name)?;
+        let tree = parser.parse(source, None)?;
+        let mut symbols = walk(&tree, source, skip_references);
+        symbols.imports.truncate(100);
+        Some(symbols)
+    })
 }
 
-fn walk<'tree>(tree: &'tree tree_sitter::Tree, source: &str) -> FileSymbols {
+/// Where the walk currently is. It decides whether a variable declaration is a
+/// definition worth reporting or just a local inside a function body.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Top,
+    Container,
+    Function,
+}
+
+fn walk(tree: &tree_sitter::Tree, source: &str, skip_references: bool) -> FileSymbols {
     let mut definitions: Vec<SymbolDef> = Vec::new();
     let mut imports: Vec<String> = Vec::new();
-    // (node, parent container name) — explicit stack, no recursion, so a deeply
-    // nested file cannot blow the sidecar's stack.
-    let mut stack: Vec<(Node<'tree>, Option<String>)> = vec![(tree.root_node(), None)];
+    let mut references: Vec<String> = Vec::new();
+    let mut seen_references: HashSet<String> = HashSet::new();
+    // (node, parent container name, scope) — explicit stack, no recursion, so a
+    // deeply nested file cannot blow the sidecar's stack.
+    let mut stack: Vec<(Node<'_>, Option<String>, Scope)> =
+        vec![(tree.root_node(), None, Scope::Top)];
     let mut visited = 0usize;
+    let mut truncated = false;
 
-    while let Some((node, parent)) = stack.pop() {
+    while let Some((node, parent, scope)) = stack.pop() {
         if visited >= MAX_NODES || definitions.len() >= MAX_DEFINITIONS {
+            truncated = true;
             break;
         }
         visited += 1;
         let kind = node.kind();
 
+        // Strings and comments are not code. Scanning raw text for identifiers
+        // used to put words from comments and string literals into `references`,
+        // which then became bogus graph edges.
+        if is_non_code(kind) {
+            continue;
+        }
+
         if DEFINITION_NODE_TYPES.contains(&kind) {
             if let Some(name) = node_name(node, source) {
-                definitions.push(SymbolDef {
-                    name: name.clone(),
-                    kind: kind_category(kind).to_owned(),
-                    line_start: node.start_position().row + 1,
-                    line_end: node.end_position().row + 1,
-                    signature: signature(node, source),
-                    parent_name: parent.clone(),
-                });
-                if CONTAINER_NODE_TYPES.contains(&kind) {
-                    push_children(&mut stack, node, Some(name));
+                let reportable = match kind {
+                    // `const x = 1` inside a function body is a local, not a
+                    // symbol the repo map should list.
+                    "variable_declarator" | "let_declaration" | "init_declarator" => {
+                        scope != Scope::Function
+                    }
+                    _ => true,
+                };
+                if reportable {
+                    let is_container = CONTAINER_NODE_TYPES.contains(&kind);
+                    definitions.push(SymbolDef {
+                        name: name.clone(),
+                        kind: kind_category(kind).to_owned(),
+                        line_start: node.start_position().row + 1,
+                        line_end: node.end_position().row + 1,
+                        signature: signature(node, source),
+                        parent_name: parent.clone(),
+                    });
+                    let child_scope = if is_container { Scope::Container } else { Scope::Function };
+                    push_children(&mut stack, node, Some(name), child_scope);
+                    continue;
                 }
-                continue;
             }
         }
 
@@ -324,21 +379,39 @@ fn walk<'tree>(tree: &'tree tree_sitter::Tree, source: &str) -> FileSymbols {
             continue;
         }
 
-        push_children(&mut stack, node, parent);
+        if !skip_references && is_identifier_kind(kind) && references.len() < MAX_REFERENCES * 2 {
+            if let Some(text) = node_text(node, source) {
+                let name = text.trim();
+                if name.chars().count() >= MIN_REFERENCE_LEN
+                    && !COMMON_LOCAL_NAMES.contains(&name)
+                    && seen_references.insert(name.to_owned())
+                {
+                    references.push(name.to_owned());
+                }
+            }
+        }
+
+        push_children(&mut stack, node, parent, scope);
     }
 
-    FileSymbols { definitions, imports, references: Vec::new() }
+    // A definition is not a reference to itself.
+    let local: HashSet<&str> = definitions.iter().map(|item| item.name.as_str()).collect();
+    references.retain(|reference| !local.contains(reference.as_str()));
+    references.truncate(MAX_REFERENCES);
+
+    FileSymbols { definitions, imports, references, truncated }
 }
 
 fn push_children<'tree>(
-    stack: &mut Vec<(Node<'tree>, Option<String>)>,
+    stack: &mut Vec<(Node<'tree>, Option<String>, Scope)>,
     node: Node<'tree>,
     parent: Option<String>,
+    scope: Scope,
 ) {
     // Reverse order so the stack yields children left-to-right.
     for index in (0..node.child_count()).rev() {
         if let Some(child) = node.child(index) {
-            stack.push((child, parent.clone()));
+            stack.push((child, parent.clone(), scope));
         }
     }
 }
@@ -347,33 +420,93 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
     node.utf8_text(source.as_bytes()).ok()
 }
 
-/// Definition name: named field first (the reliable path in every grammar),
-/// then the first identifier-ish child.
+fn is_non_code(kind: &str) -> bool {
+    matches!(
+        kind,
+        "comment"
+            | "line_comment"
+            | "block_comment"
+            | "documentation_comment"
+            | "string"
+            | "string_literal"
+            | "raw_string_literal"
+            | "interpreted_string_literal"
+            | "template_string"
+            | "char_literal"
+            | "heredoc_body"
+            | "regex"
+            | "regex_pattern"
+    )
+}
+
+fn is_identifier_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "identifier"
+            | "property_identifier"
+            | "type_identifier"
+            | "field_identifier"
+            | "shorthand_property_identifier"
+            | "namespace_identifier"
+            | "constant"
+    )
+}
+
+/// Definition name: the reliable `name` field first, then a declarator chain,
+/// then any identifier child.
 fn node_name(node: Node<'_>, source: &str) -> Option<String> {
-    for field in ["name", "declarator", "type", "key"] {
+    for field in ["name", "declarator", "key"] {
         if let Some(child) = node.child_by_field_name(field) {
-            if let Some(text) = node_text(child, source) {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() && !trimmed.contains('\n') {
-                    return Some(trimmed.chars().take(120).collect());
-                }
+            if let Some(name) = declarator_name(child, source) {
+                return Some(name);
             }
         }
     }
     for index in 0..node.child_count() {
-        let child = node.child(index)?;
+        let Some(child) = node.child(index) else { break };
+        if is_identifier_kind(child.kind()) {
+            if let Some(name) = declarator_name(child, source) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a declarator down to a bare identifier.
+///
+/// `void use() {}` in C++ exposes a `function_declarator` whose text is `use()`;
+/// taking that text verbatim made the definition name `use()`.
+fn declarator_name(node: Node<'_>, source: &str) -> Option<String> {
+    if is_identifier_kind(node.kind())
+        || matches!(node.kind(), "constructor" | "destructor_name" | "operator_name")
+    {
+        return node_text(node, source).map(|text| text.trim().chars().take(120).collect());
+    }
+    if node.kind() == "qualified_identifier" {
+        if let Some(child) = node.child_by_field_name("name") {
+            return declarator_name(child, source);
+        }
+    }
+    if let Some(child) = node.child_by_field_name("declarator") {
+        return declarator_name(child, source);
+    }
+    if let Some(child) = node.child_by_field_name("name") {
+        return declarator_name(child, source);
+    }
+    for index in 0..node.child_count() {
+        let Some(child) = node.child(index) else { break };
         if matches!(
             child.kind(),
-            "identifier"
-                | "type_identifier"
-                | "property_identifier"
-                | "field_identifier"
-                | "constant"
-                | "constructor"
+            "parameter_list"
+                | "template_argument_list"
+                | "template_parameter_list"
+                | "type_parameters"
         ) {
-            if let Some(text) = node_text(child, source) {
-                return Some(text.trim().chars().take(120).collect());
-            }
+            continue;
+        }
+        if let Some(name) = declarator_name(child, source) {
+            return Some(name);
         }
     }
     None
@@ -409,57 +542,11 @@ fn kind_category(kind: &str) -> &'static str {
         "constructor"
     } else if kind.contains("macro") {
         "macro"
+    } else if kind.contains("field") || kind.contains("property") || kind.contains("declarator") {
+        "field"
     } else {
         "definition"
     }
-}
-
-/// Identifiers used in the file that are not defined here — the signal graph
-/// ranking uses to link a file to the files it calls into.
-///
-/// A source scan rather than an AST walk: it is one pass, it never misses a
-/// usage inside a macro or string template, and the consumer only needs names.
-fn collect_references(source: &str, definitions: &[SymbolDef]) -> Vec<String> {
-    let local: HashSet<&str> = definitions.iter().map(|item| item.name.as_str()).collect();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut references: Vec<String> = Vec::new();
-    let bytes = source.as_bytes();
-    let mut index = 0usize;
-
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$' {
-            let start = index;
-            index += 1;
-            while index < bytes.len() {
-                let next = bytes[index];
-                if next.is_ascii_alphanumeric() || next == b'_' || next == b'$' {
-                    index += 1;
-                } else {
-                    break;
-                }
-            }
-            let len = index - start;
-            if len >= MIN_REFERENCE_LEN {
-                // ASCII-only scan: non-ASCII identifiers are skipped, same as the
-                // regex the TypeScript extractor used.
-                if let Ok(word) = std::str::from_utf8(&bytes[start..index]) {
-                    if !local.contains(word)
-                        && !COMMON_LOCAL_NAMES.contains(&word)
-                        && seen.insert(word.to_owned())
-                    {
-                        references.push(word.to_owned());
-                        if references.len() >= MAX_REFERENCES {
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            index += 1;
-        }
-    }
-    references
 }
 
 #[cfg(test)]

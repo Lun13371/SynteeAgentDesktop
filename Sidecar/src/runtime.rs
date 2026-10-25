@@ -29,6 +29,12 @@ type SharedWriter = Arc<Mutex<Stdout>>;
 /// JSON Lines runtime. stdout is reserved for protocol responses; diagnostics go to stderr.
 pub struct Runtime;
 
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Runtime {
     pub fn new() -> Self {
         Self
