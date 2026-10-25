@@ -53,6 +53,7 @@ import { stopAllWatchers as stopAllFastContextWatchers } from '../core/context/f
 import {
   shutdownSidecar, sidecarHealth, addSidecarFailureHandler,
 } from '../core/context/fastContext/sidecarClient'
+import { installRustTokenCounter } from '../core/tokens/rustTokenCounter'
 import { stopSemanticIndexer } from '../core/memory/semanticIndex'
 import { registerFsIPC } from './ipc/fs.ipc'
 import { registerGitIPC } from './ipc/git.ipc'
@@ -411,6 +412,9 @@ app.whenReady().then(async () => {
     log('[fast-context] Rust sidecar unavailable (%s): %s', error.code, error.message)
     maybeRestartForSidecarFailure()
   })
+  // Token counting for the whole app runs on the sidecar's native cl100k_base
+  // instead of the pure-JS BPE that used to block the main thread.
+  installRustTokenCounter()
   try {
     const health = await sidecarHealth()
     if (!health.ok) throw new Error('Rust sidecar health check returned not-ok')

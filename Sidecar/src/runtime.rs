@@ -1,4 +1,7 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Stdout, Write};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use serde_json::Value;
 
@@ -6,6 +9,22 @@ use crate::commands::{dispatch, CommandOutcome};
 use crate::config::MAX_PROTOCOL_LINE_BYTES;
 use crate::error::{Result, SidecarError};
 use crate::protocol::{Request, Response};
+
+/// Methods that may run off the reader thread.
+///
+/// The reader loop is synchronous by design: indexing holds a walk and a SQLite
+/// transaction, and letting two of those interleave would be worse than a
+/// queue. But that same queue would put a `tokensCountBatch` on the chat send
+/// path behind a five-thousand-file walk. These methods are pure and read-only,
+/// so they are handed to a small worker pool instead. Responses are matched by
+/// `id`, so out-of-order replies are already handled by the TypeScript client.
+const OFF_THREAD_METHODS: &[&str] = &["tokensCount", "tokensCountBatch", "tokensTruncate"];
+
+/// Two is enough: token requests are short and rare, and more threads would only
+/// contend on the stdout mutex.
+const WORKER_THREADS: usize = 2;
+
+type SharedWriter = Arc<Mutex<Stdout>>;
 
 /// JSON Lines runtime. stdout is reserved for protocol responses; diagnostics go to stderr.
 pub struct Runtime;
@@ -16,9 +35,23 @@ impl Runtime {
     }
 
     pub fn run(&self) -> Result<()> {
-        let stdin = io::stdin();
-        let mut stdout = io::BufWriter::new(io::stdout().lock());
+        let writer: SharedWriter = Arc::new(Mutex::new(io::stdout()));
+        let (sender, receiver) = mpsc::channel::<Request>();
+        let receiver = Arc::new(Mutex::new(receiver));
+        let workers = spawn_workers(&receiver, &writer);
 
+        let result = self.read_loop(&sender, &writer);
+
+        // Dropping the sender ends every worker's recv loop.
+        drop(sender);
+        for worker in workers {
+            let _ = worker.join();
+        }
+        result
+    }
+
+    fn read_loop(&self, sender: &Sender<Request>, writer: &SharedWriter) -> Result<()> {
+        let stdin = io::stdin();
         let mut input = stdin.lock();
         loop {
             let line = match read_bounded_line(&mut input)? {
@@ -29,7 +62,7 @@ impl Runtime {
                         "request_too_large",
                         format!("request exceeds {MAX_PROTOCOL_LINE_BYTES} bytes"),
                     );
-                    write_response(&mut stdout, &response)?;
+                    write_response(writer, &response)?;
                     continue;
                 }
                 ReadLine::Text(line) => line,
@@ -43,26 +76,74 @@ impl Runtime {
                 Err(error) => {
                     let response =
                         Response::failure(Value::Null, "invalid_json", error.to_string());
-                    write_response(&mut stdout, &response)?;
+                    write_response(writer, &response)?;
                     continue;
                 }
             };
+
+            let request = if OFF_THREAD_METHODS.contains(&request.method.as_str()) {
+                // Worker pool is gone only during teardown; serve inline instead
+                // of dropping the request.
+                match sender.send(request) {
+                    Ok(()) => continue,
+                    Err(mpsc::SendError(returned)) => returned,
+                }
+            } else {
+                request
+            };
+
             let id = request.id.clone();
             match dispatch(request) {
                 Ok(CommandOutcome { result, shutdown }) => {
-                    write_response(&mut stdout, &Response::success(id, result))?;
+                    write_response(writer, &Response::success(id, result))?;
                     if shutdown {
                         break;
                     }
                 }
                 Err(error) => {
                     let response = Response::failure(id, error_code(&error), error.to_string());
-                    write_response(&mut stdout, &response)?;
+                    write_response(writer, &response)?;
                 }
             }
         }
         Ok(())
     }
+}
+
+fn spawn_workers(
+    receiver: &Arc<Mutex<Receiver<Request>>>,
+    writer: &SharedWriter,
+) -> Vec<thread::JoinHandle<()>> {
+    (0..WORKER_THREADS)
+        .map(|index| {
+            let receiver = Arc::clone(receiver);
+            let writer = Arc::clone(writer);
+            thread::Builder::new()
+                .name(format!("sidecar-tokens-{index}"))
+                .spawn(move || loop {
+                    // The lock is held only while waiting for the next job, so
+                    // exactly one worker blocks on recv at a time.
+                    let job = {
+                        let guard = match receiver.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        guard.recv()
+                    };
+                    let Ok(request) = job else { break };
+                    let id = request.id.clone();
+                    let response = match dispatch(request) {
+                        Ok(CommandOutcome { result, .. }) => Response::success(id, result),
+                        Err(error) => Response::failure(id, error_code(&error), error.to_string()),
+                    };
+                    if let Err(error) = write_response(&writer, &response) {
+                        eprintln!("sidecar: failed to write response: {error}");
+                        break;
+                    }
+                })
+                .expect("spawn token worker")
+        })
+        .collect()
 }
 
 enum ReadLine {
@@ -140,7 +221,13 @@ fn decode_line(mut bytes: Vec<u8>) -> Result<ReadLine> {
     Ok(ReadLine::Text(text))
 }
 
-fn write_response(stdout: &mut impl Write, response: &Response) -> Result<()> {
+/// One response per line. The mutex is what keeps the reader thread and the
+/// worker pool from interleaving halves of two JSON documents.
+fn write_response(writer: &SharedWriter, response: &Response) -> Result<()> {
+    let mut stdout = match writer.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     serde_json::to_writer(&mut *stdout, response)?;
     stdout.write_all(b"\n")?;
     stdout.flush()?;

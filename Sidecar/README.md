@@ -8,8 +8,9 @@ Rust sidecar для CPU-heavy Fast Context backend Syntee Helper. Sidecar вып
 - incremental SQLite index в отдельной таблице `fast_context_sidecar_index` существующей Syntee БД;
 - Rust watcher на `notify` с debounce 250 ms, foreground pause и безопасным changed-path indexing;
 - удаление rows только для подтверждённо удалённых файлов; ошибки чтения/metadata никогда не удаляют старую запись;
-- структурный lexical parser без внешних grammar crates: modifiers `export/default/async/public/...`, functions/classes/interfaces/struct/enum/impl/type/variables, imports и bounded references;
+- нативный tree-sitter (`ast.rs`) для js/ts/tsx/py/rs/go/c/cpp/java/c_sharp/ruby/php/bash/json; lexical parser (`symbols.rs`) остаётся fallback'ом для остальных форматов;
 - lexical retrieval и компактный repo-map slice;
+- cl100k_base token counting (`tokens.rs`, `tiktoken-rs`) — точный подсчёт токенов вне main process; `tokens*` методы обслуживаются пулом потоков, чтобы не стоять в очереди за индексацией;
 - JSON Lines protocol через `stdin`/`stdout`.
 
 Watcher/index errors пишутся в `stderr` и доступны через `status.lastError`, чтобы stdout оставался machine-readable. `shutdown` останавливает watcher thread до ответа.
@@ -36,7 +37,7 @@ cargo build --release
 
 ## Methods
 
-`health`, `capabilities`, `index`, `indexChangedPaths`, `search`, `clear`, `startWatching`, `stopWatching`, `foregroundBusy`, `status`, `shutdown`.
+`health`, `capabilities`, `index`, `indexChangedPaths`, `search`, `clear`, `startWatching`, `stopWatching`, `foregroundBusy`, `status`, `tokensCount`, `tokensCountBatch`, `tokensTruncate`, `symbols`, `shutdown`.
 
 Основные params используют camelCase: `dbPath`, `projectId`, `workdir`, `options`. `startWatching` дополнительно принимает те же `options`, что и `index`. `foregroundBusy` принимает `{ "busy": true|false }`.
 

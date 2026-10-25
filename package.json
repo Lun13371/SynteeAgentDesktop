@@ -15,7 +15,7 @@
     "build:win": "npm run build:sidecar && npm run build && electron-builder --win",
     "lint": "eslint . --format json",
     "lint:pretty": "eslint .",
-    "postinstall": "node scripts/patch-node-pty-spectre.mjs && electron-builder install-app-deps && node scripts/copy-tree-sitter-wasms.js"
+    "postinstall": "node scripts/patch-node-pty-spectre.mjs && electron-builder install-app-deps"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",
@@ -57,10 +57,8 @@
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "tree-sitter-wasms": "^0.1.13",
     "unpdf": "^1.8.1",
     "uuid": "^11.1.1",
-    "web-tree-sitter": "^0.24.0",
     "ws": "^8.21.1",
     "zustand": "^4.5.5"
   },

@@ -9,7 +9,10 @@ if (-not (Test-Path $binary)) {
 $requests = @(
     '{"id":1,"method":"health","params":{}}',
     '{"id":2,"method":"capabilities","params":{}}',
-    '{"id":3,"method":"shutdown","params":{}}'
+    '{"id":3,"method":"tokensCount","params":{"text":"Hello, world!"}}',
+    '{"id":4,"method":"tokensTruncate","params":{"text":"one two three four","maxTokens":2}}',
+    '{"id":5,"method":"symbols","params":{"path":"src/ast.rs","skipReferences":true}}',
+    '{"id":6,"method":"shutdown","params":{}}'
 ) -join "`n"
 
 # PowerShell 5.1 can emit a UTF-8 BOM when piping strings. The runtime accepts

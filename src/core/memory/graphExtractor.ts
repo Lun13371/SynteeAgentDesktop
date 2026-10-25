@@ -19,7 +19,7 @@ import { AIClient } from '../ai/AIClient'
 import { extractJsonFromLlmResponse } from '../context/fastContext/annotator'
 import { getFastContextEntries, type FastContextEntry } from '../db/fastContextStore'
 import { getDB } from '../db/handle'
-import type { FileSymbols } from '../context/fastContext/symbols'
+import type { FileSymbols } from '../context/fastContext/types'
 import {
   upsertNode,
   upsertEdge,
