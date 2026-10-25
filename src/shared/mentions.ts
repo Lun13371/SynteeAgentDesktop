@@ -64,6 +64,37 @@ export function findMentionTokenAtCaret(
   return null
 }
 
+/**
+ * То же, что findMentionTokenAtCaret, но для больших текстов: сканирует только
+ * ОКНО перед кареткой (window символов), возвращая абсолютные индексы.
+ *
+ * Зачем: в инпут можно вставить лог/JSON/base64 на сотни КБ. Проход назад до
+ * пробела по такой строке (когда пробелов нет) — линейный проход на КАЖДЫЙ
+ * ввод, лишний фриз. @токен (имя файла/чата) заведомо короче окна.
+ *
+ * Результат идентичен findMentionTokenAtCaret(text, caretPos), кроме случая
+ * токена длиннее окна — там возвращается null (это уже не mention-запрос).
+ */
+export function findMentionTokenNearCaret(
+  text: string,
+  caretPos: number,
+  window: number = 512,
+): { start: number; end: number; query: string } | null {
+  if (caretPos <= 0) return null
+  const from = Math.max(0, caretPos - window)
+  if (from === 0) return findMentionTokenAtCaret(text, caretPos)
+  const win = text.slice(from, caretPos)
+  const token = findMentionTokenAtCaret(win, win.length)
+  if (!token) return null
+  if (token.start === 0) {
+    // @ на самом краю окна: символ ПЕРЕД окном берём из полного текста —
+    // иначе «foo@bar» в середине строки ложно распознался бы как mention.
+    const prev = text[from - 1]
+    if (prev !== ' ' && prev !== '\n' && prev !== '\t' && prev !== '\r') return null
+  }
+  return { start: token.start + from, end: token.end + from, query: token.query }
+}
+
 // ── Fuzzy-матчинг ────────────────────────────────────────────────────────────
 
 /**
