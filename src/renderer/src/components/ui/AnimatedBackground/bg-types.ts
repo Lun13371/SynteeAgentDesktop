@@ -43,6 +43,14 @@ export type BgMessage =
   | { type: 'disable' }
   | { type: 'destroy' }
 
+/**
+ * Сообщение worker → main-thread: фон готов (первый кадр отрисован ИЛИ
+ * рендерить нечего — стиль 'none'/шейдер не собрался). Boot-gate в App.tsx
+ * держит сплэш до этого сигнала, иначе UI показывается на «голом» фоне,
+ * пока worker компилирует шейдер (150–600мс на первом запуске).
+ */
+export type BgReadyMessage = { type: 'ready' }
+
 export const FALLBACK_RGB: [number, number, number] = [1, 1, 1]
 
 /** Приглушённость по умолчанию — объём финального цвета умножается на это. */

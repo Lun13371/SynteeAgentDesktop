@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, memo, useMemo, useCallback } from 'react'
+﻿import { useState, useEffect, useRef, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
@@ -155,14 +155,17 @@ export interface ToolChainSection {
 // Схлопываем длинные цепочки однотипных тулов (6 read_file подряд) в
 // одну раскрывающуюся группу. Только в финальном состоянии (!isRunning),
 // чтобы во время live-прогона не дезориентировать внезапным коллапсом.
-const NO_GROUP_TOOLS = new Set(['spawn_agent', 'ask_user', 'update_todo'])
+// get_fast_context и spawn_agent не группируем: у них внутри ленты живут
+// собственные карточки (FastContextBlock / карточка саб-агента) — в группе
+// они бы исчезли вместе с телом шага.
+const NO_GROUP_TOOLS = new Set(['spawn_agent', 'ask_user', 'update_todo', 'get_fast_context'])
 
 type ChainEntry =
-  | { kind: 'thinking'; key: string; text: string; ms?: number }
-  | { kind: 'text'; key: string; text: string }
-  | { kind: 'single'; key: string; iter: Iteration }
-  | { kind: 'group'; key: string; meta: ReturnType<typeof getToolMeta>; iters: Iteration[] }
-  | { kind: 'steer'; key: string; step: ToolStep }
+  | { kind: 'thinking'; key: string; text: string; ms?: number; si: number }
+  | { kind: 'text'; key: string; text: string; si: number }
+  | { kind: 'single'; key: string; iter: Iteration; si: number }
+  | { kind: 'group'; key: string; meta: ReturnType<typeof getToolMeta>; iters: Iteration[]; si: number }
+  | { kind: 'steer'; key: string; step: ToolStep; si: number }
 
 /**
  * §steer — шаги итерации в ХРОНОЛОГИЧЕСКОМ порядке: обычные тулы группируются
@@ -200,14 +203,14 @@ function buildChain(
   const flat: ChainEntry[] = []
   sectionIters.forEach((iters, si) => {
     const sec = sections[si] ?? {}
-    if (sec.thinking) flat.push({ kind: 'thinking', key: `th-${si}`, text: sec.thinking, ms: sec.thinkingMs })
-    if (sec.text) flat.push({ kind: 'text', key: `tx-${si}`, text: sec.text })
+    if (sec.thinking) flat.push({ kind: 'thinking', key: `th-${si}`, text: sec.thinking, ms: sec.thinkingMs, si })
+    if (sec.text) flat.push({ kind: 'text', key: `tx-${si}`, text: sec.text, si })
     // §steer: идём по raw-steps секции, чтобы карточка реплики встала на своё
     // место в ленте. Для секций без steer результат идентичен iters.
     const items = sec.steps ? buildSectionItems(sec.steps) : iters.map(iter => ({ kind: 'iter' as const, iter }))
     for (const item of items) {
-      if (item.kind === 'steer') flat.push({ kind: 'steer', key: `steer-${item.step.id}`, step: item.step })
-      else flat.push({ kind: 'single', key: item.iter.id, iter: item.iter })
+      if (item.kind === 'steer') flat.push({ kind: 'steer', key: `steer-${item.step.id}`, step: item.step, si })
+      else flat.push({ kind: 'single', key: item.iter.id, iter: item.iter, si })
     }
   })
   if (isRunning) return flat
@@ -225,12 +228,13 @@ function buildChain(
       while (j < flat.length && flat[j].kind === 'single' && (flat[j] as { iter: Iteration }).iter.call.toolName === name) j++
     }
     if (!noGroup && j - i >= 3) {
-      const slice = flat.slice(i, j) as Array<{ kind: 'single'; iter: Iteration }>
+      const slice = flat.slice(i, j) as Array<{ kind: 'single'; iter: Iteration; si: number }>
       out.push({
         kind: 'group',
         key: `group-${entry.iter.id}`,
         meta: getToolMeta(name, entry.iter.call.serverName),
         iters: slice.map(s => s.iter),
+        si: entry.si,
       })
     } else {
       for (let k = i; k < j; k++) out.push(flat[k])
@@ -445,21 +449,22 @@ const DiffBlock = memo(function DiffBlock({ diff }: { diff: string }) {
 
 // Один блок итерации
 const IterationBlock = memo(function IterationBlock({
-  iter, isLast, isRunning, mode, defaultOpen, liveSessionId, animateEntrance,
+  iter, isLast, isRunning, mode, liveSessionId, animateEntrance, autoOpen,
 }: {
   iter: Iteration
   isLast: boolean
   isRunning: boolean
   mode: ToolOutputMode
-  defaultOpen: boolean
   liveSessionId?: string
   // Entrance-анимация только у последнего (нового) шага живой ленты.
   // Раньше флаг стоял у всех и каскадная задержка index*0.04 давала до 4с
   // «пустоты» при раскрытии длинной цепочки, а смена флага перезапускала
   // анимацию у всех шагов разом.
   animateEntrance: boolean
+  // Шаг в «окне» последних N действий живой ленты — тело раскрыто
+  // автоматически. Старые шаги выпадают из окна и плавно сворачиваются.
+  autoOpen: boolean
 }) {
-  const [open, setOpen] = useState(defaultOpen)
   const remeasure = useChatRemeasure()
   const meta = getToolMeta(iter.call.toolName, iter.call.serverName)
   const failed = iter.result?.success === false
@@ -487,23 +492,32 @@ const IterationBlock = memo(function IterationBlock({
   // Незавершённый/неудачный визуальный анализ — вместо зелёной галочки.
   const vaUnresolved = vaPending || vaFailed
 
-  // Авто-раскрытие тела на время выполнения и авто-сворачивание после него.
-  // Раньше тело только раскрывалось (prevRunning → setOpen(true)) и никогда не
-  // закрывалось: последний шаг оставался развёрнутым, и в готовом ответе вывод
-  // команды/diff продолжал занимать место в чате. Теперь активный шаг открыт,
-  // а после завершения схлопывается — остаётся только строка шага.
-  // Ручной клик по хедеру снимает autoOpened → выбор пользователя не перебиваем.
-  const active = running || pending || analyzing
-  const autoOpened = useRef(defaultOpen)
+  // ── Раскрытие тела: «окно последних N шагов» ──────────────────────────
+  // Раньше тело открывалось по таймеру на каждый шаг и закрывалось по его
+  // завершении — при быстрых тулах получалось «открылось и мгновенно
+  // схлопнулось», плюс каждый шаг дёргал свою анимацию.
+  // Теперь состояние ПРОИЗВОДНОЕ от позиции в ленте: последние AUTO_OPEN_LAST
+  // шагов раскрыты, более старые автоматически сворачиваются (плавно, через
+  // exit-анимацию AnimatePresence). Ручной клик перекрывает авто-режим и
+  // больше не перебивается.
+  const [manual, setManual] = useState<boolean | null>(null)
+  // Отложенное включение авто-раскрытия на кадр: тело монтируется закрытым и
+  // раскрывается уже анимированно (maxHeight 0→auto), а не «выскакивает».
+  const [autoOpenNow, setAutoOpenNow] = useState(false)
   useEffect(() => {
-    if (active && !autoOpened.current) {
-      setOpen(true)
-      autoOpened.current = true
-    } else if (!active && autoOpened.current) {
-      setOpen(false)
-      autoOpened.current = false
-    }
-  }, [active])
+    if (!autoOpen) return undefined
+    const raf = requestAnimationFrame(() => setAutoOpenNow(true))
+    return () => cancelAnimationFrame(raf)
+  }, [autoOpen])
+
+  // open производный: выпал из окна (autoOpen=false) → закрыт, без setState
+  // в эффекте — закрытие идёт exit-анимацией AnimatePresence.
+  const open = manual ?? (autoOpen && autoOpenNow)
+  const toggleOpen = useCallback(() => {
+    // Клик пользователя фиксирует выбор — авто-режим больше не применяется
+    // к этому шагу (захотел развернул, захотел свернул).
+    setManual(o => !(o ?? (autoOpen && autoOpenNow)))
+  }, [autoOpen, autoOpenNow])
 
   // НЕТ авто-раскрытия при сбое: в больших чатах failed-итерации при скролле
   // монтировали полные тела (подсветка/diff) → фризы. Ошибка видна по бейджу
@@ -561,7 +575,7 @@ const IterationBlock = memo(function IterationBlock({
       <div className="tc2-iter-body">
         <button
           className={`tc2-iter-header ${open ? 'tc2-iter-header--open' : ''} ${failed ? 'tc2-iter-header--fail' : ''} ${(running || pending || analyzing) ? 'tc2-iter-header--running' : ''}`}
-          onClick={() => { autoOpened.current = false; setOpen(o => !o) }}
+          onClick={toggleOpen}
         >
           <span className="tc2-iter-icon" style={{ color: meta.color }}>
             <AppIcon name={meta.icon as 'zap'} size="sm" />
@@ -813,12 +827,20 @@ const IterationBlock = memo(function IterationBlock({
     </div>
   )
 }, (prev, next) => prev.iter === next.iter && prev.isLast === next.isLast &&
-  prev.isRunning === next.isRunning && prev.mode === next.mode && prev.defaultOpen === next.defaultOpen &&
-  prev.liveSessionId === next.liveSessionId && prev.animateEntrance === next.animateEntrance)
+  prev.isRunning === next.isRunning && prev.mode === next.mode &&
+  prev.liveSessionId === next.liveSessionId && prev.animateEntrance === next.animateEntrance &&
+  prev.autoOpen === next.autoOpen)
 
 // Сколько итераций показываем при раскрытии цепочки и шаг догрузки.
 const ITERS_PAGE = 15
 const ITERS_CHUNK = 10
+
+// ── Тайминги раскрытия тела шага ───────────────────────────────────
+// AUTO_OPEN_LAST: сколько последних действий держим раскрытыми в живой ленте.
+// Более старые сворачиваются автоматически (плавно) — «аккордеон»: видно
+// текущий контекст работы, а не простыню из всех шагов. Пользователь всегда
+// может раскрыть любой старый шаг кликом — ручной выбор авто-режим не трогает.
+const AUTO_OPEN_LAST = 3
 
 // ── Живая шапка с тикающим таймером ─────────────────────────────────
 // Вынесена в отдельный memo-компонент: setInterval 1s ре-рендерит только
@@ -919,8 +941,8 @@ const GroupBlock = memo(function GroupBlock({
                   isLast={i === iters.length - 1}
                   isRunning={false}
                   mode={mode}
-                  defaultOpen={false}
                   animateEntrance={false}
+                  autoOpen={false}
                 />
               ))}
             </motion.div>
@@ -1017,7 +1039,7 @@ const ToolChips = memo(function ToolChips({
   prev.toolsStr === next.toolsStr,
 )
 
-const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, busy, label, elapsed, summary, toolProgress, thinkingText, thinkingMs, liveThinking, chatId }: {
+const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, busy, label, elapsed, summary, toolProgress, thinkingText, thinkingMs, liveThinking, chatId, renderIterExtra }: {
   steps?: ToolStep[]
   /** Полная лента сообщения: итерации с их рассуждениями. Приоритетнее steps. */
   sections?: ToolChainSection[]
@@ -1038,6 +1060,14 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
   thinkingMs?: number
   /** Текущее стримящееся рассуждение — последней строкой ленты (isLive). */
   liveThinking?: { isLive: boolean; ms?: number; storeChatId?: string }
+  /** Дополнительный контент под конкретной итерацией (внутри ленты):
+   *  карточка Fast Context, карточка саб-агента и т.п. Раньше такие блоки
+   *  рендерились снаружи, рядом с плашкой, и разрывали «ход работы».
+   *  iter — именно эта итерация (call+result): решение, рисовать ли блок,
+   *  принимается по её шагу, иначе карточка дублировалась бы под каждым
+   *  шагом секции. isLastSection — последняя ли секция сообщения
+   *  (для live-прогресса долгих тулов). */
+  renderIterExtra?: (iter: { call: ToolStep; result?: ToolStep }, isLastSection: boolean) => React.ReactNode
 }) {
   // sections — единая лента сообщения (одна шапка на все итерации).
   // steps — legacy/одиночная цепочка (карточка агента, сообщение без iterations).
@@ -1286,12 +1316,8 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
     if (el) el.scrollTop = el.scrollHeight
   }, [collapsed, isRunning])
 
-  // Map id→index для быстрого определения isLast/defaultOpen.
-  const iterIndexMap = useMemo(() => {
-    const m = new Map<string, number>()
-    iters.forEach((iter, i) => m.set(iter.id, i))
-    return m
-  }, [iters])
+  // Map id→index больше не нужен (defaultOpen убран) — isLast считается
+  // по позиции в видимой ленте.
 
   // Лента нужна и без тулов: чистый reasoning/текст перед первым вызовом.
   const hasThinking = !!thinkingText || !!allSections.some(s => s.thinking) ||
@@ -1435,23 +1461,35 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
                 )
               }
               const iter = entry.iter
-              const origIdx = iterIndexMap.get(iter.id) ?? 0
               const isLastVisible = vIdx === visibleChain.length - 1
+              // «Окно» последних AUTO_OPEN_LAST действий: они раскрыты, более
+              // старые сворачиваются. Считаем от конца ленты, чтобы новый шаг
+              // вытеснял самый старый.
+              const fromEnd = visibleChain.length - 1 - vIdx
+              // Дополнительный контент под шагом (Fast Context / карточка
+              // саб-агента) — ВНУТРИ ленты, сразу под своей итерацией.
+              // Передаём САМУ итерацию: иначе карточка рисовалась бы под
+              // каждым шагом секции (шаги секции одинаковы для всех её итераций).
+              const extra = renderIterExtra
+                ? renderIterExtra(iter, entry.si === allSections.length - 1)
+                : null
               return (
-                <IterationBlock
-                  key={iter.id}
-                  iter={iter}
-                  isLast={isLastVisible}
-                  isRunning={!!isRunning}
-                  mode={mode}
-                  defaultOpen={!!isRunning && origIdx === iters.length - 1}
-                  liveSessionId={runCmdActive && iter.call.toolName === 'run_command' && !iter.result ? runCmdSessionId : undefined}
-                  // Анимация появления — ТОЛЬКО у последнего (только что
-                  // добавленного) шага. Раньше флаг стоял у всех: при любом
-                  // ре-рендере/смене флага класс пересоздавался и анимация
-                  // перезапускалась у всей ленты разом.
-                  animateEntrance={liveMode && isLastVisible}
-                />
+                <Fragment key={iter.id}>
+                  <IterationBlock
+                    iter={iter}
+                    isLast={isLastVisible}
+                    isRunning={!!isRunning}
+                    mode={mode}
+                    liveSessionId={runCmdActive && iter.call.toolName === 'run_command' && !iter.result ? runCmdSessionId : undefined}
+                    // Анимация появления — ТОЛЬКО у последнего (только что
+                    // добавленного) шага. Раньше флаг стоял у всех: при любом
+                    // ре-рендере/смене флага класс пересоздавался и анимация
+                    // перезапускалась у всей ленты разом.
+                    animateEntrance={liveMode && isLastVisible}
+                    autoOpen={liveMode && fromEnd < AUTO_OPEN_LAST}
+                  />
+                  {extra && <div className="tc2-iter-extra">{extra}</div>}
+                </Fragment>
               )
             })}
 
@@ -1515,9 +1553,9 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
 }, (prev, next) => prev.steps === next.steps && prev.sections === next.sections && prev.mode === next.mode &&
   prev.isRunning === next.isRunning && prev.busy === next.busy && prev.label === next.label &&
   prev.elapsed === next.elapsed && prev.summary === next.summary &&
-  prev.chatId === next.chatId &&
   prev.toolProgress === next.toolProgress &&
   prev.thinkingText === next.thinkingText && prev.thinkingMs === next.thinkingMs &&
-  prev.liveThinking === next.liveThinking)
+  prev.liveThinking === next.liveThinking && prev.chatId === next.chatId &&
+  prev.renderIterExtra === next.renderIterExtra)
 
 export default ToolChain

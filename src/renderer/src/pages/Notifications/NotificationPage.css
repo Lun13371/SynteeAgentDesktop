@@ -58,7 +58,13 @@ html:has(.notif-root) #root {
     0 0 0 1px rgba(255, 255, 255, 0.03) inset;
   overflow: hidden;
   position: relative;
-  will-change: transform, width, height, border-radius, opacity;
+  /* Только композиторные свойства: раньше здесь были width/height — они
+     заставляли держать и пере-растрировать слой с filter: blur(28px)
+     каждый кадр морфа. Анимация размера работает и без will-change. */
+  will-change: transform, opacity;
+  /* Изоляция перерисовки: содержимое карточки не инвалидирует соседей
+     (обрезано overflow:hidden и так). */
+  contain: paint;
   transform: translateZ(0);
   isolation: isolate;
   /* originY: 0 — morph-ит от верхнего края (как капля падает и растекается) */

@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense, type ComponentType } from 'react'
+import { useEffect, useState, useCallback, lazy, Suspense, type ComponentType } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useUIStore, isValidTab, type RightPanelTab } from './store/ui.store'
 import { useRightPanelTabsStore } from './store/rightPanelTabs.store'
@@ -82,6 +82,7 @@ const LoginScreen = lazyWithReload(() => import('./pages/Login/LoginScreen'))
 // показывало Suspense fallback (BootScreen) при первом уведомлении.
 import NotificationPage from './pages/Notifications/NotificationPage'
 import BootScreen from './components/ui/BootScreen/BootScreen'
+import AppIcon from './components/ui/AppIcon/AppIcon'
 import './components/ui/BootScreen/BootScreen.css'
 import TitleBar from './components/layout/TitleBar/TitleBar'
 import ToastContainer from './components/ui/Toast/Toast'
@@ -587,6 +588,14 @@ export default function App() {
   // (двойной rAF). BootScreen не запускает exit пока это false, иначе crossfade
   // покажет пустой/недоотрисованный контейнер вместо готового UI.
   const [uiPainted, setUiPainted] = useState(false)
+  // bgReady — анимированный фон отрисовал первый кадр (сигнал из bg.worker
+  // через AnimatedBackground.onReady) ИЛИ рендерить нечего. Без этого сплэш
+  // снимался раньше, чем компилировался шейдер: пользователь видел голый
+  // --body-bg, а через 150–600мс «включался» фон.
+  const [bgReady, setBgReady] = useState(false)
+  // imageReady — фото-фон (bgImage) декодирован, не будет pop-in картинки
+  // после исчезновения сплэша.
+  const [imageReady, setImageReady] = useState(false)
   // minBootShown — минимум ~500мс показа BootScreen, чтобы он не мелькал
   // одним кадром при быстрых загрузках (SQLite IPC ~30-60мс).
   const [minBootShown, setMinBootShown] = useState(false)
@@ -594,6 +603,10 @@ export default function App() {
   // Гейтит исчезновение BootScreen в app-режиме: app-обёртка может отрисоваться
   // раньше, чем ChatPage внутри (virtualizer, sidebar) отрисует данные из store.
   const bootRendered = useChatStore(s => s.bootRendered)
+  // Колбэк для AnimatedBackground: шейдер отрисовал первый кадр.
+  // useCallback — чтобы не менять проп на каждый рендер App (worker при этом
+  // не пересоздаётся: компонент хранит колбэк в ref).
+  const handleBgReady = useCallback(() => setBgReady(true), [])
 
   const mainPage = useNavStore(s => s.mainPage)
   const toggleMainPage = useNavStore(s => s.toggleMainPage)
@@ -820,6 +833,39 @@ export default function App() {
     const t = setTimeout(() => setMinBootShown(true), 500)
     return () => clearTimeout(t)
   }, [])
+
+  // ── Фото-фон: ждём декодирования картинки ─────────────────────────────
+  // applyBgImageToDOM ставит background-image на слой, но браузер декодирует
+  // файл асинхронно → на большом фото это заметный кадр «пустого» фона сразу
+  // после исчезновения сплэша. Декодируем заранее тем же dataURL (кэш общий
+  // с applyBgImageToDOM — второй раз файл с диска не читается).
+  // Фото нет/выключено — эффект ничего не делает: гейт учитывает это сам
+  // (needImageGate), без setState прямо в теле эффекта.
+  useEffect(() => {
+    if (!settingsReady) return
+    const st = useUIStore.getState()
+    const bg = (st.bgImageEnabled ? st.bgImage : null) as { src?: string } | null
+    const src = bg?.src
+    if (!src) return
+    let cancelled = false
+    const preload = async () => {
+      try {
+        let url = src
+        if (url.startsWith('bg-images://')) {
+          const cached = bgDataUrlCache.get(url) ?? (await window.syntee.bgImage.load(url)) ?? undefined
+          if (!cached) return
+          bgDataUrlCache.set(src, cached)
+          url = cached
+        }
+        const img = new Image()
+        img.src = url
+        await img.decode()
+      } catch { /* битая/нечитаемая картинка — не держим сплэш */ }
+      finally { if (!cancelled) setImageReady(true) }
+    }
+    void preload()
+    return () => { cancelled = true }
+  }, [settingsReady])
 
   // При ресайзе окна — ре-клампим ширину панели. Адаптивный MAX:
   // маленькие окна (< 900px) → 50%, средние (< 1200px) → 55%, большие → 60%.
@@ -1439,10 +1485,20 @@ export default function App() {
   // Также сбрасываем bootRendered — ChatPage будет перемонтирован (с login-слоя
   // на app-слой), он снова должен подтвердить первый рендер, иначе BootScreen
   // уйдёт раньше, чем ChatPage отрисует данные вошедшего пользователя.
+  // bgReady/imageReady тоже сбрасываем: app-слой монтируется заново, worker
+  // фона и фото-слой стартуют с нуля — сплэш должен дождаться их снова.
   useEffect(() => {
     if (authUser && authBoot !== 'app') {
       window.syntee.settings.set('loginSkipped', false)
       useChatStore.getState().setBootRendered(false)
+      // Сброс флагов готовности фона: app-слой монтируется заново, worker фона
+      // и фото-слой стартуют с нуля — сплэш должен дождаться их снова.
+      // Синхронный setState здесь осознан: это смена «сессии» app-слоя,
+      // каскадный рендер ожидаем и происходит один раз на вход.
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setBgReady(false)
+      setImageReady(false)
+      /* eslint-enable react-hooks/set-state-in-effect */
       setAuthBoot('app')
     }
   }, [authUser, authBoot])
@@ -1522,13 +1578,6 @@ export default function App() {
     return cleanup
   }, [])
 
-  // Оверлей, голос, spotlight — отдельные окна (lazy-loaded)
-  const lazyFallback = <BootScreen status="Загрузка…" />
-  if (route === 'overlay') return <Suspense fallback={lazyFallback}><OverlayPage /></Suspense>
-  if (route === 'voice') return <Suspense fallback={lazyFallback}><VoicePage /></Suspense>
-  if (route === 'spotlight') return <Suspense fallback={lazyFallback}><SpotlightPage /></Suspense>
-  if (route === 'notifications') return <NotificationPage />
-
   // ── Boot gate: показываем BootScreen пока не готовы критичные данные ──────
   // settingsReady — visual settings (theme/accent/font) применены к DOM,
   //                 иначе UI мелькнёт с default темой.
@@ -1537,23 +1586,48 @@ export default function App() {
   // authBoot === 'app' && !modelsReady — модели gateway грузятся (до 8с).
   // fontsReady — веб-шрифты загружены, не будет FOUT после исчезновения сплэша.
   // minBootShown — минимум 500мс показа BootScreen, чтобы он не мелькал.
-  // uiPainted — основной UI сделал первый layout; BootScreen не уходит раньше.
+  // bgReady — анимированный фон отрисовал первый кадр (шейдер собран).
+  // imageReady — фото-фон декодирован.
   // Замечание: при браузер-логине authBoot меняется 'login'→'app', и в этот
   // момент dataReady/modelsReady ещё false → bootDone падает в false →
   // BootScreen сам повторно показывается (без отдельной postLoginLoading-логики).
   const dataBootDone = settingsReady
     && authBoot !== null
     && (authBoot !== 'app' || (dataReady && modelsReady))
-  const bootDone = dataBootDone && fontsReady && minBootShown
+
+  // ДВА отдельных флага вместо одного:
+  //  appLayerMounted — UI-слой можно МОНТИРОВАТЬ (он под непрозрачным
+  //    сплэшем, пользователь его не видит). Монтируем раньше, чтобы
+  //    AnimatedBackground успел скомпилировать шейдер, а ChatPage — отрисовать
+  //    данные, пока сплэш ещё на экране.
+  //  bootDone — сплэш можно СНИМАТЬ: данные + шрифты + первый кадр фона.
+  // Раньше это был один флаг: слой монтировался ровно в тик снятия сплэша,
+  // и worker фона стартовал уже «на глазах» пользователя (150–600мс голого
+  // --body-bg на первом запуске).
+  const appLayerMounted = dataBootDone
+  // Фото-фон включён? Если нет — ждать декодирование нечего, гейт сразу открыт.
+  // bgImage/bgImageEnabled — уже подписанные значения стора (см. выше),
+  // поэтому гейт пересчитывается при смене настроек без setState в эффекте.
+  const needImageGate = !!bgImage && bgImageEnabled
+  // В login-режиме фона/фото ещё нет (app-слой не смонтирован) — не ждём их.
+  const bgGate = authBoot === 'app' ? bgReady : true
+  const imageGate = authBoot === 'app' ? (!needImageGate || imageReady) : true
+  const bootDone = appLayerMounted && fontsReady && minBootShown && bgGate && imageGate
   const bootStatus = !settingsReady
     ? 'Загрузка интерфейса…'
     : authBoot === null
       ? 'Проверка авторизации…'
-      : !dataReady
+      : authBoot === 'app' && !dataReady
         ? 'Загрузка чатов…'
-        : !modelsReady
+        : authBoot === 'app' && !modelsReady
           ? 'Загрузка моделей…'
-          : 'Готово'
+          : !fontsReady
+            ? 'Подготовка шрифтов…'
+            : authBoot === 'app' && needImageGate && !imageReady
+              ? 'Подготовка фона…'
+              : authBoot === 'app' && !bgReady
+                ? 'Отрисовка фона…'
+                : 'Готово'
   // BootScreen остаётся, пока не готовы данные ИЛИ UI ещё не отрисован.
   // uiPainted гейтит момент запуска exit-анимации — app-обёртка должна быть
   // отрисована, иначе crossfade покажет пустой контейнер.
@@ -1564,20 +1638,33 @@ export default function App() {
     || !uiPainted
     || (authBoot === 'app' && !bootRendered)
 
-  // Когда bootDone готов — даём UI-слою смонтироваться и зафиксировать первый
-  // layout (двойной rAF), только тогда помечаем uiPainted=true — BootScreen
-  // получает разрешение на exit. При повторном показе (браузер-логин) uiPainted
-  // сбрасывается, снова ждём отрисовку.
+  // Предохранители: сломанный WebGL/драйвер или битая картинка не должны
+  // держать сплэш вечно (тот же паттерн, что у auth 5с и моделей 8с).
+  // Стартуют только когда app-слой реально смонтирован.
   useEffect(() => {
-    if (bootDone) {
-      const raf2 = requestAnimationFrame(() => requestAnimationFrame(() => {
-        setUiPainted(true)
-      }))
-      return () => cancelAnimationFrame(raf2)
-    } else {
-      setUiPainted(false)
-    }
-  }, [bootDone])
+    if (!appLayerMounted || bgReady) return
+    const t = setTimeout(() => setBgReady(true), 2500)
+    return () => clearTimeout(t)
+  }, [appLayerMounted, bgReady])
+
+  useEffect(() => {
+    if (!appLayerMounted || imageReady || !needImageGate) return
+    const t = setTimeout(() => setImageReady(true), 3000)
+    return () => clearTimeout(t)
+  }, [appLayerMounted, imageReady, needImageGate])
+
+  // Когда app-слой смонтирован — даём ему зафиксировать первый layout
+  // (двойной rAF), только тогда помечаем uiPainted=true — BootScreen получает
+  // разрешение на exit. uiPainted не сбрасываем: сплэш всё равно удерживается
+  // bootDone (данные + фон) и bootRendered (ChatPage), а при login→app они
+  // сбрасываются сами.
+  useEffect(() => {
+    if (!appLayerMounted) return
+    const raf2 = requestAnimationFrame(() => requestAnimationFrame(() => {
+      setUiPainted(true)
+    }))
+    return () => cancelAnimationFrame(raf2)
+  }, [appLayerMounted, authBoot])
 
   // Boot-маркер: попадает в stderr только при --enable-logging. Нужен для
   // smoke-тестов релизных сборок (V8-байткод/обфускация): по нему видно, что
@@ -1587,25 +1674,42 @@ export default function App() {
     if (bootDone) console.log('[boot] UI ready — BootScreen dismissed')
   }, [bootDone])
 
-  // .app-root монтируется только когда bootDone=true (виден в JSX ниже).
-  // applyBgImageToDOM ищет .app-root и если его нет — ничего не делает.
+  // .app-root монтируется только когда appLayerMounted=true (виден в JSX ниже).
+  // applyBgImageToDOM ищет .app-root и если его нет — рисует на body.
   // На старте applyVisualSettings зовёт applyBgImageToDOM ещё ДО того,
-  // как bootDone стал true → .app-root нет → картинка не применяется.
-  // После setSettingsReady → bootDone=true → .app-root монтируется, но
-  // bgImage в Zustand уже установлен и не меняется → useEffect
-  // [bgImage, bgImageEnabled] не ре-триггерится → картинка не появлялась
-  // до ручного toggle в настройках. Этот эффект ре-применяет bg, когда
-  // .app-root появляется.
+  // как appLayerMounted стал true → .app-root нет → картинка не применяется
+  // к нему. После монтирования bgImage в Zustand уже установлен и не меняется
+  // → useEffect [bgImage, bgImageEnabled] не ре-триггерится → картинка не
+  // появлялась до ручного toggle в настройках. Этот эффект переносит слой
+  // на .app-root, когда тот появляется (до снятия сплэша — без pop-in).
   useEffect(() => {
-    if (!bootDone) return
+    if (!appLayerMounted) return
     const st = useUIStore.getState()
     if (st.bgImage) applyBgImageToDOM(st.bgImageEnabled ? st.bgImage : null)
-  }, [bootDone])
+  }, [appLayerMounted])
+
+  // Лёгкий fallback для lazy-страниц внутри уже открытого приложения.
+  // Раньше здесь стоял полноэкранный BootScreen (z-index 9999): первый вход
+  // в Settings/Memory мигал сплэшем ПОВЕРХ готового UI.
+  const pageFallback = (
+    <div className="page-suspense-fallback">
+      <AppIcon name="loader" size="sm" animation="spin" />
+    </div>
+  )
+
+  // Оверлей, голос, spotlight — отдельные окна (lazy-loaded).
+  // Ранние return'ы стоят ПОСЛЕ всех хуков: иначе хвостовые useEffect
+  // выполнялись бы только в главном окне (rules-of-hooks).
+  const lazyFallback = <BootScreen status="Загрузка…" />
+  if (route === 'overlay') return <Suspense fallback={lazyFallback}><OverlayPage /></Suspense>
+  if (route === 'voice') return <Suspense fallback={lazyFallback}><VoicePage /></Suspense>
+  if (route === 'spotlight') return <Suspense fallback={lazyFallback}><SpotlightPage /></Suspense>
+  if (route === 'notifications') return <NotificationPage />
 
   return (
     <AnimatePresence mode="sync">
       {showBootScreen && <BootScreen key="boot" status={bootStatus} />}
-      {bootDone && authBoot === 'login' && (
+      {appLayerMounted && authBoot === 'login' && (
         <motion.div
           key="login"
           className="app-boot-layer"
@@ -1625,7 +1729,7 @@ export default function App() {
           </Suspense>
         </motion.div>
       )}
-      {bootDone && authBoot === 'app' && (
+      {appLayerMounted && authBoot === 'app' && (
         <motion.div
           key="app"
           className="app-boot-layer"
@@ -1634,7 +1738,9 @@ export default function App() {
           transition={{ duration: 0.5, ease: 'easeOut' }}
         >
           <div className="app-root">
-            <AnimatedBackground />
+            {/* onReady — сигнал boot-gate'у: шейдер фона собрал первый кадр
+                (или рендерить нечего). Сплэш не снимается раньше. */}
+            <AnimatedBackground onReady={handleBgReady} />
             <TitleBar
               onSettingsClick={() => toggleMainPage('settings')}
               onAgentClick={() => {
@@ -1653,7 +1759,7 @@ export default function App() {
                 {/* Chromium transitions rendered pixels, not cloned DOM or a
                     retained motion tree. Page portals unmount; chat stays alive. */}
                 <PageTransitionHost page={mainPage} chat={<ChatPage embedded />}>
-                  <Suspense fallback={<BootScreen status="Загрузка…" />}>
+                  <Suspense fallback={pageFallback}>
                     {mainPage === 'settings' ? <SettingsPage />
                       : mainPage === 'memory' ? <MemoryPage />
                       : mainPage === 'messenger' ? <MessengerPage />

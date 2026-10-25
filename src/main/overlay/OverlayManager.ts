@@ -78,8 +78,14 @@ export class OverlayManager {
     return this.hub.getWindow()
   }
 
-  captureHubScreen(): Promise<string | null> {
-    return this.hub.captureScreen()
+  /**
+   * Блюр-фон карточки уведомления: ОТДАЁМ КЭШ синхронно.
+   * Захват экрана (DXGI) идёт в фоне — при warmup и после скрытия хаба.
+   * В момент показа карточки захват стопорил бы композитор и лагал курсор,
+   * поэтому здесь его нет: renderer получает готовый кэш в том же кадре.
+   */
+  captureHubScreen(): string | null {
+    return this.hub.getCachedScreen()
   }
 
   // ── Мышь: единая политика click-through ─────────────────────────────
