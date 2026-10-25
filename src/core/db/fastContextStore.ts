@@ -1,4 +1,3 @@
-import { v4 as uuid } from 'uuid'
 import { getDB } from './handle'
 
 // === FAST CONTEXT INDEX ===
@@ -196,4 +195,66 @@ export function getTopFastContextFiles(projectId: string, limit = 10): Array<{
 export function getFastContextLastUpdated(projectId: string): number | null {
   const r = getDB().prepare(`SELECT MAX(updated_at) as m FROM fast_context_index WHERE project_id = ?`).get(projectId) as { m: number | null }
   return r.m ?? null
+}
+
+// === RUST SIDECAR INDEX (read-only mirrors of fast_context_sidecar_index) ===
+// The Rust sidecar owns this table; main reads it for UI status only.
+
+function sidecarTableAvailable(): boolean {
+  try {
+    const row = getDB().prepare(
+      `SELECT 1 as ok FROM sqlite_master WHERE type = 'table' AND name = 'fast_context_sidecar_index'`,
+    ).get() as { ok: number } | undefined
+    return row?.ok === 1
+  } catch {
+    return false
+  }
+}
+
+export function getSidecarIndexCount(projectId: string): number {
+  if (!sidecarTableAvailable()) return 0
+  const r = getDB().prepare(`SELECT COUNT(*) as n FROM fast_context_sidecar_index WHERE project_id = ?`).get(projectId) as { n: number }
+  return r.n
+}
+
+export function getSidecarLastUpdated(projectId: string): number | null {
+  if (!sidecarTableAvailable()) return null
+  const r = getDB().prepare(`SELECT MAX(updated_at) as m FROM fast_context_sidecar_index WHERE project_id = ?`).get(projectId) as { m: number | null }
+  return r.m ?? null
+}
+
+/** Последние проиндексированные Rust-индексом файлы. */
+export function getRecentSidecarFiles(projectId: string, limit = 10): Array<{
+  filePath: string
+  lang: string | null
+  rankedScore: number
+  updatedAt: number
+}> {
+  if (!sidecarTableAvailable()) return []
+  return getDB().prepare(`
+    SELECT file_path as filePath, lang, ranked_score as rankedScore, updated_at as updatedAt
+    FROM fast_context_sidecar_index
+    WHERE project_id = ?
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).all(projectId, limit) as Array<{ filePath: string; lang: string | null; rankedScore: number; updatedAt: number }>
+}
+
+/** Самые «важные» файлы по версии Rust-индекса (источники приоритетнее артефактов). */
+export function getTopSidecarFiles(projectId: string, limit = 10): Array<{
+  filePath: string
+  lang: string | null
+  rankedScore: number
+  relevanceBoost: number
+  updatedAt: number
+}> {
+  if (!sidecarTableAvailable()) return []
+  return getDB().prepare(`
+    SELECT file_path as filePath, lang, ranked_score as rankedScore,
+           relevance_boost as relevanceBoost, updated_at as updatedAt
+    FROM fast_context_sidecar_index
+    WHERE project_id = ?
+    ORDER BY CASE WHEN lang IN ('json','yaml','toml','markdown') THEN 1 ELSE 0 END, ranked_score DESC
+    LIMIT ?
+  `).all(projectId, limit) as Array<{ filePath: string; lang: string | null; rankedScore: number; relevanceBoost: number; updatedAt: number }>
 }

@@ -17,6 +17,7 @@ import { getToolSchemas } from '../../core/tools/index'
 import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
 import { initFastContextDb, initFastContextWasmDir } from '../../core/context/fastContext'
+import { teardownSidecar } from '../../core/context/fastContext/sidecarClient'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
 const storeData: Record<string, unknown> = workerData.storeData
@@ -270,6 +271,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       incognito,
       content,
     })
+    // This thread is done with Fast Context: stop its Rust sidecar child so it
+    // does not outlive the worker thread as an orphan process.
+    void teardownSidecar()
   }
 
   try {
@@ -558,6 +562,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               fileCacheUpdates: agent?.getFileCacheUpdates(),
               fileSnapshots: agent?.getFileSnapshots(),
             })
+            void teardownSidecar()
           },
           onContextUpdate: (info) => {
             const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
@@ -1021,6 +1026,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               type: 'error', chatId, error: err.message,
               fullText, thinkingText: thinkingText || undefined, thinkingMs,
             })
+            void teardownSidecar()
           },
           onRateLimit: (waitSec) => {
             send({ type: 'rate_limit', chatId, waitSec })

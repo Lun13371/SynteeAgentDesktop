@@ -1,8 +1,11 @@
 /**
  * Fast Context IPC — статус индекса, реиндекс, очистка, live progress.
  *
+ * Все данные индекса принадлежат Rust sidecar (`fast_context_sidecar_index`);
+ * main только читает их для UI. Отдельного TypeScript-бэкенда больше нет.
+ *
  * Каналы:
- *   fastcontext:getStatus  — { fileCount, lastUpdated, watcherActive, indexingInProgress, history, recentFiles, topFiles }
+ *   fastcontext:getStatus  — { fileCount, lastUpdated, watcherActive, history, recentFiles, topFiles, backend, sidecar }
  *   fastcontext:reindex    — запускает full reindex, прогресс через fastcontext:progress event
  *   fastcontext:clearIndex — очищает индекс проекта
  *   fastcontext:progress   — push event: { stage, detail, filesProcessed, filesTotal }
@@ -12,18 +15,18 @@ import { ipcMain, type BrowserWindow } from 'electron'
 import type Store from 'electron-store'
 import { IPC_EVENTS } from '../../shared/constants'
 import {
-  getFastContextIndexCount, getFastContextLastUpdated,
-  getIndexHistory, getRecentFastContextFiles, getTopFastContextFiles,
-  clearFastContextIndex, addIndexHistoryEvent, pruneIndexHistory,
+  getIndexHistory, addIndexHistoryEvent, pruneIndexHistory,
+  getSidecarIndexCount, getSidecarLastUpdated, getRecentSidecarFiles, getTopSidecarFiles,
 } from '../../core/db'
 import {
   setProgressCallback, setUpdatedCallback, setActiveProject,
-  isWatching, isIndexing, isQueued, forceReindex, setWatcherStore,
+  isWatching, forceReindex, setWatcherStore,
   autoStartLastProject, getLastScanAt,
 } from '../../core/context/fastContextWatcher'
 import { setActiveExtensionsProject, initExtensionsDetector } from '../../core/extensionsDetector'
 import { getProjectById } from '../../core/db'
 import { log } from '../../core/logger'
+import { sidecarStatus, sidecarClear, getSidecarProcesses } from '../../core/context/fastContext/sidecarClient'
 
 let _initialized = false
 
@@ -32,7 +35,7 @@ export function registerFastContextIPC(store: Store, getWindow: () => BrowserWin
   if (_initialized) return
   _initialized = true
 
-  // Передаём store в watcher — он читает indexingSettings (enabled/debounce/ignoreDirs/prewarm).
+  // Передаём store в watcher — он читает indexingSettings (enabled/ignoreDirs/лимиты).
   setWatcherStore(store)
 
   // Инициализируем extensions-детектор (для авто-подключения MCP и авто-включения
@@ -40,7 +43,7 @@ export function registerFastContextIPC(store: Store, getWindow: () => BrowserWin
   initExtensionsDetector(getWindow)
 
   // Автостарт watcher'а последнего активного проекта — индексация начинается
-  // сама, в фоне (worker thread), не дожидаясь пока пользователь откроет чат.
+  // сама, в фоне, не дожидаясь пока пользователь откроет чат.
   // registerChatIPC (регистрирует workdir'ы) уже отработал к этому моменту.
   autoStartLastProject()
 
@@ -73,38 +76,70 @@ export function registerFastContextIPC(store: Store, getWindow: () => BrowserWin
   })
 
   // Полный статус индекса для модалки
-  ipcMain.handle('fastcontext:getStatus', (_e, projectId: string) => {
-    const fileCount = getFastContextIndexCount(projectId)
-    const lastUpdated = getFastContextLastUpdated(projectId)
-    const watcherActive = isWatching(projectId)
-    const indexing = isIndexing(projectId)
-    const queued = isQueued(projectId)
+  ipcMain.handle('fastcontext:getStatus', async (_e, projectId: string) => {
+    const processes = getSidecarProcesses()
     const lastScanAt = getLastScanAt(projectId)
     const history = getIndexHistory(projectId, 50)
-    const recentFiles = getRecentFastContextFiles(projectId, 10)
-    const topFiles = getTopFastContextFiles(projectId, 10)
-    return { fileCount, lastUpdated, watcherActive, indexingInProgress: indexing, queued, lastScanAt, history, recentFiles, topFiles }
+    const watcherActive = isWatching(projectId)
+    try {
+      const rust = await sidecarStatus()
+      const rustFileCount = typeof rust.indexedFilesCount === 'number'
+        ? rust.indexedFilesCount
+        : getSidecarIndexCount(projectId)
+      return {
+        fileCount: rustFileCount,
+        lastUpdated: getSidecarLastUpdated(projectId),
+        watcherActive: rust.active,
+        indexingInProgress: false,
+        queued: false,
+        lastScanAt,
+        history,
+        recentFiles: getRecentSidecarFiles(projectId, 10),
+        topFiles: getTopSidecarFiles(projectId, 10),
+        backend: 'rust',
+        sidecar: rust,
+        sidecarProcesses: processes.holders.length,
+        sidecarDuplicate: processes.duplicate,
+        sidecarHolders: processes.holders,
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      log(`[fastContext:getStatus] Rust sidecar unavailable: ${message}`)
+      return {
+        fileCount: 0, lastUpdated: null, watcherActive, indexingInProgress: false,
+        queued: false, lastScanAt, history, recentFiles: [], topFiles: [],
+        backend: 'rust', unavailable: true, error: message,
+        sidecarProcesses: processes.holders.length, sidecarDuplicate: processes.duplicate,
+        sidecarHolders: processes.holders,
+      }
+    }
   })
 
   // Принудительный реиндекс.
-  // Ошибки НЕ глотаем: forceReindex кидает (workdir не найден, worker упал) —
+  // Ошибки НЕ глотаем: forceReindex кидает (workdir не найден, sidecar упал) —
   // renderer показывает их в модалке вместо тихого «ничего не произошло».
   ipcMain.handle('fastcontext:reindex', async (_e, projectId: string) => {
     try {
       await forceReindex(projectId)
-      return { ok: true }
+      return { ok: true, backend: 'rust' }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       log(`[fastContext:reindex] failed for ${projectId}: ${message}`)
-      return { ok: false, error: message }
+      return { ok: false, error: message, backend: 'rust' }
     }
   })
 
   // Очистка индекса
-  ipcMain.handle('fastcontext:clearIndex', (_e, projectId: string) => {
-    clearFastContextIndex(projectId)
-    addIndexHistoryEvent(projectId, 'clear', 0, 0, 0)
-    pruneIndexHistory(projectId, 50)
-    return { ok: true }
+  ipcMain.handle('fastcontext:clearIndex', async (_e, projectId: string) => {
+    try {
+      await sidecarClear(projectId)
+      addIndexHistoryEvent(projectId, 'clear', 0, 0, 0)
+      pruneIndexHistory(projectId, 50)
+      return { ok: true, backend: 'rust' }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      log(`[fastContext:clearIndex] Rust sidecar unavailable: ${message}`)
+      return { ok: false, error: message, backend: 'rust', unavailable: true }
+    }
   })
 }

@@ -1,26 +1,26 @@
 /**
- * Fast Context Watcher — thin layer в main-процессе: управляет worker lifecycle,
- * маршрутизирует IPC, планирует pre-warm. Тяжёлый CPU-ворк (tree-sitter, graph
- * sync) и fs.watch — в worker_thread (fastContext-worker.ts).
+ * Fast Context watcher — thin routing layer over the Rust sidecar.
  *
- * Main процесс НЕ выполняет CPU-тяжёлую работу и НЕ держит fs handles —
- * только IPC routing + history recording. UI не блокируется.
+ * There is exactly one backend: the Rust sidecar. File walking, hashing,
+ * symbol extraction, incremental updates and search all happen inside it; this
+ * module only routes lifecycle calls, records index history for the UI and
+ * forwards progress to the renderer.
  *
- * fs.watch(recursive: true) в worker: Windows ReadDirectoryChangesW — kernel
- * callback, 0% CPU в простое, один handle на дерево. На file change → debounce
- * → buildOrUpdateIndex напрямую в worker (без IPC round-trip).
- *
- * Pre-warm (full scan) откладывается на prewarmDelayMs после старта, чтобы не
- * конкурировать за CPU с загрузкой UI/проектов.
- *
- * История обновлений записывается в fast_context_index_history (последние 50).
+ * There is deliberately no TypeScript indexing/search/watch fallback: a missing
+ * or crashed sidecar surfaces as a typed SidecarError, so a broken backend is
+ * visible instead of silently degrading to a different implementation.
  */
-import { Worker } from 'worker_threads'
-import { join } from 'path'
-import { getIndexSettingsFromRecord, DEFAULT_INDEXING_SETTINGS, type IndexProgress, type IndexingSettings } from './fastContext'
 import {
-  addIndexHistoryEvent, pruneIndexHistory, getFastContextIndexCount, getProjectById,
+  sidecarStartWatching, sidecarStopWatching, sidecarForegroundBusy,
+  sidecarIndex, SidecarError, addSidecarFailureHandler, getSidecarAvailability,
+} from './fastContext/sidecarClient'
+import {
+  addIndexHistoryEvent, pruneIndexHistory, getProjectById,
 } from '../db'
+import {
+  getIndexSettingsFromRecord, DEFAULT_INDEXING_SETTINGS,
+  type IndexProgress, type IndexingSettings,
+} from './fastContext'
 import { log } from '../logger'
 import type Store from 'electron-store'
 
@@ -28,9 +28,13 @@ import type Store from 'electron-store'
 // из fastContext.ipc.ts при регистрации IPC. Без store используются дефолты.
 let _store: Store | null = null
 
-/** Установить store для чтения настроек индексации (enabled/debounce/ignoreDirs). */
+/** Установить store для чтения настроек индексации (enabled/ignoreDirs/лимиты). */
 export function setWatcherStore(store: Store): void {
   _store = store
+  addSidecarFailureHandler(error => {
+    log('[watcher] Rust sidecar unavailable (%s): %s', getSidecarAvailability(), error.message)
+    if (_activeProjectId) _onProgress?.(_activeProjectId, { stage: 'error', detail: error.message })
+  })
 }
 
 /** Читает текущие настройки индексации из store (с fallback на дефолты). */
@@ -44,194 +48,25 @@ function getSettings(): IndexingSettings {
   }
 }
 
-// ── Worker paths (устанавливаются из registerChatIPC) ─────────────────────────
-let _fastContextDbPath: string | null = null
-let _fastContextWasmDir: string | null = null
-
-/** Установить пути к БД и tree-sitter WASM — вызывается из registerChatIPC. */
-export function setFastContextPaths(dbPath: string, wasmDir: string): void {
-  _fastContextDbPath = dbPath
-  _fastContextWasmDir = wasmDir
-}
-
-// ── Worker singleton ────────────────────────────────────────────────────────
-let _worker: Worker | null = null
-let _workerJobId = 0
-const _workerPending = new Map<string, { resolve: () => void; reject: (e: Error) => void; projectId: string }>()
 let _foregroundBusy = false
 
 /**
- * Кооперативный сигнал для worker'а: активный чат не блокирует SQLite и не
- * прерывает транзакции, но low-priority indexing jobs уступают CPU/диск.
- * Не создаём worker только ради сигнала — состояние будет передано при старте.
+ * Кооперативный сигнал для sidecar: активный чат не блокирует SQLite и не
+ * прерывает транзакции, но low-priority индексация уступает CPU/диск.
  */
 export function setForegroundBusy(busy: boolean): void {
   if (_foregroundBusy === busy) return
   _foregroundBusy = busy
-  try { _worker?.postMessage({ type: 'foregroundBusy', busy }) } catch { /* worker завершается */ }
+  void sidecarForegroundBusy(busy).catch(error =>
+    log('[watcher] Rust foregroundBusy failed: %s', error instanceof Error ? error.message : String(error)))
 }
 
 export function isForegroundBusy(): boolean { return _foregroundBusy }
-
-function ensureWorker(): Worker {
-  if (_worker) return _worker
-  if (!_fastContextDbPath || !_fastContextWasmDir) {
-    throw new Error('fastContextWatcher: paths not set. Call setFastContextPaths() before starting watcher.')
-  }
-  const workerPath = join(__dirname, 'fastContext-worker.js')
-  _worker = new Worker(workerPath, {
-    workerData: {
-      fastContextDbPath: _fastContextDbPath,
-      fastContextWasmDir: _fastContextWasmDir,
-    },
-  })
-  // Replay the latest state in case the worker was restarted while a chat was
-  // already running. This is a hint only; no DB work is performed here.
-  _worker.postMessage({ type: 'foregroundBusy', busy: _foregroundBusy })
-  _worker.on('message', (msg: Record<string, unknown>) => {
-    const type = msg.type as string
-    const jobId = msg.jobId as string | undefined
-    if (type === 'progress') {
-      // Прогресс от worker → форвардим в renderer БЕЗ фильтра по активному
-      // проекту: renderer сам фильтрует по projectId (ProjectIndexModal).
-      // Раньше фильтр по _activeProjectId ронял события из-за гонки —
-      // setActive идёт отдельным async IPC и мог не успеть отработать.
-      const projectId = msg.projectId as string
-      const progress = msg.progress as IndexProgress
-      _onProgress?.(projectId, progress)
-      return
-    }
-    if (type === 'requestReindex') {
-      // Safety net в воркере нашёл >= 500 изменений — инкремент бессмыслен,
-      // нужен full reindex. Раньше он молча ждал full, который сам не приходил.
-      const projectId = msg.projectId as string
-      const workdir = (msg.workdir as string) || _projectWorkdirs.get(projectId)
-      if (projectId && workdir) {
-        void enqueueIndex({
-          type: 'index', projectId, workdir,
-          changedPaths: undefined, isFull: true, isPrewarm: false,
-        }).catch(() => { /* уже залогировано в processQueue */ })
-      }
-      return
-    }
-    if (type === 'scanCompleted') {
-      // Safety net прогон завершился (в т.ч. тихий, 0 изменений) — фиксируем
-      // время проверки для модалки («Последняя проверка»).
-      const scanProjectId = msg.projectId as string
-      if (scanProjectId) _lastScanAt.set(scanProjectId, Date.now())
-      return
-    }
-    if (type === 'done' || type === 'error') {
-      const pending = jobId ? _workerPending.get(jobId) : undefined
-      if (pending && jobId) {
-        _workerPending.delete(jobId)
-        if (type === 'done') pending.resolve()
-        else pending.reject(new Error((msg.message as string) || 'fastContext worker error'))
-      }
-      // Post-done обработка (history) — только для done.
-      if (type === 'done') {
-        const projectId = msg.projectId as string
-        const filesChanged = (msg.filesChanged as number) ?? 0
-        const durationMs = (msg.durationMs as number) ?? 0
-        const isFull = !!(msg.isFull as boolean)
-        // Откладываем через setImmediate, чтобы не блокировать маршрутизацию
-        // других worker-сообщений. Graph sync уже выполнен в воркере — здесь
-        // только лёгкая запись history + уведомление renderer.
-        setImmediate(() => {
-          handleWorkerDone(projectId, filesChanged, durationMs, isFull)
-        })
-      }
-      return
-    }
-    if (type === 'log') {
-      // Диагностические сообщения от worker (graph sync stats и т.д.).
-      log((msg.message as string) || '[fastContext-worker]')
-      return
-    }
-  })
-  _worker.on('error', (err) => {
-    console.error('[fastContextWatcher] worker error:', err.message)
-    for (const p of _workerPending.values()) p.reject(err)
-    _workerPending.clear()
-    _worker = null
-  })
-  _worker.on('exit', (code) => {
-    if (code !== 0) console.warn('[fastContextWatcher] worker exited with code', code)
-    for (const p of _workerPending.values()) p.reject(new Error('fastContext worker exited'))
-    _workerPending.clear()
-    _worker = null
-  })
-  return _worker
-}
-
-/** Завершить worker (при выходе из приложения). */
-export async function terminateFastContextWorker(): Promise<void> {
-  if (_worker) {
-    try { await _worker.terminate() } catch { /* ignore */ }
-    _worker = null
-    _workerPending.clear()
-  }
-}
-
-/** Отправить job в worker, вернуть Promise, который resolved на done. */
-function sendToWorker(job: {
-  type: 'index' | 'reindex'
-  projectId: string
-  workdir: string
-  changedPaths: string[] | undefined
-  isFull: boolean
-  isPrewarm: boolean
-}): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const jobId = String(++_workerJobId)
-    _workerPending.set(jobId, { resolve, reject, projectId: job.projectId })
-    try {
-      ensureWorker().postMessage({
-        type: job.type,
-        jobId,
-        projectId: job.projectId,
-        workdir: job.workdir,
-        changedPaths: job.changedPaths,
-        isFull: job.isFull,
-        isPrewarm: job.isPrewarm,
-        settings: getSettings(),
-      })
-    } catch (e) {
-      _workerPending.delete(jobId)
-      reject(e instanceof Error ? e : new Error(String(e)))
-    }
-  })
-}
-
-/** Отправить startWatching/stopWatching в worker (fire-and-forget, без Promise). */
-function sendWatcherCommand(cmd: {
-  type: 'startWatching' | 'stopWatching'
-  projectId: string
-  workdir?: string
-  ignoreDirs?: string[]
-}): void {
-  try {
-    const settings = getSettings()
-    ensureWorker().postMessage({
-      type: cmd.type,
-      jobId: `cmd-${++_workerJobId}`,
-      projectId: cmd.projectId,
-      workdir: cmd.workdir ?? '',
-      isFull: false,
-      isPrewarm: false,
-      settings,
-      ignoreDirs: cmd.ignoreDirs ?? settings.ignoreDirs,
-    })
-  } catch (e) {
-    log('[watcher] sendWatcherCommand failed: %s', e instanceof Error ? e.message : String(e))
-  }
-}
 
 // ── Watcher state ────────────────────────────────────────────────────────────
 interface WatcherEntry {
   projectId: string
   workdir: string
-  prewarmTimer: NodeJS.Timeout | null
 }
 
 const _watchers = new Map<string, WatcherEntry>()
@@ -239,84 +74,44 @@ const _projectWorkdirs = new Map<string, string>()
 let _activeProjectId: string | null = null
 let _onProgress: ((projectId: string, progress: IndexProgress) => void) | null = null
 let _onUpdated: ((projectId: string) => void) | null = null
-const _indexingProjects = new Set<string>()
-const _queuedProjects = new Set<string>()
 
-// Когда проект последний раз prewarm-ился в ЭТОЙ сессии приложения.
-// Кулдаун — чтобы переключение проектов туда-сюда не плодило full-сканы.
-const _lastPrewarmAt = new Map<string, number>()
-const PREWARM_SESSION_COOLDOWN_MS = 15 * 60_000
-
-// Timestamp последней проверки проекта фоном (safety net / prewarm / job done).
+// Timestamp последней проверки проекта фоном (index/watcher batch).
 // В отличие от lastUpdated (= когда менялись файлы), это «когда система
 // последний раз смотрела» — показывает живость фона в модалке.
 const _lastScanAt = new Map<string, number>()
+// Rust watcher emits no unsolicited stdout notifications. Poll its cheap status
+// endpoint so renderer/history still receive updates after native indexing.
+let _sidecarStatusTimer: ReturnType<typeof setInterval> | null = null
+let _sidecarLastBatches = 0
+let _sidecarLastFilesChanged = 0
 
-// ── Глобальная очередь индексации ────────────────────────────────────────────
-// Один job за раз в worker (worker однопоточный). Активный проект — приоритет.
-interface QueuedJob {
-  type: 'index' | 'reindex'
-  projectId: string
-  workdir: string
-  changedPaths: string[] | undefined
-  isFull: boolean
-  isPrewarm: boolean
-  resolve: () => void
-  reject: (e: Error) => void
-}
-const _indexQueue: QueuedJob[] = []
-let _queueRunning = false
-
-async function processQueue(): Promise<void> {
-  if (_queueRunning) return
-  _queueRunning = true
-  try {
-    while (_indexQueue.length > 0) {
-      // Приоритет: активный проект первым
-      const activeIdx = _activeProjectId
-        ? _indexQueue.findIndex(j => j.projectId === _activeProjectId)
-        : -1
-      const job = activeIdx >= 0
-        ? _indexQueue.splice(activeIdx, 1)[0]
-        : _indexQueue.shift()!
-      _queuedProjects.delete(job.projectId)
-      _indexingProjects.add(job.projectId)
-      try {
-        await sendToWorker(job)
-        job.resolve()
-      } catch (e) {
-        // Ошибка пробрасывается вызвавшему (forceReindex → IPC → renderer),
-        // а не глотается — иначе кнопка «Реиндексировать» молча ничего не делает.
-        const err = e instanceof Error ? e : new Error(String(e))
-        log('[watcher] job failed: %s', err.message)
-        _onProgress?.(job.projectId, { stage: 'error', detail: err.message })
-        job.reject(err)
-      } finally {
-        _indexingProjects.delete(job.projectId)
+function startSidecarStatusPolling(): void {
+  if (_sidecarStatusTimer) return
+  _sidecarStatusTimer = setInterval(() => {
+    void import('./fastContext/sidecarClient').then(({ sidecarStatus }) => sidecarStatus()).then(status => {
+      if (status.batches !== _sidecarLastBatches || status.filesChanged !== _sidecarLastFilesChanged) {
+        const changedDelta = Math.max(0, status.filesChanged - _sidecarLastFilesChanged)
+        _sidecarLastBatches = status.batches
+        _sidecarLastFilesChanged = status.filesChanged
+        const projectId = _activeProjectId
+        if (projectId) {
+          _lastScanAt.set(projectId, Date.now())
+          const indexedCount = typeof status.indexedFilesCount === 'number' ? status.indexedFilesCount : undefined
+          if (changedDelta > 0) recordHistory(projectId, 'incremental', changedDelta, 0, indexedCount)
+          _onUpdated?.(projectId)
+          _onProgress?.(projectId, { stage: 'done', detail: `${status.filesChanged} файлов обновлено Rust watcher` })
+        }
       }
-      // Пауза между проектами — даём CPU остыть
-      await new Promise<void>(r => setTimeout(r, 200))
-    }
-  } finally {
-    _queueRunning = false
-  }
+    }).catch(error => {
+      log('[watcher] Rust status poll failed: %s', error instanceof Error ? error.message : String(error))
+    })
+  }, 1000)
+  _sidecarStatusTimer.unref?.()
 }
 
-function enqueueIndex(job: Omit<QueuedJob, 'resolve' | 'reject'>): Promise<void> {
-  // Prewarm is disposable background work: if an equivalent scan is already
-  // waiting, coalesce it. Never coalesce explicit/reindex requests.
-  if (job.isPrewarm && _indexQueue.some(item => item.projectId === job.projectId && item.isPrewarm)) {
-    return Promise.resolve()
-  }
-  return new Promise<void>((resolve, reject) => {
-    _queuedProjects.add(job.projectId)
-    _indexQueue.push({ ...job, resolve, reject })
-    // Сразу сообщаем renderer'у, что job встал в очередь — иначе (глобальная
-    // очередь однопоточная, впереди может висеть долгий prewarm чужого проекта)
-    // кнопка выглядит мёртвой: indexingInProgress=false, прогресса нет.
-    _onProgress?.(job.projectId, { stage: 'indexing', detail: 'В очереди на индексацию...' })
-    void processQueue()
-  })
+function stopSidecarStatusPolling(): void {
+  if (_sidecarStatusTimer) clearInterval(_sidecarStatusTimer)
+  _sidecarStatusTimer = null
 }
 
 /** Установить колбэк для прогресса индексации (→ renderer через IPC). */
@@ -354,7 +149,7 @@ export function setActiveProject(projectId: string | null): void {
   }
 }
 
-/** Запомнить workdir проекта без старта chokidar-watcher'а. Нужно чтобы
+/** Запомнить workdir проекта без старта watcher'а. Нужно чтобы
  *  setActiveProject мог запустить watcher при активации проекта. Лёгкая
  *  операция (только Map-запись), не создаёт FS-handles. */
 export function registerProjectWorkdir(projectId: string, workdir: string): void {
@@ -362,10 +157,9 @@ export function registerProjectWorkdir(projectId: string, workdir: string): void
 }
 
 /** Автостарт watcher'а последнего активного проекта при запуске приложения —
- *  не дожидаясь, пока пользователь откроет чат проекта. Индексация начинает
- *  подхватываться в фоне: watcher (kernel callback, 0% CPU) + мягкий prewarm
- *  через prewarmDelayMs. Вызывается из registerFastContextIPC — к этому
- *  моменту registerChatIPC уже зарегистрировал workdir'ы всех проектов. */
+ *  не дожидаясь, пока пользователь откроет чат проекта. Вызывается из
+ *  registerFastContextIPC — к этому моменту registerChatIPC уже
+ *  зарегистрировал workdir'ы всех проектов. */
 export function autoStartLastProject(): void {
   if (!_store) return
   if (_activeProjectId) return // уже активирован renderer'ом
@@ -380,129 +174,85 @@ export function autoStartLastProject(): void {
   }
 }
 
-/** Идёт ли индексация для проекта прямо сейчас. */
-export function isIndexing(projectId: string): boolean {
-  return _indexingProjects.has(projectId)
-}
-
-/** Стоит ли job проекта в очереди (ждёт своей очереди в worker). */
-export function isQueued(projectId: string): boolean {
-  return _queuedProjects.has(projectId)
-}
-
-/** Timestamp последней фоновой проверки проекта (safety net / prewarm / job).
+/** Timestamp последней фоновой проверки проекта.
  *  null — в этой сессии ещё не проверялся. */
 export function getLastScanAt(projectId: string): number | null {
   return _lastScanAt.get(projectId) ?? null
 }
 
 /** Записать событие в историю + prune старых. */
-function recordHistory(projectId: string, eventType: string, filesChanged: number, durationMs: number): void {
+function recordHistory(
+  projectId: string,
+  eventType: string,
+  filesChanged: number,
+  durationMs: number,
+  filesCountOverride?: number,
+): void {
   try {
-    const filesCount = getFastContextIndexCount(projectId)
-    addIndexHistoryEvent(projectId, eventType, filesCount, filesChanged, durationMs)
+    addIndexHistoryEvent(projectId, eventType, filesCountOverride ?? 0, filesChanged, durationMs)
     pruneIndexHistory(projectId, 50)
   } catch { /* history опциональна */ }
 }
 
-/** Post-done обработка в main: history + уведомление renderer.
- *  Graph sync (syncFromFastContext — сотни тысяч DB-записей на 10к файлов)
- *  перенесён в fastContext-worker (выполняется там на full). Main больше НЕ
- *  делает тяжёлых DB-записей → UI не виснет. Вызывается из worker 'done'
- *  обработчика через setImmediate. */
-function handleWorkerDone(projectId: string, filesChanged: number, durationMs: number, isFull: boolean): void {
-  // Любой завершённый job (prewarm/reindex/incremental) — это тоже «проверка».
-  _lastScanAt.set(projectId, Date.now())
-  // История: full-скан с 0 изменений (ежедневный prewarm «всё актуально») —
-  // не событие, не пишем. Иначе после включения «prewarm всегда» каждый
-  // старт приложения добавлял запись и история выглядела как бесконечный
-  // пересчёт. Реальные изменения (filesChanged > 0) и инкременты — пишем.
-  if (filesChanged > 0 || !isFull) {
-    const eventType = isFull ? 'full' : 'incremental'
-    recordHistory(projectId, eventType, filesChanged, durationMs)
-  }
-
-  _onUpdated?.(projectId)
-  // done-прогресс шлём всем (не только активному — renderer фильтрует сам),
-  // но не топим им реиндекс, который ещё стоит в очереди: watcher-инкремент
-  // может финишировать раньше, чем queued reindex стартует.
-  if (isFull || !_queuedProjects.has(projectId)) {
-    _onProgress?.(projectId, { stage: 'done', detail: `${filesChanged} файлов, ${durationMs}ms` })
-  }
-}
-
-/** Запускает watcher для проекта. Idempotent — повторный вызов для того же projectId не создаёт второй watcher.
- *  Если в настройках indexingSettings.enabled=false — не регистрирует проект.
- *  fs.watch(recursive: true) стартует В WORKER THREAD — kernel callback, 0% CPU
- *  в простое. Main процесс не держит FS handles. Pre-warm шедулится здесь. */
+/** Запускает Rust-индексацию и watcher для проекта. Idempotent — повторный
+ *  вызов для того же projectId не создаёт второй watcher. */
 export function startWatching(projectId: string, workdir: string): void {
   _projectWorkdirs.set(projectId, workdir)
   if (_watchers.has(projectId)) return
 
   const settings = getSettings()
-  // Мастер-переключатель: если индексация отключена — вообще не регистрируем.
   if (!settings.enabled) {
-    console.log(`[fastContextWatcher] indexing disabled in settings — skipping ${workdir}`)
+    log('[fastContextWatcher] indexing disabled in settings — skipping %s', workdir)
     return
   }
 
-  const entry: WatcherEntry = {
-    projectId,
-    workdir,
-    prewarmTimer: null,
-  }
-  _watchers.set(projectId, entry)
-
-  // ── Запускаем fs.watch в worker thread ──
-  // Windows: ReadDirectoryChangesW — kernel-level, 0% CPU в простое.
-  // На file change → debounce → buildOrUpdateIndex напрямую в worker.
-  // Safety net (5 мин) ловит пропущенные events.
-  sendWatcherCommand({
-    type: 'startWatching',
-    projectId, workdir,
+  _watchers.set(projectId, { projectId, workdir })
+  startSidecarStatusPolling()
+  const startedAt = Date.now()
+  void sidecarIndex(projectId, workdir, {
+    maxFiles: settings.maxFilesPerProject,
+    maxFileSizeKb: settings.maxFileSizeKb,
     ignoreDirs: settings.ignoreDirs,
-  })
-
-  // Pre-warm: ВСЕГДА ставим full-scan job (не только при пустом индексе).
-  // buildOrUpdateIndex на full — это инкремент по contentHash: актуальный
-  // индекс = только readdir+stat+hash (~1-2с на 5к файлов, 0 парсинга),
-  // изменившиеся/накопившиеся пока приложение было закрытым файлы допарсятся
-  // в мягком режиме (worker_thread, BATCH=3, пауза 40мс — UI не дёргается).
-  // Кулдаун на сессию — чтобы частые переключения проектов не плодили сканы.
-  if (settings.prewarmOnStart) {
-    const last = _lastPrewarmAt.get(projectId) ?? 0
-    if (Date.now() - last > PREWARM_SESSION_COOLDOWN_MS) {
-      const delay = settings.prewarmDelayMs ?? 30_000
-      entry.prewarmTimer = setTimeout(() => {
-        entry.prewarmTimer = null
-        _lastPrewarmAt.set(projectId, Date.now())
-        void enqueueIndex({
-          type: 'index',
-          projectId, workdir,
-          changedPaths: undefined,
-          isFull: true,
-          isPrewarm: true,
-        }).catch(() => { /* залогировано в processQueue */ })
-      }, delay)
+  }).then(result => {
+    if (result.hadErrors === true || (result.complete === false && !result.hitCap)) {
+      throw new SidecarError('index_unavailable', 'Rust initial index reported read or traversal errors')
     }
-  }
+    recordHistory(projectId, 'full', result.filesChanged ?? 0, Date.now() - startedAt, result.filesFound)
+    return sidecarStartWatching(projectId, workdir, {
+      maxFiles: settings.maxFilesPerProject,
+      maxFileSizeKb: settings.maxFileSizeKb,
+      ignoreDirs: settings.ignoreDirs,
+    })
+  }).then(() => {
+    _lastScanAt.set(projectId, Date.now())
+    _onUpdated?.(projectId)
+    _onProgress?.(projectId, { stage: 'done', detail: 'Rust watcher запущен' })
+  }).catch(error => {
+    const err = error instanceof Error ? error : new Error(String(error))
+    _watchers.delete(projectId)
+    log('[watcher] Rust startWatching failed: %s', err.message)
+    _onProgress?.(projectId, { stage: 'error', detail: err.message })
+  })
 }
 
 /** Останавливает watcher для проекта. */
 export async function stopWatching(projectId: string): Promise<void> {
   const entry = _watchers.get(projectId)
   if (!entry) return
-  if (entry.prewarmTimer) clearTimeout(entry.prewarmTimer)
-  // Останавливаем fs.watch в worker
-  sendWatcherCommand({ type: 'stopWatching', projectId })
+  try {
+    await sidecarStopWatching()
+  } catch (error) {
+    log('[watcher] Rust stopWatching failed: %s', error instanceof Error ? error.message : String(error))
+  }
   _watchers.delete(projectId)
+  if (_watchers.size === 0) stopSidecarStatusPolling()
 }
 
 /** Останавливает все watchers (при выходе из приложения). */
 export async function stopAllWatchers(): Promise<void> {
   const ids = Array.from(_watchers.keys())
   await Promise.all(ids.map(stopWatching))
-  await terminateFastContextWorker()
+  stopSidecarStatusPolling()
 }
 
 /** Проверка — запущен ли watcher для проекта. */
@@ -512,24 +262,30 @@ export function isWatching(projectId: string): boolean {
 
 /**
  * Принудительный реиндекс проекта (вызывается из IPC fastcontext:reindex).
- * Всегда full + с progress events. Ждёт очереди и завершения worker'а.
+ * Всегда full + с progress events. Ошибки пробрасываются в renderer.
  */
 export async function forceReindex(projectId: string): Promise<void> {
-  const entry = _watchers.get(projectId)
-  let workdir = entry?.workdir ?? _projectWorkdirs.get(projectId)
-  if (!workdir) {
-    // Fallback в БД: _projectWorkdirs наполняется при старте (chat.ipc) и при
-    // создании проекта. Если запись не прошла / приложение перезапускалось —
-    // раньше был тихий return и кнопка «Реиндексировать» молча ничего не делала.
-    try { workdir = getProjectById(projectId)?.workdir } catch { /* БД недоступна */ }
-  }
-  if (!workdir) throw new Error(`Workdir проекта не найден (projectId=${projectId})`)
+  const workdir = _watchers.get(projectId)?.workdir
+    ?? _projectWorkdirs.get(projectId)
+    ?? getProjectById(projectId)?.workdir
+  if (!workdir) throw new SidecarError('unavailable', `Workdir проекта не найден (projectId=${projectId})`)
   _projectWorkdirs.set(projectId, workdir)
-  await enqueueIndex({
-    type: 'reindex',
-    projectId, workdir,
-    changedPaths: undefined,
-    isFull: true,
-    isPrewarm: false,
+
+  const settings = getSettings()
+  const startedAt = Date.now()
+  const result = await sidecarIndex(projectId, workdir, {
+    maxFiles: settings.maxFilesPerProject,
+    maxFileSizeKb: settings.maxFileSizeKb,
+    ignoreDirs: settings.ignoreDirs,
   })
+  if (result.hadErrors === true || (result.complete === false && !result.hitCap)) {
+    throw new SidecarError('index_unavailable', 'Rust reindex reported read or traversal errors')
+  }
+  recordHistory(projectId, 'full', result.filesChanged ?? 0, Date.now() - startedAt, result.filesFound)
+  _lastScanAt.set(projectId, Date.now())
+  _onUpdated?.(projectId)
+  const capNote = result.hitCap
+    ? `, частичный индекс (${result.filesFound ?? settings.maxFilesPerProject}/${settings.maxFilesPerProject})`
+    : ''
+  _onProgress?.(projectId, { stage: 'done', detail: `${result.filesChanged ?? 0} файлов${capNote}` })
 }

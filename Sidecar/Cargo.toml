@@ -1,0 +1,26 @@
+[package]
+name = "syntee-sidecar"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "CPU-heavy indexing and retrieval sidecar for Syntee Helper"
+
+license = "MIT"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+walkdir = "2.5"
+notify = "6.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3
+
+[[bin]]
+name = "syntee-sidecar"
+path = "src/main.rs"

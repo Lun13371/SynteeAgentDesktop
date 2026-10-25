@@ -2,13 +2,18 @@
 // Внешние импортёры (Agent.ts, ai-worker.ts, fastContextWatcher.ts, chat.ipc.ts)
 // импортируют отсюда — путь `.../context/fastContext` разрешается в этот index.
 //
+// Индексация и поиск выполняются в Rust sidecar. TypeScript-реализация
+// индексатора/ретривера больше не подключена ни к одному пути исполнения —
+// единственный backend это Rust, ошибки всплывают как SidecarError.
+//
 // Структура:
-//   state.ts       — worker-local SQLite + tree-sitter lazy init + local CRUD + lexical helpers
-//   symbols.ts     — tree-sitter symbol extraction (definitions/imports/references)
-//   indexer.ts     — walkProjectFiles + buildOrUpdateIndex + computeGraphRank + misc
-//   retriever.ts   — buildRepoMapSlice + buildContentSnippets
-//   annotator.ts   — summarizeWithLLM (LLM-аннотация repo-map slice)
-//   orchestrator.ts — runFastContext (3-stage: indexing → retrieving → summarizing)
+//   state.ts        — SQLite connection + общие lexical helpers
+//   symbols.ts      — tree-sitter symbol extraction (для snippets/анализаторов)
+//   indexer.ts      — настройки индексации (getIndexSettings) + типы прогресса
+//   retriever.ts    — buildContentSnippets (чтение кода найденных файлов)
+//   annotator.ts    — summarizeWithLLM (LLM-аннотация repo-map slice)
+//   orchestrator.ts — runFastContext (index → search → snippets → LLM)
+//   sidecarClient.ts — JSONL-клиент Rust sidecar (единственный backend)
 //
 // Внутренние символы (getDb, localGetEntries, stem, getParser и т.д.) экспортируются
 // из своих модулей для intra-package использования, но НЕ реэкспортируются здесь —
@@ -24,14 +29,10 @@ export { getParsedSymbols, invalidateFile, clearSymbolsCache, getSymbolsCacheSta
 export { buildInvertedIndex, lookupFiles, clearInvertedIndex, clearAllInvertedIndexes, getInvertedIndexStats } from './invertedIndex'
 // fileHash (быстрый content hash для точного детекта изменений)
 export { quickHash } from './fileHash'
-// indexer
-export {
-  walkProjectFiles, buildOrUpdateIndex, computeGraphRank,
-  resetFastContextIndex, getFastContextStats, getIndexSettings,
-  type IndexProgress, type ProgressCallback,
-} from './indexer'
+// indexer — оставлены только настройки и типы прогресса
+export { getIndexSettings, type IndexProgress, type ProgressCallback } from './indexer'
 // retriever
-export { buildRepoMapSlice, buildContentSnippets } from './retriever'
+export { buildContentSnippets } from './retriever'
 // annotator
 export { summarizeWithLLM, type FastContextFile, type FastContextResult } from './annotator'
 // orchestrator
