@@ -132,7 +132,7 @@ User focus (optional): ${args || '(none — cover everything)'}
 
 ## Steps (STRICT order)
 
-1. **Analyze.** Call the \`analyze_project\` tool with path "." (current workdir). You will get a markdown report: file structure, package.json (deps/scripts), requirements.txt/pyproject.toml/Cargo.toml/go.mod, README, git status, file statistics.
+1. **Analyze.** Map the current workdir yourself with read tools: call \`get_fast_context\` (query: "project structure, entry points, main modules"), \`list_directory\` on the workdir root, and read the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\` via \`read_file\`. You will get: tech stack, deps, scripts, entry points, git-tracked layout.
 
 2. **Recommend.** Based on the analysis, pick relevant MCP servers and skills from your knowledge of the popular MCP ecosystem. Match by detected tech stack:
    - React/Next/Vue/Svelte/Vite frontend → context7 (docs), shadcn-ui (UI components)
@@ -219,7 +219,7 @@ User focus (optional): ${args || '(none — cover everything)'}
 
 ## Steps (STRICT order)
 
-1. **Analyze.** Call the \`analyze_project\` tool with path "." (current workdir). Study: file structure, package.json (deps/scripts), README, git status, tech stack, frameworks, build/test commands.
+1. **Analyze.** Map the current workdir yourself with read tools: \`get_fast_context\` (query: "project structure, entry points, main modules"), \`list_directory\` on the workdir root, and \`read_file\` on the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\`. Study: tech stack, frameworks, build/test commands, git status.
 
 2. **Check existing instructions.** Use \`read_file\` to check if any of these already exist in the workdir root:
    - AGENTS.md, CLAUDE.md, GEMINI.md, .cursorrules, .windsurfrules, .clinerules
@@ -239,7 +239,7 @@ User focus (optional): ${args || '(none — cover everything)'}
    RULES for the file:
    - Keep it UNDER 80 lines. Brevity is critical — every line eats context tokens on every message.
    - Do NOT include: obvious structure (package.json is readable), generic advice ("write clean code"), full file listings.
-   - Do NOT duplicate what analyze_project already shows — focus on distilled, actionable guidance.
+   - Do NOT duplicate what the file tree / manifest already show — focus on distilled, actionable guidance.
    - Use clear markdown headings. No fluff.
    - Write in English (it's read by the AI model on every message).
 

@@ -12,6 +12,7 @@ import { getEncoding } from 'js-tiktoken'
 import { getCatalogModel } from './modelCatalog'
 import { getGatewayModelsCache, GATEWAY_PROVIDER_ID } from './gatewayModelsCache'
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
+import { IMAGE_TOKEN_COST } from '../../shared/imageFormat'
 import { getModelPrice as getModelPriceStatic, type ModelPrice } from './ModelPricing'
 
 // ─── Кэшированный энкодер ──────────────────────────────────────────────────────
@@ -86,6 +87,25 @@ type MessageLike = {
 }
 
 /**
+ * Сколько изображений в multipart-контенте сообщения.
+ *
+ * Раньше визуальные парты игнорировались полностью: из контента брались только
+ * `text`, поэтому 30 МБ пикселей давали «0 токенов». Оценка контекста показывала
+ * 25-30%, аварийный клапан не срабатывал, а провайдер отвечал 413 — и чат падал
+ * без видимой причины. Теперь каждая картинка имеет цену (IMAGE_TOKEN_COST),
+ * так что и контекст-бар, и клапан видят визуальную нагрузку.
+ */
+function countImageParts(content: MessageLike['content']): number {
+  if (!Array.isArray(content)) return 0
+  let images = 0
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue
+    if (part.type === 'image_url' || part.type === 'input_image') images++
+  }
+  return images
+}
+
+/**
  * Полная оценка токенов массива сообщений с учётом структуры tool_calls.
  *
  * Раньше считался только `m.content + 4` — токены tool_calls (function.name,
@@ -98,6 +118,7 @@ type MessageLike = {
 function estimateMessageTokens(m: MessageLike): number {
   const contentStr = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => 'text' in p ? (p as { text: string }).text : '').join('') : '')
   let n = estimateTokens(contentStr || '') + 4 // +4 служебных (role/разделители)
+  n += countImageParts(m.content) * IMAGE_TOKEN_COST
   if (m.tool_calls && Array.isArray(m.tool_calls)) {
     for (const tc of m.tool_calls as Array<Record<string, unknown>>) {
       try { n += estimateTokens(JSON.stringify(tc)) } catch { /* ok */ }
@@ -108,6 +129,20 @@ function estimateMessageTokens(m: MessageLike): number {
   return n
 }
 
+/**
+ * FNV-1a 32-bit: идентичность огромного base64 без материализации копии строки.
+ * Раньше fingerprint содержал `JSON.stringify(image_url)` целиком — для 5 МБ
+ * картинки это 5 МБ ключа в LRU-кэше на каждое сообщение.
+ */
+function hashString(value: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `${value.length.toString(36)}:${hash.toString(36)}`
+}
+
 /** Stable message-level fingerprint; bounded cache avoids retaining message objects. */
 function messageTokenFingerprint(m: MessageLike): string {
   let content = ''
@@ -115,7 +150,12 @@ function messageTokenFingerprint(m: MessageLike): string {
   else if (Array.isArray(m.content)) {
     content = m.content.map(p => {
       let image = ''
-      try { image = p.image_url ? JSON.stringify(p.image_url) : '' } catch { image = String(p.image_url) }
+      if (p.image_url) {
+        const url = typeof p.image_url === 'object' && p.image_url !== null && 'url' in p.image_url
+          ? String((p.image_url as { url?: unknown }).url ?? '')
+          : String(p.image_url)
+        image = hashString(url)
+      }
       return `${p.type}:${p.text ?? ''}:${image}`
     }).join('|')
   }
@@ -235,7 +275,8 @@ export async function estimateMessagesTokensAsync(messages: Array<MessageLike>):
   for (let i = 0; i < messages.length; i++) {
     let sum = 0
     for (let j = starts[i]; j < starts[i + 1]; j++) sum += counts[j]
-    total += sum + 4 // +4 служебных (role/разделители)
+    // Пиксели не проходят через BPE — у них фиксированная цена, как в синхронном пути.
+    total += sum + countImageParts(messages[i].content) * IMAGE_TOKEN_COST + 4 // +4 служебных (role/разделители)
   }
   return total
 }

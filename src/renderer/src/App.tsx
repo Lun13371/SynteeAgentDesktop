@@ -430,10 +430,27 @@ async function doApplyBgImageToDOM(bgImage: {
   src: string; blur: number; opacity: number; tint: string; tintStrength: number;
   scale?: 'cover' | 'contain' | number; parallax?: boolean; parallaxStrength?: number;
 } | null) {
-  // Overlay/Voice/Spotlight окна не показывают фон. У них ранний return
-  // в App до .app-root и нет BootScreen.
+  // Фон рисуем ТОЛЬКО в главном окне (у него hash пустой).
+  //
+  // Раньше здесь был явный список 'overlay' | 'voice' | 'spotlight', и в него
+  // не попал 'notifications' — хаб уведомлений и плашки активности ИИ
+  // (NotificationWindow: полноэкранное alwaysOnTop + transparent окно #/notifications).
+  // Хаб монтирует тот же App: ранний return по route стоит ПОСЛЕ хуков, поэтому
+  // applyVisualSettings и эффекты по [bgImage]/[bootDone] там выполняются.
+  // .app-root в хабе нет → host'ом становился document.body → в окне хаба
+  // создавались #bg-image-layer + #bg-image-tint, и фото фона (с blur и
+  // opacity) ложилось на весь экран поверх рабочего стола при каждом
+  // уведомлении / появлении плашки активности.
+  // Проверка «hash непустой» покрывает все не-главные окна и защищает от
+  // повторения при добавлении новых роутов.
   const hash = window.location.hash.replace('#/', '')
-  if (hash === 'overlay' || hash === 'voice' || hash === 'spotlight') return
+  if (hash) {
+    // На всякий случай подчищаем слои, если они успели появиться до смены hash.
+    document.getElementById('bg-image-layer')?.remove()
+    document.getElementById('bg-image-tint')?.remove()
+    lastAppliedBgSrc = null
+    return
+  }
 
   const appRoot = document.querySelector('.app-root')
   // Пока BootScreen показан, .app-root ещё не смонтирован. Чтобы фон
@@ -451,7 +468,10 @@ async function doApplyBgImageToDOM(bgImage: {
 
   let url = bgImage.src
   if (bgImage.src.startsWith('bg-images://')) {
-    let cached = bgDataUrlCache.get(bgImage.src)
+    // Тип явный: bgDataUrlCache.get → string | undefined, а bgImage.load →
+    // string | null (null = файл не читается). Без аннотации TS ругался на
+    // присваивание null в переменную, выведенную из Map.get.
+    let cached: string | null | undefined = bgDataUrlCache.get(bgImage.src)
     if (!cached) {
       cached = await window.syntee.bgImage.load(bgImage.src)
       if (!cached) return

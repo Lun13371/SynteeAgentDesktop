@@ -115,6 +115,10 @@ export interface ActiveRun {
   // AbortController для прерывания обработки вложений (processAttachmentsAndStream)
   // при chat:stop — воркер ещё не создан, terminate() не помогает.
   attachmentAbort?: AbortController
+  // reqId'ы ask_user, ожидающие ответа пользователя в этом запуске. Нужны,
+  // чтобы при Стопе/краше снять висящий вопрос из QuestionPanel и удалить
+  // ipcMain-листенер (иначе ответ пользователя уходил бы в мёртвый воркер).
+  pendingQuestions?: Set<string>
   // ── Единое зеркало ephemeral live-состояния ──────────────────────────
   // Накапливается параллельно с webContents.send в IPC-хендлерах событий
   // от worker'а (tool_progress, spawn_agent, и любые будущие ephemeral-блоки).
@@ -125,6 +129,11 @@ export interface ActiveRun {
   bufferedLiveState: {
     toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
     spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
+    /** §steer — карточки реплик, внедрённых в этот ран. pending: applied:false
+     *  (ждёт границы раунда), applied:true (агент уже вставил в messages).
+     *  Возвращаются в chat:getLiveState → renderer восстанавливает их при
+     *  возврате в чат, поэтому карточка не исчезает при переключении вкладок. */
+    steers: Array<{ steerId: string; text: string; ts: number; applied: boolean }>
   }
   // ── Периодический checkpoint стриминга в БД ──
   // Таймер сохраняет накопленный bufferedText/steps/thinking в БД каждые

@@ -37,12 +37,17 @@ import {
 } from '../../core/db'
 import { getMessages } from '../../core/db/messages'
 import type { MentionItem, Attachment } from '../../shared/types'
-import { filterMentions, isTextMime, mimeFromExt } from '../../shared/mentions'
+import { filterMentions, isImageMime, isTextMime, mimeFromExt } from '../../shared/mentions'
+import { formatBytes } from '../../shared/imageFormat'
+import { normalizeImageForVision } from '../services/imageDownscale'
 import { stripAttachTokens } from '../../shared/attachmentMarkdown'
 
 // ── Лимиты ───────────────────────────────────────────────────────────────────
 const MAX_TEXT_INLINE_BYTES = 5 * 1024 * 1024  // 5МБ
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024       // 10МБ
+// Верхний предел на ВХОД картинки (paste/drag&drop/файл с диска). То, что
+// реально уходит в модель, ограничено отдельно и жёстче: normalizeImageForVision
+// приводит изображение к ≤2000 px и ≤ MAX_IMAGE_FILE_BYTES (shared/imageFormat).
+const MAX_IMAGE_INPUT_BYTES = 25 * 1024 * 1024
 const MAX_ATTACHMENTS = 10
 
 function draftDir(chatId: string): string {
@@ -274,14 +279,20 @@ export function registerMentionsIPC(): void {
     try {
       const dir = draftDir(chatId)
       await mkdir(dir, { recursive: true })
-      // Определяем расширение по mime
-      const mime = params.mime || 'image/png'
-      const ext = mime === 'image/jpeg' ? '.jpg'
-        : mime === 'image/gif' ? '.gif'
-        : mime === 'image/webp' ? '.webp'
-        : mime === 'image/bmp' ? '.bmp'
-        : mime === 'image/svg+xml' ? '.svg'
-        : '.png'
+      // Очищаем data:URL prefix если есть
+      const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '')
+      const buf = Buffer.from(cleanBase64, 'base64')
+      if (buf.length > MAX_IMAGE_INPUT_BYTES) {
+        return { success: false, error: `Image too large (${formatBytes(buf.length)}). Max ${formatBytes(MAX_IMAGE_INPUT_BYTES)}.` }
+      }
+      // Вставляемое «изображение» может быть чем угодно — clipboard-данные не
+      // всегда картинка, а mime от рендерера ничего не доказывает. Проверяем
+      // реальные байты и приводим картинку к тому, что принимает vision-модель
+      // (растр, ≤2000 px, ≤ лимита байт). Раньше файл уходил как есть: 4K-скриншот
+      // или переименованный бинарь ломали запрос (400/413) уже при отправке.
+      const normalized = normalizeImageForVision(buf)
+      if (!normalized.ok) return { success: false, error: normalized.error }
+      const { bytes, mime, ext, downscaled } = normalized.image
       const baseName = params.suggestedName || `image-${Date.now()}`
       // Защита от коллизии: если файл с таким именем уже есть (две картинки
       // с одинаковым именем при drag&drop/paste) — добавляем счётчик.
@@ -295,14 +306,8 @@ export function registerMentionsIPC(): void {
         dest = join(dir, name)
         counter++
       }
-      // Очищаем data:URL prefix если есть
-      const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '')
-      const buf = Buffer.from(cleanBase64, 'base64')
-      if (buf.length > MAX_IMAGE_BYTES) {
-        return { success: false, error: `Image too large (${(buf.length / 1024 / 1024).toFixed(1)} MB). Max 10 MB.` }
-      }
-      await writeFile(dest, buf)
-      return { success: true, path: dest, name, size: buf.length, mime }
+      await writeFile(dest, bytes)
+      return { success: true, path: dest, name, size: bytes.byteLength, mime, downscaled }
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e) }
     }
@@ -322,6 +327,30 @@ export function registerMentionsIPC(): void {
       if (st.isDirectory()) return { success: false, error: 'Is a directory', isDirectory: true }
       const dir = draftDir(chatId)
       await mkdir(dir, { recursive: true })
+
+      // Картинки храним в draft-attachments УЖЕ нормализованными: превью,
+      // прямая отправка в vision-модель и повторный analyze_image по этому
+      // пути получают один и тот же пригодный файл (≤2000 px, ≤ лимита байт).
+      // Раньше копия была байт-в-байт, поэтому 4K-скриншот гарантировал
+      // 400 «image exceeds 5 MB» / 413 «request too large».
+      if (isImageMime(mimeFromExt(sourcePath))) {
+        if (st.size > MAX_IMAGE_INPUT_BYTES) {
+          return { success: false, error: `Image too large (${formatBytes(st.size)}). Max ${formatBytes(MAX_IMAGE_INPUT_BYTES)}.` }
+        }
+        const normalized = normalizeImageForVision(await readFile(sourcePath))
+        if (!normalized.ok) return { success: false, error: normalized.error }
+        const { bytes, mime, ext, downscaled } = normalized.image
+        const baseName = basename(sourcePath, extname(sourcePath))
+        let dest = join(dir, baseName + ext)
+        let counter = 1
+        while (existsSync(dest)) {
+          dest = join(dir, `${baseName}-${counter}${ext}`)
+          counter++
+        }
+        await writeFile(dest, bytes)
+        return { success: true, path: dest, name: basename(dest), size: bytes.byteLength, mime, downscaled }
+      }
+
       const name = basename(sourcePath)
       // Уникальное имя если уже есть
       let dest = join(dir, name)

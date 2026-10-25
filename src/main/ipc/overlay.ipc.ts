@@ -4,6 +4,7 @@ import { app } from 'electron'
 import type Store from 'electron-store'
 import { AIClient } from '../../core/ai/AIClient'
 import { IPC_EVENTS } from '../../shared/constants'
+import { normalizeImageForVision } from '../services/imageDownscale'
 
 export function registerOverlayIPC(
   store: Store,
@@ -33,6 +34,20 @@ export function registerOverlayIPC(
     action: 'analyze' | 'translate' | 'summarize' | 'read'
   }) => {
     const win = overlayWindow.getWindow()
+    // Выделенная область уходит в vision-модель как base64: приводим её к
+    // лимитам провайдера (растр, ≤2000 px, ≤ лимита байт) вместо отказа —
+    // раньше большое выделение роняло запрос 413 «request too large».
+    const normalized = normalizeImageForVision(
+      Buffer.from(params.imageBase64.replace(/^data:[^;]+;base64,/, ''), 'base64'),
+    )
+    if (!normalized.ok) {
+      win?.webContents.send(IPC_EVENTS.CHAT_STREAM_ERROR, {
+        error: `Не удалось подготовить изображение: ${normalized.error}`,
+        source: 'overlay',
+      })
+      return
+    }
+    const imageBase64 = normalized.image.bytes.toString('base64')
     const client = new AIClient(store)
 
     const prompts: Record<string, string> = {
@@ -45,7 +60,7 @@ export function registerOverlayIPC(
     const finalPrompt = prompts[params.action] || params.prompt
 
     await client.analyzeImage(
-      params.imageBase64,
+      imageBase64,
       finalPrompt,
       {
         onToken: (token) => {
@@ -67,7 +82,9 @@ export function registerOverlayIPC(
   // Сохранить скриншот в файл
   ipcMain.handle('overlay:saveScreenshot', async (_, base64: string) => {
     // require вместо await import: нативный import() не работает в V8-байткоде
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { writeFileSync } = require('fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { mkdirSync } = require('fs')
     const dir = join(app.getPath('userData'), 'screenshots')
     mkdirSync(dir, { recursive: true })

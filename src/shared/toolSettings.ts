@@ -13,13 +13,13 @@ const coreTools = new Set<string>(PROTECTED_CORE_TOOLS)
 const tools = (entries: Array<[string, string]>) => entries.map(([name, label]) => ({ name, label }))
 export const OPTIONAL_TOOL_GROUPS = [
   { label: 'Исследование проекта', tools: tools([
-    ['get_fast_context', 'Быстрый контекст проекта'], ['analyze_project', 'Анализ проекта'],
+    ['get_fast_context', 'Быстрый контекст проекта'],
   ]) },
   { label: 'Интернет', tools: tools([
     ['search_web', 'Поиск в интернете'], ['fetch_page', 'Чтение веб-страниц'], ['search_images', 'Поиск изображений'],
   ]) },
-  { label: 'Память и заметки', tools: tools([
-    ['save_memory', 'Сохранение долгосрочной памяти'], ['recall_memory', 'Поиск в памяти'], ['manage_notes', 'Заметки'],
+  { label: 'Память', tools: tools([
+    ['save_memory', 'Сохранение долгосрочной памяти'], ['recall_memory', 'Поиск в памяти'],
   ]) },
   { label: 'Агенты и чаты', tools: tools([
     ['spawn_agent', 'Запуск суб-агента'], ['get_agent_status', 'Статус суб-агента'],

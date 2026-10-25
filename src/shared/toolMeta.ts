@@ -41,7 +41,6 @@ export const TOOL_META: Record<string, ToolMeta> = {
   fetch_page:    { label: 'Чтение страницы',    icon: 'downloadCloud', color: '#10b981' },
   search_images: { label: 'Поиск картинок',     icon: 'camera',       color: '#f472b6' },
   search_code:   { label: 'Поиск кода',          icon: 'code',       color: '#818cf8' },
-  analyze_project:{ label: 'Анализ',             icon: 'folder',      color: '#c084fc' },
   get_fast_context:{ label: 'Быстрый контекст',  icon: 'compass',     color: '#06b6d4' },
 
   // ── Система и генерация ──
@@ -59,7 +58,6 @@ export const TOOL_META: Record<string, ToolMeta> = {
   update_working_memory: { label: 'Память чата', icon: 'database',    color: '#34d399' },
   save_memory:    { label: 'Сохранить в память',  icon: 'database',    color: '#10b981' },
   recall_memory:  { label: 'Поиск в памяти',      icon: 'database',    color: '#059669' },
-  manage_notes:   { label: 'Заметки',            icon: 'clipboard',   color: '#f59e0b' },
 
   // ── Расширения ──
   list_extensions:{ label: 'Расширения',        icon: 'puzzle',      color: '#a78bfa' },

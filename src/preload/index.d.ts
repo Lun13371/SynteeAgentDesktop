@@ -594,6 +594,8 @@ declare const synteeAPI: {
         getQueue: (chatId: string) => Promise<any>;
         queueRemove: (chatId: string, queueId: string) => Promise<any>;
         queueReorder: (chatId: string, queueIds: string[]) => Promise<any>;
+        steer: (chatId: string, text: string, steerId: string) => Promise<any>;
+        steerCancel: (chatId: string, steerId: string) => Promise<any>;
         getSessionTimeline: (chatId: string) => Promise<any>;
         getLastTurnFilesChanged: (chatId: string) => Promise<any>;
         rewindTo: (chatId: string, userMessageId: string) => Promise<any>;
@@ -1288,47 +1290,6 @@ declare const synteeAPI: {
     clipboard: {
         writeText: (text: string) => Promise<boolean>;
         readText: () => Promise<string>;
-    };
-    notes: {
-        list: (params: {
-            scope: "project" | "chat";
-            projectId?: string;
-            chatId?: string;
-        }) => Promise<Array<{
-            id: string;
-            scope: string;
-            projectId: string | null;
-            chatId: string | null;
-            title: string;
-            content: string;
-            createdAt: number;
-            updatedAt: number;
-        }>>;
-        getProjectId: (chatId: string) => Promise<string | null>;
-        create: (params: {
-            scope: "project" | "chat";
-            projectId?: string;
-            chatId?: string;
-            title: string;
-            content?: string;
-        }) => Promise<{
-            success: boolean;
-            note?: unknown;
-            error?: string;
-        }>;
-        update: (params: {
-            id: string;
-            title?: string;
-            content?: string;
-        }) => Promise<{
-            success: boolean;
-            note?: unknown;
-            error?: string;
-        }>;
-        delete: (id: string) => Promise<{
-            success: boolean;
-            error?: string;
-        }>;
     };
 };
 export type SynteeAPI = typeof synteeAPI;

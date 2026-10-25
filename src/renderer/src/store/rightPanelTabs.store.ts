@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { RightPanelTab } from './ui.store'
+import { isValidTab, type RightPanelTab } from './ui.store'
 
 // ── Динамические табы правой панели (Codex-style) ─────────────────────
 // Панели (Файлы, Git, Терминал...) открываются как табы по требованию.
@@ -42,7 +42,10 @@ export const useRightPanelTabsStore = create<RightPanelTabsStore>((set, get) => 
   },
   restorePanels: (panels) => {
     if (Array.isArray(panels) && panels.length > 0) {
-      set({ openPanels: panels })
+      // Фильтр по isValidTab: в персисте (rpOpenPanels) могли остаться табы
+      // удалённых панелей (напр. legacy 'notes') — они бы висели пустыми.
+      const valid = panels.filter(isValidTab)
+      if (valid.length > 0) set({ openPanels: valid })
     }
   },
 }))

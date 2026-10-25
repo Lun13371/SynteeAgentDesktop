@@ -1,5 +1,5 @@
 // ── Dots tool: manage_dots — управление always-on фоновыми агентами ──────
-// Один мульти-action тул (паттерн manage_notes): create/list/get/update/
+// Один мульти-action тул (паттерн manage_chats): create/list/get/update/
 // delete/wake. Мутирующие action'ы всегда требуют подтверждения
 // (Agent.ts, поверх allowlist и авто-настроек) — агент управляет
 // always-on агентами только с явного согласия пользователя.

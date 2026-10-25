@@ -3,6 +3,16 @@
    Droplet animation: circle → expand → card.
    REAL blur: захват экрана через desktopCapturer, CSS filter:blur(). */
 
+/* ── Окно хаба = transparent:true без фона ───────────────────────────
+   globals.css красит body в --body-bg (непрозрачный). Без этого правила
+   полноэкранное прозрачное окно хаба залило бы весь рабочий стол фоном
+   темы (тот же приём и та же причина — в SpotlightPage.css). */
+html:has(.notif-root),
+html:has(.notif-root) body,
+html:has(.notif-root) #root {
+  background: transparent !important;
+}
+
 .notif-root {
   position: fixed;
   inset: 0;

@@ -54,19 +54,13 @@
   border-bottom-color: var(--border);
 }
 
-/* ── Статус-полоска слева (2px) ── */
+/* ── Статус-полоска слева (2px) — УБРАНА ──
+   Раньше блок хода работы подсвечивался полосой слева: зелёной при успехе,
+   красной при ошибке, акцентной во время прогона. Полоса визуально «кричала»
+   о статусе и спорила с аккуратной рамкой карточки — статус уже читается по
+   шапке (счётчик, бейджи, спиннер). Теперь блок нейтрален: только рамка. */
 .tc2 {
-  border-left: 2px solid transparent;
-  transition: border-left-color 0.3s ease;
-}
-.tc2--running {
-  border-left-color: var(--accent, #6366f1);
-}
-.tc2--has-fail {
-  border-left-color: #f87171;
-}
-.tc2--all-ok {
-  border-left-color: rgba(74,222,128,0.45);
+  border-left: none;
 }
 
 /* Shimmer на шапке — всегда в DOM.
@@ -152,6 +146,29 @@
   color: var(--text-secondary);
 }
 
+/* Смена текущего действия в живой шапке: плавное проявление вместо резкой
+   подмены текста. key по имени тула перезапускает анимацию. */
+.tc2-live-title {
+  animation: tc2-live-title-in 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes tc2-live-title-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Итоговая строка свёрнутого блока: «Выполнено за 22с · 3 действия».
+   Одна фраза вместо бейджа-счётчика + отдельного бейджа с часами. */
+.tc2-header-title--done {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.tc2-header-dot { color: var(--text-muted); }
+.tc2-header-count--fail {
+  color: var(--text-secondary);
+}
+.tc2-header-fail-badge { margin-left: 6px; }
+
 /* ── Elapsed pill-бейдж ── */
 .tc2-elapsed-badge {
   display: inline-flex;
@@ -186,9 +203,11 @@
   background: rgba(74,222,128,0.15);
   color: #4ade80;
 }
+/* Бейдж «N действий с ошибкой» в итоговой строке — тоже без красного:
+   ошибка видна по тексту и счётчику, блок не должен «светиться». */
 .tc2-status-badge--fail {
-  background: rgba(248,113,113,0.15);
-  color: #f87171;
+  background: var(--bg-tertiary, rgba(255,255,255,0.07));
+  color: var(--text-secondary);
 }
 .tc2-status-label {
   font-size: 12px;
@@ -274,6 +293,42 @@
 }
 .tc2-iters-wrap--open {
   grid-template-rows: 1fr;
+  position: relative;
+}
+/* Внутренний контейнер ленты — на него подписан ResizeObserver умного
+   автоскролла. Layout такой же, как был у .tc2-iters напрямую. */
+.tc2-iters-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+/* Возврат к хвосту, когда пользователь прокрутил вверх (автоскролл отпущен). */
+.tc2-jump-down {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary, rgba(255,255,255,0.06));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.28);
+  animation: tc2-jump-in 0.18s ease-out;
+}
+.tc2-jump-down:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(255,255,255,0.1));
+}
+@keyframes tc2-jump-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 .tc2-iters {
   overflow: hidden;
@@ -288,6 +343,61 @@
 .tc2-iters-wrap--open .tc2-iters {
   opacity: 1;
   padding: 8px 10px 10px;
+}
+
+/* ── Живое окно хода работы ────────────────────────────────────────
+   Пока прогон идёт, цепочка раскрыта автоматически (см. эффект
+   isRunning в ToolChain.tsx), но не растягивает сообщение на всю историю
+   действий: высота растёт естественно до ~9 строк, дальше — внутренний
+   скролл с подхватом хвоста. overscroll-behavior: contain — колесо внутри
+   окна не утаскивает за собой весь чат. */
+.tc2--running .tc2-iters-wrap--open .tc2-iters {
+  max-height: 336px;   /* было 224px — окно слишком низкое, видно 1.5–2 шага */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.tc2--running .tc2-iters-wrap--open .tc2-iters::-webkit-scrollbar { width: 6px; }
+.tc2--running .tc2-iters-wrap--open .tc2-iters::-webkit-scrollbar-track { background: transparent; }
+.tc2--running .tc2-iters-wrap--open .tc2-iters::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+/* Live-вывод run_command внутри того же окна: без своего cap'а один
+   npm install съедает всю высоту и «ход работы» превращается в терминал. */
+.tc2--running .tc2-live-terminal-pre {
+  max-height: 198px;
+  overflow-y: auto;
+}
+
+/* ── Рассуждение внутри ленты (Think → тулы → Think) ───────────────
+   ThinkingBlock перенесён внутрь контейнера итераций: убираем внешние
+   отступы блока и ограничиваем его собственный скролл, чтобы он не
+   дублировал скролл живого окна. */
+.tc2-thinking-embed { margin: 0 0 4px; }
+.tc2-thinking-embed .tb { margin: 0; }
+.tc2-thinking-embed--live { margin-top: 4px; }
+.tc2--running .tc2-thinking-embed .tb-body-inner { max-height: 180px; }
+
+/* ── Обычный текст модели внутри ленты ─────────────────────────────
+   Модель между тулами пишет не только reasoning, но и обычный текст
+   («сейчас проверю X»). Раньше он висел отдельным абзацем в сообщении и
+   после сворачивания хода работы оставался на виду. Теперь он строка
+   ленты: серый текст с левой линией, как и остальные действия. */
+.tc2-note {
+  padding: 2px 0 6px 0;
+}
+.tc2-note-text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Длинные простыни текста не должны раздувать окно — обрезаем хвост. */
+  max-height: 120px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 80%, transparent 100%);
 }
 
 /* ── Одна итерация ── */
@@ -343,9 +453,11 @@
 .tc2-dot--done {
   animation: tc2-dot-pop 0.35s ease-out;
 }
+/* Ошибка шага: без красного свечения. Точка остаётся нейтральной — статус
+   читается по крестику внутри и по бейджу «ошибка» в строке. */
 .tc2-dot--fail {
-  background: rgba(248,113,113,0.15);
-  color: #f87171;
+  background: var(--bg-tertiary, rgba(255,255,255,0.07));
+  color: var(--text-muted);
 }
 .tc2-dot--group {
   background: color-mix(in srgb, var(--dot-color, #94a3b8) 15%, transparent);
@@ -373,11 +485,12 @@
   background: var(--border);
   margin: 3px 0;
 }
-.tc2-rail-line--ok {
-  background: rgba(74,222,128,0.3);
-}
+/* Рельс между шагами всегда нейтральный: раньше он зеленел после успешного
+   шага и краснел после ошибки — цветная «гирлянда» по всей ленте. Статус
+   шага достаточно показывает точка с галочкой/крестиком. */
+.tc2-rail-line--ok,
 .tc2-rail-line--fail {
-  background: rgba(248,113,113,0.3);
+  background: var(--border);
 }
 
 /* ── Тело итерации ── */
@@ -407,12 +520,13 @@
 .tc2-iter-header--open {
   background: var(--bg-hover, var(--overlay-2));
 }
+/* Ошибка шага: без красного фона и inset-полосы — статус читается по бейджу
+   «ошибка» и крестику в точке. Раньше красная подсветка заливала всю строку. */
 .tc2-iter-header--fail {
-  background: rgba(248,113,113,0.07);
-  box-shadow: inset 2px 0 0 #f87171;
+  background: none;
 }
 .tc2-iter-header--fail:hover {
-  background: rgba(248,113,113,0.12);
+  background: var(--bg-hover, var(--overlay-2));
 }
 .tc2-iter-header--running {
   background: linear-gradient(
@@ -483,7 +597,8 @@
   flex-shrink: 0;
 }
 .tc2-badge--ok      { background: rgba(74,222,128,0.15); color: #4ade80; }
-.tc2-badge--fail    { background: rgba(248,113,113,0.15); color: #f87171; }
+/* Шаг с ошибкой — нейтральный бейдж, без красной заливки. */
+.tc2-badge--fail    { background: var(--bg-tertiary, rgba(255,255,255,0.07)); color: var(--text-secondary); }
 .tc2-badge--running {
   background: rgba(99,102,241,0.15); color: #818cf8;
   animation: tc2-pulse-opacity 1.2s infinite;
@@ -1004,6 +1119,107 @@
 .tc2-show-more:hover {
   background: var(--overlay-3);
   color: var(--text-primary);
+}
+
+/* ── §steer: реплика пользователя, внедрённая в контекст работающего агента ──
+   Long-press на кнопке отправки. Карточка живёт в общей ленте хода работы на
+   своём хронологическом месте (после тулов раунда, до следующих). Два состояния:
+   pending — ждёт границы раунда (пунктир + пульсация точки), applied — агент
+   уже вставил её в messages. В счётчик «N действий» не попадает: это не тул. */
+.tc2-steer {
+  display: flex;
+  gap: 10px;
+  position: relative;
+  margin: 2px 0;
+}
+
+.tc2-dot--steer,
+.tc2-dot--steer-pending {
+  --dot-color: var(--accent);
+}
+
+.tc2-dot--steer-pending {
+  animation: tc2-steer-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tc2-steer-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.tc2-steer-body {
+  border-radius: 10px;
+  padding: 6px 10px 7px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.tc2-steer--pending .tc2-steer-body {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.tc2-steer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+  flex-wrap: wrap;
+}
+
+.tc2-steer-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.tc2-steer-state {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: var(--overlay-3);
+  white-space: nowrap;
+}
+
+.tc2-steer-state--applied {
+  color: #34d399;
+  background: color-mix(in srgb, #34d399 16%, transparent);
+}
+
+.tc2-steer-text {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Длинную реплику не раздуваем в простыню — окно со скроллом. */
+  max-height: 140px;
+  overflow: auto;
+}
+
+/* Крестик «передумал» — только у pending-карточки (реплика ещё не в контексте). */
+.tc2-steer-cancel {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tc2-steer-cancel:hover {
+  background: color-mix(in srgb, #ef4444 18%, transparent);
+  color: #ef4444;
 }
 
 

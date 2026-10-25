@@ -88,6 +88,7 @@ test('Tool-only response does not invent observations and failure resolves all c
 })
 
 test('Native tool reads the actual path and returns pixels without calling a helper model', async () => {
+  const imageFormat = load('src/shared/imageFormat.ts')
   const dir = mkdtempSync(join(tmpdir(), 'syntee-vision-test-'))
   let visionCalls = 0
   try {
@@ -99,6 +100,7 @@ test('Native tool reads the actual path and returns pixels without calling a hel
       '../ai/AIClient': { AIClient: class { analyzeImage() { visionCalls++ } } },
       './_shared': { resolveToolPath: (p, cwd) => resolve(cwd ?? '.', p) },
       '../../shared/mentions': { mimeFromExt: () => 'image/png', isImageMime: () => true },
+      '../../shared/imageFormat': imageFormat,
       '../../shared/constants': { getIdentityHeaders: () => ({}) },
     })
     const result = await analyzeImageFile({ path: 'preview.png', question: 'What is visible?' }, {}, dir)
@@ -108,13 +110,24 @@ test('Native tool reads the actual path and returns pixels without calling a hel
     assert.match(result.output, /What is visible/)
     assert.equal(visionCalls, 0)
     assert.equal((await analyzeImageFile({ path: 'missing.png' }, {}, dir)).success, false)
+
+    // Расширение ничего не доказывает: текст под именем *.png не должен
+    // превращаться в base64-пиксели и ломать запрос.
+    const fake = join(dir, 'fake.png')
+    writeFileSync(fake, Buffer.from('#!/bin/sh\necho not-an-image\n'))
+    const fakeResult = await analyzeImageFile({ path: 'fake.png' }, {}, dir)
+    assert.equal(fakeResult.success, false)
+    assert.equal(fakeResult.imageParts, undefined)
+    assert.match(fakeResult.error, /content is text/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('Pending visual result keeps ToolChain unfinished until response', () => {
   const source = readFileSync('src/renderer/src/components/ui/ToolChain/ToolChain.tsx', 'utf8')
   const start = source.indexOf('export function hasUnfinishedCalls(')
-  const end = source.indexOf('// ── Группировка', start)
+  // Конец функции — следующий крупный раздел файла (маркер «// ── Группировка»
+  // исчез при рефакторинге ленты на buildChain → тест падал на срезе).
+  const end = source.indexOf('// ── Единая лента хода работы', start)
   const { hasUnfinishedCalls } = load('ToolChain', {}, source.slice(start, end))
   const steps = [{ id: '1', type: 'tool_call', callId: 'a' }, { id: '2', type: 'tool_result', callId: 'a', visualAnalysis: { status: 'pending' } }]
   assert.equal(hasUnfinishedCalls(steps), true)
@@ -142,9 +155,12 @@ test('Main-process checkpoint update retains paths and updates the existing resu
 
 test('Renderer replaces visual result immutably across iterations without duplicating steps', () => {
   const source = readFileSync('src/renderer/src/hooks/useToolProgress.ts', 'utf8')
-  const start = source.indexOf("} else if (step.type === 'tool_result_update') {")
-  const end = source.indexOf('\n      }\n    })', start)
-  const compiled = ts.transpileModule('export function update(step: any, buf: any, liveSet: any, chatId: string) {' + source.slice(start + "} else if (step.type === 'tool_result_update') {".length, end) + '}', { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+  const marker = "} else if (step.type === 'tool_result_update') {"
+  const start = source.indexOf(marker)
+  // Конец ветки — СЛЕДУЮЩАЯ ветка else-if (раньше здесь был жёсткий срез до
+  // конца обработчика: любая новая ветка ниже ломала тест).
+  const end = source.indexOf('} else if (step.type ===', start + marker.length)
+  const compiled = ts.transpileModule('export function update(step: any, buf: any, liveSet: any, chatId: string) {' + source.slice(start + marker.length, end) + '}', { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   const module = { exports: {} }
   new Function('module', 'exports', compiled)(module, module.exports)
   const original = { id: '1', type: 'tool_result', callId: 'a', success: true, imagePaths: ['C:/preview.png'], visualAnalysis: { status: 'pending' } }

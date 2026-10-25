@@ -35,12 +35,6 @@ export interface GraphStats {
   fileHubs?: Array<{ label: string; degree: number; topImports: string[] }>
 }
 
-/** Project notes — titles shown in the system prompt. */
-export interface NotesInfo {
-  notes: Array<{ id: string; title: string }>
-  count: number
-}
-
 /** Persona — single-select run mode profile. */
 export interface PersonaInfo {
   id: string

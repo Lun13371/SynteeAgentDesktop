@@ -14,12 +14,12 @@ import { useUIStore } from '../../../store/ui.store'
 import { useSettingsStore } from '../../../store/settings.store'
 import { useChatStore } from '../../../store/chat.store'
 import { tabActions } from '../../../store/tabs.store'
-import { playSendSound } from '../../../utils/sounds'
+import { playSendSound, playSteerSound } from '../../../utils/sounds'
 import { useChatInputVoice } from './useChatInputVoice'
 import { useChatInputAttachments } from './useChatInputAttachments'
 import { ChatInputStatusRow } from './ChatInputStatusRow'
 import { ChatInputPlusMenu } from './ChatInputPlusMenu'
-import { ChatInputActionButton } from './ChatInputActionButton'
+import { ChatInputActionButton, STEER_HOLD_MS } from './ChatInputActionButton'
 import { ChatInputEditor, type EditorApi } from './ChatInputEditor'
 import { ChatInputMenus } from './ChatInputMenus'
 import { AudioVisualizerLayer } from './AudioVisualizerLayer'
@@ -32,6 +32,11 @@ interface ChatInputProps {
   /** ID текущего чата — для панели очереди запросов. */
   chatId?: string
   onSend: (text: string) => void
+  /**
+   * §steer — внедрить текст в контекст РАБОТАЮЩЕГО агента (long-press кнопки
+   * отправки 0,5с). Без колбэка удержание выключено, клик работает как раньше.
+   */
+  onSteer?: (text: string) => void
   disabled?: boolean
   isIncognito?: boolean
   /** Реплаи в инпуте: Message[] из state чата (роль шире — 'system' тоже
@@ -111,7 +116,7 @@ interface ChatInputProps {
 // Пропсы стабилизированы в ChatPage (useCallback-хендлеры).
 function ChatInput({
   chatId,
-  onSend, disabled, isIncognito,
+  onSend, onSteer, disabled, isIncognito,
   goal, onGoalChange,
   replyTo, onCancelReply,
   isGenerating, onStop,
@@ -246,6 +251,14 @@ function ChatInput({
   // указывает на текущую показанную запись из inputHistory (DESC — 0 самый
   // свежий). При ручной правке сбрасывается в null.
   const historyIdxRef = useRef<number | null>(null)
+
+  // ── §steer: удержание Enter (клавиатурный аналог удержания кнопки) ──────
+  // Отпустил раньше STEER_HOLD_MS → обычная отправка (в очередь).
+  // Дожал до порога → реплика внедряется в контекст работающего агента.
+  const [enterHold, setEnterHold] = useState(false)
+  const enterHoldTimer = useRef<number | null>(null)
+  // Таймер уже сработал → keyup не должен отправлять второй раз.
+  const enterSteerFired = useRef(false)
 
   useEffect(() => {
     window.syntee.agent.getSettings().then((s: { approvalMode: ApprovalMode }) => {
@@ -483,6 +496,31 @@ function ChatInput({
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSendSound()
     if (sendEffect) { setSendBurst(true); setTimeout(() => setSendBurst(false), 400) }
+  }
+
+  // §steer — long-press кнопки отправки: текст уходит НЕ в очередь, а прямо в
+  // контекст работающего агента (Agent вставит его на границе раунда).
+  // Поле очищаем сразу, как при обычном send: если активного рана уже нет,
+  // ChatPage откатится на обычную отправку этим же текстом.
+  // Вложения не поддерживаем: их пайплайн (processAttachmentsAndStream) живёт
+  // в chat:send, поэтому при наличии вложений жест просто ничего не делает —
+  // пользователь отправляет обычным кликом.
+  const handleSteer = () => {
+    const cleanText = stripAttachTokens(value).trim()
+    if (!cleanText || attachments.length > 0) return
+    if (disabled && !isGenerating) return
+    const payload = value.trim()
+    historyIdxRef.current = null
+    pluginAutoReqRef.current++
+    setPluginAuto(null)
+    onChangeValue('')
+    setSlashCmds([])
+    setMentionItems([])
+    mentionTokenRef.current = null
+    closeArgPicker()
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    if (uiSounds) playSteerSound()
+    onSteer?.(payload)
   }
 
   // Отправка текста без «живого» значения value (для command-подсказки).
@@ -764,9 +802,51 @@ function ChatInput({
       // (AgentConfirmDialog ловит тот же keydown на window и вызывает
       // respond), а не отправляет набранный в инпуте текст.
       if (document.querySelector('.agent-confirm-overlay')) return
+      // §steer — удержание Enter = внедрить реплику в контекст работающего
+      // агента (клавиатурный аналог удержания кнопки отправки). Условия те же:
+      // есть текст, идёт генерация, нет вложений — то есть обычный Enter ушёл
+      // бы в очередь. Отправку НЕ делаем сразу: ждём keyup (короткое нажатие)
+      // либо порога STEER_HOLD_MS (внедрение).
+      const canSteerKeyboard = !!onSteer && !!stripAttachTokens(value).trim() &&
+        !!isGenerating && attachments.length === 0
+      if (canSteerKeyboard) {
+        // Автоповтор удержания не должен перезапускать таймер.
+        if (e.repeat || enterHoldTimer.current !== null) return
+        enterSteerFired.current = false
+        setEnterHold(true)
+        enterHoldTimer.current = window.setTimeout(() => {
+          enterHoldTimer.current = null
+          setEnterHold(false)
+          enterSteerFired.current = true
+          handleSteer()
+        }, STEER_HOLD_MS)
+        return
+      }
       handleSend()
     }
   }
+
+  // §steer — keyup Enter: короткое нажатие отправляет как обычно, удержание
+  // уже сработало в таймере (флаг не даёт отправить второй раз).
+  const handleKeyUp = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter') return
+    if (enterHoldTimer.current !== null) {
+      clearTimeout(enterHoldTimer.current)
+      enterHoldTimer.current = null
+      setEnterHold(false)
+      if (!enterSteerFired.current) handleSend()
+      return
+    }
+    enterSteerFired.current = false
+  }
+
+  // Размонтирование/смена чата посреди удержания — таймер не должен выстрелить.
+  useEffect(() => () => {
+    if (enterHoldTimer.current !== null) {
+      clearTimeout(enterHoldTimer.current)
+      enterHoldTimer.current = null
+    }
+  }, [])
 
   // Логика кнопки (Send/Stop/Mic) вынесена в ChatInputActionButton.
   // Здесь остаётся только micBusy (для бейджа статус-строки) и lang.
@@ -927,6 +1007,7 @@ function ChatInput({
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
+            onKeyUp={handleKeyUp}
             onPasteImages={handlePaste}
             onPasteLinks={handlePasteLinks}
             onUserInput={handleEditorUserInput}
@@ -975,12 +1056,14 @@ function ChatInput({
             sendBurst={sendBurst}
             onStop={onStop}
             onSend={handleSend}
+            onSteer={onSteer ? handleSteer : undefined}
+            holdActive={enterHold && !!isGenerating && !!stripAttachTokens(value).trim() && attachments.length === 0}
             onMicClick={handleMicClick}
           />
         </div>
       </div>
 
-      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · @ — файлы и сущности</p>
+      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · @ — файлы и сущности · удержать Enter или кнопку отправки — внедрить в контекст работающего агента</p>
       </div>
 
       {/* Модалка превью вложения — лайтбокс для картинок, CodePreview для файлов */}

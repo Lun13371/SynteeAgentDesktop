@@ -57,7 +57,7 @@ export interface Persona {
    * update_todo, ask_user, save_memory, recall_memory, search_web,
    * fetch_page, search_images, analyze_image, spawn_agent, get_agent_status,
    * list_extensions, get_skill, edit_file, write_file, run_command,
-   * get_diagnostics, analyze_project, get_fast_context, generate_image.
+   * get_diagnostics, get_fast_context, generate_image.
    */
   allowedTools?: string[]
   /** Optional builtin skill name whose instructions are injected for this
@@ -87,7 +87,7 @@ const TOOLS_BASE = [
 ] as const
 
 const TOOLS_RESEARCH = [
-  'get_diagnostics', 'analyze_project', 'get_fast_context',
+  'get_diagnostics', 'get_fast_context',
 ] as const
 
 const TOOLS_EDIT_NO_RUN = [

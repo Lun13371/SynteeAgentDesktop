@@ -163,6 +163,7 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       liveState?: {
         toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
         spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
+        steers?: Array<{ steerId: string; text: string; ts: number; applied: boolean }>
       }
       meta: QueueItemMeta | null
     } | null
@@ -190,6 +191,36 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
     // в main и автоматически подхватываются здесь.
     buf.toolProgress = live.liveState?.toolProgress ?? {}
     buf.spawnedAgents = live.liveState?.spawnedAgents ?? []
+    // §steer — восстанавливаем карточки реплик, которые агент ЕЩЁ не подхватил
+    // (applied:false). Применённые уже лежат в bufferedIters как обычные шаги
+    // и не дублируются — матчинг по steerId. Без этого при переключении чата
+    // «ждущая» карточка исчезала бы, а потом появлялась снова.
+    const pendingSteers = (live.liveState?.steers ?? []).filter(s => !s.applied)
+    if (pendingSteers.length > 0) {
+      const known = new Set<string>()
+      for (const iter of buf.iters) {
+        for (const s of iter.steps) if (s.type === 'steer' && s.steerId) known.add(s.steerId)
+      }
+      const missing = pendingSteers.filter(s => !known.has(s.steerId))
+      if (missing.length > 0) {
+        const steps: ToolStep[] = missing.map(s => ({
+          id: `steer-${s.steerId}`,
+          type: 'steer' as const,
+          content: s.text,
+          timestamp: s.ts,
+          steerId: s.steerId,
+          steerApplied: false,
+        }))
+        const last = buf.iters[buf.iters.length - 1]
+        if (last) buf.iters = [...buf.iters.slice(0, -1), { ...last, steps: [...last.steps, ...steps] }]
+        else {
+          // Итераций нет (ран без тулов) — текст раунда переезжает в
+          // textBefore, иначе он отрендерится дважды.
+          buf.iters = [{ textBefore: buf.text, steps }]
+          buf.text = ''
+        }
+      }
+    }
     useChatStore.getState().hydrateLiveState(chatId, {
       msgId: live.msgId,
       text: buf.text,
@@ -213,6 +244,57 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * §steer — оптимистичная карточка реплики, внедряемой в контекст активного
+ * рана (long-press на кнопке отправки). Появляется мгновенно, ещё до того как
+ * агент дойдёт до границы раунда, — иначе жест выглядел бы как «ничего не
+ * произошло». Живёт в хвосте последней итерации; когда придёт настоящий шаг
+ * (steerApplied:true) useToolProgress заменит её по steerId.
+ */
+export function appendPendingSteer(chatId: string, text: string, steerId: string): void {
+  const buf = getBuf(chatId)
+  if (!buf.streamMsgId) return
+  // Синхронно сливаем буферизованные токены, чтобы карточка встала ПОСЛЕ уже
+  // написанного текста, а не разрезала его.
+  if (buf.flushTimer !== null) { clearTimeout(buf.flushTimer); buf.flushTimer = null }
+  drainBufs(chatId)
+  const step: ToolStep = {
+    id: `steer-${steerId}`,
+    type: 'steer',
+    content: text,
+    timestamp: Date.now(),
+    steerId,
+    steerApplied: false,
+  }
+  const iters = buf.iters
+  const last = iters[iters.length - 1]
+  if (last) {
+    buf.iters = [...iters.slice(0, -1), { ...last, steps: [...last.steps, step] }]
+  } else {
+    // Тулов ещё не было — текст раунда уходит в textBefore, карточка в ленту.
+    buf.iters = [{ textBefore: buf.text, steps: [step] }]
+    buf.text = ''
+  }
+  liveSet(chatId, {
+    iters: [...buf.iters],
+    text: buf.text,
+  })
+}
+
+/** §steer — убрать оптимистичную карточку (реплику не приняли: ран уже кончился). */
+export function removePendingSteer(chatId: string, steerId: string): void {
+  const buf = buffers.get(chatId)
+  if (!buf) return
+  let changed = false
+  buf.iters = buf.iters.map(iter => {
+    const next = iter.steps.filter(s => !(s.type === 'steer' && s.steerId === steerId))
+    if (next.length === iter.steps.length) return iter
+    changed = true
+    return { ...iter, steps: next }
+  })
+  if (changed) liveSet(chatId, { iters: [...buf.iters] })
 }
 
 // ── Side chat helpers ──────────────────────────────────────────────────

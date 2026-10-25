@@ -63,7 +63,14 @@ export function useBackgroundLoadFullChat({
         else setTimeout(r, 50)
       })
 
+    // Не стартуем в кадр переключения: первая же страница истории = IPC +
+    // prependOlderMessages → новый массив messages → полный пересчёт измерений
+    // виртуализатора, ровно поверх первого рендера нового чата. Два idle-слота
+    // = лента успевает отрисоваться и вуаль переключения уйти.
     const run = async () => {
+      await idleYield()
+      await idleYield()
+      if (cancelled) return
       while (!cancelled) {
         const st = useChatStore.getState()
         // Свитч чата — стоп.

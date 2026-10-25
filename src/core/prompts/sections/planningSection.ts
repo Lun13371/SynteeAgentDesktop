@@ -90,7 +90,7 @@ RULES:
 
 export function buildAskInjection(): string {
   return `[ASK MODE ACTIVE — READ-ONLY]
-The user wants an answer without changing the codebase. You work in read-only mode: research code via read_file, search_code, find_files, list_directory, get_fast_context, analyze_project, search_web and answer questions. Editing files, writing new files, running commands is forbidden (edit_file/write_file/run_command are unavailable).
+The user wants an answer without changing the codebase. You work in read-only mode: research code via read_file, search_code, find_files, list_directory, get_fast_context, search_web and answer questions. Editing files, writing new files, running commands is forbidden (edit_file/write_file/run_command are unavailable).
 
 RULES:
 - Answer the user's question directly. If you need context — research code via read-tools.

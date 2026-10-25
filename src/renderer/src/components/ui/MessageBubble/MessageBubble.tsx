@@ -1690,6 +1690,17 @@ function renderClickablePlainText(
   return <>{parts}</>
 }
 
+// Одна итерация агентского прогона в UI (live и persisted).
+// steps непустые — ход работы (уходит в общую ленту ToolChain);
+// steps пустые — финальный текст ответа, он остаётся в сообщении.
+type MsgIter = {
+  label?: string
+  textBefore: string
+  thinking?: string
+  thinkingMs?: number
+  steps: import('../ToolChain/ToolChain').ToolStep[]
+}
+
 // Мемоизированный тяжёлый контент сообщения
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
@@ -1805,6 +1816,47 @@ const MessageContent = memo(function MessageContent({
     return toolSteps.filter(s => s.type === 'tool_result' && s.imageUrl)
   }, [isUser, toolSteps, liveIters, message])
 
+  // ── Единая лента хода работы сообщения ────────────────────────────────
+  // Раньше ToolChain рендерился на КАЖДУЮ итерацию → в чате появлялась
+  // стопка «Выполнено за 356мс · 1 действие», «… 21мс · 1 действие».
+  // Теперь все итерации сообщения идут в ОДИН блок: одна шапка и одна лента
+  // (Think → текст → тулы → Think → …), как в референсе.
+  const msgIters = useMemo<MsgIter[] | undefined>(() => {
+    if (liveIters?.length) return liveIters
+    return (message as Message & { iterations?: MsgIter[] }).iterations
+  }, [liveIters, message])
+
+  const chainSections = useMemo(() => msgIters?.map(it => ({
+    thinking: it.thinking,
+    thinkingMs: it.thinkingMs,
+    // Текст модели ПЕРЕД тулами этой итерации живёт в ленте. Итерация без
+    // steps — это финальный ответ (buildFinalIters добавляет хвостовую
+    // text-only итерацию), её текст остаётся в сообщении, иначе схлопнется
+    // сам ответ. В режиме редактора текст правится отдельными textarea.
+    text: !editorActive && it.steps.length > 0 ? it.textBefore : undefined,
+    steps: it.steps,
+  })), [msgIters, editorActive])
+
+  const chainStepCount = useMemo(
+    () => (chainSections ?? []).reduce((n, s) => n + s.steps.length, 0),
+    [chainSections],
+  )
+
+  // Бежит ли ещё ход работы (для живого окна): незавершённые тулы, идущий
+  // визуальный анализ или стримящееся рассуждение. Когда пошёл финальный
+  // текст ответа — false, и лента сама сворачивается, освобождая место.
+  const liveChainRunning = !!isStreaming && !!liveIters?.length && (
+    liveIters.some(it => it.steps.some(s => s.visualAnalysis?.status === 'pending')) ||
+    hasUnfinishedCalls(liveIters.flatMap(it => it.steps)) ||
+    liveThinking?.isLive === true
+  )
+
+  // Текущее рассуждение уходит внутрь ленты, только если у последней итерации
+  // есть тулы (иначе оно рендерится отдельным блоком ниже — без дубля).
+  const liveThinkingInChain = isStreaming && (liveIters?.[liveIters.length - 1]?.steps.length ?? 0) > 0
+    ? liveThinking
+    : undefined
+
   // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
   const agentCounts = useMemo(() => {
     if (!toolSteps) return { filesChanged: 0, commandsRun: 0 }
@@ -1892,7 +1944,7 @@ const MessageContent = memo(function MessageContent({
             В режиме редактора текстовые сегменты (textBefore) превращаются
             в textarea — тулы остаются на месте между ними, правится только текст. */}
         {!isUser && !liveIters?.length && (() => {
-          type Iter = { label?: string; textBefore: string; thinking?: string; thinkingMs?: number; steps: import('../ToolChain/ToolChain').ToolStep[] }
+          type Iter = MsgIter
           const iters = (message as Message & { iterations?: Iter[] }).iterations
           if (!iters?.length) return null
           // Текущие значения сегментов в редакторе: черновик перекрывает БД.
@@ -1904,9 +1956,23 @@ const MessageContent = memo(function MessageContent({
           }
           return (
             <div className="message-iters">
-              {iters.map((iter, i) => (
+              {/* ОДИН блок хода работы на всё сообщение (вне редактора):
+                  все итерации — секциями, тулы и рассуждения одной лентой. */}
+              {!editorActive && chainStepCount > 0 && (
+                <ToolChain
+                  sections={chainSections}
+                  mode={toolOutputMode}
+                  isRunning={false}
+                  chatId={message.chatId}
+                />
+              )}
+              {iters.map((iter, i) => {
+                const hasSteps = iter.steps.length > 0
+                return (
                 <div key={i} className={`message-iteration${editorActive ? ' message-iteration--editing' : ''}`}>
-                  {iter.thinking && (
+                  {/* Рассуждение: в ленте (выше) для итераций с тулами; здесь —
+                      только когда тулов нет, и целиком в режиме редактора. */}
+                  {iter.thinking && (editorActive || !hasSteps) && (
                     <ThinkingBlock text={iter.thinking} thinkingMs={iter.thinkingMs} />
                   )}
                   {editorActive ? (
@@ -1918,13 +1984,21 @@ const MessageContent = memo(function MessageContent({
                         />
                       </div>
                     )
-                  ) : iter.textBefore && (
+                  ) : !hasSteps && iter.textBefore ? (
+                    // Итерация без тулов — это финальный ответ: остаётся в
+                    // сообщении (в ленту не уходит, иначе схлопнется ответ).
                     <div className="message-content selectable">
                       <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
-                  )}
-                  {iter.steps.length > 0 && (
-                    <ToolChain steps={iter.steps} mode={toolOutputMode} isRunning={false} />
+                  ) : null}
+                  {/* В редакторе цепочки остаются по-итерационным: правка
+                      текста должна идти рядом со своими тулами. */}
+                  {editorActive && hasSteps && (
+                    <ToolChain
+                      steps={iter.steps}
+                      mode={toolOutputMode}
+                      isRunning={false}
+                    />
                   )}
                   {iter.steps.some(s => s.toolName === 'get_fast_context') && (() => {
                     const fcSaved = extractFastContextResult(iter.steps)
@@ -1969,7 +2043,8 @@ const MessageContent = memo(function MessageContent({
                       </div>
                     ))}
                 </div>
-              ))}
+                )
+              })}
             </div>
           )
         })()}
@@ -2041,6 +2116,18 @@ const MessageContent = memo(function MessageContent({
         {/* ── ИТЕРАЦИОННЫЙ РЕНДЕР (live агент: textBefore → toolchain → textAfter) ── */}
         {!isUser && liveIters && liveIters.length > 0 ? (
           <div className="message-segments">
+            {/* ОДИН блок хода работы на всё сообщение */}
+            {chainStepCount > 0 && (
+              <ToolChain
+                sections={chainSections}
+                mode={toolOutputMode}
+                isRunning={liveChainRunning}
+                busy={isStreaming}
+                toolProgress={toolProgress}
+                liveThinking={liveThinkingInChain}
+                chatId={message.chatId}
+              />
+            )}
             {liveIters.map((iter, ii) => {
               const isLastIter = ii === liveIters.length - 1
               const lastStepIsResult = iter.steps[iter.steps.length - 1]?.type === 'tool_result'
@@ -2051,26 +2138,18 @@ const MessageContent = memo(function MessageContent({
               // «выполняется» исчезали, пачки одинаковых тулов схлопывались),
               // хотя 2 из 3 тулов ещё работали.
               const unfinished = hasUnfinishedCalls(iter.steps)
+              const hasSteps = iter.steps.length > 0
               return (
                 <div key={ii} className="message-segment">
-                  {/* Thinking блок этой итерации — на своей позиции */}
-                  {iter.thinking && (
+                  {/* Итерация без тулов (финальный ответ / чистый reasoning) —
+                      её текст и рассуждение остаются в сообщении. */}
+                  {iter.thinking && !hasSteps && (
                     <ThinkingBlock text={iter.thinking} thinkingMs={iter.thinkingMs} />
                   )}
-                  {/* Текст ДО тулчейна */}
-                  {iter.textBefore && (
+                  {!hasSteps && iter.textBefore && (
                     <div className="message-content selectable">
                       <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
-                  )}
-                  {/* Тулчейн итерации */}
-                  {iter.steps.length > 0 && (
-                    <ToolChain
-                      steps={iter.steps}
-                      mode={toolOutputMode}
-                      isRunning={!!isStreaming && (iter.steps.some(s => s.visualAnalysis?.status === 'pending') || (isLastIter && (!lastStepIsResult || unfinished)))}
-                      toolProgress={isLastIter ? toolProgress : undefined}
-                    />
                   )}
                   {/* Fast Context блок — после toolchain, внутри итерации.
                       Позиция стабильна: стримящийся текст идёт ниже. */}
@@ -2137,7 +2216,10 @@ const MessageContent = memo(function MessageContent({
                 Условие: isLive (стрим идёт) или ms задан (thinking завершён,
                 текст ещё в store до save). text убран из liveThinking —
                 ThinkingBlock читает его из store через storeChatId. */}
-            {liveThinking && (liveThinking.isLive || liveThinking.ms !== undefined) && (
+            {liveThinking && (liveThinking.isLive || liveThinking.ms !== undefined) &&
+              // Если у последней итерации есть тулы — live-thinking уже
+              // отрендерен последней строкой её цепочки (единая лента).
+              !(isStreaming && liveIters[liveIters.length - 1]?.steps?.length > 0) && (
               <ThinkingBlock
                 liveText={liveThinking?.text}
                 thinkingMs={liveThinking.ms}

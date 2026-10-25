@@ -300,6 +300,9 @@ interface ChatInputEditorProps {
   value: string
   onChange: (text: string) => void
   onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void
+  /** §steer — keyup нужен для удержания Enter (отпустил раньше 500мс →
+   *  обычная отправка, дожал → реплика внедряется в контекст агента). */
+  onKeyUp?: (e: React.KeyboardEvent<HTMLDivElement>) => void
   /** Вызывается когда в буфере есть File-объекты (картинки ИЛИ файлы,
    *  скопированные в Проводнике) — хук добавит их как вложения. */
   onPasteImages: (e: React.ClipboardEvent<HTMLDivElement>) => void
@@ -329,6 +332,7 @@ export function ChatInputEditor({
   value,
   onChange,
   onKeyDown,
+  onKeyUp,
   onPasteImages,
   onPasteLinks,
   onUserInput,
@@ -577,6 +581,7 @@ export function ChatInputEditor({
       spellCheck={false}
       onInput={emitChange}
       onKeyDown={onKeyDown}
+      onKeyUp={onKeyUp}
       onPaste={handlePasteInner}
       onDrop={handleDropInner}
     />

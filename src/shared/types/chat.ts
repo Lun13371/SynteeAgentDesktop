@@ -44,7 +44,10 @@ export interface Project {
 
 export interface ToolStep {
   id: string
-  type: 'tool_call' | 'tool_result'
+  /** 'steer' — реплика пользователя, внедрённая в контекст агента ПОСРЕДИ
+   *  рана (long-press на кнопке Send). Не тул: живёт в ленте итерации как
+   *  отдельная карточка и персистится вместе с assistant-сообщением. */
+  type: 'tool_call' | 'tool_result' | 'steer'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -56,6 +59,13 @@ export interface ToolStep {
   callId?: string    // ID tool_call для связи call→result (реконструкция истории)
   /** Имя MCP-сервера для MCP-тулов (mcp__server__tool). undefined для встроенных. */
   serverName?: string
+  /** Клиентский id внедрённой реплики (тип 'steer'). Совпадает с steerId,
+   *  который renderer отправил в chat:steer — по нему оптимистичная
+   *  pending-карточка заменяется на подтверждённую. */
+  steerId?: string
+  /** true — агент уже вставил реплику в messages (дошёл до границы раунда).
+   *  false/undefined — карточка «ждёт границы раунда». */
+  steerApplied?: boolean
   /** Native analyze_image lifecycle (основная модель получает пиксели напрямую).
    *  Исходный tool_result помечается 'pending' — пиксели уже отданы модели, но
    *  визуальный ответ ещё не пришёл. Позже приходит отдельный tool_result_update

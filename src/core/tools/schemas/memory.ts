@@ -1,4 +1,4 @@
-// ── Memory/notes/graph tool schemas ──────────────────────────────────────
+// ── Memory tool schemas ──────────────────────────────────────────────────
 
 export const MEMORY_TOOL_SCHEMAS = [
   {
@@ -37,24 +37,6 @@ export const MEMORY_TOOL_SCHEMAS = [
           crossProject: { type: 'boolean', description: 'If true, search across ALL projects (not just the current one). Default: false. Useful when the topic may span multiple projects.' },
         },
         required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'manage_notes',
-      description: 'Manage notes for the project or chat. Actions: create, update, delete, list. Project notes are visible in all chats of the project (shown in system prompt). Chat notes are specific to the current chat. Use for remembering important project facts, decisions, or context that should persist across sessions. Max 15 project notes — use sparingly, only for important information.',
-      parameters: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', enum: ['create', 'update', 'delete', 'list'], description: 'What to do: create a new note, update an existing one, delete one, or list all notes.' },
-          scope: { type: 'string', enum: ['project', 'chat'], description: 'project — note visible in all chats of this project; chat — note only for the current chat.' },
-          title: { type: 'string', description: '[create/update] Note title (1-100 chars). Required for create, optional for update.' },
-          content: { type: 'string', description: '[create/update] Note body text. Markdown supported. Optional for update (omit to keep existing).' },
-          note_id: { type: 'string', description: '[update/delete] ID of the note to update or delete.' },
-        },
-        required: ['action', 'scope'],
       },
     },
   },

@@ -45,7 +45,6 @@ import { browserManager } from './managers/BrowserManager'
 import { log } from '../core/logger'
 import { configurePerformanceDiagnostics, startPerformanceSampling } from '../core/performanceDiagnostics'
 import { registerMemoryIPC } from './ipc/memory.ipc'
-import { registerNotesIPC } from './ipc/notes.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
@@ -394,7 +393,6 @@ app.whenReady().then(async () => {
     .then(({ loadExtensionsOnBoot }) => loadExtensionsOnBoot(store))
     .catch(err => console.warn('[browser:ext] boot load failed:', err))
   registerMemoryIPC(store)
-  registerNotesIPC(() => mainWindow.getWindow())
   registerProviderIPC(store)
   registerDebugIPC(store)
   registerImageIPC(store, mainWindow)

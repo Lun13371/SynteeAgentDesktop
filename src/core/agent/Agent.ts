@@ -1,7 +1,9 @@
 ﻿import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import { agentModelSupportsVision } from '../ai/visionSupport'
-import { hydrateToolImageContent } from '../ai/toolImageHistory'
+import { hydrateHistoryContents } from '../ai/toolImageHistory'
+import { ImageRequestBudget } from '../../shared/imageFormat'
+import { STEER_MARKER } from '../../shared/steer'
 import { NativeImageAnalysis } from './nativeImageAnalysis'
 import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, actionAllowlistKey } from './commandSafety'
 import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, isWebSourceTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
@@ -31,6 +33,7 @@ import {
   FALLBACK_SYSTEM_PROMPT, VERIFICATION_INTERVAL,
   normalizeToolName, findMissingRequiredArgs, formatMissingArgsMessage, getToolErrorHint, isSequentialTool,
   buildToolFingerprint, dropOldestRoundsIfOverflow, extractMcpServerName,
+  imagePayloadInfos,
   tryRepairJson,
   salvageEditFileArgs,
 } from './utils'
@@ -67,9 +70,12 @@ const NON_DESTRUCTIVE_TOOLS = new Set([
   'recall_memory',
   'update_working_memory',
   'update_todo',
-  'manage_notes',
   'ask_user',
 ])
+
+// §steer — реплики пользователя, внедрённые в контекст посреди рана: маркер
+// живёт в shared/steer.ts (он же используется при пересборке истории в
+// chatContextHelpers, чтобы следующий ход видел правку пользователя).
 
 export class Agent {
   private store: Store
@@ -138,6 +144,44 @@ export class Agent {
   private loopGuardHits = new Map<string, number>()
   // §1.8 — undo/rollback: стек {path, originalContent} для отмены последних изменений
   private undoStack: Array<{ path: string; originalContent: string | null }> = []
+
+  /**
+   * §steer — реплики пользователя, присланные ПОСРЕДИ активного рана
+   * (long-press на кнопке Send → chat:steer → worker.postMessage).
+   * Цикл run() дренажит их на границе раунда (перед следующим обращением к
+   * модели) и вставляет как role:'user' с маркером STEER_MARKER — агент видит
+   * «пользователь написал это во время работы» и продолжает, НЕ прерывая
+   * текущий стрим и не теряя уже сделанное.
+   * Никакого лимита: сколько прислали, столько и вставим, по порядку (FIFO).
+   */
+  private pendingSteers: Array<{ id: string; text: string }> = []
+
+  /**
+   * Вызывается из ai-worker по сообщению {type:'steer'}. Пустой текст — no-op.
+   * Метод потокобезопасен по смыслу: worker_threads однопоточны в рамках
+   * воркера, запись происходит в паузе между await-точками агента.
+   */
+  pushSteer(id: string, text: string): void {
+    const clean = typeof text === 'string' ? text.trim() : ''
+    if (!clean) return
+    this.pendingSteers.push({ id: id || `steer-${Date.now()}`, text: clean })
+  }
+
+  /** Есть ли не применённые реплики (нужно воркеру/main для статистики ранa). */
+  get hasPendingSteers(): boolean {
+    return this.pendingSteers.length > 0
+  }
+
+  /**
+   * §steer — пользователь передумал: убираем реплику из очереди на внедрение.
+   * Работает только пока она НЕ вставлена в messages (карточка в состоянии
+   * «ждёт границы раунда»). Возвращает true, если что-то реально сняли.
+   */
+  cancelSteer(id: string): boolean {
+    const before = this.pendingSteers.length
+    this.pendingSteers = this.pendingSteers.filter(s => s.id !== id)
+    return this.pendingSteers.length !== before
+  }
 
   // Персистентный кэш read_file — переживает несколько run() вызовов,
   // инвалидация по mtime+size файла на диске.
@@ -293,11 +337,28 @@ export class Agent {
     const supportsVision = agentModelSupportsVision(this.store, this.role)
     const toolSettings = getToolSettings(this.store)
     const sanitizedSystemPrompt = sanitizeToolInstructions(systemPrompt || FALLBACK_SYSTEM_PROMPT, toolSettings)
+    // Пиксели из истории переподставляются в КАЖДЫЙ запрос, поэтому чат из
+    // десяти скриншотов отправлял десятки мегабайт на каждом ходу — и чем
+    // длиннее диалог, тем «случайнее» падал запрос (413 / request too large).
+    // Бюджет гидрации расходуется с конца: свежие результаты в приоритете,
+    // старые остаются текстом с путём (модель может перечитать их тулом).
+    const historyList = history ?? []
+    // ОДИН бюджет на весь запрос: история и текущий раунд тулов делят лимиты
+    // провайдера (число картинок, 2000px при нескольких изображениях, байты).
+    const imageBudget = new ImageRequestBudget()
+    // Вложения текущего сообщения уже занимают часть бюджета запроса —
+    // учитываем их, чтобы история не добила payload до 413.
+    if (options?.imageParts?.length) {
+      for (const info of imagePayloadInfos(options.imageParts as Array<{ type: string; image_url?: { url: string } }>)) {
+        imageBudget.accept(info)
+      }
+    }
+    const historyContents = hydrateHistoryContents(historyList, supportsVision, imageBudget)
     const messages: AgentMessage[] = [
       { role: 'system', content: sanitizedSystemPrompt },
-      ...(history ?? []).map(m => ({
+      ...historyList.map((m, index) => ({
         role: m.role,
-        content: m.role === 'tool' ? hydrateToolImageContent(m, supportsVision) : m.content,
+        content: historyContents[index],
         ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.name ? { name: m.name } : {}),
@@ -331,6 +392,9 @@ export class Agent {
     // привязаны к конкретному контексту/файлу, между turn'ами они unrelated.
     this.recentErrorFingerprints = []
     this.recentParseFailures = []
+    // §steer — новый ран не наследует реплики, присланные предыдущему
+    // (они либо уже вставлены в его messages, либо ран был остановлен).
+    this.pendingSteers = []
     // Инициализируем персистентный кэш из снимка (передаётся из main через worker)
     this.fileCache = new Map(Object.entries(options?.fileCacheSnapshot ?? {}))
     // ── Session-level Map caps (anti-leak) ──────────────────────────────
@@ -486,6 +550,24 @@ export class Agent {
           this.buildSummaryDetails(modifiedFiles),
         )
         return
+      }
+
+      // §steer — реплики пользователя, присланные во время работы.
+      // Вставляем ровно на границе раунда: все tool_result предыдущего раунда
+      // уже лежат в messages (иначе user-сообщение разрезало бы пару
+      // assistant.tool_calls → tool и сломало следующий запрос), а следующий
+      // вызов модели гарантированно их увидит. Ничего не обрываем — текущий
+      // стрим/тул доводится до конца, уже сделанная работа не теряется.
+      if (this.pendingSteers.length > 0 && !signal?.aborted) {
+        const incoming = this.pendingSteers.splice(0)
+        for (const steer of incoming) {
+          messages.push({ role: 'user', content: `${STEER_MARKER}\n\n${steer.text}` })
+          // Карточка в ленте рана: renderer заменит ею оптимистичную
+          // pending-карточку (матчинг по steerId) и пометит «внедрено».
+          callbacks.onStep({ type: 'steer', content: steer.text, steerId: steer.id, steerApplied: true })
+          log('[Agent] steer applied (round %s): %s', step, steer.text.slice(0, 120))
+        }
+        callbacks.onStatus?.('Учтено сообщение пользователя')
       }
 
       try {
@@ -648,6 +730,26 @@ export class Agent {
               messages.push({ role: 'system', content: goalRuntime.instruction() + '\nContinue within this run. If finished, collect permitted fresh verification evidence and provide goal_report; if blocked, report blocked.' })
               continue
             }
+          }
+          // §steer — финальный ответ пришёл, но пользователь успел прислать
+          // реплику по ходу работы. Не завершаем ран: дописываем ответ в
+          // messages как assistant, а следующая итерация цикла вставит реплику
+          // и модель продолжит работу в ТОМ ЖЕ ране (тот же блок «хода работы»
+          // в ленте, без нового пузыря и без потери уже сделанного).
+          if (this.pendingSteers.length > 0 && !signal?.aborted) {
+            // Раунд завершён — таймер бездействия этого раунда больше не нужен,
+            // иначе он «выстрелит» посреди следующего.
+            if (inactivityTimer) clearTimeout(inactivityTimer)
+            if (answer.trim()) {
+              messages.push({
+                role: 'assistant',
+                content: answer,
+                ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
+                ...(response.thinking_blocks ? { thinking_blocks: response.thinking_blocks } : {}),
+              })
+            }
+            log('[Agent] steer pending on final answer — продолжаю ран вместо завершения')
+            continue
           }
           const goalAnswer = goalRuntime ? `**Цель:** ${goalRuntime.goal.objective}\n\n${goalRuntime.goal.progress.at(-1) ?? 'Работа остановлена.'}\n\n${goalRuntime.goal.blocker ?? ''}${goalRuntime.goal.evidence.length ? '\n\n**Проверки:**\n' + goalRuntime.goal.evidence.map(item => '- ' + item).join('\n') : ''}` : answer
           if (goalRuntime) callbacks.onStep({ type: 'answer', content: goalAnswer })
@@ -1066,13 +1168,13 @@ export class Agent {
             // В planning-режиме даём явное напоминание вместо generic-блока —
             // модель могла скопировать edit/run тулы из старой истории чата.
             const blockedMsg = planningMode
-              ? `You are in PLANNING MODE (read-only). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Return to the protocol: Step 2 — read-only research (get_fast_context, read_file, search_code, analyze_project, spawn_agent) + ask_user about hard parts. Step 3 — plan inside <plan title="..." summary="...">…</plan> with per-phase Ownership/Verification/Edge cases. Step 4 — review against the original request. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
+              ? `You are in PLANNING MODE (read-only). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Return to the protocol: Step 2 — read-only research (get_fast_context, read_file, search_code, spawn_agent) + ask_user about hard parts. Step 3 — plan inside <plan title="..." summary="...">…</plan> with per-phase Ownership/Verification/Edge cases. Step 4 — review against the original request. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
               : subagentRoleDef
                 ? `You are a ${subagentRoleDef.nameEn} sub-agent. "${fn.name}" is not available for this role. Allowed tools: ${allowed}. Sub-agents CANNOT spawn nested sub-agents — if the task genuinely needs "${fn.name}", report this to the parent agent. Do not call "${fn.name}" again.`
                 : personaAllowed
                   ? `You are in the ${persona} persona. "${fn.name}" is not in this persona's toolset. Stay in role: use only the allowed tools for this persona. Allowed: ${allowed}. If the task genuinely needs "${fn.name}", tell the user — they can switch persona (e.g. /classic or the + menu). Do not call "${fn.name}" again.`
                   : personaReadonly
-                    ? `You are in a READ-ONLY persona (${persona}). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Use read-tools (read_file, search_code, get_fast_context, analyze_project, ask_user) to research and answer in words. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
+                    ? `You are in a READ-ONLY persona (${persona}). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Use read-tools (read_file, search_code, get_fast_context, ask_user) to research and answer in words. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
                     : `Tool "${fn.name}" is unavailable in the current mode (read-only/planning/side-chat). Allowed only: ${allowed}. Do not call it again — use the allowed tools for research.`
             resultMap.set(callId, { contentForAI: blockedMsg, callId, name: fn.name })
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: blockedMsg, success: false, callId, hidden: isHiddenTool })
@@ -1142,7 +1244,7 @@ export class Agent {
           if (codeModeInternal && codeModePolicy === 'read-only'
             && fn.name !== 'read_file' && fn.name !== 'read_files' && fn.name !== 'find_files'
             && fn.name !== 'search_code' && fn.name !== 'list_directory' && fn.name !== 'get_fast_context'
-            && fn.name !== 'analyze_project' && fn.name !== 'get_diagnostics'
+            && fn.name !== 'get_diagnostics'
             && fn.name !== 'recall_memory' && fn.name !== 'get_system_info') {
             approval.block = true
             approval.reason = 'Code Mode настроен только для чтения и анализа'
@@ -1502,7 +1604,28 @@ export class Agent {
             }
           }
 
-          const nativeVisualHandoff = fn.name === 'analyze_image' && result.success && !!result.imageParts?.length
+          // analyze_image прямой пас: тул может вернуть imageParts (картинка
+          // для vision-способной основной модели). Перед вложением проверяем
+          // бюджет раунда — иначе несколько больших картинок в одном запросе
+          // дают 413 «request too large» и ломают чат.
+          const returnedImageParts = (result as { imageParts?: ContentPart[] }).imageParts
+          let acceptedImageParts: ContentPart[] | undefined = returnedImageParts
+          let imageBudgetNote = ''
+          if (returnedImageParts?.length) {
+            // Бюджет общий с историей (imageBudget): провайдер считает лимиты
+            // на весь запрос, поэтому несколько больших картинок подряд в одном
+            // раунде раньше складывались в один запрос без ограничения —
+            // 6 файлов по 3.5 МБ давали ~28 МБ payload и гарантированный 413.
+            const infos = imagePayloadInfos(returnedImageParts)
+            const reason = infos.map(info => imageBudget.reject(info)).find(r => r !== null) ?? null
+            if (reason) {
+              acceptedImageParts = undefined
+              imageBudgetNote = `\n[Image pixels were NOT attached: ${reason}. Continue without these pixels (do not retry this tool now) or ask the user to send the image in a new message.]`
+            } else {
+              for (const info of infos) imageBudget.accept(info)
+            }
+          }
+          const nativeVisualHandoff = fn.name === 'analyze_image' && result.success && !!acceptedImageParts?.length
           const visibleToolContent = imageUrl ? 'Изображение сгенерировано' : this.toolDispatcher.maskSecretValuesInText(result.output || result.error || '')
           goalRuntime?.observe(fn.name, args, result.success, visibleToolContent, callId, dryRunMode)
           if (nativeVisualHandoff) nativeImageAnalysis.add(callId, visibleToolContent, result.imagePaths)
@@ -1528,12 +1651,11 @@ export class Agent {
           // analyze_image прямой пас: тул может вернуть imageParts (картинка
           // для vision-способной основной модели) — прокидываем их в
           // tool-сообщение ниже.
-          const toolImageParts = (result as { imageParts?: ContentPart[] }).imageParts
           resultMap.set(callId, {
-            contentForAI,
+            contentForAI: imageBudgetNote ? `${contentForAI}${imageBudgetNote}` : contentForAI,
             callId,
             name: fn.name,
-            ...(toolImageParts?.length ? { imageParts: toolImageParts } : {}),
+            ...(acceptedImageParts?.length ? { imageParts: acceptedImageParts } : {}),
           })
         }
 

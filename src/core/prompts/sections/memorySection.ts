@@ -1,9 +1,9 @@
 /**
- * Memory / knowledge-graph / notes blocks — the agent sees how much memory
- * it has, the project structure, and which project notes exist.
+ * Memory / knowledge-graph blocks — the agent sees how much memory
+ * it has and the project structure.
  */
 
-import type { MemoryStats, GraphStats, NotesInfo } from './_shared'
+import type { MemoryStats, GraphStats } from './_shared'
 
 /**
  * Memory stats block — the agent sees how much memory it has.
@@ -104,16 +104,4 @@ export function buildGraphStatsBlock(stats?: GraphStats): string {
   }
 
   return block
-}
-
-/**
- * Project notes block — the agent sees which notes exist in the project.
- * Only titles are shown (not content) to save tokens. The agent can use
- * manage_notes tool with action='list' to read full content.
- * If no notes or no info — empty string.
- */
-export function buildNotesBlock(notesInfo?: NotesInfo): string {
-  if (!notesInfo || notesInfo.count === 0) return ''
-  const titles = notesInfo.notes.map((n, i) => `${i + 1}. ${n.title}`).join('\n')
-  return `\n## Project notes (${notesInfo.count})\n${titles}\nUse manage_notes tool to read, create, update, or delete notes.\n`
 }

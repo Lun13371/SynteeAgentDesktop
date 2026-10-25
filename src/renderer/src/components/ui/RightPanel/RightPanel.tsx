@@ -12,7 +12,6 @@ import GitPanel from '../GitPanel/GitPanel'
 import SessionChangesPanel from '../SessionChangesPanel/SessionChangesPanel'
 import SideChatPanel from '../SideChatPanel/SideChatPanel'
 import TerminalPanel from '../TerminalPanel/TerminalPanel'
-import NotesPanel from '../NotesPanel/NotesPanel'
 import BrowserPanel from '../BrowserPanel/BrowserPanel'
 import ChartPreviewPanel from './ChartPreviewPanel'
 import FileTabContextMenu from '../../layout/TitleBar/FileTabContextMenu'
@@ -46,7 +45,6 @@ const ALL_PANELS: Array<{ id: BuiltinRightPanelTab; label: string; icon: string;
   { id: 'terminal', label: 'Терминал', icon: 'terminal', shortcut: 'Ctrl+`' },
   { id: 'agents', label: 'Агенты', icon: 'git-branch' },
   { id: 'session', label: 'Сессия', icon: 'history' },
-  { id: 'notes', label: 'Заметки', icon: 'fileText' },
   { id: 'chart', label: 'График', icon: 'chart' },
   { id: 'browser', label: 'Браузер', icon: 'appWindow' },
 ]
@@ -58,7 +56,6 @@ const PANEL_META: Record<BuiltinRightPanelTab, { label: string; icon: string }> 
   terminal: { label: 'Терминал', icon: 'terminal' },
   agents: { label: 'Агенты', icon: 'git-branch' },
   session: { label: 'Сессия', icon: 'history' },
-  notes: { label: 'Заметки', icon: 'fileText' },
   chart: { label: 'График', icon: 'chart' },
   browser: { label: 'Браузер', icon: 'appWindow' },
 }
@@ -666,9 +663,6 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId,
                         )}
                         {panelKind === 'terminal' && (
                           <TerminalPanel currentChatId={currentChatId} />
-                        )}
-                        {panelKind === 'notes' && (
-                          <NotesPanel currentChatId={currentChatId ?? null} />
                         )}
                         {panelKind === 'chart' && (
                           <ChartPreviewPanel />

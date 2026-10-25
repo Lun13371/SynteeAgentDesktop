@@ -28,6 +28,7 @@ import { rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { log } from '../../core/logger'
 import { BROWSER_PARTITION, DEFAULT_BROWSER_PROFILE_ID, IPC_EVENTS } from '../../shared/constants'
+import { MAX_IMAGE_FILE_BYTES, formatBytes } from '../../shared/imageFormat'
 import { getChatBrowserMode, setChatBrowserMode } from '../../core/db/chats'
 import { domAction, inspect, condition, isChildFrame, locate, refInfo, snapshot, clampTimeout, resolveFrame, limitSnapshotResult } from '../browser/pageAutomation'
 import { createHash } from 'node:crypto'
@@ -1225,10 +1226,24 @@ class BrowserManagerImpl {
       if (image.isEmpty()) {
         return { success: false, error: 'Screenshot failed: the page is not visible (browser panel hidden?). Open the Browser panel and retry.' }
       }
-      const png = image.toPNG()
-      const maxPngBytes = 12 * 1024 * 1024
-      if (png.byteLength > maxPngBytes) {
-        return { success: false, error: `Screenshot is too large (${Math.round(png.byteLength / 1024 / 1024)} MB PNG; limit ${maxPngBytes / 1024 / 1024} MB). Use a smaller clip or viewport.` }
+      let png = image.toPNG()
+      // Полностраничный скриншот длинной страницы легко даёт >10 МБ PNG.
+      // Такой снимок либо отклонялся, либо уходил в контекст мегабайтами
+      // base64 и ронял запрос (413 / request too large), потому что подсчёт
+      // токенов пиксели не видел. Теперь уменьшаем изображение до влезающих
+      // размеров вместо отказа.
+      for (let attempt = 0; attempt < 3 && png.byteLength > MAX_IMAGE_FILE_BYTES; attempt++) {
+        const scale = Math.max(0.1, Math.sqrt(MAX_IMAGE_FILE_BYTES / png.byteLength) * 0.95)
+        const size = image.getSize()
+        image = image.resize({
+          width: Math.max(1, Math.floor(size.width * scale)),
+          height: Math.max(1, Math.floor(size.height * scale)),
+          quality: 'good',
+        })
+        png = image.toPNG()
+      }
+      if (png.byteLength > MAX_IMAGE_FILE_BYTES) {
+        return { success: false, error: `Screenshot is too large (${Math.round(png.byteLength / 1024 / 1024)} MB PNG; limit ${formatBytes(MAX_IMAGE_FILE_BYTES)}). Use a smaller clip or viewport.` }
       }
       const base64 = png.toString('base64')
       return {

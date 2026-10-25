@@ -134,6 +134,45 @@
   color: var(--text-muted, #5c5c68);
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Очередь вопросов ───────────────────────────────────────────────
+   Панель глобальная: ask_user может прийти из другого чата/суб-агента.
+   Новый вопрос встаёт в очередь, активный не перекрывается — бейдж
+   показывает, сколько ещё ждёт ответа. */
+.qp-queue-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: var(--font-size-xs, 11px);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary, #a0a0ac);
+  background: var(--overlay-5, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  white-space: nowrap;
+}
+
+.qp-header-origin {
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm, 6px);
+  font-size: var(--font-size-xs, 11px);
+  font-weight: 500;
+  color: var(--text-muted, #5c5c68);
+  background: var(--overlay-5, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  vertical-align: middle;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
 }
 
 .qp-close {

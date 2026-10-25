@@ -225,6 +225,11 @@
   padding: 6px 8px;
   border: 1px solid var(--border);
 }
+/* Живое окно хода работы внутри карточки саб-агента: в 1.5 раза выше
+   общего варианта (240px), но всё ещё компактнее основного чата. */
+.agent-stream-card__steps .tc2--running .tc2-iters-wrap--open .tc2-iters {
+  max-height: 240px;
+}
 
 /* Итог — markdown */
 .agent-stream-card__result {

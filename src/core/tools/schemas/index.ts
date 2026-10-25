@@ -83,7 +83,7 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
 
   // Work mode removed — always a full Code tool set.
   // In planning mode — read-only + research: all research tools are available
-  // (get_fast_context, analyze_project, search_code, read_file, ...), the
+  // (get_fast_context, search_code, read_file, ...), the
   // ask_user clarifying-question tool, but edits are FORBIDDEN (edit/write/
   // run_command/revert). The planner researches code → clarifies with the
   // user → writes the plan directly in the answer, wrapped in
@@ -116,8 +116,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     // Always available — the model decides when to save/recall.
     'save_memory',
     'recall_memory',
-    // Notes: manage project/chat notes (create/update/delete/list).
-    'manage_notes',
     'publish_result',
     // Web search, page fetching, image search and sub-agents — always
     // available to the agent, the model decides when to use them.
@@ -160,12 +158,11 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     // Ensure research tools are available if the persona is read-only-ish
     // (allowlists already include them explicitly — this is a safety net).
     if (!names.includes('get_diagnostics') && isReadonlyPersona(persona!)) {
-      names.push('get_diagnostics', 'analyze_project', 'get_fast_context')
+      names.push('get_diagnostics', 'get_fast_context')
     }
   } else if (planningMode || askMode || (persona && isReadonlyPersona(persona))) {
     // Planning / Ask / read-only persona (legacy path): research tools, read-only checks, no edits.
     names.push('get_diagnostics')
-    names.push('analyze_project')
     names.push('get_fast_context')
   } else {
     // Normal mode (or full persona without explicit allowlist): file edits + commands + verification.
@@ -173,7 +170,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     names.push('write_file')
     names.push('run_command')
     names.push('get_diagnostics')
-    names.push('analyze_project')
     names.push('get_fast_context')
     // Dots: управление always-on агентами — только в normal-режиме.
     // ask/planning/read-only и фоновые wake-раны Dot'ов (oneShotMode:'ask')

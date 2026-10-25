@@ -245,6 +245,12 @@ export function playToastSound(type: 'default' | 'success' | 'error' | 'info' = 
   playActionSound(`toast${cap}` as SoundAction)
 }
 export function playClickSound() { playActionSound('buttonClick') }
+/**
+ * §steer — реплика внедрена в контекст работающего агента (long-press на
+ * кнопке отправки). Отдельный сигнал от обычного send: пользователь должен
+ * слышать, что сообщение ушло ВНУТРЬ рана, а не встало в очередь.
+ */
+export function playSteerSound() { playActionSound('toolConfirm') }
 export function playNavigateSound() { playActionSound('navigate') }
 export function playPanelOpenSound() { playActionSound('panelOpen') }
 export function playPanelCloseSound() { playActionSound('panelClose') }

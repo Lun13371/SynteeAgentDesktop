@@ -36,7 +36,6 @@ import {
 import { extractMemoriesFromConversation, saveMemory } from '../../core/memory/MemoryEngine'
 import { saveMemoryItem, buildCuratedSummary, getMemoryStatsForProject, bumpMemoryHit, searchAllSources } from '../../core/memory/MemoryStore'
 import { getGlobalMemoryEnabled, getMemorySettings } from '../../core/memory/globalMemorySettings'
-import { listNotes, createNote, updateNote, deleteNote, getProjectNotesInfo } from '../../core/db/notes'
 
 import { onCompactionTrigger } from '../../core/memory/extractor'
 import { setGlobalMemorySettingsStore } from '../../core/memory/globalMemorySettings'
@@ -56,6 +55,8 @@ import { extractFinalPlan, stripPlanTags } from '../../shared/planParser'
 import { stripAttachTokens } from '../../shared/attachmentMarkdown'
 import { getToolSettings, isToolDisabled } from '../../shared/toolSettings'
 import { mimeFromExt } from '../../shared/mentions'
+import { ImageRequestBudget } from '../../shared/imageFormat'
+import { normalizeImageForVision } from '../services/imageDownscale'
 import { IPC_EVENTS } from '../../shared/constants'
 import type { Dot, DotConfig } from '../../shared/types'
 import { getNotificationManager } from '../managers/NotificationManager'
@@ -447,6 +448,22 @@ export function flushAllActiveRuns(): void {
 
 
 /**
+ * Снимает висящие ask_user запуска: удаляет callback + ipcMain-листенер и
+ * просит renderer убрать вопрос из очереди QuestionPanel. Нужно при Стопе и
+ * крахе воркера — отвечать на такие вопросы уже некому, иначе панель висит с
+ * мёртвым вопросом, а листенер `agent:question:response:<reqId>` течёт.
+ */
+function dismissPendingQuestions(win: BrowserWindow | null, run: ActiveRun): void {
+  if (!run.pendingQuestions || run.pendingQuestions.size === 0) return
+  for (const reqId of run.pendingQuestions) {
+    questionCallbacks.delete(reqId)
+    ipcMain.removeAllListeners(`agent:question:response:${reqId}`)
+    try { win?.webContents.send('agent:question:dismiss', reqId) } catch { /* окно могло закрыться */ }
+  }
+  run.pendingQuestions.clear()
+}
+
+/**
  * Аварийная очистка после НЕОЖИДАННОГО падения runChatSend (throw вне
  * штатных путей: исключение в getSystemPrompt, компакции, построении
  * workerData и т.п.). Штатные ошибки (worker 'error'/'exit') чистят своё
@@ -482,6 +499,7 @@ function failRunCleanup(
       if (cancelledRun.uiFlushTimer) clearTimeout(cancelledRun.uiFlushTimer)
       disposeBrowserWorkerBroker(cancelledRun.worker)
       void cancelledRun.worker?.terminate()
+      dismissPendingQuestions(win, cancelledRun)
       activeRuns.delete(chatId)
     }
     if (activeRunMeta.get(chatId)?.msgId === assistantMsgId) activeRunMeta.delete(chatId)
@@ -510,6 +528,7 @@ function failRunCleanup(
     disposeBrowserWorkerBroker(run.worker)
     try { run.worker.terminate() } catch { /* уже мёртв */ }
   }
+  if (run) dismissPendingQuestions(win, run)
   activeRuns.delete(chatId)
   activeRunMeta.delete(chatId)
   updateForegroundBusy()
@@ -868,13 +887,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     let globalPluginsDir = ''
     try { globalPluginsDir = path.join(app.getPath('userData'), 'plugins') } catch { /* app may be unavailable */ }
 
-    // Project notes — agent sees note titles in the system prompt.
-    // In incognito — skip (privacy). Only project notes, not chat notes.
-    let notesInfo: { notes: Array<{ id: string; title: string }>; count: number } | undefined
-    if (!isIncognito && promptProjectId) {
-      notesInfo = withRetrySync('notesInfo', () => getProjectNotesInfo(promptProjectId!), undefined)
-    }
-
     // Context providers плагинов: живой контекст в system prompt.
     // Инкогнито — пропуск (приватность). Таймауты внутри collectContext.
     let pluginContext: Array<{ name: string; content: string }> = []
@@ -920,12 +932,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       inspection.sources = [
         { key: 'instructions', label: 'Дополнительные инструкции', enabled: sources.instructions, detail: 'Custom system prompt, инструкции проекта и статические секции плагинов. Базовые правила и режимы остаются.', characters: (customSystemPrompt?.length ?? 0) + projectInstructions.reduce((n, f) => n + f.content.length, 0) + pluginSections.reduce((n, f) => n + f.content.length, 0) },
         { key: 'projectFiles', label: 'Контекст проекта и файлы', enabled: sources.projectFiles, detail: 'Скан проекта, файлы инструкций и живой контекст плагинов. Workdir и доступ к файлам остаются.', characters: (projectContext?.length ?? 0) + projectInstructions.reduce((n, f) => n + f.content.length, 0) + pluginContext.reduce((n, f) => n + f.content.length, 0) },
-        { key: 'memory', label: 'Память в system prompt', enabled: sources.memory && getMemorySettings().enabled, detail: 'Curated memory, working memory, summary, граф и заметки. Явные вызовы recall_memory не блокируются.', characters: memoryContext.length + mergedWorkingMemory.length },
+        { key: 'memory', label: 'Память в system prompt', enabled: sources.memory && getMemorySettings().enabled, detail: 'Curated memory, working memory, summary и граф. Явные вызовы recall_memory не блокируются.', characters: memoryContext.length + mergedWorkingMemory.length },
         { key: 'history', label: 'История сообщений', enabled: sources.history, detail: 'После последнего сжатия. Закреплённые сообщения включаются даже при выключенной истории.', characters: 0 },
         { key: 'tools', label: 'История инструментов', enabled: sources.tools, detail: 'Прошлые tool calls и результаты. Доступность инструментов текущего запуска не меняется.', characters: 0 },
       ]
     }
-    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, notesInfo: sources.memory ? notesInfo : undefined, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
+    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).
@@ -1120,8 +1132,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     // require вместо await import для builtin: нативный import() не работает в V8-байткоде.
     // (относительные import() ниже rollup компилирует в require — они безопасны)
-    const { readFile: fsReadFile, stat: fsStat, readdir: fsReaddir } = require('fs/promises')
-    const { readFileSync } = require('fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { readFile: fsReadFile, stat: fsStat, readdir: fsReaddir, mkdir: fsMkdir, writeFile: fsWriteFile } = require('fs/promises')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { readFileSync, statSync, existsSync } = require('fs')
     const { isTextMime, isImageMime } = await import('../../shared/mentions')
 
     const startedAt = Date.now()
@@ -1328,26 +1342,45 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // ── Phase 2: Обработка картинок ──
     // Если основная модель поддерживает vision — direct pass (без vision-модели).
     if (imageAtts.length > 0 && mainModelSupportsVision) {
+      // Бюджет пикселей на сообщение: провайдеры считают лимиты на ВЕСЬ запрос
+      // (≤2000 px на картинку, когда их несколько; ≤5 МБ base64 на картинку).
+      // Раньше файл читался целиком без проверок: бинарь с именем *.png или
+      // 4K-скриншот уходили в контекст как base64 и роняли запрос 400/413.
+      const imageBudget = new ImageRequestBudget()
       for (const { att } of imageAtts) {
+        const attIdx = imageAtts.findIndex(x => x.att === att)
         try {
-          const base64 = readFileSync(att.path!).toString('base64')
-          const mime = att.mime || 'image/png'
+          if (!att.path) throw new Error('attachment has no file path')
+          const st = statSync(att.path)
+          if (!st.isFile()) throw new Error('not a regular file')
+          const raw = readFileSync(att.path)
+          // Проверяем реальные байты и при необходимости УМЕНЬШАЕМ изображение
+          // (Electron nativeImage, main-процесс) — вместо отказа делаем кадр,
+          // который провайдер реально примет.
+          const normalized = normalizeImageForVision(raw)
+          if (!normalized.ok) throw new Error(normalized.error)
+          const { bytes, mime, width, height, downscaled } = normalized.image
+          const base64 = bytes.toString('base64')
+          const payloadInfo = { base64Bytes: base64.length, width, height }
+          const reason = imageBudget.reject(payloadInfo)
+          if (reason) throw new Error(reason)
+          imageBudget.accept(payloadInfo)
           imageParts.push({
             type: 'image_url',
             image_url: { url: `data:${mime};base64,${base64}`, detail: 'high' },
           })
-          const attIdx = imageAtts.findIndex(x => x.att === att)
           if (attIdx >= 0) {
             processedFiles[attIdx] = {
               ...processedFiles[attIdx],
               status: 'image_described',
-              description: 'Передано напрямую в основную модель (vision)',
+              description: downscaled
+                ? 'Передано напрямую в основную модель (уменьшено до лимитов vision)'
+                : 'Передано напрямую в основную модель (vision)',
             }
           }
         } catch (e) {
           const errMsg = (e as Error).message
           textBlocks.push(`[Ошибка чтения изображения: ${att.name} — ${errMsg}]`)
-          const attIdx = imageAtts.findIndex(x => x.att === att)
           if (attIdx >= 0) {
             processedFiles[attIdx] = { ...processedFiles[attIdx], status: 'error', detail: errMsg }
           }
@@ -1371,15 +1404,37 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Text-only модель: НЕ делаем upfront-анализ через vision-модель.
       // Просто передаём пути картинок — модель сама вызовет analyze_image
       // тул с нужными параметрами (вопрос, фокус) когда ей понадобится.
-      const pathsList = imageAtts.map(({ att }) => `- ${att.name}: ${att.path}`).join('\n')
-      textBlocks.push(`[Прикреплённые изображения (доступны через analyze_image):]\n${pathsList}`)
-      for (const { index } of imageAtts) {
+      // Путь ведём на НОРМАЛИЗОВАННУЮ копию (≤2000 px, ≤ лимита байт): иначе
+      // analyze_image упёрся бы в «image is too large» на 4K-скриншоте, а
+      // исходник в workdir мог бы вообще не копироваться в draft-attachments.
+      const visionDir = path.join(app.getPath('userData'), 'draft-attachments', chatId)
+      const pathLines: string[] = []
+      for (const { att, index } of imageAtts) {
+        let modelPath = att.path
+        try {
+          if (att.path && existsSync(att.path)) {
+            const normalized = normalizeImageForVision(readFileSync(att.path))
+            if (!normalized.ok) {
+              pathLines.push(`- ${att.name}: НЕ изображение (${normalized.error})`)
+              processedFiles[index] = { ...processedFiles[index], status: 'error', detail: normalized.error }
+              hasErrors = true
+              continue
+            }
+            if (normalized.image.downscaled) {
+              await fsMkdir(visionDir, { recursive: true })
+              modelPath = path.join(visionDir, `vision-${pathHash(att.path)}${normalized.image.ext}`)
+              await fsWriteFile(modelPath, normalized.image.bytes)
+            }
+          }
+        } catch { /* оставляем исходный путь: analyze_image сообщит причину сам */ }
+        pathLines.push(`- ${att.name}: ${modelPath}`)
         processedFiles[index] = {
           ...processedFiles[index],
           status: 'image_described',
           description: 'Путь передан модели — analyze_image по требованию',
         }
       }
+      textBlocks.push(`[Прикреплённые изображения (доступны через analyze_image):]\n${pathLines.join('\n')}`)
     }
 
     // Собираем augmented content.
@@ -1407,6 +1462,19 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
     return { content: augmentedContent, result, imageParts }
   }
+
+  /**
+ * Короткий стабильный хэш пути: имя нормализованной копии вложения
+ * переиспользуется между отправками, а не плодит дубликаты.
+ */
+function pathHash(value: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(36)
+}
 
   async function runChatSend(
     params: {
@@ -1870,9 +1938,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // AttachmentProcessingBlock после рестарта.
       attachmentResult: null as AttachmentProcessingResult | null,
       imageParts: [] as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }>,
-      bufferedLiveState: { toolProgress: {}, spawnedAgents: [] },
+      bufferedLiveState: { toolProgress: {}, spawnedAgents: [], steers: [] },
       streamCheckpointTimer: null,
       checkpointDirty: false,
+      pendingQuestions: new Set<string>(),
     }
 
     // ── UI-батчинг токенов: флеш накопленного перед любыми другими
@@ -2585,8 +2654,21 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
               pendingCallId: rawStep.pendingCallId,
               serverName: rawStep.serverName,
               codeMode: rawStep.codeMode,
+              // §steer — реплика пользователя, применённая внутри рана.
+              steerId: rawStep.steerId,
+              steerApplied: rawStep.steerApplied,
             }
             run.bufferedSteps.push(ts)
+            if (rawStep.type === 'steer' && typeof rawStep.steerId === 'string') {
+              const card = run.bufferedLiveState.steers.find(s => s.steerId === rawStep.steerId)
+              if (card) card.applied = true
+              else run.bufferedLiveState.steers.push({
+                steerId: rawStep.steerId,
+                text: typeof rawStep.content === 'string' ? rawStep.content : '',
+                ts: Date.now(),
+                applied: true,
+              })
+            }
             if (summaryTaskId && rawStep.type === 'tool_result' && rawStep.success === true && (rawStep.toolName === 'edit_file' || rawStep.toolName === 'write_file') && msg.msgId === assistantMsgId) {
               const state = getTaskSummaryState(params.chatId); const task = state.tasks.find(t => t.id === summaryTaskId); const args=run.toolCallArgsCache.get(String(rawStep.callId||''))?.args; const rel=typeof args?.path==='string'?args.path:''
               if(task && rel){ const diff=typeof rawStep.diff==='string'?rawStep.diff:typeof rawStep.content==='string'?rawStep.content:''; const existing=task.changes.find(c=>c.path===rel); if(existing){ existing.diff=[existing.diff,diff].filter(Boolean).join('\n\n--- subsequent patch ---\n\n').slice(-12000)||undefined; existing.messageId=assistantMsgId; task.changes=task.changes.filter(c=>c!==existing); task.changes.unshift(existing) } else task.changes.unshift({path:rel.slice(0,500),diff:diff.slice(-12000)||undefined,messageId:assistantMsgId}); task.changes=task.changes.slice(0,50); task.updatedAt=Date.now(); const next=upsertTaskSummary(task); broadcastTaskSummary?.(params.chatId, next) }
@@ -2610,7 +2692,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
                 run.pendingTextAfter = ''
               }
               run.currentIterSteps.push(ts)
-            } else if (rawStep.type === 'tool_result') {
+            } else if (rawStep.type === 'tool_result' || rawStep.type === 'steer') {
+              // §steer — карточка встаёт в текущую итерацию: хронологически
+              // реплика приходит после tool_result предыдущего раунда и до
+              // tool_call следующего, то есть в хвост уже открытой итерации.
               run.currentIterSteps.push(ts)
             }
           }
@@ -2699,8 +2784,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           // ask_user-тул: AI задаёт уточняющие вопросы пользователю.
           const reqId = msg.reqId as string
           const questions = msg.questions as import('../../shared/types').QuestionSpec[]
+          // Помечаем запрос как висящий — при Стопе/падении run его надо снять
+          // с панели (иначе QuestionPanel показывал бы вопрос мёртвого рана).
+          run.pendingQuestions?.add(reqId)
           // Глобальный callback Map — для notification overlay
           questionCallbacks.set(reqId, (answers: import('../../shared/types').QuestionAnswer[]) => {
+            run.pendingQuestions?.delete(reqId)
             worker.postMessage({ type: 'question_reply', replyId: `question-reply-${reqId}`, answers })
           })
           // ipcMain.once — для главного окна (QuestionPanel)
@@ -3501,133 +3590,6 @@ ${subModeOutro}`,
                 replyId: msg.replyId,
                 success: false,
                 results: [],
-                error: (e as Error).message,
-              })
-            }
-          })()
-          break
-        }
-        case 'manage_notes': {
-          ;(async () => {
-            try {
-              const action = msg.action as 'create' | 'update' | 'delete' | 'list'
-              const scope = msg.scope as 'project' | 'chat'
-              const projectId = msg.projectId as string | undefined
-              const chatId = msg.chatId as string | undefined
-
-              if (action === 'list') {
-                const notes = listNotes({ scope, projectId, chatId })
-                worker.postMessage({
-                  type: 'manage_notes_reply',
-                  replyId: msg.replyId,
-                  success: true,
-                  notes: notes.map(n => ({ id: n.id, title: n.title, content: n.content, updatedAt: n.updatedAt })),
-                })
-              } else if (action === 'create') {
-                const result = createNote({
-                  scope,
-                  projectId,
-                  chatId,
-                  title: msg.title as string,
-                  content: msg.content as string | undefined,
-                })
-                if (result.success && result.note) {
-                  try {
-                    const win = mainWindow.getWindow()
-                    if (win && !win.isDestroyed()) {
-                      win.webContents.send('notes:changed', { scope, projectId: projectId ?? null, chatId: chatId ?? null })
-                    }
-                  } catch { /* ok */ }
-                  worker.postMessage({
-                    type: 'manage_notes_reply',
-                    replyId: msg.replyId,
-                    success: true,
-                    note: { id: result.note.id, title: result.note.title },
-                  })
-                } else {
-                  worker.postMessage({
-                    type: 'manage_notes_reply',
-                    replyId: msg.replyId,
-                    success: false,
-                    error: result.error ?? 'create failed',
-                  })
-                }
-              } else if (action === 'update') {
-                const result = updateNote({
-                  id: msg.noteId as string,
-                  title: msg.title as string | undefined,
-                  content: msg.content as string | undefined,
-                })
-                if (result.success && result.note) {
-                  try {
-                    const win = mainWindow.getWindow()
-                    if (win && !win.isDestroyed()) {
-                      win.webContents.send('notes:changed', { scope, projectId: result.note.projectId, chatId: result.note.chatId })
-                    }
-                  } catch { /* ok */ }
-                  worker.postMessage({
-                    type: 'manage_notes_reply',
-                    replyId: msg.replyId,
-                    success: true,
-                    note: { id: result.note.id, title: result.note.title },
-                  })
-                } else {
-                  worker.postMessage({
-                    type: 'manage_notes_reply',
-                    replyId: msg.replyId,
-                    success: false,
-                    error: result.error ?? 'update failed',
-                  })
-                }
-              } else if (action === 'delete') {
-                let noteScope: 'project' | 'chat' = 'chat'
-                let noteProjectId: string | null = null
-                let noteChatId: string | null = null
-                try {
-                  const row = getDB().prepare(`SELECT scope, project_id, chat_id FROM notes WHERE id=?`).get(msg.noteId) as
-                    | { scope: 'project' | 'chat'; project_id: string | null; chat_id: string | null }
-                    | undefined
-                  if (row) {
-                    noteScope = row.scope
-                    noteProjectId = row.project_id
-                    noteChatId = row.chat_id
-                  }
-                } catch { /* ok */ }
-
-                const result = deleteNote(msg.noteId as string)
-                if (result.success) {
-                  try {
-                    const win = mainWindow.getWindow()
-                    if (win && !win.isDestroyed()) {
-                      win.webContents.send('notes:changed', { scope: noteScope, projectId: noteProjectId, chatId: noteChatId })
-                    }
-                  } catch { /* ok */ }
-                  worker.postMessage({
-                    type: 'manage_notes_reply',
-                    replyId: msg.replyId,
-                    success: true,
-                  })
-                } else {
-                  worker.postMessage({
-                    type: 'manage_notes_reply',
-                    replyId: msg.replyId,
-                    success: false,
-                    error: result.error ?? 'delete failed',
-                  })
-                }
-              } else {
-                worker.postMessage({
-                  type: 'manage_notes_reply',
-                  replyId: msg.replyId,
-                  success: false,
-                  error: `Unknown action: ${action}`,
-                })
-              }
-            } catch (e) {
-              worker.postMessage({
-                type: 'manage_notes_reply',
-                replyId: msg.replyId,
-                success: false,
                 error: (e as Error).message,
               })
             }
@@ -4711,6 +4673,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // Прерываем agent PTY: Ctrl+C + очистка pending. Без этого сессия
       // остаётся в '[shell busy]' и следующий run_command зависает.
       ptyManager.interruptByChat(run.chatId)
+      // Висящие ask_user этого запуска больше некому отвечать — снимаем их с
+      // панели до флеша (иначе пользователь отвечал бы в убитый воркер).
+      dismissPendingQuestions(win, run)
       // Флешим накопленный прогресс — пользователь увидит частичный ответ,
       // сохранённый в историю. sendDone также сбрасывает activeRunMeta и
       // дрейнит очередь этого чата. usage не передаём — sendDone возьмёт
@@ -4836,6 +4801,50 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     chatQueues.set(chatId, next)
     emitQueueUpdate(mainWindow.getWindow(), chatId)
     return true
+  })
+
+  // ── chat:steer — внедрить реплику пользователя прямо в контекст активного
+  //    рана (long-press на кнопке отправки). Сообщение НЕ встаёт в очередь и
+  //    НЕ ждёт завершения прогона: воркер передаёт его Agent'у, а тот вставит
+  //    его в messages на границе следующего раунда (pendingSteers в Agent.ts).
+  //    Текущий стрим/тул не обрывается — уже сделанная работа сохраняется.
+  //    accepted:false — активного рана нет (или он уже отдаёт done): renderer
+  //    откатывается на обычную отправку, чтобы сообщение не пропало.
+  ipcMain.handle('chat:steer', (_, chatId: string, text: string, steerId: string) => {
+    const clean = typeof text === 'string' ? text.trim() : ''
+    if (!clean) return { accepted: false, reason: 'empty' }
+    const id = typeof steerId === 'string' && steerId ? steerId : `steer-${Date.now()}`
+    const run = activeRuns.get(chatId)
+    if (!run || run.doneSent) return { accepted: false, reason: 'no_active_run' }
+    run.bufferedLiveState.steers.push({ steerId: id, text: clean, ts: Date.now(), applied: false })
+    try {
+      run.worker.postMessage({ type: 'steer', steerId: id, text: clean })
+    } catch (e) {
+      log('[chat:steer] worker недоступен chatId=%s: %s', chatId, (e as Error).message)
+      const card = run.bufferedLiveState.steers.find(s => s.steerId === id)
+      if (card) run.bufferedLiveState.steers = run.bufferedLiveState.steers.filter(s => s !== card)
+      return { accepted: false, reason: 'worker_dead' }
+    }
+    log('[chat:steer] внедряю в активный ран chatId=%s steerId=%s len=%d', chatId, id, clean.length)
+    return { accepted: true, steerId: id }
+  })
+
+  // ── chat:steer:cancel — пользователь передумал ДО внедрения ────────────
+  // Снимаем реплику из очереди Agent'а и из live-состояния рана. Если реплика
+  // уже вставлена в messages (applied:true) — отменить нельзя: она часть
+  // контекста, откат делается только откатом сообщения.
+  ipcMain.handle('chat:steer:cancel', (_, chatId: string, steerId: string) => {
+    if (!chatId || !steerId) return { cancelled: false }
+    const run = activeRuns.get(chatId)
+    if (!run) return { cancelled: false }
+    const card = run.bufferedLiveState.steers.find(s => s.steerId === steerId)
+    if (card?.applied) return { cancelled: false, reason: 'already_applied' }
+    run.bufferedLiveState.steers = run.bufferedLiveState.steers.filter(s => s.steerId !== steerId)
+    try {
+      run.worker.postMessage({ type: 'steer_cancel', steerId })
+    } catch { /* воркер уже умер — карточки в live-состоянии достаточно */ }
+    log('[chat:steer:cancel] реплика снята chatId=%s steerId=%s', chatId, steerId)
+    return { cancelled: true }
   })
 
   ipcMain.handle('chat:reloadClient', () => {})

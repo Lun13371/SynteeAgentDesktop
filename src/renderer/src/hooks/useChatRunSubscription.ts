@@ -25,6 +25,8 @@ export {
   initSideChatSend,
   enqueuePendingUserMsg,
   removePendingUserMsg,
+  appendPendingSteer,
+  removePendingSteer,
 } from './chatRunRuntime'
 
 export function useChatRunSubscription() {

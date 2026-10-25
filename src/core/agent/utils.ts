@@ -1,6 +1,8 @@
 import { resolve, normalize } from 'path'
-import { estimateTokens, TOOL_SCHEMAS_OVERHEAD } from '../context/contextManager'
+import { TOOL_SCHEMAS_OVERHEAD } from '../context/contextManager'
+import { estimateMessagesTokensFull } from '../tokens/usageTracker'
 import { log } from '../logger'
+import { sniffImage, type ImagePayloadInfo } from '../../shared/imageFormat'
 import { TOOL_SCHEMAS } from '../tools/schemas'
 import type { AgentMessage, AgentToolCallFingerprint, ToolRound } from './types'
 
@@ -562,11 +564,63 @@ export function getToolRounds(messages: AgentMessage[]): ToolRound[] {
 }
 
 /**
+ * Есть ли в контенте сообщения визуальные парты (пиксели).
+ * Нужно клапану: такие сообщения можно «облегчить», не удаляя раунд.
+ */
+export function hasImagePayload(content: AgentMessage['content']): boolean {
+  return Array.isArray(content) && content.some(part => part?.type === 'image_url')
+}
+
+/** Текстовая часть multipart-контента (без пикселей). */
+function contentText(content: AgentMessage['content']): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map(part => (part && part.type === 'text' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * base64-объём и пиксельные размеры визуальных партов — вход для бюджета
+ * запроса. Размеры нужны потому, что провайдеры ограничивают сторону
+ * (Anthropic: ≤2000 px, если изображений несколько), а не только байты.
+ */
+export function imagePayloadInfos(
+  parts: Array<{ type: string; image_url?: { url: string } }>,
+): ImagePayloadInfo[] {
+  const infos: ImagePayloadInfo[] = []
+  for (const part of parts) {
+    const url = part?.image_url?.url ?? ''
+    const comma = url.indexOf(',')
+    const base64 = comma === -1 ? '' : url.slice(comma + 1)
+    let width: number | null = null
+    let height: number | null = null
+    try {
+      const sniffed = sniffImage(Buffer.from(base64, 'base64'))
+      width = sniffed.width
+      height = sniffed.height
+    } catch { /* размеры неизвестны — лимиты по байтам всё равно применятся */ }
+    infos.push({ base64Bytes: base64.length, width, height })
+  }
+  return infos
+}
+
+const IMAGE_DROPPED_NOTE = '\n[Image pixels were removed from this old tool result to keep the request within the model limit. The file is still on disk — call analyze_image again if the pixels are needed.]'
+
+/**
  * Аварийный клапан: если токены сообщений реально подбираются к лимиту модели
- * (hardLimitTokens, см. getHardLimitTokens) — физически удаляем самые старые
+ * (hardLimitTokens, см. getHardLimitTokens) — сначала снимаем ПИКСЕЛИ со старых
+ * tool-результатов, и только если этого мало, физически удаляем самые старые
  * целые tool-раунды (assistant+tool сообщения целиком), без замены на
  * текст-резюме. Это защита от hard-fail API, а не проактивное сжатие:
  * срабатывает исключительно на грани реального предела.
+ *
+ * Почему сначала пиксели: раньше оценка считала только text-парты, поэтому
+ * визуальная нагрузка была невидима и клапан не срабатывал вообще, а 413
+ * повторялся до конца прогона. Теперь картинки имеют цену в токенах, и первым
+ * делом снимается самая дорогая часть payload'а — модель сохраняет текстовую
+ * квитанцию и путь, поэтому может перечитать картинку тулом analyze_image.
  *
  * Гистерезис: при срабатывании дропаем НЕ до hardLimitTokens, а до
  * targetTokens (значительно ниже) — иначе следующий же раунд тулов сразу
@@ -580,14 +634,44 @@ export function dropOldestRoundsIfOverflow(
   hardLimitTokens: number,
   targetTokens: number,
 ): AgentMessage[] {
-  const estimated = messages.reduce((sum, msg) => sum + estimateTokens(typeof msg.content === 'string' ? msg.content : (Array.isArray(msg.content) ? msg.content.map(p => 'text' in p ? p.text : '').join('') : '')) + 4, TOOL_SCHEMAS_OVERHEAD)
+  const estimateMsgs = (msgs: AgentMessage[]): number =>
+    estimateMessagesTokensFull(msgs as unknown as Array<{
+      role: string
+      content: string | Array<{ type: string; text?: string; image_url?: unknown }>
+      tool_calls?: unknown
+      tool_call_id?: string
+      name?: string
+    }>)
+
+  let estimated = estimateMsgs(messages) + TOOL_SCHEMAS_OVERHEAD
   if (estimated <= hardLimitTokens) return messages
 
-  const rounds = getToolRounds(messages)
-  if (rounds.length === 0) return messages
+  // Шаг 1 — снять пиксели со старых результатов (самое дешёвое и обратимое).
+  let working = messages
+  let strippedImages = 0
+  if (messages.some(msg => hasImagePayload(msg.content))) {
+    const next = messages.map(msg => {
+      if (estimated <= targetTokens || !hasImagePayload(msg.content)) return msg
+      const before = estimateMsgs([msg])
+      const replaced: AgentMessage = { ...msg, content: `${contentText(msg.content)}${IMAGE_DROPPED_NOTE}` }
+      estimated += estimateMsgs([replaced]) - before
+      strippedImages++
+      return replaced
+    })
+    if (strippedImages > 0) working = next
+  }
 
-  // Удаляем раунды с начала (самые старые), пока не уложимся в targetTokens
-  // (не hardLimitTokens — см. комментарий выше про гистерезис).
+  if (estimated <= targetTokens) {
+    log('[Agent] dropOldestRoundsIfOverflow: сняты пиксели со старых результатов (images=%s), раунды не удалялись, остаток~=%s',
+      strippedImages, estimated)
+    return working
+  }
+
+  const rounds = getToolRounds(working)
+  if (rounds.length === 0) return working
+
+  // Шаг 2 — удаляем раунды с начала (самые старые), пока не уложимся в
+  // targetTokens (не hardLimitTokens — см. комментарий выше про гистерезис).
   // Сохраняем system-сообщения и последнее user-сообщение.
   const removeIndices = new Set<number>()
   let currentEstimate = estimated
@@ -596,14 +680,13 @@ export function dropOldestRoundsIfOverflow(
     removeIndices.add(round.assistantIndex)
     for (const toolIndex of round.toolIndices) removeIndices.add(toolIndex)
     for (const idx of [round.assistantIndex, ...round.toolIndices]) {
-      const c = messages[idx].content
-      currentEstimate -= estimateTokens(typeof c === 'string' ? c : (Array.isArray(c) ? c.map(p => 'text' in p ? p.text : '').join('') : '')) + 4
+      currentEstimate -= estimateMsgs([working[idx]])
     }
   }
 
-  if (removeIndices.size === 0) return messages
+  if (removeIndices.size === 0) return working
 
-  const result = messages.filter((_, index) => !removeIndices.has(index))
+  const result = working.filter((_, index) => !removeIndices.has(index))
   // Вставляем короткую метку чтобы модель знала что старые раунды были удалены
   const firstNonSystem = result.findIndex(msg => msg.role !== 'system')
   const insertAt = firstNonSystem === -1 ? result.length : firstNonSystem
@@ -611,8 +694,8 @@ export function dropOldestRoundsIfOverflow(
     role: 'system',
     content: `[Старые tool-раунды удалены для экономии контекста — ${removeIndices.size} сообщений]`,
   })
-  log('[Agent] dropOldestRoundsIfOverflow сработал: estimated=%s hardLimitTokens=%s targetTokens=%s removedMessages=%s остаток~=%s',
-    estimated, hardLimitTokens, targetTokens, removeIndices.size, currentEstimate)
+  log('[Agent] dropOldestRoundsIfOverflow сработал: estimated=%s hardLimitTokens=%s targetTokens=%s strippedImages=%s removedMessages=%s остаток~=%s',
+    estimated, hardLimitTokens, targetTokens, strippedImages, removeIndices.size, currentEstimate)
   return result
 }
 

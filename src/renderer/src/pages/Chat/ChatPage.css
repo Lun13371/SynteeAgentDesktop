@@ -313,7 +313,9 @@
   font-size: 11px;
 }
 
-/* Skeleton loader */
+/* Skeleton loader — используется SplitChatPane (сплит-панель показывает
+   скелетон при загрузке второй половины). ChatPage больше не показывает
+   скелетон при переключении чата — там вуаль ниже. */
 .chat-skeleton {
   flex: 1;
   display: flex;
@@ -348,6 +350,54 @@
 @keyframes skeleton-shimmer {
   0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+/* ── Вуаль переключения чата ─────────────────────────────────────────────
+   Первый рендер ленты нового чата (markdown + подсветка кода + KaTeX +
+   Mermaid) — синхронная работа на кадр-полтора. Пока она идёт, браузер не
+   может отрисовать новый контент и держит на экране ЗАМОРОЖЕННЫЙ кадр
+   старого чата. Вуаль монтируется ДО этой работы (ChatPage.selectChat
+   специально отдаёт кадр браузеру), закрывает область ленты и плавно уходит,
+   когда новый чат уже отрисован, — вместо фриза виден кросс-фейд.
+
+   animation-delay: 90ms — на быстрых кэш-хитах (<90мс) вуаль не успевает
+   проявиться, поэтому мгновенные переключения выглядят мгновенными, без
+   «мигания» фоном. fill-mode backwards держит opacity:0 в течение задержки,
+   после окончания анимации opacity возвращается к базовому 1 — и тогда
+   exit-анимация framer-motion (inline opacity) снова работает. */
+.chat-switch-veil {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Инпут не закрываем: писать в чат можно, пока грузится история. */
+  bottom: var(--chat-input-h, 120px);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Клики/скролл не блокируем — вуаль чисто визуальная. */
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg-primary, #191919) 62%, transparent);
+  opacity: 1;
+  /* opacity-анимация уходит на compositor и продолжает играть даже когда
+     main thread заблокирован тяжёлым рендером ленты. */
+  animation: chat-switch-veil-in 140ms ease-out 90ms backwards;
+  will-change: opacity;
+}
+.chat-switch-veil-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--text-muted, #888) 28%, transparent);
+  border-top-color: var(--accent, #7c6cff);
+  animation:
+    chat-older-spin 0.7s linear infinite,
+    chat-switch-veil-in 200ms ease-out 90ms backwards;
+}
+@keyframes chat-switch-veil-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 .chat-messages {
