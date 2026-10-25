@@ -80,6 +80,20 @@ function settleFrame(): Promise<void> {
   })
 }
 
+/** Грубая оценка «тяжести» окна сообщений для решения «нужна ли вуаль».
+ *  Фриз даёт markdown-рендер: react-markdown + подсветка кода + KaTeX +
+ *  Mermaid на длинных сообщениях. На коротком окне рендер занимает единицы
+ *  миллисекунд — маскировать нечего, а любая вуаль там выглядит как
+ *  мелькание. Порог подобран по символам контента (не по числу сообщений:
+ *  10 коротких реплик дешевле одного ответа с блоком кода). */
+function isHeavyMessageWindow(msgs: readonly Message[]): boolean {
+  if (msgs.length === 0) return false
+  if (msgs.length >= 10) return true
+  let chars = 0
+  for (const m of msgs) chars += m.content?.length ?? 0
+  return chars > 2000
+}
+
 // ── Module-level empty константы для узких live-селекторов ──────────────
 // setLiveState делает { ...prev, ...partial } — при text-флаше (50мс)
 // меняется только text, остальные поля сохраняют ссылки. Селекторы
@@ -280,8 +294,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const chatInputWrapRef = useRef<HTMLDivElement>(null)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
-  // Вуаль переключения чата (см. selectChat + .chat-switch-veil в CSS).
-  const [switchingChat, setSwitchingChat] = useState(false)
+  // ── Вуаль переключения чата (см. selectChat + .chat-switch-veil в CSS) ──
+  // off   — не смонтирована;
+  // shown — проявлена (fade-in 110ms, стартует сразу при монтировании);
+  // out   — плавное затухание (160ms) поверх уже отрисованного нового чата.
+  const [veilPhase, setVeilPhase] = useState<'off' | 'shown' | 'out'>('off')
+  const veilHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Смонтирована ли вуаль прямо сейчас — без этого hideVeil в «клике по
+  // активному чату» монтировал бы невидимый элемент на 200мс вхолостую.
+  const veilVisibleRef = useRef(false)
   // Номер попытки переключения: при быстрых кликах A→B→C каждая ветка
   // selectChat проверяет, что её не перебили, — иначе поздний await
   // вернул бы UI на уже покинутый чат и снял вуаль поверх чужого контента.
@@ -1318,6 +1339,35 @@ const chatId = compactingCurrentChatIdRef.current
     // объявлен НИЖЕ по коду, его чтение в массиве зависимостей — TDZ.
   }, [messages.length, isTyping, isLoadingMessages, isCompactingHere, pinAutoscroll, currentChatId])
 
+  // ── Вуаль переключения чата: показать / убрать ──────────────────────────
+  // showVeil монтирует вуаль и сразу же отдаёт кадр браузеру: fade-in
+  // (CSS-transition на compositor) успевает стартовать ДО тяжёлого рендера
+  // ленты, поэтому продолжает идти, даже пока main thread заблокирован.
+  const showVeil = useCallback(() => {
+    if (veilHideTimerRef.current) { clearTimeout(veilHideTimerRef.current); veilHideTimerRef.current = null }
+    veilVisibleRef.current = true
+    setVeilPhase('shown')
+  }, [])
+
+  // hideVeil — плавное затухание. Элемент снимаем только после окончания
+  // transition (160ms + запас): иначе он исчезнет резко, без fade-out.
+  const hideVeil = useCallback(() => {
+    if (!veilVisibleRef.current) return
+    veilVisibleRef.current = false
+    if (veilHideTimerRef.current) clearTimeout(veilHideTimerRef.current)
+    setVeilPhase('out')
+    veilHideTimerRef.current = setTimeout(() => {
+      veilHideTimerRef.current = null
+      setVeilPhase('off')
+    }, 200)
+  }, [])
+
+  // Чистка таймера вуали при размонтировании (ChatPage keep-alive, но
+  // при выходе из приложения таймер не должен дёргать setState).
+  useEffect(() => () => {
+    if (veilHideTimerRef.current) clearTimeout(veilHideTimerRef.current)
+  }, [])
+
   const selectChat = useCallback(async (id: string) => {
     // Номер попытки: при быстрых кликах A→B→C каждая ветка ниже проверяет,
     // что её не перебили, — иначе поздний await вернул бы UI на уже
@@ -1328,7 +1378,7 @@ const chatId = compactingCurrentChatIdRef.current
     // попадает возврат в текущий чат, пока предыдущий свич ещё ждал кадр
     // под вуалью: отменяем его (seq уже сдвинут) и вуаль убираем.
     if (st0.currentChatId === id) {
-      setSwitchingChat(false)
+      hideVeil()
       return
     }
     // Был ли уже открыт какой-то чат. При первом открытии (boot, экран пуст)
@@ -1346,14 +1396,21 @@ const chatId = compactingCurrentChatIdRef.current
     // их подменит ветка ниже — уже под вуалью.
     setCurrentChat(id)
 
-    // ── Вуаль переключения: отдаём браузеру кадр ДО тяжёлого рендера ──
+    const cached = useChatStore.getState().messagesByChat[id]
+
+    // ── Вуаль: отдаём браузеру кадр ДО тяжёлого рендера ──
     // Коммит выше дешёвый (ряды ленты мемоизированы по msg, массив messages
-    // не менялся). settleFrame() гарантирует, что он уже отрисован, поэтому
-    // тяжёлый рендер новой ленты ниже идёт ПОД вуалью, а не вместо неё —
-    // иначе React блокировал бы main thread и пользователь видел бы
-    // замороженный кадр старого чата.
-    if (hadChat) {
-      setSwitchingChat(true)
+    // не менялся). settleFrame() гарантирует, что кадр с уже идущим
+    // fade-in вуали отрисован, поэтому тяжёлый рендер новой ленты ниже
+    // идёт ПОД вуалью, а не вместо неё.
+    //
+    // Вуаль нужна не всегда:
+    //  • cache hit на лёгком окне — рендер занимает единицы миллисекунд,
+    //    фриза нет, а вуаль только мелькала бы. Пропускаем;
+    //  • cache miss — вуаль работает ещё и индикатором ожидания IPC.
+    const needsVeil = hadChat && (!cached || isHeavyMessageWindow(cached.messages))
+    if (needsVeil) {
+      showVeil()
       await settleFrame()
       if (seq !== chatSwitchSeqRef.current) return
     }
@@ -1363,7 +1420,6 @@ const chatId = compactingCurrentChatIdRef.current
     // hydrateFromMain + getQueue + фоновая сверка хвоста запускаются параллельно
     // и не блокируют первый рендер. Раньше 2 последовательных IPC-раунда
     // (getLiveState → getQueue) стояли ДО проверки кеша → скелетон на 120мс+.
-    const cached = useChatStore.getState().messagesByChat[id]
     if (cached) {
       setMessagesWindow(id, cached.messages, cached.hasOlder)
       // Запускаем 3 фоновых IPC параллельно (не блокируют рендер):
@@ -1401,9 +1457,9 @@ const chatId = compactingCurrentChatIdRef.current
           }
         }).catch(() => {}),
       ])
-      // Новый чат уже отрисован → снимаем вуаль (её exit-фейд — compositor).
+      // Новый чат уже отрисован → плавно снимаем вуаль.
       await settleFrame()
-      if (seq === chatSwitchSeqRef.current) setSwitchingChat(false)
+      if (seq === chatSwitchSeqRef.current) hideVeil()
       return
     }
 
@@ -1439,10 +1495,10 @@ const chatId = compactingCurrentChatIdRef.current
       // мог залипнуть → ломало автоскролл.
       setIsLoadingMessages(false)
       await settleFrame()
-      if (seq === chatSwitchSeqRef.current) setSwitchingChat(false)
+      if (seq === chatSwitchSeqRef.current) hideVeil()
     }
     // Deps: все используемые значения — стабильные store-actions/useCallback'и.
-  }, [setCurrentChat, markChatRead, setMessagesWindow, setHasOlderMessages, pinAutoscroll])
+  }, [setCurrentChat, markChatRead, setMessagesWindow, setHasOlderMessages, pinAutoscroll, showVeil, hideVeil])
 
   const createNewChat = useCallback(async (projectId?: string) => {
     let pid = projectId ?? activeProjectId
@@ -2845,23 +2901,17 @@ const chatId = compactingCurrentChatIdRef.current
           {/* ── Вуаль переключения чата ───────────────────────────────────
               Монтируется в тот же тик, что и смена чата, но кадр под неё
               браузер отрисовывает ДО тяжёлого рендера ленты (см. settleFrame
-              в selectChat). На быстрых переключениях (<90мс) не успевает
-              проявиться — CSS animation-delay. Exit-фейд снимает framer-motion
-              поверх уже отрисованного нового чата. pointer-events: none —
-              ввод в поле сообщения не блокируется. */}
-          <AnimatePresence>
-            {switchingChat && (
-              <motion.div
-                key="chat-switch-veil"
-                className="chat-switch-veil"
-                initial={false}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.16, ease: 'easeOut' }}
-              >
-                <span className="chat-switch-veil-spinner" />
-              </motion.div>
-            )}
-          </AnimatePresence>
+              в selectChat), поэтому fade-in на compositor продолжается и во
+              время фриза. Уход — плавное затухание 160ms (класс --out),
+              элемент снимается только после его окончания.
+              pointer-events: none — ввод в поле сообщения не блокируется. */}
+          {veilPhase !== 'off' && (
+            <div
+              className={`chat-switch-veil${veilPhase === 'shown' ? ' chat-switch-veil--shown' : ' chat-switch-veil--out'}`}
+            >
+              <span className="chat-switch-veil-spinner" />
+            </div>
+          )}
 
           {/* Floating-кнопка «прокрутить вниз» — компактная, по центру,
               чуть выше инпут-бара. Появляется когда пользователь отошёл
