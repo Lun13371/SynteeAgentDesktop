@@ -1255,6 +1255,19 @@ if (typeof onmessage !== 'undefined') {
     return style === 'caustics' || style === 'interference' || style === 'network'
   }
 
+  /**
+   * Сигнал main-thread'у: фон готов показывать (первый кадр отрисован или
+   * рендерить нечего). Boot-gate в App.tsx держит сплэш до него — иначе UI
+   * показывается на голом --body-bg, пока worker компилирует шейдер.
+   * Шлём максимум один раз.
+   */
+  let readySent = false
+  function notifyReady(): void {
+    if (readySent) return
+    readySent = true
+    self.postMessage({ type: 'ready' })
+  }
+
   /** Рендер одного кадра с dt-компенсацией. */
   function renderFrame(now: number): void {
     const dt = lastFrameTs > 0 ? Math.min(now - lastFrameTs, 100) : 16.67
@@ -1275,6 +1288,8 @@ if (typeof onmessage !== 'undefined') {
       gl!.clear(gl!.COLOR_BUFFER_BIT)
       gl!.drawArrays(gl!.TRIANGLES, 0, 6)
     }
+    // Первый кадр ушёл в OffscreenCanvas — можно снимать сплэш.
+    notifyReady()
   }
 
   function loop(): void {
@@ -1338,12 +1353,13 @@ if (typeof onmessage !== 'undefined') {
     switch (m.type) {
       case 'init': {
         gl = m.canvas.getContext('webgl2', { alpha: true, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance' }) as WebGL2RenderingContext | null
-        if (!gl) return
+        // WebGL2 недоступен — рендерить нечего, но boot-gate ждать не должен.
+        if (!gl) { notifyReady(); return }
         gl.clearColor(0, 0, 0, 0)
         gl.enable(gl.BLEND)
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
         VERT_SHADER = compile(VERT_SRC, gl.VERTEX_SHADER)
-        if (!VERT_SHADER) return
+        if (!VERT_SHADER) { notifyReady(); return }
         current.style = m.style
         current.color = m.color
         current.opacity = m.opacity
@@ -1356,6 +1372,8 @@ if (typeof onmessage !== 'undefined') {
         current.origH = m.h
         current.renderScale = styleScale(m.style)
         resizeCanvas()
+        // Стиль 'none' / не собрался шейдер — цикл не запустится, кадра не будет.
+        if (!running) notifyReady()
         ensureLoop()
         break
       }
@@ -1405,6 +1423,7 @@ if (typeof onmessage !== 'undefined') {
         // после разворота окна незаметен для фоновых эффектов.
         current.time = 0
         if (current.style !== 'none') running = setup(current.style)
+        if (!running) notifyReady()
         ensureLoop()
         break
       }

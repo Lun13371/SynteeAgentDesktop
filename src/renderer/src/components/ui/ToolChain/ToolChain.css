@@ -352,7 +352,7 @@
    скролл с подхватом хвоста. overscroll-behavior: contain — колесо внутри
    окна не утаскивает за собой весь чат. */
 .tc2--running .tc2-iters-wrap--open .tc2-iters {
-  max-height: 336px;   /* было 224px — окно слишком низкое, видно 1.5–2 шага */
+  max-height: 470px;   /* 336px × 1.4 — раскрытое окно повыше, видно больше шагов */
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -367,7 +367,7 @@
 /* Live-вывод run_command внутри того же окна: без своего cap'а один
    npm install съедает всю высоту и «ход работы» превращается в терминал. */
 .tc2--running .tc2-live-terminal-pre {
-  max-height: 198px;
+  max-height: 277px;
   overflow-y: auto;
 }
 
@@ -378,7 +378,24 @@
 .tc2-thinking-embed { margin: 0 0 4px; }
 .tc2-thinking-embed .tb { margin: 0; }
 .tc2-thinking-embed--live { margin-top: 4px; }
-.tc2--running .tc2-thinking-embed .tb-body-inner { max-height: 180px; }
+.tc2--running .tc2-thinking-embed .tb-body-inner { max-height: 252px; }
+
+/* ── Контент под шагом внутри ленты ────────────────────────────────
+   Fast Context и карточки саб-агентов раньше рендерились ОТДЕЛЬНЫМИ
+   блоками рядом с плашкой хода работы: они визуально выпадали из ленты и
+   при сворачивании блока оставались висеть в сообщении. Теперь они живут
+   ВНУТРИ ленты — прямо под своим шагом (get_fast_context / spawn_agent),
+   с отступом на уровне тела шага. */
+.tc2-iter-extra {
+  padding-left: 30px;   /* 20px рельса + 10px gap — выравнивание с телом шага */
+  margin: 2px 0 6px;
+}
+/* Внутри ленты у карточек свои внешние отступы — приглушаем, чтобы не
+   разъезжалась вертикальная сетка шагов. */
+.tc2-iter-extra > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
 
 /* ── Обычный текст модели внутри ленты ─────────────────────────────
    Модель между тулами пишет не только reasoning, но и обычный текст

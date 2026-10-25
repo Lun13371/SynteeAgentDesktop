@@ -1,8 +1,8 @@
-import { useEffect, useRef, useMemo } from 'react'
+import { useEffect, useRef, useMemo, useCallback } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useUIStore } from '../../../store/ui.store'
 import { useExtensionsStore } from '../../../store/extensions.store'
-import type { BgMessage, BgStyle } from './bg-types'
+import type { BgMessage, BgReadyMessage, BgStyle } from './bg-types'
 import { FALLBACK_RGB, normalizeBgStyle } from './bg-types'
 import { collectPluginBackgrounds, parsePluginBgKey } from '../../../utils/pluginExtApi'
 import PluginBackgroundLayer from './PluginBackgroundLayer'
@@ -10,6 +10,16 @@ import type { PluginBackgroundContribution } from '../../../../../shared/types/p
 import './AnimatedBackground.css'
 
 export type { BgStyle }
+
+interface AnimatedBackgroundProps {
+  /**
+   * Вызывается ОДИН раз, когда фон реально готов: worker отрисовал первый
+   * кадр, либо рендерить нечего (фон выключен / стиль 'none' / плагинный фон /
+   * WebGL2 недоступен). Boot-gate в App.tsx держит сплэш до этого сигнала —
+   * иначе UI открывался раньше, чем шейдер успевал скомпилироваться.
+   */
+  onReady?: () => void
+}
 
 function parseColorStr(raw: string): [number, number, number] {
   if (raw.startsWith('#') && raw.length >= 7) {
@@ -28,10 +38,22 @@ function readAccColor(): [number, number, number] {
   return parseColorStr(raw || fallback || '255, 255, 255')
 }
 
-export default function AnimatedBackground() {
+export default function AnimatedBackground({ onReady }: AnimatedBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
   const colorRef = useRef<[number, number, number]>(readAccColor())
+  // Готовность фона для boot-gate: шлём onReady максимум один раз.
+  // Через ref, чтобы смена колбэка не пересоздавала worker (и не зависела от
+  // стабильности пропа). Присваивание — в эффекте: мутация ref во время
+  // рендера запрещена правилами react-hooks.
+  const readyRef = useRef(false)
+  const onReadyRef = useRef(onReady)
+  useEffect(() => { onReadyRef.current = onReady }, [onReady])
+  const notifyReady = useCallback(() => {
+    if (readyRef.current) return
+    readyRef.current = true
+    onReadyRef.current?.()
+  }, [])
 
   const { animatedBackground, bgStyle, theme, accentColor, activeCustomThemeId, animatedBgOpacity, animatedBgSpeed, bgStyleParams } = useUIStore(useShallow(s => ({
     animatedBackground: s.animatedBackground,
@@ -69,6 +91,11 @@ export default function AnimatedBackground() {
     if (!canvas || workerRef.current) return
     colorRef.current = readAccColor()
     workerRef.current = new Worker(new URL('./bg.worker.ts', import.meta.url), { type: 'module' })
+    // Worker сообщает о первом отрисованном кадре — это и есть готовность
+    // фона для boot-gate (см. onReady в App.tsx).
+    workerRef.current.onmessage = (e: MessageEvent<BgReadyMessage>) => {
+      if (e.data?.type === 'ready') notifyReady()
+    }
     const offscreen = canvas.transferControlToOffscreen()
     // Размер буфера — в физических пикселях (CSS-px * dpr), иначе на
     // HiDPI-экранах эффект мыльный. dpr ограничен 2 — больше не даёт
@@ -102,13 +129,16 @@ export default function AnimatedBackground() {
   // секунд рендера в скрытое окно — дёшево.
   const visible = animatedBackground && !hasPluginBg && style !== 'none'
   useEffect(() => {
+    // Фон не рендерится (выключен / 'none' / плагинный слой) — шейдера не
+    // будет, кадра тоже: boot-gate не должен ждать worker'а.
+    if (!visible) notifyReady()
     send({ type: visible ? 'enable' : 'disable' } as BgMessage)
     const onVis = () => {
       send({ type: visible && !document.hidden ? 'enable' : 'disable' } as BgMessage)
     }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
-  }, [visible])
+  }, [visible, notifyReady])
 
   // Реактор-эффекты: при изменении любого значения отправляем в worker.
   // Цвет зависит от theme + accentColor + кастомной темы — раньше был

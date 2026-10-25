@@ -68,9 +68,11 @@ export default function NotificationPage() {
     return undefined
   }, [notifications.length, activityVisible])
 
-  // Захват экрана для блюра — ТОЛЬКО для карточек уведомлений.
-  // Activity-виджет использует CSS backdrop-filter (без desktopCapturer)
-  // чтобы избежать DXGI warnings и лага при появлении.
+  // Блюр-фон карточки — из КЭША main-процесса (разрешается мгновенно).
+  // Захват экрана (desktopCapturer/DXGI) выполняется фоном: при прогреве хаба
+  // и после его скрытия. В момент показа карточки он бы стопорил композитор —
+  // именно из-за этого лагал курсор, когда вылезало уведомление.
+  // Activity-виджет вообще не использует скриншот: у него CSS backdrop-filter.
   const hasNotifications = notifications.length > 0
   useEffect(() => {
     if (!hasNotifications) return undefined

@@ -30,8 +30,10 @@ export function registerNotificationIPC(
     overlayManager.setInteractive(v)
   })
 
-  // Захват экрана для блюра фона карточки
-  ipcMain.handle('notification:captureScreen', async () => {
+  // Блюр-фон карточки: отдаём КЭШ (синхронно). Захват экрана выполняется
+  // фоном (прогрев при старте + после скрытия хаба) — в момент показа карточки
+  // DXGI Desktop Duplication стопорил композитор и лагал курсор.
+  ipcMain.handle('notification:captureScreen', () => {
     return overlayManager.captureHubScreen()
   })
 

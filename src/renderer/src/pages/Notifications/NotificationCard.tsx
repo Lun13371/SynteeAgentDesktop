@@ -80,8 +80,11 @@ export default function NotificationCard({ item, index, screenImg }: Props) {
     <motion.div
       className={`notif-card ${PRIORITY_BORDER[item.priority] ?? 'notif-card--info'}`}
       data-interactive="true"
+      // layout — плавный сдвиг соседних карточек (часть визуала, оставлен).
+      // layoutId убран: id у каждой карточки уникален, общих shared-layout
+      // переходов между компонентами нет — он только держал запись в реестре
+      // projection-движка и участвовал в crossfade-логике вхолостую.
       layout
-      layoutId={`notif-${item.id}`}
       initial={{
         opacity: 0,
         scale: 0.25,

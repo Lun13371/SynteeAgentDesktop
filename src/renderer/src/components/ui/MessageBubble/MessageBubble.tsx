@@ -1792,23 +1792,6 @@ const MessageContent = memo(function MessageContent({
   // Для цепочек 50+ шагов это 2500+ сравнений за рендер. Теперь useMemo.
   // Persisted-итерации рендерят карточки inline (они не ре-рендерятся часто —
   // только при scroll-mount виртуализатором).
-  const spawnAgentCards = useMemo(() => {
-    if (isUser || !toolSteps || liveIters?.length) return []
-    if ((message as Message & { iterations?: unknown[] }).iterations?.length) return []
-    const cards: Array<{ agentId: string; task: string }> = []
-    for (const s of toolSteps) {
-      if (s.type !== 'tool_call' || s.toolName !== 'spawn_agent') continue
-      const resultStep = toolSteps.find(r =>
-        r.type === 'tool_result' && r.toolName === 'spawn_agent' &&
-        r.timestamp >= s.timestamp
-      )
-      const agentIdMatch = resultStep?.content?.match(/\[AGENT:([^\]]+)\]/)
-      const agentId = agentIdMatch?.[1]
-      if (agentId) cards.push({ agentId, task: (s.toolArgs?.task as string) ?? '' })
-    }
-    return cards
-  }, [isUser, toolSteps, liveIters, message])
-
   // Изображения из tool steps
   const toolImages = useMemo(() => {
     if (isUser || !toolSteps || liveIters?.length) return []
@@ -1856,6 +1839,49 @@ const MessageContent = memo(function MessageContent({
   const liveThinkingInChain = isStreaming && (liveIters?.[liveIters.length - 1]?.steps.length ?? 0) > 0
     ? liveThinking
     : undefined
+
+  // ── Контент под шагом ВНУТРИ ленты ────────────────────────────────────
+  // FastContextBlock и карточки саб-агентов раньше рендерились отдельными
+  // блоками рядом с плашкой (и в live, и в истории — дублированным кодом).
+  // Теперь это один слот под своей итерацией: блок стоит прямо под шагом
+  // get_fast_context / spawn_agent, скроллится вместе с лентой и
+  // сворачивается вместе с ходом работы.
+  // ВАЖНО: решение принимается по шагу ИМЕННО этой итерации — иначе карточка
+  // дублировалась бы под каждым шагом секции (у секции общий список steps).
+  const renderIterExtra = useCallback((iter: { call: MsgIter['steps'][number]; result?: MsgIter['steps'][number] }, isLastSection: boolean) => {
+    const toolName = iter.call.toolName
+
+    // Fast Context — под своим шагом; live-прогресс только для последней секции.
+    if (toolName === 'get_fast_context') {
+      const fcLive = isStreaming && isLastSection ? toolProgress?.['get_fast_context'] : undefined
+      if (fcLive && fcLive.stage !== 'done') {
+        return <FastContextBlock result={EMPTY_FC_RESULT} liveProgress={fcLive} />
+      }
+      const fcSaved = extractFastContextResult([iter.call, ...(iter.result ? [iter.result] : [])])
+      return fcSaved ? <FastContextBlock result={fcSaved} /> : null
+    }
+
+    // Карточка саб-агента — под своим spawn_agent.
+    if (toolName === 'spawn_agent') {
+      const taskArg = iter.call.toolArgs?.task as string | undefined
+      // Live: карточка есть сразу (agent:spawn). Матчинг по callId (точный),
+      // fallback — по тексту задачи.
+      const spawned = spawnedAgents?.find(a => a.callId && a.callId === iter.call.callId)
+        ?? spawnedAgents?.find(a => taskArg && a.task === taskArg)
+      // История: agentId лежит в парном tool_result.
+      const agentId = spawned?.agentId ?? iter.result?.content?.match(/\[AGENT:([^\]]+)\]/)?.[1]
+      if (!agentId) return null
+      return (
+        <AgentCardLive
+          key={agentId}
+          agentId={agentId}
+          task={taskArg ?? spawned?.task ?? ''}
+        />
+      )
+    }
+
+    return null
+  }, [isStreaming, toolProgress, spawnedAgents])
 
   // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
   const agentCounts = useMemo(() => {
@@ -1937,7 +1963,12 @@ const MessageContent = memo(function MessageContent({
         )}
 
         {!isUser && toolSteps && toolSteps.length > 0 && !liveIters?.length && !(message as Message & { iterations?: unknown[] }).iterations?.length && (
-          <ToolChain steps={toolSteps} mode={toolOutputMode} isRunning={false} />
+          <ToolChain
+            steps={toolSteps}
+            mode={toolOutputMode}
+            isRunning={false}
+            renderIterExtra={renderIterExtra}
+          />
         )}
 
         {/* Финальный рендер итераций из БД — точно как live, каждая итерация отдельно.
@@ -1964,6 +1995,7 @@ const MessageContent = memo(function MessageContent({
                   mode={toolOutputMode}
                   isRunning={false}
                   chatId={message.chatId}
+                  renderIterExtra={renderIterExtra}
                 />
               )}
               {iters.map((iter, i) => {
@@ -1998,35 +2030,12 @@ const MessageContent = memo(function MessageContent({
                       steps={iter.steps}
                       mode={toolOutputMode}
                       isRunning={false}
+                      renderIterExtra={renderIterExtra}
                     />
                   )}
-                  {iter.steps.some(s => s.toolName === 'get_fast_context') && (() => {
-                    const fcSaved = extractFastContextResult(iter.steps)
-                    if (fcSaved) return <FastContextBlock result={fcSaved} />
-                    return null
-                  })()}
-                  {/* Карточки саб-агентов для persisted-итерации — по одной на
-                      каждый spawn_agent-вызов. agentId извлекается regex'ом из
-                      парного tool_result (матчинг по callId, fallback —
-                      ближайший результат после вызова). */}
-                  {iter.steps
-                    .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
-                    .map(callStep => {
-                      const resultStep = iter.steps.find(r =>
-                        r.type === 'tool_result' && r.toolName === 'spawn_agent' &&
-                        (callStep.callId ? r.callId === callStep.callId : r.timestamp >= callStep.timestamp)
-                      )
-                      const agentIdMatch = resultStep?.content?.match(/\[AGENT:([^\]]+)\]/)
-                      const agentId = agentIdMatch?.[1]
-                      if (!agentId) return null
-                      return (
-                        <AgentCardLive
-                          key={agentId}
-                          agentId={agentId}
-                          task={(callStep.toolArgs?.task as string) ?? ''}
-                        />
-                      )
-                    })}
+                  {/* Fast Context и карточки саб-агентов рендерит сам ToolChain
+                      внутри ленты (renderIterExtra) — здесь их больше нет,
+                      иначе в чате было бы два одинаковых блока. */}
                   {/* Сгенерированные изображения внутри persisted-итерации */}
                   {iter.steps
                     .filter(s => s.type === 'tool_result' && s.imageUrl)
@@ -2049,14 +2058,8 @@ const MessageContent = memo(function MessageContent({
           )
         })()}
 
-        {/* Карточки саб-агентов — мемоизированные (spawnAgentCards) */}
-        {!isUser && !liveIters?.length && spawnAgentCards.length > 0 && spawnAgentCards.map(card => (
-          <AgentCardLive
-            key={card.agentId}
-            agentId={card.agentId}
-            task={card.task}
-          />
-        ))}
+        {/* Карточки саб-агентов теперь рендерит ToolChain внутри ленты
+            (renderIterExtra) — отдельного блока здесь больше нет. */}
 
         {/* Сгенерированные изображения из tool steps — мемоизированные */}
         {!isUser && !liveIters?.length && toolImages.map(s => (
@@ -2126,6 +2129,7 @@ const MessageContent = memo(function MessageContent({
                 toolProgress={toolProgress}
                 liveThinking={liveThinkingInChain}
                 chatId={message.chatId}
+                renderIterExtra={renderIterExtra}
               />
             )}
             {liveIters.map((iter, ii) => {
@@ -2151,41 +2155,9 @@ const MessageContent = memo(function MessageContent({
                       <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
                   )}
-                  {/* Fast Context блок — после toolchain, внутри итерации.
-                      Позиция стабильна: стримящийся текст идёт ниже. */}
-                  {iter.steps.some(s => s.toolName === 'get_fast_context') && (() => {
-                    const fcLive = isStreaming && isLastIter ? toolProgress?.['get_fast_context'] : undefined
-                    const isFcLive = fcLive && fcLive.stage !== 'done'
-                    if (isFcLive) {
-                      return <FastContextBlock result={EMPTY_FC_RESULT} liveProgress={fcLive} />
-                    }
-                    const fcSaved = extractFastContextResult(iter.steps)
-                    if (fcSaved) return <FastContextBlock result={fcSaved} />
-                    return null
-                  })()}
-                  {/* Live-карточки саб-агентов — после toolchain, внутри итерации
-                      (на той же позиции, что и FastContextBlock). Появляются
-                      СРАЗУ при вызове spawn_agent: main эмитит agent:spawn ДО
-                      запуска worker'а, renderer матчит по callId (или task как
-                      fallback) с live-шагом tool_call spawn_agent. По одной
-                      карточке на каждый spawn_agent-вызов (параллельные агенты).
-                      При done карточка обновляется через agent:update. */}
-                  {iter.steps
-                    .filter(s => s.type === 'tool_call' && s.toolName === 'spawn_agent')
-                    .map(callStep => {
-                      const taskArg = callStep.toolArgs?.task as string | undefined
-                      // Матчинг по callId (точный), fallback — по task
-                      const spawned = spawnedAgents?.find(a => a.callId && a.callId === callStep.callId)
-                        ?? spawnedAgents?.find(a => taskArg && a.task === taskArg)
-                      if (!spawned) return null
-                      return (
-                        <AgentCardLive
-                          key={spawned.agentId}
-                          agentId={spawned.agentId}
-                          task={taskArg ?? spawned.task}
-                        />
-                      )
-                    })}
+                  {/* Fast Context и карточки саб-агентов больше не рендерятся
+                      здесь: они живут ВНУТРИ ленты, под своим шагом
+                      (см. renderIterExtra → ToolChain). */}
                   {/* Сгенерированные изображения внутри live-итерации */}
                   {iter.steps
                     .filter(s => s.type === 'tool_result' && s.imageUrl)
