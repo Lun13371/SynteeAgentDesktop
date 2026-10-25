@@ -1,13 +1,19 @@
-/* FastContextBlock — в стиле ToolChain, консистентный с темой */
+/* FastContextBlock — компактная плашка в стиле ToolChain (метрики шапки
+   совпадают с .tc2-header: padding 8/10, gap 8, title 12px) */
 
 .fcb-wrap {
   margin: 8px 0 4px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
+  border-left: 2px solid transparent;
   background: var(--bg-secondary);
   font-size: 12px;
   overflow: hidden;
-  transition: border-color 0.3s;
+  transition: border-color 0.3s, border-left-color 0.3s;
+}
+.fcb-wrap--live {
+  border-color: var(--border-strong);
+  border-left-color: var(--accent);
 }
 
 /* ── Header ── */
@@ -18,22 +24,22 @@
   padding: 8px 10px;
   cursor: pointer;
   user-select: none;
-  transition: background 0.2s;
+  border-bottom: 1px solid transparent;
+  transition: background 0.15s, border-color 0.2s;
 }
 .fcb-header:hover {
   background: var(--overlay-2);
 }
-.fcb-header-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
+.fcb-wrap--open .fcb-header {
+  border-bottom-color: var(--border);
 }
 .fcb-icon {
   color: var(--text-muted);
   flex-shrink: 0;
   opacity: 0.8;
+}
+.fcb-icon--spin {
+  animation: fcb-spin 3s linear infinite;
 }
 .fcb-title {
   font-size: 12px;
@@ -53,27 +59,33 @@
 .fcb-header-right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
+  margin-left: auto;
 }
+/* Мета повторяет .tc2-elapsed-badge у ToolChain */
 .fcb-meta {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
   color: var(--text-muted);
-  font-size: 10.5px;
   white-space: nowrap;
-  opacity: 0.7;
 }
 .fcb-compact-files {
   color: var(--text-muted);
   font-size: 10px;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  max-width: 240px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0.5;
+  opacity: 0.55;
 }
 .fcb-chevron {
   background: none;
@@ -84,14 +96,23 @@
   display: flex;
   align-items: center;
   border-radius: 3px;
-  transition: color 0.15s, background 0.15s, transform 0.2s;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+.fcb-chevron svg {
+  transition: transform 0.2s ease;
+}
+.fcb-chevron--closed svg {
+  transform: rotate(-90deg);
 }
 .fcb-chevron:hover {
   color: var(--text-primary);
-  background: var(--overlay-4);
+}
+.fcb-header:hover .fcb-chevron {
+  color: var(--text-primary);
 }
 
-/* ── Body: CSS grid 0fr→1fr для expand/collapse (вместо framer-motion height:auto) ── */
+/* ── Body: CSS grid 0fr→1fr для expand/collapse ── */
 .fcb-body-wrap {
   display: grid;
   grid-template-rows: 0fr;
@@ -104,20 +125,19 @@
   overflow: hidden;
   min-height: 0;
   padding: 0 10px;
-  border-top: 1px solid transparent;
   opacity: 0;
-  transition: opacity 0.2s ease, padding 0.28s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s;
+  transition: opacity 0.2s ease, padding 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .fcb-body-wrap--open .fcb-body {
   opacity: 1;
   padding: 8px 10px 10px;
-  border-top-color: var(--border);
 }
 
-/* ── Roadmap ── */
+/* ── Roadmap (только live) ── */
 .fcb-stages {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 2px;
   margin-bottom: 8px;
 }
@@ -248,16 +268,6 @@
   text-overflow: ellipsis;
   max-width: 180px;
 }
-.fcb-chip svg {
-  flex-shrink: 0;
-  opacity: 0.6;
-  color: var(--accent);
-}
-.fcb-chip span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* CSS entrance для live chips (вместо framer-motion spring) */
 @keyframes fcb-chip-enter {
   from { opacity: 0; transform: translateY(6px) scale(0.9); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
@@ -289,44 +299,9 @@
   50% { opacity: 0.8; }
 }
 
-/* ── Summary ── */
-.fcb-summary-wrap {
-  margin: 6px 0;
-  animation: fcb-fade-in 0.4s ease-out 0.1s both;
-}
-/* CSS grid 0fr→1fr для summary expand/collapse (вместо framer-motion) */
-.fcb-summary-collapse {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.fcb-summary-collapse--open {
-  grid-template-rows: 1fr;
-}
-.fcb-summary-collapse > .fcb-summary {
-  overflow: hidden;
-  min-height: 0;
-}
-.fcb-summary-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 500;
-  padding: 2px 0;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  transition: color 0.15s;
-}
-.fcb-summary-toggle:hover {
-  color: var(--text-primary);
-}
+/* ── Сводка: основной читаемый текст ответа ── */
 .fcb-summary {
-  margin: 4px 0 0;
+  margin: 0 0 8px;
   padding: 8px 10px;
   background: var(--overlay-2);
   border-left: 2px solid var(--accent);
@@ -334,22 +309,108 @@
   color: var(--text-primary);
   font-size: 11.5px;
   line-height: 1.55;
-  overflow: hidden;
+  animation: fcb-fade-in 0.4s ease-out 0.1s both;
+}
+.fcb-summary:last-child {
+  margin-bottom: 0;
 }
 
-/* ── Files list ── */
+/* ── Файлы: группы по папкам ── */
 .fcb-files {
-  margin-top: 6px;
   animation: fcb-fade-in 0.4s ease-out 0.15s both;
 }
-.fcb-files-header {
-  font-size: 9px;
+/* Раскрывашка списка файлов — по умолчанию список скрыт, видна сводка */
+.fcb-files-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
   color: var(--text-muted);
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  opacity: 0.6;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 2px 0;
+  transition: color 0.15s;
 }
+.fcb-files-toggle:hover {
+  color: var(--text-primary);
+}
+.fcb-files-toggle-chevron {
+  transform: rotate(-90deg);
+  transition: transform 0.2s ease;
+}
+.fcb-files-toggle--open .fcb-files-toggle-chevron {
+  transform: rotate(0deg);
+}
+
+/* Обёртка со скроллом: список ограничен по высоте, скроллбар всегда виден.
+   ВАЖНО: никаких отрицательных margin — родитель .fcb-wrap имеет
+   overflow:hidden и срезал бы бегунок за границей блока. */
+.fcb-file-list {
+  max-height: 200px;
+  margin-top: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 6px;
+  /* мягкое затухание снизу — обрезка списка читается как «дальше ещё есть» */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
+}
+.fcb-file-list::-webkit-scrollbar {
+  width: 6px;
+}
+.fcb-file-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.fcb-file-list::-webkit-scrollbar-thumb {
+  background: var(--overlay-5);
+  border-radius: 3px;
+}
+.fcb-file-list::-webkit-scrollbar-thumb:hover {
+  background: var(--overlay-6);
+}
+
+.fcb-dir-group {
+  margin-bottom: 6px;
+}
+.fcb-dir-group:last-child {
+  margin-bottom: 0;
+}
+.fcb-dir-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px 3px 2px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  min-width: 0;
+}
+.fcb-dir-icon {
+  flex-shrink: 0;
+  opacity: 0.5;
+  color: var(--accent);
+}
+.fcb-dir-path {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+.fcb-dir-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  background: var(--overlay-3);
+  color: var(--text-secondary);
+  padding: 0 5px;
+  border-radius: 3px;
+}
+
 .fcb-file-row {
   border-radius: 4px;
   transition: background 0.15s;
@@ -357,48 +418,21 @@
 .fcb-file-row:hover {
   background: var(--overlay-2);
 }
-.fcb-snippet {
-  max-height: 320px;
-  overflow: auto;
-  margin: 4px 6px 8px 23px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font: 10px/1.45 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  white-space: pre;
-  tab-size: 2;
-}
-/* CSS entrance для file rows (вместо framer-motion staggered) */
-@keyframes fcb-file-enter {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.fcb-file-row--enter {
-  animation: fcb-file-enter 0.25s ease-out both;
-  animation-delay: calc(var(--fcb-i, 0) * 0.03s);
-}
 .fcb-file-head {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 6px;
+  padding: 4px 6px 4px 12px;
   cursor: pointer;
 }
 .fcb-file-chevron {
   color: var(--text-muted);
   transition: transform 0.2s ease;
   flex-shrink: 0;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 .fcb-file-chevron--closed {
   transform: rotate(-90deg);
-}
-.fcb-file-icon {
-  color: var(--accent);
-  flex-shrink: 0;
-  opacity: 0.6;
 }
 .fcb-file-path {
   background: none;
@@ -406,7 +440,7 @@
   color: var(--text-primary);
   cursor: pointer;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 11px;
+  font-size: 11.5px;
   padding: 0;
   text-align: left;
   flex: 1;
@@ -423,18 +457,26 @@
   font-size: 9.5px;
   color: var(--text-muted);
   background: var(--overlay-3);
-  padding: 0 5px;
+  padding: 1px 5px;
   border-radius: 3px;
   font-family: 'SF Mono', 'Cascadia Code', monospace;
   flex-shrink: 0;
 }
 .fcb-file-why {
-  padding: 4px 8px 6px 24px;
+  padding: 2px 8px 6px 28px;
   font-size: 10.5px;
   color: var(--text-secondary);
-  line-height: 1.5;
+  line-height: 1.45;
   overflow: hidden;
   animation: fcb-fade-in 0.25s ease-out;
+}
+@keyframes fcb-file-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fcb-file-row--enter {
+  animation: fcb-file-enter 0.25s ease-out both;
+  animation-delay: calc(var(--fcb-i, 0) * 0.02s);
 }
 @keyframes fcb-fade-in {
   from { opacity: 0; }
@@ -443,19 +485,11 @@
 
 /* ── Empty ── */
 .fcb-empty {
-  padding: 10px;
+  padding: 8px;
   text-align: center;
   color: var(--text-muted);
   font-size: 11px;
   font-style: italic;
   opacity: 0.6;
   animation: fcb-fade-in 0.4s ease-out;
-}
-
-/* ── Live state ── */
-.fcb-wrap--live {
-  border-color: var(--border-strong);
-}
-.fcb-icon--spin {
-  animation: fcb-spin 3s linear infinite;
 }

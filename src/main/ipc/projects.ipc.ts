@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow, dialog } from 'electron'
 import { analyzeProject } from '../../core/tools'
 import { stopWatching as stopFastContextWatch, registerProjectWorkdir } from '../../core/context/fastContextWatcher'
+import { sidecarClear } from '../../core/context/fastContext/sidecarClient'
 import {
   createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
   setProjectVerificationCommand, setProjectContextFiles, setProjectAppearance,
@@ -87,6 +88,10 @@ export function registerProjectsIPC(mainWindow: ProjectsIPCWindow): void {
   ipcMain.handle('projects:delete', async (_, id: string, deleteChats: boolean) => {
     // Останавливаем fast context watcher перед удалением проекта
     try { await stopFastContextWatch(id) } catch { /* watcher опционален */ }
+    // Строки индекса удаляются и напрямую в SQL (deleteProject), но FTS-таблица
+    // живёт только в sidecar — просим его почистить, чтобы полнотекстовый
+    // акселератор не копил осиротевшие записи удалённых проектов.
+    try { await sidecarClear(id) } catch { /* sidecar опционален */ }
     deleteProject(id, deleteChats)
   })
   ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))

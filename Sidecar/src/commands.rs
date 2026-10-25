@@ -34,6 +34,11 @@ struct IndexParams {
     workdir: PathBuf,
     #[serde(default)]
     options: IndexOptions,
+    /// Skip the pass when the index was written more recently than this.
+    /// `get_fast_context` uses it so a query does not re-walk the project that
+    /// the watcher is already keeping current.
+    #[serde(default)]
+    max_age_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +125,8 @@ struct Capabilities {
     protocol_version: u32,
     methods: Vec<&'static str>,
     parser_backend: &'static str,
+    /// What ranking actually does, so a client can log/verify the backend.
+    ranking: &'static str,
 }
 
 pub fn dispatch(request: Request) -> Result<CommandOutcome> {
@@ -158,6 +165,7 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                     "shutdown",
                 ],
                 parser_backend: "tree-sitter (native) + lexical fallback",
+                ranking: "field-weighted + idf + ru-en synonyms + graph rank",
             })?,
             shutdown: false,
         }),
@@ -167,6 +175,7 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                 &params.project_id,
                 &params.workdir,
                 &params.options,
+                params.max_age_ms,
             )?;
             Ok(CommandOutcome { result: serde_json::to_value(result)?, shutdown: false })
         }
@@ -275,6 +284,7 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                     "definitions": symbols.definitions,
                     "imports": symbols.imports,
                     "references": symbols.references,
+                    "truncated": symbols.truncated,
                     "language": language,
                     "parser": parser,
                     "supported": true,

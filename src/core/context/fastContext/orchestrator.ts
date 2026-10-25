@@ -14,6 +14,14 @@ import type { SymbolDef } from './types'
 // with different indexing rules and ranking.
 
 /**
+ * How long an index written by the watcher (or a previous call) is trusted
+ * without re-walking the project. The watcher keeps the index current, so a
+ * full pass on every `get_fast_context` was pure overhead; the window is short
+ * enough that a query right after an edit still sees the change.
+ */
+const INDEX_MAX_AGE_MS = 30_000
+
+/**
  * Главная точка входа — вызывается тулзой get_fast_context.
  * Шлёт progress callbacks для 3-stage UI (indexing → retrieving → summarizing).
  */
@@ -35,11 +43,16 @@ export async function runFastContext(
   onProgress?.({ stage: 'indexing', detail: 'Сканирование файлов (Rust)', filesProcessed: 0, filesTotal: 0 })
   let sidecarIndexResult: Awaited<ReturnType<typeof sidecarIndex>>
   try {
-    sidecarIndexResult = await sidecarIndex(projectId, workdir, {
-      maxFiles: idxSettings.maxFilesPerProject,
-      maxFileSizeKb: idxSettings.maxFileSizeKb,
-      ignoreDirs: idxSettings.ignoreDirs,
-    })
+    sidecarIndexResult = await sidecarIndex(
+      projectId,
+      workdir,
+      {
+        maxFiles: idxSettings.maxFilesPerProject,
+        maxFileSizeKb: idxSettings.maxFileSizeKb,
+        ignoreDirs: idxSettings.ignoreDirs,
+      },
+      { maxAgeMs: INDEX_MAX_AGE_MS },
+    )
     // A file cap intentionally indexes a deterministic subset. It is usable for
     // retrieval; only actual walk/read errors make the index unsafe to trust.
     if (sidecarIndexResult.hadErrors === true || (sidecarIndexResult.complete === false && !sidecarIndexResult.hitCap)) {
@@ -51,7 +64,14 @@ export async function runFastContext(
       ].filter((reason): reason is string => reason !== null)
       throw new SidecarError('index_unavailable', `Rust sidecar index is incomplete: ${reasons.join('; ')}`)
     }
-    if (sidecarIndexResult.hitCap) {
+    if (sidecarIndexResult.skipped === true) {
+      onProgress?.({
+        stage: 'indexing',
+        detail: `Индекс свежий: ${sidecarIndexResult.filesFound ?? 0} файлов (без пересканирования)`,
+        filesProcessed: sidecarIndexResult.filesFound,
+        filesTotal: sidecarIndexResult.filesFound,
+      })
+    } else if (sidecarIndexResult.hitCap) {
       onProgress?.({
         stage: 'indexing',
         detail: `Индексирована часть проекта: ${sidecarIndexResult.filesFound ?? idxSettings.maxFilesPerProject} файлов (лимит ${idxSettings.maxFilesPerProject})`,
@@ -79,6 +99,10 @@ export async function runFastContext(
 
   const slice: string = sidecarResult.slice
   const topFiles: Array<{ path: string; score: number; definitions: SymbolDef[] }> = sidecarResult.topFiles
+  // `fallback` means nothing actually matched and the sidecar returned the most
+  // structurally important files instead — the caller must not present that as
+  // a real result.
+  const matchKind = sidecarResult.matchKind ?? 'partial'
 
   // Real index size: rows in the Rust index, not just this walk's file count.
   const indexedCount = sidecarResult.indexedFilesCount ?? sidecarIndexResult.filesFound ?? 0
@@ -98,7 +122,9 @@ export async function runFastContext(
   // Emit найденных файлов для live-UI (chips появляются по мере "нахождения")
   onProgress?.({
     stage: 'retrieving',
-    detail: `Найдено ${topFiles.length} файлов`,
+    detail: matchKind === 'fallback'
+      ? `Совпадений нет — показаны структурно важные файлы (${topFiles.length})`
+      : `Найдено ${topFiles.length} файлов`,
     filesFound: topFiles.map(f => ({
       path: f.path,
       score: f.score,
@@ -160,7 +186,9 @@ export async function runFastContext(
 
   return {
     files,
-    summary: llmResult?.summary || `Найдено ${files.length} релевантных файлов по запросу.`,
+    summary: llmResult?.summary || (matchKind === 'fallback'
+      ? `Точных совпадений по запросу не найдено. Показаны структурно важные файлы (${files.length}).`
+      : `Найдено ${files.length} релевантных файлов по запросу.`),
     ms: Date.now() - startedAt,
     indexedFilesCount: indexedCount,
     snippets: snippetResult.items,

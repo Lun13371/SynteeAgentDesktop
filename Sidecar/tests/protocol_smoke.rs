@@ -31,6 +31,7 @@ fn capabilities_expose_rust_watcher_commands() {
         assert!(methods.iter().any(|value| value == method));
     }
     assert_eq!(outcome.result["parserBackend"], "tree-sitter (native) + lexical fallback");
+    assert!(outcome.result["ranking"].as_str().unwrap().contains("idf"));
 }
 
 #[test]
@@ -125,6 +126,90 @@ fn response_result_and_params_are_wire_compatible() {
     let encoded = serde_json::to_value(response).unwrap();
     assert!(encoded.get("result").is_some());
     assert!(encoded.get("result").unwrap().get("protocolVersion").is_some());
+}
+
+#[test]
+fn fresh_index_is_reused_when_max_age_is_set() {
+    let root = std::env::temp_dir().join(format!("syntee-sidecar-fresh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo/src")).unwrap();
+    std::fs::write(root.join("repo/src/app.ts"), "export function boot() {}\n").unwrap();
+    let db_path = root.join("syntee.db");
+    let connection = rusqlite::Connection::open(&db_path).unwrap();
+    connection.execute_batch("CREATE TABLE projects (id TEXT PRIMARY KEY);").unwrap();
+    drop(connection);
+    let workdir = root.join("repo");
+
+    let first = dispatch(Request {
+        id: json!(1),
+        method: "index".to_owned(),
+        params: json!({
+            "dbPath": db_path, "projectId": "p", "workdir": workdir,
+            "options": {"maxFiles": 10, "maxFileSizeKb": 1500, "ignoreDirs": []}
+        }),
+    })
+    .unwrap();
+    assert_eq!(first.result["skipped"], false);
+    assert_eq!(first.result["filesChanged"], 1);
+
+    let second = dispatch(Request {
+        id: json!(2),
+        method: "index".to_owned(),
+        params: json!({
+            "dbPath": db_path, "projectId": "p", "workdir": workdir,
+            "options": {"maxFiles": 10, "maxFileSizeKb": 1500, "ignoreDirs": []},
+            "maxAgeMs": 60_000
+        }),
+    })
+    .unwrap();
+    assert_eq!(second.result["skipped"], true);
+    assert_eq!(second.result["filesChanged"], 0);
+    assert_eq!(second.result["filesFound"], 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn search_bridges_a_russian_query_to_english_identifiers() {
+    let root = std::env::temp_dir().join(format!("syntee-sidecar-ru-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo/src")).unwrap();
+    std::fs::write(
+        root.join("repo/src/cacheStore.ts"),
+        "export const cacheStore = { get(key: string) { return key } }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("repo/src/Button.tsx"), "export function Button() { return null }\n")
+        .unwrap();
+    let db_path = root.join("syntee.db");
+    let connection = rusqlite::Connection::open(&db_path).unwrap();
+    connection.execute_batch("CREATE TABLE projects (id TEXT PRIMARY KEY);").unwrap();
+    drop(connection);
+    let workdir = root.join("repo");
+
+    dispatch(Request {
+        id: json!(1),
+        method: "index".to_owned(),
+        params: json!({
+            "dbPath": db_path, "projectId": "p", "workdir": workdir,
+            "options": {"maxFiles": 10, "maxFileSizeKb": 1500, "ignoreDirs": []}
+        }),
+    })
+    .unwrap();
+
+    let searched = dispatch(Request {
+        id: json!(2),
+        method: "search".to_owned(),
+        params: json!({
+            "dbPath": db_path, "projectId": "p", "query": "кеш хранилище",
+            "maxFiles": 5, "maxTokens": 1000
+        }),
+    })
+    .unwrap();
+    assert_ne!(searched.result["matchKind"], "fallback");
+    assert!(searched.result["topFiles"][0]["path"].as_str().unwrap().ends_with("cacheStore.ts"));
+    // The trimmed payload must not carry every definition of every hit.
+    assert!(searched.result["topFiles"][0]["definitions"].as_array().unwrap().len() <= 12);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

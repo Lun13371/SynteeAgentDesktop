@@ -28,6 +28,10 @@ export interface SidecarSearchResult {
   slice: string
   topFiles: SidecarTopFile[]
   indexedFilesCount?: number
+  /** `exact` — every query token matched, `partial` — some, `fallback` — none. */
+  matchKind?: 'exact' | 'partial' | 'fallback'
+  /** Query tokens the sidecar actually searched for (after stemming/translation). */
+  queryTokens?: string[]
 }
 
 export interface SidecarIndexResult {
@@ -413,6 +417,12 @@ function normalizeSearchResult(result: JsonRecord, maxFiles: number, maxTokens: 
       : typeof result.indexed_files_count === 'number' ? result.indexed_files_count
         : typeof result.totalFiles === 'number' ? result.totalFiles
           : typeof result.appliedMaxFiles === 'number' ? result.appliedMaxFiles : undefined,
+    matchKind: result.matchKind === 'exact' || result.matchKind === 'partial' || result.matchKind === 'fallback'
+      ? result.matchKind
+      : undefined,
+    queryTokens: Array.isArray(result.queryTokens)
+      ? result.queryTokens.filter((value): value is string => typeof value === 'string')
+      : undefined,
   }
 }
 
@@ -443,6 +453,7 @@ export async function sidecarIndex(
   projectId: string,
   workdir: string,
   settings?: JsonRecord,
+  opts: { maxAgeMs?: number } = {},
 ): Promise<SidecarIndexResult> {
   const options = settings ? {
     maxFiles: typeof settings.maxFiles === 'number' ? settings.maxFiles : undefined,
@@ -452,8 +463,14 @@ export async function sidecarIndex(
     // "module manager" misses files that only mention those names in code.
     skipReferences: false,
   } : undefined
+  const maxAgeMs = opts.maxAgeMs && opts.maxAgeMs > 0 ? opts.maxAgeMs : undefined
   return await requestWithRecovery('index', {
-    params: sidecarParams({ projectId, workdir, ...(options ? { options } : {}) }),
+    params: sidecarParams({
+      projectId,
+      workdir,
+      ...(options ? { options } : {}),
+      ...(maxAgeMs ? { maxAgeMs } : {}),
+    }),
   }) as SidecarIndexResult
 }
 
@@ -570,6 +587,8 @@ export interface SidecarSymbolsResult {
   parser: string | null
   /** False when the language has no parser at all (caller should fall back). */
   supported: boolean
+  /** True when a cap stopped extraction before the end of the file. */
+  truncated: boolean
 }
 
 export async function sidecarSymbols(
@@ -596,6 +615,7 @@ export async function sidecarSymbols(
     language: typeof result.language === 'string' ? result.language : null,
     parser: typeof result.parser === 'string' ? result.parser : null,
     supported: result.supported !== false,
+    truncated: result.truncated === true,
   }
 }
 

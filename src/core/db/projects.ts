@@ -89,6 +89,9 @@ export function deleteProject(id: string, deleteChats = false): void {
     try {
       db.prepare('DELETE FROM fast_context_sidecar_index WHERE project_id = ?').run(id)
     } catch { /* таблица sidecar появляется только после первого Rust-индекса */ }
+    try {
+      db.prepare('DELETE FROM fast_context_sidecar_meta WHERE project_id = ?').run(id)
+    } catch { /* таблица meta появляется только после первого Rust-индекса */ }
   })()
 }
 

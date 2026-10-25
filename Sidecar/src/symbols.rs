@@ -7,8 +7,13 @@ use serde::{Deserialize, Serialize};
 pub struct SymbolDef {
     pub name: String,
     pub kind: String,
+    /// Defaulted so a partially populated row (an older index, a fixture) still
+    /// deserializes instead of silently yielding zero definitions.
+    #[serde(default)]
     pub line_start: usize,
+    #[serde(default)]
     pub line_end: usize,
+    #[serde(default)]
     pub signature: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_name: Option<String>,
@@ -19,6 +24,24 @@ pub struct FileSymbols {
     pub definitions: Vec<SymbolDef>,
     pub imports: Vec<String>,
     pub references: Vec<String>,
+    /// True when a cap stopped extraction before the end of the file, so a
+    /// consumer can tell an empty outline from a truncated one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Languages where a leading `#` starts a comment. It must not include C#:
+/// `#region`/`#if` there are directives, and treating them as comments hid real
+/// declarations that followed on the same line.
+fn hash_starts_comment(language: &str) -> bool {
+    matches!(
+        language,
+        "python" | "ruby" | "bash" | "yaml" | "toml" | "php" | "perl" | "elixir" | "make"
+    )
 }
 
 pub fn extract_symbols(source: &str, language: &str, skip_references: bool) -> FileSymbols {
@@ -28,17 +51,23 @@ pub fn extract_symbols(source: &str, language: &str, skip_references: bool) -> F
     let mut stack: Vec<(String, usize, usize)> = Vec::new();
     let mut brace_depth = 0usize;
     let mut known = HashSet::new();
+    let mut truncated = false;
 
     for (index, raw_line) in source.lines().enumerate() {
         let line_number = index + 1;
         let line = raw_line.trim().trim_start_matches('\u{feff}');
         if line.is_empty()
             || line.starts_with("//")
-            || line.starts_with('#') && language != "c" && language != "cpp"
+            || line.starts_with("/*")
+            || line.starts_with('*')
+            || line.starts_with('#') && hash_starts_comment(language)
         {
             continue;
         }
         let clean = strip_line_comment(line);
+        if clean.trim().is_empty() {
+            continue;
+        }
         if is_import(&clean, language) {
             imports.push(clean.chars().take(240).collect());
         }
@@ -66,14 +95,17 @@ pub fn extract_symbols(source: &str, language: &str, skip_references: bool) -> F
                 }
             }
         }
-        brace_depth =
-            brace_depth.saturating_add(clean.chars().filter(|character| *character == '{').count());
-        brace_depth =
-            brace_depth.saturating_sub(clean.chars().filter(|character| *character == '}').count());
+        // Braces inside string literals are text, not scope.
+        let structural = without_strings(&clean);
+        brace_depth = brace_depth
+            .saturating_add(structural.chars().filter(|character| *character == '{').count());
+        brace_depth = brace_depth
+            .saturating_sub(structural.chars().filter(|character| *character == '}').count());
         while stack.last().is_some_and(|item| brace_depth <= item.2) {
             stack.pop();
         }
         if definitions.len() >= 300 {
+            truncated = true;
             break;
         }
     }
@@ -92,7 +124,12 @@ pub fn extract_symbols(source: &str, language: &str, skip_references: bool) -> F
             break;
         }
     }
-    FileSymbols { definitions, imports: imports.into_iter().take(100).collect(), references }
+    FileSymbols {
+        definitions,
+        imports: imports.into_iter().take(100).collect(),
+        references,
+        truncated,
+    }
 }
 
 fn is_import(line: &str, language: &str) -> bool {
@@ -229,8 +266,69 @@ fn identifiers(line: &str) -> Vec<String> {
     result
 }
 
+/// Remove a trailing `//` comment without destroying string contents.
+///
+/// Splitting on the first `//` cut URLs (`"https://…"`), regex literals and JSX
+/// text in half, which in turn corrupted the identifier list the lexical scanner
+/// derives from the line.
 fn strip_line_comment(line: &str) -> String {
-    line.split_once("//").map_or_else(|| line.to_owned(), |(head, _)| head.to_owned())
+    let mut out = String::with_capacity(line.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        if let Some(active) = quote {
+            out.push(character);
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' | '`' => {
+                quote = Some(character);
+                out.push(character);
+            }
+            '/' if chars.peek() == Some(&'/') => break,
+            _ => out.push(character),
+        }
+    }
+    out
+}
+
+/// Blank out string literals so brace counting is not fooled by `"{"`.
+fn without_strings(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for character in line.chars() {
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active {
+                quote = None;
+            }
+            out.push(' ');
+            continue;
+        }
+        if matches!(character, '"' | '\'' | '`') {
+            quote = Some(character);
+            out.push(' ');
+            continue;
+        }
+        out.push(character);
+    }
+    out
 }
 
 fn is_container(kind: &str) -> bool {
@@ -312,5 +410,47 @@ mod tests {
         assert!(symbols.definitions.iter().any(|item| item.kind == "struct"));
         assert!(symbols.definitions.iter().any(|item| item.kind == "impl"));
         assert!(symbols.definitions.iter().any(|item| item.kind == "type"));
+    }
+
+    #[test]
+    fn line_comments_do_not_cut_urls_or_regexes() {
+        let symbols = extract_symbols(
+            "const url = \"https://example.com/api\" // trailing note\nfunction load() {}\n",
+            "javascript",
+            false,
+        );
+        assert!(symbols.definitions.iter().any(|item| item.name == "load"));
+        assert!(
+            symbols.references.iter().any(|item| item == "example"),
+            "identifiers from the string must survive the comment strip"
+        );
+    }
+
+    #[test]
+    fn csharp_preprocessor_directives_are_not_comments() {
+        let symbols =
+            extract_symbols("#region Methods\npublic void Run() {}\n#endregion\n", "c_sharp", true);
+        assert!(symbols.definitions.iter().any(|item| item.name == "Run"));
+    }
+
+    #[test]
+    fn braces_inside_strings_do_not_break_parent_names() {
+        let symbols = extract_symbols(
+            "class Store {\n  const open = \"{\"\n  void load() {}\n}\n",
+            "typescript",
+            true,
+        );
+        let load =
+            symbols.definitions.iter().find(|item| item.name == "load").expect("load definition");
+        assert_eq!(load.parent_name.as_deref(), Some("Store"));
+    }
+
+    #[test]
+    fn truncated_flag_marks_a_capped_scan() {
+        let source =
+            (0..400).map(|index| format!("function fn{index}() {{}}\n")).collect::<String>();
+        let symbols = extract_symbols(&source, "javascript", true);
+        assert!(symbols.truncated);
+        assert_eq!(symbols.definitions.len(), 300);
     }
 }

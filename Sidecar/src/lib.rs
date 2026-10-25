@@ -10,6 +10,8 @@ pub mod protocol;
 pub mod runtime;
 pub mod search;
 pub mod symbols;
+pub mod synonyms;
+pub mod text;
 pub mod tokens;
 pub mod walker;
 pub mod watcher;
