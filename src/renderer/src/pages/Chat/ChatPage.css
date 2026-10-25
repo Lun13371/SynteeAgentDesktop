@@ -357,14 +357,24 @@
    Mermaid) — синхронная работа на кадр-полтора. Пока она идёт, браузер не
    может отрисовать новый контент и держит на экране ЗАМОРОЖЕННЫЙ кадр
    старого чата. Вуаль монтируется ДО этой работы (ChatPage.selectChat
-   специально отдаёт кадр браузеру), закрывает область ленты и плавно уходит,
-   когда новый чат уже отрисован, — вместо фриза виден кросс-фейд.
+   специально отдаёт кадр браузеру) и плавно уходит, когда новый чат уже
+   отрисован, — вместо фриза виден кросс-фейд.
 
-   animation-delay: 90ms — на быстрых кэш-хитах (<90мс) вуаль не успевает
-   проявиться, поэтому мгновенные переключения выглядят мгновенными, без
-   «мигания» фоном. fill-mode backwards держит opacity:0 в течение задержки,
-   после окончания анимации opacity возвращается к базовому 1 — и тогда
-   exit-анимация framer-motion (inline opacity) снова работает. */
+   Управление — ЧИСТО CSS-transition (не animation и не framer-motion):
+   • появление: transition 110ms ease-out, стартует прямо при монтировании
+     благодаря @starting-style (Chromium 117+, у нас Electron 44);
+   • уход: класс --out меняет transition на 160ms без задержки и opacity → 0.
+     Transition реверсится из ТЕКУЩЕГО интерполированного значения, поэтому
+     «срезания» и скачков нет: если вуаль не успела проявиться (быстрое
+     переключение) — она так же плавно и незаметно уходит, без «щелчка»;
+   • opacity-переход выполняется на compositor и продолжает играть, даже
+     когда main thread заблокирован рендером ленты.
+
+   Раньше появление было CSS-animation (с задержкой 90мс), а уход —
+   framer-motion (inline opacity). Пока animation активна, она перебивает
+   inline-стиль → fade-out не проигрывался, а в момент отпускания свойства
+   вуаль резко «щёлкала». Плюс задержка 90мс означала, что вуаль проявлялась
+   уже ПОСЛЕ окончания фриза — то есть мигала без пользы. */
 .chat-switch-veil {
   position: absolute;
   top: 0;
@@ -372,18 +382,35 @@
   right: 0;
   /* Инпут не закрываем: писать в чат можно, пока грузится история. */
   bottom: var(--chat-input-h, 120px);
-  z-index: 30;
+  /* Выше .chat-topright-actions (40): кластер сводки/файлов тоже
+     перемонтируется на смену чата и не должен мелькать поверх вуали. */
+  z-index: 45;
   display: flex;
   align-items: center;
   justify-content: center;
   /* Клики/скролл не блокируем — вуаль чисто визуальная. */
   pointer-events: none;
   background: color-mix(in srgb, var(--bg-primary, #191919) 62%, transparent);
-  opacity: 1;
-  /* opacity-анимация уходит на compositor и продолжает играть даже когда
-     main thread заблокирован тяжёлым рендером ленты. */
-  animation: chat-switch-veil-in 140ms ease-out 90ms backwards;
+  opacity: 0;
+  transition: opacity 110ms ease-out;
   will-change: opacity;
+}
+/* Стартовое состояние для только что вставленного элемента: без него
+   transition не сработал бы (нет предыдущего значения в DOM). */
+@starting-style {
+  .chat-switch-veil--shown {
+    opacity: 0;
+  }
+}
+/* Проявить вуаль. */
+.chat-switch-veil--shown {
+  opacity: 1;
+}
+/* Плавный уход поверх уже отрисованного нового чата: короткое, но
+   полноценное затухание, а не резкое исчезновение. */
+.chat-switch-veil--out {
+  opacity: 0;
+  transition: opacity 160ms ease-out;
 }
 .chat-switch-veil-spinner {
   width: 22px;
@@ -391,13 +418,9 @@
   border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--text-muted, #888) 28%, transparent);
   border-top-color: var(--accent, #7c6cff);
-  animation:
-    chat-older-spin 0.7s linear infinite,
-    chat-switch-veil-in 200ms ease-out 90ms backwards;
-}
-@keyframes chat-switch-veil-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  /* opacity наследуется от родителя — спиннер проявляется/гаснет вместе
+     с вуалью, отдельная анимация прозрачности не нужна. */
+  animation: chat-older-spin 0.7s linear infinite;
 }
 
 .chat-messages {
