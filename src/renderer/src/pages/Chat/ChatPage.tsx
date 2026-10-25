@@ -294,13 +294,14 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const chatInputWrapRef = useRef<HTMLDivElement>(null)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
-  // ── Вуаль переключения чата (см. selectChat + .chat-switch-veil в CSS) ──
-  // off   — не смонтирована;
-  // shown — проявлена (fade-in 110ms, стартует сразу при монтировании);
+  // ── Индикатор переключения чата (см. selectChat + .chat-switch-veil в CSS,
+  //    имя класса осталось от первой версии с затемнением) ──
+  // off   — не смонтирован;
+  // shown — проявлен (fade-in 110ms, стартует сразу при монтировании);
   // out   — плавное затухание (160ms) поверх уже отрисованного нового чата.
   const [veilPhase, setVeilPhase] = useState<'off' | 'shown' | 'out'>('off')
   const veilHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Смонтирована ли вуаль прямо сейчас — без этого hideVeil в «клике по
+  // Смонтирован ли индикатор прямо сейчас — без этого hideVeil в «клике по
   // активному чату» монтировал бы невидимый элемент на 200мс вхолостую.
   const veilVisibleRef = useRef(false)
   // Номер попытки переключения: при быстрых кликах A→B→C каждая ветка
@@ -1339,8 +1340,8 @@ const chatId = compactingCurrentChatIdRef.current
     // объявлен НИЖЕ по коду, его чтение в массиве зависимостей — TDZ.
   }, [messages.length, isTyping, isLoadingMessages, isCompactingHere, pinAutoscroll, currentChatId])
 
-  // ── Вуаль переключения чата: показать / убрать ──────────────────────────
-  // showVeil монтирует вуаль и сразу же отдаёт кадр браузеру: fade-in
+  // ── Индикатор переключения чата: показать / убрать ──────────────────────
+  // showVeil монтирует индикатор и сразу же отдаёт кадр браузеру: fade-in
   // (CSS-transition на compositor) успевает стартовать ДО тяжёлого рендера
   // ленты, поэтому продолжает идти, даже пока main thread заблокирован.
   const showVeil = useCallback(() => {
@@ -2898,10 +2899,10 @@ const chatId = compactingCurrentChatIdRef.current
             </div>
           )}
 
-          {/* ── Вуаль переключения чата ───────────────────────────────────
-              Монтируется в тот же тик, что и смена чата, но кадр под неё
+          {/* ── Индикатор переключения чата (только кружок, без затемнения) ──
+              Монтируется в тот же тик, что и смена чата, но кадр под него
               браузер отрисовывает ДО тяжёлого рендера ленты (см. settleFrame
-              в selectChat), поэтому fade-in на compositor продолжается и во
+              в selectChat), поэтому вращение и fade-in продолжаются и во
               время фриза. Уход — плавное затухание 160ms (класс --out),
               элемент снимается только после его окончания.
               pointer-events: none — ввод в поле сообщения не блокируется. */}
