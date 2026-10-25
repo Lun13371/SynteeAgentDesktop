@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { QuestionSpec, QuestionAnswer, QuestionType } from '../../../../../shared/types'
 import AppIcon from '../AppIcon/AppIcon'
+import { playConfirmSound } from '../../../utils/sounds'
+import { useChatStore } from '../../../store/chat.store'
 import './QuestionPanel.css'
 
 interface PendingQuestion {
@@ -18,6 +20,67 @@ interface AnswerDraft {
 }
 
 const EMPTY_DRAFT: AnswerDraft = { values: [], text: '' }
+
+/** Стабильная пустая ссылка для черновиков «нет активного запроса». */
+const EMPTY_DRAFTS: Record<string, AnswerDraft> = {}
+
+/**
+ * Нормализация вопросов от AI.
+ * - options может прийти как string[] вместо объектов
+ * - options без value / с дубликатами → все опции «выделялись все сразу»
+ *   (values.includes(undefined) === true у каждой опции)
+ * - id генерируем, если модель его не дала
+ */
+function normalizeQuestions(raw: QuestionSpec[]): QuestionSpec[] {
+  return (raw || []).map((q, i) => {
+    const options = Array.isArray(q.options)
+      ? q.options
+          .map((rawOpt, oi) => {
+            const opt = typeof rawOpt === 'string' ? { value: rawOpt, label: rawOpt } : rawOpt
+            return {
+              ...opt,
+              value: typeof opt.value === 'string' && opt.value.trim() !== ''
+                ? opt.value
+                : (typeof opt.label === 'string' && opt.label.trim() !== '' ? opt.label : `opt_${oi}`),
+              label: typeof opt.label === 'string' && opt.label.trim() !== '' ? opt.label : `Вариант ${oi + 1}`,
+            }
+          })
+          // Дедуп по value: дубликаты получают уникальный суффикс
+          .map((opt, oi, arr) =>
+            arr.findIndex(o => o.value === opt.value) === oi
+              ? opt
+              : { ...opt, value: `${opt.value}_${oi}` },
+          )
+      : undefined
+    return {
+      ...q,
+      id: q.id || `q_${Date.now()}_${i}`,
+      options,
+    }
+  })
+}
+
+/** Пустые черновики для всех вопросов запроса. */
+function emptyDrafts(questions: QuestionSpec[]): Record<string, AnswerDraft> {
+  const init: Record<string, AnswerDraft> = {}
+  for (const q of questions) init[q.id!] = { ...EMPTY_DRAFT }
+  return init
+}
+
+/**
+ * Встать в очередь. КЛЮЧЕВОЕ: новый вопрос НЕ перекрывает активный —
+ * раньше панель имела один слот, второй ask_user (из другого чата/суб-агента)
+ * затирал первый, его черновики сбрасывались, а ответ никогда не
+ * отправлялся → агент висел в ожидании. now: FIFO + дедуп по reqId.
+ */
+export function enqueueQuestion(queue: PendingQuestion[], item: PendingQuestion): PendingQuestion[] {
+  return queue.some(x => x.reqId === item.reqId) ? queue : [...queue, item]
+}
+
+/** Снять запрос из очереди (ответ/пропуск/Стоп) — с любой позиции. */
+export function dequeueQuestion(queue: PendingQuestion[], reqId: string): PendingQuestion[] {
+  return queue.filter(x => x.reqId !== reqId)
+}
 
 /** Авто-detect типа если не указан. */
 function resolveType(q: QuestionSpec): QuestionType {
@@ -45,76 +108,77 @@ function isQuestionVisible(q: QuestionSpec, answers: Record<string, AnswerDraft>
 }
 
 export default function QuestionPanel() {
-  const [pending, setPending] = useState<PendingQuestion | null>(null)
-  const [drafts, setDrafts] = useState<Record<string, AnswerDraft>>({})
-  const [visibleIdx, setVisibleIdx] = useState(0)
-  const [helpExpanded, setHelpExpanded] = useState(false)
+  // ── Очередь вопросов ───────────────────────────────────────────────
+  // Панель ГЛОБАЛЬНАЯ (один экземпляр в App), а ask_user может прийти из
+  // любого чата и от любого суб-агента. Раньше здесь был один слот
+  // (pending), и новый вопрос перезаписывал предыдущий: черновики сбрасывались,
+  // а ответ на старый запрос никогда не отправлялся → тот агент зависал
+  // навсегда в ожидании questionResponse. Теперь FIFO-очередь (как в
+  // AgentConfirmDialog): активный = queue[0], остальные ждут своей очереди.
+  const [queue, setQueue] = useState<PendingQuestion[]>([])
+  // Черновики — per-reqId, иначе ответы/условия showIf перетекают между
+  // вопросами разных запросов.
+  const [draftsByReq, setDraftsByReq] = useState<Record<string, Record<string, AnswerDraft>>>({})
+  // Позиция визарда привязана к reqId: при смене головы очереди индекс
+  // схлопывается в 0 сам, без setState в эффекте (и без сброса активного
+  // вопроса, когда в очередь встаёт новый).
+  const [wizard, setWizard] = useState<{ reqId: string; idx: number }>({ reqId: '', idx: 0 })
+  // Раскрытое пояснение — id вопроса, к которому оно открыто (при переходе
+  // на другой вопрос схлопывается автоматически).
+  const [helpFor, setHelpFor] = useState<string | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+
+  const pending = queue[0] ?? null
+  const activeReqId = pending?.reqId ?? null
+  const drafts = (pending && draftsByReq[pending.reqId]) || EMPTY_DRAFTS
+
+  const dropDrafts = useCallback((reqId: string) => {
+    setDraftsByReq(prev => {
+      if (!(reqId in prev)) return prev
+      const next = { ...prev }
+      delete next[reqId]
+      return next
+    })
+  }, [])
+
+  /** Отправить ответ на активный запрос и снять его с головы очереди. */
+  const finishCurrent = useCallback((reqId: string, answers: QuestionAnswer[]) => {
+    window.syntee.agent.questionResponse(reqId, answers)
+    setQueue(q => dequeueQuestion(q, reqId))
+    dropDrafts(reqId)
+  }, [dropDrafts])
+
+  // Вопрос может прийти из чата, который сейчас не открыт — показываем откуда он.
+  const pendingChatTitle = useChatStore(s =>
+    s.currentChatId === pending?.chatId ? undefined : s.chats.find(c => c.id === pending?.chatId)?.title,
+  )
 
   useEffect(() => {
     const wrapper = window.syntee.agent.onQuestion((data) => {
-      const questions = (data.questions as QuestionSpec[]).map((q, i) => {
-        // Нормализация options: AI может прислать options без value или с
-        // дубликатами — без этого все опции «выделяются все сразу»
-        // (values.includes(undefined) === true у каждой опции).
-        const options = Array.isArray(q.options)
-          ? q.options
-              .map((raw, oi) => {
-                // AI может прислать options как строки ("React") вместо объектов
-                const opt = typeof raw === 'string' ? { value: raw, label: raw } : raw
-                return {
-                  ...opt,
-                  value: typeof opt.value === 'string' && opt.value.trim() !== ''
-                    ? opt.value
-                    : (typeof opt.label === 'string' && opt.label.trim() !== '' ? opt.label : `opt_${oi}`),
-                  label: typeof opt.label === 'string' && opt.label.trim() !== '' ? opt.label : `Вариант ${oi + 1}`,
-                }
-              })
-              // Дедуп по value: дубликаты получают уникальный суффикс
-              .map((opt, oi, arr) =>
-                arr.findIndex(o => o.value === opt.value) === oi
-                  ? opt
-                  : { ...opt, value: `${opt.value}_${oi}` },
-              )
-          : undefined
-        return {
-          ...q,
-          id: q.id || `q_${Date.now()}_${i}`,
-          options,
-        }
-      })
-      setPending({
+      const questions = normalizeQuestions(data.questions as QuestionSpec[])
+      const item: PendingQuestion = {
         reqId: data.reqId,
         chatId: data.chatId,
         msgId: data.msgId,
         questions,
-      })
-      // Инициализируем пустые черновики (AI не может предзаполнять ответы)
-      const init: Record<string, AnswerDraft> = {}
-      for (const q of questions) {
-        init[q.id!] = { ...EMPTY_DRAFT }
       }
-      setDrafts(init)
-      setVisibleIdx(0)
-      setHelpExpanded(false)
-      setTimeout(() => inputRef.current?.focus(), 320)
+      setDraftsByReq(prev => ({ ...prev, [item.reqId]: emptyDrafts(questions) }))
+      // Встаём в очередь, а не перекрываем активный вопрос.
+      // Дедуп по reqId — на случай повторной доставки того же запроса.
+      setQueue(q => enqueueQuestion(q, item))
+      playConfirmSound()
     })
-    // Notification overlay уже обработал ответ — закрыть панель
+    // Запрос закрыт извне (Стоп/ответ через notification overlay) — снимаем
+    // его с любого места очереди, а не только с головы.
     const offDismiss = window.syntee.agent.onQuestionDismiss((reqId) => {
-      setPending(p => {
-        if (p?.reqId === reqId) {
-          setDrafts({})
-          setVisibleIdx(0)
-          return null
-        }
-        return p
-      })
+      setQueue(q => dequeueQuestion(q, reqId))
+      dropDrafts(reqId)
     })
     return () => {
       if (wrapper) window.syntee.agent.offQuestion?.(wrapper as never)
       offDismiss()
     }
-  }, [])
+  }, [dropDrafts])
 
   // Видимый список вопросов (с учётом showIf — фильтруется по уже данным ответам)
   const visibleQuestions = useMemo(() => {
@@ -124,26 +188,31 @@ export default function QuestionPanel() {
 
   // Эффективный индекс — если visibleIdx вышел за пределы (вопрос скрылся showIf),
   // clamp к последнему видимому. Без setState в effect.
+  const visibleIdx = wizard.reqId === activeReqId ? wizard.idx : 0
   const effectiveVisibleIdx = Math.min(visibleIdx, Math.max(0, visibleQuestions.length - 1))
   const currentQuestion = visibleQuestions[effectiveVisibleIdx]
+  const currentQuestionId = currentQuestion?.id ?? null
   const currentDraft = currentQuestion ? (drafts[currentQuestion.id!] || EMPTY_DRAFT) : EMPTY_DRAFT
+  const helpExpanded = currentQuestionId !== null && helpFor === currentQuestionId
 
+  // Фокус в поле ввода: при смене активного запроса и при навигации по вопросам.
   useEffect(() => {
-    if (pending && currentQuestion) {
-      setTimeout(() => inputRef.current?.focus(), 200)
-    }
-  }, [effectiveVisibleIdx, pending, currentQuestion])
+    if (!activeReqId || !currentQuestionId) return
+    const t = setTimeout(() => inputRef.current?.focus(), 220)
+    return () => clearTimeout(t)
+  }, [activeReqId, currentQuestionId, effectiveVisibleIdx])
 
-  const updateDraft = useCallback((qId: string, patch: Partial<AnswerDraft>) => {
-    setDrafts(prev => ({
-      ...prev,
-      [qId]: { ...(prev[qId] || EMPTY_DRAFT), ...patch },
-    }))
+  const updateDraft = useCallback((reqId: string, qId: string, patch: Partial<AnswerDraft>) => {
+    setDraftsByReq(prev => {
+      const forReq = prev[reqId] || {}
+      return { ...prev, [reqId]: { ...forReq, [qId]: { ...(forReq[qId] || EMPTY_DRAFT), ...patch } } }
+    })
   }, [])
 
-  const toggleOption = (qId: string, value: string, multiple: boolean) => {
-    setDrafts(prev => {
-      const cur = prev[qId] || EMPTY_DRAFT
+  const toggleOption = (reqId: string, qId: string, value: string, multiple: boolean) => {
+    setDraftsByReq(prev => {
+      const forReq = prev[reqId] || {}
+      const cur = forReq[qId] || EMPTY_DRAFT
       let values: string[]
       if (multiple) {
         values = cur.values.includes(value)
@@ -152,12 +221,12 @@ export default function QuestionPanel() {
       } else {
         values = cur.values.includes(value) ? [] : [value]
       }
-      return { ...prev, [qId]: { ...cur, values } }
+      return { ...prev, [reqId]: { ...forReq, [qId]: { ...cur, values } } }
     })
   }
 
-  const setYesNo = (qId: string, val: boolean) => {
-    updateDraft(qId, { value: val })
+  const setYesNo = (reqId: string, qId: string, val: boolean) => {
+    updateDraft(reqId, qId, { value: val })
   }
 
   const isCurrentAnswered = useMemo(() => {
@@ -195,20 +264,26 @@ export default function QuestionPanel() {
   const isLastVisible = effectiveVisibleIdx === visibleQuestions.length - 1
   const canGoNext = isCurrentAnswered || !currentQuestion?.required
 
-  const resetHelp = () => setHelpExpanded(false)
+  const resetHelp = () => setHelpFor(null)
+
+  // Навигация пишется вместе с reqId активного запроса — так смена головы
+  // очереди автоматически начинает визард с первого вопроса.
+  const goToStep = (idx: number) => {
+    if (!activeReqId) return
+    resetHelp()
+    setWizard({ reqId: activeReqId, idx })
+  }
 
   const handleNext = () => {
     if (!canGoNext) return
     if (effectiveVisibleIdx < visibleQuestions.length - 1) {
-      resetHelp()
-      setVisibleIdx(idx => idx + 1)
+      goToStep(effectiveVisibleIdx + 1)
     }
   }
 
   const handleBack = () => {
     if (effectiveVisibleIdx > 0) {
-      resetHelp()
-      setVisibleIdx(idx => idx - 1)
+      goToStep(effectiveVisibleIdx - 1)
     }
   }
 
@@ -226,19 +301,14 @@ export default function QuestionPanel() {
       if (d.text.trim()) ans.text = d.text.trim()
       return ans
     })
-    window.syntee.agent.questionResponse(pending.reqId, answers)
-    setPending(null)
-    setDrafts({})
-    setVisibleIdx(0)
+    finishCurrent(pending.reqId, answers)
   }
 
+  // Крестик/«Пропустить» — пропускает ТОЛЬКО текущий запрос (пустые ответы),
+  // следующий из очереди показывается сразу после.
   const handleSkip = () => {
     if (!pending) return
-    const answers: QuestionAnswer[] = pending.questions.map(q => ({ id: q.id! }))
-    window.syntee.agent.questionResponse(pending.reqId, answers)
-    setPending(null)
-    setDrafts({})
-    setVisibleIdx(0)
+    finishCurrent(pending.reqId, pending.questions.map(q => ({ id: q.id! })))
   }
 
   const hasRequired = pending?.questions.some(q => q.required) ?? false
@@ -280,12 +350,36 @@ export default function QuestionPanel() {
                 <AppIcon name={typeIcon(type)} size="sm" />
               </div>
               <div className="qp-header-text">
-                <div className="qp-header-title">{typeLabel(type)}</div>
+                <div className="qp-header-title">
+                  {typeLabel(type)}
+                  {pendingChatTitle && (
+                    <span className="qp-header-origin" title={`Вопрос пришёл из чата «${pendingChatTitle}»`}>
+                      {pendingChatTitle}
+                    </span>
+                  )}
+                </div>
                 <div className="qp-header-sub">
                   {total > 1 ? `Вопрос ${effectiveVisibleIdx + 1} из ${total}` : 'Syntee хочет уточнить'}
+                  {queue.length > 1 && (
+                    <span
+                      className="qp-queue-badge"
+                      title={`Ещё ${queue.length - 1} в очереди:\n${queue
+                        .slice(1)
+                        .map(x => x.questions[0]?.header || x.questions[0]?.question || '')
+                        .filter(Boolean)
+                        .join('\n')}`}
+                    >
+                      +{queue.length - 1} в очереди
+                    </span>
+                  )}
                 </div>
               </div>
-              <button className="qp-close" onClick={handleSkip} title="Пропустить все" type="button">
+              <button
+                className="qp-close"
+                onClick={handleSkip}
+                title={queue.length > 1 ? 'Пропустить текущий (перейти к следующему)' : 'Пропустить все'}
+                type="button"
+              >
                 <AppIcon name="x" size="sm" />
               </button>
             </div>
@@ -316,7 +410,7 @@ export default function QuestionPanel() {
                   {currentQuestion.helpText && (
                     <button
                       className="qp-help-toggle"
-                      onClick={() => setHelpExpanded(v => !v)}
+                      onClick={() => setHelpFor(helpExpanded ? null : currentQuestion.id!)}
                       type="button"
                     >
                       <AppIcon name="info" size="xs" />
@@ -342,7 +436,7 @@ export default function QuestionPanel() {
                     <div className="qp-yesno">
                       <motion.button
                         className={`qp-yesno-btn${currentDraft.value === true ? ' qp-yesno-btn--yes qp-yesno-btn--active' : ' qp-yesno-btn--yes'}`}
-                        onClick={() => setYesNo(currentQuestion.id!, true)}
+                        onClick={() => setYesNo(pending.reqId, currentQuestion.id!, true)}
                         whileTap={{ scale: 0.96 }}
                         whileHover={{ scale: 1.02 }}
                         type="button"
@@ -352,7 +446,7 @@ export default function QuestionPanel() {
                       </motion.button>
                       <motion.button
                         className={`qp-yesno-btn${currentDraft.value === false ? ' qp-yesno-btn--no qp-yesno-btn--active' : ' qp-yesno-btn--no'}`}
-                        onClick={() => setYesNo(currentQuestion.id!, false)}
+                        onClick={() => setYesNo(pending.reqId, currentQuestion.id!, false)}
                         whileTap={{ scale: 0.96 }}
                         whileHover={{ scale: 1.02 }}
                         type="button"
@@ -371,7 +465,7 @@ export default function QuestionPanel() {
                           <motion.button
                             key={opt.value}
                             className={`qp-option${selected ? ' qp-option--selected' : ''}`}
-                            onClick={() => toggleOption(currentQuestion.id!, opt.value, !!currentQuestion.multiple)}
+                            onClick={() => toggleOption(pending.reqId, currentQuestion.id!, opt.value, !!currentQuestion.multiple)}
                             whileTap={{ scale: 0.97 }}
                             whileHover={{ scale: 1.015 }}
                             type="button"
@@ -405,7 +499,7 @@ export default function QuestionPanel() {
                       className={`qp-input${currentQuestion.multiline ? ' qp-input--multiline' : ''}`}
                       placeholder={currentQuestion.placeholder || (type === 'choice' ? 'Свой ответ…' : 'Введите ответ…')}
                       value={currentDraft.text}
-                      onChange={e => updateDraft(currentQuestion.id!, { text: e.target.value })}
+                      onChange={e => updateDraft(pending.reqId, currentQuestion.id!, { text: e.target.value })}
                       rows={currentQuestion.multiline ? 6 : 2}
                       onKeyDown={e => {
                         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {

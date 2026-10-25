@@ -111,6 +111,35 @@ export function convertToolsToAnthropic(tools: unknown[]): AnthropicTool[] {
 // ─── Конвертер messages: OpenAI → Anthropic ──────────────────────────────────
 
 /**
+ * §steer — склейка подряд идущих user-сообщений в ОДНО с content-блоками.
+ *
+ * Anthropic требует строгого чередования user/assistant. Реплика, внедрённая
+ * в контекст посреди рана, приходит сразу после tool_result'ов предыдущего
+ * раунда, а они конвертируются выше как {role:'user', content:[tool_result]}.
+ * Без склейки получилось бы два user-сообщения подряд → 400 "roles must
+ * alternate". Для OpenAI-совместимых провайдеров эта нормализация безвредна
+ * (конвертер вызывается только на Anthropic-пути).
+ */
+function mergeConsecutiveUserMessages(list: AnthropicMessage[]): AnthropicMessage[] {
+  const toBlocks = (content: unknown): Array<Record<string, unknown>> => {
+    if (typeof content === 'string') return content ? [{ type: 'text', text: content }] : []
+    if (Array.isArray(content)) return content as Array<Record<string, unknown>>
+    return []
+  }
+  const out: AnthropicMessage[] = []
+  for (const m of list) {
+    const prev = out[out.length - 1]
+    if (prev && prev.role === 'user' && m.role === 'user') {
+      const merged = [...toBlocks(prev.content), ...toBlocks(m.content)]
+      if (merged.length > 0) prev.content = merged
+      continue
+    }
+    out.push(m)
+  }
+  return out
+}
+
+/**
  * Конвертирует messages из OpenAI формата в Anthropic {system, messages}.
  *
  * Ключевые отличия:
@@ -119,6 +148,8 @@ export function convertToolsToAnthropic(tools: unknown[]): AnthropicTool[] {
  *   - assistant с tool_calls → content-блоки {type:'tool_use'} вместо tool_calls
  *   - consecutive tool results объединяются в одну user-мессагу (Anthropic
  *     требует чередование user/assistant, несколько подряд 'tool' → один 'user')
+ *   - §steer: два user-сообщения подряд тоже склеиваются в одно с блоками
+ *     (см. mergeConsecutiveUserMessages) — иначе 400 "roles must alternate"
  *
  * System prompt получает cache_control:{type:'ephemeral'} — кэширует
  * статичный префикс (system prompt не меняется в рамках сессии).
@@ -296,5 +327,5 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
     i++
   }
 
-  return { system, messages: result }
+  return { system, messages: mergeConsecutiveUserMessages(result) }
 }

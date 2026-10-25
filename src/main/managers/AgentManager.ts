@@ -597,10 +597,19 @@ class AgentManager {
       const resolve = (result: { summary: string; error?: string }) => {
         if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = undefined }
         this.resolvers.delete(record.id)
+        const hostWin = this.windowGetter?.()
+        const targetWin = Array.isArray(hostWin) ? hostWin[0] : hostWin
         for (const [reqId, kind] of pendingRequests) {
           if (kind === 'confirm') confirmCallbacks.delete(reqId)
           else questionCallbacks.delete(reqId)
           ipcMain.removeAllListeners(`agent:${kind}:response:${reqId}`)
+          // Суб-агент завершён/остановлен — его вопрос и диалог подтверждения
+          // больше не актуальны, убираем их из глобальных оверлеев.
+          if (kind === 'question') {
+            try { targetWin?.webContents.send('agent:question:dismiss', reqId) } catch { /* окно закрыто */ }
+          } else {
+            try { targetWin?.webContents.send('agent:confirm:dismiss', reqId) } catch { /* окно закрыто */ }
+          }
         }
         pendingRequests.clear()
         resolvePromise(result)

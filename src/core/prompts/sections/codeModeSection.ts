@@ -77,7 +77,7 @@ Which tool to prefer:
 - pinpoint edit of an existing file → edit_file (pass old_str + new_str — replaces old_str with new_str, with fuzzy matching for whitespace/indentation)
 - create a new file or overwrite an existing one → write_file (for targeted edits use edit_file)
 - read several independent files at once → read_files
-- study an unfamiliar project end-to-end → analyze_project
+- study an unfamiliar project end-to-end → get_fast_context (query: "project structure, entry points, main modules") + list_directory on the root
 - need up-to-date info from the internet (news, docs, exchange rates) → search_web
 - read the full content of a web page (after search_web or by URL) → fetch_page (renders JavaScript, returns clean markdown/text)
 - find images on the web (illustrations, photos, screenshots) → search_images

@@ -130,6 +130,9 @@ export function useToolProgress() {
       // Native analyze_image lifecycle: 'tool_result' несёт pending, отдельный
       // 'tool_result_update' (тот же callId) — responded/failed + findings.
       visualAnalysis?: { status: 'pending' | 'responded' | 'failed'; findings?: string }
+      // §steer — реплика пользователя, внедрённая в контекст активного рана.
+      steerId?: string
+      steerApplied?: boolean
     }) => {
       if (!step.chatId) return
       const chatId = step.chatId
@@ -414,6 +417,50 @@ export function useToolProgress() {
         liveSet(chatId, {
           steps: [...buf.steps],
           iters: [...buf.iters],
+          isAgentRunning: true,
+          isTyping: true,
+        })
+      } else if (step.type === 'steer') {
+        // §steer — агент дошёл до границы раунда и вставил реплику в messages.
+        // Оптимистичную pending-карточку (та же steerId) заменяем in-place,
+        // иначе карточка «дублировалась» бы с подтверждённой. Если оптими-
+        // стичной не было (реплика пришла с другого устройства/после
+        // перезагрузки) — просто добавляем в хвост.
+        const applied: ToolStep = {
+          id: step.steerId ? `steer-${step.steerId}` : uuid(),
+          type: 'steer' as const,
+          content: step.content,
+          timestamp: Date.now(),
+          steerId: step.steerId,
+          steerApplied: true,
+        }
+        let replaced = false
+        if (step.steerId) {
+          const nextIters = buf.iters.map(iter => {
+            const idx = iter.steps.findIndex(s => s.type === 'steer' && s.steerId === step.steerId)
+            if (idx === -1) return iter
+            replaced = true
+            const steps = [...iter.steps]
+            steps[idx] = applied
+            return { ...iter, steps }
+          })
+          if (replaced) buf.iters = nextIters
+        }
+        if (!replaced) {
+          if (buf.flushTimer !== null) { clearTimeout(buf.flushTimer); buf.flushTimer = null }
+          drainBufs(chatId)
+          const last = buf.iters[buf.iters.length - 1]
+          if (last) buf.iters = [...buf.iters.slice(0, -1), { ...last, steps: [...last.steps, applied] }]
+          else {
+            buf.iters = [{ textBefore: buf.text, steps: [applied] }]
+            buf.text = ''
+          }
+        }
+        buf.steps.push(applied)
+        liveSet(chatId, {
+          iters: [...buf.iters],
+          steps: [...buf.steps],
+          text: buf.text,
           isAgentRunning: true,
           isTyping: true,
         })

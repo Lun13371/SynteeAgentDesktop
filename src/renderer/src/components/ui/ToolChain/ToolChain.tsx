@@ -1,18 +1,22 @@
-import { useState, useEffect, useRef, memo, useMemo, useCallback } from 'react'
+﻿import { useState, useEffect, useRef, memo, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import ToolResultRenderer from './ToolResultRenderer'
+import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
 import { useChatRemeasure } from '../MessageBubble/remeasure'
+import { removePendingSteer } from '../../../hooks/chatRunRuntime'
 
 import { getToolMeta } from '../../../../../shared/toolMeta'
 import './ToolChain.css'
 
 export interface ToolStep {
   id: string
-  type: 'tool_call' | 'tool_result'
+  /** 'steer' — реплика пользователя, внедрённая в контекст активного рана
+   *  (long-press на кнопке отправки). Рендерится отдельной карточкой ленты. */
+  type: 'tool_call' | 'tool_result' | 'steer'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -39,6 +43,9 @@ export interface ToolStep {
     code: string
     trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }>
   }
+  /** §steer: id реплики (ключ оптимистичной карточки) и признак применения. */
+  steerId?: string
+  steerApplied?: boolean
 }
 
 // Группируем шаги: каждая итерация = один вызов тула + его результат
@@ -129,33 +136,108 @@ export function hasUnfinishedCalls(steps: ToolStep[]): boolean {
   return false
 }
 
-// ── Группировка последовательных итераций с одним toolName ──────────
+// ── Единая лента хода работы ─────────────────────────────────────────
+// В одном сообщении несколько итераций (текст → тулы → текст → тулы). Раньше
+// на каждую итерацию рисовался свой ToolChain — в чате появлялась стопка
+// «Выполнено за 356мс · 1 действие» / «… 21мс · 1 действие». Теперь сообщение
+// отдаёт СЕКЦИИ (итерации) в один ToolChain: одна шапка «Выполнено за 22с ·
+// 3 действия» и одна раскрывающаяся лента, где рассуждение и тулы идут
+// подряд, как в референсе (Think → тулы → Think).
+export interface ToolChainSection {
+  thinking?: string
+  thinkingMs?: number
+  /** Текст, который модель написала перед этими тулами (обычный текст, не
+   *  рассуждение). Живёт внутри ленты — сворачивается вместе с ходом работы. */
+  text?: string
+  steps: ToolStep[]
+}
+
 // Схлопываем длинные цепочки однотипных тулов (6 read_file подряд) в
 // одну раскрывающуюся группу. Только в финальном состоянии (!isRunning),
 // чтобы во время live-прогона не дезориентировать внезапным коллапсом.
 const NO_GROUP_TOOLS = new Set(['spawn_agent', 'ask_user', 'update_todo'])
 
-type GroupedItem =
-  | { type: 'single'; iter: Iteration }
-  | { type: 'group'; meta: ReturnType<typeof getToolMeta>; iters: Iteration[] }
+type ChainEntry =
+  | { kind: 'thinking'; key: string; text: string; ms?: number }
+  | { kind: 'text'; key: string; text: string }
+  | { kind: 'single'; key: string; iter: Iteration }
+  | { kind: 'group'; key: string; meta: ReturnType<typeof getToolMeta>; iters: Iteration[] }
+  | { kind: 'steer'; key: string; step: ToolStep }
 
-function groupConsecutiveIters(iters: Iteration[], isRunning: boolean): GroupedItem[] {
-  if (isRunning) return iters.map(iter => ({ type: 'single' as const, iter }))
-  const groups: GroupedItem[] = []
+/**
+ * §steer — шаги итерации в ХРОНОЛОГИЧЕСКОМ порядке: обычные тулы группируются
+ * в Iteration (call+result), а карточки внедрённых реплик остаются отдельными
+ * записями. Без этого steer-шаг (у него нет пары call/result) просто выпадал
+ * бы из ленты: buildIterations фильтрует только tool_call/tool_result.
+ */
+function buildSectionItems(
+  steps: ToolStep[],
+): Array<{ kind: 'iter'; iter: Iteration } | { kind: 'steer'; step: ToolStep }> {
+  const out: Array<{ kind: 'iter'; iter: Iteration } | { kind: 'steer'; step: ToolStep }> = []
+  let segment: ToolStep[] = []
+  const flush = () => {
+    if (segment.length === 0) return
+    for (const iter of buildIterations(segment)) out.push({ kind: 'iter', iter })
+    segment = []
+  }
+  for (const step of steps) {
+    if (step.type === 'steer') {
+      flush()
+      out.push({ kind: 'steer', step })
+    } else {
+      segment.push(step)
+    }
+  }
+  flush()
+  return out
+}
+
+function buildChain(
+  sectionIters: Iteration[][],
+  sections: Array<{ thinking?: string; thinkingMs?: number; text?: string; steps?: ToolStep[] }>,
+  isRunning: boolean,
+): ChainEntry[] {
+  const flat: ChainEntry[] = []
+  sectionIters.forEach((iters, si) => {
+    const sec = sections[si] ?? {}
+    if (sec.thinking) flat.push({ kind: 'thinking', key: `th-${si}`, text: sec.thinking, ms: sec.thinkingMs })
+    if (sec.text) flat.push({ kind: 'text', key: `tx-${si}`, text: sec.text })
+    // §steer: идём по raw-steps секции, чтобы карточка реплики встала на своё
+    // место в ленте. Для секций без steer результат идентичен iters.
+    const items = sec.steps ? buildSectionItems(sec.steps) : iters.map(iter => ({ kind: 'iter' as const, iter }))
+    for (const item of items) {
+      if (item.kind === 'steer') flat.push({ kind: 'steer', key: `steer-${item.step.id}`, step: item.step })
+      else flat.push({ kind: 'single', key: item.iter.id, iter: item.iter })
+    }
+  })
+  if (isRunning) return flat
+
+  const out: ChainEntry[] = []
   let i = 0
-  while (i < iters.length) {
-    const name = iters[i].call.toolName
+  while (i < flat.length) {
+    const entry = flat[i]
+    if (entry.kind !== 'single') { out.push(entry); i++; continue }
+    const name = entry.iter.call.toolName
     const noGroup = !name || NO_GROUP_TOOLS.has(name)
     let j = i + 1
-    while (j < iters.length && iters[j].call.toolName === name && !noGroup) j++
-    if (j - i >= 3 && !noGroup) {
-      groups.push({ type: 'group', meta: getToolMeta(iters[i].call.toolName, iters[i].call.serverName), iters: iters.slice(i, j) })
+    if (!noGroup) {
+      // Рассуждение/текст разрывает серию: внутри группы их не спрятать.
+      while (j < flat.length && flat[j].kind === 'single' && (flat[j] as { iter: Iteration }).iter.call.toolName === name) j++
+    }
+    if (!noGroup && j - i >= 3) {
+      const slice = flat.slice(i, j) as Array<{ kind: 'single'; iter: Iteration }>
+      out.push({
+        kind: 'group',
+        key: `group-${entry.iter.id}`,
+        meta: getToolMeta(name, entry.iter.call.serverName),
+        iters: slice.map(s => s.iter),
+      })
     } else {
-      for (let k = i; k < j; k++) groups.push({ type: 'single', iter: iters[k] })
+      for (let k = i; k < j; k++) out.push(flat[k])
     }
     i = j
   }
-  return groups
+  return out
 }
 
 function formatDuration(ms: number): string {
@@ -164,9 +246,74 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60000)}м ${Math.round((ms % 60000) / 1000)}с`
 }
 
+// Время для итоговой фразы «Выполнено за 22с»: длинные прогоны — целые
+// секунды (десятая доля там не несёт смысла и удлиняет строку).
+function formatDoneDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}мс`
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}с`
+  if (ms < 60000) return `${Math.round(ms / 1000)}с`
+  return `${Math.floor(ms / 60000)}м ${Math.round((ms % 60000) / 1000)}с`
+}
+
 function truncate(s: string, n = 80) {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
+
+/**
+ * §steer — карточка реплики пользователя, внедрённой в контекст РАБОТАЮЩЕГО
+ * агента (удержание кнопки отправки или Enter). Два состояния:
+ *   • applied=false — «ждёт границы раунда»: агент ещё не дошёл до точки
+ *     вставки (идёт долгий тул/стрим). Пульсируем + крестик «передумал»:
+ *     пока реплика не вставлена в messages, её можно снять целиком.
+ *   • applied=true — «внедрено в контекст», реплика стала частью messages;
+ *     откат здесь невозможен (только откатом сообщения), крестика нет.
+ * Карточка не является тулом и не попадает в счётчик «N действий».
+ */
+const SteerCard = memo(function SteerCard({ step, chatId }: { step: ToolStep; chatId?: string }) {
+  const applied = step.steerApplied !== false
+  const steerId = step.steerId
+  const canCancel = !applied && !!chatId && !!steerId
+  const handleCancel = useCallback(() => {
+    if (!chatId || !steerId) return
+    // Сначала убираем карточку локально (мгновенный отклик), затем говорим
+    // main снять реплику из очереди Agent'а — иначе она всё равно внедрится.
+    removePendingSteer(chatId, steerId)
+    void window.syntee.chat.steerCancel(chatId, steerId)
+  }, [chatId, steerId])
+  return (
+    <motion.div
+      className={`tc2-steer${applied ? ' tc2-steer--applied' : ' tc2-steer--pending'}`}
+      initial={{ opacity: 0, y: -3 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: 'spring', stiffness: 460, damping: 32 }}
+    >
+      <div className="tc2-rail">
+        <div className={`tc2-dot ${applied ? 'tc2-dot--steer' : 'tc2-dot--steer-pending'}`}>
+          <AppIcon name="zap" size="xs" />
+        </div>
+      </div>
+      <div className="tc2-iter-body tc2-steer-body">
+        <div className="tc2-steer-head">
+          <span className="tc2-steer-label">Вы — во время работы</span>
+          <span className={`tc2-steer-state${applied ? ' tc2-steer-state--applied' : ''}`}>
+            {applied ? 'внедрено в контекст' : 'ждёт границы раунда'}
+          </span>
+          {canCancel && (
+            <button
+              className="tc2-steer-cancel"
+              onClick={handleCancel}
+              title="Отменить: реплика не попадёт в контекст агента"
+              aria-label="Отменить внедрение реплики"
+            >
+              <AppIcon name="x" size="xs" />
+            </button>
+          )}
+        </div>
+        <div className="tc2-steer-text">{step.content}</div>
+      </div>
+    </motion.div>
+  )
+}, (prev, next) => prev.step === next.step && prev.chatId === next.chatId)
 
 function CodeModeDetails({ details }: { details: NonNullable<ToolStep['codeMode']> }) {
   const trace = details.trace ?? []
@@ -298,19 +445,18 @@ const DiffBlock = memo(function DiffBlock({ diff }: { diff: string }) {
 
 // Один блок итерации
 const IterationBlock = memo(function IterationBlock({
-  iter, index, isLast, isRunning, mode, defaultOpen, liveSessionId, animateEntrance,
+  iter, isLast, isRunning, mode, defaultOpen, liveSessionId, animateEntrance,
 }: {
   iter: Iteration
-  index: number
   isLast: boolean
   isRunning: boolean
   mode: ToolOutputMode
   defaultOpen: boolean
   liveSessionId?: string
-  // Entrance-анимация только для живых цепочек. Для сохранённых (история)
-  // анимация бесполезна и вредна: при scroll-remount и при раскрытии
-  // 100-итерационной цепочки stagger delay=index*0.04 давал последним
-  // итерациям 4+ секунды задержки.
+  // Entrance-анимация только у последнего (нового) шага живой ленты.
+  // Раньше флаг стоял у всех и каскадная задержка index*0.04 давала до 4с
+  // «пустоты» при раскрытии длинной цепочки, а смена флага перезапускала
+  // анимацию у всех шагов разом.
   animateEntrance: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -341,11 +487,23 @@ const IterationBlock = memo(function IterationBlock({
   // Незавершённый/неудачный визуальный анализ — вместо зелёной галочки.
   const vaUnresolved = vaPending || vaFailed
 
-  const prevRunning = useRef(running)
+  // Авто-раскрытие тела на время выполнения и авто-сворачивание после него.
+  // Раньше тело только раскрывалось (prevRunning → setOpen(true)) и никогда не
+  // закрывалось: последний шаг оставался развёрнутым, и в готовом ответе вывод
+  // команды/diff продолжал занимать место в чате. Теперь активный шаг открыт,
+  // а после завершения схлопывается — остаётся только строка шага.
+  // Ручной клик по хедеру снимает autoOpened → выбор пользователя не перебиваем.
+  const active = running || pending || analyzing
+  const autoOpened = useRef(defaultOpen)
   useEffect(() => {
-    if ((running || pending || analyzing) && !prevRunning.current) setOpen(true)
-    prevRunning.current = running || pending || analyzing
-  }, [running, pending, analyzing])
+    if (active && !autoOpened.current) {
+      setOpen(true)
+      autoOpened.current = true
+    } else if (!active && autoOpened.current) {
+      setOpen(false)
+      autoOpened.current = false
+    }
+  }, [active])
 
   // НЕТ авто-раскрытия при сбое: в больших чатах failed-итерации при скролле
   // монтировали полные тела (подсветка/diff) → фризы. Ошибка видна по бейджу
@@ -373,7 +531,6 @@ const IterationBlock = memo(function IterationBlock({
   return (
     <div
       className={`tc2-iter${animateEntrance ? ' tc2-iter--enter' : ''}`}
-      style={animateEntrance ? { animationDelay: `${Math.min(index, 10) * 0.04}s` } : undefined}
     >
       <div className="tc2-rail">
         <div
@@ -404,7 +561,7 @@ const IterationBlock = memo(function IterationBlock({
       <div className="tc2-iter-body">
         <button
           className={`tc2-iter-header ${open ? 'tc2-iter-header--open' : ''} ${failed ? 'tc2-iter-header--fail' : ''} ${(running || pending || analyzing) ? 'tc2-iter-header--running' : ''}`}
-          onClick={() => setOpen(o => !o)}
+          onClick={() => { autoOpened.current = false; setOpen(o => !o) }}
         >
           <span className="tc2-iter-icon" style={{ color: meta.color }}>
             <AppIcon name={meta.icon as 'zap'} size="sm" />
@@ -689,7 +846,9 @@ const LiveHeader = memo(function LiveHeader({
   return (
     <>
       <span className="tc2-spinner" />
-      <span className="tc2-header-title">{currentTool}</span>
+      {/* key по имени тула: при смене действия строка плавно проявляется
+          (CSS-анимация fade+slide), а не мигает пустотой между шагами. */}
+      <span key={currentTool} className="tc2-header-title tc2-live-title">{currentTool}</span>
       {currentArg && <code className="tc2-header-current-arg">{currentArg}</code>}
       <span className="tc2-elapsed tc2-elapsed--live">{elapsedStr}</span>
     </>
@@ -699,10 +858,9 @@ const LiveHeader = memo(function LiveHeader({
 // ── Группа повторяющихся тулов ──────────────────────────────────────
 // Схлопывает N одинаковых итераций в одну раскрывающуюся строку.
 const GroupBlock = memo(function GroupBlock({
-  group, index, mode, animateEntrance,
+  group, mode, animateEntrance,
 }: {
   group: { type: 'group'; meta: ReturnType<typeof getToolMeta>; iters: Iteration[] }
-  index: number
   mode: ToolOutputMode
   animateEntrance: boolean
 }) {
@@ -719,7 +877,6 @@ const GroupBlock = memo(function GroupBlock({
   return (
     <div
       className={`tc2-iter tc2-iter--group${animateEntrance ? ' tc2-iter--enter' : ''}`}
-      style={animateEntrance ? { animationDelay: `${Math.min(index, 10) * 0.04}s` } : undefined}
     >
       <div className="tc2-rail">
         <div
@@ -759,7 +916,6 @@ const GroupBlock = memo(function GroupBlock({
                 <IterationBlock
                   key={iter.id}
                   iter={iter}
-                  index={i}
                   isLast={i === iters.length - 1}
                   isRunning={false}
                   mode={mode}
@@ -861,26 +1017,87 @@ const ToolChips = memo(function ToolChips({
   prev.toolsStr === next.toolsStr,
 )
 
-const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elapsed, summary, toolProgress }: {
-  steps: ToolStep[]
+const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, busy, label, elapsed, summary, toolProgress, thinkingText, thinkingMs, liveThinking, chatId }: {
+  steps?: ToolStep[]
+  /** Полная лента сообщения: итерации с их рассуждениями. Приоритетнее steps. */
+  sections?: ToolChainSection[]
   mode: ToolOutputMode
   isRunning: boolean
+  /** §steer — chatId сообщения: нужен для крестика отмены pending-реплики. */
+  chatId?: string
+  /** Прогон ещё идёт, но тулы сейчас не выполняются (агент пишет ответ).
+   *  Пока busy — блок не сворачивается сам: пользователь видит ход работы
+   *  до самого конца, а не «мигание» на финальном тексте. */
+  busy?: boolean
   label?: string
   elapsed?: number   // ms — время выполнения для финального блока
   summary?: boolean  // если true — компактный финальный блок
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
+  /** Рассуждение итерации (для одиночной цепочки без sections). */
+  thinkingText?: string
+  thinkingMs?: number
+  /** Текущее стримящееся рассуждение — последней строкой ленты (isLive). */
+  liveThinking?: { isLive: boolean; ms?: number; storeChatId?: string }
 }) {
-  const iters = useMemo(() => buildIterations(steps), [steps])
+  // sections — единая лента сообщения (одна шапка на все итерации).
+  // steps — legacy/одиночная цепочка (карточка агента, сообщение без iterations).
+  const allSections = useMemo<ToolChainSection[]>(
+    () => sections ?? [{ thinking: thinkingText, thinkingMs, steps: steps ?? [] }],
+    [sections, thinkingText, thinkingMs, steps],
+  )
+  const sectionIters = useMemo(() => allSections.map(s => buildIterations(s.steps)), [allSections])
+  const iters = useMemo(() => sectionIters.flat(), [sectionIters])
+  const allSteps = useMemo(() => allSections.flatMap(s => s.steps), [allSections])
   // sessionId для live-вывода run_command (из tool_progress). Передаётся ТОЛЬКО
   // в IterationBlock — не в store, чтобы pty:data-стрим не триггерил ре-рендер.
   const runCmdSessionId = toolProgress?.['run_command']?.sessionId
   const runCmdActive = toolProgress?.['run_command']?.stage === 'start'
-  const [collapsed, setCollapsed] = useState(true)  // свёрнут по дефолту
+  const [collapsed, setCollapsed] = useState(!isRunning)  // история — свёрнут; идёт работа — открыт
+  const remeasure = useChatRemeasure()
+  const itersRef = useRef<HTMLDivElement>(null)
+  const innerRef = useRef<HTMLDivElement>(null)
+  // Прилип ли автоскролл к хвосту ленты. true — новые действия подтягиваются
+  // вниз; false — пользователь ушёл читать историю, его не трогаем.
+  const pinnedRef = useRef(true)
+  const [showJumpDown, setShowJumpDown] = useState(false)
   // Окно видимых итераций: длинные цепочки (100+ тулов) при раскрытии раньше
   // монтировали ВСЕ IterationBlock разом (со stagger-анимациями и springs) →
   // фриз. Показываем последние ITERS_PAGE, кнопка «предыдущие» расширяет окно
   // к началу. Live-хвост (последние действия) виден всегда.
   const [itersExtra, setItersExtra] = useState(0)
+
+  // ── Авто-раскрытие на старте работы / авто-сворачивание на финише ──
+  // Старт: окно хода работы открывается само — пользователь видит, что агент
+  // делает, не кликая по шапке.
+  // Финиш: схлопываем ТОЛЬКО когда прогон реально закончился. «Активность» =
+  // идут тулы (isRunning) ИЛИ агент ещё стримит ответ (busy): иначе блок
+  // сворачивался, пока модель ещё писала финальный текст.
+  // remeasure обязателен: список сообщений виртуализирован, без перемера
+  // кэш высот ряда остаётся старым → соседние сообщения наезжают/дырка.
+  const active = isRunning || !!busy
+  const prevRunningRef = useRef(isRunning)
+  const prevActiveRef = useRef(active)
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current
+    const wasActive = prevActiveRef.current
+    prevRunningRef.current = isRunning
+    prevActiveRef.current = active
+    if (isRunning && !wasRunning) {
+      setCollapsed(false)
+      setItersExtra(0)
+      remeasure?.()
+      return undefined
+    }
+    if (!active && wasActive) {
+      const t = window.setTimeout(() => {
+        setCollapsed(true)
+        remeasure?.()
+      }, 1000)
+      return () => window.clearTimeout(t)
+    }
+    return undefined
+  }, [active, isRunning, remeasure])
+
   // ── Мемоизированные агрегаты — раньше 4× filter/some на каждом рендере ──
   // ToolChain ре-рендерится при каждом токен-флеше (50мс) во время стриминга.
   // 4× filter/some по iters + 1× filter по steps = O(n) на каждый рендер.
@@ -893,7 +1110,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
     }
     // elapsed из timestamps
     let firstTs = 0, lastTs = 0
-    for (const s of steps) {
+    for (const s of allSteps) {
       if (s.timestamp) {
         if (!firstTs) firstTs = s.timestamp
         lastTs = s.timestamp
@@ -901,7 +1118,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
     }
     const elapsed = (firstTs && lastTs && firstTs !== lastTs) ? lastTs - firstTs : undefined
     return { totalDone: done, hasFailed: hasFail, failedCount: failed, autoElapsed: elapsed }
-  }, [iters, steps])
+  }, [iters, allSteps])
 
   // НЕТ авто-раскрытия цепочки при сбое: в больших чатах failed-цепочки
   // авто-раскрывались при скролле и монтировали все тела с подсветкой →
@@ -945,23 +1162,129 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
     return null
   }, [iters, isRunning])
 
-  // Время старта для тикающего таймера (стабильное — timestamp первого шага).
-  const runStartTime = steps.length > 0 && steps[0]?.timestamp ? steps[0].timestamp : Date.now()
+  // ── «Сейчас делает» в шапке ──────────────────────────────────────────
+  // Берём выполняющийся шаг, а если такого нет (тул завершился, следующий ещё
+  // не начался / агент пишет ответ) — последний шаг ленты. Раньше в этот
+  // момент шапка падала на «Агент работает» / пустоту, и казалось, что показ
+  // действия «пропадает с задержкой». Смена названия анимируется
+  // (key по имени тула → fade-in), таймер тикает только пока шаг реален.
+  const headerIter = currentRunningIter ?? (iters.length > 0 ? iters[iters.length - 1] : null)
+  const headerMeta = headerIter ? getToolMeta(headerIter.call.toolName, headerIter.call.serverName) : null
+  const headerArg = headerIter?.call.toolArgs
+    ? truncate(String(Object.values(headerIter.call.toolArgs)[0] ?? ''), 40)
+    : ''
 
-  // Видимое окно итераций (хвост + расширение к началу по клику).
-  // useMemo: стабильная ссылка массива — иначе groupedVisible пересчитывался
-  // на КАЖДЫЙ рендер (новый массив → новые group-объекты → ре-рендер групп),
-  // а при сдвиге окна (>ITERS_PAGE итераций) позиционные ключи групп
-  // ремонтировали GroupBlock и сбрасывали раскрытость.
+  // Время старта для тикающего таймера (стабильное — timestamp первого шага).
+  const runStartTime = allSteps.length > 0 && allSteps[0]?.timestamp ? allSteps[0].timestamp : Date.now()
+
+  // «Живой» режим: идут тулы ИЛИ прогон ещё стримит ответ (агент пишет текст).
+  // До конца прогона окно живёт по правилам живого режима — см. prevActiveRef.
+  // Объявлен ДО chain/эффектов: от него зависит структура ленты и автоскролл.
+  const liveMode = isRunning || !!busy
+
+  // ── Видимое окно ленты ──
+  // ITERS_PAGE ограничивает количество монтируемых тул-блоков: длинные
+  // цепочки (100+ тулов) при раскрытии монтировали всё разом → фриз.
+  // Показываем хвост, кнопка «предыдущие» расширяет окно к началу.
   const visibleCount = Math.min(iters.length, ITERS_PAGE + itersExtra)
   const hiddenCount = iters.length - visibleCount
-  const visibleIters = useMemo(() => iters.slice(hiddenCount), [iters, hiddenCount])
 
-  // Группировка видимых итераций (только в финальном состоянии).
-  const groupedVisible = useMemo(
-    () => groupConsecutiveIters(visibleIters, !!isRunning),
-    [visibleIters, isRunning],
-  )
+  // ── Единая лента сообщения: Think → текст → тулы → Think → … ──
+  // Структура строится по liveMode (isRunning || busy), а НЕ по isRunning:
+  // isRunning на время прогона мигает (между «тул завершился» и «следующий
+  // начался» он false). Из-за этого группировка серий то появлялась, то
+  // исчезала → ключи записей менялись → ВСЕ шаги ремонтировались и у всех
+  // разом перезапускалась entrance-анимация. liveMode стабилен весь прогон.
+  const chain = useMemo(
+    () => buildChain(sectionIters, allSections, liveMode),
+    [sectionIters, allSections, liveMode],
+  )  // Обрезаем по окну — сколько тул-итераций уже «спрятано» в начале ленты.
+  const visibleChain = useMemo(() => {
+    if (hiddenCount <= 0) return chain
+    let skip = hiddenCount
+    let startIdx = 0
+    for (let i = 0; i < chain.length; i++) {
+      const e = chain[i]
+      if (e.kind === 'single') {
+        if (skip === 0) { startIdx = i; break }
+        skip--
+      } else if (e.kind === 'group') {
+        if (e.iters.length >= skip) { startIdx = i; break }
+        skip -= e.iters.length
+      }
+    }
+    return startIdx > 0 ? chain.slice(startIdx) : chain
+  }, [chain, hiddenCount])
+
+  // Источник отклика — ResizeObserver на внутреннем контейнере ленты
+  // (см. эффект ниже): отдельный счётчик длины текста больше не нужен,
+  // рост <pre>-вывода и reasoning ловится самим RO.
+
+  // ── Умный автоскролл живого окна ────────────────────────────────────
+  // Подписываемся на РЕАЛЬНЫЙ рост содержимого (ResizeObserver), а не на
+  // React-рендеры: вывод команды стримится внутри <pre>, reasoning растёт из
+  // Zustand, diff/detals раскрываются по анимации — на всё это нужен отклик.
+  //   • прилип (pinned) — пользователь у низа (зазор < 24px): тянем хвост;
+  //   • отпустил — прокрутил вверх читать: НЕ трогаем скролл, показываем
+  //      кнопку «к последним действиям»;
+  //   • сам вернулся в низ → снова прилипает, кнопка гаснет.
+  // Пороги: 24px на определение «у низа» — чтобы «у низа» ловилось и после
+  // дробного scrollTop с HiDPI.
+  useEffect(() => {
+    const el = itersRef.current
+    const inner = innerRef.current
+    if (!el || !inner) return
+    const BOTTOM_GAP = 24
+    const atBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_GAP
+    const stick = () => { el.scrollTop = el.scrollHeight }
+
+    const onScroll = () => {
+      const bottom = atBottom()
+      if (bottom && !pinnedRef.current) pinnedRef.current = true
+      if (liveMode && pinnedRef.current && !bottom) pinnedRef.current = false
+      // Кнопку показываем только в живом окне: в истории пользователь сам
+      // управляет скроллом, лишний оверлей там мешает.
+      setShowJumpDown(v => {
+        const next = liveMode && !bottom
+        return v === next ? v : next
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+
+    let raf = 0
+    const ro = new ResizeObserver(() => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        if (liveMode && pinnedRef.current && !collapsed) stick()
+      })
+    })
+    ro.observe(inner)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      ro.disconnect()
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [collapsed, liveMode])
+
+  // Отпустил прокрутку ↑ и появились новые действия → кнопка возврата.
+  const jumpToBottom = useCallback(() => {
+    const el = itersRef.current
+    if (!el) return
+    pinnedRef.current = true
+    setShowJumpDown(false)
+    el.scrollTop = el.scrollHeight
+  }, [])
+
+  // Открыл окно заново (или начался прогон) — сразу прилипаем к хвосту.
+  // Показ кнопки править не нужно: stick() ниже порождает scroll-событие,
+  // onScroll сам сбросит flag — без setState внутри эффекта.
+  useEffect(() => {
+    if (collapsed) return
+    pinnedRef.current = true
+    const el = itersRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [collapsed, isRunning])
 
   // Map id→index для быстрого определения isLast/defaultOpen.
   const iterIndexMap = useMemo(() => {
@@ -970,7 +1293,15 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
     return m
   }, [iters])
 
-  if (iters.length === 0 && !isRunning) return null
+  // Лента нужна и без тулов: чистый reasoning/текст перед первым вызовом.
+  const hasThinking = !!thinkingText || !!allSections.some(s => s.thinking) ||
+    (!!liveThinking && (liveThinking.isLive || liveThinking.ms !== undefined))
+  // §steer — карточка внедрённой реплики тоже повод показать окно: прогон без
+  // единого тула (модель отвечала текстом) иначе схлопнулся бы в null и
+  // сообщение пользователя «исчезло» бы из ленты.
+  const hasSteers = allSections.some(s => s.steps.some(st => st.type === 'steer'))
+
+  if (iters.length === 0 && !isRunning && !hasThinking && !hasSteers) return null
 
   if (mode === 'compact') {
     return (
@@ -992,12 +1323,12 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
   )
   }
 
-  const statusClass = isRunning ? '' : hasFailed ? ' tc2--has-fail' : iters.length > 0 ? ' tc2--all-ok' : ''
-  const okCount = totalDone - failedCount
+  // liveMode объявлен выше (до эффекта автоскролла) — здесь только строка
+  // инструментов и разметка.
   const toolsStr = chipGroups.map(g => `${g.meta.label}${g.count > 1 ? ` ×${g.count}` : ''}`).join(' · ')
 
   return (
-    <div className={`tc2${summary ? ' tc2--summary' : ''}${isRunning ? ' tc2--running' : ''}${statusClass}`}>
+    <div className={`tc2${summary ? ' tc2--summary' : ''}${liveMode ? ' tc2--running' : ''}`}>
       <div className="tc2-header" onClick={() => setCollapsed(c => !c)}>
         <span className="tc2-collapse-btn">
           <AppIcon name={collapsed ? 'chevronRight' : 'chevronDown'} size="xs" />
@@ -1006,31 +1337,44 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
         <div className="tc2-header-summary">
           {label
             ? <span className="tc2-header-title tc2-header-title--label">{label}</span>
-            : isRunning
-              ? currentRunningIter
-                ? (() => {
-                    const m = getToolMeta(currentRunningIter.call.toolName, currentRunningIter.call.serverName)
-                    const arg = currentRunningIter.call.toolArgs
-                      ? truncate(String(Object.values(currentRunningIter.call.toolArgs)[0] ?? ''), 40)
-                      : ''
-                    return <LiveHeader currentTool={m.label} currentArg={arg} startTime={runStartTime} />
-                  })()
+            : liveMode
+              ? headerMeta
+                ? currentRunningIter
+                  // Шаг реально выполняется — тикающий таймер.
+                  ? <LiveHeader currentTool={headerMeta.label} currentArg={headerArg} startTime={runStartTime} />
+                  // Шаг завершён, следующий ещё не пришёл / агент пишет ответ:
+                  // название последнего действия остаётся, спиннер показывает,
+                  // что работа продолжается (без врущего таймера).
+                  : <>
+                      <span className="tc2-spinner" />
+                      <span key={headerMeta.label} className="tc2-header-title tc2-live-title">{headerMeta.label}</span>
+                      {headerArg && <code className="tc2-header-current-arg">{headerArg}</code>}
+                    </>
                 : <><span className="tc2-spinner" /><span className="tc2-header-title">Агент работает</span></>
-              : <span className="tc2-header-title">
-                  {hasFailed
-                    ? <span className="tc2-status-badges">
-                        <span className="tc2-status-badge tc2-status-badge--ok">{okCount}</span>
-                        <span className="tc2-status-badge tc2-status-badge--fail">{failedCount}</span>
-                        <span className="tc2-status-label">{totalDone === 1 ? 'действие' : 'действий'}</span>
+              : (() => {
+                  // «Выполнено за 22с · 3 действия» — одной фразой вместо
+                  // бейджа-счётчика + отдельного бейджа с часами: строка короче
+                  // и читается как итог работы, а не как набор индикаторов.
+                  const plural = totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'
+                  return (
+                    <span className="tc2-header-title tc2-header-title--done">
+                      {elapsedMs != null ? `Выполнено за ${formatDoneDuration(elapsedMs)}` : 'Выполнено'}
+                      <span className="tc2-header-dot"> · </span>
+                      <span className={hasFailed ? 'tc2-header-count tc2-header-count--fail' : 'tc2-header-count'}>
+                        {totalDone} {plural}
                       </span>
-                    : <span className="tc2-status-badges">
-                        <span className="tc2-status-badge tc2-status-badge--ok">{okCount}</span>
-                        <span className="tc2-status-label">{totalDone === 1 ? 'действие' : totalDone < 5 ? 'действия' : 'действий'}</span>
-                      </span>
-                  }
-                </span>
+                      {hasFailed && (
+                        <span className="tc2-status-badge tc2-status-badge--fail tc2-header-fail-badge">
+                          {failedCount}
+                        </span>
+                      )}
+                    </span>
+                  )
+                })()
           }
-          {elapsedStr && !isRunning && (
+          {/* Часы-бейдж нужны только для блоков с внешним label (там нет
+              фразы «Выполнено за …» в заголовке). */}
+          {label && elapsedStr && !liveMode && (
             <span className="tc2-elapsed-badge">
               <AppIcon name="clock" size="xs" />
               {elapsedStr}
@@ -1038,53 +1382,82 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
           )}
         </div>
 
-        <ToolChips chipGroups={chipGroups} isRunning={isRunning} toolsStr={toolsStr} />
+        <ToolChips chipGroups={chipGroups} isRunning={liveMode} toolsStr={toolsStr} />
       </div>
 
 
 
       <div className={`tc2-iters-wrap${collapsed ? '' : ' tc2-iters-wrap--open'}`}>
-        <div className="tc2-iters">
+        <div className="tc2-iters" ref={itersRef}>
+          {/* Внутренний контейнер — цель ResizeObserver для умного автоскролла:
+              расти может что угодно внутри (вывод команды, reasoning, diff),
+              отклик нужен на РЕАЛЬНЫЙ рост содержимого, а не на re-render. */}
+          <div className="tc2-iters-inner" ref={innerRef}>
             {hiddenCount > 0 && (
               <button className="tc2-show-more" onClick={() => setItersExtra(e => e + ITERS_CHUNK)}>
                 Показать ещё {Math.min(ITERS_CHUNK, hiddenCount)} из {hiddenCount} предыдущих действий
               </button>
             )}
-            {groupedVisible.map((item, vIdx) => {
-              if (item.type === 'group') {
+            {visibleChain.map((entry, vIdx) => {
+              // Рассуждение — строкой ленты (Think внутри окна хода работы).
+              if (entry.kind === 'thinking') {
+                return (
+                  <div key={entry.key} className="tc2-thinking-embed">
+                    <ThinkingBlock text={entry.text} thinkingMs={entry.ms} />
+                  </div>
+                )
+              }
+              // Обычный текст модели перед тулами — тоже внутри ленты, чтобы
+              // при сворачивании хода работы он уходил вместе с ним, а не
+              // оставался висеть в сообщении.
+              if (entry.kind === 'text') {
+                return (
+                  <div key={entry.key} className="tc2-note">
+                    <div className="tc2-note-text">{entry.text}</div>
+                  </div>
+                )
+              }
+              if (entry.kind === 'steer') {
+                // §steer — реплика пользователя, внедрённая по ходу рана.
+                return <SteerCard key={entry.key} step={entry.step} chatId={chatId} />
+              }
+              if (entry.kind === 'group') {
                 return (
                   <GroupBlock
                     // Стабильный ключ по id первой итерации группы: индексный
                     // ключ ремонтировал GroupBlock при сдвиге окна видимых
                     // итераций → раскрытая группа схлопывалась.
-                    key={`group-${item.iters[0].id}`}
-                    group={item}
-                    index={vIdx}
+                    key={entry.key}
+                    group={{ type: 'group', meta: entry.meta, iters: entry.iters }}
                     mode={mode}
                     animateEntrance={false}
                   />
                 )
               }
-              const iter = item.iter
+              const iter = entry.iter
               const origIdx = iterIndexMap.get(iter.id) ?? 0
-              const isLastVisible = vIdx === groupedVisible.length - 1
+              const isLastVisible = vIdx === visibleChain.length - 1
               return (
                 <IterationBlock
                   key={iter.id}
                   iter={iter}
-                  index={vIdx}
                   isLast={isLastVisible}
                   isRunning={!!isRunning}
                   mode={mode}
                   defaultOpen={!!isRunning && origIdx === iters.length - 1}
                   liveSessionId={runCmdActive && iter.call.toolName === 'run_command' && !iter.result ? runCmdSessionId : undefined}
-                  animateEntrance={!!isRunning}
+                  // Анимация появления — ТОЛЬКО у последнего (только что
+                  // добавленного) шага. Раньше флаг стоял у всех: при любом
+                  // ре-рендере/смене флага класс пересоздавался и анимация
+                  // перезапускалась у всей ленты разом.
+                  animateEntrance={liveMode && isLastVisible}
                 />
               )
             })}
 
-            {/* Пульс — ждём следующего тула */}
-            {isRunning && iters.length > 0 && iters[iters.length - 1].result && (
+            {/* Пульс — ждём следующего тула. При наличии live-thinking не нужен:
+                строку «Думаю…» заменяет сам блок рассуждения ниже. */}
+            {isRunning && iters.length > 0 && iters[iters.length - 1].result && !liveThinking && (
               <div className="tc2-iter">
                 <div className="tc2-rail">
                   <div className="tc2-dot tc2-dot--thinking" />
@@ -1099,7 +1472,7 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
             )}
 
             {/* Старт — нет тулов ещё */}
-            {isRunning && iters.length === 0 && (
+            {isRunning && iters.length === 0 && !liveThinking && (
               <div className="tc2-iter">
                 <div className="tc2-rail">
                   <div className="tc2-dot tc2-dot--thinking" />
@@ -1112,13 +1485,39 @@ const ToolChain = memo(function ToolChain({ steps, mode, isRunning, label, elaps
                 </div>
               </div>
             )}
+
+            {/* Текущее стримящееся рассуждение — последней строкой ленты, чтобы
+                «ход работы» читался одной лентой (Think → тулы → Think).
+                ThinkingBlock сам подписан на store по storeChatId — токены
+                ре-рендерят только его, не всю цепочку. */}
+            {liveThinking && (liveThinking.isLive || liveThinking.ms !== undefined) && (
+              <div className="tc2-thinking-embed tc2-thinking-embed--live">
+                <ThinkingBlock
+                  thinkingMs={liveThinking.ms}
+                  isLive={liveThinking.isLive}
+                  storeChatId={liveThinking.storeChatId}
+                />
+              </div>
+            )}
+          </div>
         </div>
+        {/* Пользователь прокрутил вверх читать — автоскролл отпущен.
+            Кнопка возвращает к хвосту и снова прилипает. */}
+        {showJumpDown && !collapsed && liveMode && (
+          <button className="tc2-jump-down" onClick={jumpToBottom} title="К последним действиям">
+            <AppIcon name="chevronDown" size="xs" />
+            <span>к последним</span>
+          </button>
+        )}
       </div>
     </div>
   )
-}, (prev, next) => prev.steps === next.steps && prev.mode === next.mode &&
-  prev.isRunning === next.isRunning && prev.label === next.label &&
+}, (prev, next) => prev.steps === next.steps && prev.sections === next.sections && prev.mode === next.mode &&
+  prev.isRunning === next.isRunning && prev.busy === next.busy && prev.label === next.label &&
   prev.elapsed === next.elapsed && prev.summary === next.summary &&
-  prev.toolProgress === next.toolProgress)
+  prev.chatId === next.chatId &&
+  prev.toolProgress === next.toolProgress &&
+  prev.thinkingText === next.thinkingText && prev.thinkingMs === next.thinkingMs &&
+  prev.liveThinking === next.liveThinking)
 
 export default ToolChain

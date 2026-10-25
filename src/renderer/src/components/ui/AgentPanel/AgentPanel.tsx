@@ -359,8 +359,11 @@ const AgentStreamCard = memo(function AgentStreamCard({ agent, expanded, onToggl
                 ) : null}
               </div>
 
-              {/* Thinking / Мышление — рассуждения агента */}
-              {hasThinking && (
+              {/* Thinking / Мышление — рассуждения агента. Пока агент работает
+                  (и когда тулов нет) — отдельным блоком; после финиша
+                  рассуждение уезжает первой строкой в ленту ToolChain, чтобы
+                  вместе с ходом работы сворачивалось в одну строку. */}
+              {hasThinking && (isLive || toolSteps.length === 0) && (
                 <ThinkingBlock
                   text={agent.thinking!}
                   isLive={isLive}
@@ -383,6 +386,8 @@ const AgentStreamCard = memo(function AgentStreamCard({ agent, expanded, onToggl
                     steps={toolSteps as never}
                     mode="detailed"
                     isRunning={agent.status === 'running'}
+                    thinkingText={isLive ? undefined : agent.thinking}
+                    thinkingMs={isLive ? undefined : agent.thinkingMs}
                   />
                 </div>
               )}

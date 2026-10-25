@@ -6,7 +6,7 @@ export interface AgentStep {
   // tool_call_pending — модель только начала генерировать этот вызов (имя
   // уже известно, аргументы ещё стримятся) — ранний сигнал для UI, чтобы
   // блок тула появлялся сразу, а не после долгой генерации большого diff/content.
-  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'tool_result_update' | 'answer'
+  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'tool_result_update' | 'answer' | 'steer'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -21,6 +21,10 @@ export interface AgentStep {
   hidden?: boolean
   /** Имя MCP-сервера (для MCP-тулов mcp__server__tool). */
   serverName?: string
+  /** type:'steer' — id внедрённой реплики пользователя (ключ оптимистичной
+   *  карточки в renderer) и флаг, что она уже вставлена в messages. */
+  steerId?: string
+  steerApplied?: boolean
   // Связывает финальный tool_call с более ранним tool_call_pending той же
   // генерации (см. onToolCallStarted) — фронтенд заменяет pending-карточку
   // на настоящую вместо создания второго блока.
@@ -177,19 +181,6 @@ export interface AgentCallbacks {
     }>
     error?: string
   }>
-  /**
-   * manage_notes-тул: CRUD для проектных и чат-заметок.
-   * Round-trip в main-процесс, где есть доступ к БД.
-   */
-  onManageNotes?: (params: {
-    action: 'create' | 'update' | 'delete' | 'list'
-    scope: 'project' | 'chat'
-    title?: string
-    content?: string
-    noteId?: string
-    projectId?: string
-    chatId?: string
-  }) => Promise<{ success: boolean; notes?: Array<{ id: string; title: string; content: string; updatedAt: number }>; note?: { id: string; title: string }; error?: string }>
   /**
    * manage_dots-тул: управление Dot'ами (always-on фоновые агенты).
    * Round-trip в main-процесс, где живёт DotManager. Возвращает

@@ -1095,8 +1095,45 @@
   pointer-events: none;
   animation: queue-send-pulse 2s ease-in-out infinite;
 }
-@keyframes queue-send-pulse {
-  0%, 100% { opacity: 0.35; transform: scale(1); }
+/* ── §steer — удержание кнопки отправки = внедрить в контекст агента ──
+   Пока держим: внутри кнопки наливается кольцо-прогресс (500мс), иконка
+   send превращается в молнию. Кольцо абсолютно внутри кнопки, поэтому не
+   клипается overflow:hidden и не сдвигает layout. */
+.chat-input-action-btn--steerable {
+  position: relative;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.chat-input-action-btn--holding {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 65%, transparent),
+              0 0 16px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.chat-input-action-ring {
+  position: absolute;
+  inset: 1px;
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  pointer-events: none;
+  transform: rotate(-90deg);
+  z-index: 2;
+}
+
+.chat-input-action-ring .ring-track {
+  fill: none;
+  stroke: rgba(0, 0, 0, 0.2) !important;
+  stroke-width: 2;
+}
+
+.chat-input-action-ring .ring-fill {
+  fill: none;
+  stroke: #ffffff !important;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+@keyframes queue-send-pulse {  0%, 100% { opacity: 0.35; transform: scale(1); }
   50%      { opacity: 1;    transform: scale(1.03); }
 }
 

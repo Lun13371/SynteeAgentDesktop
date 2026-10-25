@@ -53,6 +53,19 @@ const replyHandlers = new Map<string, (msg: Record<string, unknown>) => void>()
 // Флаг — агент уже запущен (стартовое сообщение обработано)
 let agentStarted = false
 const runAbort = new AbortController()
+/**
+ * §steer — экземпляр агента текущего рана. Нужен, потому что сообщения
+ * parentPort.on('message') обрабатываются НОВЫМ вызовом хендлера: локальная
+ * переменная `agent` живёт в замыкании стартового сообщения и оттуда
+ * недоступна. Ссылку выставляем сразу после создания Agent'а.
+ */
+let steerAgent: Agent | null = null
+/**
+ * §steer — реплики, пришедшие ДО создания Agent'а (worst case: пользователь
+ * зажал кнопку в тот момент, когда воркер ещё инициализируется). Храним и
+ * переливаем в agent.pushSteer сразу после создания — иначе молча теряем.
+ */
+const earlySteers: Array<{ id: string; text: string }> = []
 
 // set() мутирует локальную копию storeData — иначе API key round-robin
 // (AIClient.getClientForRole -> getNextApiKey -> store.set('providers', ...))
@@ -103,6 +116,27 @@ function send(msg: Record<string, unknown>) {
 parentPort?.on('message', async (msg: Record<string, unknown>) => {
   if (msg.type === 'abort_run') {
     runAbort.abort()
+    return
+  }
+  // --- §steer: реплика пользователя внутрь активного рана ---
+  // НЕ прерываем текущий стрим/тул: Agent придержит её до границы раунда и
+  // вставит в messages как user-сообщение с маркером. Обрабатываем ДО
+  // `if (agentStarted) return` — иначе после старта сообщение отбрасывалось.
+  if (msg.type === 'steer') {
+    const text = typeof msg.text === 'string' ? msg.text : ''
+    const steerId = typeof msg.steerId === 'string' && msg.steerId ? msg.steerId : `steer-${Date.now()}`
+    if (!text.trim()) return
+    if (steerAgent) steerAgent.pushSteer(steerId, text)
+    else earlySteers.push({ id: steerId, text })
+    return
+  }
+  // --- §steer: пользователь передумал, реплику снимаем до внедрения ---
+  if (msg.type === 'steer_cancel') {
+    const steerId = typeof msg.steerId === 'string' ? msg.steerId : ''
+    if (!steerId) return
+    if (steerAgent) steerAgent.cancelSteer(steerId)
+    const idx = earlySteers.findIndex(s => s.id === steerId)
+    if (idx >= 0) earlySteers.splice(idx, 1)
     return
   }
   // --- Reply от main (spawn_agent_reply, get_agent_status_reply) ---
@@ -238,6 +272,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
 
   const finalize = (details?: unknown) => {
     flushIter()
+    // §steer — ран закрыт: новые реплики этому агенту уже не нужны.
+    steerAgent = null
     console.log('[ai-worker] finalize: fullText=%d chars, steps=%d, iters=%d', fullText.length, collectedSteps.length, collectedIters.length)
     // Если после последней итерации остался thinking или текст — создаём финальную итерацию
     if (collectedIters.length > 0 && (pendingThinking || pendingTextAfter.trim())) {
@@ -284,6 +320,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     if (enableTools) {
       const isSubAgent = !!(workerData as Record<string, unknown>).isSubAgent
       agent = new Agent(fakeStore, isSubAgent ? 'subagent' : 'main')
+      // §steer — exposing the instance to the shared on('message') handler +
+      // сливаем реплики, пришедшие пока воркер ещё не был готов.
+      steerAgent = agent
+      for (const s of earlySteers.splice(0)) agent.pushSteer(s.id, s.text)
 
       // Мутабельный тулсет рана: request_access может включить browser-тулы
       // ПОСРЕДИ рана (подтверждение юзера) — Agent держит ссылку на массив
@@ -513,6 +553,23 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               // Форвардим в renderer — там immutable-замена по callId.
               send({ type: 'step', chatId, msgId, step })
 
+            } else if (step.type === 'steer') {
+              // §steer — реплику пользователя вставили в messages на границе
+              // раунда. Шагом кладём в текущую итерацию (персистится вместе с
+              // assistant-сообщением → карточка живёт на своём месте после
+              // перезагрузки чата) и шлём в renderer: там по steerId
+              // оптимистичная pending-карточка перещёлкивается в «внедрено».
+              const ts = {
+                id: `${Date.now()}-${Math.random()}`,
+                type: step.type,
+                content: step.content,
+                timestamp: Date.now(),
+                steerId: step.steerId,
+                steerApplied: step.steerApplied !== false,
+              }
+              collectedSteps.push(ts)
+              currentIterSteps.push(ts)
+              send({ type: 'step', chatId, msgId, step })
             } else if (step.type === 'thought') {
               // Fallback — reasoning не стримился, пришёл одним блоком
               if (!thinkingStartMs) thinkingStartMs = Date.now()
@@ -893,20 +950,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 })
               })
               send({ type: 'recall_memory', chatId, msgId, replyId, ...params })
-            })
-          },
-          onManageNotes: (params) => {
-            return new Promise((resolve) => {
-              const replyId = `manage-notes-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              replyHandlers.set(replyId, (reply) => {
-                resolve({
-                  success: (reply.success as boolean) ?? false,
-                  notes: reply.notes as Array<{ id: string; title: string; content: string; updatedAt: number }> | undefined,
-                  note: reply.note as { id: string; title: string } | undefined,
-                  error: reply.error as string | undefined,
-                })
-              })
-              send({ type: 'manage_notes', chatId, msgId, replyId, ...params })
             })
           },
           onToolProgress: (p) => {

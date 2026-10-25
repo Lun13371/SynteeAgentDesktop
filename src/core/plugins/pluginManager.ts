@@ -1278,14 +1278,21 @@ export class PluginManager {
             if (!existsSync(p)) throw new Error(`ai.chat: файл не найден: ${p}`)
             const st = statSync(p)
             if (st.size > 10_485_760) throw new Error('ai.chat: картинка больше 10 МБ')
-            const buf = readFileSync(p)
-            const ext = p.split('.').pop()?.toLowerCase() ?? 'png'
-            const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : (ext === 'webp' ? 'image/webp' : 'image/png')
-            url = `data:${mime};base64,${buf.toString('base64')}`
+            // Проверяем реальные байты и приводим картинку к лимитам vision:
+            // иначе плагин мог отправить в модель что угодно (бинарь под именем
+            // *.png, 4K-скриншот) и сломать запрос 400/413.
+            const { normalizeImageForVision } = await import('../../main/services/imageDownscale')
+            const normalized = normalizeImageForVision(readFileSync(p))
+            if (!normalized.ok) throw new Error(`ai.chat: ${normalized.error}`)
+            url = `data:${normalized.image.mime};base64,${normalized.image.bytes.toString('base64')}`
           } else if (m.url) {
             url = String(m.url)
           } else if (m.base64) {
-            url = `data:image/png;base64,${String(m.base64)}`
+            const { normalizeImageForVision } = await import('../../main/services/imageDownscale')
+            const raw = Buffer.from(String(m.base64).replace(/^data:[^;]+;base64,/, ''), 'base64')
+            const normalized = normalizeImageForVision(raw)
+            if (!normalized.ok) throw new Error(`ai.chat: ${normalized.error}`)
+            url = `data:${normalized.image.mime};base64,${normalized.image.bytes.toString('base64')}`
           }
           if (!url) throw new Error('ai.chat: image-часть требует path/url/base64')
           parts.push({ type: 'image_url', image_url: { url } })

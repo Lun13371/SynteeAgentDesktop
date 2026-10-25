@@ -608,6 +608,15 @@ const synteeAPI = {
     getQueue: (chatId: string) => ipcRenderer.invoke('chat:getQueue', chatId),
     queueRemove: (chatId: string, queueId: string) => ipcRenderer.invoke('chat:queueRemove', chatId, queueId),
     queueReorder: (chatId: string, queueIds: string[]) => ipcRenderer.invoke('chat:queueReorder', chatId, queueIds),
+    // ── Steering: реплика пользователя ВНУТРЬ активного рана ──
+    // Long-press на кнопке отправки: текст не встаёт в очередь, а влетает
+    // в контекст работающего агента на границе следующего раунда.
+    // accepted:false — активного рана нет (renderer отправит обычным путём).
+    steer: (chatId: string, text: string, steerId: string) =>
+      ipcRenderer.invoke('chat:steer', chatId, text, steerId),
+    // Передумал: снять реплику, пока агент её не внедрил (карточка «ждёт»).
+    steerCancel: (chatId: string, steerId: string) =>
+      ipcRenderer.invoke('chat:steer:cancel', chatId, steerId),
     // ── Checkpoint / rewind ──
     // getSessionTimeline — список всех точек отката чата (для правой панели).
     // getLastTurnFilesChanged — кол-во файлов в последнем turn'е (для badge).
@@ -1289,24 +1298,6 @@ const synteeAPI = {
   clipboard: {
     writeText: (text: string) => ipcRenderer.invoke('clipboard:writeText', text) as Promise<boolean>,
     readText: () => ipcRenderer.invoke('clipboard:readText') as Promise<string>,
-  },
-
-  // Заметки — проектные (видны во всех чатах проекта) и чат-заметки (только в чате).
-  // CRUD через IPC, live-обновление через событие 'notes:changed'.
-  notes: {
-    list: (params: { scope: 'project' | 'chat'; projectId?: string; chatId?: string }) =>
-      ipcRenderer.invoke('notes:list', params) as Promise<Array<{
-        id: string; scope: string; projectId: string | null; chatId: string | null
-        title: string; content: string; createdAt: number; updatedAt: number
-      }>>,
-    getProjectId: (chatId: string) => ipcRenderer.invoke('notes:getProjectId', chatId) as Promise<string | null>,
-
-    create: (params: { scope: 'project' | 'chat'; projectId?: string; chatId?: string; title: string; content?: string }) =>
-      ipcRenderer.invoke('notes:create', params) as Promise<{ success: boolean; note?: unknown; error?: string }>,
-    update: (params: { id: string; title?: string; content?: string }) =>
-      ipcRenderer.invoke('notes:update', params) as Promise<{ success: boolean; note?: unknown; error?: string }>,
-    delete: (id: string) =>
-      ipcRenderer.invoke('notes:delete', id) as Promise<{ success: boolean; error?: string }>,
   },
 }
 

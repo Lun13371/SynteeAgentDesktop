@@ -1,6 +1,7 @@
 import type { Message, ReplyTarget } from '../../shared/types'
 import type { ChatMessage } from '../../core/context/contextManager'
 import { stripAttachTokens } from '../../shared/attachmentMarkdown'
+import { STEER_MARKER } from '../../shared/steer'
 
 /**
  * Форматирует реплай-цитаты для AI-контекста: на какое сообщение отвечает
@@ -99,10 +100,19 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
   }
 
   const iterations: Iteration[] = []
+  // §steer — реплики пользователя, внедрённые в контекст посреди этого рана.
+  // Отдельного user-сообщения в БД они не создают (живут шагами внутри
+  // assistant-сообщения), поэтому при пересборке истории восстанавливаем их
+  // как user-сообщения — иначе следующий ход «забыл бы» о правке.
+  const steerTexts: string[] = []
   let currentIter: Iteration | null = null
   let pendingCall: { callId: string; toolName: string; toolArgs: Record<string, unknown> } | null = null
 
   for (const step of steps) {
+    if (step.type === 'steer') {
+      if (typeof step.content === 'string' && step.content.trim()) steerTexts.push(step.content.trim())
+      continue
+    }
     if (step.type === 'tool_call') {
       // Новая итерация только если предыдущая уже имеет results
       // (т.е. предыдущий раунд завершён). Раньше условие было
@@ -140,10 +150,15 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
     }
   }
 
-  // Если итераций нет — просто текст (но мог быть todo)
+  // Если итераций нет — просто текст (но мог быть todo и/или §steer)
+  const steerMessages: ChatMessage[] = steerTexts.map(t => ({
+    role: 'user' as const,
+    content: `${STEER_MARKER}\n\n${t}`,
+  }))
   if (iterations.length === 0) {
     if (message.todo?.length) {
       return [
+        ...steerMessages,
         {
           role: 'assistant' as const,
           content: message.content,
@@ -153,13 +168,15 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
       ]
     }
     if (message.thinking) {
-      return [{ role: 'assistant', content: message.content, reasoning_content: message.thinking }]
+      return [...steerMessages, { role: 'assistant', content: message.content, reasoning_content: message.thinking }]
     }
-    return [{ role: 'assistant', content: message.content }]
+    return [...steerMessages, { role: 'assistant', content: message.content }]
   }
 
   // Если есть content до первой итерации и он непустой — добавляем как отдельное сообщение
-  const result: ChatMessage[] = []
+  // §steer — реплики пользователя идут ПЕРЕД ответом ассистента: они пришли
+  // по ходу рана, и финальный ответ уже их учитывает.
+  const result: ChatMessage[] = [...steerMessages]
   const contentBefore = message.content || ''
   const hasContentBefore = contentBefore.trim().length > 0
 

@@ -52,7 +52,6 @@ import {
   buildInstallPathsBlock,
   buildMemoryStatsBlock,
   buildGraphStatsBlock,
-  buildNotesBlock,
   buildSecretsBlock,
   buildPlanningInjection,
   buildAskInjection,
@@ -135,9 +134,6 @@ export interface SystemPromptParams {
   persona?: { id: string; nameEn: string; toolsProfile: 'full' | 'readonly'; skillId?: string }
   /** Resolved instructions for a persona that wraps a builtin skill. */
   personaSkill?: { name: string; instructions: string }
-  /** Project notes — titles shown in the system prompt so the agent is aware
-    * of existing notes. Full content is available via manage_notes tool. */
-  notesInfo?: { notes: Array<{ id: string; title: string }>; count: number }
   /** Max parallel sub-agents — injected into the spawn_agent section. */
   maxParallelSubAgents?: number
   /** Контент context providers плагинов (registerContextProvider) —
@@ -165,7 +161,7 @@ export interface SystemPromptParts {
  * SYSTEM_PROMPT_CACHE_BREAK (см. buildSystemPrompt).
  */
 export function buildSystemPromptParts(params: SystemPromptParams): SystemPromptParts {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, persona, personaSkill, notesInfo, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, persona, personaSkill, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -176,7 +172,6 @@ export function buildSystemPromptParts(params: SystemPromptParams): SystemPrompt
   const installPathsBlock = buildInstallPathsBlock(workdir, globalSkillsDir, globalPluginsDir)
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)
-  const notesBlock = buildNotesBlock(notesInfo)
   const secretsBlock = buildSecretsBlock(protectedVars)
   const modeInjection = planningMode
     ? buildPlanningInjection()
@@ -310,7 +305,7 @@ accomplish the task:
 
 | Role | Tools | Use for |
 |------|-------|---------|
-| researcher | read-only (read_file, search_code, get_fast_context, analyze_project, get_diagnostics) | code investigation, find files, understand architecture |
+| researcher | read-only (read_file, search_code, get_fast_context, get_diagnostics) | code investigation, find files, understand architecture |
 | deep-researcher | read-only + search_web + fetch_page | external research (docs, APIs, best practices) + codebase analysis |
 | editor | read + edit_file + write_file (no run_command) | implement code changes, verify via get_diagnostics |
 | implementer | full (read + edit + run_command) | full implementation with tests/builds (default) |
@@ -438,7 +433,6 @@ Date and time: ${dateStr}.
 ${browserBlock}
 ${memoryStatsBlock}
 ${graphStatsBlock}
-${notesBlock}
 ${secretsBlock}
 ${memoryContext ? '\n' + memoryContext : ''}${workingMemory ? `\n## Working memory (what was done in this chat)\n${workingMemory}\n` : ''}`
 

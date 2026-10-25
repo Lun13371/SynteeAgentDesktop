@@ -8,7 +8,7 @@ import * as Diff from 'diff'
 export const execAsync = promisify(exec)
 export const execFileAsync = promisify(execFile)
 
-// Единый список игнорируемых директорий для list_directory/find_files/search_code/analyze_project
+// Единый список игнорируемых директорий для list_directory/find_files/search_code/projectAnalyze
 export const DEFAULT_IGNORE_DIRS = ['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage']
 
 // Нормализация CRLF→LF (используется в edit_file/strReplaceCore)

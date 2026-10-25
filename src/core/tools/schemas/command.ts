@@ -35,20 +35,6 @@ export const COMMAND_TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
-      name: 'analyze_project',
-      description: 'Full project analysis — file structure, dependencies, git status, statistics. Call at the start of working with an unfamiliar project.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Absolute path to the project root' },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
       name: 'get_system_info',
       description: 'Получить информацию о системе (OS, память, uptime).',
       parameters: { type: 'object', properties: {} },

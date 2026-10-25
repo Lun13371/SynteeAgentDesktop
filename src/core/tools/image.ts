@@ -6,7 +6,9 @@ import OpenAI from 'openai'
 import type Store from 'electron-store'
 import type { Provider, ModelParams } from '../../shared/types'
 import { getIdentityHeaders } from '../../shared/constants'
-import { isImageMime, mimeFromExt } from '../../shared/mentions'
+import {
+  MAX_IMAGE_FILE_BYTES, formatBytes, imageRejectionReason, inspectImage, type RasterMime,
+} from '../../shared/imageFormat'
 import { AIClient } from '../ai/AIClient'
 import { agentModelSupportsVision } from '../ai/visionSupport'
 import { resolveToolPath, type ToolResult } from './_shared'
@@ -184,37 +186,61 @@ export async function analyzeImageFile(
   workdir?: string,
   userDataPath?: string,
   role: 'main' | 'subagent' = 'main',
+  chatId?: string,
 ): Promise<ToolResult> {
   let absPath = resolveToolPath(args.path, workdir)
   if (!existsSync(absPath)) {
     // Fallback: AI часто видит только имя файла-вложения (напр. "dollar.png")
     // в инлайн-описании от processAttachmentsAndStream, без полного пути.
     // Ищем файл по имени в userData/draft-attachments/{chatId}/ — там хранятся
-    // скопированные/pasted вложения. Если нашли — используем полный путь.
-    const found = userDataPath ? findInDraftAttachments(userDataPath, args.path) : null
-    if (!found) {
-      return { success: false, output: '', error: `File not found: ${absPath}` }
+    // скопированные/pasted вложения. Только ТЕКУЩИЙ чат: раньше сканировались
+    // все чаты и бралось первое совпадение по имени, поэтому в анализ мог
+    // попасть скриншот из другого диалога.
+    const lookup = userDataPath ? findInDraftAttachments(userDataPath, args.path, chatId) : {}
+    if (lookup.ambiguous?.length) {
+      return {
+        success: false, output: '',
+        error: `Ambiguous attachment name "${args.path}" — ${lookup.ambiguous.length} files match:\n${lookup.ambiguous.map(p => `- ${p}`).join('\n')}\nPass the full path explicitly.`,
+      }
     }
-    absPath = found
-  }
-  const mime = mimeFromExt(absPath)
-  // SVG vision-модели не принимают (data:image/svg+xml отклоняется API) —
-  // просим конвертировать в растр.
-  if (!isImageMime(mime) || mime === 'image/svg+xml') {
-    return { success: false, output: '', error: `Not a supported raster image (PNG/JPEG/WebP/GIF): ${absPath}${mime === 'image/svg+xml' ? ' (SVG is not supported — convert to PNG first)' : ''}` }
-  }
-  let size = 0
-  try { size = statSync(absPath).size } catch {
-    return { success: false, output: '', error: `Cannot stat file: ${absPath}` }
-  }
-  if (size > 20 * 1024 * 1024) {
-    return { success: false, output: '', error: `Image is too large (${(size / 1024 / 1024).toFixed(1)}MB, limit 20MB)` }
+    if (!lookup.path) {
+      return {
+        success: false, output: '',
+        error: `File not found: ${absPath}${chatId ? " (attachments are looked up only in this chat's draft folder)" : ''}`,
+      }
+    }
+    absPath = lookup.path
   }
 
-  let base64 = ''
-  try { base64 = readFileSync(absPath).toString('base64') } catch (e) {
+  let bytes: Buffer
+  try {
+    const stat = statSync(absPath)
+    if (!stat.isFile()) return { success: false, output: '', error: `Not a regular file: ${absPath}` }
+    // Размер проверяем ДО чтения: незачем тянуть в память 50-мегабайтный файл,
+    // чтобы потом его отклонить.
+    if (stat.size > MAX_IMAGE_FILE_BYTES) {
+      return {
+        success: false, output: '',
+        error: `Image is too large (${formatBytes(stat.size)}, limit ${formatBytes(MAX_IMAGE_FILE_BYTES)}): ${absPath}. Downscale it or convert to PNG/JPEG first.`,
+      }
+    }
+    bytes = readFileSync(absPath)
+  } catch (e) {
     return { success: false, output: '', error: `Cannot read image: ${(e as Error).message}` }
   }
+
+  // Тип определяем по РЕАЛЬНЫМ байтам, а не по расширению: файл *.png может
+  // быть бинарём/архивом/текстом. Раньше такой файл целиком уходил в контекст
+  // как base64 → 400/413 и сломанный чат.
+  const info = inspectImage(bytes)
+  const rejection = imageRejectionReason(info)
+  if (rejection || !info.mime) {
+    const svgHint = info.mime === 'image/svg+xml' ? ' (SVG is not supported — convert to PNG first)' : ''
+    return { success: false, output: '', error: `${rejection ?? 'Not a supported raster image'}: ${absPath}${svgHint}` }
+  }
+  const mime = info.mime as RasterMime
+  const base64 = bytes.toString('base64')
+  const dims = info.width && info.height ? ` (${info.width}×${info.height} px, ${formatBytes(bytes.byteLength)})` : ''
 
   const question = args.question?.trim()
 
@@ -224,7 +250,7 @@ export async function analyzeImageFile(
   if (agentModelSupportsVision(store, role)) {
     return {
       success: true,
-      output: `Изображение «${absPath}» загружено и приложено для нативного визуального анализа. Анализ выполняет основная модель в следующем ответе.${question ? `\nВопрос: ${question.slice(0, 1000)}` : '\nЗадача: визуально проверь изображение в контексте текущего запроса.'}`,
+      output: `Изображение «${absPath}»${dims} загружено и приложено для нативного визуального анализа. Анализ выполняет основная модель в следующем ответе.${question ? `\nВопрос: ${question.slice(0, 1000)}` : '\nЗадача: визуально проверь изображение в контексте текущего запроса.'}`,
       imagePaths: [absPath],
       imageParts: [{ type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: 'high' } }],
     }
@@ -262,6 +288,11 @@ export async function analyzeImageFile(
   }
 }
 
+interface DraftLookup {
+  path?: string
+  ambiguous?: string[]
+}
+
 /**
  * Fallback-поиск картинки-вложения в draft-attachments.
  *
@@ -269,28 +300,39 @@ export async function analyzeImageFile(
  * полного пути. Когда вызывает analyze_image("dollar.png") — resolveToolPath
  * строит {workdir}/dollar.png, которого не существует. Ищем по имени в
  * userData/draft-attachments/{chatId}/ — там хранятся pasted/drag&drop
- * вложения. Сканируем все chatId-поддиректории (файл мог быть вложен в
- * другом чате, или chatId неизвестен).
+ * вложения.
  *
- * Возвращает абсолютный путь или null.
+ * Область поиска — ТОЛЬКО текущий чат (chatId). Раньше сканировались все
+ * chatId-поддиректории и возвращалось первое совпадение по имени: имена
+ * коллизят (`-1`, `-2` от saveImageFromBase64), поэтому в анализ мог попасть
+ * файл из другого диалога. Несколько совпадений — не угадываем, а просим путь.
  */
-function findInDraftAttachments(userDataPath: string, fileName: string): string | null {
+function findInDraftAttachments(userDataPath: string, fileName: string, chatId?: string): DraftLookup {
   const target = basename(fileName).toLowerCase()
   const draftRoot = join(userDataPath, 'draft-attachments')
-  if (!existsSync(draftRoot)) return null
+  if (!existsSync(draftRoot)) return {}
+
+  const dirs: string[] = []
   try {
-    for (const chatDir of readdirSync(draftRoot)) {
-      const chatPath = join(draftRoot, chatDir)
-      try {
-        const stat = statSync(chatPath)
-        if (!stat.isDirectory()) continue
-        for (const file of readdirSync(chatPath)) {
-          if (file.toLowerCase() === target) {
-            return join(chatPath, file)
-          }
-        }
-      } catch { /* skip unreadable dirs */ }
+    if (chatId) {
+      const own = join(draftRoot, chatId)
+      if (existsSync(own)) dirs.push(own)
+    } else {
+      for (const entry of readdirSync(draftRoot)) dirs.push(join(draftRoot, entry))
     }
-  } catch { /* skip */ }
-  return null
+  } catch { return {} }
+
+  const hits: string[] = []
+  for (const dir of dirs) {
+    try {
+      if (!statSync(dir).isDirectory()) continue
+      for (const file of readdirSync(dir)) {
+        if (file.toLowerCase() === target) hits.push(join(dir, file))
+      }
+    } catch { /* skip unreadable dirs */ }
+  }
+
+  if (hits.length === 1) return { path: hits[0] }
+  if (hits.length > 1) return { ambiguous: hits }
+  return {}
 }

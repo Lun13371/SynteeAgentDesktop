@@ -19,11 +19,12 @@ function loadTS(relative, mocks = {}) {
     if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id]
     return require(require.resolve(id, { paths: [path.dirname(filename)] }))
   }
-  vm.runInNewContext(code, { module, exports: module.exports, require: localRequire, Buffer, console, setTimeout, clearTimeout, AbortController, DOMException, process }, { filename })
+  vm.runInNewContext(code, { module, exports: module.exports, require: localRequire, Buffer, console, setTimeout, clearTimeout, AbortController, DOMException, process, TextEncoder, TextDecoder, URL, URLSearchParams, queueMicrotask }, { filename })
   return module.exports
 }
 const plain = value => JSON.parse(JSON.stringify(value))
-const { routeToolImagesToUser } = loadTS('src/core/ai/toolImageMessages.ts')
+const toolImageMessages = loadTS('src/core/ai/toolImageMessages.ts')
+const { routeToolImagesToUser } = toolImageMessages
 const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=', detail: 'high' } }
 const source = [
   { role: 'system', content: 'system' },
@@ -62,9 +63,17 @@ assert.equal(anthropic.messages[1].content[1].tool_use_id, 'b')
 console.log('PASS native Anthropic: pixels remain inside paired tool_result')
 
 const mentions = loadTS('src/shared/mentions.ts')
-const { hydrateToolImageContent } = loadTS('src/core/ai/toolImageHistory.ts', { '../../shared/mentions': mentions })
+const imageFormat = loadTS('src/shared/imageFormat.ts')
+const {
+  hydrateToolImageContent, hydrateHistoryContents, createImageHydrationBudget,
+} = loadTS('src/core/ai/toolImageHistory.ts', {
+  '../../shared/mentions': mentions,
+  '../../shared/imageFormat': imageFormat,
+})
 const { messageToContextMessages } = loadTS('src/main/ipc/chatContextHelpers.ts', {
   '../../shared/attachmentMarkdown': { stripAttachTokens: text => text },
+  // §steer — маркер внедрённой реплики (иначе require не найдёт shared/steer).
+  '../../shared/steer': { STEER_MARKER: '[Пользователь написал во время твоей работы]' },
 })
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'syntee-image-test-'))
 
@@ -108,6 +117,48 @@ async function main() {
     assert.equal(legacy.imagePaths, undefined)
     console.log('PASS history: JSON path persistence, exact pixels, missing/mixed/text-only/SVG/relative/oversize handling, legacy warning')
 
+    // ── Budget: пиксели из истории переподставляются в КАЖДЫЙ запрос ──
+    const noImages = createImageHydrationBudget({ maxImages: 0 })
+    const omitted = hydrateToolImageContent({ content: 'Prepared', imagePaths: [file] }, true, noImages)
+    assert.equal(typeof omitted, 'string')
+    assert.match(omitted, /pixels omitted/)
+    assert.doesNotMatch(omitted, /base64/)
+
+    const tinyBudget = createImageHydrationBudget({ maxBytes: 4 })
+    const omittedByBytes = hydrateToolImageContent({ content: 'Prepared', imagePaths: [file] }, true, tinyBudget)
+    assert.equal(typeof omittedByBytes, 'string')
+    assert.match(omittedByBytes, /exhausted/)
+
+    // Правила провайдеров: большая картинка едет только в одиночку, иначе 400.
+    const sideBudget = createImageHydrationBudget({ maxImages: 4 })
+    const large = { base64Bytes: 1000, width: 4000, height: 3000 }
+    const small = { base64Bytes: 1000, width: 800, height: 600 }
+    assert.equal(sideBudget.reject(large), null)
+    sideBudget.accept(large)
+    assert.match(sideBudget.reject(small), /already carries a larger image/)
+    const sideBudget2 = createImageHydrationBudget({ maxImages: 4 })
+    assert.equal(sideBudget2.reject(small), null)
+    sideBudget2.accept(small)
+    assert.match(sideBudget2.reject(large), /cannot share a request/)
+    assert.match(createImageHydrationBudget().reject({ base64Bytes: 10, width: 9000, height: 100 }), /limit 8000px/)
+
+    const sharedBudget = createImageHydrationBudget({ maxImages: 1 })
+    const newerImage = path.join(tmp, 'newer.png')
+    fs.copyFileSync(file, newerImage)
+    const historyContents = hydrateHistoryContents([
+      { role: 'tool', content: 'older', imagePaths: [file] },
+      { role: 'assistant', content: 'middle' },
+      { role: 'tool', content: 'newer', imagePaths: [newerImage] },
+    ], true, sharedBudget)
+    assert.equal(typeof historyContents[0], 'string', 'oldest image must be dropped first')
+    assert.match(historyContents[0], /pixels omitted/)
+    assert.equal(historyContents[1], 'middle')
+    assert.equal(Array.isArray(historyContents[2]), true, 'freshest image keeps its pixels')
+    assert.equal(sharedBudget.images, 1)
+    const deduped = hydrateToolImageContent({ content: 'again', imagePaths: [newerImage] }, true, sharedBudget)
+    assert.match(deduped, /already attached in this request/)
+    console.log('PASS image budget: fresh pixels win, oldest results degrade to text, duplicates and byte cap enforced')
+
     const catalog = { isCatalogReady: () => false }
     const vision = loadTS('src/core/ai/visionSupport.ts', { '../tokens/modelCatalog': catalog })
     const storeData = { modelAssignments: [
@@ -124,17 +175,106 @@ async function main() {
     console.log('PASS model routing: effective main/subagent assignment and fallback')
 
     const { analyzeImageFile } = loadTS('src/core/tools/image.ts', {
-      openai: class {}, '../ai/AIClient': {}, '../ai/visionSupport': vision,
+      openai: { default: class {} }, '../ai/AIClient': {}, '../ai/visionSupport': vision,
       '../../shared/constants': {}, '../../shared/mentions': mentions,
+      '../../shared/imageFormat': imageFormat,
       './_shared': { resolveToolPath: (p, cwd) => path.resolve(cwd || root, p) },
     })
     const analyzed = await analyzeImageFile({ path: file, question: 'What is shown?' }, store)
     assert.equal(analyzed.success, true)
     assert.deepEqual(plain(analyzed.imagePaths), [file])
     assert.equal(analyzed.imageParts[0].type, 'image_url')
-    assert.match(analyzed.output, /не готовое описание/)
+    assert.match(analyzed.output, /приложено для нативного визуального анализа/)
     assert.match(analyzed.output, /What is shown/)
     console.log('PASS analyze_image: real file -> visual result + saved absolute path + honest status')
+
+    // ── Magic bytes: расширение ничего не доказывает ──
+    const fakeImage = path.join(tmp, 'fake.png')
+    fs.writeFileSync(fakeImage, Buffer.from('#!/bin/sh\necho "not an image"\n'))
+    const fakeResult = await analyzeImageFile({ path: fakeImage }, store)
+    assert.equal(fakeResult.success, false)
+    assert.match(fakeResult.error, /not an image: its content is text/i)
+    assert.equal(fakeResult.imageParts, undefined, 'no pixels for a text file named *.png')
+    assert.doesNotMatch(fakeResult.error, /base64/)
+
+    const binaryImage = path.join(tmp, 'binary.png')
+    fs.writeFileSync(binaryImage, Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]))
+    const binaryResult = await analyzeImageFile({ path: binaryImage }, store)
+    assert.equal(binaryResult.success, false)
+    assert.match(binaryResult.error, /not a raster image/i)
+
+    const svgImage = path.join(tmp, 'vector.svg')
+    fs.writeFileSync(svgImage, '<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    const svgResult = await analyzeImageFile({ path: svgImage }, store)
+    assert.equal(svgResult.success, false)
+    assert.match(svgResult.error, /convert to PNG first/)
+
+    const hugeImage = path.join(tmp, 'huge.png')
+    fs.writeFileSync(hugeImage, Buffer.alloc(imageFormat.MAX_IMAGE_FILE_BYTES + 1))
+    const hugeResult = await analyzeImageFile({ path: hugeImage }, store)
+    assert.equal(hugeResult.success, false)
+    assert.match(hugeResult.error, /too large/i)
+    assert.doesNotMatch(hugeResult.error, /base64/)
+    console.log('PASS analyze_image guards: text/binary/SVG mislabeled as image and oversize files are refused, no base64 leak')
+
+    // ── Формат по реальным байтам + реальные размеры в пикселях ──
+    const pngSniff = imageFormat.sniffImage(fs.readFileSync(file))
+    assert.equal(pngSniff.mime, 'image/png')
+    assert.equal(pngSniff.supported, true)
+    assert.equal(pngSniff.width, 1)
+    assert.equal(pngSniff.height, 1)
+
+    const jpeg = Buffer.from([
+      0xff, 0xd8,
+      0xff, 0xe0, 0x00, 0x10, ...Array(14).fill(0),
+      0xff, 0xc0, 0x00, 0x11, 0x08,
+      0x01, 0x2c,       // height 300
+      0x01, 0x90,       // width 400
+      ...Array(9).fill(0),
+      0xff, 0xd9,
+    ])
+    const jpegSniff = imageFormat.sniffImage(jpeg)
+    assert.equal(jpegSniff.mime, 'image/jpeg')
+    assert.equal(jpegSniff.height, 300)
+    assert.equal(jpegSniff.width, 400)
+
+    const gifSniff = imageFormat.sniffImage(Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x40, 0x01, 0xc8, 0x00, ...Array(20).fill(0)]))
+    assert.equal(gifSniff.mime, 'image/gif')
+    assert.equal(gifSniff.width, 320)
+    assert.equal(gifSniff.height, 200)
+
+    assert.equal(imageFormat.sniffImage(Buffer.from('hello, i am text')).mime, null)
+    const bmpInfo = imageFormat.inspectImage(Buffer.concat([
+      Buffer.from('BM'), Buffer.alloc(12), Buffer.from([0x28, 0, 0, 0]),
+      Buffer.from([0x40, 0x06, 0, 0]), Buffer.from([0x40, 0x06, 0, 0]),
+    ]))
+    assert.equal(bmpInfo.mime, 'image/bmp')
+    assert.equal(bmpInfo.supported, false, 'bmp is not accepted by vision APIs')
+    assert.match(imageFormat.imageRejectionReason(bmpInfo), /convert it to PNG/)
+    console.log('PASS imageFormat: magic bytes, PNG/JPEG/GIF pixel sizes, unsupported formats rejected before base64')
+
+    // ── Нормализация (main-процесс): вместо отказа — уменьшение ──
+    // Electron подменяем: проверяем решение "нужен ли ресайз" и ветку отказа,
+    // не завися от реального nativeImage.
+    let decodeCalls = 0
+    const { normalizeImageForVision } = loadTS('src/main/services/imageDownscale.ts', {
+      electron: { nativeImage: { createFromBuffer: () => { decodeCalls++; return { isEmpty: () => true } } } },
+      '../../shared/imageFormat': imageFormat,
+    })
+    const smallPng = fs.readFileSync(file)
+    const passthrough = normalizeImageForVision(smallPng)
+    assert.equal(passthrough.ok, true)
+    assert.equal(passthrough.image.downscaled, false)
+    assert.equal(decodeCalls, 0, 'маленькая картинка не должна трогать декодер')
+    const textFile = normalizeImageForVision(Buffer.from('just text'))
+    assert.equal(textFile.ok, false)
+    assert.match(textFile.error, /not an image/)
+    const bigPng = Buffer.concat([smallPng, Buffer.alloc(imageFormat.MAX_IMAGE_FILE_BYTES)])
+    const undecodable = normalizeImageForVision(bigPng)
+    assert.equal(undecodable.ok, false)
+    assert.equal(decodeCalls, 1, 'большая картинка идёт в ресайз')
+    assert.match(undecodable.error, /Cannot decode/)
+    console.log('PASS imageDownscale: small images pass through untouched, oversize goes to resize, junk is refused')
 
     let nativeCalled = false
     const { AIClient } = loadTS('src/core/ai/AIClient.ts', {
@@ -149,7 +289,9 @@ async function main() {
         assert.equal(messages[2].content[0].type, 'image_url')
         return { content: 'native' }
       } },
-      './toolImageMessages': { routeToolImagesToUser }, '../tokens/usageTracker': {},
+      './toolImageMessages': toolImageMessages, '../tokens/usageTracker': {},
+      './toolCallHistory': { repairToolCallHistory: (messages) => messages },
+      './mediaSupport': { resolveMediaTransport: () => 'unsupported', requestMediaAnalysis: async () => '' },
     })
     const ai = Object.create(AIClient.prototype)
     ai.store = { get: () => '' }
@@ -189,6 +331,62 @@ async function main() {
     await assert.rejects(ai.chatWithTools(source, []), /Provider rejected visual input/)
     assert.equal(JSON.stringify(source), before, 'provider rejection must never remove canonical pixels')
     console.log('PASS actual AIClient request payloads: Chat Completions, Responses input_image (not JSON), native Anthropic branch, 400 preserves images')
+
+    // ── Токены: пиксели должны быть видны оценке контекста ──
+    // Раньше из multipart брались только text-парты, поэтому 30 МБ картинок
+    // стоили «0 токенов»: контекст-бар молчал, клапан не срабатывал, а
+    // провайдер отвечал 413.
+    const usageTracker = loadTS('src/core/tokens/usageTracker.ts', {
+      './modelCatalog': { getCatalogModel: () => null, isCatalogReady: () => false },
+      './gatewayModelsCache': { getGatewayModelsCache: () => null, GATEWAY_PROVIDER_ID: 'syntee-gateway' },
+      './ModelPricing': { getModelPrice: () => null },
+      '../../shared/data/builtinModels': { BUILTIN_MODELS: [] },
+      '../../shared/imageFormat': imageFormat,
+    })
+    const tokenImagePart = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }
+    const textOnlyTokens = usageTracker.estimateMessagesTokensFull([{ role: 'user', content: '' }])
+    const imageTokens = usageTracker.estimateMessagesTokensFull([{ role: 'user', content: [tokenImagePart] }])
+    assert.ok(imageTokens - textOnlyTokens >= imageFormat.IMAGE_TOKEN_COST,
+      `image part must add ~${imageFormat.IMAGE_TOKEN_COST} tokens (got ${imageTokens - textOnlyTokens})`)
+
+    // ── Клапан: пиксели снимаются раньше, чем удаляются раунды ──
+    const { dropOldestRoundsIfOverflow, hasImagePayload, imagePayloadInfos } = loadTS('src/core/agent/utils.ts', {
+      '../context/contextManager': { TOOL_SCHEMAS_OVERHEAD: 0 },
+      '../tokens/usageTracker': { estimateMessagesTokensFull: usageTracker.estimateMessagesTokensFull },
+      '../tools/schemas': { TOOL_SCHEMAS: [] },
+      '../logger': { log: () => {} },
+      '../../shared/imageFormat': imageFormat,
+    })
+    const toolMessages = [
+      { role: 'system', content: 'sys' },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'a', type: 'function', function: { name: 'analyze_image', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'a', name: 'analyze_image', content: [tokenImagePart, { type: 'text', text: 'receipt' }] },
+      { role: 'user', content: 'next' },
+    ]
+    const canonicalBefore = JSON.stringify(toolMessages)
+    assert.equal(dropOldestRoundsIfOverflow(toolMessages, 5000, 4000), toolMessages, 'under the limit the array is returned untouched')
+    assert.equal(hasImagePayload(toolMessages[2].content), true)
+    const compacted = dropOldestRoundsIfOverflow(toolMessages, 500, 100)
+    assert.notEqual(compacted, toolMessages)
+    assert.equal(compacted.length, toolMessages.length, 'rounds survive — only pixels are dropped')
+    assert.equal(typeof compacted[2].content, 'string')
+    assert.match(compacted[2].content, /receipt/)
+    assert.match(compacted[2].content, /Image pixels were removed/)
+    assert.equal(JSON.stringify(toolMessages), canonicalBefore, 'canonical messages must not be mutated')
+
+    // Размеры берутся из самих байтов: по ним бюджет решает, можно ли
+    // прикладывать картинку рядом с другими.
+    const infos = imagePayloadInfos([
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${fs.readFileSync(file).toString('base64')}` } },
+      { type: 'text', text: 'receipt' },
+    ])
+    assert.equal(infos.length, 2)
+    assert.equal(infos[0].width, 1)
+    assert.equal(infos[0].height, 1)
+    assert.ok(infos[0].base64Bytes > 0)
+    assert.equal(infos[1].base64Bytes, 0)
+    console.log('PASS context accounting: image parts cost tokens; overflow valve drops pixels before whole rounds')
+
     console.log('All tool image regression checks passed.')
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })

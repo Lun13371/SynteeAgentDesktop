@@ -10,7 +10,7 @@ import { v4 as uuid } from 'uuid'
 import { useContextCounter } from '../../hooks/useContextCounter'
 import { useChatAutoscroll } from '../../hooks/useChatAutoscroll'
 import { useBackgroundLoadFullChat } from '../../hooks/useBackgroundLoadFullChat'
-import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../hooks/useChatRunSubscription'
+import { initChatSend, hydrateFromMain, enqueuePendingUserMsg, appendPendingSteer, removePendingSteer } from '../../hooks/useChatRunSubscription'
 import TitleBar from '../../components/layout/TitleBar/TitleBar'
 import Sidebar from '../../components/layout/Sidebar/Sidebar'
 import { playDoneSound } from '../../utils/sounds'
@@ -66,6 +66,18 @@ const itemStyle: React.CSSProperties = {
   top: 0,
   left: 0,
   width: '100%',
+}
+
+/** Дождаться кадра, в котором браузер уже ОТРИСОВАЛ текущий коммит.
+ *  requestAnimationFrame срабатывает ДО paint, поэтому после него нужен ещё
+ *  макротаск: setTimeout(0) выполняется уже после отрисовки кадра.
+ *  Нужно при переключении чата: сначала показать вуаль (cheap-коммит),
+ *  отдать кадр — и только потом запускать тяжёлый рендер ленты нового чата,
+ *  иначе React заблокирует main thread и вуаль никогда не отрисуется. */
+function settleFrame(): Promise<void> {
+  return new Promise<void>(resolve => {
+    requestAnimationFrame(() => { setTimeout(resolve, 0) })
+  })
 }
 
 // ── Module-level empty константы для узких live-селекторов ──────────────
@@ -268,9 +280,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const chatInputWrapRef = useRef<HTMLDivElement>(null)
   const [toolOutputMode, setToolOutputMode] = useState<ToolOutputMode>('normal')
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
-  const [showSkeleton, setShowSkeleton] = useState(false)
+  // Вуаль переключения чата (см. selectChat + .chat-switch-veil в CSS).
+  const [switchingChat, setSwitchingChat] = useState(false)
+  // Номер попытки переключения: при быстрых кликах A→B→C каждая ветка
+  // selectChat проверяет, что её не перебили, — иначе поздний await
+  // вернул бы UI на уже покинутый чат и снял вуаль поверх чужого контента.
+  const chatSwitchSeqRef = useRef(0)
   const isInitialScrollRef = useRef(true)
-  const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Guard: при manual /compact мы сами вызываем setMessages(result.messages)
   // с синхронным возвратом IPC. Но main также эмитит CHAT_COMPACTED, и
   // листенер дёрнет getMessagesPage(20)→setMessagesWindow — второй апдейт
@@ -1293,14 +1309,54 @@ const chatId = compactingCurrentChatIdRef.current
     if (isInitialScrollRef.current) {
       requestAnimationFrame(() => { pinAutoscroll(true); isInitialScrollRef.current = false })
     }
-  }, [messages.length, isTyping, isLoadingMessages, isCompactingHere, pinAutoscroll])
+    // currentChatId в deps обязателен: окно истории почти всегда ровно 50
+    // сообщений (или вся короткая история), поэтому при переключении между
+    // двумя чатами длина ленты ЧАСТО НЕ МЕНЯЕТСЯ. Без currentChatId эффект
+    // не перезапускался → новый чат открывался с сохранённым scrollTop
+    // предыдущего (середина ленты вместо низа).
+    // В deps именно messages.length, а не displayMessages.length: displayMessages
+    // объявлен НИЖЕ по коду, его чтение в массиве зависимостей — TDZ.
+  }, [messages.length, isTyping, isLoadingMessages, isCompactingHere, pinAutoscroll, currentChatId])
 
   const selectChat = useCallback(async (id: string) => {
+    // Номер попытки: при быстрых кликах A→B→C каждая ветка ниже проверяет,
+    // что её не перебили, — иначе поздний await вернул бы UI на уже
+    // покинутый чат и снял вуаль поверх чужого контента.
+    const seq = ++chatSwitchSeqRef.current
+    const st0 = useChatStore.getState()
+    // Клик по уже активному чату — ничего не перерисовываем. Сюда же
+    // попадает возврат в текущий чат, пока предыдущий свич ещё ждал кадр
+    // под вуалью: отменяем его (seq уже сдвинут) и вуаль убираем.
+    if (st0.currentChatId === id) {
+      setSwitchingChat(false)
+      return
+    }
+    // Был ли уже открыт какой-то чат. При первом открытии (boot, экран пуст)
+    // вуаль не нужна — маскировать нечего, и лишний кадр задержки ни к чему.
+    const hadChat = !!st0.currentChatId
+
     isInitialScrollRef.current = true
     pinAutoscroll(true)
-    setCurrentChat(id)
     // Сбрасываем unread-бейдж этого чата (пользователь его увидел)
     markChatRead(id)
+
+    // Активный чат переключаем СРАЗУ: подсветка вкладки/строки сайдбара и
+    // верхний кластер должны отреагировать на клик мгновенно. Лента при этом
+    // ещё показывает сообщения старого чата (messages — общее поле стора),
+    // их подменит ветка ниже — уже под вуалью.
+    setCurrentChat(id)
+
+    // ── Вуаль переключения: отдаём браузеру кадр ДО тяжёлого рендера ──
+    // Коммит выше дешёвый (ряды ленты мемоизированы по msg, массив messages
+    // не менялся). settleFrame() гарантирует, что он уже отрисован, поэтому
+    // тяжёлый рендер новой ленты ниже идёт ПОД вуалью, а не вместо неё —
+    // иначе React блокировал бы main thread и пользователь видел бы
+    // замороженный кадр старого чата.
+    if (hadChat) {
+      setSwitchingChat(true)
+      await settleFrame()
+      if (seq !== chatSwitchSeqRef.current) return
+    }
 
     // ── Мгновенный показ из LRU-кеша (если есть) ──
     // Кэш-хит: показываем сообщения сразу, БЕЗ скелетона и БЕЗ ожидания IPC.
@@ -1310,7 +1366,6 @@ const chatId = compactingCurrentChatIdRef.current
     const cached = useChatStore.getState().messagesByChat[id]
     if (cached) {
       setMessagesWindow(id, cached.messages, cached.hasOlder)
-      // Скелетон не показываем — контент уже на экране.
       // Запускаем 3 фоновых IPC параллельно (не блокируют рендер):
       void Promise.all([
         // 1. Гидрируем live-состояние из main — если в чате работает агент,
@@ -1346,12 +1401,18 @@ const chatId = compactingCurrentChatIdRef.current
           }
         }).catch(() => {}),
       ])
+      // Новый чат уже отрисован → снимаем вуаль (её exit-фейд — compositor).
+      await settleFrame()
+      if (seq === chatSwitchSeqRef.current) setSwitchingChat(false)
       return
     }
 
-    // ── Cache miss: показываем скелетон, грузим последнюю страницу ──
+    // ── Cache miss: история грузится по IPC, всё это время лента закрыта
+    // вуалью со спиннером (раньше здесь был скелетон с задержкой 120мс:
+    // первые 120мс висел замороженный СТАРЫЙ чат, потом скелетон, потом
+    // новый чат — три состояния подряд вместо одного). Скелетон вдобавок
+    // размонтировал .chat-messages, теряя scroll-контейнер и позицию.
     setIsLoadingMessages(true)
-    skeletonTimerRef.current = setTimeout(() => setShowSkeleton(true), 120)
     // hydrateFromMain + getQueue — параллельно с getMessagesPage (не блокируют
     // первый рендер сообщений). Раньше они шли последовательно ДО getMessagesPage.
     try {
@@ -1373,12 +1434,12 @@ const chatId = compactingCurrentChatIdRef.current
       // getMessagesPage упал — оставляем пустой чат (или stale кэш если есть).
       // Не показываем ошибку: пользователь увидит empty-state и может повторить.
     } finally {
-      // Гарантированно сбрасываем loading-флаг и скелетон, даже при ошибке
+      // Гарантированно сбрасываем loading-флаг и вуаль, даже при ошибке
       // или race (пользователь кликнул другой чат). Без finally isLoadingMessages
-      // мог залипнуть → ломало автоскролл и показ скелетона поверх сообщений.
-      if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current)
-      setShowSkeleton(false)
+      // мог залипнуть → ломало автоскролл.
       setIsLoadingMessages(false)
+      await settleFrame()
+      if (seq === chatSwitchSeqRef.current) setSwitchingChat(false)
     }
     // Deps: все используемые значения — стабильные store-actions/useCallback'и.
   }, [setCurrentChat, markChatRead, setMessagesWindow, setHasOlderMessages, pinAutoscroll])
@@ -2166,6 +2227,31 @@ const chatId = compactingCurrentChatIdRef.current
     return () => { off?.() }
   }, [])
 
+  // ── §steer — внедрить реплику в контекст РАБОТАЮЩЕГО агента ────────────
+  // Long-press кнопки отправки (0,5с). Сообщение НЕ встаёт в очередь: main
+  // передаёт его воркеру, Agent вставит его в messages на границе следующего
+  // раунда и продолжит тот же ран — стрим и тулы не обрываются, уже сделанное
+  // не теряется. Откат на обычную отправку нужен на гонку «нажал, а ран как
+  // раз закончился», иначе текст просто пропал бы.
+  const steerToContext = useCallback(async (text: string) => {
+    const clean = text.trim()
+    if (!clean || !currentChatId) return
+    pinAutoscroll(true)
+    const steerId = `steer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    // Оптимистичная карточка «ждёт границы раунда»: реакция на жест мгновенная,
+    // иначе кажется, что сообщение не отправилось (применение может ждать
+    // столько, сколько идёт долгий тул).
+    appendPendingSteer(currentChatId, clean, steerId)
+    let accepted = false
+    try {
+      const res = await window.syntee.chat.steer(currentChatId, clean, steerId) as { accepted?: boolean }
+      accepted = !!res?.accepted
+    } catch { accepted = false }
+    if (accepted) return
+    removePendingSteer(currentChatId, steerId)
+    await handleSend(text)
+  }, [currentChatId, handleSend, pinAutoscroll])
+
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
     pinMessage(id)
@@ -2416,7 +2502,14 @@ const chatId = compactingCurrentChatIdRef.current
   // estimateSize: () => 120 даёт 120px для всех рядов при первом рендере.
   // Большие сообщения реально 2000-8000px → RO перемеряет → прыжки → фриз.
   // Кэш: Map<msgId, height>. estimateSize читает из кэша → первый paint
-  // без прыжков. При смене чата кэш сбрасывается (все id новые).
+  // без прыжков.
+  //
+  // Раньше кэш СБРАСЫВАЛСЯ на каждую смену чата. Это было лишним: ключ —
+  // message.id, а id сообщений глобально уникальны, чужих id в кэше нового
+  // чата быть не может. Сброс же стирал высоты ПРЕДЫДУЩЕГО чата, поэтому
+  // возврат в недавний чат стоил полного перемера всех рядов (RO-шторм
+  // ровно в кадр переключения) + прыжка скролла. Теперь кэш живёт сквозь
+  // переключения; реальные измерения RO всё равно уточняют высоты на месте.
   const rowHeightsRef = useRef<Map<string, number>>(new Map())
 
   const estimateSize = useCallback(
@@ -2431,10 +2524,8 @@ const chatId = compactingCurrentChatIdRef.current
     [displayMessages],
   )
 
-  // Сброс кэша при смене чата — все id новые, старые высоты бесполезны.
-  useEffect(() => {
-    rowHeightsRef.current.clear()
-  }, [currentChatId])
+  // (Смена чата кэш НЕ сбрасывает — см. комментарий у rowHeightsRef: ключ
+  //  это message.id, id глобально уникальны, протухать нечему.)
 
   const virtualizer = useVirtualizer({
     count: displayMessages.length,
@@ -2464,6 +2555,11 @@ const chatId = compactingCurrentChatIdRef.current
         if (h > 0) rowHeightsRef.current.set(id, h)
       }
     }
+    // Кэш больше не сбрасывается на смену чата → растёт всё время жизни окна.
+    // Записи крошечные (string→number), но без капа в многодневной сессии с
+    // сотнями чатов это утечка. Порог 4000 рядов ≈ несколько МБ; сброс
+    // безопасен — высоты пересчитаются RO при следующем монтировании рядов.
+    if (rowHeightsRef.current.size > 4000) rowHeightsRef.current.clear()
     return virtualizer.measureElement(el)
   }, [virtualizer])
 
@@ -2641,22 +2737,10 @@ const chatId = compactingCurrentChatIdRef.current
               </motion.div>
             )}
           </AnimatePresence>
-          {showSkeleton ? (
-            <motion.div
-              key="skeleton"
-              className="chat-skeleton"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.12 }}
-            >
-              {[0.4, 0.7, 0.5, 0.9, 0.6, 0.8, 0.45, 0.75].map((w, i) => (
-                <div key={i} className={`chat-skeleton-row ${i % 3 === 0 ? 'chat-skeleton-row--user' : ''}`}>
-                  <div className="chat-skeleton-bubble" style={{ width: `${w * 100}%` }} />
-                </div>
-              ))}
-            </motion.div>
-          ) : displayMessages.length === 0 && !isTyping ? (
+          {/* Скелетона больше нет: на cache-miss лента закрыта вуалью
+              переключения (ниже), это стабильнее — .chat-messages не
+              размонтируется, scroll-контейнер и позиция не теряются. */}
+          {displayMessages.length === 0 && !isTyping ? (
             <div className="chat-empty-state">
               <div className="chat-empty-icon">
                 <Logo size={52} />
@@ -2758,6 +2842,27 @@ const chatId = compactingCurrentChatIdRef.current
             </div>
           )}
 
+          {/* ── Вуаль переключения чата ───────────────────────────────────
+              Монтируется в тот же тик, что и смена чата, но кадр под неё
+              браузер отрисовывает ДО тяжёлого рендера ленты (см. settleFrame
+              в selectChat). На быстрых переключениях (<90мс) не успевает
+              проявиться — CSS animation-delay. Exit-фейд снимает framer-motion
+              поверх уже отрисованного нового чата. pointer-events: none —
+              ввод в поле сообщения не блокируется. */}
+          <AnimatePresence>
+            {switchingChat && (
+              <motion.div
+                key="chat-switch-veil"
+                className="chat-switch-veil"
+                initial={false}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.16, ease: 'easeOut' }}
+              >
+                <span className="chat-switch-veil-spinner" />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* Floating-кнопка «прокрутить вниз» — компактная, по центру,
               чуть выше инпут-бара. Появляется когда пользователь отошёл
               от низа (autoScroll=false). Клик — плавный скролл + закрепление. */}
@@ -2803,6 +2908,7 @@ const chatId = compactingCurrentChatIdRef.current
             <ChatInput
               chatId={currentChatId ?? undefined}
               onSend={handleSend}
+              onSteer={steerToContext}
               goal={chatGoal}
               onGoalChange={async (g) => { if (!currentChatId) return; const saved = await window.syntee.goal.set(currentChatId, g); setChatGoal(saved) }}
               disabled={isTyping || isCompactingHere || editorMode}

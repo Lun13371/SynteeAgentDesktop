@@ -392,8 +392,9 @@ export class ToolDispatcher {
       case 'analyze_image':
         // Распознавание картинки с диска: прямой пас (imageParts) для
         // vision-способной основной модели, иначе — описание от vision-модели.
-        // userDataPath — для fallback-поиска картинок-вложений в draft-attachments.
-        return analyzeImageFile(resolvedArgs as { path: string; question?: string }, this.store, this.workdir, this.userDataPath, this.modelRole)
+        // userDataPath + chatId — fallback-поиск вложений ограничен текущим
+        // чатом (имена файлов коллизят между чатами).
+        return analyzeImageFile(resolvedArgs as { path: string; question?: string }, this.store, this.workdir, this.userDataPath, this.modelRole, this.chatId)
       case 'read_files': {
         const rfResult = await readFiles(resolvedArgs.paths as string[], this.workdir)
         if (rfResult.success) {
@@ -418,8 +419,6 @@ export class ToolDispatcher {
             workdir: this.workdir,
           }
         )
-      case 'analyze_project':
-        return analyzeProject((resolvedArgs.path as string) ?? this.workdir ?? '.', this.workdir)
       case 'get_fast_context': {
         const fcQuery = resolvedArgs.query as string
         if (!fcQuery) return { success: false, output: '', error: 'query is required' }
@@ -429,7 +428,7 @@ export class ToolDispatcher {
             success: true,
             output: JSON.stringify({
               files: [],
-              summary: 'Fast context недоступен (нет workdir). Использован analyze_project как fallback. ' + (fallback.output.slice(0, 200)),
+              summary: 'Fast context недоступен (нет workdir). Использован встроенный анализ проекта как fallback. ' + (fallback.output.slice(0, 200)),
               ms: 0,
               indexedFilesCount: 0,
               fallback: true,
@@ -602,45 +601,6 @@ export class ToolDispatcher {
             idx++
           }
           return { success: true, output: `Found ${result.results.length} results across ${Object.keys(sourceCounts).length} sources (${sourceSummary}):\n\n${lines.join('\n')}` }
-        } catch (e) {
-          return { success: false, output: '', error: (e as Error).message }
-        }
-      }
-      case 'manage_notes': {
-        const action = resolvedArgs.action as string
-        const scope = resolvedArgs.scope as string
-        if (!action || !['create', 'update', 'delete', 'list'].includes(action)) {
-          return { success: false, output: '', error: 'action must be one of: create, update, delete, list' }
-        }
-        if (!scope || !['project', 'chat'].includes(scope)) {
-          return { success: false, output: '', error: 'scope must be "project" or "chat"' }
-        }
-        if (!callbacks?.onManageNotes) {
-          return { success: false, output: '', error: 'manage_notes unavailable (no notes backend)' }
-        }
-        try {
-          const result = await callbacks.onManageNotes({
-            action: action as 'create' | 'update' | 'delete' | 'list',
-            scope: scope as 'project' | 'chat',
-            title: resolvedArgs.title as string | undefined,
-            content: resolvedArgs.content as string | undefined,
-            noteId: resolvedArgs.note_id as string | undefined,
-            projectId: this.projectId,
-            chatId: this.chatId,
-          })
-          if (!result.success) return { success: false, output: '', error: result.error ?? 'manage_notes failed' }
-          if (action === 'list') {
-            const notes = result.notes ?? []
-            if (notes.length === 0) return { success: true, output: `No ${scope} notes found.` }
-            const lines = notes.map((n, i) =>
-              `${i + 1}. **${n.title}** (id: ${n.id}, updated: ${new Date(n.updatedAt).toISOString().slice(0, 10)})\n   ${n.content.slice(0, 200)}${n.content.length > 200 ? '...' : ''}`
-            )
-            return { success: true, output: `${scope} notes (${notes.length}):\n\n${lines.join('\n\n')}` }
-          }
-          if (action === 'create') return { success: true, output: `Created ${scope} note "${result.note?.title ?? '?'}" (id: ${result.note?.id ?? '?'}).` }
-          if (action === 'update') return { success: true, output: `Updated ${scope} note "${result.note?.title ?? '?'}" (id: ${result.note?.id ?? '?'}).` }
-          if (action === 'delete') return { success: true, output: `Deleted ${scope} note.` }
-          return { success: true, output: 'OK' }
         } catch (e) {
           return { success: false, output: '', error: (e as Error).message }
         }
