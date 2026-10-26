@@ -91,9 +91,9 @@ export const REQUEST_ACCESS_SCHEMA = {
   type: 'function' as const,
   function: {
     name: 'request_access',
-    description: 'Ask the user to enable browser_control for this chat. If approved the browser tools become available in this run; if declined continue without them.',
+    description: 'Ask the user to enable a disabled capability for this chat. Supported capabilities: browser_control (built-in browser tools) and image_generation (generate_image). If approved, the capability becomes available in this run; if declined continue without it.',
     parameters: { type: 'object', properties: {
-      capability: enumeration(['browser_control'], 'Capability to enable.'),
+      capability: enumeration(['browser_control', 'image_generation'], 'Capability to enable.'),
       reason: string('Short reason shown to the user.'),
     }, required: ['capability'], additionalProperties: false },
   },

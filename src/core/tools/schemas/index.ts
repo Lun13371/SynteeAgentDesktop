@@ -57,8 +57,8 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   multiAgentMode?: boolean
   mode?: 'code' | 'work'  // deprecated — ignored; work mode removed
   /** Тумблер «Управление браузером»: browser_* тулы (navigate/snapshot/
-   *  click/type/...). ВЫКЛ → в тулсете только request_access (универсальный
-   *  тул запроса доступа); ВКЛ → 15 browser-тулов, request_access не нужен. */
+   *  click/type/...). ВЫКЛ → browser-тулы скрыты, но request_access остаётся.
+   *  ВКЛ → browser-тулы доступны с учётом режима. */
   browserMode?: boolean
   /** Persona — single-select run mode. Read-only personas get the same
    *  restricted tool set as planning/ask (no edit/write/run). Full personas
@@ -138,14 +138,15 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     'manage_chats',
     'list_extensions',
     'get_skill',
-    // Универсальный тул запроса доступа к выключенным возможностям
-    // (browser_control сейчас). Всегда в тулсете — модель знает, что можно
-    // попросить. Когда browserMode ВКЛ — не добавляем (нечего запрашивать).
+    // Универсальный тул запроса доступа к выключенным возможностям.
+    // Пока выключена хотя бы одна capability, модель должна иметь возможность
+    // попросить её включить (browser_control / image_generation).
   ]
 
-  if (!browserMode) {
+  if (!browserMode || !imageMode) {
     names.push('request_access')
-  } else {
+  }
+  if (browserMode) {
     const researchOnly = planningMode || askMode || !!(persona && isReadonlyPersona(persona))
     names.push(...BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
       .filter(name => !researchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name)))
@@ -198,10 +199,13 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   // Browser access remains orthogonal to personas. Research modes can navigate
   // and inspect, but cannot enter data, execute JS, upload or modify private state.
   const browserResearchOnly = planningMode || askMode || !!(persona && isReadonlyPersona(persona))
-  const browserNames = browserMode
-    ? BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
-      .filter(name => !browserResearchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name))
-    : ['request_access']
+  const browserNames = [
+    ...(browserMode
+      ? BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
+        .filter(name => !browserResearchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name))
+      : []),
+    ...(!browserMode || !imageMode ? ['request_access'] : []),
+  ]
   const finalNames = [...new Set([
     ...names.filter(name => !name.startsWith('browser_') && name !== 'request_access'),
     ...browserNames,

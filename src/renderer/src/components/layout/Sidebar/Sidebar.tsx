@@ -632,9 +632,13 @@ function Sidebar({
   }
 
   const handleDuplicate = async (chat: Chat) => {
-    await window.syntee.chat.duplicate(chat.id)
+    const result = await window.syntee.chat.fork(chat.id, `${chat.title} (копия)`) as {
+      chatId?: string; error?: string
+    }
+    if (result.error || !result.chatId) return
     const updated = await window.syntee.chat.getAll() as Chat[]
     onChatsUpdate?.(updated)
+    onSelectChat?.(result.chatId)
   }
 
   const handleShare = (chat: Chat) => {

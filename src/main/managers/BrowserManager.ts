@@ -29,7 +29,7 @@ import { randomUUID } from 'node:crypto'
 import { log } from '../../core/logger'
 import { BROWSER_PARTITION, DEFAULT_BROWSER_PROFILE_ID, IPC_EVENTS } from '../../shared/constants'
 import { MAX_IMAGE_FILE_BYTES, formatBytes } from '../../shared/imageFormat'
-import { getChatBrowserMode, setChatBrowserMode } from '../../core/db/chats'
+import { getChatBrowserMode, setChatBrowserMode, getChatModes, setChatImageMode } from '../../core/db/chats'
 import { domAction, inspect, condition, isChildFrame, locate, refInfo, snapshot, clampTimeout, resolveFrame, limitSnapshotResult } from '../browser/pageAutomation'
 import { createHash } from 'node:crypto'
 import { BrowserExtras as defaultBrowserExtras } from '../browser/BrowserExtras'
@@ -58,6 +58,8 @@ export interface BrowserOpResult {
   error?: string
   /** request_access: подтверждено ли включение. */
   enabled?: boolean
+  /** request_access: capability that was enabled. */
+  capability?: 'browser_control' | 'image_generation'
   /** screenshot: base64 PNG (без data:-префикса) для vision-модели. */
   imageBase64?: string
 }
@@ -81,6 +83,7 @@ export interface BrowserOpPayload {
   amount?: number
   tabId?: string
   reason?: string
+  capability?: 'browser_control' | 'image_generation'
   ms?: number
   snapshotId?: string
   selector?: string
@@ -773,8 +776,10 @@ class BrowserManagerImpl {
     if (signal.aborted) return { success: false, error: 'Browser operation aborted.' }
     // Агентская активность: снять троттлинг + отложить idle-discard.
     this.markAgentActivity()
-    // request_access доступен всегда — это и есть путь включения.
-    if (p.action === 'request_access') return this.handleRequestAccess(chatId, p.reason, signal)
+    // request_access доступен всегда — это и есть путь включения отключённых
+    // capability. Несмотря на историческое имя BrowserManager, этот round-trip
+    // теперь обслуживает и image_generation: отдельный backend для диалога не нужен.
+    if (p.action === 'request_access') return this.handleRequestAccess(chatId, p.capability, p.reason, signal)
 
     const enabled = chatId ? getChatBrowserMode(chatId) : false
     if (!enabled) {
@@ -992,35 +997,58 @@ class BrowserManagerImpl {
 
   // ── request_access: confirm через AgentConfirmDialog ────────────────────
 
-  private async handleRequestAccess(chatId: string, reason?: string, signal?: AbortSignal): Promise<BrowserOpResult> {
+  private async handleRequestAccess(
+    chatId: string,
+    capability: BrowserOpPayload['capability'],
+    reason?: string,
+    signal?: AbortSignal,
+  ): Promise<BrowserOpResult> {
     if (!chatId) return { success: false, error: 'request_access: no chat context' }
-    if (getChatBrowserMode(chatId)) {
-      return { success: true, enabled: true, output: 'Browser control is already enabled for this chat.' }
+    const requested = capability ?? 'browser_control'
+    if (requested !== 'browser_control' && requested !== 'image_generation') {
+      return { success: false, error: `request_access: unsupported capability "${requested}"` }
+    }
+    const modes = getChatModes(chatId)
+    const alreadyEnabled = requested === 'browser_control' ? getChatBrowserMode(chatId) : modes.imageMode
+    if (alreadyEnabled) {
+      return { success: true, enabled: true, capability: requested, output: `${requested} is already enabled for this chat.` }
     }
 
+    const label = requested === 'browser_control' ? 'управление браузером' : 'генерацию изображений'
     const approved = await this.confirmBrowserAction(
       chatId,
       'request_access',
-      { capability: 'browser_control', reason: reason ?? '' },
-      'AI просит включить управление браузером для этой задачи. Включить?',
+      { capability: requested, reason: reason ?? '' },
+      `AI просит включить ${label} для этой задачи. Включить?`,
       signal,
     )
 
     if (approved) {
-      try { setChatBrowserMode(chatId, true) } catch { /* ok */ }
-      // Синк UI: чип в StatusRow + тумблер в плюс-меню.
+      try {
+        if (requested === 'browser_control') setChatBrowserMode(chatId, true)
+        else setChatImageMode(chatId, true)
+      } catch { /* ok */ }
       const win = this.getWin()
-      win?.webContents.send(IPC_EVENTS.BROWSER_MODE_CHANGED, { chatId, enabled: true })
+      if (requested === 'browser_control') {
+        // Синк UI: чип в StatusRow + тумблер в плюс-меню.
+        win?.webContents.send(IPC_EVENTS.BROWSER_MODE_CHANGED, { chatId, enabled: true })
+      } else {
+        win?.webContents.send(IPC_EVENTS.IMAGE_MODE_CHANGED, { chatId, enabled: true })
+      }
       return {
         success: true,
         enabled: true,
-        output: 'Browser control ENABLED. The browser_* tools are now available — use them immediately to continue the task.',
+        capability: requested,
+        output: requested === 'browser_control'
+          ? 'Browser control ENABLED. The browser_* tools are now available — use them immediately to continue the task.'
+          : 'Image generation ENABLED. The generate_image tool is now available — use it immediately to continue the task.',
       }
     }
     return {
       success: true,
       enabled: false,
-      output: 'The user declined browser control. Continue without browser tools.',
+      capability: requested,
+      output: `The user declined ${label}. Continue without this capability.`,
     }
   }
 

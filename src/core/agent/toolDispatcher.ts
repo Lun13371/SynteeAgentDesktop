@@ -794,6 +794,7 @@ export class ToolDispatcher {
             amount: resolvedArgs.amount as number | undefined,
             tabId: resolvedArgs.tab_id as string | undefined,
             reason: resolvedArgs.reason as string | undefined,
+            capability: resolvedArgs.capability as 'browser_control' | 'image_generation' | undefined,
             ms: resolvedArgs.ms as number | undefined,
           })
           if (!result.success) {

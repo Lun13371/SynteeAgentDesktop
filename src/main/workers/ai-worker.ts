@@ -10,7 +10,7 @@ import { classifyTool } from '../../core/agent/commandSafety'
 import { writeFile, editFile } from '../../core/tools/index'
 import { buildPlanningInjection, buildAskInjection } from '../../core/prompts/buildSystemPrompt'
 import { getModelContextWindow } from '../../core/context/contextManager'
-import { recordSessionCost, buildSnapshotFromReal } from '../../core/tokens/usageTracker'
+import { recordSessionCost, buildSnapshotFromReal, estimateCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
 import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
@@ -27,6 +27,11 @@ const askMode: boolean = !!(workerData as Record<string, unknown>).askMode
 // рана. Может быть включён ПОСРЕДИ рана (request_access → confirm) — тогда
 // onBrowserAction мутирует runTools (см. ниже), следующий раунд уже с тулами.
 const browserMode: boolean = !!(workerData as Record<string, unknown>).browserMode
+const imageMode: boolean = !!(workerData as Record<string, unknown>).imageMode
+// Runtime copies are flipped after request_access approval without rebuilding
+// the worker or its initial tool snapshot.
+let runBrowserMode = browserMode
+let runImageMode = imageMode
 const workerPersona = (workerData as Record<string, unknown>).persona as import('../../shared/modes').PersonaId | undefined
 const workerPersonaInjection = ((workerData as Record<string, unknown>).personaInjection as string | undefined) ?? ''
 const workerMode: 'code' | 'work' = ((workerData as Record<string, unknown>).mode as 'code' | 'work') ?? 'code'
@@ -335,6 +340,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           disabledTools: toolSettings.disabledTools,
           planningMode,
           askMode,
+          imageMode,
           persona: workerPersona,
           browserMode,
           mode: workerMode,
@@ -348,26 +354,29 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         const index = runTools.findIndex(t => t.function.name === 'manage_chats')
         if (index >= 0) runTools.splice(index, 1)
       }
-      // Флип browser-режима посреди рана: request_access подтверждён →
-      // добавляем browser-тулы и убираем request_access (повторно запрашивать
-      // доступ уже не нужно). Важно: обычный main-chat тоже передаёт сюда
-      // toolSchemas как явный snapshot, поэтому нельзя использовать наличие
-      // toolSchemas как запрет на расширение. Сам факт наличия request_access
-      // является разрешением на это расширение; side-chat/one-shot allowlists,
-      // где request_access отсутствует, сюда не попадут.
-      const enableBrowserToolsMidRun = (): number => {
+      // request_access может включить browser_control или image_generation
+      // посреди рана. Добавляем только запрошенную capability и оставляем
+      // request_access, если вторая capability всё ещё выключена.
+      const enableCapabilityMidRun = (capability: 'browser_control' | 'image_generation'): number => {
         const names = new Set(runTools.map(t => t.function.name))
-        const idx = runTools.findIndex(t => t.function.name === 'request_access')
-        if (idx < 0) return 0
         const permitted = filterToolSchemas(getToolSchemas({
-          planningMode, askMode, persona: workerPersona, browserMode: true,
-          mode: workerMode, ...toolSettings,
+          planningMode, askMode, imageMode: capability === 'image_generation' || runImageMode, persona: workerPersona,
+          browserMode: capability === 'browser_control' || runBrowserMode, mode: workerMode, ...toolSettings,
         }), toolSettings)
-        const browserSchemas = permitted.filter(t => t.function.name.startsWith('browser_') && !names.has(t.function.name))
-        runTools.splice(idx, 1)
-        runTools.push(...browserSchemas)
-        console.log('[ai-worker] browser access granted mid-run: added %d browser tools (total=%d)', browserSchemas.length, runTools.length)
-        return browserSchemas.length
+        const capabilitySchemas = capability === 'browser_control'
+          ? permitted.filter(t => t.function.name.startsWith('browser_'))
+          : permitted.filter(t => t.function.name === 'generate_image')
+        const additions = capabilitySchemas.filter(t => !names.has(t.function.name))
+        for (const schema of additions) runTools.push(schema)
+        if (capability === 'browser_control') runBrowserMode = true
+        else runImageMode = true
+        const stillNeedsAccess = !runBrowserMode || !runImageMode
+        if (!stillNeedsAccess) {
+          const idx = runTools.findIndex(t => t.function.name === 'request_access')
+          if (idx >= 0) runTools.splice(idx, 1)
+        }
+        console.log('[ai-worker] %s access granted mid-run: added %d tools (total=%d)', capability, additions.length, runTools.length)
+        return additions.length
       }
 
       // Прокидываем chatId и колбэки рабочей памяти
@@ -655,6 +664,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               status: snapshot.status,
               source: 'real',
               breakdown: snapshot.breakdown,
+              pricing: getModelPriceInfo(resolvedProviderId ?? '', resolvedModelId ?? ''),
+              estimatedCostCents: estimateCost(promptTokens, completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
+              providerId: resolvedProviderId,
+              modelId: resolvedModelId,
               sessionCostCents: sess?.totalCents ?? null,
               sessionRequests: sess?.requests ?? 0,
               // Сырые накопленные токены turn'а — main аккумулирует их в
@@ -826,17 +839,22 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onBrowserAction: async (payload) => {
             const result = await requestBrowserOperation(payload, replyHandlers, send, runAbort.signal)
             if (!runAbort.signal.aborted && result.success && result.enabled && payload.action === 'request_access') {
-              const added = enableBrowserToolsMidRun()
+              const capability = result.capability ?? payload.capability ?? 'browser_control'
+              const added = enableCapabilityMidRun(capability)
               if (added === 0) {
                 return {
                   success: false,
                   enabled: false,
-                  error: 'Browser access was confirmed, but no browser tools could be added to this run. Start a normal chat (not a restricted side chat/one-shot run) and try again.',
+                  capability,
+                  error: `${capability} access was confirmed, but its tool could not be added to this run. Start a normal chat (not a restricted side chat/one-shot run) and try again.`,
                 }
               }
               return {
                 ...result,
-                output: `Browser control ENABLED. Added ${added} browser tools to the current run. Continue using them immediately.`,
+                capability,
+                output: capability === 'browser_control'
+                  ? `Browser control ENABLED. Added ${added} browser tools to the current run. Continue using them immediately.`
+                  : `Image generation ENABLED. Added generate_image to the current run. Continue using it immediately.`,
               }
             }
             return result
@@ -1059,6 +1077,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               status: snapshot.status,
               source: 'real',
               breakdown: snapshot.breakdown,
+              pricing: getModelPriceInfo(resolvedProviderId ?? '', resolvedModelId ?? ''),
+              estimatedCostCents: estimateCost(u.promptTokens, u.completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
+              providerId: resolvedProviderId,
+              modelId: resolvedModelId,
               sessionCostCents: sess?.totalCents ?? null,
               sessionRequests: sess?.requests ?? 0,
               // Сырые накопленные токены turn'а (см. агентный onUsage выше)

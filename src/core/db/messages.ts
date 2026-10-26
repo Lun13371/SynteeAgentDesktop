@@ -19,8 +19,8 @@ export function setMessageSavedCallback(cb: (chatId: string) => void): void { _o
 /** Write the message row only. Callers own the surrounding transaction and side effects. */
 function writeMessageRow(msg: Message): void {
   getDB().prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, tool_calls_count, thinking_blocks, finish_reason, streaming_ms, reply_to)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, tool_calls_count, thinking_blocks, finish_reason, streaming_ms, reply_to, hidden_from_context)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
     msg.toolSteps ? JSON.stringify(msg.toolSteps) : null,
@@ -46,6 +46,7 @@ function writeMessageRow(msg: Message): void {
     msg.finishReason ?? null,
     msg.streamingMs ?? null,
     msg.replyTo ? JSON.stringify(msg.replyTo) : null,
+    msg.hiddenFromContext ? 1 : 0,
   )
 }
 

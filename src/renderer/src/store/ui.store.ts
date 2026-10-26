@@ -6,6 +6,8 @@ type Theme =
   | 'crimson' | 'pitch' | 'ocean' | 'carbon'
   | 'nord' | 'dracula' | 'gruvbox' | 'tokyonight' | 'mocha' | 'onedark' | 'monokai'
   | 'everforest' | 'solarized' | 'latte' | 'sepia' | 'dawn' | 'mist' | 'mint' | 'sakura'
+  | 'retroWave' | 'volcanic' | 'lavenderVoid' | 'arcticGlass' | 'terminalGreen' | 'espresso'
+  | 'sunsetPaper' | 'porcelain' | 'citrus'
   | 'custom'
 type Page = 'chat' | 'settings' | 'tasks' | 'stats'
 type Density = 'compact' | 'comfortable' | 'spacious'

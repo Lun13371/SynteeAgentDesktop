@@ -11,7 +11,7 @@ import { getSubagentRole } from '../../shared/subagent-roles'
 import {
   createChat, getAllChats, getMessages, getMessagesPage, saveMessage, saveMessageAndDeleteStreamingBuffer,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB, getDB,
-  archiveChat, pinChat, setChatColor, duplicateChat, exportChat,
+  archiveChat, pinChat, setChatColor, exportChat,
   DEFAULT_CHAT_TITLE,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatMode, getChatWorkdirContext,
@@ -72,7 +72,7 @@ import {
   getModelContextWindow,
   type ChatMessage,
 } from '../../core/context/contextManager'
-import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost } from '../../core/tokens/usageTracker'
+import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
 import { registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
@@ -730,7 +730,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
   } catch { /* БД ещё пуста — ок */ }
 
-  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, planningMode?: boolean, askMode?: boolean, inspection?: Pick<ContextInspection, 'sources' | 'files'>): Promise<string> => {
+  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, planningMode?: boolean, askMode?: boolean, inspection?: Pick<ContextInspection, 'sources' | 'files'>, imageModeOverride?: boolean): Promise<string> => {
     const contextPrefs = getContextPreferences(chatId)
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
@@ -952,6 +952,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     // раньше здесь было !!params.browserMode || getChatBrowserMode(dbChatId) —
     // ReferenceError, валивший КАЖДЫЙ chat:send).
     const promptBrowserMode = chatId ? getChatBrowserMode(chatId) : false
+    const promptImageMode = imageModeOverride ?? (chatId ? getChatModes(chatId).imageMode : false)
     // Source controls affect actual builder inputs, not just inspector labels.
     const sources = contextPrefs.sources
     const includedFiles = projectInstructions.filter(file => sources.instructions && sources.projectFiles && !contextPrefs.excludedFiles.includes(file.source))
@@ -965,7 +966,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         { key: 'tools', label: 'История инструментов', enabled: sources.tools, detail: 'Прошлые tool calls и результаты. Доступность инструментов текущего запуска не меняется.', characters: 0 },
       ]
     }
-    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
+    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, imageMode: promptImageMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).
@@ -1899,7 +1900,8 @@ function pathHash(value: string): string {
     // same snapshot even if settings/memory change between asynchronous phases.
     const sendSystemPrompt = params.sideChatParentId
       ? undefined
-      : await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)
+      : await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode, undefined,
+        !!params.imageMode || params.slashCommand?.name === 'image' || getChatModes(dbChatId).imageMode)
     if (ctxSettings.tokenCounterEnabled) {
       const contextWindow = getModelContextWindow(storeData)
       const sysPrompt = sendSystemPrompt
@@ -2404,6 +2406,7 @@ function pathHash(value: string): string {
         storeData,
         planningMode: effectivePlanningMode,
         askMode: effectiveAskMode,
+        imageMode: !!params.imageMode || params.slashCommand?.name === 'image' || getChatModes(params.chatId).imageMode,
         // Тумблер «Управление браузером»: browser_* тулы с первого раунда.
         // Включение посреди рана (request_access) — через мутацию тулсета
         // в воркере (enableBrowserToolsMidRun).
@@ -3717,6 +3720,10 @@ ${subModeOutro}`,
             source: msg.source ?? 'estimate',
             compressed: contextCompressed,
             breakdown: msg.breakdown,
+            pricing: msg.pricing ?? null,
+            estimatedCostCents: msg.estimatedCostCents ?? null,
+            providerId: msg.providerId,
+            modelId: msg.modelId,
             sessionCostCents: msg.sessionCostCents ?? null,
             sessionRequests: msg.sessionRequests ?? 0,
             historyMessages: history.length,
@@ -3894,7 +3901,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       disabledTools: store.get('disabledTools', []) as string[],
       planningMode: effectivePlanningMode,
       askMode: effectiveAskMode,
-      imageMode: !!params.imageMode || params.slashCommand?.name === 'image',
+      imageMode: !!params.imageMode || params.slashCommand?.name === 'image' || getChatModes(params.chatId).imageMode,
       browserMode: !!params.browserMode || getChatBrowserMode(params.chatId),
       mode: chatMode,
       mcpTools: params.incognito ? undefined : mcpTools,
@@ -4479,6 +4486,14 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         source,
         compressed: false,
         breakdown: snapshot.breakdown,
+        pricing: (() => {
+          const model = getChatModel(chatId)
+          const assignments = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
+          const main = assignments.find(a => a.role === 'main')
+          const modelId = model?.modelId ?? main?.modelId ?? ''
+          const providerId = model?.modelProvider ?? main?.providerId ?? ''
+          return getModelPriceInfo(providerId, modelId)
+        })(),
         sessionCostCents: sess?.totalCents ?? null,
         sessionRequests: sess?.requests ?? 0,
         historyMessages: historyMessagesCount,
@@ -4977,7 +4992,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     setChatColor(chatId, color)
   })
 
-  ipcMain.handle('chat:duplicate', (_, chatId: string) => duplicateChat(chatId))
+  // chat:duplicate зарегистрирован в chatFork.ipc.ts и направлен в общий forkChat.
   ipcMain.handle('chat:export', (_, chatId: string, format: 'txt' | 'md') => exportChat(chatId, format))
 
   // === CHECKPOINT / REWIND — вынесены в chatCheckpoint.ipc.ts ===

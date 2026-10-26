@@ -136,6 +136,10 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const liveAgentStatus = useChatStore(s => s.liveByChat[chatId]?.agentStatus) ?? null
   const liveRetry = useChatStore(s => s.liveByChat[chatId]?.retry)
   const liveLastError = useChatStore(s => s.liveByChat[chatId]?.lastError)
+  const runStatus = useChatStore(s => s.runStatusByChat[chatId])
+  const runStatusBusy = runStatus?.status === 'queued'
+    || runStatus?.status === 'running'
+    || runStatus?.status === 'compacting'
   const hasLiveText = useChatStore(s => !!(s.liveByChat[chatId]?.text))
   const lastTurnChanges = useChatStore(s => s.lastTurnChangesByChat[chatId]) ?? null
   const liveChanges = useMemo(() => computeLiveChanges(liveSteps), [liveSteps])
@@ -200,6 +204,12 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
   useEffect(() => { askModeRef.current = askMode }, [askMode])
+  useEffect(() => window.syntee.chat.onImageModeChanged(info => {
+    if (info.chatId === chatId) {
+      setImageMode(info.enabled)
+      imageModeRef.current = info.enabled
+    }
+  }), [chatId])
   useEffect(() => { personaRef.current = persona }, [persona])
 
   const [replyTo, setReplyTo] = useState<Message[]>([])
@@ -446,21 +456,21 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     return () => ro.disconnect()
   }, [])
 
-  // Звук завершения. RACE GUARD (смена chatId-пропа): при переключении
-  // сплита на другой чат isTyping падает в false не из-за завершения
-  // стрима, а потому что live теперь указывает на другой чат — не играем
-  // звук, только синхронизируем ref.
-  const prevIsTypingRef = useRef(false)
-  const prevSoundChatIdRef = useRef(chatId)
+  // Звук завершения — только по явному terminal run-status. isTyping может
+  // сбрасываться при гидрации/смене live-буфера и не является сигналом done.
+  const prevRunSoundStatusRef = useRef<{ chatId: string; status?: string }>({ chatId })
   useEffect(() => {
-    if (prevSoundChatIdRef.current !== chatId) {
-      prevSoundChatIdRef.current = chatId
-      prevIsTypingRef.current = isTyping
+    const previous = prevRunSoundStatusRef.current
+    if (previous.chatId !== chatId) {
+      prevRunSoundStatusRef.current = { chatId, status: runStatus?.status }
       return
     }
-    if (prevIsTypingRef.current && !isTyping) playDoneSound()
-    prevIsTypingRef.current = isTyping
-  }, [isTyping, chatId])
+    const status = runStatus?.status
+    const terminal = status === 'done' || status === 'error' || status === 'cancelled'
+    const wasActive = previous.status === 'running' || previous.status === 'compacting'
+    if (terminal && wasActive && status === 'done') playDoneSound()
+    prevRunSoundStatusRef.current = { chatId, status }
+  }, [runStatus?.status, chatId])
 
   // ── Контекст-счётчик ──
   const contextInfo = useContextCounter({
@@ -933,14 +943,14 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       </AnimatePresence>
 
       <div ref={chatInputWrapRef} style={{ display: 'contents' }}>
-        <ChatInput
-          chatId={chatId}
-          onSend={handleSend}
-          disabled={isTyping || splitEditorMode}
+          <ChatInput
+            chatId={chatId}
+            onSend={handleSend}
+            disabled={isTyping || runStatusBusy || splitEditorMode}
           isIncognito={isIncognito}
           replyTo={replyTo}
           onCancelReply={handleCancelReply}
-          isGenerating={isTyping || isAgentRunning}
+            isGenerating={isTyping || isAgentRunning || runStatusBusy}
           onStop={handleStop}
           contextInfo={contextInfo}
           showContextRing={showContextRing}

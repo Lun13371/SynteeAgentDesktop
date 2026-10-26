@@ -39,6 +39,17 @@ test('Preferences never expand Ask/browser/image gating', () => {
   assert.ok(names({ browserMode: true, customToolsEnabled: true, disabledTools: ['browser_click'] }).includes('browser_navigate'))
   assert.ok(!names({ browserMode: true, customToolsEnabled: true, disabledTools: ['browser_click'] }).includes('browser_click'))
 })
+test('request_access stays available until browser and image capabilities are both enabled', () => {
+  assert.ok(names({}).includes('request_access'))
+  assert.ok(names({ imageMode: true }).includes('request_access'))
+  assert.ok(names({ browserMode: true }).includes('request_access'))
+  assert.ok(!names({ imageMode: true, browserMode: true }).includes('request_access'))
+  assert.ok(names({ imageMode: true }).includes('generate_image'))
+  assert.ok(names({ browserMode: true }).includes('browser_navigate'))
+  const schema = load('src/core/tools/schemas/browser.ts').REQUEST_ACCESS_SCHEMA
+  assert.deepEqual(schema.function.parameters.properties.capability.enum, ['browser_control', 'image_generation'])
+})
+
 test('Media schemas are registered, enabled by default and can be disabled individually', () => {
   for (const name of ['analyze_video', 'analyze_audio']) {
     assert.ok(names({}).includes(name), name)

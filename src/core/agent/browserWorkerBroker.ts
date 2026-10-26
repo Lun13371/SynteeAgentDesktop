@@ -22,7 +22,7 @@ export function browserOperationTimeout(payload: Record<string, unknown>): numbe
   return confirmationActions.has(String(payload.action)) ? 120_000 : 30_000
 }
 
-type BrowserResult = { success: boolean; error?: string; enabled?: boolean; output?: string; imageBase64?: string }
+type BrowserResult = { success: boolean; error?: string; enabled?: boolean; capability?: 'browser_control' | 'image_generation'; output?: string; imageBase64?: string }
 
 /** One-shot worker request, using the worker's existing shared reply-id map. */
 export function requestBrowserOperation(

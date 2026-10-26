@@ -260,6 +260,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // Ре-рендер только при переходе empty→non-empty и обратно.
   const hasLiveText = useChatStore(s => !!(s.currentChatId && s.liveByChat[s.currentChatId]?.text))
   const runStatus = useChatStore(s => s.currentChatId ? s.runStatusByChat[s.currentChatId] : undefined)
+  // runStatus переживает переключение чатов и приходит раньше live-гидрации.
+  // Используем его как быстрый источник истины для кнопки Send/Stop, чтобы
+  // при возврате в работающий чат не было короткого idle-состояния.
+  const runStatusBusy = runStatus?.status === 'queued'
+    || runStatus?.status === 'running'
+    || runStatus?.status === 'compacting'
   const lastTurnChanges = useChatStore(s => s.currentChatId ? s.lastTurnChangesByChat[s.currentChatId] : null)
   // Live-изменения: вычисляем из liveSteps во время выполнения запроса.
   const liveChanges = useMemo(() => computeLiveChanges(liveSteps), [liveSteps])
@@ -596,41 +602,30 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     prevRunStatusRef.current = runStatus.status
   }, [runStatus, toast, currentChatId])
 
-  // Звук завершения — при переходе running → done/error для текущего чата.
-  // RACE GUARD (смена чата): при переключении currentChatId узкие селекторы
-  // начинают указывать на ДРУГОЙ чат (или default-значения) — isTyping
-  // падает в false не потому что стрим закончился. Без guard звук «AI ответил»
-  // проигрывался при каждом уходе из работающего чата. При смене чата
-  // только синхронизируем ref — без звука и без скролла.
-  const prevIsTypingRef = useRef(false)
-  const prevSoundChatIdRef = useRef<string | null>(currentChatId)
+  // Звук завершения привязан к явному IPC run-status, а не к isTyping.
+  // isTyping меняется и при переключении чата/гидрации live-состояния, поэтому
+  // переход true → false здесь давал ложный «ответ завершён» при навигации.
+  // CHAT_RUN_STATUS приходит с chatId и является единственным источником
+  // терминального завершения конкретного запуска.
+  const prevRunSoundStatusRef = useRef<{ chatId: string | null; status?: string }>({ chatId: currentChatId })
   useEffect(() => {
-    if (prevSoundChatIdRef.current !== currentChatId) {
-      prevSoundChatIdRef.current = currentChatId
-      prevIsTypingRef.current = isTyping
+    const previous = prevRunSoundStatusRef.current
+    if (previous.chatId !== currentChatId) {
+      prevRunSoundStatusRef.current = { chatId: currentChatId, status: runStatus?.status }
       return
     }
-    if (prevIsTypingRef.current && !isTyping) {
-      playDoneSound()
-      // При завершении стрима принудительно скроллим к низу — финальное
-      // сообщение может быть за вьюпортом если пользователь отскроллил вверх
-      // во время стриминга. Без этого сообщение рендерится но не видно.
+    const status = runStatus?.status
+    const terminal = status === 'done' || status === 'error' || status === 'cancelled'
+    const wasActive = previous.status === 'running' || previous.status === 'compacting'
+    if (terminal && wasActive) {
+      if (status === 'done') playDoneSound()
       requestAnimationFrame(() => pinAutoscroll(true))
     }
-    if (!prevIsTypingRef.current && isTyping) {
-      // Стрим начался (в т.ч. queued-запрос стартовал). Если всё ещё
-      // закреплены — прыгаем к низу: покажет user-сообщение + начало
-      // ответа. Для queued-сообщений addMessage+initChatSend происходят
-      // в useChatRunSubscription БЕЗ pinAutoscroll — это единственный
-      // скролл для них. Если пользователь отскроллил вверх после отправки
-      // (pinnedRef=false) — не навязываем скролл.
-      requestAnimationFrame(() => { if (pinnedRef.current) pinAutoscroll(true) })
-    }
-    prevIsTypingRef.current = isTyping
+    prevRunSoundStatusRef.current = { chatId: currentChatId, status }
     // pinAutoscroll объявлен ниже по коду (const), включать в deps нельзя —
-    // упадёт с TDZ. Ссылка внутри тела эффекта безопасна (выполняется после рендера).
+    // упадёт с TDZ. Ссылка внутри тела эффекта безопасна после рендера.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTyping, currentChatId])
+  }, [runStatus?.status, currentChatId])
 
   // CHAT_COMPACTED — реакция на сжатие контекста в main (как авто-компакция
   // внутри chat:send когда токенов накопилось > rollingTriggerPct, так и
@@ -772,16 +767,20 @@ const chatId = compactingCurrentChatIdRef.current
     window.syntee.chat.setBrowserMode(currentChatId, v).catch(e => console.error('[browserMode] IPC fail:', e))
   }, [currentChatId, isIncognito])
 
-  // BROWSER_MODE_CHANGED из main: request_access подтверждён AI (диалог
-  // AgentConfirmDialog) или тумблер переключён из другого места — синкаем
-  // чип/тумблер, если событие для текущего чата.
+  // request_access подтверждён AI (диалог AgentConfirmDialog) — синкаем
+  // режимы текущего чата с main-процессом.
   useEffect(() => {
-    const off = window.syntee.browser.onModeChanged(({ chatId, enabled }) => {
+    const offBrowser = window.syntee.browser.onModeChanged(({ chatId, enabled }) => {
       if (chatId !== prevChatIdRef.current) return
       setBrowserMode(enabled)
       browserModeRef.current = enabled
     })
-    return () => { off() }
+    const offImage = window.syntee.chat.onImageModeChanged(({ chatId, enabled }) => {
+      if (chatId !== prevChatIdRef.current) return
+      setImageMode(enabled)
+      imageModeRef.current = enabled
+    })
+    return () => { offBrowser(); offImage() }
   }, [])
 
   // ── In-app hotkeys для переключения режимов чата ──────────────────────
@@ -3112,11 +3111,11 @@ const chatId = compactingCurrentChatIdRef.current
               onSteer={steerToContext}
               goal={chatGoal}
               onGoalChange={handleGoalChange}
-              disabled={isTyping || isCompactingHere || editorMode}
+              disabled={isTyping || runStatusBusy || isCompactingHere || editorMode}
               isIncognito={isIncognito}
               replyTo={replyTo}
               onCancelReply={handleCancelReply}
-              isGenerating={isTyping || isAgentRunning || isCompactingHere}
+              isGenerating={isTyping || isAgentRunning || runStatusBusy || isCompactingHere}
               onStop={handleStop}
               contextInfo={contextInfo}
               showContextRing={showContextRing}
