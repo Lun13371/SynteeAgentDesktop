@@ -1,13 +1,15 @@
 import { ipcMain } from 'electron'
 import { v4 as uuid } from 'uuid'
 import {
-  getMessages, getAllChats, createChat, renameChat, saveMessage,
+  getMessages, getAllChats, createChat, renameChat, saveMessage, getDB,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
+  getChatModes, setChatModes, getChatBrowserMode, setChatBrowserMode,
+  getChatPersona, setChatPersona,
   saveNamedSnapshot, getNamedSnapshots,
 } from '../../core/db'
 import { searchAllSources } from '../../core/memory/MemoryStore'
 import { slimMessagesForUI } from './slimMessages'
-import { activeRuns } from './chatShared'
+import { activeRuns, activeRunMeta, compactRuns } from './chatShared'
 import { log } from '../../core/logger'
 import type { Message } from '../../shared/types'
 
@@ -18,69 +20,67 @@ import type { Message } from '../../shared/types'
 // копию чата на текущий момент и может идти в другом направлении ("what-if"
 // эксперименты без потери оригинала).
 //
+// Единственный путь копирования чата для команды /fork и пункта «Дублировать».
+// Полная запись Message копируется через saveMessage, включая compact divider,
+// compactSummary, iterations, attachments и hidden_from_context-поддерживаемые поля.
+async function forkChat(sourceChatId: string, title?: string): Promise<{
+  chatId?: string; messages?: Message[]; title?: string; error?: string
+}> {
+  try {
+    if (activeRuns.has(sourceChatId) || activeRunMeta.has(sourceChatId) || compactRuns.has(sourceChatId)) {
+      return { error: 'Чат занят — дождитесь завершения ответа или сжатия перед форком.' }
+    }
+    const sourceMessages = getMessages(sourceChatId)
+    if (sourceMessages.length === 0) return { error: 'Исходный чат пуст — нечего форкать.' }
+
+    const db = getDB()
+    const sourceRow = db.prepare('SELECT * FROM chats WHERE id = ?').get(sourceChatId) as Record<string, any> | undefined
+    const sourceChat = getAllChats().find(c => c.id === sourceChatId)
+    if (!sourceRow || !sourceChat) return { error: 'Исходный чат не найден.' }
+
+    const forkedChat = createChat(false, sourceChat.mode, sourceChat.projectId, {
+      modelId: sourceChat.modelId,
+      modelProvider: sourceChat.modelProvider,
+      reasoningValue: sourceChat.reasoningValue,
+    })
+    const forkedChatId = forkedChat.id
+    const forkTitle = (title && title.trim()) || `${sourceChat.title} (fork)`
+    renameChat(forkedChatId, forkTitle)
+
+    // Копируем остальные sticky-настройки чата. Не копируем transient draft,
+    // pin/archive и last_usage — форк является независимым новым чатом.
+    db.prepare(`UPDATE chats SET color = ?, project_context = ?, planning_mode = ?, image_mode = ?,
+      ask_mode = ?, browser_mode = ?, persona = ? WHERE id = ?`).run(
+      sourceRow.color ?? null, sourceRow.project_context ?? null,
+      sourceRow.planning_mode ?? 0, sourceRow.image_mode ?? 0,
+      sourceRow.ask_mode ?? 0, sourceRow.browser_mode ?? 0,
+      sourceRow.persona ?? 'classic', forkedChatId,
+    )
+
+    for (const msg of sourceMessages) {
+      saveMessage({ ...msg, id: uuid(), chatId: forkedChatId })
+    }
+    const wm = getWorkingMemory(sourceChatId)
+    if (wm) setWorkingMemory(forkedChatId, wm)
+    const summary = getChatSummary(sourceChatId)
+    if (summary) setChatSummary(forkedChatId, summary)
+    setChatModes(forkedChatId, getChatModes(sourceChatId))
+    setChatBrowserMode(forkedChatId, getChatBrowserMode(sourceChatId))
+    setChatPersona(forkedChatId, getChatPersona(sourceChatId))
+
+    log('[chat:fork] source=%s → forked=%s, messages=%d, title=%s', sourceChatId, forkedChatId, sourceMessages.length, forkTitle)
+    return { chatId: forkedChatId, messages: slimMessagesForUI(getMessages(forkedChatId)), title: forkTitle }
+  } catch (e) {
+    log('[chat:fork] error source=%s: %s', sourceChatId, (e as Error).message)
+    return { error: `Ошибка форка: ${(e as Error).message}` }
+  }
+}
+
 // Возвращает { chatId, messages } нового чата (или { error }).
 export function registerForkIPC(): void {
-  ipcMain.handle('chat:fork', async (_, sourceChatId: string, title?: string) => {
-    try {
-      const sourceMessages = getMessages(sourceChatId)
-      if (sourceMessages.length === 0) {
-        return { error: 'Исходный чат пуст — нечего форкать.' }
-      }
-
-      // Читаем метаданные исходного чата
-      const sourceChat = getAllChats().find(c => c.id === sourceChatId)
-      if (!sourceChat) {
-        return { error: 'Исходный чат не найден.' }
-      }
-
-      // Создаём новый чат с теми же параметрами (не инкогнито, тот же режим/проект).
-      // Модель и уровень мышления наследуются от исходного чата (per-chat).
-      const forkedChat = createChat(false, sourceChat.mode, sourceChat.projectId, {
-        modelId: sourceChat.modelId,
-        modelProvider: sourceChat.modelProvider,
-        reasoningValue: sourceChat.reasoningValue,
-      })
-      const forkedChatId = forkedChat.id
-      const forkTitle = (title && title.trim()) || `${sourceChat.title} (fork)`
-      renameChat(forkedChatId, forkTitle)
-
-      // Копируем сообщения. saveMessage проставит новый chatId — но чтобы
-      // сохранить порядок и структуру, копируем как есть с новыми id.
-      // createdAt сохраняем оригинальные — порядок в БД (ORDER BY created_at)
-      // остаётся тем же. toolSteps/iterations/thinking/todo/slashCommand тоже
-      // копируем (serialized через JSON в saveMessage).
-      for (const msg of sourceMessages) {
-        const newMsg: Message = {
-          ...msg,
-          id: uuid(), // новый id, чтобы не было PK-конфликта
-          chatId: forkedChatId,
-        }
-        saveMessage(newMsg)
-      }
-
-      // Копируем working memory и summary
-      try {
-        const wm = getWorkingMemory(sourceChatId)
-        if (wm) setWorkingMemory(forkedChatId, wm)
-      } catch { /* ok */ }
-      try {
-        const summary = getChatSummary(sourceChatId)
-        if (summary) setChatSummary(forkedChatId, summary)
-      } catch { /* ok */ }
-
-      log('[chat:fork] source=%s → forked=%s, messages=%d, title=%s',
-        sourceChatId, forkedChatId, sourceMessages.length, forkTitle)
-
-      return {
-        chatId: forkedChatId,
-        messages: slimMessagesForUI(getMessages(forkedChatId)),
-        title: forkTitle,
-      }
-    } catch (e) {
-      log('[chat:fork] error source=%s: %s', sourceChatId, (e as Error).message)
-      return { error: `Ошибка форка: ${(e as Error).message}` }
-    }
-  })
+  ipcMain.handle('chat:fork', async (_, sourceChatId: string, title?: string) => forkChat(sourceChatId, title))
+  // Старый IPC сохраняем для совместимости, но он больше не использует старый SQL-копировщик.
+  ipcMain.handle('chat:duplicate', async (_, sourceChatId: string) => forkChat(sourceChatId))
 
   // === /snapshot <name> — именованный снапшот =================================
   //

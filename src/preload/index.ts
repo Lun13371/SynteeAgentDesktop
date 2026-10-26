@@ -695,6 +695,11 @@ const synteeAPI = {
     // Индивидуальные сеттеры — пишут один режим, не затрагивая остальные.
     setPlanningMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setPlanningMode', chatId, val),
     setImageMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setImageMode', chatId, val),
+    onImageModeChanged: (cb: (info: { chatId: string; enabled: boolean }) => void) => {
+      const listener = (_e: unknown, info: { chatId: string; enabled: boolean }) => cb(info)
+      ipcRenderer.on('chat:image-mode-changed', listener)
+      return () => ipcRenderer.removeListener('chat:image-mode-changed', listener)
+    },
     setAskMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setAskMode', chatId, val),
     // Тумблер «Управление браузером» (browser_* тулы для AI).
     getBrowserMode: (chatId: string) => ipcRenderer.invoke('browser:getMode', chatId) as Promise<boolean>,

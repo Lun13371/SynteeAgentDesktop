@@ -1153,6 +1153,88 @@ body {
   --overlay-rgb: 107, 58, 77;
 }
 
+/* ── RETRO WAVE — фиолетовый неон и магента ─────────────────── */
+[data-theme="retroWave"] {
+  --body-bg: #10091d; --bg-primary: rgba(26, 15, 48, 0.84); --bg-secondary: rgba(39, 22, 64, 0.87); --bg-tertiary: rgba(54, 29, 82, 0.9);
+  --text-primary: #f7edff; --text-secondary: #c4a8dc; --text-muted: #83699c; --accent: #d946ef; --accent-hover: rgba(217, 70, 239, 0.85); --accent-subtle: rgba(217, 70, 239, 0.12);
+  --border: rgba(196, 168, 220, 0.12); --border-strong: rgba(217, 70, 239, 0.28); --sidebar-bg: rgba(18, 10, 34, 0.9);
+  --shadow: 0 4px 20px rgba(8, 3, 18, 0.3); --shadow-lg: 0 20px 60px rgba(8, 3, 18, 0.45);
+  --overlay-1: rgba(247, 237, 255, 0.02); --overlay-2: rgba(247, 237, 255, 0.04); --overlay-3: rgba(247, 237, 255, 0.06); --overlay-4: rgba(247, 237, 255, 0.08); --overlay-5: rgba(247, 237, 255, 0.12); --overlay-6: rgba(247, 237, 255, 0.16);
+  --on-accent: #fff; --on-accent-strong: #fff; --on-accent-muted: rgba(255,255,255,.75); --glass-bg: rgba(26,15,48,.72); --glass-border: rgba(217,70,239,.16); --glass-highlight-1: rgba(255,255,255,.12); --glass-highlight-2: rgba(217,70,239,.08); --shadow-rgb: 8,3,18; --overlay-rgb: 247,237,255;
+}
+
+/* ── VOLCANIC — уголь и раскалённая лава ─────────────────────── */
+[data-theme="volcanic"] {
+  --body-bg: #120706; --bg-primary: rgba(35,15,13,.84); --bg-secondary: rgba(47,21,18,.87); --bg-tertiary: rgba(64,28,22,.9);
+  --text-primary: #ffe8dc; --text-secondary: #d2a296; --text-muted: #8b645c; --accent: #ff633d; --accent-hover: rgba(255,99,61,.85); --accent-subtle: rgba(255,99,61,.1);
+  --border: rgba(210,162,150,.12); --border-strong: rgba(255,99,61,.28); --sidebar-bg: rgba(22,9,8,.9); --shadow: 0 4px 20px rgba(8,2,1,.3); --shadow-lg: 0 20px 60px rgba(8,2,1,.45);
+  --overlay-1: rgba(255,232,220,.02); --overlay-2: rgba(255,232,220,.04); --overlay-3: rgba(255,232,220,.06); --overlay-4: rgba(255,232,220,.08); --overlay-5: rgba(255,232,220,.12); --overlay-6: rgba(255,232,220,.16);
+  --on-accent: #fff; --on-accent-strong: #fff; --on-accent-muted: rgba(255,255,255,.75); --glass-bg: rgba(35,15,13,.72); --glass-border: rgba(255,99,61,.16); --glass-highlight-1: rgba(255,255,255,.1); --glass-highlight-2: rgba(255,99,61,.08); --shadow-rgb: 8,2,1; --overlay-rgb: 255,232,220;
+}
+
+/* ── LAVENDER VOID — мягкая глубокая фиолетовая ──────────────── */
+[data-theme="lavenderVoid"] {
+  --body-bg: #0d0a18; --bg-primary: rgba(25,19,43,.84); --bg-secondary: rgba(36,28,56,.87); --bg-tertiary: rgba(50,39,74,.9);
+  --text-primary: #eee9ff; --text-secondary: #bdb2d8; --text-muted: #776b91; --accent: #a78bfa; --accent-hover: rgba(167,139,250,.85); --accent-subtle: rgba(167,139,250,.1);
+  --border: rgba(189,178,216,.12); --border-strong: rgba(167,139,250,.28); --sidebar-bg: rgba(15,11,26,.9); --shadow: 0 4px 20px rgba(5,3,12,.3); --shadow-lg: 0 20px 60px rgba(5,3,12,.45);
+  --overlay-1: rgba(238,233,255,.02); --overlay-2: rgba(238,233,255,.04); --overlay-3: rgba(238,233,255,.06); --overlay-4: rgba(238,233,255,.08); --overlay-5: rgba(238,233,255,.12); --overlay-6: rgba(238,233,255,.16);
+  --on-accent: #fff; --on-accent-strong: #fff; --on-accent-muted: rgba(255,255,255,.75); --glass-bg: rgba(25,19,43,.72); --glass-border: rgba(167,139,250,.16); --glass-highlight-1: rgba(255,255,255,.1); --glass-highlight-2: rgba(167,139,250,.08); --shadow-rgb: 5,3,12; --overlay-rgb: 238,233,255;
+}
+
+/* ── ARCTIC GLASS — ледяные синие стеклянные панели ──────────── */
+[data-theme="arcticGlass"] {
+  --body-bg: #06131b; --bg-primary: rgba(13,34,45,.82); --bg-secondary: rgba(18,43,55,.86); --bg-tertiary: rgba(25,57,70,.9);
+  --text-primary: #e4f8ff; --text-secondary: #a2cbd8; --text-muted: #648b99; --accent: #67e8f9; --accent-hover: rgba(103,232,249,.85); --accent-subtle: rgba(103,232,249,.1);
+  --border: rgba(162,203,216,.12); --border-strong: rgba(103,232,249,.28); --sidebar-bg: rgba(8,23,31,.9); --shadow: 0 4px 20px rgba(1,8,12,.3); --shadow-lg: 0 20px 60px rgba(1,8,12,.45);
+  --overlay-1: rgba(228,248,255,.02); --overlay-2: rgba(228,248,255,.04); --overlay-3: rgba(228,248,255,.06); --overlay-4: rgba(228,248,255,.08); --overlay-5: rgba(228,248,255,.12); --overlay-6: rgba(228,248,255,.16);
+  --on-accent: #08202a; --on-accent-strong: #08202a; --on-accent-muted: rgba(8,32,42,.75); --glass-bg: rgba(13,34,45,.68); --glass-border: rgba(103,232,249,.16); --glass-highlight-1: rgba(255,255,255,.12); --glass-highlight-2: rgba(103,232,249,.08); --shadow-rgb: 1,8,12; --overlay-rgb: 228,248,255;
+}
+
+/* ── TERMINAL GREEN — монохромный зелёный терминал ───────────── */
+[data-theme="terminalGreen"] {
+  --body-bg: #050c08; --bg-primary: rgba(10,25,16,.86); --bg-secondary: rgba(14,34,21,.88); --bg-tertiary: rgba(19,45,27,.91);
+  --text-primary: #d8ffe0; --text-secondary: #9bc9a5; --text-muted: #5e8b68; --accent: #39ff88; --accent-hover: rgba(57,255,136,.85); --accent-subtle: rgba(57,255,136,.1);
+  --border: rgba(155,201,165,.12); --border-strong: rgba(57,255,136,.26); --sidebar-bg: rgba(6,17,10,.92); --shadow: 0 4px 20px rgba(0,5,2,.3); --shadow-lg: 0 20px 60px rgba(0,5,2,.45);
+  --overlay-1: rgba(216,255,224,.02); --overlay-2: rgba(216,255,224,.04); --overlay-3: rgba(216,255,224,.06); --overlay-4: rgba(216,255,224,.08); --overlay-5: rgba(216,255,224,.12); --overlay-6: rgba(216,255,224,.16);
+  --on-accent: #062412; --on-accent-strong: #062412; --on-accent-muted: rgba(6,36,18,.75); --glass-bg: rgba(10,25,16,.72); --glass-border: rgba(57,255,136,.16); --glass-highlight-1: rgba(255,255,255,.1); --glass-highlight-2: rgba(57,255,136,.08); --shadow-rgb: 0,5,2; --overlay-rgb: 216,255,224;
+}
+
+/* ── ESPRESSO — тёплый тёмный кофе и медь ────────────────────── */
+[data-theme="espresso"] {
+  --body-bg: #120d0a; --bg-primary: rgba(37,25,19,.84); --bg-secondary: rgba(48,32,23,.87); --bg-tertiary: rgba(64,42,29,.9);
+  --text-primary: #f7e8d7; --text-secondary: #c8aa91; --text-muted: #816b5a; --accent: #d9915b; --accent-hover: rgba(217,145,91,.85); --accent-subtle: rgba(217,145,91,.1);
+  --border: rgba(200,170,145,.12); --border-strong: rgba(217,145,91,.28); --sidebar-bg: rgba(23,15,11,.9); --shadow: 0 4px 20px rgba(6,3,1,.3); --shadow-lg: 0 20px 60px rgba(6,3,1,.45);
+  --overlay-1: rgba(247,232,215,.02); --overlay-2: rgba(247,232,215,.04); --overlay-3: rgba(247,232,215,.06); --overlay-4: rgba(247,232,215,.08); --overlay-5: rgba(247,232,215,.12); --overlay-6: rgba(247,232,215,.16);
+  --on-accent: #20130b; --on-accent-strong: #20130b; --on-accent-muted: rgba(32,19,11,.75); --glass-bg: rgba(37,25,19,.72); --glass-border: rgba(217,145,91,.16); --glass-highlight-1: rgba(255,255,255,.1); --glass-highlight-2: rgba(217,145,91,.08); --shadow-rgb: 6,3,1; --overlay-rgb: 247,232,215;
+}
+
+/* ── SUNSET PAPER — персиковая бумага и коралл ───────────────── */
+[data-theme="sunsetPaper"] {
+  --body-bg: #fff0e8; --bg-primary: rgba(255,249,245,.92); --bg-secondary: rgba(255,241,233,.94); --bg-tertiary: rgba(250,225,213,.95);
+  --text-primary: #55352f; --text-secondary: #805b52; --text-muted: #aa8277; --accent: #ed8067; --accent-hover: rgba(237,128,103,.88); --accent-subtle: rgba(237,128,103,.1);
+  --border: rgba(85,53,47,.1); --border-strong: rgba(237,128,103,.25); --sidebar-bg: rgba(252,234,225,.94); --shadow: 0 4px 20px rgba(85,53,47,.08); --shadow-lg: 0 20px 60px rgba(85,53,47,.15);
+  --overlay-1: rgba(85,53,47,.02); --overlay-2: rgba(85,53,47,.04); --overlay-3: rgba(85,53,47,.06); --overlay-4: rgba(85,53,47,.08); --overlay-5: rgba(85,53,47,.12); --overlay-6: rgba(85,53,47,.16);
+  --on-accent: #fff; --on-accent-strong: #fff; --on-accent-muted: rgba(255,255,255,.75); --glass-bg: rgba(255,249,245,.76); --glass-border: rgba(85,53,47,.1); --glass-highlight-1: rgba(255,255,255,.65); --glass-highlight-2: rgba(255,255,255,.3); --shadow-rgb: 85,53,47; --overlay-rgb: 85,53,47;
+}
+
+/* ── PORCELAIN — чистый холодный минимализм ──────────────────── */
+[data-theme="porcelain"] {
+  --body-bg: #f1f5f9; --bg-primary: rgba(255,255,255,.92); --bg-secondary: rgba(241,245,249,.94); --bg-tertiary: rgba(226,233,241,.95);
+  --text-primary: #26364a; --text-secondary: #53657c; --text-muted: #8795a7; --accent: #5279b9; --accent-hover: rgba(82,121,185,.88); --accent-subtle: rgba(82,121,185,.09);
+  --border: rgba(38,54,74,.1); --border-strong: rgba(82,121,185,.24); --sidebar-bg: rgba(232,238,245,.94); --shadow: 0 4px 20px rgba(38,54,74,.08); --shadow-lg: 0 20px 60px rgba(38,54,74,.15);
+  --overlay-1: rgba(38,54,74,.02); --overlay-2: rgba(38,54,74,.04); --overlay-3: rgba(38,54,74,.06); --overlay-4: rgba(38,54,74,.08); --overlay-5: rgba(38,54,74,.12); --overlay-6: rgba(38,54,74,.16);
+  --on-accent: #fff; --on-accent-strong: #fff; --on-accent-muted: rgba(255,255,255,.75); --glass-bg: rgba(255,255,255,.78); --glass-border: rgba(38,54,74,.1); --glass-highlight-1: rgba(255,255,255,.7); --glass-highlight-2: rgba(255,255,255,.35); --shadow-rgb: 38,54,74; --overlay-rgb: 38,54,74;
+}
+
+/* ── CITRUS — кремовый фон и лаймово-лимонный акцент ─────────── */
+[data-theme="citrus"] {
+  --body-bg: #fffbea; --bg-primary: rgba(255,254,245,.92); --bg-secondary: rgba(255,250,220,.94); --bg-tertiary: rgba(246,239,192,.95);
+  --text-primary: #34412d; --text-secondary: #5e6948; --text-muted: #92976d; --accent: #b89500; --accent-hover: rgba(184,149,0,.88); --accent-subtle: rgba(184,149,0,.1);
+  --border: rgba(52,65,45,.1); --border-strong: rgba(184,149,0,.25); --sidebar-bg: rgba(250,246,221,.94); --shadow: 0 4px 20px rgba(52,65,45,.08); --shadow-lg: 0 20px 60px rgba(52,65,45,.15);
+  --overlay-1: rgba(52,65,45,.02); --overlay-2: rgba(52,65,45,.04); --overlay-3: rgba(52,65,45,.06); --overlay-4: rgba(52,65,45,.08); --overlay-5: rgba(52,65,45,.12); --overlay-6: rgba(52,65,45,.16);
+  --on-accent: #fff; --on-accent-strong: #fff; --on-accent-muted: rgba(255,255,255,.78); --glass-bg: rgba(255,254,245,.78); --glass-border: rgba(52,65,45,.1); --glass-highlight-1: rgba(255,255,255,.7); --glass-highlight-2: rgba(255,255,255,.35); --shadow-rgb: 52,65,45; --overlay-rgb: 52,65,45;
+}
+
 /* ========== LIQUID GLASS ========== */
 .glass {
   background: var(--glass-bg);

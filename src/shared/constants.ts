@@ -1,4 +1,9 @@
 export const APP_NAME = 'Syntee Helper'
+
+// Build-time constant supplied by Vite's `define`; the declaration keeps raw
+// TypeScript checks (including the updater-only check) independent of Vite.
+declare const __APP_VERSION__: string
+
 // Version is injected at build time by Vite define from package.json.
 // Fallback '0.1.0' for non-Vite contexts (raw tsc, tests).
 export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.1.0'
@@ -337,6 +342,8 @@ export const IPC_EVENTS = {
   // main → renderer: browserMode чата переключён (тумблером или через
   // подтверждение AI) — ChatPage синхронизирует чип/тумблер ({chatId, enabled}).
   BROWSER_MODE_CHANGED: 'browser:mode-changed',
+  // main → renderer: imageMode чата включён через request_access.
+  IMAGE_MODE_CHANGED: 'chat:image-mode-changed',
 }
 
 // ── Browser: partition webview-сессии ─────────────────────────────────────

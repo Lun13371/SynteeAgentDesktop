@@ -21,7 +21,7 @@ import { IFRAME_HOST_METHODS as IFRAME_HOST_METHODS_SHARED } from '@shared/const
 import './PluginIframe.css'
 
 // Светлые темы — для флага dark в theme-сообщении.
-const LIGHT_THEMES = new Set(['light', 'paper', 'latte', 'sepia', 'dawn', 'mist', 'solarized'])
+const LIGHT_THEMES = new Set(['light', 'paper', 'latte', 'sepia', 'dawn', 'mist', 'solarized', 'sunsetPaper', 'porcelain', 'citrus'])
 
 // Прямые host-методы для iframe-панелей (plugins:iframeCall в main,
 // белый список + проверка прав по манифесту). Всё остальное — RPC в

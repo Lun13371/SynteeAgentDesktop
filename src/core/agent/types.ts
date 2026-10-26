@@ -239,8 +239,9 @@ export interface AgentCallbacks {
     amount?: number
     tabId?: string
     reason?: string
+    capability?: 'browser_control' | 'image_generation'
     ms?: number
-  }) => Promise<{ success: boolean; output?: string; error?: string; enabled?: boolean; imageBase64?: string }>
+  }) => Promise<{ success: boolean; output?: string; error?: string; enabled?: boolean; capability?: 'browser_control' | 'image_generation'; imageBase64?: string }>
 }
 
 export interface AgentSummaryDetails {

@@ -903,7 +903,7 @@ const AVATAR_STYLES: { id: string; label: string; icon: IconName | null }[] = [
   { id: 'emoji',  label: 'Эмодзи', icon: 'bot' },
   { id: 'none',   label: 'Нет',    icon: 'x' },
 ]
-// 27 встроенных тем (19 тёмных + 8 светлых) — данные из builtinThemes.ts
+// 36 встроенных тем (25 тёмных + 11 светлых) — данные из builtinThemes.ts
 // (единый источник: карточки здесь, шаблоны редактора тем, проверка isBuiltin).
 const THEMES = BUILTIN_THEMES.map(t => ({ id: t.id, label: t.label, group: t.group, colors: t.card }))
 

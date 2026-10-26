@@ -74,6 +74,10 @@ interface UsagePush {
   }
   sessionCostCents?: number | null
   sessionRequests?: number
+  pricing?: { inputPerM: number; outputPerM: number } | null
+  estimatedCostCents?: number | null
+  providerId?: string
+  modelId?: string
   // Fix 6: метаданные для ContextRing (раньше захардкожены в 0)
   historyMessages?: number
   toolCallsCount?: number
@@ -94,6 +98,7 @@ export function useContextCounter({
   // перетираем estimate'ом context:calculate. Как у opencode: real
   // usage — источник истины после первого ответа модели.
   const lastRealRef = useRef<UsagePush | null>(null)
+  const pricingRef = useRef<UsagePush['pricing']>(null)
   const isRunningRef = useRef(isRunning)
   useEffect(() => { isRunningRef.current = isRunning }, [isRunning])
 
@@ -105,6 +110,7 @@ export function useContextCounter({
       // при быстрой смене чатов A→B→C, когда ответ от A приходит позже).
       if (data.chatId && chatId && data.chatId !== chatId) return
       lastPushRef.current = data
+      if (data.pricing !== undefined) pricingRef.current = data.pricing
       // Phase 4: real-priority — real usage от провайдера храним отдельно;
       // estimate от context:calculate игнорируем, если уже есть real.
       if (data.source === 'real') {
@@ -114,7 +120,7 @@ export function useContextCounter({
         // (как в opencode: real — источник истины после первого ответа).
         return
       }
-      setInfo(buildContextInfo(data, inputTokensRef.current, modelId, isRunningRef.current))
+      setInfo(buildContextInfo(data, inputTokensRef.current, modelId, isRunningRef.current, pricingRef.current))
     }
     const off = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, handler as (...args: unknown[]) => void)
     return off
@@ -129,6 +135,7 @@ export function useContextCounter({
     setInfo(null)
     lastPushRef.current = null
     lastRealRef.current = null
+    pricingRef.current = null
     inputTokensRef.current = 0
     // Просим main пересчитать контекст для нового чата — он эмитит CONTEXT_USAGE
     window.syntee.context.calculate(chatId).catch(() => { /* тихо — не критично */ })
@@ -169,7 +176,7 @@ export function useContextCounter({
       // ввода станут историей только в следующем раунде.
       const base = lastRealRef.current ?? lastPushRef.current
       if (base) {
-        setInfo(buildContextInfo(base, quickEstimate, modelId, isRunningRef.current))
+        setInfo(buildContextInfo(base, quickEstimate, modelId, isRunningRef.current, pricingRef.current))
       }
     }, 500)
     return () => {
@@ -180,7 +187,13 @@ export function useContextCounter({
   return info
 }
 
-function buildContextInfo(push: UsagePush, inputTokens: number, modelId: string, isRunning = false): ContextInfo {
+function buildContextInfo(
+  push: UsagePush,
+  inputTokens: number,
+  modelId: string,
+  isRunning = false,
+  fallbackPricing: UsagePush['pricing'] = null,
+): ContextInfo {
   const breakdown = push.breakdown ?? { history: 0, system: 0, tools: 0, current: 0 }
   // Добавляем токены текущего ввода к estimate. При real usage во время
   // активного run'а (isRunning) НЕ добавляем — реальный promptTokens уже
@@ -213,8 +226,8 @@ function buildContextInfo(push: UsagePush, inputTokens: number, modelId: string,
     toolCallsCount: push.toolCallsCount ?? 0,
     currentInput: inputTokens,
     reserved: 2000,
-    pricing: null,
-    estimatedCostCents: null,
+    pricing: push.pricing ?? fallbackPricing ?? null,
+    estimatedCostCents: push.estimatedCostCents ?? null,
     compressed: push.compressed,
   }
 }

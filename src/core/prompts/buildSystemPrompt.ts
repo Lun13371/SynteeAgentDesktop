@@ -30,7 +30,7 @@ export function sanitizeToolInstructions(prompt: string, settings: ToolSettings)
     const tokens = new Set(text.split(/[^a-zA-Z0-9_]+/))
     return disabled.some(name => tokens.has(name))
   }
-  const guidanceSections = /^(Tools|Code mode|Long-term memory|Sub-agents|Sub-agent roles|Large and ambiguous tasks|Browser control)/
+  const guidanceSections = /^(Tools|Code mode|Long-term memory|Sub-agents|Sub-agent roles|Large and ambiguous tasks|Browser control|Image generation)/
   const sections = prompt.split(/(?=^## )/m)
   const cleaned = sections.map(section => {
     const heading = section.match(/^## (.+)/)?.[1] ?? ''
@@ -123,6 +123,8 @@ export interface SystemPromptParams {
    *  попросить включение). Секция динамическая (per-chat) — не ломает
    *  кэш статичного префикса. */
   browserMode?: boolean
+  /** Тумблер генерации изображений: generate_image доступен модели. */
+  imageMode?: boolean
   /**
     * Persona — single-select run mode (classic/architect/debugger/...).
     * Orthogonal to planning/ask. 'classic' (or undefined) → no injection.
@@ -161,7 +163,7 @@ export interface SystemPromptParts {
  * SYSTEM_PROMPT_CACHE_BREAK (см. buildSystemPrompt).
  */
 export function buildSystemPromptParts(params: SystemPromptParams): SystemPromptParts {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, persona, personaSkill, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, imageMode, persona, personaSkill, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -436,6 +438,13 @@ After executing tools, write the result to the user inside the <final_answer> bl
 Do not call tools again if the task is already solved.`
 
   // ─── ДИНАМИЧЕСКИЙ ХВОСТ (меняется каждый ход, НЕ кэшируется) ───────────────
+  const imageBlock = imageMode
+    ? `## Image generation — ENABLED
+
+The generate_image tool is available. Use it when the user asks to create or generate an image.`
+    : `## Image generation — DISABLED
+
+Image generation is not enabled for this chat. If the user asks to create an image, call request_access with capability: image_generation and a short reason. The user will confirm; if approved, generate_image becomes available immediately in this same run. If declined, continue without it.`
   const browserBlock = browserMode
     ? `## Browser control — ENABLED
 
@@ -477,6 +486,7 @@ continue without browser tools.`
   const dynamicPart = `## Current session context
 Date and time: ${dateStr}.
 ${browserBlock}
+${imageBlock}
 ${memoryStatsBlock}
 ${graphStatsBlock}
 ${secretsBlock}

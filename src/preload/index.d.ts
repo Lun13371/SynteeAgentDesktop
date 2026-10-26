@@ -75,18 +75,7 @@ declare const synteeAPI: {
     auth: {
         login: () => Promise<any>;
         isLoggedIn: () => Promise<boolean>;
-        me: () => Promise<{
-            user: {
-                id: string;
-                email: string;
-                username?: string | null;
-                username_is_auto?: boolean;
-                role: string;
-                display_name?: string | null;
-                avatar_url?: string | null;
-            } | null;
-            status: 'authenticated' | 'unauthenticated' | 'unavailable';
-        }>;
+        me: () => Promise<any>;
         logout: () => Promise<any>;
         onLoggedIn: (cb: () => void) => () => Electron.IpcRenderer;
         onLoggedOut: (cb: () => void) => () => Electron.IpcRenderer;
@@ -632,13 +621,6 @@ declare const synteeAPI: {
             error?: string;
         }>;
         getConsumedPerFileUndoPaths: (chatId: string, userMessageId: string) => Promise<string[]>;
-        getCheckpointFileDiffs: (chatId: string, userMessageId: string) => Promise<Array<{
-            filePath: string;
-            original: string;
-            modified: string;
-            added: number;
-            deleted: number;
-        }>>;
         getLastRewind: (chatId: string) => Promise<{
             rewindMessageId: string;
             createdAt: number;
@@ -675,6 +657,7 @@ declare const synteeAPI: {
         }) => Promise<any>;
         setPlanningMode: (chatId: string, val: boolean) => Promise<any>;
         setImageMode: (chatId: string, val: boolean) => Promise<any>;
+        onImageModeChanged: (cb: (info: { chatId: string; enabled: boolean }) => void) => () => Electron.IpcRenderer;
         setAskMode: (chatId: string, val: boolean) => Promise<any>;
         getBrowserMode: (chatId: string) => Promise<boolean>;
         setBrowserMode: (chatId: string, val: boolean) => Promise<any>;
@@ -897,11 +880,11 @@ declare const synteeAPI: {
         }>;
     };
     gitSync: {
-        getState: () => Promise<import('../shared/types').GitSyncState>;
+        getState: () => Promise<any>;
         checkNow: () => Promise<any>;
         apply: (projectId: string) => Promise<any>;
         later: (projectId: string) => Promise<any>;
-        onState: (cb: (state: any) => void) => () => Electron.IpcRenderer;
+        onState: (cb: (state: import("../shared/types").GitSyncState) => void) => () => Electron.IpcRenderer;
     };
     git: {
         status: (workdir: string) => Promise<any>;

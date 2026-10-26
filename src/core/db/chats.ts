@@ -209,25 +209,7 @@ export function setChatColor(id: string, color: string | null): void {
   getDB().prepare('UPDATE chats SET color = ? WHERE id = ?').run(color, id)
 }
 
-export function duplicateChat(id: string): Chat | null {
-  const db = getDB()
-  const src = db.prepare(`SELECT * FROM chats WHERE id = ?`).get(id) as Chat & { created_at: number; updated_at: number; is_incognito: number; workdir: string | null; project_context: string | null; project_id: string | null; mode: string } | undefined
-  if (!src) return null
-  const newId = uuid()
-  const now = Date.now()
-  // Копируем project_id — дубликат чата остаётся в том же проекте
-  // и сохраняет привязку к рабочей директории. Модель (model_id/model_provider)
-  // и уровень мышления (reasoning_value) тоже копируются.
-  db.prepare(`INSERT INTO chats (id, title, created_at, updated_at, is_incognito, is_pinned, is_archived, color, mode, workdir, project_context, project_id, model_id, model_provider, reasoning_value) VALUES (?,?,?,?,?,0,0,?,?,?,?,?,?,?,?)`)
-    .run(newId, src.title + ' (копия)', now, now, src.is_incognito ?? 0, (src as unknown as Record<string,unknown>).color ?? null, src.mode ?? 'code', src.workdir ?? null, src.project_context ?? null, src.project_id ?? null, (src as unknown as Record<string,unknown>).model_id ?? null, (src as unknown as Record<string,unknown>).model_provider ?? null, (src as unknown as Record<string,unknown>).reasoning_value ?? null)
-  const msgs = db.prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC').all(id) as (Message & { chat_id: string; created_at: number; is_pinned: number; tool_steps?: string })[]
-  for (const m of msgs) {
-    const mid = uuid()
-    db.prepare(`INSERT INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps) VALUES (?,?,?,?,?,?,?,?)`)
-      .run(mid, newId, m.role, m.content, m.created_at ?? m.createdAt, 0, m.model ?? null, m.tool_steps ?? null)
-  }
-  return getAllChats().find(c => c.id === newId) ?? null
-}
+// Чаты копируются только через общий forkChat в main/ipc/chatFork.ipc.ts.
 
 export function exportChat(id: string, format: 'txt' | 'md'): string {
   const db = getDB()
