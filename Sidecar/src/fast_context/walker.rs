@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use walkdir::{DirEntry, WalkDir};
 
-use crate::config::{IndexOptions, DEFAULT_MAX_DEPTH};
-use crate::language::language_for_path;
+use crate::common::config::{IndexOptions, DEFAULT_MAX_DEPTH};
+use crate::fast_context::language::language_for_path;
 
 #[derive(Debug, Clone)]
 pub struct SourceFile {
@@ -215,7 +215,7 @@ pub fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{is_in_ignored_dir, is_under, strip_verbatim_prefix, walk_project, walk_subtree};
-    use crate::config::IndexOptions;
+    use crate::common::config::IndexOptions;
 
     #[test]
     fn file_cap_marks_walk_incomplete() {

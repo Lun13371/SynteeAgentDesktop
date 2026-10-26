@@ -109,6 +109,12 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     'find_files',
     'search_code',
     'list_directory',
+    // Code mode — обычный тул, доступный во ВСЕХ режимах (research и normal):
+    // сам по себе он ничего не меняет, его возможности = набор тулов текущего
+    // рана. В read-only режимах внутри можно вызвать только read-тулы (мост
+    // сверяет имена с allowedSchemas), поэтому эскалации нет, а агрегация
+    // результатов поиска нужна как раз в исследовательских задачах.
+    'execute_code',
     'update_working_memory',
     'update_todo',
     'ask_user',
@@ -168,11 +174,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     names.push('edit_file')
     names.push('write_file')
     names.push('run_command')
-    // Code mode: один TS-скрипт вместо серии вызовов. Обычный тул, как run_command —
-    // отключается через disabledTools. В ask/planning/read-only его НЕТ: там
-    // needsApproval спрашивает каждый тул, и скрипт из 20 внутренних вызовов
-    // превратился бы в 20 диалогов подряд.
-    names.push('execute_code')
     names.push('get_diagnostics')
     names.push('get_fast_context')
     // Dots: управление always-on агентами — только в normal-режиме.
@@ -242,6 +243,43 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
         },
       } as any)
     }
+  }
+
+  // Code mode: описание должно перечислять тулы, реально доступные внутри
+  // скрипта. Без этого модель не знает, что можно вызвать (в описании было
+  // абстрактное «current allowed tools»), не уверена, что скрипт не упадёт на
+  // первом же вызове, и предпочитает привычный одиночный тул.
+  // Длинные семейства (browser_*, mcp__*, plugin__*) сворачиваем в группы —
+  // иначе в browser-режиме описание раздувается на ~550 токенов на каждый запрос.
+  const codeIndex = schemas.findIndex(s => (s as { function: { name: string } }).function.name === 'execute_code')
+  if (codeIndex >= 0) {
+    const all = schemas
+      .map(s => (s as { function: { name: string } }).function.name)
+      .filter(name => name !== 'execute_code')
+    const families = [
+      ['browser_', 'browser_*'],
+      ['mcp__', 'mcp__*'],
+      ['plugin__', 'plugin__*'],
+    ] as const
+    const listed: string[] = []
+    for (const name of all) {
+      const family = families.find(([prefix]) => name.startsWith(prefix))
+      if (family) {
+        const label = family[1]
+        const count = all.filter(n => n.startsWith(family[0])).length
+        if (!listed.includes(`${label} (${count})`)) listed.push(`${label} (${count})`)
+      } else {
+        listed.push(name)
+      }
+    }
+    const base = schemas[codeIndex] as unknown as { function: { name: string; description?: string; parameters?: unknown } }
+    schemas[codeIndex] = {
+      ...base,
+      function: {
+        ...base.function,
+        description: `${base.function.description} Tools available inside this run: ${listed.join(', ')}.`,
+      },
+    } as unknown as (typeof schemas)[number]
   }
 
   return schemas

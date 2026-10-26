@@ -5,14 +5,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::ast;
-use crate::config::IndexOptions;
-use crate::db::{Database, UpsertEntry};
-use crate::error::{Result, SidecarError};
-use crate::hashing::quick_hash;
-use crate::search::{self, SearchOptions, SearchResult};
-use crate::symbols::{self, FileSymbols};
-use crate::walker::{self, walk_project, SourceFile};
+use crate::fast_context::ast;
+use crate::common::config::IndexOptions;
+use crate::fast_context::db::{Database, UpsertEntry};
+use crate::common::error::{Result, SidecarError};
+use crate::common::hashing::quick_hash;
+use crate::fast_context::search::{self, SearchOptions, SearchResult};
+use crate::fast_context::symbols::{self, FileSymbols};
+use crate::fast_context::walker::{self, walk_project, SourceFile};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,7 +295,7 @@ impl Indexer {
         let mut files_found = 0usize;
 
         for path in targets {
-            let Some(language) = crate::language::language_for_path(&path) else { continue };
+            let Some(language) = crate::fast_context::language::language_for_path(&path) else { continue };
             let metadata = match fs::metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => {

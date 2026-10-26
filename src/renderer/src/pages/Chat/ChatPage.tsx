@@ -638,12 +638,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const off = window.syntee.on('chat:compacted', (data: unknown) => {
       const d = data as { chatId: string; trigger: 'auto' | 'manual' }
       if (d.chatId !== currentChatId) return
-      // Manual /compact: invoke уже сделал setMessages(allMessages) с divider'ом
-      // в КОНЦЕ ленты (createdAt = Date.now()). НЕ дублируем getMessagesPage —
-      // иначе перетрёт последними 20, а divider может быть не в последних 20
-      // если сообщений > 20 (он в конце, но... нет, в конце — попадёт). Всё же
-      // не рискуем — guard пропускает setMessagesWindow. Скроллим в низ (divider
-      // там) + контекст-расчёт.
+      // Manual /compact: invoke уже сделал setMessages(allMessages) — в ленте
+      // есть новый divider (createdAt = граница middle|tail, поэтому он стоит
+      // ПЕРЕД сохранённым tail'ом, а не в конце). НЕ дублируем getMessagesPage —
+      // перезапись страницей последних 50 сообщений потеряла бы divider, если
+      // сохранённый tail длиннее этой страницы. Guard пропускает
+      // setMessagesWindow. Скроллим в низ (свежие сообщения ниже divider'а)
+      // + пересчитываем контекст.
       if (manualCompactJustDoneRef.current) {
         manualCompactJustDoneRef.current = false
         isInitialScrollRef.current = true
@@ -1937,14 +1938,14 @@ const chatId = compactingCurrentChatIdRef.current
       // хендлера (event.sender.send до return), invoke резолвится после.
       // Guard НЕ гасим в finally — только в listener (по приходу CHAT_COMPACTED).
       // Если погасить в finally раньше CHAT_COMPACTED → setMessagesWindow(20)
-      // перетрёт setMessages(allMessages) и divider (в конце ленты) может
-      // потеряться при > 20 сообщений. Timeout 10s — safety net.
+      // перетрёт setMessages(allMessages) и divider (на границе middle|tail)
+      // может потеряться. Timeout 10s — safety net.
       manualCompactJustDoneRef.current = true
       const compactGuardTimer = setTimeout(() => { manualCompactJustDoneRef.current = false }, 10000)
       try {
         const result = await window.syntee.chat.compact(currentChatId, slash.args || undefined) as {
           messages?: Message[]
-          stats?: { removedCount: number; tokensBefore: number; tokensAfter: number; tokensSaved: number; dividerMessageId: string }
+          stats?: { removedCount: number; tokensBefore: number; tokensAfter: number; tokensSaved: number; dividerMessageId: string; mode?: 'full' | 'last'; focus?: string }
           error?: string
           cancelled?: boolean
         }
@@ -1964,7 +1965,8 @@ const chatId = compactingCurrentChatIdRef.current
         if (result.messages && useChatStore.getState().currentChatId === compactChatId) setMessages(result.messages)
         if (result.stats) {
           const tk = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n)
-          toast(`Контекст сжат: удалено ${result.stats.removedCount} сообщ. · ${tk(result.stats.tokensBefore)}→${tk(result.stats.tokensAfter)} tok · сэкономлено ~${tk(result.stats.tokensSaved)}`, 'success')
+          const modeLabel = result.stats.mode ? ` (${result.stats.mode}${result.stats.focus ? ' + фокус' : ''})` : ''
+          toast(`Контекст сжат${modeLabel}: удалено ${result.stats.removedCount} сообщ. · ${tk(result.stats.tokensBefore)}→${tk(result.stats.tokensAfter)} tok · сэкономлено ~${tk(result.stats.tokensSaved)}`, 'success')
         }
       } catch (e) {
         toast('Ошибка сжатия: ' + String((e as Error)?.message ?? e), 'error')

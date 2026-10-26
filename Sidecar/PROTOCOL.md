@@ -119,6 +119,56 @@ Parses one file and returns definitions, imports and call-site references.
 
 The same pipeline feeds the index: `index`/`indexChangedPaths` use native tree-sitter where a grammar exists and the lexical scanner elsewhere, so the repo-map the model sees is built from the same symbols as this method.
 
+### `semanticEmbed`
+
+E5-эмбеддинги (384-dim) для пачки текстов. Модель — `Xenova/multilingual-e5-small`, веса `q8`.
+
+```json
+{"id":5,"method":"semanticEmbed","params":{"modelPath":"…/onnx/model_quantized.onnx","tokenizerPath":"…/tokenizer.json","texts":["hello world"],"prefix":"passage"}}
+```
+
+`prefix` — `query` (поисковый запрос) или `passage` (индексируемый текст). E5 асимметрична: без префикса качество падает, а `query`/`passage` одного и того же текста дают разные векторы.
+
+```json
+{"model":"Xenova/multilingual-e5-small@q8-rust","dim":384,"vectors":[[0.021,-0.043,…]]}
+```
+
+Векторы L2-нормализованы (mean-pooling по `attention_mask`), поэтому cosine = dot product. Паритет с JS-пайплайном `@huggingface/transformers` закреплён тестом `tests/semantic-rust-parity.test.cjs` (порог cosine ≥ 0.9999 на 10 сэмплах).
+
+### `semanticIndex`
+
+Один цикл индексации источников `recall_memory` в таблицу `semantic_embeddings`.
+
+```json
+{"id":6,"method":"semanticIndex","params":{"dbPath":"…/syntee.db","modelPath":"…","tokenizerPath":"…","options":{"budgetMs":60000,"pageSize":200,"pauseBetweenItemsMs":40,"pauseBetweenPagesMs":250,"maxTextChars":1500,"sources":[]}}}
+```
+
+`sources` пустой — все пять (`memory`, `messages`, `summaries`, `agent_logs`, `pinned`). Индексируются только новые/изменённые строки: `sha256(текст)` + тег модели в `semantic_embeddings`. Ответ:
+
+```json
+{"model":"Xenova/multilingual-e5-small@q8-rust","sources":[{"source":"memory","indexed":252,"skipped":0,"failed":0,"durationMs":19993}],"durationMs":20021,"budgetExhausted":true,"totalIndexed":252,"totalSkipped":0,"totalFailed":0}
+```
+
+`budgetExhausted: true` — бюджет цикла кончился, остаток доедет следующим вызовом. Это замена бесконечному циклу в TS, который однажды занял 16.7 минуты. Цикл уступает фореграунду: пока `foregroundBusy: true`, страницы не читаются.
+
+### `semanticSearch`
+
+Cosine-поиск по `semantic_embeddings` с теми же scope/project/kind-фильтрами, что у lexical-канала.
+
+```json
+{"id":7,"method":"semanticSearch","params":{"dbPath":"…","modelPath":"…","tokenizerPath":"…","query":"как ускорили индексацию","limit":5,"sources":["memory","messages"],"scope":"all","projectId":null,"crossProject":false,"kind":null,"memoryEnabled":true,"memoryGlobal":true,"memoryProject":true,"memoryChat":true}}
+```
+
+```json
+{"model":"Xenova/multilingual-e5-small@q8-rust","hits":[{"source":"memory","sourceId":"…","score":0.8398,"content":"…","chatId":"…","chatTitle":"…","role":"assistant","date":1793009705830}]}
+```
+
+Для `source: "memory"` дополнительно приходит `memoryRow` — полная строка `memory_items`, чтобы вызывающий построил `MemoryItem` своим маппером. Скан ограничен на источник (`memory` — 4000 по importance, `messages` — 10000 по recency), поэтому выдача bounded.
+
+### `semanticUnload`
+
+Освобождает ONNX-сессию и память модели, не останавливая процесс. Вызывается при shutdown sidecar.
+
 ### `shutdown`
 
 Stops and joins watcher threads before returning `shutting_down`.

@@ -624,7 +624,7 @@ declare const synteeAPI: {
             rewindMessageId: string;
             createdAt: number;
         } | null>;
-        compact: (chatId: string, mode?: string) => Promise<any>;
+        compact: (chatId: string, args?: string) => Promise<any>;
         compactCancel: (chatId: string) => Promise<any>;
         fork: (chatId: string, title?: string) => Promise<any>;
         snapshotCreate: (chatId: string, name: string) => Promise<any>;

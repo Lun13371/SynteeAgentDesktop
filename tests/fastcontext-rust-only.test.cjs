@@ -73,28 +73,28 @@ test('the Rust protocol advertises the token and symbol methods', () => {
   }
   assert.match(src, /parser_backend: "tree-sitter/)
   assert.match(src, /ranking: "field-weighted/)
-  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/tokens.rs')))
-  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/ast.rs')))
+  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/text/tokens.rs')))
+  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/fast_context/ast.rs')))
 })
 
 test('the index uses the same tree-sitter parser as the symbols command', () => {
   // Regression guard: the index used to be built by the lexical scanner while
   // only the on-demand `symbols` call used tree-sitter, so everything the
   // search ranked came from line regexes.
-  const indexer = fs.readFileSync(path.join(root, 'Sidecar/src/indexer.rs'), 'utf8')
+  const indexer = fs.readFileSync(path.join(root, 'Sidecar/src/fast_context/indexer.rs'), 'utf8')
   assert.match(indexer, /ast::extract/)
-  const walker = fs.readFileSync(path.join(root, 'Sidecar/src/walker.rs'), 'utf8')
+  const walker = fs.readFileSync(path.join(root, 'Sidecar/src/fast_context/walker.rs'), 'utf8')
   // One traversal, source files ordered before artifacts.
   assert.equal((walker.match(/WalkDir::new/g) ?? []).length, 2, 'walk_project + walk_subtree only')
 })
 
 test('the retrieval quality switches stay wired end to end', () => {
-  const search = fs.readFileSync(path.join(root, 'Sidecar/src/search.rs'), 'utf8')
+  const search = fs.readFileSync(path.join(root, 'Sidecar/src/fast_context/search.rs'), 'utf8')
   assert.match(search, /synonyms::translations/, 'RU→EN bridging must stay enabled')
   assert.match(search, /MAX_DEFINITIONS_PER_HIT/)
   assert.match(search, /enum MatchKind/)
-  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/synonyms.rs')))
-  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/text.rs')))
+  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/fast_context/synonyms.rs')))
+  assert.ok(fs.existsSync(path.join(root, 'Sidecar/src/text/normalize.rs')))
 
   const client = fs.readFileSync(path.join(root, 'src/core/context/fastContext/sidecarClient.ts'), 'utf8')
   assert.match(client, /matchKind/, 'the search result type must carry matchKind')

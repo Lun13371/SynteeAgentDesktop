@@ -84,6 +84,7 @@ import { getMcpManager } from '../../core/mcp/McpManager'
 import { getPluginManager } from '../../core/plugins/pluginManager'
 import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult, ReplyTarget } from '../../shared/types'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
+import { parseCompactArgs } from '../../shared/slashCommands'
 import { messageToContextMessages, formatReplyQuote } from './chatContextHelpers'
 import { slimMessageForUI, slimMessagesForUI } from './slimMessages'
 import { getMessagesCached, getMessagesAfterLatestCompactCached, recoverStreamingBuffersForChat } from './historyCache'
@@ -580,9 +581,12 @@ function createCompactDivider(chatId: string, opts: {
   tokensAfter: number
   summaryContent: string
   createdAt?: number
+  /** Пометка ручного /compact: 'last' | 'full', при фокусе — 'last + фокус'. */
+  modeLabel?: string
 }): Message {
   const tokensSaved = Math.max(0, opts.tokensBefore - opts.tokensAfter)
-  const content = `Контекст сжат • удалено ${opts.removedCount} сообщ. • ${fmtTokensK(opts.tokensBefore)}→${fmtTokensK(opts.tokensAfter)} токенов • сэкономлено ~${fmtTokensK(tokensSaved)}`
+  const modeSuffix = opts.modeLabel ? ` (${opts.modeLabel})` : ''
+  const content = `Контекст сжат${modeSuffix} • удалено ${opts.removedCount} сообщ. • ${fmtTokensK(opts.tokensBefore)}→${fmtTokensK(opts.tokensAfter)} токенов • сэкономлено ~${fmtTokensK(tokensSaved)}`
   return {
     id: uuid(),
     chatId,
@@ -676,6 +680,27 @@ function getLiveMessages(history: Message[]): Message[] {
     !(message.role === 'system' && message.slashCommand?.name === 'compact')
     && message.createdAt > latestDividerAt,
   )
+}
+
+/**
+ * createdAt для divider'а ручного /compact.
+ *
+ * Divider — это граница AI-контекста: getMessagesAfterLatestCompact берёт
+ * сообщения с created_at > divider.created_at. Значит divider обязан стоять
+ * ровно ПЕРЕД сохранённым tail'ом (createdAt первого tail Message − 1) —
+ * как в авто-компакции внутри runChatSend. Если поставить его на Date.now()
+ * (как было раньше), из live-подмножества выпадает и tail, который
+ * applyRollingWindowAsync только что сохранил, причём в summary он тоже не
+ * попадает (middle его исключает) — последние сообщения исчезают из контекста
+ * модели молча.
+ *
+ * Пустой tail (история из одного сообщения) — divider уходит в конец ленты:
+ * сохранять нечего, всё ушло в summary.
+ */
+export function compactDividerCreatedAt(tail: ChatMessage[], liveMessages: Message[]): number {
+  const firstTailMsgId = tail.find(m => m.messageId)?.messageId
+  const boundaryMsg = firstTailMsgId ? liveMessages.find(m => m.id === firstTailMsgId) : undefined
+  return boundaryMsg ? boundaryMsg.createdAt - 1 : Date.now()
 }
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
@@ -4907,6 +4932,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   /**
    * chat:compact — ручное сжатие контекста чата через slash-команду /compact.
    *
+   * Аргументы команды: `[full|last] [фокус...]` (разбор — parseCompactArgs).
+   *   full — сжать всё, кроме последних rollingKeepLast сообщений (дефолт);
+   *   last — сжать всё, кроме последнего сообщения;
+   *   фокус — свободный текст, приоритет при отборе деталей в резюме.
+   *
    * Делает то же, что и авто-компакция внутри chat:send, но с
    * forceCompress=true (срабатывает даже когда порог токенов не достигнут),
    * и сохраняет видимый system-разделитель «Контекст сжат» в ленте чата
@@ -4917,7 +4947,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
    * компакция гоняет LLM-запрос через summaryFn и не должна проходить
    * параллельно с другим ходом.
    */
-  ipcMain.handle('chat:compact', async (event, chatId: string, mode?: string) => {
+  ipcMain.handle('chat:compact', async (event, chatId: string, args?: string) => {
     // Sidechat-чаты (incognito, префикс 'sidechat:') — эфемерны:
     // история не в БД, summary не сохраняется — компакция бессмысленна.
     if (chatId.startsWith('sidechat:')) {
@@ -5033,8 +5063,10 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // был непустым. Если совсем нечего сжимать (1-2 сообщения) —
       // вернёт compressed=false → сообщим пользователю.
       const tokensBefore = await estimateMessagesTokensAsync(rawHistory)
-      const compactMode = mode === 'last' ? 'last' : 'full'
-      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true, compactMode)
+      // /compact [full|last] [фокус...] — режим + свободный фокус для резюме.
+      const { mode: compactMode, focus } = parseCompactArgs(args)
+      log('[chat:compact] chatId=%s mode=%s focus=%s', chatId, compactMode, focus ? `"${focus.slice(0, 80)}"` : '—')
+      const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true, compactMode, focus || undefined)
       if (!result.compressed) {
         compactOutcome = 'error'
         return { error: 'Недостаточно сообщений для сжатия (нужно больше 2).' }
@@ -5060,17 +5092,23 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         return { cancelled: true, error: 'Сжатие отменено' }
       }
 
-      // Видимый разделитель «Контекст сжат» — в КОНЦЕ ленты (createdAt = now),
-      // не в середине. getLiveMessages следующего chat:send найдёт divider как
-      // последний compaction-маркер и вернёт сообщения с createdAt > divider'а
-      // (новые сообщения, отправленные после сжатия) + summary в system prompt.
-      // Контекст реально сжимается: AI видит только summary + новые сообщения.
+      // Видимый разделитель «Контекст сжат» ставится на ГРАНИЦУ middle|tail
+      // (createdAt = первый tail Message минус 1) — ровно как в авто-компакции
+      // внутри runChatSend. Раньше здесь стоял createdAt = Date.now(): следующее
+      // чтение live-истории (created_at > divider.created_at) отсекало ВСЁ,
+      // включая tail, который applyRollingWindowAsync только что сохранил
+      // (/compact last → 1 сообщение, /compact → rollingKeepLast = 20).
+      // При этом в summary tail тоже не попадал (middle его исключает) —
+      // последние сообщения исчезали из контекста модели молча. Теперь:
+      //   middle → summary (в system prompt)
+      //   tail   → остаётся live ПОСЛЕ divider'а и грузится в контекст как есть
       const divider = createCompactDivider(chatId, {
         removedCount: result.removedCount,
         tokensBefore,
         tokensAfter,
         summaryContent: result.summaryContent ?? '',
-        createdAt: Date.now(),
+        createdAt: compactDividerCreatedAt(result.messages, liveMessages),
+        modeLabel: focus ? `${compactMode} + фокус` : compactMode,
       })
 
       // Атомарная транзакция: summary + divider коммитятся вместе. Если abort
@@ -5093,6 +5131,9 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       // (Выше уже выполнено в транзакции; этот блок памяти extraction
       // запускаем только если summary реально записан.)
       if (result.summaryContent) {
+        // Захватываем в константу: внутри async-замыкания ниже TS теряет
+        // narrowing по result.summaryContent (string | undefined).
+        const summaryText = result.summaryContent
         // Фаза 3: compaction-триггер памяти — sync summary → memory_items
         // (episodic). Fire-and-forget — не блокируем /compact.
         ;(async () => {
@@ -5105,7 +5146,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
             }
             await onCompactionTrigger(store, {
               chatId,
-              summary: result.summaryContent,
+              summary: summaryText,
               projectId: compactionProjectId,
             })
           } catch (e) {
@@ -5145,7 +5186,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
             breakdown: snapshot.breakdown,
             sessionCostCents: sess?.totalCents ?? null,
             sessionRequests: sess?.requests ?? 0,
-            historyMessages: liveMessages.length,
+            // Кол-во сообщений должно соответствовать breakdown.history —
+            // он посчитан по result.messages (tail). Раньше здесь стоял
+            // liveMessages.length (до-сжатия) и ринг показывал «5k tok (40 сообщ.)»,
+            // хотя 5k — это токены tail'а.
+            historyMessages: result.messages.length,
             toolCallsCount: history.reduce((sum, msg) => {
               const steps = msg.toolSteps as Array<{ type: string }> | undefined
               return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
@@ -5174,6 +5219,8 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
           tokensAfter,
           tokensSaved: Math.max(0, tokensBefore - tokensAfter),
           dividerMessageId: divider.id,
+          mode: compactMode,
+          focus: focus || undefined,
         },
       }
     } catch (e) {

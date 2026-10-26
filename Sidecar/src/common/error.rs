@@ -18,4 +18,7 @@ pub enum SidecarError {
 
     #[error("unsupported method: {0}")]
     UnsupportedMethod(String),
+
+    #[error("model error: {0}")]
+    Model(String),
 }

@@ -619,6 +619,127 @@ export async function sidecarSymbols(
   }
 }
 
+// ─── Semantic (E5 embeddings in Rust) ───────────────────────────────────────
+//
+// Раньше E5-инференс жил в main-процессе: нативная ONNX-сессия блокировала
+// event loop кусками по ~400 мс (замер 26.10.2026: 1.7 ядра, eventLoopP95 400+
+// мс), из-за чего фризил весь UI. Теперь модель и индексация — в sidecar.
+
+/** Пути к E5-модели в HF-кэше приложения. */
+export interface SemanticModelPaths {
+  modelPath: string
+  tokenizerPath: string
+}
+
+/** Идентификатор модели — зеркалит `E5_MODEL` в Rust. */
+const SEMANTIC_MODEL_ID = 'Xenova/multilingual-e5-small'
+/** Файл квантованных весов (dtype q8). */
+const SEMANTIC_MODEL_FILE = join('onnx', 'model_quantized.onnx')
+
+/**
+ * Пути к модели или null, если она ещё не скачана.
+ *
+ * Sidecar не знает про `userData`, поэтому раскладку кэша разрешает main и
+ * передаёт готовые пути в запросе.
+ */
+export function resolveSemanticModelPaths(): SemanticModelPaths | null {
+  const cacheDir = process.env.TRANSFORMERS_CACHE
+  if (!cacheDir) return null
+  const modelDir = join(cacheDir, SEMANTIC_MODEL_ID)
+  const modelPath = join(modelDir, SEMANTIC_MODEL_FILE)
+  const tokenizerPath = join(modelDir, 'tokenizer.json')
+  if (!existsSync(modelPath) || !existsSync(tokenizerPath)) return null
+  return { modelPath, tokenizerPath }
+}
+
+export interface SidecarSemanticCycleReport {
+  model: string
+  sources: Array<{ source: string; indexed: number; skipped: number; failed: number; durationMs: number }>
+  durationMs: number
+  budgetExhausted: boolean
+  totalIndexed: number
+  totalSkipped: number
+  totalFailed: number
+}
+
+export interface SidecarSemanticHit {
+  source: string
+  sourceId: string
+  score: number
+  content: string
+  chatId?: string
+  chatTitle?: string
+  role?: string
+  date?: number
+  memoryRow?: Record<string, unknown>
+}
+
+/** Индексация — долгая операция: бюджет Rust плюс запас на загрузку модели. */
+const SEMANTIC_INDEX_TIMEOUT_MS = 180_000
+const SEMANTIC_SEARCH_TIMEOUT_MS = 30_000
+
+/** Считает эмбеддинги пачки текстов в sidecar. */
+export async function sidecarSemanticEmbed(
+  texts: string[],
+  prefix: 'query' | 'passage',
+  paths: SemanticModelPaths,
+): Promise<number[][] | null> {
+  if (texts.length === 0) return []
+  const result = await request(
+    'semanticEmbed',
+    { modelPath: paths.modelPath, tokenizerPath: paths.tokenizerPath, texts, prefix },
+    SEMANTIC_SEARCH_TIMEOUT_MS,
+  )
+  if (!Array.isArray(result.vectors)) return null
+  return result.vectors as number[][]
+}
+
+/** Один цикл индексации всех источников recall_memory. */
+export async function sidecarSemanticIndex(
+  options: JsonRecord,
+  paths: SemanticModelPaths,
+): Promise<SidecarSemanticCycleReport> {
+  const result = await requestWithRecovery(
+    'semanticIndex',
+    {
+      params: sidecarParams({
+        modelPath: paths.modelPath,
+        tokenizerPath: paths.tokenizerPath,
+        options,
+      }),
+    },
+    SEMANTIC_INDEX_TIMEOUT_MS,
+  )
+  return {
+    model: typeof result.model === 'string' ? result.model : '',
+    sources: Array.isArray(result.sources) ? result.sources as SidecarSemanticCycleReport['sources'] : [],
+    durationMs: typeof result.durationMs === 'number' ? result.durationMs : 0,
+    budgetExhausted: result.budgetExhausted === true,
+    totalIndexed: typeof result.totalIndexed === 'number' ? result.totalIndexed : 0,
+    totalSkipped: typeof result.totalSkipped === 'number' ? result.totalSkipped : 0,
+    totalFailed: typeof result.totalFailed === 'number' ? result.totalFailed : 0,
+  }
+}
+
+/** Semantic-поиск: cosine по `semantic_embeddings` со scope/kind-фильтрами. */
+export async function sidecarSemanticSearch(
+  options: JsonRecord,
+  paths: SemanticModelPaths,
+): Promise<SidecarSemanticHit[]> {
+  const result = await requestWithRecovery(
+    'semanticSearch',
+    {
+      params: sidecarParams({
+        modelPath: paths.modelPath,
+        tokenizerPath: paths.tokenizerPath,
+        ...options,
+      }),
+    },
+    SEMANTIC_SEARCH_TIMEOUT_MS,
+  )
+  return Array.isArray(result.hits) ? result.hits as SidecarSemanticHit[] : []
+}
+
 /** Best-effort graceful shutdown; safe to call more than once. */
 export async function shutdownSidecar(): Promise<void> {
   shuttingDown = true

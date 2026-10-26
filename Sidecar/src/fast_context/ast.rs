@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::symbols::{FileSymbols, SymbolDef};
+use crate::fast_context::symbols::{FileSymbols, SymbolDef};
 
 /// Node kinds that represent a definition.
 ///

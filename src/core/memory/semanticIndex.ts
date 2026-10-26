@@ -1,52 +1,36 @@
 /**
- * semanticIndex — фоновая E5-индексация всех источников recall_memory.
+ * semanticIndex — фоновая E5-индексация памяти и semantic-поиск.
  *
- * Индексирует 5 источников в таблицу semantic_embeddings (384-dim E5):
- *   1. memory_items      → text = "title. content"            (id)
- *   2. messages          → text = content (user/assistant)    (id)
- *   3. chat_summaries    → text = content                     (chat_id)
- *   4. agent_logs        → text = "[tool] ERROR: … | result"  (id)
- *   5. pinned_messages   → text = content сообщения           (message_id)
+ * Вся тяжёлая работа (ONNX-инференс, cosine по BLOB-векторам, обход источников)
+ * теперь в Rust sidecar (`Sidecar/src/semantic/`). Здесь остался только
+ * планировщик и адаптер форматов.
  *
- * Source texts и роли совпадают с тем, что ищут chatSearch.ts / search.ts —
- * чтобы эмбеддинги и lexical-поиск видели один и тот же корпус.
+ * Почему переехало: E5-инференс в main-процессе блокировал event loop кусками
+ * по ~400 мс (замер 26.10.2026: cpuUser 1.6–1.9 ядра за 10 с, eventLoopP95
+ * 390–450 мс). Любой IPC в этот момент вставал в очередь — «фризил весь UI».
+ * Отдельный процесс эту возможность убирает физически.
  *
- * Свойства:
- *   - Идемпотентно: sha256(content) + model в semantic_embeddings; неизменённые
- *     строки пропускаются — на каждом цикле эмбеддятся только новые/изменённые.
- *   - Не блокирует startup/IPC: первый запуск через START_DELAY_MS, далее
- *     периодически; между записями sleep (event loop дышит, IPC отвечают).
- *   - Keyset-пагинация (WHERE id > ? ORDER BY id LIMIT ?) — память bounded,
- *     messages может быть 100k+ строк.
- *   - Защита от параллельных запусков: _running-флаг, повторный вызов no-op.
- *   - stop/start: stopSemanticIndexer() снимает таймеры + флаг _stopRequested
- *     (текущий цикл доезжает до ближайшей проверки и выходит) + disposeE5Embedder.
- *   - Fallback: если E5-модель недоступна (нет сети/ONNX) — цикл пропускается,
- *     текущий TF-IDF/FTS поиск работает как раньше. Ошибки отдельных строк
- *     не прерывают цикл.
- *   - Orphan cleanup: эмбеддинги удалённых строк источников вычищаются
- *     (agent_logs прунятся через 14 дней, messages удаляются при rewind).
+ * Индексируется 5 источников в таблицу `semantic_embeddings` (384-dim E5):
+ *   1. memory_items      → text = "title. content"
+ *   2. messages          → text = content (user/assistant)
+ *   3. chat_summaries    → text = content
+ *   4. agent_logs        → text = "[tool] ERROR: … | result"
+ *   5. pinned_messages   → text = content сообщения
  *
- * ВАЖНО: индексер и поиск живут в одном модуле. searchSemanticSources() —
- * E5 query embedding + cosine ranking по semantic_embeddings с теми же
- * scope/project/kind фильтрами, что lexical-канал (chatSearch/search.ts).
- * Hybrid-merge semantic+lexical кандидатов — в searchAllSources (search.ts).
+ * Деградация: если sidecar недоступен или модель не скачана — цикл
+ * пропускается, lexical/TF-IDF поиск работает как раньше.
  */
 
-import { createHash } from 'node:crypto'
-import type Database from 'better-sqlite3'
-import { getDB } from '../db/handle'
+import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { getMemorySettings } from './globalMemorySettings'
-import {
-  getReadyE5Embedder,
-  disposeE5Embedder,
-  embeddingToBuffer,
-  cosineSimilarity,
-  bufferToEmbedding,
-  type E5Embedder,
-  type Embedding,
-} from '../context/embeddings'
 import { rowToItem, type MemoryKind, type MultiSourceResult } from './store/_shared'
+import {
+  resolveSemanticModelPaths,
+  sidecarSemanticIndex,
+  sidecarSemanticSearch,
+  type SidecarSemanticHit,
+} from '../context/fastContext/sidecarClient'
 import { perfMark, perfEvent } from '../performanceDiagnostics'
 
 // ─── Типы ────────────────────────────────────────────────────────────────────
@@ -62,22 +46,13 @@ const SEMANTIC_SOURCES: SemanticSourceName[] = ['memory', 'messages', 'summaries
 const START_DELAY_MS = 30_000
 /** Периодический реиндекс (ловит новые сообщения/логи). */
 const REINDEX_INTERVAL_MS = 15 * 60 * 1000
-/** Строк на страницу (keyset-пагинация) — bounded память. */
-const PAGE_SIZE = 200
 /**
- * Пауза после каждого эмбеддинга — semantic indexing уступает foreground.
- * E5/ONNX может занимать заметный CPU даже когда вызов async; 40ms
- * уменьшает пики на слабых CPU и всё ещё оставляет индексирование полезным
- * в фоне.
+ * Бюджет CPU на один вызов sidecar. Недоделанное продолжается следующим
+ * вызовом — так один цикл не растягивается на 16 минут, как было в TS.
  */
-const PAUSE_BETWEEN_ITEMS_MS = 40
-/** Пауза между страницами — даже если всё skipped (просто читали хэши). */
-const PAUSE_BETWEEN_PAGES_MS = 250
-/**
- * E5 лимит ~512 токенов; для RU/EN ~3 символа/токен → 1500 символов с запасом.
- * Хэш считается от усечённого текста — стабильные инвалидиции.
- */
-const MAX_TEXT_CHARS = 1500
+const CYCLE_BUDGET_MS = 60_000
+/** Сколько подряд «продолжений» делаем внутри одного запуска (страховка). */
+const MAX_CONSECUTIVE_CYCLES = 5
 
 // ─── Состояние ───────────────────────────────────────────────────────────────
 
@@ -87,218 +62,83 @@ let _running = false
 let _stopRequested = false
 let _started = false
 let _isForegroundBusy: () => boolean = () => false
-// Foreground pause is polled with cancellable stop checks below.
 
 /** Connect foreground activity without coupling core memory code to Electron/main. */
 export function setSemanticIndexerForegroundPredicate(predicate: () => boolean): void {
   _isForegroundBusy = predicate
 }
 
-let _foregroundQuietUntil = 0
-async function waitForForegroundIdle(): Promise<boolean> {
-  // Only impose the grace period after foreground activity, not on every row.
-  while (!_stopRequested) {
-    if (_isForegroundBusy()) {
-      _foregroundQuietUntil = Date.now() + 2_000
-      await sleep(250)
-      continue
-    }
-    if (Date.now() >= _foregroundQuietUntil) return true
-    await sleep(Math.min(250, _foregroundQuietUntil - Date.now()))
-  }
-  return false
-}
+// ─── Модель ──────────────────────────────────────────────────────────────────
 
-// ─── Хелперы ─────────────────────────────────────────────────────────────────
+const HF_BASE = 'https://huggingface.co'
+const MODEL_ID = 'Xenova/multilingual-e5-small'
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
+/** Файлы модели, которые нужны Rust-эмбеддеру. */
+const MODEL_FILES: Array<{ relative: string; minBytes: number }> = [
+  { relative: join('onnx', 'model_quantized.onnx'), minBytes: 100 * 1024 * 1024 },
+  { relative: 'tokenizer.json', minBytes: 1024 * 1024 },
+]
 
-function sha256(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex')
-}
-
-interface SourceRow {
-  /** PK строки источника (memory_items.id / messages.id / chat_id / message_id). */
-  id: string
-  /** Текст для эмбеддинга (уже собранный, как в chatSearch). */
-  text: string
-}
+let _downloadAttempted = false
+let _downloadFailedAt = 0
+/** Прежняя политика E5: неудачу не ретраим чаще, чем раз в 5 минут. */
+const DOWNLOAD_RETRY_MS = 5 * 60 * 1000
 
 /**
- * Одна страница строк источника (keyset-пагинация по id, ASC).
- * Тексты собираем из тех же полей, что ищут chatSearch.ts / search.ts.
+ * Скачивает файлы модели в HF-кэш приложения, если их нет.
+ *
+ * Раньше загрузку делал transformers.js при первом `getE5Embedder()`. Теперь
+ * инференс в Rust, поэтому и качать должен кто-то без ONNX в main — иначе
+ * вернули бы 500 МБ и блокировки, от которых уходили. Это два HTTP-запроса.
+ *
+ * Возвращает true, если модель на месте.
  */
-function fetchSourcePage(
-  source: SemanticSourceName,
-  db: Database.Database,
-  afterId: string | null,
-  limit: number,
-): SourceRow[] {
-  const after = afterId ?? ''
-  switch (source) {
-    case 'memory': {
-      // title + content — search.ts матчит и content, и title (LIKE boost).
-      const rows = db.prepare(
-        `SELECT id, title, content FROM memory_items WHERE id > ? ORDER BY id ASC LIMIT ?`
-      ).all(after, limit) as Array<{ id: string; title: string | null; content: string }>
-      return rows.map(r => ({ id: r.id, text: `${r.title ?? ''}. ${r.content}`.trim() }))
-    }
-    case 'messages': {
-      // user/assistant — как FTS-триггеры messages_fts_ai индексируют роли;
-      // system-сообщения (разделители компакции) семантически бесполезны.
-      const rows = db.prepare(
-        `SELECT id, content FROM messages WHERE id > ? AND role IN ('user','assistant') ORDER BY id ASC LIMIT ?`
-      ).all(after, limit) as Array<{ id: string; content: string }>
-      return rows.map(r => ({ id: r.id, text: r.content }))
-    }
-    case 'summaries': {
-      const rows = db.prepare(
-        `SELECT chat_id AS id, content FROM chat_summaries WHERE chat_id > ? ORDER BY chat_id ASC LIMIT ?`
-      ).all(after, limit) as Array<{ id: string; content: string }>
-      return rows.map(r => ({ id: r.id, text: r.content }))
-    }
-    case 'agent_logs': {
-      // Include a bounded args fragment: lexical search also checks args, and
-      // technical identifiers often live there (file paths, tool parameters).
-      const rows = db.prepare(
-        `SELECT id, tool, args, result, error FROM agent_logs WHERE id > ? ORDER BY id ASC LIMIT ?`
-      ).all(after, limit) as Array<{
-        id: string
-        tool: string | null
-        args: string | null
-        result: string | null
-        error: string | null
-      }>
-      return rows.map(r => {
-        const parts: string[] = []
-        if (r.tool) parts.push(`[${r.tool}]`)
-        if (r.args) parts.push(`ARGS: ${r.args.slice(0, 700)}`)
-        if (r.error) parts.push(`ERROR: ${r.error}`)
-        else if (r.result) parts.push(r.result)
-        return { id: r.id, text: parts.join(' ') }
-      })
-    }
-    case 'pinned': {
-      const rows = db.prepare(
-        `SELECT pm.message_id AS id, m.content
-         FROM pinned_messages pm
-         JOIN messages m ON m.id = pm.message_id
-         WHERE pm.message_id > ? ORDER BY pm.message_id ASC LIMIT ?`
-      ).all(after, limit) as Array<{ id: string; content: string }>
-      return rows.map(r => ({ id: r.id, text: r.content }))
-    }
+async function ensureModelFiles(): Promise<boolean> {
+  if (resolveSemanticModelPaths()) return true
+  const cacheDir = process.env.TRANSFORMERS_CACHE
+  if (!cacheDir) return false
+  if (_downloadAttempted) {
+    // Уже пытались: повторяем только после окна ожидания (офлайн-режим не
+    // должен крутить загрузчик на каждом цикле).
+    if (_downloadFailedAt === 0) return false
+    if (Date.now() - _downloadFailedAt < DOWNLOAD_RETRY_MS) return false
   }
-}
 
-/** Удаляет эмбеддинги строк, которых больше нет в источнике (prune/rewind). */
-function cleanupOrphans(source: SemanticSourceName, db: Database.Database): number {
-  const sourceTable: Record<SemanticSourceName, string> = {
-    memory: `(SELECT id FROM memory_items)`,
-    messages: `(SELECT id FROM messages)`,
-    summaries: `(SELECT chat_id FROM chat_summaries)`,
-    agent_logs: `(SELECT id FROM agent_logs)`,
-    pinned: `(SELECT message_id FROM pinned_messages)`,
-  }
+  _downloadAttempted = true
+  const modelDir = join(cacheDir, MODEL_ID)
   try {
-    const info = db.prepare(
-      `DELETE FROM semantic_embeddings WHERE source = ? AND source_id NOT IN ${sourceTable[source]}`
-    ).run(source)
-    return info.changes
-  } catch {
-    return 0
-  }
-}
-
-// ─── Индексация одного источника ─────────────────────────────────────────────
-
-interface SourceStats {
-  indexed: number
-  skipped: number
-  failed: number
-}
-
-async function indexSource(
-  source: SemanticSourceName,
-  embedder: E5Embedder,
-): Promise<SourceStats> {
-  const cycleStarted = perfMark()
-  const db = getDB()
-  const selectExisting = db.prepare(
-    `SELECT content_hash, model FROM semantic_embeddings WHERE source = ? AND source_id = ?`
-  )
-  const upsert = db.prepare(
-    `INSERT OR REPLACE INTO semantic_embeddings
-       (source, source_id, content_hash, embedding, model, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  )
-
-  const stats: SourceStats = { indexed: 0, skipped: 0, failed: 0 }
-  let afterId: string | null = null
-
-  for (;;) {
-    if (_stopRequested) return stats
-
-    if (!await waitForForegroundIdle()) return stats
-    const rows = fetchSourcePage(source, db, afterId, PAGE_SIZE)
-    if (rows.length === 0) break
-    afterId = rows[rows.length - 1].id
-
-    for (const row of rows) {
-      if (_stopRequested) return stats
-
-      const text = row.text.slice(0, MAX_TEXT_CHARS).trim()
-      if (!text) {
-        stats.skipped++
-        continue
+    for (const file of MODEL_FILES) {
+      const target = join(modelDir, file.relative)
+      if (existsSync(target) && statSync(target).size >= file.minBytes) continue
+      mkdirSync(dirname(target), { recursive: true })
+      const url = `${HF_BASE}/${MODEL_ID}/resolve/main/${file.relative.split('\\').join('/')}`
+      console.log(`[semanticIndex] downloading ${file.relative}…`)
+      const response = await fetch(url, { redirect: 'follow' })
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+      const buffer = Buffer.from(await response.arrayBuffer())
+      if (buffer.byteLength < file.minBytes) {
+        throw new Error(`truncated download: ${buffer.byteLength} bytes`)
       }
-
-      // Не переэмбеддим неизменённое: hash совпал + та же модель.
-      const hash = sha256(text)
-      const existing = selectExisting.get(source, row.id) as
-        | { content_hash: string; model: string }
-        | undefined
-      if (existing && existing.content_hash === hash && existing.model === embedder.model) {
-        if (!await waitForForegroundIdle()) return stats
-        stats.skipped++
-        continue
-      }
-
-      if (!await waitForForegroundIdle()) return stats
-      try {
-        const emb = await embedder.embedPassage(text)
-        upsert.run(source, row.id, hash, embeddingToBuffer(emb), embedder.model, Date.now())
-        stats.indexed++
-      } catch {
-        // Ошибка одной строки (слишком длинный/битый текст) не валит цикл.
-        stats.failed++
-      }
-
-      // Пауза только после реального эмбеддинга — skipped-скан не спит
-      // (полный проход по 100k сообщений занимает секунды, не часы).
-      await sleep(PAUSE_BETWEEN_ITEMS_MS)
+      // Атомарная подмена: недокачанный файл не должен выглядеть готовым.
+      const temp = `${target}.part`
+      writeFileSync(temp, buffer)
+      renameSync(temp, target)
+      console.log(`[semanticIndex] saved ${file.relative} (${Math.round(buffer.byteLength / 1024 / 1024)} MB)`)
     }
-
-    if (rows.length < PAGE_SIZE) break
-    await sleep(PAUSE_BETWEEN_PAGES_MS)
+    return resolveSemanticModelPaths() !== null
+  } catch (e) {
+    _downloadFailedAt = Date.now()
+    console.warn('[semanticIndex] model download failed:', e instanceof Error ? e.message : e)
+    return false
   }
-
-  if (!await waitForForegroundIdle()) return stats
-  const orphans = cleanupOrphans(source, db)
-  if (orphans > 0) {
-    console.log(`[semanticIndex] ${source}: cleaned ${orphans} orphaned embeddings`)
-  }
-  perfEvent('semantic_index.source', perfMark() - cycleStarted, { source, indexed: stats.indexed, skipped: stats.skipped, failed: stats.failed })
-  return stats
 }
 
-// ─── Публичный API ───────────────────────────────────────────────────────────
+// ─── Индексация ──────────────────────────────────────────────────────────────
 
 /**
  * Один цикл индексации всех 5 источников. Идемпотентен, защищён от
- * параллельных запусков (_running). Ошибки глотаются с warn — фоновый
- * процесс не должен падать и не должен ломать основной поиск.
+ * параллельных запусков (_running). Ошибки глотаются с warn — фоновый процесс
+ * не должен падать и не должен ломать основной поиск.
  */
 export async function runSemanticIndexingOnce(): Promise<void> {
   if (_running) {
@@ -306,34 +146,33 @@ export async function runSemanticIndexingOnce(): Promise<void> {
     return
   }
   if (_stopRequested) return
+  // Пользователь активно работает (идёт ран/компакция) — не начинаем цикл.
+  if (_isForegroundBusy()) return
+
   _running = true
   const cycleStarted = perfMark()
   try {
-    // Background indexing is the only path allowed to initialize/download E5.
-    // recall_memory uses getReadyE5Embedder() and never blocks on model startup.
-    if (!await waitForForegroundIdle()) return
-    const { getE5Embedder } = await import('../context/embeddings')
-    const embedder = await getE5Embedder()
-    if (!embedder) {
-      // Модель недоступна (нет сети / ONNX упал). Не ошибка: lexical/TF-IDF
-      // поиск работает как раньше. До перезапуска приложения не ретраим.
-      console.log('[semanticIndex] E5 embedder unavailable — skipping cycle (lexical search unaffected)')
+    if (!await ensureModelFiles()) {
+      console.log('[semanticIndex] E5 model unavailable — skipping cycle (lexical search unaffected)')
       return
     }
+    const paths = resolveSemanticModelPaths()
+    if (!paths) return
 
-    const startedAt = Date.now()
-    for (const source of SEMANTIC_SOURCES) {
-      if (_stopRequested) break
-      try {
-        const stats = await indexSource(source, embedder)
-        if (stats.indexed > 0 || stats.failed > 0) {
-          console.log(
-            `[semanticIndex] ${source}: +${stats.indexed} indexed, ${stats.skipped} unchanged, ${stats.failed} failed (${Date.now() - startedAt}ms elapsed)`
-          )
-        }
-      } catch (e) {
-        console.warn(`[semanticIndex] source '${source}' failed:`, e instanceof Error ? e.message : e)
-      }
+    let totalIndexed = 0
+    let totalFailed = 0
+    for (let attempt = 0; attempt < MAX_CONSECUTIVE_CYCLES; attempt++) {
+      if (_stopRequested || _isForegroundBusy()) break
+      const report = await sidecarSemanticIndex({ budgetMs: CYCLE_BUDGET_MS }, paths)
+      totalIndexed += report.totalIndexed
+      totalFailed += report.totalFailed
+      if (!report.budgetExhausted) break
+      // Бюджет кончился — сразу продолжаем, пока не доедем до конца.
+    }
+    if (totalIndexed > 0 || totalFailed > 0) {
+      console.log(
+        `[semanticIndex] +${totalIndexed} indexed, ${totalFailed} failed (${Math.round(perfMark() - cycleStarted)}ms)`,
+      )
     }
   } catch (e) {
     console.warn('[semanticIndex] cycle failed:', e instanceof Error ? e.message : e)
@@ -346,8 +185,6 @@ export async function runSemanticIndexingOnce(): Promise<void> {
 /**
  * Запускает фоновую индексацию: первый цикл через START_DELAY_MS (не блокирует
  * startup), далее каждые REINDEX_INTERVAL_MS. Повторный вызов — no-op.
- * Вызывается из registerMemoryIPC; сами циклы не блокируют IPC-хендлеры
- * (async + sleep-паузы между эмбеддингами).
  */
 export function startSemanticIndexer(): void {
   if (_started) return
@@ -366,9 +203,9 @@ export function startSemanticIndexer(): void {
 }
 
 /**
- * Останавливает индексатор: снимает таймеры, выставляет _stopRequested
- * (текущий цикл доедет до ближайшей проверки и выйдет), освобождает E5 ONNX
- * pipeline. Вызывается из main/index.ts before-quit.
+ * Останавливает индексатор: снимает таймеры и выставляет _stopRequested
+ * (текущий цикл доедет до ближайшей проверки и выйдет). Модель в sidecar
+ * освобождается командой `semanticUnload` при shutdown sidecar.
  */
 export function stopSemanticIndexer(): void {
   _stopRequested = true
@@ -381,7 +218,6 @@ export function stopSemanticIndexer(): void {
     clearInterval(_interval)
     _interval = null
   }
-  disposeE5Embedder()
 }
 
 /** Текущее состояние (для диагностики/UI-статуса). */
@@ -393,7 +229,7 @@ export function getSemanticIndexerStatus(): {
   return { started: _started, running: _running, stopRequested: _stopRequested }
 }
 
-// ─── SEMANTIC SEARCH (E5 query → cosine ranking) ─────────────────────────────
+// ─── SEMANTIC SEARCH (E5 query → cosine ranking в Rust) ──────────────────────
 
 export interface SemanticSearchOptions {
   /** Какие источники искать. Default: все 5. */
@@ -413,247 +249,36 @@ export interface SemanticSearchOptions {
   limit?: number
 }
 
-/**
- * Верхняя граница сканируемых строк на источник: cosine считается в JS по
- * BLOB-векторам, скан обязан быть bounded (память ≤ cap × 1.5KB, время
- * ≤ cap × ~2µs). Для типичных БД это полный скан источника; для гигантских —
- * обрезка: memory по importance (как top-500 в searchMemory), chat-источники
- * по recency (как ORDER BY created_at в chatSearch LIKE-fallback).
- */
-const SEMANTIC_SCAN_CAPS: Record<SemanticSourceName, number> = {
-  memory: 4000,
-  messages: 10000,
-  summaries: 2000,
-  agent_logs: 3000,
-  pinned: 2000,
-}
-
-/** Content truncate — тот же лимит, что MAX_CONTENT_CHARS в chatSearch.ts. */
-const SEMANTIC_MAX_CONTENT_CHARS = 600
-
-function truncateContent(text: string): string {
-  return text.length <= SEMANTIC_MAX_CONTENT_CHARS
-    ? text
-    : text.slice(0, SEMANTIC_MAX_CONTENT_CHARS) + '…'
-}
-
-/**
- * Scope WHERE для memory_items — точная копия логики searchMemory (search.ts):
- * semantic-канал обязан видеть ровно тот же набор строк, что lexical.
- */
-function memoryScopeWhere(
-  scope: 'global' | 'project' | 'chat' | 'all' | undefined,
-  projectId: string | undefined,
-  crossProject = false,
-): { where: string; args: unknown[] } {
-  const settings = getMemorySettings()
-  const globalEnabled = settings.enabled && settings.global
-  if (!settings.enabled) return { where: `0=1`, args: [] }
-  if (crossProject) {
-    const allowed: string[] = []
-    if (settings.global) allowed.push(`mi.scope = 'global'`)
-    if (settings.project) allowed.push(`mi.scope = 'project'`)
-    if (settings.chat) allowed.push(`mi.scope = 'chat'`)
-    return { where: allowed.length ? `(${allowed.join(' OR ')})` : `0=1`, args: [] }
+/** Строка-кандидат sidecar → MultiSourceResult (формат lexical-канала). */
+function hitToResult(hit: SidecarSemanticHit): MultiSourceResult | null {
+  const source = hit.source as SemanticSourceName
+  if (!SEMANTIC_SOURCES.includes(source)) return null
+  const semanticScore = Math.max(0, Math.min(1, hit.score))
+  const result: MultiSourceResult = {
+    source,
+    sourceId: hit.sourceId,
+    content: hit.content,
+    score: semanticScore,
+    semanticScore,
   }
-  if (scope === 'global') return { where: globalEnabled ? `mi.scope = 'global'` : `0=1`, args: [] }
-  if ((scope === 'project' || scope === 'chat') && projectId) {
-    return { where: (scope === 'project' ? settings.project : settings.chat) ? `mi.scope = 'project' AND mi.project_id = ?` : `0=1`, args: [projectId] }
-  }
-  // 'all' (default) / 'project'|'chat' без projectId — как в searchMemory
-  const allowedDefault: string[] = []
-  if (settings.global) allowedDefault.push(`mi.scope = 'global'`)
-  if (settings.project) allowedDefault.push(`mi.scope = 'project'`)
-  if (settings.chat) allowedDefault.push(`mi.scope = 'chat'`)
-  return {
-    where: allowedDefault.length
-      ? `(${allowedDefault.join(' OR ')}) AND (mi.project_id = ? OR mi.scope = 'global')`
-      : `0=1`,
-    args: [projectId ?? '__none__'],
-  }
-}
-
-/** Scope WHERE для chat-источников (JOIN chats c) — копия chatSearch.scopeFilter. */
-function chatScopeWhere(
-  crossProject: boolean | undefined,
-  projectId: string | undefined,
-): { where: string; args: unknown[] } {
-  if (crossProject) return { where: `1=1`, args: [] }
-  if (projectId) return { where: `c.project_id = ?`, args: [projectId] }
-  return { where: `c.project_id IS NULL`, args: [] }
-}
-
-/** Строка-кандидат semantic-канала: PK + вектор + content + метаданные. */
-interface SemanticRow {
-  sourceId: string
-  embedding: Buffer
-  content: string
-  chatId?: string | null
-  chatTitle?: string | null
-  role?: string | null
-  date?: number
-  /** Полная строка memory_items (mi.*) — для item в MultiSourceResult. */
-  memoryRow?: Record<string, unknown>
-}
-
-interface SemanticFetchOptions {
-  scope: 'global' | 'project' | 'chat' | 'all' | undefined
-  projectId: string | undefined
-  crossProject: boolean | undefined
-  kind: MemoryKind | undefined
-}
-
-/**
- * Кандидаты одного источника: semantic_embeddings JOIN таблица источника
- * (scope/kind фильтры + se.model = ? — не смешиваем векторы разных моделей).
- * Вся параметризация — placeholders; ORDER BY + LIMIT держат скан bounded.
- */
-function fetchSemanticRows(
-  source: SemanticSourceName,
-  db: Database.Database,
-  model: string,
-  opts: SemanticFetchOptions,
-): SemanticRow[] {
-  const cap = SEMANTIC_SCAN_CAPS[source]
-  switch (source) {
-    case 'memory': {
-      const scope = memoryScopeWhere(opts.scope, opts.projectId, opts.crossProject)
-      const kindWhere = opts.kind ? `AND mi.kind = ?` : ''
-      const kindArgs = opts.kind ? [opts.kind] : []
-      const rows = db.prepare(
-        `SELECT se.source_id, se.embedding, mi.*
-         FROM semantic_embeddings se
-         JOIN memory_items mi ON mi.id = se.source_id
-         WHERE se.source = 'memory' AND se.model = ? AND ${scope.where} ${kindWhere}
-         ORDER BY mi.importance DESC
-         LIMIT ?`
-      ).all(model, ...scope.args, ...kindArgs, cap) as Array<Record<string, unknown>>
-      return rows.map(r => ({
-        sourceId: r.source_id as string,
-        embedding: r.embedding as Buffer,
-        // memory content не усекаем — searchMemory тоже возвращает полный content
-        content: r.content as string,
-        memoryRow: r,
-      }))
-    }
-    case 'messages': {
-      const scope = chatScopeWhere(opts.crossProject, opts.projectId)
-      const rows = db.prepare(
-        `SELECT se.source_id, se.embedding, m.content, m.role, m.chat_id, c.title, m.created_at
-         FROM semantic_embeddings se
-         JOIN messages m ON m.id = se.source_id
-         JOIN chats c ON c.id = m.chat_id
-         WHERE se.source = 'messages' AND se.model = ? AND ${scope.where}
-         ORDER BY m.created_at DESC
-         LIMIT ?`
-      ).all(model, ...scope.args, cap) as Array<{
-        source_id: string; embedding: Buffer; content: string; role: string
-        chat_id: string; title: string | null; created_at: number
-      }>
-      return rows.map(r => ({
-        sourceId: r.source_id,
-        embedding: r.embedding,
-        content: truncateContent(r.content),
-        chatId: r.chat_id,
-        chatTitle: r.title,
-        role: r.role,
-        date: r.created_at,
-      }))
-    }
-    case 'summaries': {
-      const scope = chatScopeWhere(opts.crossProject, opts.projectId)
-      const rows = db.prepare(
-        `SELECT se.source_id, se.embedding, cs.content, c.title, cs.updated_at
-         FROM semantic_embeddings se
-         JOIN chat_summaries cs ON cs.chat_id = se.source_id
-         JOIN chats c ON c.id = cs.chat_id
-         WHERE se.source = 'summaries' AND se.model = ? AND ${scope.where}
-         ORDER BY cs.updated_at DESC
-         LIMIT ?`
-      ).all(model, ...scope.args, cap) as Array<{
-        source_id: string; embedding: Buffer; content: string
-        title: string | null; updated_at: number
-      }>
-      return rows.map(r => ({
-        sourceId: r.source_id,
-        embedding: r.embedding,
-        content: truncateContent(r.content),
-        chatId: r.source_id,
-        chatTitle: r.title,
-        date: r.updated_at,
-      }))
-    }
-    case 'agent_logs': {
-      const scope = chatScopeWhere(opts.crossProject, opts.projectId)
-      // 14-дневный cutoff — как в searchAgentLogs (старые логи прунятся)
-      const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000
-      const rows = db.prepare(
-        `SELECT se.source_id, se.embedding, al.tool, al.result, al.error, al.created_at, al.chat_id, c.title
-         FROM semantic_embeddings se
-         JOIN agent_logs al ON al.id = se.source_id
-         LEFT JOIN chats c ON c.id = al.chat_id
-         WHERE se.source = 'agent_logs' AND se.model = ? AND ${scope.where} AND al.created_at > ?
-         ORDER BY al.created_at DESC
-         LIMIT ?`
-      ).all(model, ...scope.args, cutoff, cap) as Array<{
-        source_id: string; embedding: Buffer; tool: string | null; result: string | null
-        error: string | null; created_at: number; chat_id: string | null; title: string | null
-      }>
-      // Content — тот же формат, что searchAgentLogs: "[tool] ERROR: …" / "[tool] result"
-      return rows.map(r => {
-        const parts: string[] = []
-        if (r.tool) parts.push(`[${r.tool}]`)
-        if (r.error) parts.push(`ERROR: ${r.error}`)
-        else if (r.result) parts.push(r.result)
-        return {
-          sourceId: r.source_id,
-          embedding: r.embedding,
-          content: truncateContent(parts.join(' ')),
-          chatId: r.chat_id,
-          chatTitle: r.title,
-          date: r.created_at,
-        }
-      })
-    }
-    case 'pinned': {
-      const scope = chatScopeWhere(opts.crossProject, opts.projectId)
-      const rows = db.prepare(
-        `SELECT se.source_id, se.embedding, m.content, m.role, m.chat_id, c.title, m.created_at
-         FROM semantic_embeddings se
-         JOIN pinned_messages pm ON pm.message_id = se.source_id
-         JOIN messages m ON m.id = pm.message_id
-         JOIN chats c ON c.id = m.chat_id
-         WHERE se.source = 'pinned' AND se.model = ? AND ${scope.where}
-         ORDER BY m.created_at DESC
-         LIMIT ?`
-      ).all(model, ...scope.args, cap) as Array<{
-        source_id: string; embedding: Buffer; content: string; role: string
-        chat_id: string; title: string | null; created_at: number
-      }>
-      return rows.map(r => ({
-        sourceId: r.source_id,
-        embedding: r.embedding,
-        content: truncateContent(r.content),
-        chatId: r.chat_id,
-        chatTitle: r.title,
-        role: r.role,
-        date: r.created_at,
-      }))
-    }
-  }
+  if (source === 'memory' && hit.memoryRow) result.item = rowToItem(hit.memoryRow)
+  if (hit.chatId != null) result.chatId = hit.chatId
+  if (hit.chatTitle != null) result.chatTitle = hit.chatTitle
+  if (hit.role != null) result.role = hit.role
+  if (hit.date != null) result.date = hit.date
+  if (source === 'messages' || source === 'pinned') result.messageId = hit.sourceId
+  return result
 }
 
 /**
  * Semantic-поиск по всем источникам recall_memory (E5, cosine).
  *
- * Делает E5 query embedding и ищет кандидатов в semantic_embeddings с теми же
- * scope/project/kind фильтрами, что lexical-канал (chatSearch/search.ts) —
- * оба канала видят один и тот же корпус. Возвращает top-K на источник в
- * формате MultiSourceResult с sourceId и semanticScore (cosine 0..1).
- * Graph НЕ возвращается — граф-экспансия остаётся в searchAllSources.
+ * Возвращает top-K на источник в формате MultiSourceResult с sourceId и
+ * semanticScore (cosine 0..1). Graph НЕ возвращается — граф-экспансия остаётся
+ * в searchAllSources.
  *
- * Отказоустойчивость: E5 недоступен / таблицы нет / ошибка SQL / битый BLOB →
- * [] (или пропуск источника) — lexical-канал работает как раньше.
+ * Отказоустойчивость: sidecar недоступен / модели нет / ошибка SQL → [] —
+ * lexical-канал работает как раньше.
  */
 export async function searchSemanticSources(
   query: string,
@@ -662,72 +287,39 @@ export async function searchSemanticSources(
   const trimmed = query.trim()
   if (!trimmed) return []
 
-  // Query path uses only an already initialized pipeline; model download/load
-  // belongs exclusively to the background indexer, never a chat tool call.
-  const embedder = getReadyE5Embedder()
-  if (!embedder) return []
+  // Поиск никогда не запускает скачивание модели — только уже готовые файлы.
+  const paths = resolveSemanticModelPaths()
+  if (!paths) return []
 
-  let queryEmb: Embedding
+  const settings = getMemorySettings()
   try {
-    queryEmb = await embedder.embedQuery(trimmed)
-  } catch {
+    const hits = await sidecarSemanticSearch({
+      query: trimmed,
+      sources: options.sources ?? SEMANTIC_SOURCES,
+      scope: options.scope,
+      projectId: options.projectId,
+      crossProject: options.crossProject === true,
+      kind: options.kind,
+      limit: Math.max(1, options.limit ?? 5),
+      memoryEnabled: settings.enabled,
+      memoryGlobal: settings.global,
+      memoryProject: settings.project,
+      memoryChat: settings.chat,
+    }, paths)
+    const results: MultiSourceResult[] = []
+    for (const hit of hits) {
+      const mapped = hitToResult(hit)
+      if (mapped) results.push(mapped)
+    }
+    return results
+  } catch (e) {
+    console.warn('[semanticIndex] semantic search failed:', e instanceof Error ? e.message : e)
     return []
   }
+}
 
-  let db: Database.Database
-  try {
-    db = getDB()
-  } catch {
-    return []
-  }
-
-  const sources = options.sources ?? SEMANTIC_SOURCES
-  const limit = Math.max(1, options.limit ?? 5)
-  const results: MultiSourceResult[] = []
-
-  for (const source of sources) {
-    if (!SEMANTIC_SOURCES.includes(source)) continue
-    let rows: SemanticRow[]
-    try {
-      rows = fetchSemanticRows(source, db, embedder.model, {
-        scope: options.scope,
-        projectId: options.projectId,
-        crossProject: options.crossProject,
-        kind: options.kind,
-      })
-    } catch {
-      continue // нет таблицы/индекса у источника — пропускаем, не валим поиск
-    }
-    if (rows.length === 0) continue
-
-    // Cosine ranking: E5-векторы L2-normalized → dot product.
-    const scored: Array<{ row: SemanticRow; cos: number }> = []
-    for (const row of rows) {
-      try {
-        const cos = cosineSimilarity(queryEmb, bufferToEmbedding(row.embedding))
-        if (Number.isFinite(cos)) scored.push({ row, cos })
-      } catch { /* битый BLOB — пропускаем строку */ }
-    }
-    scored.sort((a, b) => b.cos - a.cos)
-
-    for (const { row, cos } of scored.slice(0, limit)) {
-      const semanticScore = Math.max(0, Math.min(1, cos))
-      const res: MultiSourceResult = {
-        source,
-        sourceId: row.sourceId,
-        content: row.content,
-        score: semanticScore,
-        semanticScore,
-      }
-      if (source === 'memory' && row.memoryRow) res.item = rowToItem(row.memoryRow)
-      if (row.chatId != null) res.chatId = row.chatId
-      if (row.chatTitle != null) res.chatTitle = row.chatTitle
-      if (row.role != null) res.role = row.role
-      if (row.date != null) res.date = row.date
-      if (source === 'messages' || source === 'pinned') res.messageId = row.sourceId
-      results.push(res)
-    }
-  }
-
-  return results
+/** Путь к модели — для диагностики/статуса в UI. */
+export function getSemanticModelInfo(): { available: boolean; model: string } {
+  const paths = resolveSemanticModelPaths()
+  return { available: paths !== null, model: MODEL_ID }
 }

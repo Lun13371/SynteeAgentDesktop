@@ -4,10 +4,10 @@ use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
 use serde::Deserialize;
 
-use crate::error::Result;
-use crate::symbols::{FileSymbols, SymbolDef};
-use crate::text::normalize_join;
-use crate::walker::SourceFile;
+use crate::common::error::Result;
+use crate::fast_context::symbols::{FileSymbols, SymbolDef};
+use crate::text::normalize::normalize_join;
+use crate::fast_context::walker::SourceFile;
 
 pub struct Database {
     connection: Connection,
@@ -107,10 +107,10 @@ fn derive_search_fields(
         if names.len() >= SEARCH_NAMES_MAX_CHARS {
             break;
         }
-        let normalized = crate::text::normalize(&definition.name);
+        let normalized = crate::text::normalize::normalize(&definition.name);
         append_field(&mut names, &normalized, SEARCH_NAMES_MAX_CHARS);
         if let Some(parent) = definition.parent_name.as_deref() {
-            append_field(&mut names, &crate::text::normalize(parent), SEARCH_NAMES_MAX_CHARS);
+            append_field(&mut names, &crate::text::normalize::normalize(parent), SEARCH_NAMES_MAX_CHARS);
         }
     }
     let body = normalize_join(
@@ -141,7 +141,7 @@ impl Database {
         validate_db_path(path)?;
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         if !has_projects_table(&connection)? {
-            return Err(crate::error::SidecarError::InvalidRequest(
+            return Err(crate::common::error::SidecarError::InvalidRequest(
                 "dbPath is not an existing Syntee database: projects table is missing".to_owned(),
             ));
         }
@@ -714,12 +714,12 @@ impl Database {
 
 fn validate_db_path(path: &Path) -> Result<()> {
     if path.as_os_str().is_empty() {
-        return Err(crate::error::SidecarError::InvalidRequest(
+        return Err(crate::common::error::SidecarError::InvalidRequest(
             "dbPath must point to an existing Syntee database".to_owned(),
         ));
     }
     if !path.is_file() {
-        return Err(crate::error::SidecarError::InvalidRequest(format!(
+        return Err(crate::common::error::SidecarError::InvalidRequest(format!(
             "dbPath does not point to an existing database file: {}",
             path.display()
         )));
@@ -751,8 +751,8 @@ mod tests {
     use rusqlite::Connection;
 
     use super::Database;
-    use crate::symbols::{FileSymbols, SymbolDef};
-    use crate::walker::SourceFile;
+    use crate::fast_context::symbols::{FileSymbols, SymbolDef};
+    use crate::fast_context::walker::SourceFile;
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("syntee-sidecar-{label}-{}.db", std::process::id()))

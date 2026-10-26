@@ -345,7 +345,7 @@ export interface SummaryPromptResult {
   userContent: string
 }
 
-export function buildSummaryPrompt(messages: ChatMessage[], prevSummary?: string): SummaryPromptResult {
+export function buildSummaryPrompt(messages: ChatMessage[], prevSummary?: string, focus?: string): SummaryPromptResult {
   // Pruning перед суммаризацией — убираем лишние токены из tool results
   const pruned = pruneToolOutputsForSummary(messages)
 
@@ -369,9 +369,16 @@ export function buildSummaryPrompt(messages: ChatMessage[], prevSummary?: string
     ? `Below is the existing summary. Incorporate the new messages into it.\nKEEP everything important from the existing summary — do not delete facts, files, decisions.\nAdd new information, update statuses (completed/in-progress), fix if something changed.\nIf the new dialogue has no information for a section — keep the old one.\n\n<existing_summary>\n${prevSummary}\n</existing_summary>\n\n`
     : ''
 
+  // Фокус пользователя (/compact last <текст>): приоритет при отборе деталей.
+  // Не отменяет шаблон — только подсвечивает, что нельзя потерять.
+  const trimmedFocus = focus?.trim()
+  const focusBlock = trimmedFocus
+    ? `USER FOCUS FOR THIS COMPACTION — preserve these details above all else, in their own words:\n${trimmedFocus}\n(Still keep every other critical fact: the focus is a priority hint, not a filter.)\n\n`
+    : ''
+
   return {
     systemPrompt: SUMMARY_SYSTEM_PROMPT,
-    userContent: `${updateInstruction}---\nDialogue for summarization:\n\n${text}`,
+    userContent: `${updateInstruction}${focusBlock}---\nDialogue for summarization:\n\n${text}`,
   }
 }
 
@@ -382,6 +389,8 @@ export async function applyRollingWindowAsync(
   prevSummary?: string,
   forceCompress?: boolean,
   compactMode?: 'full' | 'last',
+  /** Свободный фокус пользователя (/compact <mode> <focus>) — приоритет в резюме. */
+  focus?: string,
 ): Promise<CompressResult> {
   // Exact count, computed in Rust when the sidecar is up: this is the full
   // history, the single most expensive BPE call in the send path.
@@ -438,7 +447,7 @@ export async function applyRollingWindowAsync(
   let summaryContent: string
   if (summaryFn) {
     try {
-      const { systemPrompt, userContent } = buildSummaryPrompt(middleMessages, prevSummary)
+      const { systemPrompt, userContent } = buildSummaryPrompt(middleMessages, prevSummary, focus)
       summaryContent = await summaryFn(systemPrompt, userContent)
     } catch {
       // Fallback: извлекаем ключевые факты структурно вместо механической
