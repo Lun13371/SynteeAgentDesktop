@@ -15,7 +15,7 @@
  * Параметр projectId — текущий активный проект (для проектных скиллов/серверов
  * и выбора scope). Может быть undefined.
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { v4 as uuid } from 'uuid'
 import { copyToClipboard } from '@renderer/utils/clipboard'
@@ -28,6 +28,7 @@ import SkillsInstalledList from './SkillsInstalledList'
 import ScopeSelector, { scopeLabel } from './ScopeSelector'
 export { scopeLabel } from './ScopeSelector'
 import { useExtensionsStore } from '../../../store/extensions.store'
+import { useChatStore } from '../../../store/chat.store'
 import { CURATED_MCP_SERVERS, getCuratedCommand, type CuratedMcpServer, type CuratedMcpCategory } from '../../../../../core/marketplace/curatedMcp'
 import { CURATED_SKILL_REPOS, type CuratedSkillRepo } from '../../../../../core/marketplace/curatedSkills'
 import type {
@@ -359,6 +360,28 @@ function McpInstalledList({ servers, projects, projectId, onBrowseCatalog }: { s
   const [showForm, setShowForm] = useState(false)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<McpFilter>('all')
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const reloadMcp = useExtensionsStore(s => s.loadMcpServers)
+  const loadActiveForChat = useExtensionsStore(s => s.loadActiveForChat)
+
+  const disableAllMcp = async () => {
+    const targets = servers.filter(server => server.enabled)
+    if (!targets.length) return
+    if (!confirm(`Выключить все MCP-серверы (${targets.length})?`)) return
+    setBulkBusy(true)
+    try {
+      await window.syntee.mcp.setServersEnabled({
+        serverIds: targets.map(server => server.id),
+        projectId,
+        enabled: false,
+      })
+      await reloadMcp(projectId)
+      const currentChatId = useChatStore.getState().currentChatId
+      if (currentChatId) await loadActiveForChat(currentChatId)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   // Поиск: имя, команда, url, имена тулов
   const q = search.trim().toLowerCase()
@@ -413,7 +436,19 @@ function McpInstalledList({ servers, projects, projectId, onBrowseCatalog }: { s
   return (
     <>
       <div className="ext-catalog-cta">
-        <div className="ext-catalog-cta-actions" />
+        <div className="ext-catalog-cta-actions">
+          {servers.length > 0 && (
+            <button
+              className="ext-action-btn ext-action-btn--danger"
+              onClick={disableAllMcp}
+              disabled={bulkBusy || !servers.some(server => server.enabled)}
+              title="Отключить все отображаемые MCP-серверы"
+            >
+              <AppIcon name="power" size="xs" />
+              {bulkBusy ? 'Выключение…' : 'Выключить все MCP'}
+            </button>
+          )}
+        </div>
         <button className="ext-action-btn ext-action-btn--primary" onClick={onBrowseCatalog}>
           <AppIcon name="search" size="xs" />
           Добавить из каталога
@@ -530,6 +565,7 @@ export function McpLogsList({
 /** Карточка MCP-сервера: статус, тумблер, reconnect, тулы с per-tool управлением. */
 function McpServerCard({ server, projects, projectId }: { server: McpServerRuntime; projects: Project[]; projectId?: string }): JSX.Element {
   const [expanded, setExpanded] = useState(false)
+  const [approvalBusy, setApprovalBusy] = useState(false)
   const [showError, setShowError] = useState(false)
   // null = авто (показывать журнал при ошибке), true = принудительно открыть,
   // false = принудительно закрыть. Избегает setState-в-effect: showLogs
@@ -557,13 +593,17 @@ function McpServerCard({ server, projects, projectId }: { server: McpServerRunti
     : 0
 
   const toggleEnabled = async () => {
-    await window.syntee.mcp.setServerState({ serverId: server.id, enabled: !server.enabled })
-    reloadMcp()
+    await window.syntee.mcp.setServerState({
+      serverId: server.id,
+      projectId: server.projectId ?? projectId,
+      enabled: !server.enabled,
+    })
+    await reloadMcp(projectId)
   }
 
   const setScope = async (scope: ExtensionScope) => {
-    await window.syntee.mcp.setServerState({ serverId: server.id, scope })
-    reloadMcp()
+    await window.syntee.mcp.setServerState({ serverId: server.id, projectId: server.projectId ?? projectId, scope })
+    await reloadMcp(projectId)
   }
 
   const reconnect = async () => {
@@ -584,20 +624,38 @@ function McpServerCard({ server, projects, projectId }: { server: McpServerRunti
     const currentState = server.toolStates[toolFullName] ?? { enabled: true, requireApproval: true }
     await window.syntee.mcp.setToolState({
       serverId: server.id,
+      projectId: server.projectId ?? projectId,
       toolFullName,
       state: { ...currentState, enabled: !currentEnabled },
     })
-    reloadMcp()
+    await reloadMcp(projectId)
   }
 
   const toggleToolApproval = async (toolFullName: string, currentApproval: boolean) => {
     const currentState = server.toolStates[toolFullName] ?? { enabled: true, requireApproval: true }
     await window.syntee.mcp.setToolState({
       serverId: server.id,
+      projectId: server.projectId ?? projectId,
       toolFullName,
       state: { ...currentState, requireApproval: !currentApproval },
     })
-    reloadMcp()
+    await reloadMcp(projectId)
+  }
+
+  const setAllToolApproval = async (requireApproval: boolean) => {
+    if (!server.tools.length || approvalBusy) return
+    setApprovalBusy(true)
+    try {
+      await window.syntee.mcp.setServerToolApproval({
+        serverId: server.id,
+        projectId: server.projectId ?? projectId,
+        toolFullNames: server.tools.map(tool => tool.name),
+        requireApproval,
+      })
+      await reloadMcp(projectId)
+    } finally {
+      setApprovalBusy(false)
+    }
   }
 
   const copyError = async () => {
@@ -787,6 +845,24 @@ function McpServerCard({ server, projects, projectId }: { server: McpServerRunti
           </div>
 
           {server.tools.length > 0 ? (
+            <>
+            <div className="ext-tools-permissions-toolbar">
+              <span>Подтверждение для всех тулов</span>
+              <button
+                className="ext-action-btn ext-action-btn--xs"
+                onClick={() => setAllToolApproval(true)}
+                disabled={approvalBusy}
+              >
+                Включить
+              </button>
+              <button
+                className="ext-action-btn ext-action-btn--xs"
+                onClick={() => setAllToolApproval(false)}
+                disabled={approvalBusy}
+              >
+                Выключить
+              </button>
+            </div>
             <div className="ext-tools-list">
               {server.tools.map(t => {
                 const state = server.toolStates[t.name] ?? { enabled: true, requireApproval: true }
@@ -814,6 +890,7 @@ function McpServerCard({ server, projects, projectId }: { server: McpServerRunti
                 )
               })}
             </div>
+            </>
           ) : (
             <div className="ext-no-tools">
               {server.status === 'connected' ? 'Нет тулов' : 'Подключите сервер чтобы увидеть тулы'}

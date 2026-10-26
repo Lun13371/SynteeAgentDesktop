@@ -53,8 +53,12 @@ export class McpManager {
   private clients = new Map<string, McpClient>()
   /** serverId → timestamp последней попытки подключения (для cooldown). */
   private lastConnectAttempt = new Map<string, number>()
+  /** Серверы, выключенные пока шёл handshake. */
+  private disabledServerIds = new Set<string>()
   /** win for push events. */
   private win: BrowserWindow | null = null
+  /** Сигнатура последнего глобального конфига для hot-reload. */
+  private globalConfigSignature = ''
   /** Кэш последних загруженных конфигов (для getAll без перечитывания). */
   private lastConfigs: McpServerConfig[] = []
 
@@ -77,12 +81,55 @@ export class McpManager {
    */
   warmupGlobalServers(): void {
     const configs = loadAllServers(this.store).filter(c => c.source === 'global')
+    this.globalConfigSignature = this.configSignature(configs)
     for (const config of configs) {
       if (!this.getServerEnabled(config)) continue
       this.ensureConnected(config).catch(e => {
         log('[MCP] warmup connect failed:', config.name, (e as Error).message)
       })
     }
+  }
+
+  /** Подхватывает изменения ~/.syntee/mcp.json без перезапуска приложения. */
+  reloadGlobalServers(): void {
+    const configs = loadAllServers(this.store).filter(c => c.source === 'global')
+    const signature = this.configSignature(configs)
+    if (signature === this.globalConfigSignature) return
+    this.globalConfigSignature = signature
+    const currentIds = new Set(configs.map(config => config.id))
+    for (const [serverId, client] of this.clients) {
+      if (!serverId.startsWith('global:')) continue
+      this.clients.delete(serverId)
+      void client.disconnect()
+      if (!currentIds.has(serverId)) this.emitStatus(serverId, 'disconnected')
+    }
+    // Конфиг с тем же именем мог измениться (command/args/env/url), поэтому
+    // старый клиент тоже закрываем и поднимаем уже с новым конфигом.
+    for (const config of configs) {
+      if (!this.getServerEnabled(config)) {
+        const client = this.clients.get(config.id)
+        this.clients.delete(config.id)
+        if (client) void client.disconnect()
+        continue
+      }
+      this.lastConnectAttempt.delete(config.id)
+      this.ensureConnected(config).catch(error => {
+        log('[MCP] reloadGlobalServers connect failed:', config.name, (error as Error).message)
+      })
+    }
+    this.emitServersChanged()
+  }
+
+  private configSignature(configs: McpServerConfig[]): string {
+    return JSON.stringify(configs.map(config => ({
+      id: config.id,
+      transport: config.transport,
+      command: config.command,
+      args: config.args,
+      env: config.env,
+      url: config.url,
+      headers: config.headers,
+    })))
   }
 
   /** Загружает все конфиги серверов (глобальные + проектные). */
@@ -92,16 +139,19 @@ export class McpManager {
   }
 
   /**
-   * Перечитывает .mcp.json для проекта и fire-and-forget подключает НОВЫЕ
-   * проектные серверы (которых ещё нет в clients или они упали). Сбрасывает
-   * cooldown чтобы только что установленный сервер подключился немедленно,
-   * а не ждал следующего chat:send. Вызывается extensionsWatcher'ом при
-   * изменении {workdir}/.mcp.json (например после /setup).
+   * Перечитывает .mcp.json для проекта и синхронизирует подключение с enabled.
+   * Вызывается extensionsWatcher'ом при изменении файла.
    */
   reloadProjectServers(workdir: string, projectId?: string): void {
     const configs = this.loadConfigs(workdir, projectId)
     for (const config of configs) {
       if (config.source !== 'project') continue
+      if (!this.getServerEnabled(config)) {
+        const disabledClient = this.clients.get(config.id)
+        this.clients.delete(config.id)
+        if (disabledClient) void disabledClient.disconnect()
+        continue
+      }
       const existing = this.clients.get(config.id)
       if (existing && (existing.status === 'connected' || existing.status === 'connecting')) continue
       this.lastConnectAttempt.delete(config.id)
@@ -112,7 +162,7 @@ export class McpManager {
     this.emitServersChanged(projectId)
     for (const config of configs) {
       const client = this.clients.get(config.id)
-      this.emitStatus(config.id, client?.status ?? 'disconnected', client?.error)
+      this.emitStatus(config.id, this.getServerEnabled(config) ? (client?.status ?? 'disconnected') : 'disconnected', client?.error)
     }
   }
 
@@ -128,18 +178,21 @@ export class McpManager {
   getAllServers(opts: { projectWorkdir?: string; projectId?: string } = {}): McpServerRuntime[] {
     const configs = this.loadConfigs(opts.projectWorkdir, opts.projectId)
     return configs.map(c => {
+      const enabled = this.getServerEnabled(c)
       const client = this.clients.get(c.id)
-      const tools = client?.tools ?? []
+      const tools = enabled ? (client?.tools ?? []) : []
       const toolStates = this.getToolStatesForServer(c)
       return {
         ...c,
-        enabled: this.getServerEnabled(c),
+        enabled,
         scope: this.getServerScope(c),
-        status: client?.status ?? 'disconnected',
-        error: client?.error,
+        // enabled — policy, status — runtime. Если policy выключена,
+        // UI всегда показывает disconnected даже при запоздавшем событии SDK.
+        status: enabled ? (client?.status ?? 'disconnected') : 'disconnected',
+        error: enabled ? client?.error : undefined,
         tools,
         toolStates,
-        connectStartedAt: client?.connectStartedAt,
+        connectStartedAt: enabled ? client?.connectStartedAt : undefined,
         logs: client?.logs ?? [],
       }
     })
@@ -193,8 +246,34 @@ export class McpManager {
     }
   }
 
+  /** Массово переключает подтверждение для всех известных тулов сервера. */
+  setServerToolApproval(config: McpServerConfig, toolNames: string[], requireApproval: boolean): void {
+    const states = this.getToolStatesForServer(config)
+    const updated: Record<string, McpToolState> = { ...states }
+    const names = new Set([...toolNames, ...Object.keys(states)])
+    for (const name of names) {
+      const current = states[name] ?? defaultToolState()
+      updated[name] = { ...current, requireApproval }
+    }
+
+    if (config.source === 'project' && config.projectId) {
+      const all = (this.store.get('mcpProjectState') as Record<string, Record<string, { toolStates?: Record<string, McpToolState>; scope?: ExtensionScope; enabled?: boolean }>> | undefined) ?? {}
+      if (!all[config.projectId]) all[config.projectId] = {}
+      if (!all[config.projectId][config.name]) all[config.projectId][config.name] = {}
+      all[config.projectId][config.name].toolStates = updated
+      this.store.set('mcpProjectState', all)
+    } else {
+      const all = (this.store.get('mcpGlobalState') as Record<string, { enabled?: boolean; scope?: ExtensionScope; toolStates?: Record<string, McpToolState> }> | undefined) ?? {}
+      if (!all[config.name]) all[config.name] = {}
+      all[config.name].toolStates = updated
+      this.store.set('mcpGlobalState', all)
+    }
+  }
+
   /** Сохраняет enabled для сервера. */
   setServerEnabled(config: McpServerConfig, enabled: boolean): void {
+    if (enabled) this.disabledServerIds.delete(config.id)
+    else this.disabledServerIds.add(config.id)
     if (config.source === 'project' && config.projectId) {
       const all = (this.store.get('mcpProjectState') as Record<string, Record<string, { enabled?: boolean; scope?: ExtensionScope; toolStates?: Record<string, McpToolState> }>> | undefined) ?? {}
       if (!all[config.projectId]) all[config.projectId] = {}
@@ -208,11 +287,15 @@ export class McpManager {
       this.store.set('mcpGlobalState', all)
     }
     if (!enabled) {
-      // Выключили — отключаем клиент сразу (симметрия с включением).
-      this.clients.get(config.id)?.disconnect().then(() => {
-        this.clients.delete(config.id)
+      // Выключили — сначала убираем клиента из реестра, чтобы завершившийся
+      // handshake не мог вернуть его в состояние connected.
+      const client = this.clients.get(config.id)
+      this.clients.delete(config.id)
+      if (client) {
+        void client.disconnect().finally(() => this.emitStatus(config.id, 'disconnected'))
+      } else {
         this.emitStatus(config.id, 'disconnected')
-      })
+      }
     } else {
       // Включили — запускаем подключение в фоне (fire-and-forget), чтобы
       // статус/логи обновились сразу, а не при следующем chat:send.Cooldown не
@@ -244,13 +327,21 @@ export class McpManager {
 
   saveGlobalServer(config: McpServerConfig): void {
     saveGlobalServerToFile({ ...config, source: 'global' })
+    // Форма в UI и агент могут добавить сервер напрямую в файл —
+    // подключаем его сразу, не дожидаясь следующего polling/перезапуска.
+    this.globalConfigSignature = ''
+    this.reloadGlobalServers()
   }
 
   /** Удаляет глобальный сервер. Принимает id (`global:{name}`) или имя. */
   deleteGlobalServer(id: string): void {
     const name = id.startsWith('global:') ? id.slice('global:'.length) : id
     deleteGlobalServerFromFile(name)
-    this.clients.get(id)?.disconnect().then(() => this.clients.delete(id))
+    const client = this.clients.get(id)
+    this.clients.delete(id)
+    if (client) void client.disconnect()
+    this.globalConfigSignature = ''
+    this.reloadGlobalServers()
     // Чистим runtime-состояние
     const all = (this.store.get('mcpGlobalState') as Record<string, unknown> | undefined) ?? {}
     delete all[name]
@@ -259,23 +350,27 @@ export class McpManager {
 
   // ── Подключение ───────────────────────────────────────────────────────────
 
-  /** Явное подключение (из UI). */
+  /** Явное подключение (из UI); выключенный сервер остаётся отключённым. */
   async connect(serverId: string): Promise<void> {
     const config = this.lastConfigs.find(c => c.id === serverId)
-    if (!config) return
+    if (!config || !this.getServerEnabled(config)) return
     await this.ensureConnected(config)
   }
 
-  /** Переподключение: отключить + подключить. Явный вызов из UI — игнорирует cooldown. */
+  /** Переподключение: выключенный сервер остаётся отключённым. */
   async reconnect(serverId: string): Promise<void> {
+    const config = this.lastConfigs.find(c => c.id === serverId)
+    if (!config || !this.getServerEnabled(config)) {
+      await this.disconnect(serverId)
+      return
+    }
     const existing = this.clients.get(serverId)
     if (existing) {
       await existing.disconnect()
       this.clients.delete(serverId)
     }
     this.lastConnectAttempt.delete(serverId)
-    const config = this.lastConfigs.find(c => c.id === serverId)
-    if (config) await this.ensureConnected(config)
+    await this.ensureConnected(config)
   }
 
   /** Отключение. */
@@ -289,6 +384,7 @@ export class McpManager {
 
   /** Lazy-подключение: создаёт клиент если нет, подключает. */
   private async ensureConnected(config: McpServerConfig): Promise<McpClient | null> {
+    if (this.disabledServerIds.has(config.id) || !this.getServerEnabled(config)) return null
     let client = this.clients.get(config.id)
     if (client && client.status === 'connected') return client
     // Cooldown после неудачной попытки: без него сломанный/недоступный
@@ -305,18 +401,28 @@ export class McpManager {
     if (!client) {
       client = new McpClient(config)
       client.onStatusChange = (status, error) => {
+        if (this.clients.get(config.id) !== client) return
         this.emitStatus(config.id, status, error)
       }
       client.onToolsChange = () => {
+        if (this.clients.get(config.id) !== client) return
         this.emitToolsUpdated(config.id)
       }
       client.onLogChange = () => {
+        if (this.clients.get(config.id) !== client) return
         this.emitLogs(config.id)
       }
       this.clients.set(config.id, client)
     }
     this.lastConnectAttempt.set(config.id, Date.now())
     await client.connect()
+    // Выключение могло произойти пока выполнялся handshake.
+    if (this.disabledServerIds.has(config.id) || !this.getServerEnabled(config)) {
+      if (this.clients.get(config.id) === client) this.clients.delete(config.id)
+      await client.disconnect()
+      this.emitStatus(config.id, 'disconnected')
+      return null
+    }
     return client
   }
 
@@ -431,6 +537,14 @@ export class McpManager {
     const config = configs.find(c => sanitize(c.name) === serverNameRaw)
     if (!config) {
       return { success: false, output: '', error: `MCP-сервер не найден для тула ${fullToolName}` }
+    }
+    if (!this.getServerEnabled(config)) {
+      return { success: false, output: '', error: `MCP-сервер ${config.name} выключен` }
+    }
+    const toolStates = this.getToolStatesForServer(config)
+    const toolState = toolStates[fullToolName] ?? defaultToolState()
+    if (!toolState.enabled) {
+      return { success: false, output: '', error: `MCP-тул ${fullToolName} выключен` }
     }
     const client = await this.ensureConnected(config)
     if (!client || client.status !== 'connected') {

@@ -924,6 +924,29 @@ function renderParsedSegments(
 // нужен workdir для кликабельных путей и onOpenFile для code-блоков.
 // Кэш parsedRenderCache ключуется по text+workdir — при смене workdir
 // кэш-промах, но evictOldest ограничивает рост.
+function showMessageContextMenu(x: number, y: number, items: Array<{ label: string; run: () => void }>): void {
+  document.querySelector('.message-link-ctx-menu')?.remove()
+  const menu = document.createElement('div')
+  menu.className = 'message-link-ctx-menu'
+  for (const item of items) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = item.label
+    button.addEventListener('click', () => { menu.remove(); item.run() })
+    menu.appendChild(button)
+  }
+  document.body.appendChild(menu)
+  const rect = menu.getBoundingClientRect()
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`
+  const close = (e: Event) => { if (!menu.contains(e.target as Node)) menu.remove() }
+  const closeOnKey = (e: KeyboardEvent) => { if (e.key === 'Escape') menu.remove() }
+  setTimeout(() => {
+    document.addEventListener('pointerdown', close, { once: true })
+    document.addEventListener('keydown', closeOnKey, { once: true })
+  }, 0)
+}
+
 function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string) => void; onPreviewAttachment?: (a: Attachment | null) => void }): Record<string, unknown> {
   const { workdir, onOpenFile, onPreviewAttachment } = opts
 
@@ -1024,12 +1047,22 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
     td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
     blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
     a({ href, children }: { href?: string; children?: React.ReactNode }) {
+      const onContextMenu = (e: React.MouseEvent<HTMLAnchorElement>) => {
+        if (!href || href.startsWith('file-path://')) return
+        e.preventDefault()
+        e.stopPropagation()
+        const isLocal = href.startsWith('file://') || (workdir && !/^(https?:|mailto:)/i.test(href))
+        showMessageContextMenu(e.clientX, e.clientY, [
+          { label: isLocal ? 'Открыть путь' : 'Открыть ссылку в браузере', run: () => isLocal ? void handleLinkClick({ preventDefault() {}, stopPropagation() {} } as React.MouseEvent, href) : window.open(href, '_blank', 'noopener,noreferrer') },
+          { label: 'Копировать адрес', run: () => { void copyToClipboard(href) } },
+        ])
+      }
       // file-path:// — кликабельный путь файла из remarkFilePaths плагина.
       // FilePathLink: чип с иконкой, статусом существования, peek-превью,
       // контекстным меню; клик → панель/Проводник (openFilePath).
       if (href?.startsWith('file-path://')) {
         const rawPath = decodeURIComponent(href.replace(/^file-path:\/\//, ''))
-        return <FilePathLink raw={rawPath} workdir={workdir} />
+        return <FilePathLink raw={rawPath} workdir={workdir} onPreviewAttachment={onPreviewAttachment ?? undefined} />
       }
       // file:// — путь к файлу на диске, открываем в правой панели
       if (href?.startsWith('file://')) {
@@ -1038,6 +1071,7 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
             href={href}
             className="md-link"
             onClick={(e) => handleLinkClick(e, href)}
+            onContextMenu={onContextMenu}
           >
             {children}
           </a>
@@ -1058,6 +1092,7 @@ function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string
           rel="noreferrer"
           title={href}
           onClick={(e) => handleLinkClick(e, href)}
+          onContextMenu={onContextMenu}
         >
           {children}
         </a>
@@ -1975,6 +2010,15 @@ const MessageContent = memo(function MessageContent({
     <div
       ref={wrapRef}
       className="message-bubble-wrap"
+      onContextMenu={(e) => {
+        const selected = window.getSelection()?.toString().trim() ?? ''
+        if (!selected || (e.target as HTMLElement).closest('a, button, input, textarea')) return
+        e.preventDefault()
+        showMessageContextMenu(e.clientX, e.clientY, [
+          { label: 'Копировать выделенное', run: () => { void copyToClipboard(selected) } },
+          { label: 'Искать выделенное в интернете', run: () => window.open(`https://www.google.com/search?q=${encodeURIComponent(selected)}`, '_blank', 'noopener,noreferrer') },
+        ])
+      }}
     >
       <div className={`message-bubble ${isUser ? 'message-bubble--user glass' : 'message-bubble--assistant'}`}>
         {isPinned === 1 && (

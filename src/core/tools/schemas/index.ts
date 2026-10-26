@@ -255,7 +255,7 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   if (codeIndex >= 0) {
     const all = schemas
       .map(s => (s as { function: { name: string } }).function.name)
-      .filter(name => name !== 'execute_code')
+      .filter(name => name !== 'execute_code' && name !== 'get_fast_context')
     const families = [
       ['browser_', 'browser_*'],
       ['mcp__', 'mcp__*'],

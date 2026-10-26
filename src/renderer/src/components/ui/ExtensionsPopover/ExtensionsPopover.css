@@ -452,6 +452,23 @@
   padding: 2px 8px 0;
 }
 
+/* ── Массовые настройки MCP ── */
+.ext-tools-permissions-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.ext-tools-permissions-toolbar > span {
+  margin-right: auto;
+}
+
 /* ── Список тулов MCP-сервера ── */
 .ext-tools-list {
   display: flex;
@@ -653,8 +670,16 @@
 /* ── Кнопка "Добавить из каталога" над списком установленных ── */
 .ext-catalog-cta {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 10px;
+}
+.ext-catalog-cta-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 /* ── Каталог (маркетплейс): поиск + сетка карточек ── */

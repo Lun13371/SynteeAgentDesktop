@@ -84,6 +84,61 @@
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
+.file-path-media-wrap--video {
+  display: inline-flex;
+  vertical-align: middle;
+  margin: 2px;
+}
+
+.file-path-video-thumb {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-end;
+  width: min(280px, 100%);
+  min-height: 90px;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 8px;
+  background: #08090d;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.file-path-video-thumb video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.72;
+}
+
+.file-path-video-play {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: auto;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 78%, #000);
+  color: white;
+}
+
+.file-path-video-name {
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
+  padding: 5px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.65);
+  font-size: 11px;
+}
+
 /* ── Peek-превью по ховеру ────────────────────────────────────────────── */
 
 .path-peek {

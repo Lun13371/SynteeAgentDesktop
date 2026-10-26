@@ -54,6 +54,8 @@ export interface FileTab {
   diffMode: boolean
   /** Оригинальный контент (HEAD) для diff-режима */
   diffOriginal: string
+  /** Временный просмотр конкретного патча из сообщения (не персистится). */
+  changePreviewDiff?: string
   /** Запрос на переход к строке (из клика по пути src/foo.ts:42).
    *  FileEditorPane скроллит/подсвечивает и вызывает consumeReveal. */
   revealLine?: number
@@ -98,6 +100,10 @@ interface FileTabsStore {
   loadDiffOriginal: (id: string) => Promise<void>
   /** Открыть файл в табе СРАЗУ в diff-режиме (Open Changes) */
   openFileDiff: (relPath: string, workdir: string) => Promise<void>
+  /** Показать конкретный patch из сообщения в правой панели. */
+  openChangePreview: (relPath: string, workdir: string, diff: string) => Promise<void>
+  /** Закрыть просмотр конкретного patch и вернуться к файлу. */
+  closeChangePreview: (id: string) => void
 }
 
 export const useFileTabsStore = create<FileTabsStore>((set, get) => ({
@@ -122,7 +128,7 @@ export const useFileTabsStore = create<FileTabsStore>((set, get) => ({
       set(state => ({
         activeFileTabId: relPath,
         openFileTabs: state.openFileTabs.map(t =>
-          t.id === relPath ? { ...t, revealLine: opts?.line, revealLineEnd: opts?.lineEnd } : t
+          t.id === relPath ? { ...t, revealLine: opts?.line, revealLineEnd: opts?.lineEnd, changePreviewDiff: undefined } : t
         ),
       }))
       return
@@ -366,6 +372,23 @@ export const useFileTabsStore = create<FileTabsStore>((set, get) => ({
       get().toggleDiffMode(relPath)
     }
   },
+
+  openChangePreview: async (relPath, workdir, diff) => {
+    await get().openFile(relPath, workdir)
+    set(state => ({
+      openFileTabs: state.openFileTabs.map(tab => tab.id === relPath
+        ? { ...tab, changePreviewDiff: diff, diffMode: false }
+        : tab),
+      activeFileTabId: relPath,
+      workdir,
+    }))
+  },
+
+  closeChangePreview: (id) => set(state => ({
+    openFileTabs: state.openFileTabs.map(tab => tab.id === id
+      ? { ...tab, changePreviewDiff: undefined }
+      : tab),
+  })),
 
   restoreTabs: async (paths, workdir) => {
     set({ workdir })

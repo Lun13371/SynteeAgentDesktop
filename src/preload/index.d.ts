@@ -1011,13 +1011,26 @@ declare const synteeAPI: {
         reconnect: (serverId: string) => Promise<any>;
         setServerState: (params: {
             serverId: string;
+            projectId?: string;
             enabled?: boolean;
             scope?: unknown;
         }) => Promise<any>;
+        setServersEnabled: (params: {
+            serverIds: string[];
+            projectId?: string;
+            enabled: boolean;
+        }) => Promise<any>;
         setToolState: (params: {
             serverId: string;
+            projectId?: string;
             toolFullName: string;
             state: unknown;
+        }) => Promise<any>;
+        setServerToolApproval: (params: {
+            serverId: string;
+            projectId?: string;
+            toolFullNames: string[];
+            requireApproval: boolean;
         }) => Promise<any>;
         installDirect: (params: {
             name: string;

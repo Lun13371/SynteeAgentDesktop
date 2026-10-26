@@ -1038,10 +1038,14 @@ const synteeAPI = {
     connect: (serverId: string) => ipcRenderer.invoke('mcp:connect', serverId),
     disconnect: (serverId: string) => ipcRenderer.invoke('mcp:disconnect', serverId),
     reconnect: (serverId: string) => ipcRenderer.invoke('mcp:reconnect', serverId),
-    setServerState: (params: { serverId: string; enabled?: boolean; scope?: unknown }) =>
+    setServerState: (params: { serverId: string; projectId?: string; enabled?: boolean; scope?: unknown }) =>
       ipcRenderer.invoke('mcp:setServerState', params),
-    setToolState: (params: { serverId: string; toolFullName: string; state: unknown }) =>
+    setServersEnabled: (params: { serverIds: string[]; projectId?: string; enabled: boolean }) =>
+      ipcRenderer.invoke('mcp:setServersEnabled', params),
+    setToolState: (params: { serverId: string; projectId?: string; toolFullName: string; state: unknown }) =>
       ipcRenderer.invoke('mcp:setToolState', params),
+    setServerToolApproval: (params: { serverId: string; projectId?: string; toolFullNames: string[]; requireApproval: boolean }) =>
+      ipcRenderer.invoke('mcp:setServerToolApproval', params),
     installDirect: (params: {
       name: string
       transport: 'stdio' | 'sse' | 'streamable-http'

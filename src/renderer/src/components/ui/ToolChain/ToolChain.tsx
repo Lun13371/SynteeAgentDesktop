@@ -326,25 +326,78 @@ const SteerCard = memo(function SteerCard({ step, chatId }: { step: ToolStep; ch
   )
 }, (prev, next) => prev.step === next.step && prev.chatId === next.chatId)
 
+function codeTraceArgs(value: unknown): string {
+  let parsed = value
+  if (typeof parsed === 'string') {
+    const rawText = parsed
+    try { parsed = JSON.parse(rawText) } catch { return rawText.slice(0, 400) }
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return Object.entries(parsed as Record<string, unknown>)
+      .map(([key, val]) => {
+        let text: string
+        try { text = typeof val === 'string' ? val : JSON.stringify(val) ?? String(val) }
+        catch { text = String(val) }
+        return `${key}: ${text}`
+      })
+      .join(' · ')
+      .slice(0, 500)
+  }
+  try { return JSON.stringify(parsed) ?? String(parsed) } catch { return String(parsed) }
+}
+
+function codeTraceSummary(trace: NonNullable<ToolStep['codeMode']>['trace']): string {
+  if (!trace?.length) return 'Внутренние вызовы не записаны'
+  const counts = new Map<string, number>()
+  for (const entry of trace) counts.set(entry.name, (counts.get(entry.name) ?? 0) + 1)
+  const tools = [...counts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name)
+  const failed = trace.filter(entry => entry.status === 'failure').length
+  return `${trace.length} вызов${trace.length === 1 ? '' : trace.length < 5 ? 'а' : 'ов'}: ${tools.join(', ')}${failed ? ` · ошибок: ${failed}` : ''}`
+}
+
+function CodeModeSummary({ trace }: { trace: NonNullable<ToolStep['codeMode']>['trace'] }) {
+  if (!trace?.length) return null
+  const shown = trace.slice(0, 3)
+  return (
+    <div className="tc2-code-summary">
+      {shown.map((entry, index) => (
+        <div key={`${entry.name}-${index}`} className={`tc2-code-summary-row tc2-code-summary-row--${entry.status}`}>
+          <code>{entry.name}</code>
+          <span className="tc2-code-summary-args">{codeTraceArgs(entry.args) || 'без аргументов'}</span>
+          <span className="tc2-code-summary-result">{entry.result || '(пустой вывод)'}</span>
+        </div>
+      ))}
+      {trace.length > shown.length && <div className="tc2-code-summary-more">ещё {trace.length - shown.length} вызовов — нажмите, чтобы раскрыть</div>}
+    </div>
+  )
+}
+
 function CodeModeDetails({ details }: { details: NonNullable<ToolStep['codeMode']> }) {
   const trace = details.trace ?? []
   return (
-    <div className="tc2-section">
-      <div className="tc2-section-title" style={{ color: '#a78bfa' }}>TypeScript Code Mode</div>
-      <details className="tc2-code-details">
-        <summary>Показать программу и внутренние вызовы ({trace.length})</summary>
-        <pre className="tc2-code-block">{details.code}</pre>
-        {trace.length > 0 && (
-          <div className="tc2-code-trace">
-            {trace.map((entry, index) => (
-              <div key={`${entry.name}-${index}`} className={`tc2-code-trace-row tc2-code-trace-row--${entry.status}`}>
+    <div className="tc2-section tc2-code-mode">
+      <div className="tc2-section-title" style={{ color: '#a78bfa' }}>
+        Внутренние вызовы · {trace.length}
+      </div>
+      {trace.length > 0 ? (
+        <div className="tc2-code-trace">
+          {trace.map((entry, index) => (
+            <div key={`${entry.name}-${index}`} className={`tc2-code-trace-row tc2-code-trace-row--${entry.status}`}>
+              <div className="tc2-code-trace-head">
                 <code>{entry.name}</code>
-                <span>{entry.status === 'success' ? '✓' : '✗'}</span>
-                <span>{entry.result}</span>
+                <span className="tc2-code-trace-status">{entry.status === 'success' ? '✓' : '✗'}</span>
               </div>
-            ))}
-          </div>
-        )}
+              <div className="tc2-code-trace-args">{codeTraceArgs(entry.args) || 'без аргументов'}</div>
+              <pre className="tc2-code-trace-result">{entry.result || '(пустой вывод)'}</pre>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="tc2-code-empty">Внутренние вызовы не записаны.</div>
+      )}
+      <details className="tc2-code-details">
+        <summary>Показать TypeScript-код</summary>
+        <pre className="tc2-code-block">{details.code}</pre>
       </details>
     </div>
   )
@@ -456,7 +509,7 @@ const DiffBlock = memo(function DiffBlock({ diff }: { diff: string }) {
 
 // Один блок итерации
 const IterationBlock = memo(function IterationBlock({
-  iter, isLast, isRunning, mode, liveSessionId, animateEntrance, autoOpen,
+  iter, isLast, isRunning, mode, liveSessionId, animateEntrance,
 }: {
   iter: Iteration
   isLast: boolean
@@ -468,9 +521,7 @@ const IterationBlock = memo(function IterationBlock({
   // «пустоты» при раскрытии длинной цепочки, а смена флага перезапускала
   // анимацию у всех шагов разом.
   animateEntrance: boolean
-  // Шаг в «окне» последних N действий живой ленты — тело раскрыто
-  // автоматически. Старые шаги выпадают из окна и плавно сворачиваются.
-  autoOpen: boolean
+  // Тулы закрыты по умолчанию; раскрытие — только по клику.
 }) {
   const remeasure = useChatRemeasure()
   const meta = getToolMeta(iter.call.toolName, iter.call.serverName)
@@ -499,32 +550,12 @@ const IterationBlock = memo(function IterationBlock({
   // Незавершённый/неудачный визуальный анализ — вместо зелёной галочки.
   const vaUnresolved = vaPending || vaFailed
 
-  // ── Раскрытие тела: «окно последних N шагов» ──────────────────────────
-  // Раньше тело открывалось по таймеру на каждый шаг и закрывалось по его
-  // завершении — при быстрых тулах получалось «открылось и мгновенно
-  // схлопнулось», плюс каждый шаг дёргал свою анимацию.
-  // Теперь состояние ПРОИЗВОДНОЕ от позиции в ленте: последние AUTO_OPEN_LAST
-  // шагов раскрыты, более старые автоматически сворачиваются (плавно, через
-  // exit-анимацию AnimatePresence). Ручной клик перекрывает авто-режим и
-  // больше не перебивается.
-  const [manual, setManual] = useState<boolean | null>(null)
-  // Отложенное включение авто-раскрытия на кадр: тело монтируется закрытым и
-  // раскрывается уже анимированно (maxHeight 0→auto), а не «выскакивает».
-  const [autoOpenNow, setAutoOpenNow] = useState(false)
-  useEffect(() => {
-    if (!autoOpen) return undefined
-    const raf = requestAnimationFrame(() => setAutoOpenNow(true))
-    return () => cancelAnimationFrame(raf)
-  }, [autoOpen])
-
-  // open производный: выпал из окна (autoOpen=false) → закрыт, без setState
-  // в эффекте — закрытие идёт exit-анимацией AnimatePresence.
-  const open = manual ?? (autoOpen && autoOpenNow)
+  // ── Раскрытие тела: закрыто по умолчанию ─────────────────────────────
+  // Карточки остаются компактными; содержимое открывается только по клику.
+  const [open, setOpen] = useState(false)
   const toggleOpen = useCallback(() => {
-    // Клик пользователя фиксирует выбор — авто-режим больше не применяется
-    // к этому шагу (захотел развернул, захотел свернул).
-    setManual(o => !(o ?? (autoOpen && autoOpenNow)))
-  }, [autoOpen, autoOpenNow])
+    setOpen(value => !value)
+  }, [])
 
   // НЕТ авто-раскрытия при сбое: в больших чатах failed-итерации при скролле
   // монтировали полные тела (подсветка/diff) → фризы. Ошибка видна по бейджу
@@ -533,21 +564,21 @@ const IterationBlock = memo(function IterationBlock({
 
   const statusColor = (failed || vaFailed) ? '#f87171' : meta.color
 
-  // Тяжёлое тело (длинный вывод/diff): maxHeight-анимация framer-motion
-  // гоняет layout ВСЕГО поддерева (Prism-спаны, diff-строки) каждый кадр
-  // 0.22с → фриз при раскрытии больших результатов. Для тяжёлых тел
-  // анимируем только opacity (height сразу auto, один layout на монтирование),
-  // сворачивание/раскрытие мгновенное и без джанка.
-  const bodyLen = (iter.result?.content?.length ?? 0) + (iter.result?.diff?.length ?? 0)
-  const heavy = bodyLen > 3000
+  // Высота анимируется до auto: фиксированный maxHeight обрезал длинные
+  // результаты, а переключение режима heavy во время стрима могло оставить
+  // тело с промежуточной высотой. Внутренний contain изолирует тяжёлый paint.
 
   // Preview в свёрнутом заголовке: для run_command берём именно args.command
   // (первое значение args может быть другим ключом), title показывает полный
   // текст — раньше команду было не видно нигде: preview обрезан 80 символами,
   // а в раскрытом теле аргументы показывались только в detailed-режиме.
-  const previewText = iter.call.toolName === 'run_command'
-    ? String(iter.call.toolArgs?.command ?? Object.values(iter.call.toolArgs ?? {})[0] ?? '')
-    : String(Object.values(iter.call.toolArgs ?? {})[0] ?? '')
+  const previewText = iter.call.toolName === 'execute_code'
+    ? iter.result?.codeMode
+      ? codeTraceSummary(iter.result.codeMode.trace)
+      : running ? 'Выполняется TypeScript-скрипт' : 'TypeScript-скрипт'
+    : iter.call.toolName === 'run_command'
+      ? String(iter.call.toolArgs?.command ?? Object.values(iter.call.toolArgs ?? {})[0] ?? '')
+      : String(Object.values(iter.call.toolArgs ?? {})[0] ?? '')
 
   return (
     <div
@@ -604,7 +635,7 @@ const IterationBlock = memo(function IterationBlock({
           )}
 
 
-          {iter.call.toolArgs && !open && (
+          {!open && (iter.call.toolArgs || iter.call.toolName === 'execute_code') && (
             <span className="tc2-iter-preview" title={previewText}>
               {truncate(previewText)}
             </span>
@@ -631,16 +662,22 @@ const IterationBlock = memo(function IterationBlock({
           <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="xs" />
         </button>
 
+        {iter.call.toolName === 'execute_code' && iter.result?.codeMode && !open && mode !== 'compact' && (
+          <CodeModeSummary trace={iter.result.codeMode.trace} />
+        )}
+
         <AnimatePresence initial={false}>
           {open && (
             <motion.div
               className="tc2-iter-details"
-              initial={heavy ? { opacity: 0 } : { maxHeight: 0, opacity: 0 }}
-              animate={heavy ? { opacity: 1 } : { maxHeight: 2000, opacity: 1 }}
-              exit={heavy ? { opacity: 0 } : { maxHeight: 0, opacity: 0 }}
-              transition={heavy
-                ? { duration: 0.12 }
-                : { duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              initial={{ height: 0, opacity: 0, y: -3 }}
+              animate={{ height: 'auto', opacity: 1, y: 0 }}
+              exit={{ height: 0, opacity: 0, y: -2 }}
+              transition={{
+                height: { duration: 0.26, ease: [0.22, 1, 0.36, 1] },
+                opacity: { duration: 0.18, ease: 'easeOut' },
+                y: { duration: 0.2, ease: 'easeOut' },
+              }}
               style={{ overflow: 'hidden' }}
               onAnimationComplete={() => remeasure?.()}
             >
@@ -835,19 +872,11 @@ const IterationBlock = memo(function IterationBlock({
   )
 }, (prev, next) => prev.iter === next.iter && prev.isLast === next.isLast &&
   prev.isRunning === next.isRunning && prev.mode === next.mode &&
-  prev.liveSessionId === next.liveSessionId && prev.animateEntrance === next.animateEntrance &&
-  prev.autoOpen === next.autoOpen)
+  prev.liveSessionId === next.liveSessionId && prev.animateEntrance === next.animateEntrance)
 
 // Сколько итераций показываем при раскрытии цепочки и шаг догрузки.
 const ITERS_PAGE = 15
 const ITERS_CHUNK = 10
-
-// ── Тайминги раскрытия тела шага ───────────────────────────────────
-// AUTO_OPEN_LAST: сколько последних действий держим раскрытыми в живой ленте.
-// Более старые сворачиваются автоматически (плавно) — «аккордеон»: видно
-// текущий контекст работы, а не простыню из всех шагов. Пользователь всегда
-// может раскрыть любой старый шаг кликом — ручной выбор авто-режим не трогает.
-const AUTO_OPEN_LAST = 3
 
 // ── Живая шапка с тикающим таймером ─────────────────────────────────
 // Вынесена в отдельный memo-компонент: setInterval 1s ре-рендерит только
@@ -934,10 +963,14 @@ const GroupBlock = memo(function GroupBlock({
           {open && (
             <motion.div
               className="tc2-group-iters"
-              initial={{ maxHeight: 0, opacity: 0 }}
-              animate={{ maxHeight: 5000, opacity: 1 }}
-              exit={{ maxHeight: 0, opacity: 0 }}
-              transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              initial={{ height: 0, opacity: 0, y: -3 }}
+              animate={{ height: 'auto', opacity: 1, y: 0 }}
+              exit={{ height: 0, opacity: 0, y: -2 }}
+              transition={{
+                height: { duration: 0.28, ease: [0.22, 1, 0.36, 1] },
+                opacity: { duration: 0.18, ease: 'easeOut' },
+                y: { duration: 0.2, ease: 'easeOut' },
+              }}
               style={{ overflow: 'hidden' }}
               onAnimationComplete={() => remeasure?.()}
             >
@@ -949,7 +982,6 @@ const GroupBlock = memo(function GroupBlock({
                   isRunning={false}
                   mode={mode}
                   animateEntrance={false}
-                  autoOpen={false}
                 />
               ))}
             </motion.div>
@@ -1103,37 +1135,20 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
   // к началу. Live-хвост (последние действия) виден всегда.
   const [itersExtra, setItersExtra] = useState(0)
 
-  // ── Авто-раскрытие на старте работы / авто-сворачивание на финише ──
-  // Старт: окно хода работы открывается само — пользователь видит, что агент
-  // делает, не кликая по шапке.
-  // Финиш: схлопываем ТОЛЬКО когда прогон реально закончился. «Активность» =
-  // идут тулы (isRunning) ИЛИ агент ещё стримит ответ (busy): иначе блок
-  // сворачивался, пока модель ещё писала финальный текст.
-  // remeasure обязателен: список сообщений виртуализирован, без перемера
-  // кэш высот ряда остаётся старым → соседние сообщения наезжают/дырка.
-  const active = isRunning || !!busy
+  // ── Авто-раскрытие цепочки при старте ──────────────────────────────
+  // Не сворачиваем ленту по завершении: автоматическое закрытие через секунду
+  // прерывало чтение результата и воспринималось как «тулы сами схлопнулись».
+  // Закрыть блок можно вручную по шапке.
   const prevRunningRef = useRef(isRunning)
-  const prevActiveRef = useRef(active)
   useEffect(() => {
     const wasRunning = prevRunningRef.current
-    const wasActive = prevActiveRef.current
     prevRunningRef.current = isRunning
-    prevActiveRef.current = active
     if (isRunning && !wasRunning) {
       setCollapsed(false)
       setItersExtra(0)
       remeasure?.()
-      return undefined
     }
-    if (!active && wasActive) {
-      const t = window.setTimeout(() => {
-        setCollapsed(true)
-        remeasure?.()
-      }, 1000)
-      return () => window.clearTimeout(t)
-    }
-    return undefined
-  }, [active, isRunning, remeasure])
+  }, [isRunning, remeasure])
 
   // ── Мемоизированные агрегаты — раньше 4× filter/some на каждом рендере ──
   // ToolChain ре-рендерится при каждом токен-флеше (50мс) во время стриминга.
@@ -1476,10 +1491,7 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
               }
               const iter = entry.iter
               const isLastVisible = vIdx === visibleChain.length - 1
-              // «Окно» последних AUTO_OPEN_LAST действий: они раскрыты, более
-              // старые сворачиваются. Считаем от конца ленты, чтобы новый шаг
-              // вытеснял самый старый.
-              const fromEnd = visibleChain.length - 1 - vIdx
+              // Тул-карточки по умолчанию закрыты.
               // Дополнительный контент под шагом (Fast Context / карточка
               // саб-агента) — ВНУТРИ ленты, сразу под своей итерацией.
               // Передаём САМУ итерацию: иначе карточка рисовалась бы под
@@ -1500,7 +1512,6 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
                     // ре-рендере/смене флага класс пересоздавался и анимация
                     // перезапускалась у всей ленты разом.
                     animateEntrance={liveMode && isLastVisible}
-                    autoOpen={liveMode && fromEnd < AUTO_OPEN_LAST}
                   />
                   {extra && <div className="tc2-iter-extra">{extra}</div>}
                 </Fragment>

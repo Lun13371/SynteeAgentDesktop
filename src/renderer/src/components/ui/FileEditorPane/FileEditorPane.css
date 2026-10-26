@@ -163,6 +163,69 @@
   font-size: 13px;
 }
 
+.file-editor-pane__change-preview {
+  height: 100%;
+  overflow: auto;
+  padding: 10px 0 20px;
+  background: var(--bg-primary, #1e1e1e);
+  font: 12px/1.55 var(--font-mono, 'Cascadia Code', 'Fira Code', monospace);
+  tab-size: 2;
+}
+
+.file-editor-pane__diff-line {
+  display: flex;
+  min-height: 19px;
+  padding: 0 12px;
+  white-space: pre;
+}
+
+.file-editor-pane__diff-line code {
+  font: inherit;
+  color: var(--text-secondary, #ccc);
+}
+
+.file-editor-pane__diff-mark {
+  width: 20px;
+  flex: 0 0 20px;
+  color: var(--text-muted, #888);
+  user-select: none;
+}
+
+.file-editor-pane__diff-line--add {
+  background: rgba(46, 160, 67, 0.16);
+}
+
+.file-editor-pane__diff-line--add code,
+.file-editor-pane__diff-line--add .file-editor-pane__diff-mark {
+  color: #7ee787;
+}
+
+.file-editor-pane__diff-line--del {
+  background: rgba(248, 81, 73, 0.15);
+}
+
+.file-editor-pane__diff-line--del code,
+.file-editor-pane__diff-line--del .file-editor-pane__diff-mark {
+  color: #ff938a;
+}
+
+.file-editor-pane__diff-line--hunk {
+  margin: 8px 0 4px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  background: color-mix(in srgb, var(--accent, #818cf8) 10%, transparent);
+}
+
+.file-editor-pane__diff-line--hunk code,
+.file-editor-pane__diff-line--header code,
+.file-editor-pane__diff-line--meta code {
+  color: var(--text-muted, #969696);
+}
+
+.file-editor-pane__diff-line--header {
+  opacity: .78;
+}
+
 .file-editor-pane__binary {
   display: flex;
   flex-direction: column;

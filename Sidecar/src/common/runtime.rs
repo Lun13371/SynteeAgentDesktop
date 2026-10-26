@@ -60,6 +60,10 @@ impl Runtime {
     }
 
     pub fn run(&self) -> Result<()> {
+        // Модель E5 — 399 МБ RSS против 34 МБ без неё. Сторож выгружает её
+        // после пяти минут простоя, иначе фоновый процесс висит с полной
+        // моделью даже когда за час не было ни одного recall_memory.
+        crate::semantic::start_idle_unloader();
         let writer: SharedWriter = Arc::new(Mutex::new(io::stdout()));
         let (sender, receiver) = mpsc::channel::<Request>();
         let receiver = Arc::new(Mutex::new(receiver));
