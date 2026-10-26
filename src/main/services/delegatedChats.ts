@@ -9,6 +9,7 @@ import {
   updateDelegatedRequest, countPendingDelegations, recoverDelegatedRequests, markDelegatedRequestRead,
 } from '../../core/db/delegatedChats'
 import { activeRuns, activeRunMeta, chatQueues, runStatusListeners } from '../ipc/chatShared'
+import { stripFinalMarkers } from '../../shared/finalAnswer'
 import type { ManageChatsParams, ManageChatsResult } from '../../shared/delegatedChats'
 import type { ProgrammaticChatSendParams } from '../ipc/chat.ipc'
 
@@ -194,7 +195,8 @@ export async function executeManageChats(
       if (buffer) {
         try { recovered = (JSON.parse(buffer.payload) as { content?: string }).content ?? '' } catch { /* invalid checkpoint */ }
       }
-      const text = live ? run!.bufferedText : message?.content ?? recovered
+      // Служебные теги <final_answer> родителю не нужны — только чистый текст.
+      const text = stripFinalMarkers(live ? run!.bufferedText : message?.content ?? recovered)
       const returnedContent = text.slice(offset, offset + maxChars)
       if (!live && message && !buffer && state.request_id && state.status === 'done' && returnedContent.trim()) {
         markDelegatedRequestRead(chatId, state.request_id)

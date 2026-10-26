@@ -94,6 +94,7 @@ import Logo from '../Logo/Logo'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import type { Message, ToolOutputMode, Attachment } from '../../../../../shared/types'
 import { extractPlanSegments } from '../../../../../shared/planParser'
+import { splitFinalFromIters, stripFinalMarkersStreaming } from '../../../../../shared/finalAnswer'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain, { hasUnfinishedCalls } from '../ToolChain/ToolChain'
@@ -1809,7 +1810,27 @@ const MessageContent = memo(function MessageContent({
     return (message as Message & { iterations?: MsgIter[] }).iterations
   }, [liveIters, message])
 
-  const chainSections = useMemo(() => msgIters?.map(it => ({
+  // ── Итоговый ответ по тегу <final_answer> ─────────────────────────────
+  // Модель иногда пишет ответ, а потом всё равно вызывает тул (save_memory,
+  // update_todo). Без тега такой текст попадал в textBefore СЛЕДУЮЩЕЙ
+  // итерации и рендерился заметкой в свёрнутой ленте «хода работы» — ответ
+  // как будто исчезал. Здесь блок вынимается из итераций и показывается
+  // ответом под лентой, даже если после него были тулы. Теги в чате не видны.
+  // В режиме редактора тексты не трогаем — там правится сырой текст.
+  const finalSplit = useMemo(
+    () => (editorActive ? { iters: msgIters, answer: '' } : splitFinalFromIters(msgIters)),
+    [msgIters, editorActive],
+  )
+  const renderIters = editorActive ? msgIters : finalSplit.iters
+  const taggedAnswer = editorActive ? '' : finalSplit.answer
+  // Текст, стримящийся ПОСЛЕ последнего тула: маркеры (и недописанные тоже)
+  // надо скрыть сразу, чтобы тег не мигал в чате во время печати.
+  const liveTextAfterClean = useMemo(
+    () => (liveTextAfter ? stripFinalMarkersStreaming(liveTextAfter) : liveTextAfter),
+    [liveTextAfter],
+  )
+
+  const chainSections = useMemo(() => renderIters?.map(it => ({
     thinking: it.thinking,
     thinkingMs: it.thinkingMs,
     // Текст модели ПЕРЕД тулами этой итерации живёт в ленте. Итерация без
@@ -1818,7 +1839,7 @@ const MessageContent = memo(function MessageContent({
     // сам ответ. В режиме редактора текст правится отдельными textarea.
     text: !editorActive && it.steps.length > 0 ? it.textBefore : undefined,
     steps: it.steps,
-  })), [msgIters, editorActive])
+  })), [renderIters, editorActive])
 
   const chainStepCount = useMemo(
     () => (chainSections ?? []).reduce((n, s) => n + s.steps.length, 0),
@@ -1975,8 +1996,9 @@ const MessageContent = memo(function MessageContent({
             В режиме редактора текстовые сегменты (textBefore) превращаются
             в textarea — тулы остаются на месте между ними, правится только текст. */}
         {!isUser && !liveIters?.length && (() => {
-          type Iter = MsgIter
-          const iters = (message as Message & { iterations?: Iter[] }).iterations
+          // renderIters = итерации БД без блоков <final_answer> (они вынесены
+          // в taggedAnswer ниже); в режиме редактора — сырой текст как есть.
+          const iters = renderIters
           if (!iters?.length) return null
           // Текущие значения сегментов в редакторе: черновик перекрывает БД.
           const draftTexts = editorActive ? (editorDraft?.iterTexts ?? []) : []
@@ -2054,6 +2076,16 @@ const MessageContent = memo(function MessageContent({
                 </div>
                 )
               })}
+              {/* Итоговый ответ из тега <final_answer>: рендерится под лентой
+                  хода работы, даже если модель после ответа успела вызвать тул
+                  (иначе текст уезжал заметкой в свёрнутую ленту). */}
+              {!editorActive && taggedAnswer && (
+                <div className="message-iteration">
+                  <div className="message-content selectable">
+                    <ParsedContent text={taggedAnswer} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
+                  </div>
+                </div>
+              )}
             </div>
           )
         })()}
@@ -2143,6 +2175,9 @@ const MessageContent = memo(function MessageContent({
               // хотя 2 из 3 тулов ещё работали.
               const unfinished = hasUnfinishedCalls(iter.steps)
               const hasSteps = iter.steps.length > 0
+              // В ленте живёт ВЫЧИЩЕННЫЙ текст итерации: блок <final_answer>
+              // вынут в taggedAnswer ниже и рендерится ответом, а не заметкой.
+              const iterText = renderIters?.[ii]?.textBefore ?? iter.textBefore
               return (
                 <div key={ii} className="message-segment">
                   {/* Итерация без тулов (финальный ответ / чистый reasoning) —
@@ -2150,9 +2185,9 @@ const MessageContent = memo(function MessageContent({
                   {iter.thinking && !hasSteps && (
                     <ThinkingBlock text={iter.thinking} thinkingMs={iter.thinkingMs} />
                   )}
-                  {!hasSteps && iter.textBefore && (
+                  {!hasSteps && iterText && (
                     <div className="message-content selectable">
-                      <ParsedContent text={iter.textBefore} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
+                      <ParsedContent text={iterText} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
                   )}
                   {/* Fast Context и карточки саб-агентов больше не рендерятся
@@ -2177,7 +2212,7 @@ const MessageContent = memo(function MessageContent({
                       !unfinished: при параллельных тулах не показываем «ожидание»,
                       пока остальные вызовы ещё выполняются — тулчейн сам крутит
                       спиннеры. */}
-                  {isStreaming && isLastIter && lastStepIsResult && !unfinished && !liveTextAfter && !liveThinking && (
+                  {isStreaming && isLastIter && lastStepIsResult && !unfinished && !liveTextAfterClean && !liveThinking && (
           <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} />
                   )}
                 </div>
@@ -2199,10 +2234,17 @@ const MessageContent = memo(function MessageContent({
                 storeChatId={liveThinking.storeChatId}
               />
             )}
-            {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
-            {liveTextAfter && (
+            {/* Итоговый ответ из <final_answer>, вынутый из итераций: остаётся
+                ответом под лентой, даже если модель после него вызвала тул. */}
+            {taggedAnswer && (
               <div className="message-content selectable">
-                <ParsedContent text={liveTextAfter} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} mdComponents={mdComponents} workdir={workdir} />
+                <ParsedContent text={taggedAnswer} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
+              </div>
+            )}
+            {/* Текст ПОСЛЕ всех тулов (финальный ответ текущей итерации) */}
+            {liveTextAfterClean && (
+              <div className="message-content selectable">
+                <ParsedContent text={liveTextAfterClean} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} isStreaming={isStreaming} mdComponents={mdComponents} workdir={workdir} />
               </div>
             )}
           </div>
@@ -2627,7 +2669,13 @@ const MessageBubble = memo(function MessageBubble({
   const liveStepsFromStore = useChatStore(s =>
     isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.steps : undefined
   )
-  const effectiveContent = isLiveBubble ? (liveText || message.content) : message.content
+  // Служебные теги <final_answer> невидимы: срезаем их и из живого текста
+  // (в т.ч. недописанный хвост тега, чтобы он не мигал при печати), и из
+  // сохранённого content (на случай ответов вне agent-цикла). User-сообщения
+  // не трогаем: у них «<» в конце — обычный текст, а не наш тег.
+  const effectiveContent = isLiveBubble
+    ? stripFinalMarkersStreaming(liveText || message.content)
+    : (isUser ? message.content : stripFinalMarkersStreaming(message.content))
   const effectiveLiveTextAfter = isLiveBubble
     ? liveText
     : (message as Message & { liveTextAfter?: string }).liveTextAfter

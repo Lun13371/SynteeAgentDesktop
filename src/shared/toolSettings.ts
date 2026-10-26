@@ -15,6 +15,9 @@ export const OPTIONAL_TOOL_GROUPS = [
   { label: 'Исследование проекта', tools: tools([
     ['get_fast_context', 'Быстрый контекст проекта'],
   ]) },
+  { label: 'Оркестрация', tools: tools([
+    ['execute_code', 'Скрипт вместо серии вызовов (Code Mode)'],
+  ]) },
   { label: 'Интернет', tools: tools([
     ['search_web', 'Поиск в интернете'], ['fetch_page', 'Чтение веб-страниц'], ['search_images', 'Поиск изображений'],
   ]) },

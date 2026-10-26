@@ -21,6 +21,7 @@ import {
 import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
 import { getChatBrowserMode } from '../../core/db/chats'
 import { getSubagentRole } from '../../shared/subagent-roles'
+import { stripFinalMarkers } from '../../shared/finalAnswer'
 import { confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
 import { getNotificationManager } from './NotificationManager'
 import { searchAllSources, saveMemoryItem, type SaveMemoryInput } from '../../core/memory/MemoryStore'
@@ -1271,7 +1272,10 @@ ${subModeOutro}`
  * данные для синтеза. Кап 50000 — защитный потолок от аномально раздутого вывода.
  */
 function buildSubagentSummary(text: string, details?: unknown): string {
-  const textPart = text.length > 30000 ? text.slice(0, 30000) + '...' : text
+  // Служебные теги <final_answer> суб-агенту тоже ставит промпт — родителю
+  // они не нужны, это шум в tool-результате.
+  const clean = stripFinalMarkers(text)
+  const textPart = clean.length > 30000 ? clean.slice(0, 30000) + '...' : clean
 
   if (!details || typeof details !== 'object') return textPart
 

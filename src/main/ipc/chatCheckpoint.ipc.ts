@@ -2,13 +2,14 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { IPC_EVENTS } from '../../shared/constants'
 import {
-  getCheckpoints, getLastCheckpoint, getMessages, getSnapshotsForCheckpoint, getSnapshotsAfter,
+  getCheckpoints, getLastCheckpoint, getMessages, getSnapshotsForCheckpoint,
   getContextSnapshot, setWorkingMemory, setChatSummary, deleteMessagesAfter, getMessageCount,
   deleteCheckpointsAfter, saveMessage, saveRewindHistory, getRewindHistory, deleteRewindHistory,
   deleteMessageById, getLastRewindMessage, getChatWorkdirContext,
   getTurnSnapshotsOrdered, getLaterTurnSnapshots, type FileSnapshotRow,
 } from '../../core/db'
 import { resolveSnapshotPath } from '../../core/db/snapshotPaths'
+import { firstSnapshotPerPath } from '../../core/db/snapshotMerge'
 import { makeDiff, normalizeLineEndings } from '../../core/tools/_shared'
 import { slimMessagesForUI } from './slimMessages'
 import { activeRuns } from './chatShared'
@@ -30,6 +31,30 @@ function chatSnapshotPath(chatId: string, p: string): string {
   let workdir: string | undefined
   try { workdir = getChatWorkdirContext(chatId).workdir } catch { /* нет чата/БД — fallback на cwd */ }
   return resolveSnapshotPath(p, workdir)
+}
+
+/**
+ * §rollback-order — снапшоты turn'а, по ОДНОЙ записи на файл: первая правка
+ * файла в этом turn'е (rowid ASC), т.е. состояние ДО turn'а. Без дедупа
+ * файл, правленный несколько раз за turn, восстанавливался в произвольное
+ * промежуточное состояние (см. core/db/snapshotMerge.ts).
+ */
+function turnSnapshotsForUndo(chatId: string, userMessageId: string) {
+  let workdir: string | undefined
+  try { workdir = getChatWorkdirContext(chatId).workdir } catch { /* ok */ }
+  return firstSnapshotPerPath(getSnapshotsForCheckpoint(chatId, userMessageId), workdir)
+}
+
+/**
+ * §rollback-order — файлы для rewind к turn'у N: состояние каждого файла на
+ * КОНЕЦ turn'а N = contentBefore первой правки в самом раннем ПОСЛЕДУЮЩЕМ
+ * turn'е, тронувшем этот файл. getLaterTurnSnapshots отдаёт строки ASC
+ * (created_at, rowid) и исключает строки самого turn'а N (ретраи).
+ */
+function laterTurnSnapshotsForRewind(chatId: string, userMessageId: string) {
+  let workdir: string | undefined
+  try { workdir = getChatWorkdirContext(chatId).workdir } catch { /* ok */ }
+  return firstSnapshotPerPath(getLaterTurnSnapshots(chatId, userMessageId), workdir)
 }
 
 // ── Кумулятивный дифф turn'а (как в Claude Code/Cursor) ────────────────────
@@ -213,7 +238,7 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
       if (!cp || !cp.assistantMessageId) {
         return { error: 'Нет изменений для отмены.' }
       }
-      const snapshots = getSnapshotsForCheckpoint(chatId, cp.userMessageId)
+      const snapshots = turnSnapshotsForUndo(chatId, cp.userMessageId)
       if (snapshots.length === 0) {
         return { error: 'Снапшоты файлов не найдены.' }
       }
@@ -260,7 +285,7 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
       if (!cp || !cp.assistantMessageId) {
         return { error: 'Нет изменений для отмены.' }
       }
-      const snapshots = getSnapshotsForCheckpoint(chatId, cp.userMessageId)
+      const snapshots = turnSnapshotsForUndo(chatId, cp.userMessageId)
       // §rollback — путь из renderer может не совпадать с записью в БД
       // (относительный vs абсолютный): сравниваем по резолвнутым путям.
       const wantedAbs = chatSnapshotPath(chatId, filePath)
@@ -314,8 +339,12 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
         return { error: 'Чекпоинт для этого сообщения не найден (возможно, оно было до включения фичи отката).' }
       }
 
-      // 2. Получаем file_snapshots всех turn'ов ПОСЛЕ указанного.
-      const snapshots = getSnapshotsAfter(chatId, userMessageId)
+      // 2. Файлы, тронутые turn'ами СТРОГО ПОСЛЕ указанного: по одной записи на
+      //    файл — состояние на конец нашего turn'а (contentBefore первой правки
+      //    в самом раннем последующем turn'е). Порядок детерминирован (rowid),
+      //    файл, правленный несколько раз, больше не получает случайное
+      //    промежуточное состояние.
+      const snapshots = laterTurnSnapshotsForRewind(chatId, userMessageId)
       log('[chat:rewindTo] snapshots after checkpoint: %d', snapshots.length)
 
       // REDO: сохраняем текущее состояние файлов (contentAfter) до отката —
@@ -325,11 +354,8 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
       // чтобы восстановление redo-файлов тоже попадало в проект.
       const { readFileSync, existsSync: pathExistsBefore } = require('fs') // require: нативный import() не работает в V8-байткоде
       const fileChangesForRedo: Array<{ path: string; contentAfter: string | null }> = []
-      const seenPaths = new Set<string>()
       for (const snap of snapshots) {
         const snapAbs = chatSnapshotPath(chatId, snap.path)
-        if (seenPaths.has(snapAbs)) continue
-        seenPaths.add(snapAbs)
         try {
           if (pathExistsBefore(snapAbs)) {
             fileChangesForRedo.push({ path: snapAbs, contentAfter: readFileSync(snapAbs, 'utf-8') })
@@ -341,7 +367,7 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
         }
       }
 
-      // 3. Восстанавливаем файлы в обратном порядке (последняя правка первой).
+      // 3. Восстанавливаем файлы (по одной записи на файл, см. шаг 2).
       //    contentBefore = null → файл был создан later-turn'ом → удаляем.
       //    Иначе → перезаписываем contentBefore.
       const { writeFileSync, unlinkSync, existsSync: pathExists } = require('fs') // require: нативный import() не работает в V8-байткоде
@@ -457,7 +483,7 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
       return { error: 'Чат активен — дождитесь завершения ответа.' }
     }
     try {
-      const snapshots = getSnapshotsForCheckpoint(chatId, userMessageId)
+      const snapshots = turnSnapshotsForUndo(chatId, userMessageId)
       if (snapshots.length === 0) {
         return { error: 'Снапшоты файлов не найдены.' }
       }
@@ -467,14 +493,17 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
       const failed: string[] = []
       for (const snap of snapshots) {
         try {
+          // §rollback — относительный путь снапшота резолвим против workdir
+          // чата: без этого запись/удаление уходили в папку установки.
+          const absPath = chatSnapshotPath(chatId, snap.path)
           if (snap.contentBefore === null) {
-            if (existsSync(snap.path)) {
-              unlinkSync(snap.path)
+            if (existsSync(absPath)) {
+              unlinkSync(absPath)
               restored.push(snap.path)
             }
           } else {
-            try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
-            writeFileSync(snap.path, snap.contentBefore, 'utf-8')
+            try { mkdirSync(dirname(absPath), { recursive: true }) } catch { /* ok */ }
+            writeFileSync(absPath, snap.contentBefore, 'utf-8')
             restored.push(snap.path)
           }
         } catch (e) {
@@ -497,18 +526,22 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
       return { error: 'Чат активен — дождитесь завершения ответа.' }
     }
     try {
-      const snapshots = getSnapshotsForCheckpoint(chatId, userMessageId)
-      const snap = snapshots.find(s => s.path === filePath)
+      const snapshots = turnSnapshotsForUndo(chatId, userMessageId)
+      // §rollback — путь из renderer может не совпадать с записью в БД
+      // (относительный vs абсолютный): сравниваем по резолвнутым путям.
+      const wantedAbs = chatSnapshotPath(chatId, filePath)
+      const snap = snapshots.find(s => s.path === filePath || chatSnapshotPath(chatId, s.path) === wantedAbs)
       if (!snap) {
         return { error: 'Файл не найден в снапшотах этого turn\'а.' }
       }
       const { writeFileSync, unlinkSync, existsSync, mkdirSync } = require('fs')
       const { dirname } = require('path')
+      const absPath = chatSnapshotPath(chatId, snap.path)
       if (snap.contentBefore === null) {
-        if (existsSync(snap.path)) unlinkSync(snap.path)
+        if (existsSync(absPath)) unlinkSync(absPath)
       } else {
-        try { mkdirSync(dirname(snap.path), { recursive: true }) } catch { /* ok */ }
-        writeFileSync(snap.path, snap.contentBefore, 'utf-8')
+        try { mkdirSync(dirname(absPath), { recursive: true }) } catch { /* ok */ }
+        writeFileSync(absPath, snap.contentBefore, 'utf-8')
       }
       const win = BrowserWindow.getAllWindows()[0] ?? null
       win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })

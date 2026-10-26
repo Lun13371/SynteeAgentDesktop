@@ -30,7 +30,7 @@ export function sanitizeToolInstructions(prompt: string, settings: ToolSettings)
     const tokens = new Set(text.split(/[^a-zA-Z0-9_]+/))
     return disabled.some(name => tokens.has(name))
   }
-  const guidanceSections = /^(Tools|Long-term memory|Sub-agents|Sub-agent roles|Large and ambiguous tasks|Browser control)/
+  const guidanceSections = /^(Tools|Code mode|Long-term memory|Sub-agents|Sub-agent roles|Large and ambiguous tasks|Browser control)/
   const sections = prompt.split(/(?=^## )/m)
   const cleaned = sections.map(section => {
     const heading = section.match(/^## (.+)/)?.[1] ?? ''
@@ -380,6 +380,26 @@ Rules: valid JSON only (double quotes, no trailing commas). "type" is bar | line
 
 For processes, timelines, hierarchies and relationships use mermaid fenced blocks (flowchart, timeline, gantt, mindmap) — they also render in the chat.
 
+## Final answer tag (MANDATORY)
+
+Your reply contains two kinds of text: short WORKING NARRATION between tool calls
+("Reading the config…", "Now the build") and the FINAL ANSWER the user actually reads.
+Wrap the final answer in <final_answer>…</final_answer>. The UI strips the tags and
+renders the block as the answer; anything outside it is folded into the collapsed work log.
+
+Rules:
+- Exactly one block per reply, at the very END of the message.
+- The block is self-contained: the whole result — conclusions, numbers, code, tables, next steps.
+- NEVER open the block while you still plan to call a tool. If a tool is still needed,
+  call it first and write the answer after it. A reply that contains tool calls must not
+  contain the block.
+- Nothing after the closing tag. No tool calls, no commentary.
+- Do not mention or explain the tags, do not escape them, do not put them in code examples
+  (unless the user explicitly asks about this format).
+- Short conversational replies without any tools also go inside the block.
+- If the current mode/persona requires its own wrapper (e.g. <plan>…</plan>), put that
+  wrapper INSIDE <final_answer>, not around it.
+
 ## Answer format
 
 - write clearly and concisely, unless the user asked for details
@@ -387,7 +407,8 @@ For processes, timelines, hierarchies and relationships use mermaid fenced block
 - tables, diff blocks, charts and mermaid — only when it really helps
 - math formulas: LaTeX in \`$...$\` (inline) or \`$$...$$\` on its own lines (display); never \\(...\\) or \\[...\\]
 
-After executing tools, write the result to the user. Do not call tools again if the task is already solved.`
+After executing tools, write the result to the user inside the <final_answer> block.
+Do not call tools again if the task is already solved.`
 
   // ─── ДИНАМИЧЕСКИЙ ХВОСТ (меняется каждый ход, НЕ кэшируется) ───────────────
   const browserBlock = browserMode

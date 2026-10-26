@@ -25,6 +25,7 @@ import {
   getAllProjects,
   getProjectById,
   saveFileSnapshots, saveContextSnapshot, saveCheckpointMeta, getMessageCount,
+  pickSnapshots, firstSnapshotPerPath,
   getCheckpoints, pruneOldCheckpoints, deleteMessageById, editMessageContent, setMessageHidden,
   saveStreamingBuffer, deleteStreamingBuffer,
   logAgentAction,
@@ -52,6 +53,7 @@ import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
 import { getToolSchemas, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
 import { extractFinalPlan, stripPlanTags } from '../../shared/planParser'
+import { stripFinalMarkers } from '../../shared/finalAnswer'
 import { stripAttachTokens } from '../../shared/attachmentMarkdown'
 import { getToolSettings, isToolDisabled } from '../../shared/toolSettings'
 import { mimeFromExt } from '../../shared/mentions'
@@ -1539,7 +1541,7 @@ function pathHash(value: string): string {
         'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
-        'contextSettings', 'codeModeEnabled',
+        'contextSettings',
         'customToolsEnabled', 'disabledTools',
       ]
     for (const k of storeKeys) {
@@ -1941,6 +1943,7 @@ function pathHash(value: string): string {
       bufferedLiveState: { toolProgress: {}, spawnedAgents: [], steers: [] },
       streamCheckpointTimer: null,
       checkpointDirty: false,
+      liveSnapshots: [],
       pendingQuestions: new Set<string>(),
     }
 
@@ -2097,7 +2100,10 @@ function pathHash(value: string): string {
         id: assistantMsgId,
         chatId: params.chatId,
         role: 'assistant',
-        content: fullText,
+        // Теги <final_answer> — служебные: в content (превью чата, копирование,
+        // озвучка, контекст без итераций) они не нужны. В iterations текст
+        // остаётся С тегами — по ним UI понимает, что это ответ (см. finalAnswer.ts).
+        content: stripFinalMarkers(fullText),
         // Финальный save — реальное время завершения ответа.
         // Checkpoint-таймер сохранял с run.createdAt (стабильный timestamp
         // для UPSERT), но финальный sendDone перезаписывает правильным.
@@ -2186,8 +2192,16 @@ function pathHash(value: string): string {
       // откатить чисто диалог. file_snapshots пишем только если есть правки.
       if (!params.incognito) {
         try {
-          const snaps = fileSnapshots ?? []
-          const filePaths = snaps.map(s => s.path)
+          // §rollback-live — при Stop/краше воркера финальный fileSnapshots не
+          // приходит: берём накопленный по ходу рана буфер (иначе чекпоинт
+          // сохранялся с filesChanged=0 и правки было не откатить).
+          const snaps = pickSnapshots(run.liveSnapshots, fileSnapshots)
+          // filesChanged/filePaths — это ФАЙЛЫ, а не число правок: снапшот
+          // пишется на каждую правку, поэтому файл, изменённый 3 раза за turn,
+          // иначе считался трижды (бейдж «3 файла» на один файл).
+          let chatWorkdir: string | undefined
+          try { chatWorkdir = getChatWorkdirContext(params.chatId).workdir } catch { /* ok */ }
+          const filePaths = firstSnapshotPerPath(snaps, chatWorkdir).map(s => s.path)
           saveFileSnapshots(params.chatId, assistantMsgId, userMsg.id, snaps)
           saveContextSnapshot(
             params.chatId, userMsg.id,
@@ -2447,7 +2461,7 @@ function pathHash(value: string): string {
           id: assistantMsgId,
           chatId: params.chatId,
           role: 'assistant',
-          content: run.bufferedText,
+          content: stripFinalMarkers(run.bufferedText),
           createdAt: run.createdAt,
           isPinned: 0,
           model: (storeData.modelAssignments as Array<{ role: string; modelId: string }> | undefined)
@@ -2562,6 +2576,24 @@ function pathHash(value: string): string {
           noteOutputActivity()
           run.uiThinkingBuf += tok
           scheduleUiFlush()
+          break
+        }
+
+        // §rollback-live — воркер отдаёт {path, contentBefore} на каждую
+        // правку файла. Копим в run.liveSnapshots: если финальный done не
+        // придёт (Stop/краш воркера), sendDone возьмёт этот буфер, и правки
+        // прогона останутся откатываемыми.
+        case 'file_snapshot': {
+          const snap = msg.snapshot as { path?: unknown; contentBefore?: unknown } | undefined
+          if (snap && typeof snap.path === 'string') {
+            run.liveSnapshots.push({
+              path: snap.path,
+              contentBefore: typeof snap.contentBefore === 'string' ? snap.contentBefore : null,
+            })
+            // Защита от неограниченного роста (марафонский рефакторинг):
+            // undoStack агента всё равно ограничен 50 записями.
+            if (run.liveSnapshots.length > 500) run.liveSnapshots.splice(0, run.liveSnapshots.length - 500)
+          }
           break
         }
 
@@ -4281,7 +4313,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations', 'codeModeEnabled',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
         'contextSettings',
@@ -4903,7 +4935,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       const storeData: Record<string, unknown> = {}
       const storeKeys = [
         'apiKey', 'apiEndpoint', 'providers', 'modelAssignments', 'customModels',
-        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations', 'codeModeEnabled',
+        'temperature', 'maxTokens', 'reasoningValue', 'agentSettings', 'agentPermissions', 'projectPermissions', 'chatApprovalAllowlist', 'integrations',
         'voiceId', 'embeddingModel',
         'imageProviderId', 'imageModelId', 'imageDefaultSize', 'imageDefaultQuality',
         'contextSettings',

@@ -46,6 +46,18 @@ export interface ContextCountedInfo {
 
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
+  /**
+   * §rollback-live — файл изменён тулом (write_file/edit_file): отдаём
+   * {path, contentBefore} СРАЗУ после правки, а не только в финальном
+   * onDone(details.fileSnapshots).
+   *
+   * Зачем: при Stop (worker.terminate) и при краше воркера финальный
+   * fileSnapshots не приходит вообще → чекпоинт сохранялся с filesChanged=0 и
+   * откатить правки прогона было НЕЛЬЗЯ. Воркер стримит снапшоты в main по
+   * одному, main копит их в ActiveRun.liveSnapshots и использует, если
+   * финальный список пуст/отсутствует.
+   */
+  onFileSnapshot?: (snapshot: { path: string; contentBefore: string | null }) => void
   onDone: (answer: string, details?: AgentSummaryDetails) => void
   onError: (error: Error) => void
   onStatus?: (text: string) => void

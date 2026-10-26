@@ -46,14 +46,22 @@ export function saveFileSnapshots(
   userMessageId: string,
   entries: FileSnapshotEntry[],
 ): void {
-  if (entries.length === 0) return
   const db = getDB()
-  const now = Date.now()
-  const stmt = db.prepare(`
-    INSERT INTO file_snapshots (id, chat_id, message_id, user_message_id, path, content_before, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `)
+  // §rollback-retry — ретрай/повторная генерация того же turn'а (тот же
+  // user_message_id) пишет НОВЫЙ undoStack. Старые строки этого turn'а больше
+  // не валидны: при откате «первая запись по пути» взялась бы из прошлого
+  // прогона (состояние до него), а не до текущего. Чистим перед вставкой.
+  // Пустой entries тоже чистим: turn, который ничего не изменил, не должен
+  // оставлять снапшоты от предыдущей попытки.
   const tx = db.transaction((items: FileSnapshotEntry[]) => {
+    db.prepare(`DELETE FROM file_snapshots WHERE chat_id = ? AND user_message_id = ?`)
+      .run(chatId, userMessageId)
+    if (items.length === 0) return
+    const now = Date.now()
+    const stmt = db.prepare(`
+      INSERT INTO file_snapshots (id, chat_id, message_id, user_message_id, path, content_before, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
     for (const e of items) {
       stmt.run(uuid(), chatId, messageId, userMessageId, e.path, e.contentBefore, now)
     }
@@ -195,6 +203,12 @@ export function getLastCheckpoint(chatId: string): CheckpointMeta | null {
  * Возвращает file_snapshots конкретного checkpoint'а (turn'а) — для undo
  * правок последнего запроса БЕЗ удаления сообщений диалога.
  * Берём последний checkpoint с этим userMessageId (на случай дубликатов).
+ *
+ * §rollback-order — порядок ВАЖЕН: rowid ASC = порядок выполнения правок
+ * (все строки turn'а имеют один created_at, а id — uuid v4, хронологии не
+ * несёт; ORDER BY id DESC давал случайный порядок). Вызывающий код обязан
+ * дедуплицировать по пути и восстанавливать ПЕРВУЮ запись файла —
+ * см. core/db/snapshotMerge.ts (firstSnapshotPerPath).
  */
 export function getSnapshotsForCheckpoint(chatId: string, userMessageId: string): FileSnapshotEntry[] {
   const db = getDB()
@@ -209,33 +223,25 @@ export function getSnapshotsForCheckpoint(chatId: string, userMessageId: string)
     SELECT path, content_before as contentBefore
     FROM file_snapshots
     WHERE chat_id = ? AND user_message_id = ?
-    ORDER BY id DESC
+    ORDER BY rowid ASC
   `).all(chatId, userMessageId) as FileSnapshotEntry[]
   return rows
 }
 
 export function getSnapshotsAfter(chatId: string, userMessageId: string): FileSnapshotEntry[] {
-  const db = getDB()
-  // ORDER BY created_at ASC LIMIT 1 — при дубликатах chat_checkpoints с одним
-  // user_message_id (их создаёт saveNamedSnapshot, копируя метаданные) берём
-  // САМЫЙ РАННИЙ: порог «строго после» должен отсекать все последующие turn'ы,
-  // а не только те, что были после позднего дубликата.
-  const cp = db.prepare(`
-    SELECT created_at as createdAt FROM chat_checkpoints
-    WHERE chat_id = ? AND user_message_id = ?
-    ORDER BY created_at ASC LIMIT 1
-  `).get(chatId, userMessageId) as { createdAt: number } | undefined
-  if (!cp) return []
-
-  // created_at > порог — строго после, исключает сам указанный turn.
-  // Сортировка DESC — последние правки первыми (LIFO восстановление).
-  const rows = db.prepare(`
-    SELECT path, content_before as contentBefore
-    FROM file_snapshots
-    WHERE chat_id = ? AND created_at > ?
-    ORDER BY created_at DESC, id DESC
-  `).all(chatId, cp.createdAt) as FileSnapshotEntry[]
-  return rows
+  // §rollback-order — legacy-обёртка над getLaterTurnSnapshots (единственный
+  // источник истины: строго последующие turn'ы, ASC по хронологии с rowid как
+  // тай-брейкером внутри turn'а). Возвращаем LIFO (DESC), как ожидали прежние
+  // вызывающие: последняя правка применяется первой, поэтому финальным
+  // значением файла оказывается contentBefore ПЕРВОЙ правки самого раннего
+  // последующего turn'а — то есть состояние на конец целевого turn'а.
+  // Раньше здесь был ORDER BY created_at DESC, id DESC — внутри turn'а
+  // порядок был случайным (id = uuid v4) и файл, правленный дважды, получал
+  // произвольное промежуточное состояние.
+  return getLaterTurnSnapshots(chatId, userMessageId)
+    .slice()
+    .reverse()
+    .map(r => ({ path: r.path, contentBefore: r.contentBefore }))
 }
 
 /** Снапшот файла + принадлежность к turn'у (для кумулятивного диффа). */

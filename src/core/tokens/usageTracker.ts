@@ -372,7 +372,7 @@ export interface UsageSnapshot {
 // Overhead константы — единственный источник истины. contextManager.ts и
 // Agent.ts импортируют TOOL_SCHEMAS_OVERHEAD отсюда (раньше значение было
 // продублировано в нескольких местах с риском рассинхрона).
-export const TOOL_SCHEMAS_OVERHEAD = 3800
+export const TOOL_SCHEMAS_OVERHEAD = 4200
 const API_OVERHEAD = 100
 
 export function buildSnapshotFromReal(

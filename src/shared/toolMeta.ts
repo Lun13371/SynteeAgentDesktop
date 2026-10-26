@@ -34,6 +34,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
 
   // ── Команды и диагностика ──
   run_command:    { label: 'Команда',           icon: 'terminal',    color: '#f59e0b' },
+  execute_code:   { label: 'Скрипт',            icon: 'code',        color: '#a78bfa' },
   get_diagnostics:{ label: 'Диагностика',        icon: 'bug',         color: '#f59e0b' },
 
   // ── Поиск и контекст ──

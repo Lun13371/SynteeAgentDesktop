@@ -1355,7 +1355,14 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
 
   return (
     <div className={`tc2${summary ? ' tc2--summary' : ''}${liveMode ? ' tc2--running' : ''}`}>
+      {/* Conic-рамка: статичная маска на обёртке, градиент вращается через
+          individual-свойство rotate (композитится на GPU) вместо анимации
+          CSS-переменной внутри conic-gradient (repaint каждый кадр). */}
+      <span className="tc2-border-arc" aria-hidden="true" />
       <div className="tc2-header" onClick={() => setCollapsed(c => !c)}>
+        {/* Дымка-блик шапки: градиент бежит через transform, а не через
+            background-position — иначе repaint шапки каждый кадр. */}
+        <span className="tc2-header-glow" aria-hidden="true" />
         <span className="tc2-collapse-btn">
           <AppIcon name={collapsed ? 'chevronRight' : 'chevronDown'} size="xs" />
         </span>
