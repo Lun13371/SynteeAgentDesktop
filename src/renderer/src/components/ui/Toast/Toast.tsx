@@ -54,14 +54,20 @@ export default function ToastContainer() {
           <motion.div
             key={toast.id}
             className={`toast toast--${toast.type}`}
-            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.95 }}
-            transition={{ type: 'spring', stiffness: 350, damping: 28 }}
+            initial={{ opacity: 0, y: 14, scale: 0.94, filter: 'blur(8px)' }}
+            animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, y: -8, scale: 0.97, filter: 'blur(6px)' }}
+            transition={{ type: 'spring', stiffness: 420, damping: 30, mass: 0.75 }}
+            layout
           >
             <span className="toast-icon">{getToastIcon(toast.type)}</span>
             <span className="toast-message">{toast.message}</span>
-            <button className="toast-close" onClick={() => remove(toast.id)} title="Закрыть">✕</button>
+            <button className="toast-close" onClick={() => remove(toast.id)} title="Закрыть" aria-label="Закрыть">✕</button>
+            <span
+              className="toast-progress"
+              aria-hidden="true"
+              style={{ animationDuration: `${toast.duration ?? 3000}ms` }}
+            />
           </motion.div>
         ))}
       </AnimatePresence>

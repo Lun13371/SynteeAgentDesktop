@@ -80,6 +80,10 @@ export function ChatInputActionButton({
   // отправку (он придёт автоматически после pointerup).
   const firedRef = useRef(false)
 
+  // Залипший holdActive/holding дополнительно гейтится через canSteer в
+  // holdingView, поэтому после смены режима старая молния не может попасть
+  // на обычную Send-иконку. Локальное состояние сбрасывается в timeout,
+  // pointerup и cleanup; эффект с setState здесь намеренно не нужен.
   const clearHold = useCallback(() => {
     if (holdTimer.current !== null) {
       clearTimeout(holdTimer.current)
@@ -159,8 +163,7 @@ export function ChatInputActionButton({
         {btnMode === 'stop' ? (
           <motion.span key="stop" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }} className="chat-input-stop-icon" />
         ) : btnMode === 'send' ? (
-          // Держим — иконка send превращается в молнию: жест читается сразу.
-          <motion.span key={holdingView ? 'send-hold' : 'send'} initial={{ rotate: -90, opacity: 0, scale: 0.5 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} exit={{ rotate: 90, opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
+          <motion.span key="send" initial={{ rotate: -90, opacity: 0, scale: 0.5 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} exit={{ rotate: 90, opacity: 0, scale: 0.5 }} transition={{ type: 'spring', stiffness: 500, damping: 30 }}>
             <AppIcon name={holdingView ? 'zap' : 'send'} size="md" />
           </motion.span>
         ) : btnMode === 'voice' ? (

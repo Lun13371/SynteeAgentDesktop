@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { createHash } from 'crypto'
-import { existsSync, writeFileSync, unlinkSync, rmSync, mkdirSync } from 'fs'
+import { existsSync, writeFileSync, unlinkSync, rmSync, mkdirSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { runGit, isGitRepo, GIT_TIMEOUT_MS } from '../git/runGit'
 
@@ -28,11 +28,18 @@ export interface WorktreeInfo {
   baseSha: string
 }
 
+export interface MergeFileSnapshot {
+  path: string
+  contentBefore: string | null
+}
+
 export interface MergeResult {
   ok: boolean
   conflict: boolean
   /** true — worktree оставлен (конфликт/ошибка) для ручного разбора; false — очищен. */
   worktreeKept: boolean
+  /** Состояние файлов в родителе до применения дельты суб-агента. */
+  fileSnapshots: MergeFileSnapshot[]
   error?: string
 }
 
@@ -91,6 +98,7 @@ export async function mergeWorktreeBack(
   parentWorkdir: string,
   info: WorktreeInfo,
 ): Promise<MergeResult> {
+  const fileSnapshots: MergeFileSnapshot[] = []
   // Проверяем, что worktree ещё существует (мог быть удалён вручную).
   // ok:false — раньше возвращался ok:true, и родительский агент считал, что
   // изменения применены, хотя их нет (тихая потеря данных).
@@ -99,6 +107,7 @@ export async function mergeWorktreeBack(
       ok: false,
       conflict: false,
       worktreeKept: false,
+      fileSnapshots,
       error: 'worktree не найден (удалён вручную?) — изменения суб-агента не применены',
     }
   }
@@ -116,12 +125,39 @@ export async function mergeWorktreeBack(
   try {
     diff = await runGit(info.worktreePath, ['diff', '--no-color', info.baseSha])
   } catch (e: any) {
-    return { ok: false, conflict: false, worktreeKept: true, error: `diff failed: ${e.message}` }
+    return { ok: false, conflict: false, worktreeKept: true, fileSnapshots, error: `diff failed: ${e.message}` }
+  }
+
+  // Снимаем состояние родительских файлов ДО git apply. Это становится частью
+  // undoStack родительского turn'а: изменения суб-агента должны откатываться
+  // той же кнопкой, что и изменения основного агента.
+  // Use NUL-delimited names (not diff headers): Git quotes paths with spaces,
+  // Unicode, tabs, or backslashes in `diff --git a/... b/...`. --no-renames
+  // reports both sides of a rename as delete+add so rollback captures the old
+  // source file and the absent destination independently.
+  let uniquePaths: string[] = []
+  try {
+    const nameOutput = await runGit(info.worktreePath, ['diff', '--name-only', '-z', '--no-renames', info.baseSha])
+    uniquePaths = [...new Set(nameOutput.split('\0').filter(Boolean))]
+  } catch {
+    // Fall back to plain diff parser only if --name-only failed.
+    uniquePaths = [...new Set([...diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].map(m => m[2]).filter(Boolean))]
+  }
+  for (const relativePath of uniquePaths) {
+    const absolutePath = join(parentWorkdir, relativePath)
+    try {
+      fileSnapshots.push({
+        path: absolutePath,
+        contentBefore: existsSync(absolutePath) ? readFileSync(absolutePath, 'utf-8') : null,
+      })
+    } catch {
+      fileSnapshots.push({ path: absolutePath, contentBefore: null })
+    }
   }
 
   // Нет изменений — применять нечего, можно чистить.
   if (!diff.trim()) {
-    return { ok: true, conflict: false, worktreeKept: false }
+    return { ok: true, conflict: false, worktreeKept: false, fileSnapshots }
   }
 
   // Записываем diff во временный файл и применяем в родительском workdir.
@@ -131,7 +167,7 @@ export async function mergeWorktreeBack(
   try {
     writeFileSync(patchFile, diff, 'utf-8')
     await runGit(parentWorkdir, ['apply', '--3way', '--whitespace=nowarn', patchFile])
-    return { ok: true, conflict: false, worktreeKept: false }
+    return { ok: true, conflict: false, worktreeKept: false, fileSnapshots }
   } catch (e: any) {
     // Non-zero exit — конфликт применения или ошибка. Оставляем worktree для
     // ручного разбора, чтобы данные суб-агента не потерялись. При этом сам
@@ -143,6 +179,7 @@ export async function mergeWorktreeBack(
       ok: false,
       conflict: true,
       worktreeKept: true,
+      fileSnapshots,
       error: `git apply --3way failed: ${e.message}`,
     }
   } finally {

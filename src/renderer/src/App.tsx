@@ -21,6 +21,7 @@ import { useFileTabsStore } from './store/fileTabs.store'
 import { useMessengerStore } from './store/messenger.store'
 import { useDotsStore } from './store/dots.store'
 import { useToast } from './components/ui/Toast/Toast'
+import AuthStatusBanner from './components/ui/AuthStatusBanner/AuthStatusBanner'
 import { IPC_EVENTS } from '../../shared/constants'
 import { autoAssignGatewayModels, markAutoAssignDone, isAutoAssignDone } from './store/autoAssign'
 import { contrastText, withAlpha, hexToRgb, hslToHex } from './utils/colorUtils'
@@ -615,6 +616,7 @@ export default function App() {
   const theme = useUIStore(s => s.theme)
 
   const authUser = useAuthStore(s => s.user)
+  const authAvailability = useAuthStore(s => s.availability)
   const authLoad = useAuthStore(s => s.load)
 
   // Глобальная IPC-подписка на события чатов (токены, шаги, статусы).
@@ -932,6 +934,25 @@ export default function App() {
   useEffect(() => {
     const off = window.syntee.on('nav:open-dots', () => {
       useNavStore.getState().toggleMainPage('dots')
+    })
+    return () => { off() }
+  }, [])
+
+  // Открытие Git-панели из Git Sync уведомления/бейджа.
+  useEffect(() => {
+    const off = window.syntee.on('nav:open-git', (payload: unknown) => {
+      useNavStore.getState().toggleMainPage('chat')
+      const workdir = String((payload as { workdir?: string } | null)?.workdir ?? '')
+      const target = workdir ? useChatStore.getState().chats.find(chat => chat.workdir === workdir) : undefined
+      if (target) {
+        useChatStore.getState().setCurrentChat(target.id)
+        useTabsStore.getState().openTab(target.id)
+      }
+      useRightPanelTabsStore.getState().openPanel('git')
+      useUIStore.getState().setAgentPanelTab('git')
+      useUIStore.getState().setAgentPanelOpen(true)
+      void window.syntee.settings.set('agentPanelTab', 'git')
+      void window.syntee.settings.set('agentPanelOpen', true)
     })
     return () => { off() }
   }, [])
@@ -1464,7 +1485,7 @@ export default function App() {
   // Подписка на logout из main-процесса (например, при истечении сессии)
   useEffect(() => {
     const off = window.syntee.auth.onLoggedOut(() => {
-      useAuthStore.setState({ user: null })
+      useAuthStore.setState({ user: null, availability: 'unauthenticated' })
       setAuthBoot('login')
     })
     return () => { off() }
@@ -1488,6 +1509,10 @@ export default function App() {
   // bgReady/imageReady тоже сбрасываем: app-слой монтируется заново, worker
   // фона и фото-слой стартуют с нуля — сплэш должен дождаться их снова.
   useEffect(() => {
+    if (authAvailability === 'unauthenticated' && authBoot === 'app') {
+      setAuthBoot('login')
+      return
+    }
     if (authUser && authBoot !== 'app') {
       window.syntee.settings.set('loginSkipped', false)
       useChatStore.getState().setBootRendered(false)
@@ -1501,7 +1526,7 @@ export default function App() {
       /* eslint-enable react-hooks/set-state-in-effect */
       setAuthBoot('app')
     }
-  }, [authUser, authBoot])
+  }, [authUser, authAvailability, authBoot])
 
   // ── Syntee-Gateway: загрузка моделей + polling статусов ─────────────────
   // При появлении юзера тянем модели и запускаем polling раз в 60с.
@@ -1775,6 +1800,7 @@ export default function App() {
             <PluginBottomHost />
             <BottomDock />
             <PluginStatusBar />
+            <AuthStatusBanner />
             <ToastContainer />
             <PluginPanel />
             <PluginModalHost />

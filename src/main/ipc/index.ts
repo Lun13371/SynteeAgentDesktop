@@ -88,6 +88,11 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     if (key === 'activityMonitor') {
       getActivityManager()?.refreshConfig()
     }
+    if (key === 'gitSyncEnabled') {
+      void import('../managers/GitSyncManager').then(({ getGitSyncManager }) => {
+        getGitSyncManager()?.setEnabled(value === true)
+      })
+    }
     // Перерегистрация глобальных хоткеев при изменении биндингов.
     // Без этого старые шорткаты остаются зарегистрированными до перезапуска.
     if (key === 'hotkeys') {

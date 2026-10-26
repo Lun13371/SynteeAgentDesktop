@@ -165,6 +165,11 @@ export class NotificationManager {
         this.mainWindow.show()
         this.mainWindow.getWindow()?.webContents.send('nav:openSettings', 'updates')
         break
+      case 'git_sync':
+        void import('./GitSyncManager').then(({ getGitSyncManager }) => {
+          void getGitSyncManager()?.handleNotificationAction(payload.id, payload.actionId)
+        })
+        break
       case 'system':
         // Действия плагинов: actionId вида plugin:{pluginId}:{command} —
         // выполняет слэш-команду плагина (notifications.show с actions).
@@ -227,6 +232,8 @@ export class NotificationManager {
       messenger: { enabled: true, showWhen: 'always' },
       updates: { enabled: true, showWhen: 'always' },
       system: { enabled: true, showWhen: 'inactive' },
+      // Git Sync — важные обновления показываются сразу, даже если окно активно.
+      git_sync: { enabled: true, showWhen: 'always' },
     }
     if (!raw || typeof raw !== 'object') {
       return { enabled: true, types: DEFAULT_TYPES }

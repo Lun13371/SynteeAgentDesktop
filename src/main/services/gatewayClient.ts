@@ -76,22 +76,31 @@ export function isAccessTokenExpired(token: string): boolean {
   }
 }
 
-let refreshPromise: Promise<string | null> | null = null
+type RefreshResult =
+  | { kind: 'success'; token: string }
+  | { kind: 'invalid'; statusCode: number }
+  | { kind: 'unavailable'; error: unknown }
 
-async function refreshAccessToken(): Promise<string | null> {
+let refreshPromise: Promise<RefreshResult> | null = null
+
+/**
+ * Обновляет access-токен, не смешивая окончательную потерю сессии
+ * с временной недоступностью gateway.
+ *
+ * Важно: сеть/timeout/5xx НЕ очищают refresh-токен. Иначе краткий обрыв
+ * интернета при запуске превращался в принудительный logout.
+ */
+async function refreshAccessToken(): Promise<RefreshResult> {
   if (refreshPromise) return refreshPromise
   refreshPromise = (async () => {
     const refresh = getRefreshToken()
-    if (!refresh) return null
+    if (!refresh) return { kind: 'invalid', statusCode: 401 } as const
     try {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 10000)
       let res: Response
       try {
         // Refresh-токен передаётся в JSON body, а НЕ в query-параметре.
-        // После JWT-харденинга gateway принимает только body-контракт
-        // (RefreshRequest); query-вариант ловит 422 → вечный логаут
-        // десктоп-клиента после истечения 7-дневного access-токена.
         res = await fetch(`${GATEWAY_API_URL}/api/user/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -101,12 +110,20 @@ async function refreshAccessToken(): Promise<string | null> {
       } finally {
         clearTimeout(timer)
       }
-      if (!res.ok) return null
+      if (res.status === 401 || res.status === 403) {
+        return { kind: 'invalid', statusCode: res.status } as const
+      }
+      if (!res.ok) {
+        return { kind: 'unavailable', error: new Error(`Refresh HTTP ${res.status}`) } as const
+      }
       const data = (await res.json()) as TokenResponse
+      if (!data.access_token || !data.refresh_token) {
+        return { kind: 'unavailable', error: new Error('Invalid refresh response') } as const
+      }
       setTokens(data.access_token, data.refresh_token)
-      return data.access_token
-    } catch {
-      return null
+      return { kind: 'success', token: data.access_token } as const
+    } catch (error) {
+      return { kind: 'unavailable', error } as const
     } finally {
       refreshPromise = null
     }
@@ -163,21 +180,29 @@ const makeHeaders = (token: string | null): Record<string, string> => {
     clearTimeout(timer)
   }
 
-  // Auto-refresh on 401 (only for authenticated requests)
+  // Auto-refresh on 401 (only for authenticated requests).
+  // Только однозначный 401/403 refresh-токена означает logout; сеть и 5xx
+  // должны оставить сохранённую сессию нетронутой.
   if (res.status === 401 && !noAuth) {
-    const newToken = await refreshAccessToken()
-    if (newToken) {
+    const refreshResult = await refreshAccessToken()
+    if (refreshResult.kind === 'success') {
       const controller2 = new AbortController()
       const timer2 = setTimeout(() => controller2.abort(), timeoutMs)
       try {
-        init.headers = makeHeaders(newToken)
+        init.headers = makeHeaders(refreshResult.token)
         res = await fetch(`${GATEWAY_API_URL}${path}`, { ...init, signal: controller2.signal })
       } finally {
         clearTimeout(timer2)
       }
-    } else {
+    } else if (refreshResult.kind === 'invalid') {
       clearTokens()
-      throw new GatewayAuthError('Session expired')
+      throw new GatewayAuthError('Session expired', refreshResult.statusCode)
+    } else {
+      // Временная ошибка gateway: токены сохраняем, вызывающий код сможет
+      // открыть приложение в offline/degraded режиме и повторить запрос.
+      throw refreshResult.error instanceof Error
+        ? refreshResult.error
+        : new Error('Gateway temporarily unavailable')
     }
   }
 
@@ -266,9 +291,13 @@ export async function deleteApiKey(keyId: string): Promise<void> {
 /**
  * Принудительный refresh access-токена (для 401-ретраев в LLM/fetch-путях).
  * Singleton refreshPromise внутри сливает параллельные вызовы в один запрос.
+ * При временной недоступности возвращаем null, но токены не удаляем.
  */
 export async function forceRefreshGatewayToken(): Promise<string | null> {
-  return refreshAccessToken()
+  const result = await refreshAccessToken()
+  if (result.kind === 'success') return result.token
+  if (result.kind === 'invalid') clearTokens()
+  return null
 }
 
 /**
@@ -278,7 +307,16 @@ export async function forceRefreshGatewayToken(): Promise<string | null> {
 export async function getGatewayAuthToken(): Promise<string | null> {
   let token = getAccessToken()
   if (!token || isAccessTokenExpired(token)) {
-    token = await refreshAccessToken()
+    const result = await refreshAccessToken()
+    if (result.kind === 'success') token = result.token
+    else if (result.kind === 'invalid') {
+      clearTokens()
+      token = null
+    } else {
+      // Access-токен ещё можно попробовать использовать: возможно, gateway
+      // временно недоступен именно на refresh-запросе.
+      token = getAccessToken()
+    }
   }
   return token
 }

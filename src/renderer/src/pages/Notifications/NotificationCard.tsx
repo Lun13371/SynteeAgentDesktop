@@ -38,7 +38,7 @@ interface Props {
   screenImg?: string | null
 }
 
-const DROP_SPRING = { type: 'spring' as const, stiffness: 170, damping: 13, mass: 1.1 }
+const NOTIFICATION_SPRING = { type: 'spring' as const, stiffness: 360, damping: 30, mass: 0.8 }
 
 export default function NotificationCard({ item, index, screenImg }: Props) {
   const { remove, pauseTimer, resumeTimer } = useNotificationStore()
@@ -80,48 +80,30 @@ export default function NotificationCard({ item, index, screenImg }: Props) {
     <motion.div
       className={`notif-card ${PRIORITY_BORDER[item.priority] ?? 'notif-card--info'}`}
       data-interactive="true"
-      // layout — плавный сдвиг соседних карточек (часть визуала, оставлен).
-      // layoutId убран: id у каждой карточки уникален, общих shared-layout
-      // переходов между компонентами нет — он только держал запись в реестре
-      // projection-движка и участвовал в crossfade-логике вхолостую.
+      // layout — плавный сдвиг соседних карточек.
+      // Карточка больше не морфится из «капли»: мягкое glass-появление
+      // выглядит спокойнее и не создаёт ощущения прыжка интерфейса.
       layout
-      initial={{
-        opacity: 0,
-        scale: 0.25,
-        borderRadius: '50%',
-        y: -80,
-        width: 48,
-        height: 48,
-      }}
+      initial={{ opacity: 0, y: -18, scale: 0.94, filter: 'blur(10px)' }}
       animate={{
         opacity: 1,
-        scale: 1,
-        borderRadius: '14px',
         y: 0,
-        width: 340,
-        height: 'auto',
+        scale: 1,
+        filter: 'blur(0px)',
         transition: {
-          ...DROP_SPRING,
-          y: { ...DROP_SPRING, delay: 0 },
-          scale: { ...DROP_SPRING, delay: 0.05 },
-          borderRadius: { duration: 0.5, ease: 'easeOut', delay: 0.1 },
-          width: { ...DROP_SPRING, delay: 0.05 },
-          height: { duration: 0.4, ease: 'easeOut', delay: 0.1 },
-          opacity: { duration: 0.25, ease: 'easeOut' },
+          ...NOTIFICATION_SPRING,
+          opacity: { duration: 0.22, ease: 'easeOut' },
+          filter: { duration: 0.28, ease: 'easeOut' },
         },
       }}
       exit={{
         opacity: 0,
-        scale: 0.2,
-        borderRadius: '50%',
-        y: -40,
-        width: 40,
-        height: 40,
+        y: -10,
+        scale: 0.96,
+        filter: 'blur(8px)',
         transition: {
-          duration: 0.4,
+          duration: 0.24,
           ease: [0.4, 0, 0.2, 1],
-          opacity: { duration: 0.25, ease: 'easeIn' },
-          y: { duration: 0.4, ease: [0.4, 0, 0.2, 1] },
         },
       }}
       onMouseEnter={handleMouseEnter}
@@ -144,9 +126,9 @@ export default function NotificationCard({ item, index, screenImg }: Props) {
 
       <motion.div
         className="notif-card-inner"
-        initial={{ opacity: 0, scale: 0.5 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ delay: 0.25, duration: 0.3, ease: 'easeOut' }}
+        initial={{ opacity: 0, y: 5 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.08, duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
       >
         <div className="notif-icon-wrap">
           <AppIcon name={iconName as any} size="sm" tone={tone} strokeWidth={2} />
@@ -184,6 +166,16 @@ export default function NotificationCard({ item, index, screenImg }: Props) {
           <AppIcon name="x" size="xs" tone="muted" strokeWidth={2.2} />
         </button>
       </motion.div>
+      {item.duration && item.duration > 0 && (
+        <span
+          className="notif-progress"
+          aria-hidden="true"
+          style={{
+            animationDuration: `${item.duration}ms`,
+            animationPlayState: item.paused ? 'paused' : 'running',
+          }}
+        />
+      )}
     </motion.div>
   )
 }

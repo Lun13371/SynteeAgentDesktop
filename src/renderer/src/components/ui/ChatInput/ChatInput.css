@@ -829,6 +829,68 @@
   text-overflow: ellipsis;
 }
 
+.chat-input-git-sync-wrap {
+  position: relative;
+  display: inline-flex;
+  align-self: flex-start;
+}
+.chat-input-git-sync-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
+  border-radius: 20px;
+  background: color-mix(in srgb, #f59e0b 13%, transparent);
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat-input-git-sync-badge:hover { background: color-mix(in srgb, #f59e0b 24%, transparent); }
+.chat-input-git-sync-badge--danger {
+  color: #fb7185;
+  border-color: color-mix(in srgb, #fb7185 52%, transparent);
+  background: color-mix(in srgb, #fb7185 13%, transparent);
+}
+.chat-input-git-sync-popover {
+  position: fixed;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
+  overflow: hidden;
+  border-radius: var(--radius-lg, 16px);
+  background: var(--glass-bg, rgba(18, 18, 28, 0.97));
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  transform-origin: bottom left;
+  color: var(--text-primary, rgba(255,255,255,0.9));
+}
+.chat-input-git-sync-popover-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.chat-input-git-sync-count { margin-left: auto; min-width: 20px; padding: 2px 7px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); font-size: 10px; font-weight: 700; text-align: center; }
+.chat-input-git-sync-projects { overflow-y: auto; }
+.chat-input-git-sync-project { display: flex; flex-direction: column; min-height: 0; }
+.chat-input-git-sync-project + .chat-input-git-sync-project { border-top: 1px solid var(--border); }
+.chat-input-git-sync-project-head { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.chat-input-git-sync-project-head strong { color: var(--text-primary); font-size: 12px; font-weight: 600; }
+.chat-input-git-sync-project-head span { color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
+.chat-input-git-sync-warning { padding: 8px 12px; color: #fb7185; font-size: 11px; line-height: 1.4; border-bottom: 1px solid var(--border); }
+.chat-input-git-sync-commits { display: flex; flex-direction: column; gap: 0; padding: 4px 0; overflow-y: auto; }
+.chat-input-git-sync-commit { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 12px; color: var(--text-secondary); font-size: 11px; }
+.chat-input-git-sync-commit + .chat-input-git-sync-commit { border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.chat-input-git-sync-commit code { flex: 0 0 auto; color: var(--accent); font-family: var(--font-mono); font-size: 10px; }
+.chat-input-git-sync-commit span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-input-git-sync-more { padding: 5px 12px; color: var(--text-muted); font-size: 10px; }
+.chat-input-git-sync-actions { display: flex; align-items: center; gap: 6px; padding: 9px 10px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--text-muted) 5%, transparent); }
+.chat-input-git-sync-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--text-muted) 6%, transparent); color: var(--text-secondary); font-size: 10.5px; font-weight: 500; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.chat-input-git-sync-actions button:first-child { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.chat-input-git-sync-actions button:hover { color: var(--text-primary); background: color-mix(in srgb, var(--text-muted) 12%, transparent); }
+.chat-input-git-sync-actions button:disabled { opacity: .55; cursor: wait; }
+
 .chat-input-planning-badge {
   display: inline-flex;
   align-items: center;

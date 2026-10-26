@@ -111,6 +111,10 @@ interface ChatInputProps {
    *  защиты в ApprovalModeSelector. null/undefined = чат без проекта. */
   projectId?: string | null
   projectName?: string
+  gitSyncProjects?: import('../../../../../shared/types').GitSyncProjectState[]
+  onGitSyncApply?: (projectId: string) => Promise<void>
+  onGitSyncLater?: (projectId: string) => void
+  onGitSyncOpenGit?: (projectId: string) => void
 }
 
 // memo: ChatPage ре-рендерится ~20×/сек при стриминге и на scroll-range
@@ -165,6 +169,10 @@ function ChatInput({
   onOpenProjectSettings,
   projectId,
   projectName,
+  gitSyncProjects = [],
+  onGitSyncApply,
+  onGitSyncLater,
+  onGitSyncOpenGit,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   // Глобальные настройки авто-режима (agentPermissions.autoMode) и проектный
@@ -1049,6 +1057,10 @@ function ChatInput({
         reasoningValue={reasoningValue}
         onReasoningChange={onReasoningChange}
         onOpenProjectSettings={onOpenProjectSettings}
+        gitSyncProjects={gitSyncProjects}
+        onGitSyncApply={onGitSyncApply}
+        onGitSyncLater={onGitSyncLater}
+        onGitSyncOpenGit={onGitSyncOpenGit}
         secretsEnabled={secretsEnabled}
         onProtectedVarsClick={() => setProtectedVarsOpen(true)}
       />

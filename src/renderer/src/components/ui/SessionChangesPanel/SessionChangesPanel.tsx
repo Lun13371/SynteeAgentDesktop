@@ -35,6 +35,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('last')
   const [selectedCheckpoint, setSelectedCheckpoint] = useState<CheckpointMeta | null>(null)
+  const [consumedUndoPaths, setConsumedUndoPaths] = useState<Set<string>>(new Set())
   // ── Per-file диффы выбранного checkpoint'а ──
   // КУМУЛЯТИВНЫЕ за весь запрос (до первой правки → после последней, как в
   // Claude Code/Cursor) из chat:getCheckpointFileDiffs (снапшоты). Fallback
@@ -110,6 +111,18 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
       setLoading(false)
     }
   }, [chatId])
+
+  useEffect(() => {
+    let cancelled = false
+    if (chatId && selectedCheckpoint) {
+      window.syntee.chat.getConsumedPerFileUndoPaths(chatId, selectedCheckpoint.userMessageId)
+        .then(paths => { if (!cancelled) setConsumedUndoPaths(new Set(paths.map(normalizeDiffPath))) })
+        .catch(() => { if (!cancelled) setConsumedUndoPaths(new Set()) })
+    } else {
+      setConsumedUndoPaths(new Set())
+    }
+    return () => { cancelled = true }
+  }, [chatId, selectedCheckpoint])
 
   useEffect(() => {
     if (chatId) {
@@ -380,6 +393,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
         setError(result.error)
       } else {
         setUndoneFiles(prev => new Set(prev).add(filePath))
+        await refresh()
       }
     } catch (e) {
       setError(String((e as Error)?.message ?? e))
@@ -387,7 +401,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
       setUndoingFile(null)
     }
     setConfirmTarget(null)
-  }, [chatId, selectedCheckpoint, undoingFile, undoingAll])
+  }, [chatId, selectedCheckpoint, undoingFile, undoingAll, refresh])
 
   // ── Undo all files of checkpoint ──
   const handleUndoAllFiles = useCallback(async () => {
@@ -399,6 +413,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
         setError(result.error)
       } else {
         setUndoneFiles(new Set([...new Set(selectedCheckpoint.filePaths)]))
+        await refresh()
       }
     } catch (e) {
       setError(String((e as Error)?.message ?? e))
@@ -406,7 +421,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
       setUndoingAll(false)
     }
     setConfirmTarget(null)
-  }, [chatId, selectedCheckpoint, undoingFile, undoingAll])
+  }, [chatId, selectedCheckpoint, undoingFile, undoingAll, refresh])
 
   // ── Undo files only (из timeline в режиме "files") ──
   // Откатывает только файлы к состоянию этого turn'а, сообщения остаются.
@@ -836,7 +851,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                     const dir = dirname(p)
                     const stats = getFileStats(p)
                     const isUndoing = undoingFile === p
-                    const isUndone = undoneFiles.has(p)
+                    const isUndone = undoneFiles.has(p) || consumedUndoPaths.has(normalizeDiffPath(p))
                     // Нормализованный матчинг: чекпоинт-пути (БД) и parsePatch
                     // пути могут отличаться кавычками/\ vs / — иначе чип не
                     // подсвечивается и fileDiff не находится.

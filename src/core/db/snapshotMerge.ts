@@ -74,19 +74,21 @@ export function firstSnapshotPerPath<T extends SnapshotLike>(
 }
 
 /**
- * Склеивает инкрементально накопленные снапшоты (стрим из воркера — переживает
- * Stop/краш) с финальным undoStack'ом агента.
+ * Выбирает источник снапшотов для checkpoint'а.
  *
- * Финальный список авторитетнее (это ровно то, что агент считает undoStack'ом
- * на конец turn'а), но он может быть неполным: undoStack обрезается до 50
- * записей, а при Stop/краше воркер вообще не присылает его. Поэтому:
- *  - финальный непустой → он;
- *  - иначе → накопленный стрим.
+ * Live-поток — источник истины: он содержит хронологию ВСЕХ правок, включая
+ * правки саб-агентов, которые произошли после того, как основной Agent собрал
+ * свой локальный undoStack. Финальный список Agent нужен как fallback для
+ * старых/неполных worker-путей, где live-сообщения ещё не стримились.
+ *
+ * Это важно для сценария `spawn_agent`: финальный undoStack родителя не знает
+ * о merge worktree, а `live` уже содержит и родительские, и добавленные main-
+ * процессом снапшоты саб-агента.
  */
 export function pickSnapshots(
   live: SnapshotLike[] | undefined,
   finalList: SnapshotLike[] | undefined,
 ): SnapshotLike[] {
-  if (finalList && finalList.length > 0) return finalList
-  return live ?? []
+  if (live && live.length > 0) return live
+  return finalList ?? []
 }

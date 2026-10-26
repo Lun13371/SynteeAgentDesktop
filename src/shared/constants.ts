@@ -173,6 +173,8 @@ export const DEFAULT_SETTINGS = {
   backupPath: '',
   agentPanelWidth: 420,
   agentPanelOpen: false,
+  // Фоновый Git Sync Monitor включён по умолчанию.
+  gitSyncEnabled: true,
   hotkeys: DEFAULT_HOTKEYS,
   integrations: {
     telegram: { token: '', chatId: '' },
@@ -214,6 +216,7 @@ export const DEFAULT_SETTINGS = {
       messenger: { enabled: true, showWhen: 'always' as const },
       updates: { enabled: true, showWhen: 'always' as const },
       system: { enabled: true, showWhen: 'inactive' as const },
+      git_sync: { enabled: true, showWhen: 'always' as const },
       ask_user: { enabled: true, showWhen: 'always' as const },
     },
   },
@@ -308,6 +311,8 @@ export const IPC_EVENTS = {
   NOTIFICATION_PUSH: 'notification:push',
   // renderer → main: пользователь кликнул action на уведомлении
   NOTIFICATION_ACTION: 'notification:action',
+  // Git Sync Monitor: живое состояние фонового fetch по проектам.
+  GIT_SYNC_STATE: 'git-sync:state',
   // ── Dots (always-on фоновые агенты) ──
   // main → renderer: список/конфиги Dot'ов изменились (CRUD) — перезагрузить
   DOTS_CHANGED: 'dots:changed',

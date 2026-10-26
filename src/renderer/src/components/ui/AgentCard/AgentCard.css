@@ -8,21 +8,27 @@
   position: relative;
   display: flex;
   margin: 6px 0;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-secondary) 94%, var(--accent)), var(--bg-secondary));
   overflow: hidden;
   cursor: pointer;
-  transition: border-color 0.18s, background 0.18s, transform 0.1s;
+  transition: border-color 0.18s, background 0.18s, box-shadow 0.18s, transform 0.1s;
   font-size: 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
 }
 .agent-c:hover {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: var(--bg-tertiary);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-tertiary) 92%, var(--accent)), var(--bg-tertiary));
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.14), 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent);
 }
-.agent-c:active { transform: scale(0.995); }
+.agent-c:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.agent-c:active { transform: scale(0.998); }
 .agent-c--live {
-  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
 }
 
 /* Левая цветная полоска — узкая, индикатор статуса */
@@ -37,24 +43,36 @@
 .agent-c__stripe--cancelled { background: var(--text-muted); opacity: 0.4; }
 
 .agent-c__main {
+  position: relative;
   flex: 1;
   min-width: 0;
-  padding: 7px 10px;
+  padding: 8px 10px 7px;
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
-/* ── Строка-заголовок (компактная, одна строка) ── */
+/* ── Шапка: большая кликабельная зона открытия агента ── */
 .agent-c__row {
   display: flex;
   align-items: center;
   gap: 7px;
+  width: 100%;
   min-width: 0;
+  padding: 0 32px 0 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
   user-select: none;
 }
 .agent-c__row:hover .agent-c__task { color: var(--text-primary); }
+.agent-c__row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: 3px;
+  border-radius: 7px;
+}
 
 .agent-c__status-icon {
   flex-shrink: 0;
@@ -62,12 +80,29 @@
   align-items: center;
 }
 
-.agent-c__task {
+.agent-c__task-wrap {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   flex: 1;
   min-width: 0;
+  gap: 1px;
+}
+.agent-c__eyebrow {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+.agent-c__task {
+  min-width: 0;
   font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -76,18 +111,23 @@
 
 /* Текущий тул — inline pill справа от задачи (live) */
 .agent-c__current-tool {
-  flex-shrink: 0;
+  flex-shrink: 1;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--overlay-3);
-  color: var(--text-muted);
+  gap: 4px;
+  max-width: 150px;
+  padding: 4px 7px;
+  border: 1px solid var(--overlay-3);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--overlay-3) 72%, transparent);
+  color: var(--text-secondary);
   font-size: 10px;
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  max-width: 140px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-c__current-tool span {
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -122,6 +162,35 @@
   background: color-mix(in srgb, currentColor 14%, transparent);
 }
 
+.agent-c__expand {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.agent-c__expand:hover {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: var(--overlay-3);
+}
+.agent-c__expand:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+.agent-c__expand:active { transform: scale(0.92); }
 .agent-c__chevron {
   flex-shrink: 0;
   transition: transform 0.2s;
@@ -135,7 +204,9 @@
 /* ── Разворачиваемое тело ── */
 .agent-c__body {
   overflow: hidden;
-  padding-left: 0;
+  margin-top: 2px;
+  padding: 8px 32px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
 }
 
 /* Tool chips — компактная строка */
@@ -232,9 +303,11 @@
   display: flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  padding-top: 1px;
   font-size: 10px;
   color: var(--text-muted);
-  opacity: 0.75;
+  opacity: 0.78;
 }
 .agent-c__meta-model {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
@@ -248,9 +321,17 @@
 .agent-c__meta-time { white-space: nowrap; }
 .agent-c__meta-hint {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 6px;
+  border-radius: 6px;
   font-size: 9.5px;
   color: var(--accent);
-  opacity: 0;
-  transition: opacity 0.15s;
+  opacity: 0.72;
+  transition: opacity 0.15s, background 0.15s;
 }
-.agent-c:hover .agent-c__meta-hint { opacity: 0.7; }
+.agent-c:hover .agent-c__meta-hint {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}

@@ -273,6 +273,7 @@ export function deleteMessageById(messageId: string): void {
   // user_message_id), поэтому вызывать безопасно в любом случае.
   getDB().prepare(`DELETE FROM file_snapshots WHERE user_message_id = ?`).run(messageId)
   getDB().prepare(`DELETE FROM context_snapshots WHERE user_message_id = ?`).run(messageId)
+  getDB().prepare(`DELETE FROM per_file_undo_consumed WHERE user_message_id = ?`).run(messageId)
   if (row?.chatId) _onMessageSaved?.(row.chatId)
 }
 

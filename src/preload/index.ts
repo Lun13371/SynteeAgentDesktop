@@ -639,6 +639,7 @@ const synteeAPI = {
     // getLastRewind — последнее rewind-сообщение (для redo-баннера).
     undoCheckpointFiles: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:undoCheckpointFiles', chatId, userMessageId) as Promise<{ restored?: number; failed?: string[]; error?: string }>,
     undoCheckpointFile: (chatId: string, userMessageId: string, path: string) => ipcRenderer.invoke('chat:undoCheckpointFile', chatId, userMessageId, path) as Promise<{ success?: boolean; error?: string }>,
+    getConsumedPerFileUndoPaths: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:getConsumedPerFileUndoPaths', chatId, userMessageId) as Promise<string[]>,
     getLastRewind: (chatId: string) => ipcRenderer.invoke('chat:getLastRewind', chatId) as Promise<{ rewindMessageId: string; createdAt: number } | null>,
     // ── Сжатие контекста (/compact) ──
     // Ручной запуск applyRollingWindowAsync с forceCompress=true.
@@ -948,6 +949,19 @@ const synteeAPI = {
     // Stat по абсолютному пути (файл/папка/существует) — для кликабельных путей
     statPath: (absPath: string) =>
       ipcRenderer.invoke('fs:statPath', absPath) as Promise<{ exists: boolean; isDir: boolean; isFile: boolean; size: number; resolved: string }>,
+  },
+
+  // Git Sync Monitor — фоновый fetch и состояние новых upstream-коммитов.
+  gitSync: {
+    getState: () => ipcRenderer.invoke('git-sync:getState'),
+    checkNow: () => ipcRenderer.invoke('git-sync:checkNow'),
+    apply: (projectId: string) => ipcRenderer.invoke('git-sync:apply', projectId),
+    later: (projectId: string) => ipcRenderer.invoke('git-sync:later', projectId),
+    onState: (cb: (state: import('../shared/types').GitSyncState) => void) => {
+      const handler = (_e: unknown, state: unknown) => cb(state as import('../shared/types').GitSyncState)
+      ipcRenderer.on('git-sync:state', handler)
+      return () => ipcRenderer.removeListener('git-sync:state', handler)
+    },
   },
 
   // Git-статус для правой панели

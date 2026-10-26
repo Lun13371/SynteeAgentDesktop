@@ -10,6 +10,8 @@ import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
 import { getPersona, DEFAULT_PERSONA, type PersonaId } from '../../../../../shared/modes'
 import type { LastTurnChanges } from '../../../../../shared/types'
 import type { UseVoiceInputResult } from '../../../hooks/useVoiceInput'
+import type { GitSyncProjectState } from '../../../../../shared/types'
+import { GitSyncBadge } from './GitSyncBadge'
 import { whileHoverTiny, whileTapTiny, springHover } from '../../../utils/motionPresets'
 
 interface ChatInputStatusRowProps {
@@ -48,6 +50,10 @@ interface ChatInputStatusRowProps {
   secretsEnabled?: number
   /** Открыть модалку защищённых переменных (клик по бейджу секретов). */
   onProtectedVarsClick?: () => void
+  gitSyncProjects?: GitSyncProjectState[]
+  onGitSyncApply?: (projectId: string) => Promise<void>
+  onGitSyncLater?: (projectId: string) => void
+  onGitSyncOpenGit?: (projectId: string) => void
 }
 
 /**
@@ -83,6 +89,10 @@ export function ChatInputStatusRow({
   onOpenProjectSettings,
   secretsEnabled,
   onProtectedVarsClick,
+  gitSyncProjects = [],
+  onGitSyncApply,
+  onGitSyncLater,
+  onGitSyncOpenGit,
 }: ChatInputStatusRowProps) {
   // ── Скролл бейджей: переполнение → горизонтальный скролл без скроллбара ──
   // Бейджей может быть много (workdir + секреты + voice + queue + extensions +
@@ -190,6 +200,14 @@ export function ChatInputStatusRow({
             </svg>
             <span>{workdirBreadcrumb}</span>
           </motion.div>
+        )}
+        {onGitSyncApply && onGitSyncLater && onGitSyncOpenGit && (
+          <GitSyncBadge
+            projects={gitSyncProjects}
+            onApply={onGitSyncApply}
+            onLater={onGitSyncLater}
+            onOpenGit={onGitSyncOpenGit}
+          />
         )}
       </AnimatePresence>
 

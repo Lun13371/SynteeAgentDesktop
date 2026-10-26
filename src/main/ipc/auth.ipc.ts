@@ -146,20 +146,22 @@ export function registerAuthIPC(getMainWindow: () => BrowserWindow | null): void
 
   ipcMain.handle('auth:isLoggedIn', () => hasTokens())
 
-  ipcMain.handle('auth:me', async (): Promise<GatewayUser | null> => {
-    if (!hasTokens()) return null
+  ipcMain.handle('auth:me', async (): Promise<{
+    user: GatewayUser | null
+    status: 'authenticated' | 'unauthenticated' | 'unavailable'
+  }> => {
+    if (!hasTokens()) return { user: null, status: 'unauthenticated' }
     try {
-      return await getMe()
+      return { user: await getMe(), status: 'authenticated' }
     } catch (err) {
-      // GatewayAuthError (401/403) — токен протух, стираем.
+      // Только однозначный 401/403 refresh-токена означает logout.
       if (err instanceof GatewayAuthError) {
         clearTokens()
-        return null
+        return { user: null, status: 'unauthenticated' }
       }
-      // Любая другая ошибка (ECONNREFUSED, timeout, сеть) — не крашим
-      // приложение, возвращаем null → рендерер покажет экран входа.
-      // Юзер может войти заново или продолжить как гость.
-      return null
+      // Сеть, timeout и 5xx — это временная недоступность. Токены оставляем
+      // в хранилище, чтобы короткий обрыв интернета не превращался в logout.
+      return { user: null, status: 'unavailable' }
     }
   })
 

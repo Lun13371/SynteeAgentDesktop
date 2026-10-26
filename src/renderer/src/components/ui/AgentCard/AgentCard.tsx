@@ -50,7 +50,7 @@ function elapsedMs(createdAt: number, finishedAt?: number): string {
   return `${(ms / 60000).toFixed(1)}м`
 }
 
-const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardProps) {
+const AgentCard = memo(function AgentCard({ agent, onClick, live: _live }: AgentCardProps) {
   const meta = STATUS_META[agent.status]
   const isLive = agent.status === 'running' || agent.status === 'pending'
   const [expanded, setExpanded] = useState(false)
@@ -67,6 +67,7 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
       const t = setTimeout(() => setExpanded(false), 1500)
       return () => clearTimeout(t)
     }
+    return undefined
   }, [isLive])
 
   // Последние 4 тул-вызова (для chips в развёрнутом теле).
@@ -75,20 +76,25 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
     .slice(-4)
   const currentTool = recentTools[recentTools.length - 1]?.toolName
 
+  const canExpand = isLive || !!agent.summary || agent.status === 'error' || agent.status === 'cancelled'
+
   return (
     <div
       className={`agent-c agent-c--${agent.status}${isLive ? ' agent-c--live' : ''}`}
       onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={e => { if (e.key === 'Enter') onClick?.() }}
+      role="group"
     >
       {/* Левая полоска статуса */}
-      <div className={`agent-c__stripe agent-c__stripe--${agent.status}`} />
+      <div className={`agent-c__stripe agent-c__stripe--${agent.status}`} aria-hidden="true" />
 
       <div className="agent-c__main">
-        {/* Компактная строка-заголовок */}
-        <div className="agent-c__row" onClick={(e) => { e.stopPropagation(); setExpanded(v => !v) }}>
+        {/* Вся шапка открывает правую панель агента. */}
+        <button
+          type="button"
+          className="agent-c__row"
+          aria-label={`Открыть суб-агента: ${agent.task}`}
+          onClick={(e) => { e.stopPropagation(); onClick?.() }}
+        >
           <div className="agent-c__status-icon">
             <AppIcon
               name={meta.icon}
@@ -97,26 +103,29 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
               animation={agent.status === 'running' ? 'spin' : 'none'}
             />
           </div>
-          <span className="agent-c__task" title={agent.task}>{shortTask(agent.task)}</span>
+          <div className="agent-c__task-wrap">
+            <span className="agent-c__eyebrow">Суб-агент{agent.role ? ` · ${getSubagentRole(agent.role).nameEn}` : ''}</span>
+            <span className="agent-c__task" title={agent.task}>{shortTask(agent.task, 72)}</span>
+          </div>
           {currentTool && isLive && (
-            <span className="agent-c__current-tool" title={currentTool}>
+            <span className="agent-c__current-tool" title={`Сейчас: ${currentTool}`}>
               <AppIcon name={getToolMeta(currentTool).icon as IconName} size="xs" style={{ color: getToolMeta(currentTool).color }} />
-              {currentTool}
-            </span>
-          )}
-          {agent.role && (
-            <span
-              className="agent-c__role-badge"
-              style={{ color: getSubagentRole(agent.role).color }}
-            >
-              {getSubagentRole(agent.role).nameEn}
+              <span>{currentTool}</span>
             </span>
           )}
           <span className={`agent-c__badge agent-c__badge--${agent.status}`}>{meta.label}</span>
-          {!isLive && agent.summary && (
-            <AppIcon name="chevronDown" size="xs" tone="muted" className={expanded ? 'agent-c__chevron' : 'agent-c__chevron agent-c__chevron--closed'} />
-          )}
-        </div>
+        </button>
+        {canExpand && (
+          <button
+            type="button"
+            className="agent-c__expand"
+            aria-label={expanded ? 'Скрыть детали суб-агента' : 'Показать детали суб-агента'}
+            aria-expanded={expanded}
+            onClick={(e) => { e.stopPropagation(); setExpanded(v => !v) }}
+          >
+            <AppIcon name={expanded ? 'chevronUp' : 'chevronDown'} size="xs" tone="muted" />
+          </button>
+        )}
 
         {/* Развёрнутое тело — детали по клику */}
         <AnimatePresence initial={false}>
@@ -199,7 +208,7 @@ const AgentCard = memo(function AgentCard({ agent, onClick, live }: AgentCardPro
         </AnimatePresence>
 
         {/* Футер-мета — компактный, всегда виден */}
-        <div className="agent-c__meta" onClick={(e) => e.stopPropagation()}>
+        <div className="agent-c__meta">
           <span className="agent-c__meta-model">{agent.model}</span>
           <span className="agent-c__meta-dot">·</span>
           <span className="agent-c__meta-steps">{agent.stepsCount} шаг{agent.stepsCount === 1 ? '' : 'ов'}</span>
