@@ -161,7 +161,6 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   { section: 'agent', id: 'autoMemoryInterval', label: 'Автосохранение рабочей памяти', keywords: ['память', 'автосохранение'] },
   { section: 'agent', id: 'maxRepeatedToolCalls', label: 'Повтор tool-call', keywords: ['зацикливание', 'повтор'] },
   { section: 'agent', id: 'maxRepeatedErrors', label: 'Повтор одной ошибки', keywords: ['ошибка', 'повтор'] },
-  { section: 'agent', id: 'codeModeEnabled', label: 'TypeScript Code Mode', keywords: ['code mode', 'код', 'экспериментальный', 'typescript', 'скрипт'] },
   { section: 'tools', id: 'customToolsEnabled', label: 'Дополнительные инструменты', keywords: ['tools', 'встроенные'] },
   // Безопасность
   { section: 'security', id: 'approvalMode', label: 'Режим подтверждения действий', keywords: ['подтверждение', 'approval', 'авто', 'спрашивать'] },
@@ -2588,10 +2587,6 @@ const AgentSection = memo(function AgentSection({ settings, onSet }: { settings:
       </SectionTitle>
 
       <Group id="agent-behavior" icon="bot" title="Поведение">
-        <Field id="codeModeEnabled" label="TypeScript Code Mode" description="Экспериментальный режим: агент сможет объединять несколько вызовов инструментов в одну TypeScript-программу. Само включение настройки не меняет доступные инструменты и правила подтверждения.">
-          <Toggle value={Boolean(settings['codeModeEnabled'])} onChange={v => onSet('codeModeEnabled', v)} />
-        </Field>
-
         <Field id="enableThinking" label="Режим размышлений" description="AI показывает ход своих мыслей перед ответом — цепочка рассуждений видна в свёрнутом блоке">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Toggle value={agentSettings.enableThinking} onChange={v => updateAgent({ enableThinking: v })} />

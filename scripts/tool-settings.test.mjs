@@ -47,6 +47,13 @@ test('Media schemas are registered, enabled by default and can be disabled indiv
     assert.ok(settings.OPTIONAL_TOOL_GROUPS.some(group => group.tools.some(tool => tool.name === name)), name)
   }
 })
+test('execute_code is a normal registered tool: on by default, off in ask/planning, individually disableable', () => {
+  assert.ok(names({}).includes('execute_code'))
+  assert.ok(!names({ askMode: true }).includes('execute_code'))
+  assert.ok(!names({ planningMode: true }).includes('execute_code'))
+  assert.ok(!names({ customToolsEnabled: true, disabledTools: ['execute_code'] }).includes('execute_code'))
+  assert.ok(settings.OPTIONAL_TOOL_GROUPS.some(group => group.tools.some(tool => tool.name === 'execute_code')))
+})
 test('Agent preserves worker array identity for live browser access and forwards media cancellation', () => {
   const source = readFileSync('src/core/agent/Agent.ts', 'utf8')
   assert.ok(source.includes('this.toolDispatcher.mediaSignal = signal'))

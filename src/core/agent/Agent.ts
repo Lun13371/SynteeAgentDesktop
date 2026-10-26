@@ -51,15 +51,6 @@ import type { CodeTraceEntry } from '../codeMode'
 // Если worker завершён, артефакты очищаются вместе с ним.
 const CODE_MODE_ARTIFACTS = new EphemeralArtifactStore()
 
-const EXECUTE_CODE_SCHEMA = {
-  type: 'function' as const,
-  function: {
-    name: 'execute_code',
-    description: 'For multi-step tasks, write a fresh isolated TypeScript program. Hybrid choice: use normal tools for simple actions, execute_code to orchestrate several permitted tools and aggregate results without sending intermediate results to the model. No imports, Node APIs, timers, or network. tools.call(name,args) or tools.<tool_name>(args) returns {success, output, error?}; output is the raw formatted tool output. Internal tool calls use the current allowed tools and all normal permissions/approvals. A denial/block stops this program. artifacts.save(value), load(id), list(), delete(id) store JSON artifacts scoped to this chat between runs. Body is async and its return value is the final output.',
-    parameters: { type: 'object', properties: { code: { type: 'string', description: 'TypeScript body of an async function; use return for the final result.' } }, required: ['code'], additionalProperties: false },
-  },
-}
-
 // Тулы, которые НЕ блокируются hard block при parse-failure loop guard —
 // они не деструктивны (идемпотентны, не меняют файлы/систему).
 // Hard block на весь run лишает модель возможности сохранить
@@ -126,6 +117,11 @@ export class Agent {
   onGetWorkingMemory?: (chatId: string) => string
   /** Колбэк после записи/редактирования файла агентом — для live-обновления UI */
   onFileChanged?: (path: string) => void
+  /** §rollback-live — колбэк на КАЖДУЮ правку файла: {path, contentBefore}.
+   *  Воркер стримит это в main, чтобы правки прогона оставались
+   *  откатываемыми даже если финальный done не придёт (Stop/краш воркера).
+   *  Вызывается вместе с callbacks.onFileSnapshot (если задан). */
+  onFileSnapshot?: (snapshot: { path: string; contentBefore: string | null }) => void
   /** Защищённые переменные: key → decrypted value. Подстановка ${{KEY}} в
    *  аргументы тулов и обратная маскировка в результатах. */
   secretValues?: Map<string, string>
@@ -436,12 +432,8 @@ export class Agent {
     // schemas mid-run. Never mutate the global registry when no override is supplied.
     const filteredSchemas = filterToolSchemas(activeSchemas, toolSettings)
     activeSchemas.splice(0, activeSchemas.length, ...filteredSchemas)
-    const codeModeEnabled = this.store.get('codeModeEnabled') === true
-    if (codeModeEnabled && !activeSchemas.some(s => s.function.name === 'execute_code')) activeSchemas.push(EXECUTE_CODE_SCHEMA)
-    if (!codeModeEnabled) {
-      const index = activeSchemas.findIndex(s => s.function.name === 'execute_code')
-      if (index >= 0) activeSchemas.splice(index, 1)
-    }
+    // execute_code — обычный тул реестра (schemas/code.ts). Набор приходит из
+    // getToolSchemas: normal-режим даёт его, ask/planning/read-only — нет.
     const artifacts = CODE_MODE_ARTIFACTS
     const autoMemoryInterval = Math.max(0, options?.autoMemoryInterval ?? 0)
     const maxRepeatedToolCalls = Math.max(2, options?.maxRepeatedToolCalls ?? 3)
@@ -1349,6 +1341,15 @@ export class Agent {
           let result: ToolResult
           let codeTrace: CodeTraceEntry[] | undefined
           try {
+            // execute_code — обычный тул реестра: в ask/planning/read-only его НЕТ
+            // в наборе (там каждый внутренний вызов спрашивал бы подтверждение).
+            // Модель может его галлюцинировать — отвечаем отказом, не исполняем.
+            if (fn.name === 'execute_code' && !activeSchemas.some(s => s.function.name === 'execute_code')) {
+              const unavailable = 'Tool "execute_code" is unavailable in the current mode.'
+              resultMap.set(callId, { contentForAI: unavailable, callId, name: fn.name })
+              callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: unavailable, success: false, callId })
+              return
+            }
             if (fn.name === 'execute_code') {
               const code = typeof args.code === 'string' ? args.code : ''
               const codeAbort = new AbortController()
@@ -1381,7 +1382,10 @@ export class Agent {
                   if (!internalResult) return { success: false, output: '', error: signal?.aborted ? 'Execution aborted' : 'Tool was blocked or cancelled.' }
                   const text = internalResult.contentForAI
                   const blocked = /(?:Action blocked|Rejected by the user|Действие отклонено пользователем|Approval required; tool not executed|unavailable in the current run|Permission block|Permission denied|blocked by loop guard|Hard loop guard|Loop guard|is disabled|unavailable in the current mode|not available in the current mode)/i.test(text)
-                  if (blocked) codeAbort.abort()
+                  // Отказ НЕ обрывает скрипт: возвращаем его внутрь гостя как
+                  // {success:false, error}, чтобы try/catch мог продолжить с
+                  // другими файлами. Раньше один отклонённый write_file из
+                  // сорока вызовов выбрасывал все уже полученные результаты.
                   return { success: !blocked, output: text, ...(blocked ? { error: text } : {}) }
                 },
               }) } finally { signal?.removeEventListener('abort', forwardAbort) }
@@ -1458,6 +1462,12 @@ export class Agent {
                 // §1.8 — сохраняем оригинал для undo (null = файл был создан заново)
                 this.undoStack.push({ path: snapPath, originalContent: origContent ?? null })
                 if (this.undoStack.length > 50) this.undoStack.shift()  // ограничиваем стек
+                // §rollback-live — отдаём снапшот в main СРАЗУ: при Stop/краше
+                // воркера финальный onDone не придёт, и без стрима правки этого
+                // прогона остались бы неоткатываемыми (filesChanged=0).
+                const snap = { path: snapPath, contentBefore: origContent ?? null }
+                try { callbacks.onFileSnapshot?.(snap) } catch { /* колбэк не должен ломать выполнение тула */ }
+                try { this.onFileSnapshot?.(snap) } catch { /* то же */ }
                 for (const key of Array.from(this.readFileCache.keys())) {
                   if (key.startsWith(p + ':')) this.readFileCache.delete(key)
                 }

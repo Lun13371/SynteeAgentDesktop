@@ -2,6 +2,7 @@ import type { Message } from '../../shared/types'
 import { getDB } from './handle'
 import { touchChat } from './chats'
 import { deleteStreamingBuffer, deleteStreamingBuffersForChat } from './streamingBuffers'
+import { stripFinalMarkers } from '../../shared/finalAnswer'
 
 // === MESSAGES ===
 
@@ -219,7 +220,11 @@ export function editMessageContent(messageId: string, content: string, iterTexts
       iterationsJson = JSON.stringify(iters)
       // content = конкатенация непустых сегментов — то, что видит пользователь
       // (messageToContextMessages отправляет content в AI-контекст).
-      finalContent = iters.map(it => it.textBefore ?? '').filter(t => t.trim().length > 0).join('\n\n')
+      // Служебные теги <final_answer> из content убираем (в iterations остаются —
+      // по ним UI понимает, что это итоговый ответ).
+      finalContent = stripFinalMarkers(
+        iters.map(it => it.textBefore ?? '').filter(t => t.trim().length > 0).join('\n\n'),
+      )
     }
   }
   const info = db.prepare('UPDATE messages SET content = ?, iterations = ? WHERE id = ?')
@@ -255,6 +260,15 @@ export function deleteMessageById(messageId: string): void {
   // Чекпоинты ссылаются на user_message_id/assistant_message_id — удаляем
   // осиротевшие, иначе кнопка «Откатить» в панели «Сессия» укажет в пустоту.
   getDB().prepare(`DELETE FROM chat_checkpoints WHERE user_message_id = ? OR assistant_message_id = ?`).run(messageId, messageId)
+  // §rollback-orphan — file_snapshots/context_snapshots привязаны к
+  // user_message_id напрямую и НЕ имеют FK на chat_checkpoints. Без этой
+  // чистки снапшоты удалённого turn'а остаются в БД: rewind к более раннему
+  // turn'у подхватывает их по created_at и «восстанавливает» состояние
+  // несуществующего turn'а (файлы откатываются к правке, которой уже нет).
+  // Для assistant-сообщения запрос — no-op (его id не встречается в
+  // user_message_id), поэтому вызывать безопасно в любом случае.
+  getDB().prepare(`DELETE FROM file_snapshots WHERE user_message_id = ?`).run(messageId)
+  getDB().prepare(`DELETE FROM context_snapshots WHERE user_message_id = ?`).run(messageId)
   if (row?.chatId) _onMessageSaved?.(row.chatId)
 }
 

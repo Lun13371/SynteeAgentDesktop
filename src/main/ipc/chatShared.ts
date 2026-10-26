@@ -149,6 +149,13 @@ export interface ActiveRun {
   // от API, bufferedText не растёт). С dirty-flag — saveMessage только
   // при реальных изменениях → main не блокируется пустой сериализацией.
   checkpointDirty: boolean
+  // ── §rollback-live: снапшоты файлов, накопленные по ходу рана ──
+  // Воркер шлёт {path, contentBefore} на КАЖДУЮ правку (write_file/edit_file).
+  // Финальный sendDone получает полный undoStack агента, но при Stop
+  // (worker.terminate) и краше/выходе воркера финальный список не приходит —
+  // без этого буфера такие правки нельзя было откатить вообще (чекпоинт
+  // сохранялся с filesChanged=0 и пустыми file_snapshots).
+  liveSnapshots: Array<{ path: string; contentBefore: string | null }>
 }
 
 export const activeRuns = new Map<string, ActiveRun>()

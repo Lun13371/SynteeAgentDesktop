@@ -423,6 +423,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       agent.onFileChanged = (filePath) => {
         send({ type: 'file_changed', path: filePath })
       }
+      // §rollback-live — {path, contentBefore} на КАЖДУЮ правку файла, сразу
+      // после её применения. main копит их в ActiveRun.liveSnapshots и
+      // использует, если финальный done с fileSnapshots не пришёл (Stop через
+      // worker.terminate, краш/выход воркера) — иначе такие правки нельзя
+      // было откатить вообще (чекпоинт с filesChanged=0).
+      agent.onFileSnapshot = (snapshot) => {
+        send({ type: 'file_snapshot', chatId, msgId, snapshot })
+      }
 
       // Синхронизируем workdir/projectId/chatId/gateway/колбэки в ToolDispatcher —
       // они устанавливаются ПОСЛЕ конструктора Agent, но ToolDispatcher создаётся
@@ -446,6 +454,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             })
           },
           onStep: (step) => {
+            // §rollback-live — снапшоты файлов стримим отдельным сообщением
+            // (см. onFileSnapshot ниже), здесь только шаги.
             // Скрытые тулы (update_todo, update_working_memory) — не шлём в UI
             if (step.hidden) {
               return

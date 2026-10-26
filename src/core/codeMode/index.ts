@@ -21,7 +21,7 @@ export interface ExecuteCodeOptions {
 }
 export interface ExecuteCodeResult extends CodeToolResult { trace?: CodeTraceEntry[] }
 
-export const CODE_MODE_LIMITS = Object.freeze({ codeChars: 40_000, outputChars: 20_000, bridgeJsonChars: 100_000, toolCalls: 50, parallelCalls: 4, timeoutMs: 10_000, memoryBytes: 48 * 1024 * 1024, traceEntries: 50 })
+export const CODE_MODE_LIMITS = Object.freeze({ codeChars: 40_000, outputChars: 40_000, bridgeJsonChars: 100_000, toolCalls: 120, parallelCalls: 8, timeoutMs: 30_000, memoryBytes: 48 * 1024 * 1024, traceEntries: 60 })
 const FORBIDDEN = new Set(['execute_code', 'executeCode', 'code_mode', 'codeMode'])
 const errText = (e: unknown): string => e instanceof Error ? e.message : String(e)
 
@@ -75,6 +75,20 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
   const maxCalls = CODE_MODE_LIMITS.toolCalls
   let calls = 0, inFlight = 0
   let active = true
+  // Бюджет времени считает только CPU гостя. Время, проведённое в host-вызовах
+  // (run_command на 30с, fetch_page, суб-агент), не должно убивать скрипт:
+  // раньше один длинный тул внутри скрипта давал «Execution timed out», хотя
+  // сам тул продолжал работать, а его результат выбрасывался.
+  let hostMs = 0
+  let hostSince: number | null = null
+  let hostDepth = 0
+  const hostEnter = (): void => { if (hostDepth++ === 0) hostSince = Date.now() }
+  const hostLeave = (): void => {
+    if (--hostDepth > 0 || hostSince === null) return
+    hostMs += Date.now() - hostSince
+    hostSince = null
+  }
+  const scriptDeadline = (): number => deadline + hostMs + (hostSince === null ? 0 : Date.now() - hostSince)
   const deferreds: Array<{ handle: { dispose(): void }; resolve(value?: import('quickjs-emscripten').QuickJSHandle): void; dispose(): void }> = []
   const pendingTasks: Promise<unknown>[] = []
   const pushTrace = (entry: CodeTraceEntry): void => {
@@ -85,7 +99,7 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
   const runtime = module.newRuntime()
   runtime.setMemoryLimit(CODE_MODE_LIMITS.memoryBytes)
   runtime.setMaxStackSize(512 * 1024)
-  runtime.setInterruptHandler(() => !!signal?.aborted || Date.now() > deadline)
+  runtime.setInterruptHandler(() => !!signal?.aborted || Date.now() > scriptDeadline())
   const ctx = runtime.newContext()
   try {
     const bridge = ctx.newFunction('__bridge', (nameHandle, argsHandle) => {
@@ -123,7 +137,11 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
           else if (name === '__artifact_load') { const value = store.load(options.chatId!, payload.id ?? ''); result = value === undefined ? { success: false, output: '', error: 'Artifact not found' } : { success: true, output: JSON.stringify(value) } }
           else if (name === '__artifact_list') result = { success: true, output: JSON.stringify(store.list(options.chatId!)) }
           else { const removed = store.delete(options.chatId!, payload.id ?? ''); result = { success: removed, output: String(removed) } }
-        } else result = await options.callTool(name, args, signal)
+        } else {
+          hostEnter()
+          try { result = await options.callTool(name, args, signal) }
+          finally { hostLeave() }
+        }
         settle(result, result?.success ? 'success' : 'failure')
       })
       pendingTasks.push(task.catch(e => settle({ success: false, output: '', error: errText(e) }, 'failure')).finally(() => { inFlight-- }))
@@ -159,7 +177,7 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
     const promise = result.value
     while (true) {
       if (signal?.aborted) return fail('Execution aborted')
-      if (Date.now() > deadline) return fail('Execution timed out')
+      if (Date.now() > scriptDeadline()) return fail('Execution timed out')
       const state = ctx.getPromiseState(promise)
       if (state.type === 'fulfilled') {
         const output = ctx.dump(state.value)
@@ -176,7 +194,7 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
       await new Promise(resolve => setTimeout(resolve, 1))
     }
   } catch (e) {
-    return fail(signal?.aborted ? 'Execution aborted' : Date.now() > deadline ? 'Execution timed out' : errText(e))
+    return fail(signal?.aborted ? 'Execution aborted' : Date.now() > scriptDeadline() ? 'Execution timed out' : errText(e))
   } finally {
     active = false
     // Do not tear down the runtime while host tool promises are still settling:

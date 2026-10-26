@@ -4,6 +4,9 @@
 .changes-badge-wrap {
   display: inline-flex;
   flex-shrink: 0;
+  /* База для glow-слоя (.changes-badge-wrap::before): он живёт СНАРУЖИ
+     пилюли, поэтому его не режет overflow пилюли и не гасит её opacity. */
+  position: relative;
 }
 
 .changes-badge-pill {
@@ -300,45 +303,78 @@
   position: relative;
   border-color: color-mix(in srgb, #4ade80 50%, transparent);
   background: color-mix(in srgb, #4ade80 15%, transparent);
-  box-shadow:
-    0 0 12px color-mix(in srgb, #4ade80 30%, transparent),
-    0 0 24px color-mix(in srgb, #4ade80 15%, transparent);
-  animation: changes-badge-live-glow 2s ease-in-out infinite;
+  /* Тень переехала на .changes-badge-wrap::before — см. там же про
+     анимацию box-shadow. На самой пилюле тени больше нет, иначе свечение
+     удвоилось бы (статичное + пульсирующее). */
+  box-shadow: none;
+  /* Клип для бегущего блика: ::after теперь шире пилюли. Собственная тень
+     элемента overflow не обрезается — но её тут и нет. */
+  overflow: hidden;
 }
 
-@keyframes changes-badge-live-glow {
-  0%, 100% {
-    box-shadow:
-      0 0 12px color-mix(in srgb, #4ade80 25%, transparent),
-      0 0 24px color-mix(in srgb, #4ade80 10%, transparent);
-  }
-  50% {
-    box-shadow:
-      0 0 18px color-mix(in srgb, #4ade80 45%, transparent),
-      0 0 36px color-mix(in srgb, #4ade80 20%, transparent);
-  }
-}
+/* Glow: статичная тень + пульс opacity.
+   Почему не анимацией box-shadow: свойство не композитится, каждый кадр —
+   перерисовка (на 144 Гц это 144 repaint/с на одном только бейдже; замер
+   по CDP: 434 paint/с в простое уходили в 2 paint/с после отключения).
 
-/* Shimmer-эффект — бегущий блик по бейджу */
-.changes-badge-pill--live::after {
+   Было: 12px/25 % + 24px/10 %  ↔  18px/45 % + 36px/20 %  (цикл 2 с).
+   Стало: тень зафиксирована в ЯРКОМ состоянии, дышит только opacity 0.53↔1.
+   45 % · 0.53 ≈ 24 % и 20 % · 0.53 ≈ 11 % — против прежних 25 % / 10 %,
+   то есть тусклый край цикла совпадает по яркости с точностью до ~5 %,
+   пик совпадает точно.
+   Единственное отступление: на тусклом крае радиус размытия остаётся
+   18/36 px вместо 12/24 px (мягкое гало чуть шире при той же яркости).
+   Компенсировать нельзя — радиус размытия не анимируется на GPU ни одним
+   способом, а честный кроссфейд двух слоёв удваивал бы плотность в середине
+   перехода. */
+.changes-badge-wrap:has(> .changes-badge-pill--live)::before {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: inherit;
+  border-radius: 20px;
+  box-shadow:
+    0 0 18px color-mix(in srgb, #4ade80 45%, transparent),
+    0 0 36px color-mix(in srgb, #4ade80 20%, transparent);
+  pointer-events: none;
+  animation: changes-badge-glow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes changes-badge-glow-pulse {
+  0%, 100% { opacity: 0.53; }
+  50%      { opacity: 1; }
+}
+
+/* Shimmer — бегущий блик без анимации background-position (тоже не
+   композитится → перерисовка каждый кадр).
+   Геометрия, W — ширина пилюли: слой 600 % ширины, старт left: −450 %
+   → покрывает [−4.5W, 1.5W]; сдвиг 66.6667 % от 6W = ровно 4W за 2.5 с
+   → к концу [−0.5W, 5.5W]; пилюля [0, W] покрыта на всём цикле.
+   Период тайла 33.3333 % от 6W = 2W — как было при background-size: 200 %.
+   Итог: смещение −2W → +2W за 2.5 с, т.е. то же самое, что давала
+   background-position: 200 % → −200 %, но через transform (композитится). */
+.changes-badge-pill--live::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -450%;
+  width: 600%;
   background: linear-gradient(
     105deg,
     transparent 30%,
     color-mix(in srgb, #ffffff 25%, transparent) 50%,
     transparent 70%
   );
-  background-size: 200% 100%;
-  animation: changes-badge-shimmer 2.5s ease-in-out infinite;
+  background-size: 33.3333% 100%;
+  background-repeat: repeat;
   pointer-events: none;
+  will-change: transform;
+  animation: changes-badge-shimmer-x 2.5s ease-in-out infinite;
 }
 
-@keyframes changes-badge-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+@keyframes changes-badge-shimmer-x {
+  from { transform: translateX(0); }
+  to   { transform: translateX(66.6667%); }
 }
 
 /* Live-индикатор в popup: точка + текст слева, кнопка «Открыть в панели» справа */

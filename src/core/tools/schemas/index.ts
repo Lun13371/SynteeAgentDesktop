@@ -6,6 +6,7 @@ import { isReadonlyPersona, getPersonaAllowedTools } from '../../../shared/modes
 import { READ_TOOL_SCHEMAS } from './read'
 import { EDIT_TOOL_SCHEMAS } from './edit'
 import { COMMAND_TOOL_SCHEMAS } from './command'
+import { CODE_TOOL_SCHEMAS } from './code'
 import { SEARCH_TOOL_SCHEMAS } from './search'
 import { AGENT_TOOL_SCHEMAS } from './agent'
 import { PLAN_TOOL_SCHEMAS } from './plan'
@@ -21,6 +22,7 @@ import { TASK_SUMMARY_TOOL_SCHEMAS } from './taskSummary'
 export const TOOL_SCHEMAS = [
   ...EDIT_TOOL_SCHEMAS,
   ...COMMAND_TOOL_SCHEMAS,
+  ...CODE_TOOL_SCHEMAS,
   ...READ_TOOL_SCHEMAS,
   ...SEARCH_TOOL_SCHEMAS,
   ...AGENT_TOOL_SCHEMAS,
@@ -169,6 +171,11 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     names.push('edit_file')
     names.push('write_file')
     names.push('run_command')
+    // Code mode: один TS-скрипт вместо серии вызовов. Обычный тул, как run_command —
+    // отключается через disabledTools. В ask/planning/read-only его НЕТ: там
+    // needsApproval спрашивает каждый тул, и скрипт из 20 внутренних вызовов
+    // превратился бы в 20 диалогов подряд.
+    names.push('execute_code')
     names.push('get_diagnostics')
     names.push('get_fast_context')
     // Dots: управление always-on агентами — только в normal-режиме.

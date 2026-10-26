@@ -75,20 +75,19 @@
    всегда (opacity:0 её не останавливает) — десятки невидимых шиммеров в
    истории чата грузили renderer на 10%+ CPU в простое. При снятии
    --running анимация сразу останавливается — визуально это незаметно,
-   т.к. в этот же момент начинается 1.5s «распад дымки» (opacity→0). */
-.tc2-header::after {
-  content: '';
+   т.к. в этот же момент начинается 1.5s «распад дымки» (opacity→0).
+   ПЕРЕНОС: блик больше не анимирует background-position (repaint каждый
+   кадр). Обёртка .tc2-header-glow держит дымку (opacity/blur/transform с
+   теми же переходами), а бегущий градиент живёт в её ::before и двигается
+   через transform — композитится на GPU.
+   Геометрия (W — ширина шапки): псевдоэлемент 600% ширины, старт
+   left: -450% → [−4.5W, 1.5W], сдвиг 66.6667% от 6W = 4W за 5s →
+   в конце [−0.5W, 5.5W]; шапка [0, W] покрыта всегда. Период градиента
+   33.3333% от 6W = 2W — как было при background-size: 200%.
+   Итог: −2W → +2W за 5s, ровно как background-position 200% → −200%. */
+.tc2-header-glow {
   position: absolute;
   inset: -4px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    transparent 15%,
-    color-mix(in srgb, var(--accent, #6366f1) 24%, transparent) 50%,
-    transparent 85%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
   pointer-events: none;
   z-index: 0;
   /* default (не running) — растворённое состояние */
@@ -101,8 +100,26 @@
     filter 1.5s cubic-bezier(0.32, 0, 0.67, 0),
     transform 1.5s cubic-bezier(0.32, 0, 0.67, 0);
 }
-.tc2--running .tc2-header::after {
-  animation: tc2-header-shimmer 5s linear infinite;
+.tc2-header-glow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -450%;
+  width: 600%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 15%,
+    color-mix(in srgb, var(--accent, #6366f1) 24%, transparent) 50%,
+    transparent 85%,
+    transparent 100%
+  );
+  background-size: 33.3333% 100%;
+  background-repeat: repeat;
+  will-change: transform;
+}
+.tc2--running .tc2-header-glow {
   opacity: 1;
   filter: blur(0px);
   transform: scale(1) translateY(0) rotate(0deg);
@@ -111,13 +128,16 @@
     filter 0.5s cubic-bezier(0.22, 0.61, 0.36, 1),
     transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
-.tc2-header > * {
+.tc2--running .tc2-header-glow::before {
+  animation: tc2-header-shimmer-x 5s linear infinite;
+}
+.tc2-header > *:not(.tc2-header-glow) {
   position: relative;
   z-index: 1;
 }
-@keyframes tc2-header-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+@keyframes tc2-header-shimmer-x {
+  from { transform: translateX(0); }
+  to   { transform: translateX(66.6667%); }
 }
 
 .tc2-collapse-btn {
@@ -545,19 +565,58 @@
 .tc2-iter-header--fail:hover {
   background: var(--bg-hover, var(--overlay-2));
 }
+/* Shimmer running-строки — БЕЗ анимации background-position.
+   background-position не композитится на GPU → repaint строки каждый кадр
+   (на 144 Гц это 144 repaint/с на каждую running-строку).
+   Здесь тот же градиент и та же скорость, но блик живёт в ::before и
+   двигается через transform — композитится, без repaint.
+   Геометрия (W — ширина строки):
+     псевдоэлемент 600% ширины, старт left: -450% → покрывает [−4.5W, 1.5W],
+     сдвиг 66.6667% от 6W = 4W за 2s → в конце [−0.5W, 5.5W]: строка [0, W]
+     покрыта на всём протяжении;
+     период градиента 33.3333% от 6W = 2W (как background-size: 200%).
+   Итог: смещение −2W → +2W за 2s — ровно как у background-position
+   200% → −200%, но без перерисовки. */
 .tc2-iter-header--running {
+  position: relative;
+  overflow: hidden;
+  /* Блик теперь в ::before, поэтому фон должен быть пустым: иначе при
+     --open (bg-hover) градиент лёг бы ПОВЕРХ фона, а раньше он его заменял. */
+  background: none;
+}
+.tc2-iter-header--running::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -450%;
+  width: 600%;
   background: linear-gradient(
     90deg,
     transparent,
     color-mix(in srgb, var(--accent, #6366f1) 7%, transparent),
     transparent
   );
-  background-size: 200% 100%;
-  animation: tc2-shimmer 2s linear infinite;
+  background-size: 33.3333% 100%;
+  background-repeat: repeat;
+  pointer-events: none;
+  /* transition как у background в базовом правиле — hover гасит блик плавно */
+  transition: opacity 0.12s;
+  will-change: transform;
+  animation: tc2-shimmer-x 2s linear infinite;
 }
-@keyframes tc2-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+/* Позиционированный ::before рисуется ПОВЕРХ inline-контента — поднимаем текст. */
+.tc2-iter-header--running > * {
+  position: relative;
+  z-index: 1;
+}
+/* Hover в оригинале заменял градиент фоном var(--bg-hover) — поведение то же. */
+.tc2-iter-header--running:hover::before {
+  opacity: 0;
+}
+@keyframes tc2-shimmer-x {
+  from { transform: translateX(0); }
+  to   { transform: translateX(66.6667%); }
 }
 
 /* Длительность итерации */
@@ -1062,41 +1121,62 @@
 }
 
 /* ── Conic-gradient рамка на running-блоке ── */
-@property --tc2-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-/* Conic-рамка — всегда в DOM, плавный fade in/out через opacity */
+/* Рамка БЕЗ анимации CSS-переменной.
+   Раньше @keyframes анимировал --tc2-angle внутри conic-gradient(from …).
+   Анимация custom property НЕ композитится → style recalc поддерева +
+   пересборка градиента + mask-composite: exclude → полный repaint слоя
+   каждый кадр (на 144 Гц это 144 repaint/с).
+   Теперь: conic-gradient статичен (без `from`), вращается сам слой через
+   individual-свойство `rotate` — оно композитится на GPU, без repaint.
+   Геометрия: conic-gradient зависит ТОЛЬКО от угла от центра, поэтому
+   вращение квадрата вокруг центра карточки даёт ту же картинку, что
+   вращение угла. Квадрат 2W × 2W (сторона = 2 ширины карточки) — при любом
+   угле его вписанный круг радиуса W всегда покрыт, а карточка W × H
+   (H заметно меньше W) в этот круг вписывается.
+   Слой обёрнут в span: маска (content-box + exclude) остаётся статичной на
+   обёртке и обрезает вращающийся градиент по рамке 1px. */
 .tc2 {
   position: relative;
 }
-.tc2::before {
-  content: '';
+.tc2-border-arc {
   position: absolute;
   inset: -1px;
   border-radius: inherit;
   padding: 1px;
-  background: conic-gradient(
-    from var(--tc2-angle, 0deg),
-    transparent 70%,
-    var(--accent, #6366f1),
-    transparent 90%
-  );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
           mask-composite: exclude;
-  animation: tc2-border-spin 2.5s linear infinite;
+  overflow: hidden;
   pointer-events: none;
   z-index: 0;
   opacity: 0;
   transition: opacity 0.4s ease;
 }
-.tc2--running::before {
+.tc2-border-arc::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 200%;
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  background: conic-gradient(
+    transparent 70%,
+    var(--accent, #6366f1) 80%,
+    transparent 90%
+  );
+  will-change: rotate;
+}
+/* Вращение только в --running: в истории чата рамка с opacity: 0 не должна
+   крутить невидимый композитированный слой. */
+.tc2--running .tc2-border-arc {
   opacity: 1;
 }
-@keyframes tc2-border-spin {
-  to { --tc2-angle: 360deg; }
+.tc2--running .tc2-border-arc::before {
+  animation: tc2-border-rotate 2.5s linear infinite;
+}
+@keyframes tc2-border-rotate {
+  to { rotate: 360deg; }
 }
 
 /* ── Группа повторяющихся тулов ── */

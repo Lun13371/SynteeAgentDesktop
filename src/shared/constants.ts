@@ -94,7 +94,6 @@ export const DEFAULT_HOTKEYS = {
 }
 
 export const DEFAULT_SETTINGS = {
-  codeModeEnabled: false,
   theme: 'dark' as const,
   accentColor: '#ffffff',
   language: 'ru',
