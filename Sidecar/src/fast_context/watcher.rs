@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 
-use crate::config::IndexOptions;
-use crate::error::{Result, SidecarError};
-use crate::indexer::Indexer;
+use crate::common::config::IndexOptions;
+use crate::common::error::{Result, SidecarError};
+use crate::fast_context::indexer::Indexer;
 
 const DEBOUNCE: Duration = Duration::from_millis(250);
 const POLL: Duration = Duration::from_millis(100);

@@ -25,11 +25,11 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{MAX_SEARCH_FILES, MAX_SEARCH_RESULT_BYTES, MAX_SEARCH_TOKENS};
-use crate::db::IndexRow;
-use crate::symbols::SymbolDef;
-use crate::synonyms;
-use crate::text::{contains_word, contains_word_prefix, is_stop_word, normalize, stem_variants};
+use crate::common::config::{MAX_SEARCH_FILES, MAX_SEARCH_RESULT_BYTES, MAX_SEARCH_TOKENS};
+use crate::fast_context::db::IndexRow;
+use crate::fast_context::symbols::SymbolDef;
+use crate::fast_context::synonyms;
+use crate::text::normalize::{contains_word, contains_word_prefix, is_stop_word, normalize, stem_variants};
 
 /// How many definitions travel with one hit. The repo-map slice only prints a
 /// dozen names, and the previous "all definitions of every file" payload hit the
@@ -506,8 +506,8 @@ fn format_definitions(hit: &SearchHit) -> String {
 #[cfg(test)]
 mod tests {
     use super::{rank, search, MatchKind, SearchOptions};
-    use crate::config::{MAX_SEARCH_FILES, MAX_SEARCH_RESULT_BYTES, MAX_SEARCH_TOKENS};
-    use crate::db::IndexRow;
+    use crate::common::config::{MAX_SEARCH_FILES, MAX_SEARCH_RESULT_BYTES, MAX_SEARCH_TOKENS};
+    use crate::fast_context::db::IndexRow;
 
     fn row(path: &str, lang: &str, symbols: &str) -> IndexRow {
         IndexRow {

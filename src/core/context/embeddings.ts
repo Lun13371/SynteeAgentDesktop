@@ -118,143 +118,15 @@ const NEURAL_DIM = 384
 const TFIDF_DIM = 1024
 const FAST_TFIDF_DIM = 2048
 
-// ─── E5 multilingual embeddings (semantic index recall_memory) ──────────────
-// Отдельный lazy-пайплайн от MiniLM. Официальная модель Xenova/multilingual-e5-small
-// (модели "small2" не существует — это small). 384-dim, обучена на 100+ языках
-// (русский ок). Требует префиксы "query: " / "passage: " — асимметричный формат E5.
+// ─── E5 multilingual embeddings — ПЕРЕНЕСЕНО В RUST SIDECAR ──────────────────
+// Модель Xenova/multilingual-e5-small (q8), токенизация и ONNX-инференс теперь
+// живут в Sidecar/src/semantic/embed.rs, индексация и cosine-поиск — в
+// semantic/{index,search}.rs. Причина: нативная ONNX-сессия в main-процессе
+// блокировала event loop кусками по ~400 мс (замер 26.10.2026: 1.6–1.9 ядра за
+// 10 с, eventLoopP95 390–450 мс) — «фризил весь UI».
 //
-// Назначение: фоновая индексация всех 5 источников recall_memory
-// (memory/messages/summaries/agent_logs/pinned) в таблицу semantic_embeddings.
-// НЕ используется getEmbedder'ом — fast-context и memory TF-IDF работают как раньше.
-//
-// Fallback-политика: getE5Embedder() возвращает null при недоступности модели
-// (нет сети / ONNX упал) и НЕ ретраит до перезапуска приложения — вызывающий
-// код (semanticIndex) просто пропускает индексацию, lexical/TF-IDF поиск
-// продолжает работать без изменений.
-
-export const E5_MODEL = 'Xenova/multilingual-e5-small'
-export const E5_DIM = 384
-
-/**
- * Точность весов E5. q8 → model_quantized.onnx (~113 МБ) вместо fp32 (448 МБ).
- * Выигрыш по private RAM main-процесса: ~340 МБ (замер 26.10.2026).
- */
-export const E5_DTYPE = 'q8' as const
-
-/**
- * Тег модели для колонки semantic_embeddings.model. Векторы fp32 и q8 лежат в
- * немного разных пространствах, поэтому смена dtype обязана инвалидировать
- * старый индекс: строки с прежним тегом не матчатся ни в поиске (WHERE model
- * = ?), ни в инкрементальной индексации (existing.model === embedder.model) и
- * перезаписываются в первом же цикле.
- */
-export const E5_MODEL_TAG = `${E5_MODEL}@${E5_DTYPE}`
-
-export interface E5Embedder {
-  /** Embed поискового запроса (префикс "query: "). */
-  embedQuery(text: string): Promise<Embedding>
-  /** Embed индексируемого текста (префикс "passage: "). */
-  embedPassage(text: string): Promise<Embedding>
-  /** Размерность вектора (384). */
-  readonly dim: number
-  /** Имя модели — для инвалидации при смене (col semantic_embeddings.model). */
-  readonly model: string
-}
-
-let _e5Pipeline: any = null
-let _e5InitAttempted = false
-let _e5InitFailed = false
-let _e5LastFailureAt = 0
-const E5_RETRY_INTERVAL_MS = 5 * 60 * 1000
-
-async function initE5(): Promise<void> {
-  if (_e5InitAttempted) return
-  _e5InitAttempted = true
-  try {
-    // require вместо await import: нативный import() не работает в V8-байткоде
-    // (тот же паттерн, что initNeural выше).
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { pipeline, env } = require('@huggingface/transformers')
-    if (process.env.TRANSFORMERS_CACHE) {
-      env.cacheDir = process.env.TRANSFORMERS_CACHE
-    }
-    try {
-      env.backends.onnx.wasm.numThreads = 1
-    } catch { /* onnx may not be configured */ }
-    _e5Pipeline = await pipeline('feature-extraction', E5_MODEL, modelLoadOptions(E5_DTYPE))
-    console.log('[embeddings] E5 pipeline ready:', E5_MODEL, `(${E5_DTYPE}, threads=${ONNX_SESSION_OPTIONS.intraOpNumThreads})`)
-  } catch (e) {
-    _e5InitFailed = true
-    _e5LastFailureAt = Date.now()
-    console.warn('[embeddings] E5 init failed; lexical search remains active:', e instanceof Error ? e.message : e)
-  }
-}
-
-async function embedE5(text: string, prefix: 'query' | 'passage'): Promise<Embedding> {
-  if (!_e5Pipeline) await initE5()
-  if (!_e5Pipeline) throw new Error('E5 pipeline not available')
-  // E5 требует префикс "query: "/"passage: " перед текстом — без него качество
-  // проседает (модель обучена с этими префиксами).
-  const output = await _e5Pipeline([`${prefix}: ${text}`], { pooling: 'mean', normalize: true })
-  return output.data as Float32Array
-}
-
-/**
- * Lazy E5-embedder или null, если модель недоступна. Никогда не бросает —
- * semanticIndex при null просто пропускает цикл индексации, текущий
- * TF-IDF/FTS поиск не затронут.
- */
-function createE5Embedder(): E5Embedder | null {
-  if (!_e5Pipeline) return null
-  return {
-    embedQuery: (text: string) => embedE5(text, 'query'),
-    embedPassage: (text: string) => embedE5(text, 'passage'),
-    dim: E5_DIM,
-    model: E5_MODEL_TAG,
-  }
-}
-
-/**
- * Загружает E5 для ФОНОВОГО индексатора. Повторяет временную неудачу не чаще
- * раза в пять минут, чтобы не крутить downloader при офлайн-режиме.
- */
-export async function getE5Embedder(): Promise<E5Embedder | null> {
-  if (_e5InitFailed) {
-    if (Date.now() - _e5LastFailureAt < E5_RETRY_INTERVAL_MS) return null
-    _e5InitFailed = false
-    _e5InitAttempted = false
-  }
-  await initE5()
-  return createE5Embedder()
-}
-
-/**
- * Возвращает только уже прогретую E5-модель. Поиск никогда не запускает
- * скачивание/инициализацию ONNX сам, поэтому первый recall не подвисает.
- */
-export function getReadyE5Embedder(): E5Embedder | null {
-  return createE5Embedder()
-}
-
-/** E5 pipeline доступен (инициализирован и не упал)? Для статус-репортов. */
-export function isE5Available(): boolean {
-  return !_e5InitFailed && _e5Pipeline !== null
-}
-
-/** Освобождает E5 pipeline (before-quit / stopSemanticIndexer). */
-export function disposeE5Embedder(): void {
-  if (_e5Pipeline) {
-    try {
-      const p = _e5Pipeline as any
-      if (typeof p.dispose === 'function') p.dispose()
-      else if (p.model?.dispose) p.model.dispose()
-    } catch { /* ignore */ }
-    _e5Pipeline = null
-    _e5InitAttempted = false
-  }
-  _e5InitFailed = false
-  _e5LastFailureAt = 0
-}
+// Здесь остаются только MiniLM (getEmbedder, по умолчанию выключен) и TF-IDF
+// fallback: fast-context и memory TF-IDF работают как раньше.
 
 async function embedNeural(text: string): Promise<Embedding> {
   if (!_pipeline) await initNeural()

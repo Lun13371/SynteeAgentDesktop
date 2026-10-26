@@ -1,7 +1,7 @@
 use std::process;
 
-use syntee_sidecar::error::Result;
-use syntee_sidecar::runtime::Runtime;
+use syntee_sidecar::common::error::Result;
+use syntee_sidecar::common::runtime::Runtime;
 
 fn main() {
     if let Err(error) = run() {

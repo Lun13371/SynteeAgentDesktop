@@ -1,17 +1,16 @@
-pub mod ast;
+//! Syntee sidecar — CPU-тяжёлые подсистемы приложения в отдельном процессе.
+//!
+//! Раскладка:
+//!   - `common`       — конфиг, ошибки, хэши, протокольный рантайм;
+//!   - `text`         — нормализация и токенизация;
+//!   - `fast_context` — индекс файлов проекта (tree-sitter + FTS5);
+//!   - `semantic`     — E5-эмбеддинги памяти: индексация и cosine-поиск;
+//!   - `commands`     — диспетчер методов протокола;
+//!   - `protocol`     — формат запроса/ответа.
+
 pub mod commands;
-pub mod config;
-pub mod db;
-pub mod error;
-pub mod hashing;
-pub mod indexer;
-pub mod language;
+pub mod common;
+pub mod fast_context;
 pub mod protocol;
-pub mod runtime;
-pub mod search;
-pub mod symbols;
-pub mod synonyms;
+pub mod semantic;
 pub mod text;
-pub mod tokens;
-pub mod walker;
-pub mod watcher;

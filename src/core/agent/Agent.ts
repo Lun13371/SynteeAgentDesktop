@@ -1425,9 +1425,10 @@ export class Agent {
           let result: ToolResult
           let codeTrace: CodeTraceEntry[] | undefined
           try {
-            // execute_code — обычный тул реестра: в ask/planning/read-only его НЕТ
-            // в наборе (там каждый внутренний вызов спрашивал бы подтверждение).
-            // Модель может его галлюцинировать — отвечаем отказом, не исполняем.
+            // execute_code — обычный тул реестра, тот же путь, что у остальных.
+            // Гард нужен только на случай, когда его нет в наборе: персона с
+            // явным allowlist или disabledTools. Тогда вызов отклоняется, а не
+            // исполняется (модель может галлюцинировать имя).
             if (fn.name === 'execute_code' && !activeSchemas.some(s => s.function.name === 'execute_code')) {
               const unavailable = 'Tool "execute_code" is unavailable in the current mode.'
               resultMap.set(callId, { contentForAI: unavailable, callId, name: fn.name })

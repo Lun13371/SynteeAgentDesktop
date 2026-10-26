@@ -641,12 +641,14 @@ const synteeAPI = {
     undoCheckpointFile: (chatId: string, userMessageId: string, path: string) => ipcRenderer.invoke('chat:undoCheckpointFile', chatId, userMessageId, path) as Promise<{ success?: boolean; error?: string }>,
     getLastRewind: (chatId: string) => ipcRenderer.invoke('chat:getLastRewind', chatId) as Promise<{ rewindMessageId: string; createdAt: number } | null>,
     // ── Сжатие контекста (/compact) ──
-    // Ручной запуск applyRollingWindowAsync с forceCompress=true. Возвращает
-    // обновлённую ленту сообщений (включая новый system-разделитель компакции)
-    // и stats { removedCount, tokensBefore, tokensAfter, tokensSaved,
-    // dividerMessageId } для toast'а. При активном чате / пустом чате —
-    // { error: string }.
-    compact: (chatId: string, mode?: string) => ipcRenderer.invoke('chat:compact', chatId, mode),
+    // Ручной запуск applyRollingWindowAsync с forceCompress=true.
+    // args — сырые аргументы команды: "[full|last] [фокус...]" (разбирает main
+    // через parseCompactArgs: режим + свободный фокус для промпта резюме).
+    // Возвращает обновлённую ленту сообщений (включая новый system-разделитель
+    // компакции) и stats { removedCount, tokensBefore, tokensAfter, tokensSaved,
+    // dividerMessageId, mode, focus } для toast'а. При активном чате / пустом
+    // чате — { error: string }.
+    compact: (chatId: string, args?: string) => ipcRenderer.invoke('chat:compact', chatId, args),
     // Отмена ручной /compact по Stop-кнопке. Прерывает LLM-стрим резюме
     // БЕЗ применения частичного результата к чату (summary/divider не
     // пишутся). Возвращает { cancelled: boolean }.

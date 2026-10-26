@@ -269,8 +269,8 @@ User focus (optional): ${args || '(none — cover everything)'}
     label: '/compact',
     description: 'Сжать контекст чата',
     icon: 'layers',
-    argumentHint: 'full | last',
-    placeholder: 'режим сжатия...',
+    argumentHint: '[full | last] [фокус]',
+    placeholder: 'фокус сжатия — что обязательно сохранить (необязательно)...',
     source: 'builtin',
     arguments: [
       {
@@ -278,6 +278,11 @@ User focus (optional): ${args || '(none — cover everything)'}
         description: 'full — сжать старые сообщения, оставив недавние (по умолчанию). last — оставить только последнее сообщение + резюме',
         choices: ['full', 'last'],
         default: 'full',
+      },
+      {
+        name: 'focus',
+        description: 'Свободный текст после режима: что обязательно сохранить в резюме, например «решения по схеме БД и миграциям»',
+        required: false,
       },
     ],
     systemPrompt: () => '',
@@ -579,4 +584,36 @@ export function hydrateCommands(cmds: SlashCommand[]): SlashCommand[] {
       },
     }
   })
+}
+
+// ─── /compact — разбор аргументов ───────────────────────────────────────────
+
+export type CompactMode = 'full' | 'last'
+
+export interface CompactArgs {
+  mode: CompactMode
+  /** Свободный текст: что обязательно сохранить в резюме. '' — не задан. */
+  focus: string
+}
+
+/** Предел длины фокуса — он уходит в промпт суммаризации, а не в чат. */
+export const COMPACT_FOCUS_MAX_CHARS = 500
+
+/**
+ * Разбирает аргументы `/compact [full|last] [фокус...]`.
+ *
+ * Первый токен считается режимом ТОЛЬКО если это ровно `full` или `last`.
+ * Иначе весь текст — фокус (как `/compact <instructions>` в Claude Code),
+ * а режим остаётся дефолтным `full`. Так опечатка не переключает режим молча:
+ * `/compact lst` → full + фокус «lst» (видно в divider'е), а не «сжал по-другому».
+ */
+export function parseCompactArgs(args?: string): CompactArgs {
+  const raw = (args ?? '').trim()
+  if (!raw) return { mode: 'full', focus: '' }
+  const head = /^(full|last)(?:\s+|$)/i.exec(raw)
+  if (!head) return { mode: 'full', focus: raw.slice(0, COMPACT_FOCUS_MAX_CHARS) }
+  return {
+    mode: head[1].toLowerCase() === 'last' ? 'last' : 'full',
+    focus: raw.slice(head[0].length).trim().slice(0, COMPACT_FOCUS_MAX_CHARS),
+  }
 }

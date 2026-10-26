@@ -47,12 +47,25 @@ test('Media schemas are registered, enabled by default and can be disabled indiv
     assert.ok(settings.OPTIONAL_TOOL_GROUPS.some(group => group.tools.some(tool => tool.name === name)), name)
   }
 })
-test('execute_code is a normal registered tool: on by default, off in ask/planning, individually disableable', () => {
+test('execute_code is a normal registered tool: available in every mode, individually disableable', () => {
   assert.ok(names({}).includes('execute_code'))
-  assert.ok(!names({ askMode: true }).includes('execute_code'))
-  assert.ok(!names({ planningMode: true }).includes('execute_code'))
+  // Исследовательские режимы тоже: внутри можно вызвать только read-тулы.
+  assert.ok(names({ askMode: true }).includes('execute_code'))
+  assert.ok(names({ planningMode: true }).includes('execute_code'))
   assert.ok(!names({ customToolsEnabled: true, disabledTools: ['execute_code'] }).includes('execute_code'))
   assert.ok(settings.OPTIONAL_TOOL_GROUPS.some(group => group.tools.some(tool => tool.name === 'execute_code')))
+})
+test('execute_code description lists the tools available inside the script', () => {
+  const schema = options => getToolSchemas(options).find(s => s.function.name === 'execute_code')
+  const normal = schema({}).function.description
+  assert.match(normal, /Tools available inside this run: /)
+  assert.ok(normal.includes('read_file') && normal.includes('run_command'))
+  // Read-only run must not advertise mutation tools — the bridge would reject them.
+  const ask = schema({ askMode: true }).function.description
+  assert.ok(!ask.includes('run_command'), ask)
+  assert.ok(!ask.includes('write_file,'), ask)
+  // Long families are grouped, not enumerated (otherwise ~550 extra tokens per request).
+  assert.ok(schema({ browserMode: true }).function.description.includes('browser_* (45)'))
 })
 test('Agent preserves worker array identity for live browser access and forwards media cancellation', () => {
   const source = readFileSync('src/core/agent/Agent.ts', 'utf8')

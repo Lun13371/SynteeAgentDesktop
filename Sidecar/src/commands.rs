@@ -4,16 +4,16 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::ast;
-use crate::config::{IndexOptions, PROTOCOL_VERSION};
-use crate::error::{Result, SidecarError};
-use crate::indexer::Indexer;
-use crate::language::language_for_path;
+use crate::fast_context::ast;
+use crate::common::config::{IndexOptions, PROTOCOL_VERSION};
+use crate::common::error::{Result, SidecarError};
+use crate::fast_context::indexer::Indexer;
+use crate::fast_context::language::language_for_path;
 use crate::protocol::Request;
-use crate::search::SearchOptions;
-use crate::symbols::extract_symbols;
-use crate::tokens;
-use crate::watcher::WatchManager;
+use crate::fast_context::search::SearchOptions;
+use crate::fast_context::symbols::extract_symbols;
+use crate::text::tokens;
+use crate::fast_context::watcher::WatchManager;
 
 pub struct CommandOutcome {
     pub result: Value,
@@ -119,6 +119,43 @@ struct HealthParams {
     db_path: Option<PathBuf>,
 }
 
+// ─── Semantic (E5 embeddings) ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SemanticEmbedParams {
+    model_path: PathBuf,
+    tokenizer_path: PathBuf,
+    texts: Vec<String>,
+    /// "query" — поисковый запрос, "passage" — индексируемый документ.
+    #[serde(default = "default_prefix")]
+    prefix: String,
+}
+
+fn default_prefix() -> String {
+    "passage".to_owned()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SemanticIndexParams {
+    db_path: PathBuf,
+    model_path: PathBuf,
+    tokenizer_path: PathBuf,
+    #[serde(default)]
+    options: crate::semantic::IndexRunOptions,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SemanticSearchParams {
+    db_path: PathBuf,
+    model_path: PathBuf,
+    tokenizer_path: PathBuf,
+    #[serde(flatten)]
+    options: crate::semantic::SearchOptions,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Capabilities {
@@ -162,10 +199,14 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                     "tokensCountBatch",
                     "tokensTruncate",
                     "symbols",
+                    "semanticEmbed",
+                    "semanticIndex",
+                    "semanticSearch",
+                    "semanticUnload",
                     "shutdown",
                 ],
                 parser_backend: "tree-sitter (native) + lexical fallback",
-                ranking: "field-weighted + idf + ru-en synonyms + graph rank",
+                ranking: "field-weighted + idf + ru-en synonyms + graph rank; semantic: E5 cosine (onnx)",
             })?,
             shutdown: false,
         }),
@@ -218,6 +259,9 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
         "stopWatching" => Ok(CommandOutcome { result: watcher().stop()?, shutdown: false }),
         "foregroundBusy" => {
             let params: BusyParams = parse_params(request.params)?;
+            // Один флаг на все фоновые задачи: watcher файлового индекса и
+            // semantic-индексатор памяти уступают фореграунду одинаково.
+            crate::semantic::set_foreground_busy(params.busy);
             Ok(CommandOutcome { result: watcher().foreground_busy(params.busy), shutdown: false })
         }
         "status" => Ok(CommandOutcome { result: watcher().status(), shutdown: false }),
@@ -294,7 +338,52 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
         }
         "shutdown" => {
             watcher().shutdown()?;
+            crate::semantic::unload_embedder();
             Ok(CommandOutcome { result: json!({ "status": "shutting_down" }), shutdown: true })
+        }
+        "semanticEmbed" => {
+            let params: SemanticEmbedParams = parse_params(request.params)?;
+            let embedder = crate::semantic::embedder(&params.model_path, &params.tokenizer_path)?;
+            let prefix = match params.prefix.as_str() {
+                "query" => crate::semantic::embed::EmbedPrefix::Query,
+                "passage" => crate::semantic::embed::EmbedPrefix::Passage,
+                other => {
+                    return Err(SidecarError::InvalidRequest(format!(
+                        "unknown prefix: {other}"
+                    )))
+                }
+            };
+            let vectors = embedder.embed_batch(&params.texts, prefix)?;
+            Ok(CommandOutcome {
+                result: json!({
+                    "model": crate::semantic::E5_MODEL_TAG,
+                    "dim": crate::semantic::E5_DIM,
+                    "vectors": vectors,
+                }),
+                shutdown: false,
+            })
+        }
+        "semanticIndex" => {
+            let params: SemanticIndexParams = parse_params(request.params)?;
+            let embedder = crate::semantic::embedder(&params.model_path, &params.tokenizer_path)?;
+            let report = crate::semantic::run_cycle(&params.db_path, &embedder, &params.options)?;
+            Ok(CommandOutcome { result: serde_json::to_value(report)?, shutdown: false })
+        }
+        "semanticSearch" => {
+            let params: SemanticSearchParams = parse_params(request.params)?;
+            let embedder = crate::semantic::embedder(&params.model_path, &params.tokenizer_path)?;
+            let hits = crate::semantic::search(&params.db_path, &embedder, &params.options)?;
+            Ok(CommandOutcome {
+                result: json!({
+                    "model": crate::semantic::E5_MODEL_TAG,
+                    "hits": hits,
+                }),
+                shutdown: false,
+            })
+        }
+        "semanticUnload" => {
+            crate::semantic::unload_embedder();
+            Ok(CommandOutcome { result: json!({ "status": "unloaded" }), shutdown: false })
         }
         other => Err(SidecarError::UnsupportedMethod(other.to_owned())),
     }
