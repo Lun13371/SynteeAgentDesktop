@@ -4,11 +4,31 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import type { ChatGoal, GoalStatus } from '../../../../../shared/types/goal'
 
-type GoalEdit = Pick<ChatGoal, 'objective' | 'criteria' | 'constraints' | 'maxSteps'>
+/**
+ * Карточка цели (`/goal`) — семантика Claude Code: одно УСЛОВИЕ завершения,
+ * вердикты независимого оценщика (ходы/токены/последняя причина), управление
+ * паузой и снятием. Критерии/ограничения старой версии больше не задаются
+ * руками — вместо них работает оценщик (см. goalEvaluator.ts).
+ */
+type GoalEdit = Pick<ChatGoal, 'objective' | 'maxSteps'>
 const statuses: Record<GoalStatus, string> = {
-  running: 'В работе', paused: 'На паузе', blocked: 'Заблокирована', completed: 'Завершена',
-  unverified: 'Не проверена', stopped: 'Остановлена', limit: 'Лимит шагов',
+  running: 'В работе', paused: 'На паузе', blocked: 'Невыполнима', completed: 'Достигнута',
+  unverified: 'Без вердикта', stopped: 'Снята', limit: 'Лимит раундов',
 }
+const MAX_CONDITION_CHARS = 4000
+const RESUMABLE: GoalStatus[] = ['running', 'paused', 'unverified', 'limit']
+
+function formatDuration(from: number): string {
+  const minutes = Math.max(0, Math.round((Date.now() - from) / 60_000))
+  if (minutes < 1) return 'меньше минуты'
+  if (minutes < 60) return `${minutes} мин`
+  return `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`
+}
+
+function formatTokens(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value)
+}
+
 export default function GoalCard({ goal, running, onCommand, onSave }: {
   goal: ChatGoal; running: boolean
   onCommand: (command: string) => Promise<void>
@@ -19,8 +39,6 @@ export default function GoalCard({ goal, running, onCommand, onSave }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [objective, setObjective] = useState('')
-  const [criteria, setCriteria] = useState('')
-  const [constraints, setConstraints] = useState('')
   const [maxSteps, setMaxSteps] = useState(goal.maxSteps)
   const dialogRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLButtonElement>(null)
@@ -56,22 +74,23 @@ export default function GoalCard({ goal, running, onCommand, onSave }: {
     try { await onCommand(command) } catch (e) { setError(String(e)) }
     finally { setBusy(false) }
   }
-  const canResume = !running && !['completed', 'stopped'].includes(goal.status) && goal.steps < goal.maxSteps
+  const canResume = !running && RESUMABLE.includes(goal.status)
+  const active = goal.status === 'running' || goal.status === 'paused'
+  const verdicts = goal.evidence
   return <section className={`chat-goal-banner${expanded ? ' is-expanded' : ''}`} aria-label="Цель чата">
     <div className="goal-heading">
       <AppIcon name="compass" size="xs" tone="accent" aria-hidden="true" />
       <strong title={goal.objective}>{goal.objective}</strong>
-      <span role="status">{statuses[goal.status]} · {goal.steps}/{goal.maxSteps}</span>
+      <span role="status">{statuses[goal.status]} · ходов {goal.turnsEvaluated}</span>
       <AnimatePresence initial={false} mode="popLayout">
         {expanded && <motion.div className="goal-controls" initial={{ opacity: 0, scale: 0.94, x: 8 }} animate={{ opacity: 1, scale: 1, x: 0 }} exit={{ opacity: 0, scale: 0.94, x: 8 }} transition={{ type: 'spring', stiffness: 440, damping: 28 }}>
             {running
               ? <button disabled={busy} onClick={() => void execute('/goal-pause')}>Пауза</button>
-              : <button disabled={busy || !canResume} onClick={() => void execute('/goal')}>Продолжить</button>}
+              : <button disabled={busy || !canResume} onClick={() => void execute('/goal-resume')}>Продолжить</button>}
             <button ref={editRef} disabled={busy || running} onClick={() => {
-              setObjective(goal.objective); setCriteria(goal.criteria.join('\n')); setConstraints(goal.constraints.join('\n'))
-              setMaxSteps(goal.maxSteps); setError(''); setEditing(true)
+              setObjective(goal.objective); setMaxSteps(goal.maxSteps); setError(''); setEditing(true)
             }}>Изменить</button>
-            <button disabled={busy || goal.status === 'stopped'} onClick={() => void execute('/goal-stop')}>Остановить</button>
+            <button disabled={busy} onClick={() => void execute('/goal-stop')}>Снять</button>
           </motion.div>}
       </AnimatePresence>
       <motion.button type="button" className="goal-expand-toggle" aria-expanded={expanded} aria-controls="goal-details" aria-label={expanded ? 'Свернуть цель' : 'Развернуть цель'} onClick={() => setExpanded(value => !value)} whileHover={reduceMotion ? undefined : { scale: 1.1 }} whileTap={reduceMotion ? undefined : { scale: 0.9 }}>
@@ -81,16 +100,21 @@ export default function GoalCard({ goal, running, onCommand, onSave }: {
       </motion.button>
     </div>
     <AnimatePresence initial={false} mode="wait">
-      {!expanded && goal.progress.length > 0 && <motion.p className="goal-compact-progress" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: reduceMotion ? 0 : 0.16 }}><b>Сейчас:</b> {goal.progress.at(-1)}</motion.p>}
+      {!expanded && goal.lastReason && <motion.p className="goal-compact-progress" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: reduceMotion ? 0 : 0.16 }}><b>Вердикт:</b> {goal.lastReason}</motion.p>}
       {expanded && <motion.div id="goal-details" className="goal-expanded-content" initial={reduceMotion ? false : { opacity: 0, height: 0, y: -6 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -6 }} transition={{ height: { type: 'spring', stiffness: 420, damping: 34 }, opacity: { duration: 0.16 }, y: { duration: 0.2 } }}>
-      {goal.progress.length > 0 && <p><b>Прогресс:</b> {goal.progress.at(-1)}</p>}
-      {goal.blocker && <p className="goal-blocker"><b>Блокер:</b> {goal.blocker}</p>}
-      <details open><summary>Подробности цели · {goal.criteria.length} критериев · {goal.progress.length} шагов прогресса · {goal.evidence.length} проверок</summary>
+      <p className="goal-stats">
+        {active ? <>Идёт: <b>{formatDuration(goal.startedAt)}</b> · </> : null}
+        Ходов оценено: <b>{goal.turnsEvaluated}</b> · ~<b>{formatTokens(goal.tokensSpent)}</b> токенов
+        {goal.maxSteps > 0 ? <> · раундов: <b>{goal.steps}/{goal.maxSteps}</b></> : <> · раундов: <b>{goal.steps}</b> (без лимита)</>}
+      </p>
+      {goal.lastReason && <p><b>Последний вердикт:</b> {goal.lastReason}</p>}
+      {goal.blocker && <p className="goal-blocker"><b>Причина:</b> {goal.blocker}</p>}
+      <details open><summary>Условие · {verdicts.length} вердиктов · {goal.progress.length} записей прогресса</summary>
         <motion.div initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: reduceMotion ? 0 : 0.08 }}>
-          <b>Критерии завершения</b><ul>{goal.criteria.map((item, i) => <li key={i}>{item}</li>)}</ul>
-          {goal.constraints.length > 0 && <><b>Ограничения</b><ul>{goal.constraints.map((item, i) => <li key={i}>{item}</li>)}</ul></>}
-          {goal.progress.length > 0 && <><b>Весь прогресс</b><ul>{goal.progress.map((item, i) => <li key={i}>{item}</li>)}</ul></>}
-          {goal.evidence.length > 0 && <><b>Свидетельства</b><ul>{goal.evidence.map((item, i) => <li key={i}>{item}</li>)}</ul></>}
+          <b>Условие завершения</b><p className="goal-condition">{goal.objective}</p>
+          <small>Вердикт выносит отдельная быстрая модель по транскрипту после каждого хода: условие либо держится, либо нет. Слова агента о готовности доказательством не считаются — проверка должна быть видна в переписке.</small>
+          {verdicts.length > 0 && <><b>Вердикты оценщика</b><ul>{verdicts.map((item, i) => <li key={i}>{item}</li>)}</ul></>}
+          {goal.progress.length > 0 && <><b>Прогресс</b><ul>{goal.progress.map((item, i) => <li key={i}>{item}</li>)}</ul></>}
         </motion.div>
       </details>
       </motion.div>}
@@ -102,20 +126,18 @@ export default function GoalCard({ goal, running, onCommand, onSave }: {
           initial={reduceMotion ? false : { opacity: 0, y: 18, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: 12, scale: 0.98 }} transition={{ type: 'spring', stiffness: 380, damping: 30 }}>
       <form onSubmit={async event => {
         event.preventDefault()
-        const lines = (value: string) => value.split('\n').map(s => s.trim()).filter(Boolean)
-        if (!objective.trim() || !lines(criteria).length || lines(criteria).length > 20 || lines(constraints).length > 20 || !Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 12 || maxSteps < goal.steps) {
-          setError('Укажи хотя бы один критерий и целый лимит не меньше 1 и уже выполненных шагов'); return
+        const condition = objective.trim()
+        if (!condition || condition.length > MAX_CONDITION_CHARS || !Number.isInteger(maxSteps) || maxSteps < 0 || maxSteps > 500) {
+          setError(`Условие обязательно (до ${MAX_CONDITION_CHARS} символов); лимит раундов — целое 0…500 (0 = без лимита)`); return
         }
         setBusy(true); setError('')
-        try { await onSave({ objective: objective.trim(), criteria: lines(criteria), constraints: lines(constraints), maxSteps }); setEditing(false) }
+        try { await onSave({ objective: condition, maxSteps }); setEditing(false) }
         catch (e) { setError(String(e)) } finally { setBusy(false) }
       }}>
-        <h3 id={titleId}>Настройки цели</h3>
-        <label>Цель<textarea required maxLength={2000} rows={2} value={objective} disabled={busy} onChange={e => setObjective(e.target.value)} /></label>
-        <p>Автопроверка: <code>diagnostics_passed</code>, <code>file_contains:путь::текст</code> или <code>file_not_contains:путь::текст</code>. Свободные критерии требуют проверки человеком. Один шаг — раунд модели; лимит инструментов и времени действует отдельно.</p>
-        <label>Критерии завершения (по одному на строку)<textarea autoFocus required rows={4} value={criteria} disabled={busy} onChange={e => setCriteria(e.target.value)} /></label>
-        <label>Ограничения (по одному на строку)<textarea rows={4} value={constraints} disabled={busy} onChange={e => setConstraints(e.target.value)} /></label>
-        <label>Максимум шагов<input type="number" min={Math.max(1, goal.steps)} max={12} step={1} required value={maxSteps} disabled={busy} onChange={e => setMaxSteps(Number(e.target.value))} /></label>
+        <h3 id={titleId}>Условие цели</h3>
+        <label>Условие завершения<textarea autoFocus required maxLength={MAX_CONDITION_CHARS} rows={4} value={objective} disabled={busy} onChange={e => setObjective(e.target.value)} /></label>
+        <p>Пиши проверяемое условие — такое, которое видно в переписке: «npm test выходит с кодом 0», «в CHANGELOG.md есть запись для каждого PR», «git status чист». Проверяет его отдельная модель после каждого хода. Границы задаются клаузой в самом условии («…или остановись после 20 ходов»).</p>
+        <label>Максимум раундов (0 — без лимита)<input type="number" min={0} max={500} step={1} required value={maxSteps} disabled={busy} onChange={e => setMaxSteps(Number(e.target.value))} /></label>
         {error && <p role="alert">{error}</p>}
         <div className="goal-controls"><button type="button" disabled={busy} onClick={() => setEditing(false)}>Отмена</button><button type="submit" disabled={busy}>{busy ? 'Сохранение…' : 'Сохранить'}</button></div>
         </form>

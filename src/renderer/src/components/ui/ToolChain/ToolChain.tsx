@@ -10,6 +10,7 @@ import { useChatRemeasure } from '../MessageBubble/remeasure'
 import { removePendingSteer } from '../../../hooks/chatRunRuntime'
 
 import { getToolMeta } from '../../../../../shared/toolMeta'
+import { isFinalAnswerToolName } from '../../../../../shared/finalAnswer'
 import './ToolChain.css'
 
 export interface ToolStep {
@@ -56,6 +57,12 @@ interface Iteration {
 }
 
 function buildIterations(steps: ToolStep[]): Iteration[] {
+  // publish_result удалён из тулсета — старые сообщения ещё содержат эти шаги.
+  // Скрываем их, чтобы в ленте не оставалось карточки несуществующего тула.
+  steps = steps.filter(s => s.toolName !== 'publish_result')
+  // §final-answer — в старых сообщениях остались «вызовы» тула final_answer
+  // (модель спутала служебный тег с функцией). В ленте им делать нечего.
+  steps = steps.filter(s => !isFinalAnswerToolName(s.toolName))
   const iters: Iteration[] = []
   const calls = steps.filter(s => s.type === 'tool_call')
   const results = steps.filter(s => s.type === 'tool_result')

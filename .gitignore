@@ -2,6 +2,8 @@ node_modules
 tmp_out.txt
 # Temp diagnostic/build scratch files
 eslint_diag.txt
+# `npm run lint` writes its full JSON report here (hundreds of KB).
+eslint-out.json
 tmp_tsc.txt
 tsc_err.txt
 tsc_err2.txt

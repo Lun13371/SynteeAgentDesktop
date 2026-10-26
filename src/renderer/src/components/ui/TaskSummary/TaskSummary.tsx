@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { Check, ChevronDown, CircleAlert, CircleCheck, CircleHelp, Copy, CornerUpLeft, ExternalLink, FileDiff, ListChecks, MessageSquare, MoreHorizontal, Pin, PinOff, Play, Plus, RefreshCw, X } from 'lucide-react'
+import { Check, ChevronDown, CircleAlert, CircleCheck, CircleHelp, Copy, CornerUpLeft, FileDiff, ListChecks, MessageSquare, MoreHorizontal, Pin, PinOff, Play, Plus, RefreshCw, X } from 'lucide-react'
 import type { TaskSummary, TaskSummaryParticipant, TaskSummaryState, TaskSummaryTodoStatus } from '../../../../../shared/types/taskSummary'
 import { openFilePath } from '../../../utils/openFilePath'
-import { useRightPanelTabsStore } from '../../../store/rightPanelTabs.store'
-import { useUIStore } from '../../../store/ui.store'
 import { tabActions } from '../../../store/tabs.store'
 import { useToast } from '../Toast/Toast'
 import './TaskSummary.css'
@@ -29,7 +27,7 @@ function AnimatedCollapse({ open, children }: { open: boolean; children: React.R
   return <AnimatePresence initial={false}>{open && <motion.div className="syntee-task-summary__collapse" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={reducedMotion ? { duration: 0 } : collapseTransition}>{children}</motion.div>}</AnimatePresence>
 }
 
-const sectionClass: Record<string, string> = { 'Сейчас': 'now', 'План': 'plan', 'Команда': 'team', 'Результаты': 'results', 'Итог': 'summary', 'Проверки': 'checks', 'Осталось': 'remaining', 'Изменения': 'changes', 'Заметки': 'notes' }
+const sectionClass: Record<string, string> = { 'Сейчас': 'now', 'План': 'plan', 'Команда': 'team', 'Итог': 'summary', 'Проверки': 'checks', 'Осталось': 'remaining', 'Изменения': 'changes', 'Заметки': 'notes' }
 function Section({ title, count, defaultOpen = false, children }: { title: string; count?: string | number; defaultOpen?: boolean; children: React.ReactNode }) {
   // Only a task switch resets these controls, never a hydrated live update.
   const [override, setOverride] = useState<boolean | null>(null)
@@ -155,19 +153,6 @@ function TaskSummary({ chatId, workdir, live, liveStatus, liveTodo = [], onNavig
     setPinText(''); setPinMode(false)
   }
   const navigate = (id: string) => { setOpen(true); onNavigateMessage?.(id) }
-  const openUrlInBrowser = (target: string) => {
-    if (!/^https?:\/\//i.test(target)) return
-    const tabs = useRightPanelTabsStore.getState(); const ui = useUIStore.getState()
-    tabs.openPanel('browser'); ui.setAgentPanelTab('browser'); ui.setAgentPanelOpen(true); void window.syntee.browser.newTab(target)
-  }
-  const openResult = (result: NonNullable<TaskSummary['results']>[number]) => {
-    if (result.kind === 'file') void openFilePath(result.target, workdir)
-    else if (result.kind === 'url') openUrlInBrowser(result.target)
-    else if (result.kind === 'image') {
-      if (/^https?:\/\//i.test(result.target)) openUrlInBrowser(result.target)
-      else void openFilePath(result.target, workdir)
-    }
-  }
   const title = selected?.title ?? 'Сводка задачи'
   const compactStatus = effectiveLive ? (liveStatus || 'Идёт выполнение') : selected ? statusLabel[selected.status] : 'Нет активной задачи'
   const reducedTransition = prefersReducedMotion ? { duration: 0 } : { duration: 0.2, ease: 'easeOut' as const }
@@ -188,7 +173,7 @@ function TaskSummary({ chatId, workdir, live, liveStatus, liveTodo = [], onNavig
           <div className="syntee-task-summary__actions">
           <button type="button" title={state?.pinned ? 'Открепить сводку' : 'Закрепить сводку'} aria-label={state?.pinned ? 'Открепить сводку' : 'Закрепить сводку'} onClick={() => patch({ pinned: !state?.pinned })}>{state?.pinned ? <PinOff size={14} /> : <Pin size={14} />}</button>
           <button type="button" title="Ещё" onClick={() => { setMenuOpen(value => !value); setTaskPickerOpen(false) }}><MoreHorizontal size={15} /></button>
-          <AnimatePresence initial={false}>{menuOpen && <motion.div className="syntee-task-summary__menu" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={reducedTransition}><button type="button" onClick={() => void copy(selected?.summary ?? '')}><Copy size={13} />Копировать итог</button><button type="button" onClick={() => void copy(todo.map(item => `${item.status === 'done' ? '✓' : '○'} ${item.text}`).join('\n'))}><Copy size={13} />Копировать план</button><button type="button" onClick={() => void copy(selected?.results.map(result => `${result.title}: ${result.target}`).join('\n') ?? '')}><Copy size={13} />Копировать результаты</button><button type="button" onClick={addManualPin}><Pin size={13} />Добавить закрепление</button><button type="button" onClick={() => patch({ newTaskRequested: true })}><Plus size={13} />Новая задача</button></motion.div>}</AnimatePresence>
+          <AnimatePresence initial={false}>{menuOpen && <motion.div className="syntee-task-summary__menu" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={reducedTransition}><button type="button" onClick={() => void copy(selected?.summary ?? '')}><Copy size={13} />Копировать итог</button><button type="button" onClick={() => void copy(todo.map(item => `${item.status === 'done' ? '✓' : '○'} ${item.text}`).join('\n'))}><Copy size={13} />Копировать план</button><button type="button" onClick={addManualPin}><Pin size={13} />Добавить закрепление</button><button type="button" onClick={() => patch({ newTaskRequested: true })}><Plus size={13} />Новая задача</button></motion.div>}</AnimatePresence>
           {!state?.pinned && <button type="button" title="Закрыть сводку" aria-label="Закрыть сводку" onClick={() => { setOpen(false); setMenuOpen(false) }}><X size={14} /></button>}
         </div></header>
         <AnimatePresence initial={false}>{taskPickerOpen && <motion.div className="syntee-task-summary__task-options" aria-label="История задач" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={reducedTransition}><div>{state?.tasks.map(task => <button type="button" key={task.id} className={task.id === selected?.id ? 'is-selected' : ''} aria-pressed={task.id === selected?.id} onClick={() => { patch({ selectedTaskId: task.id }); setTaskPickerOpen(false) }}><span>{task.title}</span><small>{statusLabel[task.status]}</small>{task.id === selected?.id && <Check size={12} />}</button>)}</div></motion.div>}</AnimatePresence>
@@ -201,7 +186,6 @@ function TaskSummary({ chatId, workdir, live, liveStatus, liveTodo = [], onNavig
               {effectiveLive && <Section title="Сейчас" defaultOpen><p>{liveStatus || 'Идёт выполнение'}</p></Section>}
               {!!todo.length && <Section title="План" count={`${done}/${todo.length}`} defaultOpen={!!effectiveLive}><div className="syntee-task-summary__todo">{todo.map((item, index) => <div key={`${item.text}-${index}`} className={`syntee-task-summary__todo-item is-${item.status}`}>{todoIcon(item.status)}<span>{item.text}</span></div>)}</div></Section>}
               {!!participants.length && <Section title="Команда" count={`${activeParticipants} активных · ${participants.length} всего${failedParticipants ? ` · ${failedParticipants} проблем` : ''}`} defaultOpen={!!activeParticipants || !!failedParticipants}>{(['subagent', 'chat'] as const).map(kind => { const group = participants.filter(p => p.kind === kind); return !!group.length && <div key={kind}><div className="syntee-task-summary__group">{kind === 'subagent' ? 'Сабагенты' : 'Связанные чаты'} · {group.length}</div>{group.map(p => <Participant key={`${p.id}:${p.requestId ?? ''}`} participant={p} navigate={navigate} />)}</div> })}</Section>}
-              {!!selected?.results.length && <Section title="Результаты" count={selected.results.length} defaultOpen={!effectiveLive}><FirstFour>{selected.results.map(result => <div className="syntee-task-summary__result" key={result.id}><button type="button" className="syntee-task-summary__link" onClick={() => openResult(result)}>{result.title}<ExternalLink size={12} /></button><button type="button" className="syntee-task-summary__change-toggle" title="К сообщению результата" aria-label="К сообщению результата" onClick={() => navigate(result.messageId)}><CornerUpLeft size={12} /></button><button type="button" title="Копировать результат" aria-label="Копировать результат" onClick={() => void copy(`${result.title}: ${result.target}`)}><Copy size={12} /></button></div>)}</FirstFour></Section>}
               {selected?.summary && <Section title="Итог" defaultOpen={!effectiveLive}><p>{selected.summary}</p><button type="button" className="syntee-task-summary__insert" onClick={() => onInsert(selected.summary ?? '')}><Play size={13} />Подставить в поле</button></Section>}
               {!!selected?.checks.length && <Section title="Проверки" count={failedChecks ? `${failedChecks} проблем · ${selected.checks.length}` : selected.checks.length} defaultOpen={failedChecks > 0}>{selected.checks.map(check => <SummaryCheck key={check.id} check={check} navigate={navigate} />)}</Section>}
               {selected?.remaining && <Section title="Осталось" defaultOpen={!effectiveLive}><p>{selected.remaining}</p><button type="button" className="syntee-task-summary__insert" onClick={() => onInsert(`Продолжай задачу «${selected.title}»: ${selected.remaining ?? ''}`)}><Play size={13} />Продолжить эту задачу</button></Section>}

@@ -16,6 +16,14 @@ app.setPath('userData', process.env.SYNTEE_USER_DATA_DIR || join(app.getPath('ap
 // используется из worker_threads, где импорт Electron ненадёжен.
 process.env.SYNTEE_DB_PATH = join(app.getPath('userData'), 'syntee.db')
 
+// Кэш моделей @huggingface/transformers (E5 для semantic-поиска, whisper для
+// голоса). Библиотека НЕ читает env сама — читатели выставляют env.cacheDir из
+// этой переменной (core/context/embeddings.ts, whisper-worker). Без явного
+// значения кэш по умолчанию ложится в <node_modules>/@huggingface/transformers
+// /.cache, а в packaged-сборке это app.asar.unpacked — потенциально read-only
+// (Program Files) → модель не скачивается и семантика тихо падает на TF-IDF.
+process.env.TRANSFORMERS_CACHE = join(app.getPath('userData'), 'transformers-cache')
+
 // Лимит дискового кэша Chromium (512 МБ, все партишны: приложение +
 // встроенный браузер + spa-renderer). Без него кэш растёт по эвристике
 // свободного места — партишн браузера уже съел 155 МБ за вечер.

@@ -957,7 +957,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     if (!isIncognito && chatId) {
       const goal = getChatGoal(chatId)
       if (goal && ['running', 'paused', 'blocked'].includes(goal.status)) {
-        systemPrompt += `\n\n## ACTIVE USER GOAL (persistent)\nObjective: ${goal.objective}\nCompletion criteria: ${goal.criteria.join('; ')}\nConstraints: ${goal.constraints.join('; ')}\nProgress: ${goal.progress.slice(-12).join(' | ')}\nStep budget: ${goal.steps}/${goal.maxSteps}. Do not claim completion without concrete evidence. Stop for blockers or approvals; never bypass tool permissions. Goal status: ${goal.status}.`
+        systemPrompt += `\n\n## ACTIVE USER GOAL (persistent, /goal)\nCompletion condition: ${goal.objective}\n` +
+          `An INDEPENDENT evaluator reads this transcript after every turn and decides met / not_met / impossible — your own claim of completion is not evidence. Make the check visible: run it and let the real output appear in the conversation.\n` +
+          `Progress: ${goal.progress.slice(-12).join(' | ') || '(none yet)'}\n` +
+          (goal.lastReason ? `Last verdict: not yet met — ${goal.lastReason}\n` : '') +
+          `Turn ${goal.turnsEvaluated} evaluated${goal.maxSteps > 0 ? `, round budget ${goal.steps}/${goal.maxSteps}` : ', no round cap'}. ` +
+          'If the condition cannot be satisfied, say so explicitly. Never bypass tool permissions, and never repeat irreversible side effects without checking the current state. ' +
+          `Goal status: ${goal.status}.`
       }
     }
     return systemPrompt
@@ -2055,8 +2061,8 @@ function pathHash(value: string): string {
           task.remaining = task.todo.filter(item => item.status === 'pending' || item.status === 'in_progress').map(item => item.text).join('; ').slice(0, 500) || undefined
           const facts = [
             completed.length ? `Сделано: ${completed.slice(0, 8).join('; ')}` : '',
-            task.results.length ? `Результаты: ${task.results.slice(0, 5).map(item => item.title).join('; ')}` : '',
-            task.checks.length ? `Проверки: ${task.checks.slice(0, 5).map(item => `${item.title} — ${item.status === 'passed' ? 'пройдена' : item.status === 'failed' ? 'ошибка' : 'не подтверждена'}`).join('; ')}` : '',
+                        task.checks.length ? `Проверки:
+ ${task.checks.slice(0, 5).map(item => `${item.title} — ${item.status === 'passed' ? 'пройдена' : item.status === 'failed' ? 'ошибка' : 'не подтверждена'}`).join('; ')}` : '',
             task.changes.length ? `Изменено файлов: ${new Set(task.changes.map(item => item.path)).size}` : '',
             task.remaining ? `Осталось: ${task.remaining}` : '',
           ].filter(Boolean)
@@ -2613,20 +2619,10 @@ function pathHash(value: string): string {
           // зафиксироваться раньше, чем придёт tool_call.
           flushUiTokens()
           const rawStep = msg.step as Record<string, unknown>
-          if (summaryTaskId && rawStep.type === 'tool_result' && ['publish_result', 'get_diagnostics', 'run_command'].includes(String(rawStep.toolName)) && msg.msgId === assistantMsgId && typeof rawStep.content === 'string') {
+          if (summaryTaskId && rawStep.type === 'tool_result' && ['get_diagnostics', 'run_command'].includes(String(rawStep.toolName)) && msg.msgId === assistantMsgId && typeof rawStep.content === 'string') {
             const state = getTaskSummaryState(params.chatId); const task = state.tasks.find(t => t.id === summaryTaskId)
             if (task) {
               const output = rawStep.content.slice(0, 4000)
-              if (rawStep.toolName === 'publish_result' && rawStep.success === true) {
-                try {
-                  const parsed = JSON.parse(output) as { taskSummaryResult?: { title?: string; kind?: 'file'|'url'|'image'; target?: string } }
-                  const result = parsed.taskSummaryResult
-                  if (typeof result?.title === 'string' && typeof result.target === 'string' && ['file', 'url', 'image'].includes(result.kind ?? '')) {
-                    task.results = task.results.filter(item => item.target !== result.target)
-                    task.results.unshift({ id: uuid(), title: result.title.slice(0, 120), kind: result.kind!, target: result.target.slice(0, 2000), messageId: assistantMsgId })
-                  }
-                } catch { /* malformed publication is not an artifact */ }
-              }
               const toolName=String(rawStep.toolName||'')
               if (toolName === 'get_diagnostics') {
                 const unknown = /DIAGNOSTICS_UNKNOWN|check DID NOT run completely|не удалось определить/i.test(output)
@@ -2644,7 +2640,7 @@ function pathHash(value: string): string {
                   task.checks.unshift({ id: uuid(), title: command.slice(0, 100), status, detail: output.slice(-6000), messageId: assistantMsgId })
                 }
               }
-              task.results=task.results.slice(0,30); task.checks=task.checks.slice(0,30); task.updatedAt=Date.now(); const next=upsertTaskSummary(task); broadcastTaskSummary?.(params.chatId, next)
+              task.checks=task.checks.slice(0,30); task.updatedAt=Date.now(); const next=upsertTaskSummary(task); broadcastTaskSummary?.(params.chatId, next)
             }
           }
           // tool_call_pending — временный ранний сигнал для UI (см. Agent.ts
@@ -3983,9 +3979,11 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     }
     // Goal runtime transport is scoped to this worker/run; no new UI send or IPC handler.
     const runtimeGoal = !params.incognito ? getChatGoal(params.chatId) : null
-    // Only explicit /goal launches autonomous continuation. Ordinary questions
-    // may reference the pinned objective but must retain normal chat semantics.
-    const activeGoal = params.slashCommand?.name === 'goal' && runtimeGoal?.status === 'running' ? runtimeGoal : null
+    // §goal (семантика Claude Code): пока цель set (running) или приостановлена
+    // (paused — ждёт следующего сообщения), ЛЮБОЙ ход в чате продолжает работу
+    // к цели. Оценщик проверяет условие после каждого хода.
+    const activeGoal = runtimeGoal && (runtimeGoal.status === 'running' || runtimeGoal.status === 'paused')
+      ? runtimeGoal : null
     let goalRevision = activeGoal?.updatedAt
     worker.on('message', (event: Record<string, unknown>) => {
       if (event.type !== 'goal_progress' || !activeGoal) return
@@ -3993,13 +3991,15 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
         const current = getChatGoal(params.chatId)
         const next = event.goal as import('../../shared/types/goal').ChatGoal | undefined
         // Never resurrect a goal stopped/replaced/edited by the user mid-run.
-        if (!current || current.id !== activeGoal.id || current.status !== 'running' || current.updatedAt !== goalRevision) {
+        if (!current || current.id !== activeGoal.id || current.updatedAt !== goalRevision) {
           worker.postMessage({ type: 'abort_run' })
           return
         }
         if (!next || next.id !== current.id || next.chatId !== params.chatId) return
         const saved = setChatGoal({ ...current, status: next.status, steps: next.steps,
-          progress: next.progress, evidence: next.evidence, blocker: next.blocker })
+          progress: next.progress, evidence: next.evidence, blocker: next.blocker,
+          turnsEvaluated: next.turnsEvaluated, tokensSpent: next.tokensSpent,
+          lastReason: next.lastReason, idleTurns: next.idleTurns, startedAt: next.startedAt })
         goalRevision = saved?.updatedAt
         broadcastGoal(params.chatId, saved)
       } catch (error) {
@@ -4008,10 +4008,13 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       }
     })
     worker.once('exit', () => {
-      if (!activeGoal) return
+      if (!activeGoal || run.doneSent) return
       const current = getChatGoal(params.chatId)
-      if (current?.id === activeGoal.id && current.status === 'running' && current.updatedAt === goalRevision) {
-        const saved = setChatGoal({ ...current, status: 'paused', blocker: 'Worker interrupted; inspect side effects before explicit resume' })
+      if (current?.id === activeGoal.id && current.updatedAt === goalRevision) {
+        // Прогон оборвался (крэш/терминация): цель НЕ снимается — как в [CC]
+        // она восстанавливается, и следующий ход продолжает работу.
+        const saved = setChatGoal({ ...current,
+          progress: [...current.progress, 'Прогон прерван; проверь состояние перед продолжением'].slice(-100) })
         broadcastGoal(params.chatId, saved)
       }
     })

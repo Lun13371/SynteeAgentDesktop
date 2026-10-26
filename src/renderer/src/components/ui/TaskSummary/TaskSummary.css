@@ -214,7 +214,6 @@
 .syntee-task-summary__section--now { order: 1; }
 .syntee-task-summary__section--plan { order: 2; }
 .syntee-task-summary__section--team { order: 3; }
-.syntee-task-summary__section--results { order: 10; }
 .syntee-task-summary__section--summary { order: 11; }
 .syntee-task-summary__section--checks { order: 12; }
 .syntee-task-summary__section--remaining { order: 13; }

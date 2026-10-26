@@ -13,7 +13,7 @@ new Function('require', 'module', 'exports', output)(id => {
   if (id.includes('../AppIcon/AppIcon')) return { default: () => null }
   return require(id)
 }, mod, mod.exports)
-const goal = { id: 'goal', chatId: 'chat', objective: 'Check renderer', status: 'paused', criteria: [], constraints: [], progress: [], evidence: [], steps: 0, maxSteps: 5, createdAt: 1, updatedAt: 1 }
+const goal = { id: 'goal', chatId: 'chat', objective: 'Check renderer', status: 'paused', criteria: [], constraints: [], progress: [], evidence: [], steps: 3, maxSteps: 0, createdAt: 1, startedAt: Date.now() - 120000, updatedAt: 1, turnsEvaluated: 2, tokensSpent: 14200, idleTurns: 0, lastReason: 'npm test still prints 2 failures' }
 const previousDocument = global.document
 global.document = { body: {} }
 try {

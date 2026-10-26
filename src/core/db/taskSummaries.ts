@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { ensureTaskSummaryStateRow } from '../../shared/types/taskSummary'
 import type { TaskSummary, TaskSummaryState, TaskSummaryPatch } from '../../shared/types/taskSummary'
 import type { ChatGoal } from '../../shared/types/goal'
+import { normalizeGoal } from '../../shared/types/goal'
 
 let initializedFor: ReturnType<typeof getDB> | undefined
 
@@ -67,7 +68,8 @@ export function getChatGoal(chatId: string): ChatGoal | null {
   if (!row) return null
   try {
     const goal = JSON.parse(row.data) as ChatGoal
-    return goal
+    // Цели, сохранённые старой версией, не имеют новых полей.
+    return normalizeGoal(goal)
   } catch { return null }
 }
 
@@ -76,13 +78,17 @@ export function setChatGoal(goal: ChatGoal | null, chatId?: string): ChatGoal | 
   const id = goal?.chatId ?? chatId
   if (!id) return null
   if (!goal) { getDB().prepare('DELETE FROM chat_goals WHERE chat_id = ?').run(id); return null }
-  const maxSteps = Number.isFinite(goal.maxSteps) ? Math.max(1, Math.min(12, Math.floor(goal.maxSteps))) : 8
-  const steps = Number.isFinite(goal.steps) ? Math.max(0, Math.min(Math.floor(goal.steps), maxSteps)) : 0
+  // maxSteps = 0 → без лимита (семантика Claude Code: границы задаются
+  // клаузой в самом условии, а не жёстким потолком раундов).
+  const maxSteps = Number.isFinite(goal.maxSteps) ? Math.max(0, Math.min(500, Math.floor(goal.maxSteps))) : 0
+  const steps = Number.isFinite(goal.steps) ? Math.max(0, Math.floor(goal.steps)) : 0
   // A strict revision even for multiple writes in one millisecond: pause/resume
   // must invalidate an old worker snapshot, not accidentally reuse its revision.
   const previousRevision = getChatGoal(id)?.updatedAt ?? 0
   const updatedAt = Math.max(Date.now(), Number.isFinite(previousRevision) ? previousRevision + 1 : 0)
-  const safe: ChatGoal = { ...goal, objective: goal.objective.slice(0, 2000), criteria: goal.criteria.slice(0, 20), constraints: goal.constraints.slice(0, 20), progress: goal.progress.slice(-100), evidence: goal.evidence.slice(-50), steps, maxSteps, updatedAt }
+  const base = normalizeGoal({ ...goal, objective: goal.objective.slice(0, 4000), steps, maxSteps })
+  const safe: ChatGoal = { ...base, criteria: base.criteria.slice(0, 20), constraints: base.constraints.slice(0, 20),
+    progress: base.progress.slice(-100), evidence: base.evidence.slice(-50), updatedAt }
   getDB().prepare('INSERT INTO chat_goals(chat_id, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at').run(id, JSON.stringify(safe), safe.updatedAt)
   return safe
 }
@@ -147,7 +153,7 @@ export function upsertTaskSummary(task: TaskSummary): TaskSummaryState {
 
 export function createTaskSummary(chatId: string, title: string, messageId: string): TaskSummary {
   const now = Date.now()
-  return { id: uuid(), chatId, title: title.slice(0, 120), status: 'running', createdAt: now, updatedAt: now, messageIds: [messageId], todo: [], results: [], changes: [], checks: [] }
+  return { id: uuid(), chatId, title: title.slice(0, 120), status: 'running', createdAt: now, updatedAt: now, messageIds: [messageId], todo: [], changes: [], checks: [] }
 }
 
 export function recoverInterruptedTaskSummaries(): void {
@@ -158,9 +164,11 @@ export function recoverInterruptedTaskSummaries(): void {
     for (const row of goals) {
       try {
         const goal = JSON.parse(row.data) as ChatGoal
-        if (goal.status !== 'running') continue
-        goal.status = 'paused'
-        goal.blocker = 'Прервано перезапуском; проверь состояние и явно возобнови через /goal'
+        if (goal.status !== 'running' && goal.status !== 'paused') continue
+        // §goal ([CC]): активная цель переживает перезапуск и НЕ сбрасывается —
+        // следующий ход продолжит работу. Фиксируем только факт прерывания.
+        goal.progress = [...(Array.isArray(goal.progress) ? goal.progress : []),
+          'Приложение перезапущено во время цели; состояние могло измениться — проверь перед продолжением'].slice(-100)
         setChatGoal(goal)
       } catch { /* ignore corrupt goal rows */ }
     }

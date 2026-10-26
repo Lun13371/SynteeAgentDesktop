@@ -75,6 +75,80 @@ export function splitFinalAnswer(text: string): FinalSplit {
   }
 }
 
+// ── Защита от «тула» final_answer ────────────────────────────────────────
+// Часть моделей принимает тег <final_answer> за имя функции и вызывает
+// несуществующий тул: в чате появляется карточка «final_answer — ошибка»,
+// модель получает «такого тула нет» и путается. Такие вызовы вынимаем ДО
+// проверки схем: текст из аргументов становится обычным текстом ответа.
+
+/** Похоже ли имя тула на маркер итогового ответа. */
+export function isFinalAnswerToolName(name: string | undefined | null): boolean {
+  if (!name) return false
+  const n = name.trim().toLowerCase().replace(/^<|>$/g, '').replace(/[\s_-]/g, '')
+  return n === 'finalanswer' || n === 'final' || n === 'answerfinal'
+}
+
+const FINAL_TEXT_KEYS = [
+  'text', 'content', 'answer', 'final', 'final_answer', 'finalAnswer', 'markdown', 'value', 'summary', 'message',
+]
+
+/** Достаёт текст ответа из аргументов «тула» final_answer. */
+export function extractFinalAnswerToolText(rawArguments: string | undefined): string {
+  if (!rawArguments) return ''
+  const raw = rawArguments.trim()
+  if (!raw) return ''
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Не JSON — модель положила в аргументы просто текст.
+    return raw.startsWith('{') || raw.startsWith('[') ? '' : raw
+  }
+  if (typeof parsed === 'string') return parsed.trim()
+  if (!parsed || typeof parsed !== 'object') return ''
+  const obj = parsed as Record<string, unknown>
+  for (const key of FINAL_TEXT_KEYS) {
+    const v = obj[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  // Незнакомые ключи не угадываем: лучше вернуть пусто (агент подскажет
+  // модели написать текст), чем выдать пользователю служебное поле вроде
+  // {"status":"done"} за ответ.
+  return ''
+}
+
+export interface FinalToolCallsSplit<T> {
+  /** Оставшиеся (настоящие) вызовы тулов. */
+  calls: T[]
+  /** Текст, который модель пыталась отдать через «тул» final_answer. */
+  text: string
+  /** Сколько вызовов вынули. */
+  removed: number
+}
+
+/**
+ * Вынимает из списка tool_calls вызовы «final_answer» (модель спутала тег с
+ * функцией). Возвращает очищенный список и текст ответа из их аргументов.
+ */
+export function takeFinalAnswerToolCalls<T extends { function?: { name?: string; arguments?: string } }>(
+  calls: T[] | undefined,
+): FinalToolCallsSplit<T> {
+  if (!calls?.length) return { calls: calls ?? [], text: '', removed: 0 }
+  const kept: T[] = []
+  const texts: string[] = []
+  for (const call of calls) {
+    if (!isFinalAnswerToolName(call?.function?.name)) {
+      kept.push(call)
+      continue
+    }
+    const t = extractFinalAnswerToolText(call.function?.arguments)
+    if (t) texts.push(t)
+  }
+  const removed = calls.length - kept.length
+  if (removed === 0) return { calls, text: '', removed: 0 }
+  return { calls: kept, text: texts.join('\n\n'), removed }
+}
+
 export interface FinalSplitIters<T> {
   iters: T[] | undefined
   /** Итоговый ответ, вынутый из итераций (пустая строка — маркеров не было). */

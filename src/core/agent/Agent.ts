@@ -4,6 +4,7 @@ import { agentModelSupportsVision } from '../ai/visionSupport'
 import { hydrateHistoryContents } from '../ai/toolImageHistory'
 import { ImageRequestBudget } from '../../shared/imageFormat'
 import { STEER_MARKER } from '../../shared/steer'
+import { isFinalAnswerToolName, takeFinalAnswerToolCalls } from '../../shared/finalAnswer'
 import { NativeImageAnalysis } from './nativeImageAnalysis'
 import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, actionAllowlistKey } from './commandSafety'
 import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, isWebSourceTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
@@ -41,6 +42,7 @@ import { validateAndCoerceArgs } from './validateArgs'
 import { ToolDispatcher } from './toolDispatcher'
 import { jsonrepair } from 'jsonrepair'
 import { GoalRuntime } from './goalRuntime'
+import { formatTranscript, makeGoalJudge } from './goalEvaluator'
 import type { ChatGoal } from '../../shared/types/goal'
 import { filterToolSchemas, getToolSettings, isToolDisabled } from '../../shared/toolSettings'
 import { sanitizeToolInstructions } from '../prompts/buildSystemPrompt'
@@ -303,19 +305,19 @@ export class Agent {
     const EFFECTIVE_MAX_STEPS = this.role === 'subagent'
       ? (Number.isFinite(maxSteps) ? Math.max(1, Math.min(1024, Math.floor(maxSteps))) : 256)
       : 1024
-    const goalRuntime = this.role === 'main' && this.goal?.status === 'running'
-      ? new GoalRuntime(this.goal, this.workdir, goal => { this.goal = goal; this.onGoalProgress?.(goal) }) : undefined
-    // A real abort deadline covers LLM calls, approval waits and delegated tools.
-    const callerSignal = signal
-    const goalAbort = goalRuntime ? new AbortController() : undefined
-    const relayAbort = () => goalAbort?.abort()
-    callerSignal?.addEventListener('abort', relayAbort, { once: true })
-    if (callerSignal?.aborted) relayAbort()
-    if (goalAbort) signal = goalAbort.signal
-    const deadlineTimer = goalRuntime ? setTimeout(() => {
-      goalRuntime.stop('limit', 'Goal time budget exhausted (10 minutes); in-flight external side effects may still finish')
-      goalAbort?.abort()
-    }, Math.max(0, goalRuntime.deadline - Date.now())) : undefined
+    // §goal — цель участвует в прогоне, пока она set (running) или ждёт
+    // следующего сообщения пользователя (paused). Как в [CC]: обычный ход
+    // в чате с активной целью тоже продолжает работу к цели.
+    const goalRuntime = this.role === 'main' && this.goal && (this.goal.status === 'running' || this.goal.status === 'paused')
+      ? new GoalRuntime(this.goal, goal => { this.goal = goal; this.onGoalProgress?.(goal) },
+        makeGoalJudge((goalMessages, modelType, systemPrompt, opts) =>
+          this.client.complete(goalMessages, modelType, systemPrompt, opts)))
+      : undefined
+    // Возобновление после паузы: следующий ход продолжает цикл.
+    if (goalRuntime && goalRuntime.goal.status === 'paused') {
+      goalRuntime.goal.status = 'running'
+      goalRuntime.save()
+    }
     const goalWait = async <T>(promise: Promise<T>): Promise<T> => {
       if (!goalRuntime || !signal) return promise
       const abortSignal = signal
@@ -489,6 +491,10 @@ export class Agent {
     // раундов подряд останавливаемся с onError.
     let consecutiveErrors = 0
     const MAX_CONSECUTIVE_ERRORS = 3
+    // §final-answer — сколько раз модель «вызывала» несуществующий тул
+    // final_answer без текста внутри. После 2 подсказок завершаем, чтобы
+    // не крутить пустые раунды до maxSteps.
+    let finalAnswerNudges = 0
     const nativeImageAnalysis = new NativeImageAnalysis()
     const runCallbacks = callbacks
     let codeModeInternalCallDepth = 0
@@ -496,12 +502,13 @@ export class Agent {
       ...runCallbacks,
       onStep: (event) => { if (codeModeInternalCallDepth === 0) runCallbacks.onStep(event) },
       onDone: (answer, details) => {
-        if (goalRuntime?.active) goalRuntime.stop(callerSignal?.aborted ? 'paused' : 'unverified', callerSignal?.aborted ? 'Stopped by user; explicit resume required' : 'Run ended without verified completion')
+        // §goal — завершение прогона само по себе не вердикт: цель остаётся
+        // set, если оценщик её не закрыл (как в [CC]).
         nativeImageAnalysis.fail('Визуальный анализ прерван: ответ модели не получен.', runCallbacks.onStep)
         runCallbacks.onDone(answer, details)
       },
       onError: (error) => {
-        if (goalRuntime?.active) goalRuntime.stop('blocked', error.message.slice(0, 1000))
+        if (goalRuntime?.active) goalRuntime.handleError(error.message)
         nativeImageAnalysis.fail(`Визуальный анализ не завершён: ${error.message}`, runCallbacks.onStep)
         runCallbacks.onError(error)
       },
@@ -511,10 +518,14 @@ export class Agent {
 
     for (let step = 0; ; step++) {
       if (goalRuntime && !signal?.aborted) {
-        const reason = goalRuntime.active ? goalRuntime.beginRound() : goalRuntime.goal.blocker
-        if (reason || !goalRuntime.active) {
-          if (goalRuntime.active) goalRuntime.stop('limit', reason ?? 'Goal stopped')
-          callbacks.onDone(`[goal: ${goalRuntime.goal.status}] ${goalRuntime.goal.blocker ?? ''}`, this.buildSummaryDetails(modifiedFiles))
+        if (!goalRuntime.active) {
+          callbacks.onDone(`Цель закрыта: ${goalRuntime.goal.blocker ?? goalRuntime.goal.status}`, this.buildSummaryDetails(modifiedFiles))
+          return
+        }
+        const reason = goalRuntime.beginRound()
+        if (reason) {
+          goalRuntime.stop('limit', reason)
+          callbacks.onDone(`Цель остановлена: ${reason}`, this.buildSummaryDetails(modifiedFiles))
           return
         }
       }
@@ -616,11 +627,21 @@ export class Agent {
                   : `Network error, retry ${attempt}${maxAttempts ? `/${maxAttempts}` : ''}...`)
                 callbacks.onRetry?.(attempt, reason, waitSec, maxAttempts)
               },
-              callbacks.onUsage,
+              goalRuntime
+                ? (promptTokens: number, completionTokens: number, cacheRead?: number, cacheWrite?: number) => {
+                  // Расход цикла цели — для статуса /goal (как token spend в [CC]).
+                  goalRuntime.addTokens(promptTokens + completionTokens)
+                  callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
+                }
+                : callbacks.onUsage,
               (tok) => { resetInactivityTimer(); callbacks.onThinkingToken?.(tok) },
               callbacks.onThinkingDone,
               (index, rawToolName) => {
                 const normalizedName = normalizeToolName(rawToolName, activeSchemas)
+                // §final-answer — модель спутала тег <final_answer> с тулом.
+                // Карточку-«вызов» в ленту не показываем вообще: такой вызов
+                // будет вынут ниже, а его текст станет ответом.
+                if (isFinalAnswerToolName(rawToolName) || isFinalAnswerToolName(normalizedName)) return
                 const isHidden = normalizedName === 'update_working_memory' || normalizedName === 'update_todo'
                 if (isHidden || isToolDisabled(normalizedName, getToolSettings(this.store))) return
                 callbacks.onStep({
@@ -648,6 +669,45 @@ export class Agent {
         console.log('[Agent] round %s: chatWithTools OK — tool_calls=%d, content=%d chars', step, response.tool_calls?.length ?? 0, (response.content || '').length)
         log('[Agent] round %s: chatWithTools OK — tool_calls=%d, content=%d chars', step, response.tool_calls?.length ?? 0, (response.content || '').length)
 
+        // §final-answer — часть моделей принимает тег <final_answer> за имя
+        // функции и «вызывает» несуществующий тул. Раньше это давало красную
+        // карточку «Tool "final_answer" is unavailable…» и модель путалась.
+        // Вынимаем такие вызовы ДО проверки схем: их текст становится обычным
+        // текстом ответа, сами вызовы не попадают ни в ленту, ни в историю.
+        if (response.tool_calls?.length) {
+          const finalSplit = takeFinalAnswerToolCalls(response.tool_calls as Array<{ function?: { name?: string; arguments?: string } }>)
+          if (finalSplit.removed > 0) {
+            log('[Agent] final_answer вызван как тул — вынут (%d), текста %d симв.',
+              finalSplit.removed, finalSplit.text.length)
+            response.tool_calls = finalSplit.calls as typeof response.tool_calls
+            if (finalSplit.text) {
+              // Оборачиваем в тег: если в этом же раунде есть настоящие тулы,
+              // текст уйдёт в итерацию как «ход работы» — тег даёт UI понять,
+              // что это ответ (см. splitFinalFromIters в MessageBubble).
+              const tagged = finalSplit.text.includes('<final_answer>')
+                ? finalSplit.text
+                : `<final_answer>\n${finalSplit.text}\n</final_answer>`
+              response.content = [response.content?.trim(), tagged].filter(Boolean).join('\n\n')
+            } else {
+              // Текста в аргументах не было — подсказываем и продолжаем раунд,
+              // не отдавая пользователю пустой ответ.
+              if (++finalAnswerNudges > 2) {
+                callbacks.onDone(
+                  response.content?.trim() || 'Не удалось получить итоговый ответ: модель пыталась вызвать несуществующий инструмент.',
+                  this.buildSummaryDetails(modifiedFiles),
+                )
+                return
+              }
+              messages.push({
+                role: 'user',
+                content: '[final-answer] There is no tool named "final_answer" — do not call it. ' +
+                  'Write the answer as plain text in your message, wrapped in <final_answer>…</final_answer>.',
+              })
+              continue
+            }
+          }
+        }
+
         if (!response.tool_calls?.length) {
           const answer = response.content || ''
           nativeImageAnalysis.respond(this.toolDispatcher.maskSecretValuesInText(answer), false, callbacks.onStep)
@@ -659,7 +719,10 @@ export class Agent {
           // В этом случае НЕ завершаем — продолжаем цикл, даём модели
           // шанс дать ответ, добавив assistant-сообщение с reasoning
           // и user-промпт "продолжи".
-          if (!answer.trim() && !signal?.aborted) {
+          // §goal — в режиме цели ход с пустым текстом всё равно нужно оценить:
+          // вердикт выносится по транскрипту (вывод инструментов уже в нём),
+          // поэтому «пустой ответ» не повод завершать без вердикта.
+          if (!answer.trim() && !signal?.aborted && !goalRuntime) {
             console.log('[Agent] empty answer after reasoning, emptyRetries=%d', (messages.filter(m =>
               m.role === 'user' && typeof m.content === 'string' &&
               m.content.startsWith('[empty-reasoning-retry]')
@@ -714,14 +777,35 @@ export class Agent {
           }
 
           if (goalRuntime) {
-            const decision = goalRuntime.checkpoint(answer)
-            if (decision === 'continue') {
+            // Ход завершился финальным ответом. Вердикт выносит ОТДЕЛЬНАЯ
+            // модель по транскрипту (prompt-based Stop hook в [CC]) — не сам
+            // агент. Его слова о готовности доказательством не считаются.
+            if (answer.trim()) {
               messages.push({ role: 'assistant', content: answer,
                 ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
                 ...(response.thinking_blocks ? { thinking_blocks: response.thinking_blocks } : {}) })
-              messages.push({ role: 'system', content: goalRuntime.instruction() + '\nContinue within this run. If finished, collect permitted fresh verification evidence and provide goal_report; if blocked, report blocked.' })
+            }
+            if (signal?.aborted) { callbacks.onDone(answer); return }
+            const decision = await goalRuntime.evaluate(formatTranscript(messages))
+            if (decision === 'continue') {
+              // reason оценщика уходит в следующий ход как указание (как в [CC]).
+              messages.push({ role: 'user', content:
+                `[goal] Not yet met: ${goalRuntime.goal.lastReason || 'the condition does not hold yet'}. ` +
+                `Continue toward: ${goalRuntime.goal.objective}. ` +
+                'Make the check visible in the conversation — run it and let the real output appear.' })
               continue
             }
+            // В режиме цели токены не стримились (промежуточные ходы не должны
+            // засорять сообщение), поэтому финальный текст отдаём одним блоком
+            // — это ОБЫЧНЫЙ ответ модели, без синтетических приписок.
+            const finalText = answer || (goalRuntime.goal.status === 'completed'
+              ? goalRuntime.goal.lastReason || 'Готово.'
+              : goalRuntime.goal.status === 'blocked'
+                ? goalRuntime.goal.blocker || 'Цель невыполнима.'
+                : 'Готово.')
+            callbacks.onStep({ type: 'answer', content: finalText })
+            callbacks.onDone(finalText, this.buildSummaryDetails(modifiedFiles))
+            return
           }
           // §steer — финальный ответ пришёл, но пользователь успел прислать
           // реплику по ходу работы. Не завершаем ран: дописываем ответ в
@@ -743,9 +827,9 @@ export class Agent {
             log('[Agent] steer pending on final answer — продолжаю ран вместо завершения')
             continue
           }
-          const goalAnswer = goalRuntime ? `**Цель:** ${goalRuntime.goal.objective}\n\n${goalRuntime.goal.progress.at(-1) ?? 'Работа остановлена.'}\n\n${goalRuntime.goal.blocker ?? ''}${goalRuntime.goal.evidence.length ? '\n\n**Проверки:**\n' + goalRuntime.goal.evidence.map(item => '- ' + item).join('\n') : ''}` : answer
-          if (goalRuntime) callbacks.onStep({ type: 'answer', content: goalAnswer })
-          callbacks.onDone(goalAnswer, this.buildSummaryDetails(modifiedFiles))
+          // §goal больше не подменяет финальный ответ синтетикой — цель
+          // закрывается в блоке выше и отдаёт реальный ответ модели.
+          callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
 
           if (this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {
             const existing = this.onGetWorkingMemory ? this.onGetWorkingMemory(this.chatId) : ''
@@ -1637,7 +1721,6 @@ export class Agent {
           }
           const nativeVisualHandoff = fn.name === 'analyze_image' && result.success && !!acceptedImageParts?.length
           const visibleToolContent = imageUrl ? 'Изображение сгенерировано' : this.toolDispatcher.maskSecretValuesInText(result.output || result.error || '')
-          goalRuntime?.observe(fn.name, args, result.success, visibleToolContent, callId, dryRunMode)
           if (nativeVisualHandoff) nativeImageAnalysis.add(callId, visibleToolContent, result.imagePaths)
           callbacks.onStep({
             type: 'tool_result',
@@ -1863,9 +1946,8 @@ export class Agent {
       }
     }
     } finally {
-      if (deadlineTimer) clearTimeout(deadlineTimer)
-      callerSignal?.removeEventListener('abort', relayAbort)
-      if (goalRuntime?.active) goalRuntime.stop(callerSignal?.aborted ? 'paused' : 'unverified', callerSignal?.aborted ? 'Stopped by user; explicit resume required' : 'Run ended without verified completion')
+      // §goal — завершение прогона не снимает цель: она остаётся set, пока её
+      // не закроет оценщик или пользователь (как в [CC]).
     }
   }
 

@@ -210,9 +210,9 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
               {goal && (
                 <section className="ctx-goal-card">
                   <strong>🎯 {goal.objective}</strong>
-                  <small>Критерии: {goal.criteria.join('; ') || 'уточнить'} · Шаги: {goal.steps}/{goal.maxSteps}</small>
-                  <small>Статус: {goal.status}{goal.blocker ? ` · ${goal.blocker}` : ''}</small>
-                  <small>Управление целью — в карточке над полем ввода. Цель сохраняется независимо от сжатия истории.</small>
+                  <small>Ходов оценено: {goal.turnsEvaluated} · ~{goal.tokensSpent} токенов · раундов: {goal.steps}{goal.maxSteps > 0 ? `/${goal.maxSteps}` : ''}</small>
+                  <small>Статус: {goal.status}{goal.lastReason ? ` · ${goal.lastReason}` : ''}</small>
+                  <small>Управление целью — в карточке над полем ввода. Условие проверяет отдельная модель после каждого хода.</small>
                 </section>
               )}
               {chatId && <button type="button" className="context-manager-launch" onClick={() => {
