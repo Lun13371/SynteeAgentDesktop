@@ -241,6 +241,33 @@
 }
 
 .message-content p { margin: 0 0 8px; }
+
+.message-link-ctx-menu {
+  position: fixed;
+  z-index: 10020;
+  min-width: 190px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-bg, rgba(18, 18, 28, 0.97));
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(20px);
+}
+.message-link-ctx-menu button {
+  all: unset;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.message-link-ctx-menu button:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
 .message-content p:last-child { margin-bottom: 0; }
 /* Сохранение пробелов и переносов в пользовательских сообщениях
    независимо от режима markdown. pre-wrap: множественные пробелы

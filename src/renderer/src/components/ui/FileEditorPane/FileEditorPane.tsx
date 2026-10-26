@@ -76,6 +76,7 @@ export default function FileEditorPane({ tab, treeOpen, onToggleTree }: FileEdit
   const updateContent = useFileTabsStore(s => s.updateContent)
   const closeFileTab = useFileTabsStore(s => s.closeFileTab)
   const toggleDiffMode = useFileTabsStore(s => s.toggleDiffMode)
+  const closeChangePreview = useFileTabsStore(s => s.closeChangePreview)
   const addToast = useToast(s => s.add)
 
   // Автосохранение: проверяем настройку
@@ -172,14 +173,25 @@ export default function FileEditorPane({ tab, treeOpen, onToggleTree }: FileEdit
               <AppIcon name="folder" size="xs" />
             </button>
           )}
-          <button
-            className={`file-editor-pane__btn ${tab.diffMode ? 'file-editor-pane__btn--active' : ''}`}
-            onClick={() => toggleDiffMode(tab.id)}
-            disabled={tab.loading || tab.isBinary}
-            title={tab.diffMode ? 'Показать файл' : 'Открыть изменения (diff)'}
-          >
-            <AppIcon name="git" size="xs" />
-          </button>
+          {tab.changePreviewDiff ? (
+            <button
+              className="file-editor-pane__btn file-editor-pane__btn--active"
+              onClick={() => closeChangePreview(tab.id)}
+              title="Вернуться к файлу"
+              aria-label="Вернуться к файлу"
+            >
+              <AppIcon name="fileText" size="xs" />
+            </button>
+          ) : (
+            <button
+              className={`file-editor-pane__btn ${tab.diffMode ? 'file-editor-pane__btn--active' : ''}`}
+              onClick={() => toggleDiffMode(tab.id)}
+              disabled={tab.loading || tab.isBinary}
+              title={tab.diffMode ? 'Показать файл' : 'Открыть изменения (diff)'}
+            >
+              <AppIcon name="git" size="xs" />
+            </button>
+          )}
           <button
             className="file-editor-pane__btn"
             onClick={handleSave}
@@ -249,6 +261,23 @@ export default function FileEditorPane({ tab, treeOpen, onToggleTree }: FileEdit
                 Открыть в системе
               </button>
             )}
+          </div>
+        ) : tab.changePreviewDiff !== undefined ? (
+          <div className="file-editor-pane__change-preview" role="region" aria-label={`Изменения файла ${tab.relPath}`}>
+            {tab.changePreviewDiff ? tab.changePreviewDiff.split('\n').map((line, index) => {
+              const kind = line.startsWith('+++') || line.startsWith('---')
+                ? 'header'
+                : line.startsWith('@@')
+                  ? 'hunk'
+                  : line.startsWith('+')
+                    ? 'add'
+                    : line.startsWith('-')
+                      ? 'del'
+                      : line.startsWith('\\')
+                        ? 'meta'
+                        : 'context'
+              return <div key={index} className={`file-editor-pane__diff-line file-editor-pane__diff-line--${kind}`}><span className="file-editor-pane__diff-mark">{kind === 'add' ? '+' : kind === 'del' ? '−' : kind === 'context' ? ' ' : ''}</span><code>{kind === 'add' || kind === 'del' || kind === 'context' ? line.slice(1) : line}</code></div>
+            }) : <div className="file-editor-pane__loading">Нет доступного diff для этого изменения.</div>}
           </div>
         ) : tab.diffMode ? (
           <SafeDiffEditor

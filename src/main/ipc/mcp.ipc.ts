@@ -100,12 +100,14 @@ export function registerMcpIPC(store: Store, getWindow: () => BrowserWindow | nu
 
   ipcMain.handle('mcp:setServerState', (_e, params: {
     serverId: string
+    projectId?: string
     enabled?: boolean
     scope?: ExtensionScope
   }) => {
-    // Нужно найти конфиг сервера по id среди последних загруженных.
-    // Берём все серверы (без project, чтобы покрыть глобальные).
-    const all = mgr().getAllServers({})
+    // Для проектного MCP обязательно передаём projectId, иначе его состояние
+    // ошибочно прочитается/запишется как глобальное.
+    const project = params.projectId ? getProjectById(params.projectId) : undefined
+    const all = mgr().getAllServers({ projectWorkdir: project?.workdir, projectId: params.projectId })
     const config = all.find(c => c.id === params.serverId)
     if (!config) return { ok: false, error: 'Сервер не найден' }
     if (params.enabled !== undefined) mgr().setServerEnabled(config, params.enabled)
@@ -113,15 +115,44 @@ export function registerMcpIPC(store: Store, getWindow: () => BrowserWindow | nu
     return { ok: true }
   })
 
+  ipcMain.handle('mcp:setServersEnabled', (_e, params: {
+    serverIds: string[]
+    projectId?: string
+    enabled: boolean
+  }) => {
+    const project = params.projectId ? getProjectById(params.projectId) : undefined
+    const manager = mgr()
+    const all = manager.getAllServers({ projectWorkdir: project?.workdir, projectId: params.projectId })
+    const targets = all.filter(server => params.serverIds.includes(server.id))
+    for (const server of targets) manager.setServerEnabled(server, params.enabled)
+    return { ok: true, updated: targets.length }
+  })
+
   ipcMain.handle('mcp:setToolState', (_e, params: {
     serverId: string
+    projectId?: string
     toolFullName: string
     state: McpToolState
   }) => {
-    const all = mgr().getAllServers({})
+    const project = params.projectId ? getProjectById(params.projectId) : undefined
+    const all = mgr().getAllServers({ projectWorkdir: project?.workdir, projectId: params.projectId })
     const config = all.find(c => c.id === params.serverId)
     if (!config) return { ok: false, error: 'Сервер не найден' }
     mgr().setToolState(config, params.toolFullName, params.state)
+    return { ok: true }
+  })
+
+  ipcMain.handle('mcp:setServerToolApproval', (_e, params: {
+    serverId: string
+    projectId?: string
+    toolFullNames: string[]
+    requireApproval: boolean
+  }) => {
+    const project = params.projectId ? getProjectById(params.projectId) : undefined
+    const all = mgr().getAllServers({ projectWorkdir: project?.workdir, projectId: params.projectId })
+    const config = all.find(c => c.id === params.serverId)
+    if (!config) return { ok: false, error: 'Сервер не найден' }
+    mgr().setServerToolApproval(config, params.toolFullNames, params.requireApproval)
     return { ok: true }
   })
 

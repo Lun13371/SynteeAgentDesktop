@@ -382,8 +382,11 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
             })
         }
         "semanticUnload" => {
-            crate::semantic::unload_embedder();
-            Ok(CommandOutcome { result: json!({ "status": "unloaded" }), shutdown: false })
+            let unloaded = crate::semantic::unload_embedder();
+            Ok(CommandOutcome {
+                result: json!({ "status": if unloaded { "unloaded" } else { "idle" } }),
+                shutdown: false,
+            })
         }
         other => Err(SidecarError::UnsupportedMethod(other.to_owned())),
     }

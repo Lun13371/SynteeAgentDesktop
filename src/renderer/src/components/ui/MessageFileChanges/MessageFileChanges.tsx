@@ -88,7 +88,10 @@ function MessageFileChanges({ steps, workdir }: MessageFileChangesProps): React.
               title={shown + (f.created ? '\nСоздан' : '') + `\n+${f.adds} −${f.dels}`}
               onClick={e => {
                 e.stopPropagation()
-                void openFilePath(f.path, workdir)
+                const diff = f.patches.join('\n\n')
+                void openFilePath(f.path, workdir, diff
+                  ? { changeDiff: diff }
+                  : undefined)
               }}
             >
               <span className="inline-attach-icon">

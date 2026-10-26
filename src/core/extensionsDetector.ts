@@ -22,6 +22,7 @@ import { join } from 'path'
 import type { BrowserWindow } from 'electron'
 import { IPC_EVENTS } from '../shared/constants'
 import { getMcpManager } from './mcp/McpManager'
+import { getGlobalMcpPath } from './mcp/mcpConfig'
 import { getSkillManager } from './skills/skillManager'
 
 let _getWindow: (() => BrowserWindow | null) | null = null
@@ -31,6 +32,7 @@ let _pollTimer: NodeJS.Timeout | null = null
 let _mcpHash: string | ''
 let _skillsHash: string = ''
 let _mcpFingerprint = '' // stat-фингерпринт .mcp.json (size:mtime)
+let _globalMcpFingerprint = '' // stat-фингерпринт ~/.syntee/mcp.json
 let _fastUntil = 0 // до этого момента поллинг быстрый (onboarding)
 
 /** Интервалы polling — адаптивные. Первые FAST_WINDOW_MS после активации
@@ -102,11 +104,22 @@ function skillsDirHash(dir: string): string {
 
 /** Один scan-цикл: сравнить хэши, при изменении дернуть менеджеры. */
 function scanOnce(): void {
-  if (!_workdir || !_projectId) return
   // Пауза когда главное окно скрыто — экономит FS-stat'ы в фоне.
   // При возврате окна следующий тик обновит состояние.
   const win = _getWindow?.()
   if (win && !win.isDestroyed() && !win.isVisible()) return
+
+  // Глобальный MCP-конфиг отслеживается независимо от активного проекта.
+  const globalMcpPath = getGlobalMcpPath()
+  const globalMcpFp = existsSync(globalMcpPath) ? fileFingerprint(globalMcpPath) : ''
+  if (globalMcpFp !== _globalMcpFingerprint) {
+    _globalMcpFingerprint = globalMcpFp
+    try { getMcpManager().reloadGlobalServers() } catch (e) {
+      console.warn('[extensionsDetector] reloadGlobalServers failed:', e)
+    }
+  }
+
+  if (!_workdir || !_projectId) return
   const mcpJsonPath = join(_workdir, '.mcp.json')
   const skillsDir = join(_workdir, '.syntee', 'skills')
 
@@ -152,6 +165,7 @@ function stopCurrent(): void {
   _mcpHash = ''
   _skillsHash = ''
   _mcpFingerprint = ''
+  _globalMcpFingerprint = ''
   _fastUntil = 0
 }
 

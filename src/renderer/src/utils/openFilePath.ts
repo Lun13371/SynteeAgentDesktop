@@ -49,7 +49,14 @@ export function toFileUrl(absPath: string): string {
 export interface OpenPathOpts {
   /** Открыть в diff-режиме (Open Changes) вместо обычного просмотра */
   diff?: boolean
+  /** Показать конкретный unified patch вместо полного файла. */
+  changeDiff?: string
+  /** Принудительно открыть во внешнем приложении Windows. */
+  external?: boolean
 }
+
+// Бинарные/исполняемые форматы не должны попадать в текстовый редактор Monaco.
+const EXTERNAL_ONLY_EXT = /\.(?:exe|dll|msi|bat|cmd|com|scr|sys|bin|png|jpe?g|gif|webp|ico|pdf|mp4|webm|mov|m4v|avi|mkv|mp3|wav|zip|7z|rar)$/i
 
 /**
  * Открыть путь из текста сообщения/терминала.
@@ -81,7 +88,14 @@ export async function openFilePath(rawFull: string, workdir?: string, opts?: Ope
   const ui = useUIStore.getState()
   const wd = workdir || tabsStore.workdir || undefined
 
-  // Нет workdir или файл вне проекта → системный вьюер
+  // Явный внешний выбор или формат, который нельзя открыть как текст.
+  if (opts?.external || EXTERNAL_ONLY_EXT.test(path)) {
+    await window.syntee.shell.openPath(stat.resolved || abs)
+    return
+  }
+
+  // Без workdir / вне проекта → системное приложение. Встроенный редактор
+  // разрешён только для файлов проекта; внешне открыть можно через меню.
   const absNorm = normalizePath(stat.resolved || abs)
   const wdNorm = wd ? normalizePath(wd).replace(/\/$/, '') : ''
   const inside = !!wdNorm && absNorm.toLowerCase().startsWith(wdNorm.toLowerCase() + '/')
@@ -96,7 +110,9 @@ export async function openFilePath(rawFull: string, workdir?: string, opts?: Ope
   // (C:/...): openFile кладёт workdir в стор табов, а refreshTab/saveFile
   // ходят через safeJoin — с forward-слэшами любой файл отбрасывался
   // как «Path outside root». pathResolve внутри safeJoin уже нормализует.
-  if (opts?.diff) {
+  if (opts?.changeDiff !== undefined) {
+    await tabsStore.openChangePreview(rel, wd, opts.changeDiff)
+  } else if (opts?.diff) {
     await tabsStore.openFileDiff(rel, wd)
   } else {
     await tabsStore.openFile(rel, wd, { line, lineEnd })

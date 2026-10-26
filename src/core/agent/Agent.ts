@@ -877,7 +877,7 @@ export class Agent {
         })
         console.log('[Agent] tool_calls=%d, executing...', response.tool_calls.length)
 
-        const resultMap = new Map<string, { contentForAI: string; callId: string; name: string; imageParts?: ContentPart[] }>()
+        const resultMap = new Map<string, { contentForAI: string; callId: string; name: string; imageParts?: ContentPart[]; success?: boolean }>()
         const pendingMutations: Array<() => void> = []
 
         const normalizedCalls: NormalizedToolCall[] = response.tool_calls.map((call, callIndex) => {
@@ -1449,7 +1449,12 @@ export class Agent {
                 callTool: async (toolName, toolArgs, childSignal) => {
                   if (childSignal?.aborted || signal?.aborted) return { success: false, output: '', error: 'Execution aborted' }
                   const allowedSchemas = new Set(activeSchemas.map(s => s.function.name))
-                  if (toolName === 'execute_code' || !allowedSchemas.has(toolName)) return { success: false, output: '', error: `Tool "${toolName}" is unavailable in the current run.` }
+                  if (toolName === 'execute_code' || toolName === 'get_fast_context' || !allowedSchemas.has(toolName)) {
+                    const reason = toolName === 'get_fast_context'
+                      ? 'get_fast_context is not available inside execute_code; use search_code, find_files, or read_file instead.'
+                      : `Tool "${toolName}" is unavailable in the current run.`
+                    return { success: false, output: '', error: reason }
+                  }
                   const internalId = `code-${callId}-${Math.random().toString(36).slice(2, 9)}`
                   const internalItem = {
                     callId: internalId,
@@ -1466,12 +1471,10 @@ export class Agent {
                   const internalResult = resultMap.get(internalId)
                   if (!internalResult) return { success: false, output: '', error: signal?.aborted ? 'Execution aborted' : 'Tool was blocked or cancelled.' }
                   const text = internalResult.contentForAI
-                  const blocked = /(?:Action blocked|Rejected by the user|Действие отклонено пользователем|Approval required; tool not executed|unavailable in the current run|Permission block|Permission denied|blocked by loop guard|Hard loop guard|Loop guard|is disabled|unavailable in the current mode|not available in the current mode)/i.test(text)
-                  // Отказ НЕ обрывает скрипт: возвращаем его внутрь гостя как
-                  // {success:false, error}, чтобы try/catch мог продолжить с
-                  // другими файлами. Раньше один отклонённый write_file из
-                  // сорока вызовов выбрасывал все уже полученные результаты.
-                  return { success: !blocked, output: text, ...(blocked ? { error: text } : {}) }
+                  const failed = internalResult.success === false || /(?:Action blocked|Rejected by the user|Действие отклонено пользователем|Approval required; tool not executed|unavailable in the current run|Permission block|Permission denied|blocked by loop guard|Hard loop guard|Loop guard|is disabled|unavailable in the current mode|not available in the current mode)/i.test(text)
+                  // Failure/отказ НЕ обрывает скрипт: возвращаем его внутрь гостя как
+                  // {success:false, error}, чтобы try/catch мог продолжить.
+                  return { success: !failed, output: text, ...(failed ? { error: text } : {}) }
                 },
               }) } finally { signal?.removeEventListener('abort', forwardAbort) }
               codeTrace = codeResult.trace
@@ -1749,6 +1752,7 @@ export class Agent {
             contentForAI: imageBudgetNote ? `${contentForAI}${imageBudgetNote}` : contentForAI,
             callId,
             name: fn.name,
+            success: result.success,
             ...(acceptedImageParts?.length ? { imageParts: acceptedImageParts } : {}),
           })
         }

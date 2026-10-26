@@ -15,6 +15,7 @@
 
 import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import type { Attachment } from '../../../../../shared/types'
 import FileIcon from '../FileIcon/FileIcon'
 import {
   usePathStatus,
@@ -24,6 +25,7 @@ import { openFilePath, revealInExplorer, resolveAbsolutePath, toFileUrl } from '
 import './FilePathLink.css'
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i
+const VIDEO_RE = /\.(mp4|webm|mov|m4v|avi|mkv)$/i
 
 // ── Peek-кэш: первые строки файла (LRU 24) ──────────────────────────────
 interface PeekData {
@@ -154,6 +156,8 @@ interface FilePathLinkProps {
   /** Полный текст совпадения: путь + опциональный суффикс :42-58 */
   raw: string
   workdir?: string
+  /** Открыть локальное изображение/видео во встроенном preview. */
+  onPreviewAttachment?: (attachment: Attachment) => void
 }
 
 interface PeekState {
@@ -163,7 +167,7 @@ interface PeekState {
   path: string
 }
 
-const FilePathLink = memo(function FilePathLink({ raw, workdir }: FilePathLinkProps) {
+const FilePathLink = memo(function FilePathLink({ raw, workdir, onPreviewAttachment }: FilePathLinkProps) {
   const { path, line, lineEnd } = useMemo(() => splitPathLine(raw), [raw])
   // Нормализуем (сворачиваем ../) — единый ключ кэша статуса и корректные
   // inside-проверки; без этого `a/../b` и `b` давали разные записи кэша.
@@ -173,6 +177,8 @@ const FilePathLink = memo(function FilePathLink({ raw, workdir }: FilePathLinkPr
   const canCheck = isAbs || !!workdir
   const statusRec = usePathStatus(canCheck ? resolved : undefined)
   const isImage = IMAGE_RE.test(path)
+  const isVideo = VIDEO_RE.test(path)
+  const isMedia = isImage || isVideo
   const isDir = statusRec.status === 'exists' && !!statusRec.isDir
 
   const [peek, setPeek] = useState<PeekState | null>(null)
@@ -184,16 +190,44 @@ const FilePathLink = memo(function FilePathLink({ raw, workdir }: FilePathLinkPr
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    if (isMedia && onPreviewAttachment) {
+      onPreviewAttachment({
+        id: `chat-path-${Date.now()}-${path}`,
+        kind: isImage ? 'image' : 'video',
+        name: path.split(/[\\/]/).pop() || path,
+        path: resolved,
+        dataUrl: toFileUrl(resolved),
+        mime: isImage ? 'image/*' : 'video/*',
+        source: 'paste',
+        attachedAt: Date.now(),
+      })
+      return
+    }
     void openFilePath(raw, workdir)
-  }, [raw, workdir])
+  }, [raw, workdir, isMedia, isImage, onPreviewAttachment, path, resolved])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
     const items: Array<MenuItem | 'sep'> = []
     items.push({ label: 'Показать в Проводнике', onClick: () => { void revealInExplorer(raw, workdir) } })
+    if (isMedia && onPreviewAttachment) {
+      items.push({ label: 'Открыть встроенный просмотр', onClick: () => {
+        onPreviewAttachment({
+          id: `chat-path-${Date.now()}-${path}`,
+          kind: isImage ? 'image' : 'video',
+          name: path.split(/[\\/]/).pop() || path,
+          path: resolved,
+          dataUrl: toFileUrl(resolved),
+          mime: isImage ? 'image/*' : 'video/*',
+          source: 'paste',
+          attachedAt: Date.now(),
+        })
+      } })
+    }
     if (!isDir) {
       items.push({ label: 'Открыть', onClick: () => { void openFilePath(raw, workdir) } })
+      items.push({ label: 'Открыть внешним приложением', onClick: () => { void openFilePath(raw, workdir, { external: true }) } })
       if (workdir) {
         const wdNorm = workdir.replace(/\\/g, '/').replace(/\/$/, '')
         const absNorm = resolved.replace(/\\/g, '/')
@@ -216,11 +250,11 @@ const FilePathLink = memo(function FilePathLink({ raw, workdir }: FilePathLinkPr
       }
     }
     showPathContextMenu(e.clientX, e.clientY, items)
-  }, [raw, workdir, resolved, isDir])
+  }, [raw, workdir, resolved, isDir, isMedia, isImage, path, onPreviewAttachment])
 
-  // ── Peek-превью (не для папок и картинок) ──
+  // ── Peek-превью (не для папок и медиа) ──
   const startPeek = useCallback(() => {
-    if (isDir || isImage) return
+    if (isDir || isMedia) return
     peekAbort.current = false
     if (peekTimer.current) clearTimeout(peekTimer.current)
     peekTimer.current = setTimeout(async () => {
@@ -235,7 +269,7 @@ const FilePathLink = memo(function FilePathLink({ raw, workdir }: FilePathLinkPr
       const top = below + 300 > window.innerHeight ? Math.max(8, r.top - 306) : below
       setPeek({ x: r.left, y: top, content: data.content, path: resolved })
     }, 250)
-  }, [resolved, isDir, isImage])
+  }, [resolved, isDir, isMedia])
 
   const stopPeek = useCallback(() => {
     peekAbort.current = true
@@ -256,23 +290,33 @@ const FilePathLink = memo(function FilePathLink({ raw, workdir }: FilePathLinkPr
     return <span>{raw}</span>
   }
 
-  // ── Картинка по пути → инлайн-миниатюра ──
-  if (isImage) {
+  // ── Медиа по пути → миниатюра/плеер с открытием встроенного preview ──
+  if (isMedia) {
     return (
-      <span className="file-path-img-wrap">
-        <img
-          className="file-path-img"
-          src={toFileUrl(resolved)}
-          alt={path}
-          title={path}
-          loading="lazy"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            void window.syntee.shell.openPath(resolved)
-          }}
-          onContextMenu={handleContextMenu}
-        />
+      <span className={`file-path-media-wrap${isVideo ? ' file-path-media-wrap--video' : ''}`}>
+        {isImage ? (
+          <img
+            className="file-path-img"
+            src={toFileUrl(resolved)}
+            alt={path}
+            title="Открыть просмотр"
+            loading="lazy"
+            onClick={handleClick}
+            onContextMenu={handleContextMenu}
+          />
+        ) : (
+          <button
+            type="button"
+            className="file-path-video-thumb"
+            title="Открыть встроенный просмотр"
+            onClick={handleClick}
+            onContextMenu={handleContextMenu}
+          >
+            <video src={toFileUrl(resolved)} preload="metadata" muted />
+            <span className="file-path-video-play">▶</span>
+            <span className="file-path-video-name">{path.split(/[\\/]/).pop() || path}</span>
+          </button>
+        )}
       </span>
     )
   }

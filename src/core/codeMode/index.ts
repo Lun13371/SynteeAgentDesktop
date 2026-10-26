@@ -17,11 +17,13 @@ export interface ExecuteCodeOptions {
   onTrace?: (entry: CodeTraceEntry) => unknown
   artifacts?: ArtifactStore
   timeoutMs?: number
+  /** Absolute wall-clock cap, including time spent waiting for nested tools. */
+  wallTimeoutMs?: number
   sanitizeTrace?: (value: unknown) => unknown
 }
 export interface ExecuteCodeResult extends CodeToolResult { trace?: CodeTraceEntry[] }
 
-export const CODE_MODE_LIMITS = Object.freeze({ codeChars: 40_000, outputChars: 40_000, bridgeJsonChars: 100_000, toolCalls: 120, parallelCalls: 8, timeoutMs: 30_000, memoryBytes: 48 * 1024 * 1024, traceEntries: 60 })
+export const CODE_MODE_LIMITS = Object.freeze({ codeChars: 40_000, outputChars: 40_000, bridgeJsonChars: 100_000, toolCalls: 120, parallelCalls: 8, timeoutMs: 30_000, wallTimeoutMs: 120_000, memoryBytes: 48 * 1024 * 1024, traceEntries: 60 })
 const FORBIDDEN = new Set(['execute_code', 'executeCode', 'code_mode', 'codeMode'])
 const errText = (e: unknown): string => e instanceof Error ? e.message : String(e)
 
@@ -60,18 +62,30 @@ function jsonBounded(value: unknown, limit = CODE_MODE_LIMITS.bridgeJsonChars): 
 // Guest bridge serializes arguments before crossing the WASM boundary.
 
 export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteCodeResult> {
-  const { code, signal } = options
+  const { code } = options
+  const externalSignal = options.signal
   const trace: CodeTraceEntry[] = []
   const fail = (error: string): ExecuteCodeResult => ({ success: false, output: '', error, ...(trace.length ? { trace } : {}) })
   if (typeof code !== 'string' || code.length > CODE_MODE_LIMITS.codeChars) return fail('Code exceeds 40,000 character limit')
-  if (signal?.aborted) return fail('Execution aborted')
+  if (externalSignal?.aborted) return fail('Execution aborted')
   const transpiled = ts.transpileModule(`async function __user_main__(){\n${code}\n}\n__user_main__()`, {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None, strict: true, noEmitOnError: true },
     reportDiagnostics: true
   })
   const fatal = (transpiled.diagnostics ?? []).filter(d => d.category === ts.DiagnosticCategory.Error)
   if (fatal.length) return fail(`TypeScript compile error: ${fatal.map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('; ')}`)
-  const deadline = Date.now() + Math.max(1, options.timeoutMs ?? CODE_MODE_LIMITS.timeoutMs)
+  // Two independent ceilings: guest CPU time (paused while a host tool is pending)
+  // and an absolute wall-clock cap (never paused), so repeated slow/hung tools
+  // cannot keep one execute_code call alive indefinitely.
+  const startedAt = Date.now()
+  const deadline = startedAt + Math.max(1, options.timeoutMs ?? CODE_MODE_LIMITS.timeoutMs)
+  const wallDeadline = startedAt + Math.max(1, options.wallTimeoutMs ?? CODE_MODE_LIMITS.wallTimeoutMs)
+  const executionController = new AbortController()
+  const forwardAbort = (): void => executionController.abort()
+  if (externalSignal?.aborted) executionController.abort()
+  else externalSignal?.addEventListener('abort', forwardAbort, { once: true })
+  const signal = executionController.signal
+  const wallTimer = setTimeout(() => executionController.abort(), Math.max(1, wallDeadline - Date.now()))
   const maxCalls = CODE_MODE_LIMITS.toolCalls
   let calls = 0, inFlight = 0
   let active = true
@@ -89,6 +103,12 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
     hostSince = null
   }
   const scriptDeadline = (): number => deadline + hostMs + (hostSince === null ? 0 : Date.now() - hostSince)
+  const executionError = (): 'Execution aborted' | 'Execution timed out' | 'Execution exceeded the 120-second wall-clock limit' | null => {
+    if (externalSignal?.aborted) return 'Execution aborted'
+    if (Date.now() >= wallDeadline) return 'Execution exceeded the 120-second wall-clock limit'
+    if (Date.now() > scriptDeadline()) return 'Execution timed out'
+    return null
+  }
   const deferreds: Array<{ handle: { dispose(): void }; resolve(value?: import('quickjs-emscripten').QuickJSHandle): void; dispose(): void }> = []
   const pendingTasks: Promise<unknown>[] = []
   const pushTrace = (entry: CodeTraceEntry): void => {
@@ -99,7 +119,7 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
   const runtime = module.newRuntime()
   runtime.setMemoryLimit(CODE_MODE_LIMITS.memoryBytes)
   runtime.setMaxStackSize(512 * 1024)
-  runtime.setInterruptHandler(() => !!signal?.aborted || Date.now() > scriptDeadline())
+  runtime.setInterruptHandler(() => !!executionError())
   const ctx = runtime.newContext()
   try {
     const bridge = ctx.newFunction('__bridge', (nameHandle, argsHandle) => {
@@ -123,7 +143,11 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
         if (!active) return
         const bounded = { success: !!value.success, output: String(value.output ?? '').slice(0, CODE_MODE_LIMITS.outputChars), ...(value.error ? { error: String(value.error).slice(0, CODE_MODE_LIMITS.outputChars) } : {}) }
         const safeArgs = options.sanitizeTrace ? options.sanitizeTrace(args) : args
-        pushTrace({ name, args: safeArgs, result: bounded.output.slice(0, 1000), status })
+        // Preserve failure details in the UI trace. Many tools return an empty
+        // output plus an error field; recording only output made those calls
+        // look like successful calls with no content.
+        const traceResult = bounded.output || String(value.error ?? '')
+        pushTrace({ name, args: safeArgs, result: traceResult.slice(0, 1000), status })
         const text = JSON.stringify(bounded)
         if (Buffer.byteLength(text, 'utf8') > CODE_MODE_LIMITS.bridgeJsonChars) { deferred.resolve(ctx.newString(JSON.stringify({ success: false, output: '', error: 'Tool result exceeds bridge size limit' }))) }
         else deferred.resolve(ctx.newString(text))
@@ -176,8 +200,8 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
     if (result.error) { const text = ctx.dump(result.error); result.error.dispose(); return fail(String(text)) }
     const promise = result.value
     while (true) {
-      if (signal?.aborted) return fail('Execution aborted')
-      if (Date.now() > scriptDeadline()) return fail('Execution timed out')
+      const executionFailure = executionError()
+      if (executionFailure) return fail(executionFailure)
       const state = ctx.getPromiseState(promise)
       if (state.type === 'fulfilled') {
         const output = ctx.dump(state.value)
@@ -194,8 +218,11 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
       await new Promise(resolve => setTimeout(resolve, 1))
     }
   } catch (e) {
-    return fail(signal?.aborted ? 'Execution aborted' : Date.now() > scriptDeadline() ? 'Execution timed out' : errText(e))
+    return fail(executionError() ?? errText(e))
   } finally {
+    if (Date.now() >= wallDeadline && !externalSignal?.aborted) executionController.abort()
+    clearTimeout(wallTimer)
+    externalSignal?.removeEventListener('abort', forwardAbort)
     active = false
     // Do not tear down the runtime while host tool promises are still settling:
     // QuickJS asserts when a pending guest promise is freed during GC.

@@ -369,6 +369,9 @@ export function initExtensionsPushEvents(): () => void {
         }
       }),
     }))
+    if (_currentChatId) {
+      void useExtensionsStore.getState().loadActiveForChat(_currentChatId)
+    }
   })
 
   const offTools = window.syntee.on('mcp:tools:updated', (data: unknown) => {

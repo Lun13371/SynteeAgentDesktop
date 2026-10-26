@@ -56,7 +56,7 @@ export const READ_TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'get_fast_context',
-      description: 'Find files and symbols for feature, concept, or architecture questions using the project index; includes compact code snippets as evidence. For an exact filename, symbol, or error string, use find_files/search_code directly. For remaining files, batch reads with read_files.',
+      description: 'Map relevant project files, symbols, and relationships (including callers/imports) for unfamiliar, feature-level, architectural, or cross-file code tasks; includes compact code snippets. Prefer this FIRST when the relevant files/dependencies are unclear or a change spans multiple files, then verify by reading the actual implementation. For a known exact file/symbol/error and a narrow local task, use find_files/search_code/read_file directly instead. Not for non-code questions.',
       parameters: {
         type: 'object',
         properties: {

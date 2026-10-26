@@ -127,6 +127,8 @@ export function useToolProgress() {
       content: string; success?: boolean; imageUrl?: string; imagePaths?: string[]
       msgId?: string; callId?: string; pendingCallId?: string; chatId?: string
       diff?: string
+      // execute_code: trace должен попасть в live ToolStep так же, как в сохранённый.
+      codeMode?: { code: string; trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }> }
       // Native analyze_image lifecycle: 'tool_result' несёт pending, отдельный
       // 'tool_result_update' (тот же callId) — responded/failed + findings.
       visualAnalysis?: { status: 'pending' | 'responded' | 'failed'; findings?: string }
@@ -293,6 +295,7 @@ export function useToolProgress() {
           diff: step.diff,
           imagePaths: step.imagePaths,
           callId: step.callId,
+          codeMode: step.codeMode,
           visualAnalysis: step.visualAnalysis,
         }
         buf.steps.push(newStep)

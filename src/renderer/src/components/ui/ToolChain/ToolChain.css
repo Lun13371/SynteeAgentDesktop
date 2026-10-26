@@ -431,10 +431,8 @@
   color: var(--text-secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  /* Длинные простыни текста не должны раздувать окно — обрезаем хвост. */
-  max-height: 120px;
-  overflow: hidden;
-  mask-image: linear-gradient(to bottom, #000 80%, transparent 100%);
+  /* Текст модели показываем полностью — без искусственного лимита высоты,
+     обрезания хвоста и градиентной маски. */
 }
 
 /* ── Одна итерация ── */
@@ -447,11 +445,25 @@
    CSS-анимации дешевле (нет JS-side state tracking, нет inline
    transform после завершения) и не создают постоянный compositing layer. */
 @keyframes tc2-iter-enter {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  0%   { opacity: 0; transform: translate3d(0, 12px, 0) scale(0.97); filter: blur(3px); }
+  65%  { opacity: 1; transform: translate3d(0, -1px, 0) scale(1.005); filter: blur(0); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); filter: blur(0); }
 }
 .tc2-iter--enter {
-  animation: tc2-iter-enter 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+  animation: tc2-iter-enter 0.46s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes tc2-dot-pop {
+  0% { transform: scale(0.55); }
+  70% { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+.tc2-iter--enter .tc2-dot {
+  animation: tc2-dot-pop 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: 0.06s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tc2-iter--enter,
+  .tc2-iter--enter .tc2-dot { animation-duration: 0.01ms; animation-delay: 0ms; }
 }
 
 /* Вертикальная линия + точка с иконкой */
@@ -758,16 +770,62 @@
   font-size: 11px;
   user-select: none;
 }
-.tc2-code-trace { display: grid; gap: 4px; }
-.tc2-code-trace-row {
+.tc2-code-summary {
   display: grid;
-  grid-template-columns: minmax(120px, auto) 18px 1fr;
-  gap: 6px;
-  align-items: baseline;
-  font: 11px/1.35 var(--font-mono);
+  gap: 3px;
+  margin: 0 4px 6px 31px;
+  padding: 4px 7px;
+  border-left: 2px solid #a78bfa66;
+  color: var(--text-muted);
+  font: 10px/1.35 var(--font-mono);
+}
+.tc2-code-summary-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 7px; }
+.tc2-code-summary-row code { color: #a78bfa; white-space: nowrap; }
+.tc2-code-summary-row--failure code { color: #f87171; }
+.tc2-code-summary-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc2-code-summary-result {
+  grid-column: 2;
+  color: var(--text-secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+.tc2-code-summary-more { color: var(--text-muted); font-family: var(--font-sans); }
+.tc2-code-mode { margin-top: 4px; }
+.tc2-code-trace { display: grid; gap: 6px; }
+.tc2-code-trace-row {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-tertiary);
   color: var(--text-secondary);
 }
-.tc2-code-trace-row--failure { color: #f87171; }
+.tc2-code-trace-row--failure { border-color: color-mix(in srgb, #f87171 35%, var(--border)); }
+.tc2-code-trace-head { display: flex; align-items: center; gap: 7px; font: 11px/1.35 var(--font-mono); }
+.tc2-code-trace-head code { color: #a78bfa; font-weight: 600; }
+.tc2-code-trace-status { color: #4ade80; }
+.tc2-code-trace-row--failure .tc2-code-trace-status { color: #f87171; }
+.tc2-code-trace-args {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font: 10px/1.4 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tc2-code-trace-result {
+  margin: 5px 0 0;
+  max-height: 96px;
+  overflow: auto;
+  color: var(--text-secondary);
+  font: 10px/1.4 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tc2-code-empty { color: var(--text-muted); font-size: 11px; }
+.tc2-code-details { margin-top: 8px; }
 .tc2-arg-row {
   display: flex;
   gap: 8px;

@@ -11,7 +11,7 @@
 //! `tests/semantic-parity.test.cjs`.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use ort::environment::Environment;
 use ort::session::Session;
@@ -68,8 +68,30 @@ impl EmbedPrefix {
 pub struct E5Embedder {
     session: Mutex<Session>,
     tokenizer: Tokenizer,
-    /// Environment обязан жить дольше сессии: он владеет ONNX-рантаймом.
-    _environment: Environment,
+}
+
+/// ONNX-окружение — одно на процесс и живёт до конца работы sidecar.
+///
+/// ⚠️ `ort::init().build()` разрешён только ОДИН раз за процесс: повторный
+/// вызов падает с «only one environment is allowed per process». Поэтому
+/// окружение нельзя создавать внутри [`E5Embedder::load`] — иначе после
+/// `semanticUnload` модель уже не загрузить. Держим его глобально, а выгрузка
+/// освобождает только сессию и токенизатор (это и есть ~365 МБ).
+static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
+
+fn shared_environment() -> Result<&'static Environment> {
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    let environment = ort::init()
+        .with_name("syntee-sidecar")
+        .build()
+        .map_err(|error| SidecarError::Model(format!("onnx environment: {error}")))?;
+    // Гонка двух первых загрузок: проигравший отбрасывает своё окружение.
+    let _ = ENVIRONMENT.set(environment);
+    ENVIRONMENT
+        .get()
+        .ok_or_else(|| SidecarError::Model("onnx environment unavailable".to_owned()))
 }
 
 impl E5Embedder {
@@ -91,17 +113,21 @@ impl E5Embedder {
             )));
         }
 
-        let environment = ort::init()
-            .with_name("syntee-sidecar")
-            .build()
-            .map_err(|error| SidecarError::Model(format!("onnx environment: {error}")))?;
+        let environment = shared_environment()?;
 
-        let session = Session::builder(&environment)
+        let mut builder = Session::builder(environment)
             .map_err(|error| SidecarError::Model(format!("session builder: {error}")))?
             .with_intra_threads(INTRA_OP_THREADS)
             .map_err(|error| SidecarError::Model(format!("intra threads: {error}")))?
             .with_inter_threads(INTER_OP_THREADS)
-            .map_err(|error| SidecarError::Model(format!("inter threads: {error}")))?
+            .map_err(|error| SidecarError::Model(format!("inter threads: {error}")))?;
+        // Арена процессора держит освобождённые блоки под себя: в простое это
+        // десятки мегабайт «мусора», которые видно в RSS. Для одного короткого
+        // прогона на текст аллокатор и так дешёвый.
+        if let Ok(next) = builder.clone().with_config_entry("session.use_env_allocators", "0") {
+            builder = next;
+        }
+        let session = builder
             .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
             .map_err(|error| SidecarError::Model(format!("optimization level: {error}")))?
             .commit_from_file(model_path)
@@ -113,7 +139,6 @@ impl E5Embedder {
         Ok(Self {
             session: Mutex::new(session),
             tokenizer,
-            _environment: environment,
         })
     }
 
