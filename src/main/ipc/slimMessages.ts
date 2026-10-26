@@ -1,4 +1,5 @@
 import type { Message, ToolStep } from '../../shared/types'
+import { stripAttachmentDataUrls } from '../../shared/attachmentStorage'
 
 /**
  * Slim-версии сообщений для renderer'а.
@@ -70,6 +71,14 @@ export function slimMessageForUI<T extends Message>(msg: T): T {
   }
   if (typeof msg.thinking === 'string' && msg.thinking.length > THINKING_MAX) {
     out = { ...out, thinking: capNote(msg.thinking, THINKING_MAX) }
+  }
+  // base64 вложений — самая тяжёлая часть сообщения (до 13 МБ на одну картинку).
+  // В renderer не нужен: вложение рендерится по file://${path}. Без этой ветки
+  // 20.75 МБ base64 ехали по IPC при каждой загрузке страницы и оседали в
+  // JS-heap renderer'а.
+  if (msg.attachments && msg.attachments.length > 0) {
+    const stripped = stripAttachmentDataUrls(msg.attachments)
+    if (stripped.changed) out = { ...out, attachments: stripped.attachments }
   }
   return out
 }

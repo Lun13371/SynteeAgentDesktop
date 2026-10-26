@@ -147,7 +147,54 @@ test('синхронизация вложений: быстрый выход б�
 
 test('авто-ресайз не меряет scrollHeight на крупном тексте', () => {
   const src = INPUT_SRC.slice(INPUT_SRC.indexOf('// Авто-ресайз contentEditable-редактора'))
-  const body = src.slice(0, src.indexOf('}, [value])'))
-  assert.match(body, /if \(value\.length > 50_000\)/)
+  const body = src.slice(0, src.indexOf('}, [liveText])'))
+  assert.match(body, /if \(liveText\.length > 50_000\)/)
   assert.match(body, /el\.style\.height = '200px'/)
+  // Замер — в кадре (rAF), а не синхронно в commit-фазе: два layout'а подряд
+  // прямо в обработчике ввода давали forced reflow на каждый символ.
+  assert.match(body, /requestAnimationFrame\(/)
 })
+
+// ── Ввод не ре-рендерит страницу чата ──────────────────────────────────────
+// Главный источник статтеров при наборе: setDraft(text) на каждый символ
+// ре-рендерил всю ChatPage (виртуализатор + ~500 строк JSX). Живой текст
+// обязан жить внутри ChatInput, а родитель — получать его для персиста.
+
+test('ChatPage: набор текста не поднимает draft в стейт страницы', () => {
+  const pageSrc = readFileSync('src/renderer/src/pages/Chat/ChatPage.tsx', 'utf8')
+  const src = pageSrc.slice(pageSrc.indexOf('const handleDraftChange = useCallback'))
+  const body = src.slice(0, src.indexOf('}, [currentChatId, isIncognito])'))
+  assert.ok(!/setDraft\(text\)/.test(body), 'setDraft(text) на каждый ввод вернулся — фризы при печати')
+  // Очистка поля — единственное исключение: пустой черновик синхронизируем сразу.
+  assert.match(body, /setDraft\(''\)/)
+  // Актуальный текст для персиста обновляется сразу (ref), без ре-рендера.
+  assert.match(body, /draftRef\.current = text/)
+})
+
+test('ChatInput: живой текст локальный, родитель получает уведомление', () => {
+  assert.match(INPUT_SRC, /const \[liveText, setLiveText\] = useState\(value\)/)
+  assert.match(INPUT_SRC, /const applyLive = useCallback/)
+  // Эхо собственного ввода не должно затирать более свежий текст.
+  assert.match(INPUT_SRC, /if \(value === lastEmittedRef\.current\) return/)
+  // Редактор и кнопка отправки читают ЖИВОЙ текст, а не внешний value.
+  assert.match(INPUT_SRC, /value=\{liveText\}/)
+  assert.ok(!/onSend\(value\.trim\(\)\)/.test(INPUT_SRC), 'отправка читает внешний value')
+})
+
+test('ChatInput: позиция каретки запрашивается только при наличии @', () => {
+  assert.match(INPUT_SRC, /const caretPos = text\.includes\('@'\)/)
+})
+
+test('ChatInput: IPC mentions:search дебаунсится', () => {
+  assert.match(INPUT_SRC, /mentionDebounceRef/)
+  assert.match(INPUT_SRC, /clearTimeout\(mentionDebounceRef\.current\)/)
+})
+
+test('ChatInputEditor: без полного обхода DOM на каждый символ', () => {
+  // Быстрый путь по последнему отправленному значению вместо serializeEditor.
+  assert.match(EDITOR_SRC, /if \(lastEmittedRef\.current === value\)/)
+  // Обход .ce-reply только когда реплаи реально есть.
+  assert.match(EDITOR_SRC, /if \(replies\.length === 0\) return/)
+  assert.match(EDITOR_SRC, /if \(list\.length === 0 && !hasReplyChipsRef\.current\) return/)
+})
+

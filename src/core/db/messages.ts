@@ -3,6 +3,7 @@ import { getDB } from './handle'
 import { touchChat } from './chats'
 import { deleteStreamingBuffer, deleteStreamingBuffersForChat } from './streamingBuffers'
 import { stripFinalMarkers } from '../../shared/finalAnswer'
+import { stripAttachmentDataUrls } from '../../shared/attachmentStorage'
 
 // === MESSAGES ===
 
@@ -30,7 +31,10 @@ function writeMessageRow(msg: Message): void {
     msg.todo ? JSON.stringify(msg.todo) : null,
     msg.compactSummary ?? null,
     msg.compactStats ? JSON.stringify(msg.compactStats) : null,
-    msg.attachments ? JSON.stringify(msg.attachments) : null,
+    // base64 вложений в БД не храним: файл уже лежит на диске (path), renderer
+    // рендерит его через file://, AI-пайплайн читает файл по path. Иначе PNG
+    // 2.4 МБ раздувается до 13 МБ base64 и парсится на каждом чтении истории.
+    msg.attachments ? JSON.stringify(stripAttachmentDataUrls(msg.attachments).attachments) : null,
     msg.attachmentResult ? JSON.stringify(msg.attachmentResult) : null,
     msg.durationMs ?? null,
     msg.promptTokens ?? null,

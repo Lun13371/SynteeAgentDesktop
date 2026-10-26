@@ -1,5 +1,6 @@
 ﻿import type Database from 'better-sqlite3'
-import { basename } from 'path'
+import { basename, isAbsolute } from 'path'
+import { existsSync } from 'fs'
 import { v4 as uuid } from 'uuid'
 
 /**
@@ -78,4 +79,64 @@ export function migrateLegacyMemoryToMemoryItems(db: Database.Database): void {
   migrateAll(legacyRows)
 
   console.log(`[migrations] memory_items: migrated ${legacyRows.length} rows from legacy memory table`)
+}
+
+/**
+ * Чистит base64 (dataUrl) из messages.attachments у вложений, файлы которых
+ * уже лежат на диске (path существует).
+ *
+ * Контекст (замер 26.10.2026): 33 вложения держали 20.75 МБ base64, максимум
+ * 12.99 МБ в одном сообщении (PNG 2.4 МБ → data:URL). Каждое чтение истории
+ * парсит эти JSON, а slimMessagesForUI гонял их в renderer по IPC.
+ *
+ * Идемпотентна: после чистки строки не матчатся по `LIKE '%"dataUrl"%'`.
+ * Безопасность: чистим ТОЛЬКО когда путь абсолютный и файл реально существует —
+ * если файла нет, dataUrl остаётся единственной копией картинки.
+ */
+export function stripMessageAttachmentDataUrls(db: Database.Database): void {
+  const rows = db.prepare(
+    `SELECT id, attachments FROM messages WHERE attachments LIKE '%"dataUrl"%'`
+  ).all() as Array<{ id: string; attachments: string }>
+  if (rows.length === 0) return
+
+  const update = db.prepare(`UPDATE messages SET attachments = ? WHERE id = ?`)
+  let cleanedMessages = 0
+  let cleanedAttachments = 0
+  let freedChars = 0
+
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(row.attachments)
+      } catch {
+        continue // битый JSON — не наш случай, не трогаем
+      }
+      if (!Array.isArray(parsed)) continue
+
+      let changed = false
+      for (const item of parsed as Array<Record<string, unknown>>) {
+        const dataUrl = item?.dataUrl
+        const path = item?.path
+        if (typeof dataUrl !== 'string' || typeof path !== 'string') continue
+        if (!isAbsolute(path) || !existsSync(path)) continue
+        freedChars += dataUrl.length
+        delete item.dataUrl
+        cleanedAttachments++
+        changed = true
+      }
+      if (changed) {
+        update.run(JSON.stringify(parsed), row.id)
+        cleanedMessages++
+      }
+    }
+  })
+  tx()
+
+  if (cleanedMessages > 0) {
+    console.log(
+      `[migrations] attachments: stripped base64 from ${cleanedAttachments} attachment(s) ` +
+      `in ${cleanedMessages} message(s), freed ${(freedChars / 1048576).toFixed(1)} MB of JSON`
+    )
+  }
 }

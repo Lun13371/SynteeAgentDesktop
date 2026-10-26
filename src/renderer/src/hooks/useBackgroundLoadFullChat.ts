@@ -36,6 +36,11 @@ export interface BackgroundLoadOptions {
   isBusy: () => boolean
   /** Установить флаг «идёт загрузка». */
   setBusy: (v: boolean) => void
+  /** true — пользователь только что печатал. Догрузку откладываем: паузы между
+   *  нажатиями выглядят как idle, и страница истории грузилась ровно во время
+   *  набора (prepend → новый массив messages → полный пересчёт измерений
+   *  виртуализатора поверх ввода). */
+  isUserTyping?: () => boolean
 }
 
 const DEFAULT_PAGE_SIZE = 50
@@ -48,6 +53,7 @@ export function useBackgroundLoadFullChat({
   pageSize = DEFAULT_PAGE_SIZE,
   isBusy,
   setBusy,
+  isUserTyping,
 }: BackgroundLoadOptions) {
   useEffect(() => {
     if (!chatId) return
@@ -77,6 +83,11 @@ export function useBackgroundLoadFullChat({
         if (st.currentChatId !== chatId && st.splitChatId !== chatId) return
         // Скролл-триггер (или предыдущая итерация) ещё грузит — ждём.
         if (isBusy()) { await sleep(60); continue }
+        // Пользователь печатает — догрузка подождёт. Паузы между нажатиями
+        // проходят как idle, и без этого проверка «попадала» ровно в момент
+        // набора: prepend → новый массив messages → пересчёт измерений
+        // виртуализатора прямо поверх ввода.
+        if (isUserTyping?.()) { await sleep(250); continue }
         // Окно целевого чата. Для current — messages + hasOlderMessages;
         // для split — messagesByChat[chatId] (entry). Кеш актуален для обоих.
         const entry = st.messagesByChat[chatId]

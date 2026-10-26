@@ -68,6 +68,11 @@ const itemStyle: React.CSSProperties = {
   width: '100%',
 }
 
+/** Команды, которые ChatPage обрабатывает сама (не уходят в агент как промпт). */
+const GOAL_COMMANDS = ['goal', 'goal-pause', 'goal-stop', 'goal-resume']
+/** Алиасы снятия цели — как `/goal clear` в Claude Code. */
+const GOAL_CLEAR_ALIASES = new Set(['clear', 'stop', 'off', 'reset', 'none', 'cancel'])
+
 /** Дождаться кадра, в котором браузер уже ОТРИСОВАЛ текущий коммит.
  *  requestAnimationFrame срабатывает ДО paint, поэтому после него нужен ещё
  *  макротаск: setTimeout(0) выполняется уже после отрисовки кадра.
@@ -330,12 +335,27 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [replyTo, setReplyTo] = useState<Message[]>([])
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null)
   // ── Per-chat UI state (переживает перезапуск приложения) ──
-  // draft — текст в поле ввода (черновик). inputHistory — предыдущие
-  // user-запросы чата (DESC, самый свежий первым), для навигации стрелками.
-  // planning/image/askMode — тумблеры плюсик-меню инпут-бара.
-  // Все четыре сохраняются в chats/messages через IPC. Для инкогнито —
+  // draft — ВНЕШНЕЕ значение поля ввода (снимок черновика: загрузка чата,
+  // программная подстановка, очистка после отправки). Набор текста сюда НЕ
+  // идёт — живой текст живёт внутри ChatInput, иначе setDraft на каждый символ
+  // ре-рендерил бы всю страницу чата (виртуализатор + ~500 строк JSX) и при
+  // стриме это складывалось в статтеры. Актуальный текст для персиста —
+  // draftRef (обновляется сразу), для ContextRing — draftLive (зеркало с
+  // троттлингом). inputHistory — предыдущие user-запросы чата (DESC, самый
+  // свежий первым), для навигации стрелками.
+  // planning/image/askMode — тумблеры плюсика-меню инпут-бара.
+  // Всё это сохраняется в chats/messages через IPC. Для инкогнито —
   // только in-memory на сессию (после рестарта чисто).
   const [draft, setDraft] = useState('')
+  // Зеркало живого текста для ContextRing (кольцо контекста): обновляется не
+  // чаще ~350мс вместо setState на каждый символ. Сам хук всё равно
+  // дебаунсит расчёт на 500мс — визуально поведение кольца не меняется.
+  const [draftLive, setDraftLive] = useState('')
+  const draftLiveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Время последнего ввода — фоновая догрузка истории не стартует, пока
+  // пользователь печатает (idle-окна между нажатиями иначе принимались за
+  // простой и догрузка страницы совпадала с набором).
+  const lastInputAtRef = useRef(0)
   const [inputHistory, setInputHistory] = useState<string[]>([])
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
@@ -382,6 +402,13 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const attachmentsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => { draftRef.current = draft }, [draft])
+  // Таймер зеркала draftLive не должен дёргать setState после размонтирования.
+  useEffect(() => () => {
+    if (draftLiveTimerRef.current !== null) {
+      clearTimeout(draftLiveTimerRef.current)
+      draftLiveTimerRef.current = null
+    }
+  }, [])
   useEffect(() => { draftAttachmentsRef.current = draftAttachments }, [draftAttachments])
   useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
@@ -700,7 +727,10 @@ const chatId = compactingCurrentChatIdRef.current
   // Счётчик контекста
   const contextInfo = useContextCounter({
     chatId: currentChatId || '',
-    currentInput: draft,
+    // draftLive, а не draft: живой текст поля больше не поднимается в стейт
+    // страницы (иначе ре-рендер на каждый символ) — кольцу хватает зеркала
+    // с троттлингом, хук всё равно дебаунсит расчёт на 500мс.
+    currentInput: draftLive,
     modelId: mainModelId,
     incognito: isIncognito,
     enabled: showContextRing && !isIncognito,
@@ -847,8 +877,26 @@ const chatId = compactingCurrentChatIdRef.current
   // чата / размонтировании pending-таймер отменяется и сохранение идёт
   // синхронно в эффекте ниже.
   const handleDraftChange = useCallback((text: string) => {
-    setDraft(text)
+    // ВАЖНО: setDraft здесь НЕ вызывается — иначе каждый символ ре-рендерит
+    // страницу чата (главный источник статтеров при наборе). Живой текст
+    // хранит сам ChatInput; сюда приходит уведомление для персиста.
     draftRef.current = text
+    lastInputAtRef.current = performance.now()
+    if (text === '') {
+      // Очистка поля (отправка/сброс) — состояние родителя синхронизируем
+      // сразу: пустой черновик должен быть виден всем потребителям.
+      if (draftLiveTimerRef.current !== null) {
+        clearTimeout(draftLiveTimerRef.current)
+        draftLiveTimerRef.current = null
+      }
+      setDraft('')
+      setDraftLive('')
+    } else if (draftLiveTimerRef.current === null) {
+      draftLiveTimerRef.current = setTimeout(() => {
+        draftLiveTimerRef.current = null
+        setDraftLive(draftRef.current)
+      }, 350)
+    }
     if (currentChatId && !isIncognito) {
       if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current)
       // Крупный черновик (вставленный лог/JSON на сотни КБ) пишем реже:
@@ -863,6 +911,15 @@ const chatId = compactingCurrentChatIdRef.current
       }, delay)
     }
   }, [currentChatId, isIncognito])
+
+  // Стабильный колбэк для инпут-бара: инлайн-стрелка в JSX (`onGoalChange=
+  // {async g => ...}`) создавала новую ссылку на каждом ре-рендере страницы и
+  // пробивала React.memo у ChatInput (при стриме страница рендерится ~20×/сек).
+  const handleGoalChange = useCallback(async (g: ChatGoal | null) => {
+    if (!currentChatId) return
+    const saved = await window.syntee.goal.set(currentChatId, g)
+    setChatGoal(saved)
+  }, [currentChatId])
 
   // ── Вложения черновика: debounced-сохранение в БД ──
   // Аналогично draft — 300мс дебаунс. При смене чата сохраняем синхронно.
@@ -905,6 +962,7 @@ const chatId = compactingCurrentChatIdRef.current
 
     if (!currentChatId) {
       setDraft('')
+      setDraftLive('')
       setInputHistory([])
       setPlanningMode(false); setImageMode(false); setAskMode(false)
       setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
@@ -926,6 +984,7 @@ const chatId = compactingCurrentChatIdRef.current
     if (isIncognito) {
       // Инкогнито: дефолт-значения, история из in-memory Map
       setDraft('')
+      setDraftLive('')
       setPlanningMode(false); setImageMode(false); setAskMode(false)
       setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setDraftAttachments([])
@@ -1009,6 +1068,7 @@ const chatId = compactingCurrentChatIdRef.current
       personaRef.current = safePersona
       const d = typeof draftText === 'string' ? draftText : ''
       setDraft(d)
+      setDraftLive(d)
       draftRef.current = d
       // Вложения черновика
       const atts = Array.isArray(attachments) ? attachments : []
@@ -1034,7 +1094,7 @@ const chatId = compactingCurrentChatIdRef.current
       setInputHistory(dedup)
     }).catch(() => {
       if (cancelled) return
-      setDraft(''); setPlanningMode(false); setImageMode(false); setAskMode(false); setBrowserMode(false)
+      setDraft(''); setDraftLive(''); setPlanningMode(false); setImageMode(false); setAskMode(false); setBrowserMode(false)
       browserModeRef.current = false
       setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setInputHistory([])
@@ -1299,6 +1359,8 @@ const chatId = compactingCurrentChatIdRef.current
     scrollContainerRef,
     isBusy: () => useChatStore.getState().isLoadingOlder,
     setBusy: (v) => useChatStore.getState().setIsLoadingOlder(v),
+    // Не догружаем историю, пока в инпуте была активность за последние 1.2с.
+    isUserTyping: () => performance.now() - lastInputAtRef.current < 1200,
   })
 
   // Загрузка тоггла миникарты сообщений в settings store — дальше компонент
@@ -1627,22 +1689,27 @@ const chatId = compactingCurrentChatIdRef.current
     // ── Команда плагина (registerCommand) — перехватываем ДО агента ──
     // RPC в процесс плагина, результат сохраняется в БД как пара
     // user+assistant сообщений (переживает перезагрузку).
-    const isGoalCommand = slash && ['goal', 'goal-pause', 'goal-stop'].includes(slash.command.name)
+    // ── /goal — семантика Claude Code ───────────────────────────────────
+    //   /goal <условие>  — поставить/заменить цель и сразу начать ход;
+    //   /goal            — статус цели (условие, время, ходы, токены, вердикт);
+    //   /goal clear|stop|off|reset|none|cancel — снять цель досрочно.
+    // Работу судит независимый оценщик — см. goalEvaluator.ts.
+    const isGoalCommand = slash && GOAL_COMMANDS.includes(slash.command.name)
     if (isGoalCommand && isIncognito) {
       toast('Цели недоступны в инкогнито: их состояние сохраняется в базе', 'info'); return
     }
     if (isGoalCommand && goalActionRef.current) return
-    if (slash && ['goal-pause', 'goal-stop'].includes(slash.command.name)) {
+    const goalArg = slash?.command.name === 'goal' ? slash.args.trim() : ''
+    const clearsGoal = slash?.command.name === 'goal-stop'
+      || (!!goalArg && GOAL_CLEAR_ALIASES.has(goalArg.toLowerCase()))
+    if (clearsGoal) {
       if (!currentChatId) { toast('Активной цели нет', 'info'); return }
       goalActionRef.current = true
       try {
         const current = await window.syntee.goal.get(currentChatId)
-        if (!current) { toast('Активной цели нет', 'info'); return }
-        const status = slash.command.name === 'goal-stop' ? 'stopped' : 'paused'
-        if (status === 'paused' && ['completed', 'stopped'].includes(current.status)) {
-          toast('Эту цель нельзя поставить на паузу', 'info'); return
-        }
-        applyGoal(await window.syntee.goal.set(currentChatId, { ...current, status, updatedAt: Date.now() }))
+        await window.syntee.goal.set(currentChatId, null)
+        toast(current ? `Цель снята: ${current.objective}` : 'Активной цели нет', current ? 'info' : 'info')
+        setChatGoal(null)
         const st = useChatStore.getState()
         if (st.liveByChat[currentChatId]?.isAgentRunning || st.liveByChat[currentChatId]?.isTyping || st.runStatusByChat[currentChatId]?.status === 'running') {
           await stopChatRun(currentChatId)
@@ -1651,8 +1718,40 @@ const chatId = compactingCurrentChatIdRef.current
       finally { goalActionRef.current = false }
       return
     }
-    if (slash?.command.name === 'goal' && !slash.args.trim() && !currentChatId) {
-      toast('Текущей цели нет. Укажи новую: /goal <цель>', 'info'); return
+    if (slash?.command.name === 'goal-pause') {
+      if (!currentChatId) { toast('Активной цели нет', 'info'); return }
+      goalActionRef.current = true
+      try {
+        const current = await window.syntee.goal.get(currentChatId)
+        if (!current) { toast('Активной цели нет', 'info'); return }
+        if (['completed', 'blocked', 'stopped'].includes(current.status)) {
+          toast('Эту цель нельзя поставить на паузу', 'info'); return
+        }
+        applyGoal(await window.syntee.goal.set(currentChatId, { ...current, status: 'paused', updatedAt: Date.now() }))
+        toast('Цель на паузе. Отправь сообщение или /goal-resume, чтобы продолжить.', 'info')
+        const st = useChatStore.getState()
+        if (st.liveByChat[currentChatId]?.isAgentRunning || st.liveByChat[currentChatId]?.isTyping || st.runStatusByChat[currentChatId]?.status === 'running') {
+          await stopChatRun(currentChatId)
+        }
+      } catch (e) { toast('Ошибка цели: ' + String(e), 'error') }
+      finally { goalActionRef.current = false }
+      return
+    }
+    // /goal без аргументов — статус (как в Claude Code), а не продолжение.
+    // Продолжение: /goal-resume либо любое обычное сообщение.
+    if (slash?.command.name === 'goal' && !goalArg) {
+      if (!currentChatId) { toast('Цели нет. Поставь новую: /goal <условие>', 'info'); return }
+      const current = await window.syntee.goal.get(currentChatId)
+      if (!current) { toast('Цели нет. Поставь новую: /goal <условие>', 'info'); return }
+      const minutes = Math.max(0, Math.round((Date.now() - current.startedAt) / 60_000))
+      toast([
+        `Цель: ${current.objective}`,
+        `Статус: ${current.status}${['running', 'paused'].includes(current.status) ? ` · идёт ${minutes} мин` : ''}`,
+        `Ходов оценено: ${current.turnsEvaluated} · ~${current.tokensSpent} токенов`,
+        current.lastReason ? `Последний вердикт: ${current.lastReason}` : 'Вердиктов ещё не было',
+        current.blocker ? `Причина: ${current.blocker}` : '',
+      ].filter(Boolean).join('\n'), 'info')
+      return
     }
 
     if (slash?.command.plugin) {
@@ -1675,7 +1774,13 @@ const chatId = compactingCurrentChatIdRef.current
     }
 
     if (slash?.command.name === 'clear') {
-      if (currentChatId) { setMessages([]); toast('Чат очищен', 'info') }
+      if (currentChatId) {
+        // Как в [CC]: `/clear` начинает разговор заново и снимает активную цель.
+        await window.syntee.goal.set(currentChatId, null)
+        setChatGoal(null)
+        setMessages([])
+        toast('Чат очищен, цель снята', 'info')
+      }
       return
     }
     if (slash?.command.name === 'sys') {
@@ -1895,29 +2000,32 @@ const chatId = compactingCurrentChatIdRef.current
     }
 
     let goalPrompt: string | undefined
-    if (slash?.command.name === 'goal') {
+    if (slash?.command.name === 'goal' || slash?.command.name === 'goal-resume') {
+      const objective = slash.command.name === 'goal' ? slash.args.trim() : ''
       const current = await window.syntee.goal.get(chatId)
+      if (!objective && (!current || ['completed', 'blocked'].includes(current.status))) {
+        toast('Нет цели для продолжения. Поставь новую: /goal <условие>', 'info'); return
+      }
+      // Как в Claude Code: новая цель ЗАМЕНЯЕТ активную и сразу запускает ход.
+      // Старый прогон прерываем, чтобы воркер не продолжал прежнюю цель.
       const st = useChatStore.getState()
       if (st.liveByChat[chatId]?.isAgentRunning || st.liveByChat[chatId]?.isTyping || st.runStatusByChat[chatId]?.status === 'running') {
-        toast('Сначала останови текущий запрос; цель не будет запущена повторно', 'info'); return
-      }
-      const objective = slash.args.trim()
-      if (!objective && (!current || ['completed', 'stopped'].includes(current.status))) {
-        toast('Нет цели для продолжения. Создай новую: /goal <цель>', 'info'); return
-      }
-      if (!objective && current && current.steps >= current.maxSteps) {
-        toast('Лимит шагов исчерпан. Увеличь его в редакторе цели', 'info'); return
+        await stopChatRun(chatId)
       }
       const now = Date.now()
+      // Условие — ОДНА строка (как в [CC]); критерии/ограничения старой версии
+      // больше не выдумываются: вердикт выносит независимый оценщик.
       const goal: ChatGoal = objective ? {
-        id: crypto.randomUUID(), chatId, objective,
-        criteria: ['Показать результат и проверяемые свидетельства выполнения'],
-        constraints: ['Не обходить подтверждения и разрешения', 'Не повторять внешние/необратимые действия без проверки состояния'],
-        progress: [], evidence: [], steps: 0, maxSteps: 5,
-        status: 'running', createdAt: now, updatedAt: now,
-      } : { ...current!, status: 'running', blocker: undefined, updatedAt: now }
+        id: crypto.randomUUID(), chatId, objective: objective.slice(0, 4000),
+        criteria: [], constraints: [],
+        progress: [], evidence: [], steps: 0, maxSteps: 0,
+        status: 'running', createdAt: now, startedAt: now, updatedAt: now,
+        turnsEvaluated: 0, tokensSpent: 0, idleTurns: 0,
+      } : { ...current!, status: 'running', blocker: undefined, startedAt: now, updatedAt: now }
       applyGoal(await window.syntee.goal.set(chatId, goal))
-      goalPrompt = `[РЕЖИМ ДОСТИЖЕНИЯ ЦЕЛИ] ${goal.objective}\nКритерии: ${goal.criteria.join('; ')}\nОграничения: ${goal.constraints.join('; ')}\nСохранённый прогресс: ${goal.progress.join('; ') || 'нет'}\nСвидетельства: ${goal.evidence.join('; ') || 'нет'}\n${objective ? 'Начни выполнение.' : 'Явное продолжение текущей цели. Сначала проверь фактическое состояние и сохранённые результаты; не повторяй уже выполненные side effects.'}\nСделай следующий полезный шаг, проверь результат. Не объявляй завершение без evidence; при блокере или необходимости approval остановись.`
+      goalPrompt = objective
+        ? `[goal] ${goal.objective}\n\nWork until this condition actually holds. A separate evaluator reads the transcript after every turn, so your own claim of completion is not evidence: run the check and let its real output appear in the conversation. Do not bypass tool approvals, and do not repeat irreversible side effects without checking the current state first.`
+        : `[goal] Continue toward: ${goal.objective}\nLast verdict: ${goal.lastReason ?? '—'}\nCheck the current state first (do not repeat irreversible side effects), then take the next useful step and make the check visible in the conversation.`
     }
 
     // displayContent — с inline-токенами вложений [[attach:id]] (рендер в
@@ -2689,9 +2797,13 @@ const chatId = compactingCurrentChatIdRef.current
                 try {
                   const current = await window.syntee.goal.get(chatGoal.chatId)
                   if (!current || current.id !== chatGoal.id) throw new Error('Цель уже изменилась')
-                  const changed = patch.objective !== current.objective || JSON.stringify(patch.criteria) !== JSON.stringify(current.criteria) || JSON.stringify(patch.constraints) !== JSON.stringify(current.constraints)
+                  // Смена УСЛОВИЯ — это новая цель: старые вердикты оценщика к
+                  // ней не относятся (как в [CC]: новое условие заменяет цель).
+                  const changed = patch.objective !== current.objective
                   const updated = await window.syntee.goal.set(chatGoal.chatId, { ...current, ...patch,
-                    ...(changed ? { id: crypto.randomUUID(), progress: [], evidence: [], steps: 0, status: 'paused' as const, blocker: undefined } : {}), updatedAt: Date.now() })
+                    ...(changed ? { id: crypto.randomUUID(), progress: [], evidence: [], steps: 0,
+                      turnsEvaluated: 0, tokensSpent: 0, idleTurns: 0, lastReason: undefined,
+                      startedAt: Date.now(), status: 'paused' as const, blocker: undefined } : {}), updatedAt: Date.now() })
                   applyGoal(updated)
                 } finally { goalActionRef.current = false }
               }} />
@@ -2967,7 +3079,7 @@ const chatId = compactingCurrentChatIdRef.current
               onSend={handleSend}
               onSteer={steerToContext}
               goal={chatGoal}
-              onGoalChange={async (g) => { if (!currentChatId) return; const saved = await window.syntee.goal.set(currentChatId, g); setChatGoal(saved) }}
+              onGoalChange={handleGoalChange}
               disabled={isTyping || isCompactingHere || editorMode}
               isIncognito={isIncognito}
               replyTo={replyTo}

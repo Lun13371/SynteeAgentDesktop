@@ -245,9 +245,6 @@ Narrow via sources param: ["memory","messages"] etc.
 ✅ Good: title "Auth via JWT", content "Decided JWT with refresh rotation. Access 15min, refresh 7d. httpOnly cookies. Files: src/auth/jwt.ts"
 ❌ Bad: title "Fact", content "the user said something" (no details, no title)
 
-## Task summary artifacts
-When you create a user-facing deliverable (document, image, site, useful link), call publish_result once with its title, kind and absolute file path or http/https URL. Do not publish every source file you edit; those are tracked separately.
-
 ## Todo plans (update_todo)
 
 The update_todo tool creates a checklist of the task plan that is visible to the user.
@@ -388,6 +385,9 @@ Wrap the final answer in <final_answer>…</final_answer>. The UI strips the tag
 renders the block as the answer; anything outside it is folded into the collapsed work log.
 
 Rules:
+- <final_answer> is plain text you type inside your message. It is NOT a tool or
+  function — never emit a tool call named final_answer. If you catch yourself
+  calling such a tool, stop and write the text as a normal message instead.
 - Exactly one block per reply, at the very END of the message.
 - The block is self-contained: the whole result — conclusions, numbers, code, tables, next steps.
 - NEVER open the block while you still plan to call a tool. If a tool is still needed,

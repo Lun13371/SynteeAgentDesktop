@@ -17,7 +17,6 @@ import { MEDIA_TOOL_SCHEMAS } from './media'
 import { DOTS_TOOL_SCHEMAS } from './dots'
 import { CHAT_TOOL_SCHEMAS } from './chats'
 import { BROWSER_TOOL_SCHEMAS, BROWSER_RESEARCH_TOOL_NAMES, REQUEST_ACCESS_SCHEMA } from './browser'
-import { TASK_SUMMARY_TOOL_SCHEMAS } from './taskSummary'
 
 export const TOOL_SCHEMAS = [
   ...EDIT_TOOL_SCHEMAS,
@@ -34,7 +33,6 @@ export const TOOL_SCHEMAS = [
   ...DOTS_TOOL_SCHEMAS,
   ...CHAT_TOOL_SCHEMAS,
   ...BROWSER_TOOL_SCHEMAS,
-  ...TASK_SUMMARY_TOOL_SCHEMAS,
   // Реестр — полный список для TOOL_BY_NAME; в конкретный тулсет чата
   // request_access попадает через names (когда browserMode ВЫКЛ).
   REQUEST_ACCESS_SCHEMA,
@@ -118,7 +116,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     // Always available — the model decides when to save/recall.
     'save_memory',
     'recall_memory',
-    'publish_result',
     // Web search, page fetching, image search and sub-agents — always
     // available to the agent, the model decides when to use them.
     'search_web',

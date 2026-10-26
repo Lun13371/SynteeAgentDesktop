@@ -373,7 +373,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // Прокидываем chatId и колбэки рабочей памяти
       agent.chatId = chatId
       const runGoal = msg.goal as import('../../shared/types/goal').ChatGoal | undefined
-      if (!incognito && !isSubAgent && runGoal?.chatId === chatId && runGoal.status === 'running') {
+      // §goal — активная (running) и приостановленная (paused) цель участвуют
+      // в следующем ходе: отправка сообщения возобновляет цикл (как в [CC]).
+      if (!incognito && !isSubAgent && runGoal?.chatId === chatId
+        && (runGoal.status === 'running' || runGoal.status === 'paused')) {
         agent.goal = runGoal
         agent.onGoalProgress = goal => send({ type: 'goal_progress', goal })
       }

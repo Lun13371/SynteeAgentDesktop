@@ -92,12 +92,13 @@ refractor.alias('ruby', ['rb'])
 import PlanCard from '../PlanCard/PlanCard'
 import Logo from '../Logo/Logo'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
-import type { Message, ToolOutputMode, Attachment } from '../../../../../shared/types'
+import type { Message, ToolOutputMode, Attachment, ToolStep } from '../../../../../shared/types'
 import { extractPlanSegments } from '../../../../../shared/planParser'
 import { splitFinalFromIters, stripFinalMarkersStreaming } from '../../../../../shared/finalAnswer'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain, { hasUnfinishedCalls } from '../ToolChain/ToolChain'
+import MessageFileChanges from '../MessageFileChanges/MessageFileChanges'
 import TodoChecklist from '../TodoChecklist/TodoChecklist'
 import FastContextBlock, { type FastContextResultData } from '../FastContextBlock/FastContextBlock'
 import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
@@ -1810,6 +1811,16 @@ const MessageContent = memo(function MessageContent({
     return (message as Message & { iterations?: MsgIter[] }).iterations
   }, [liveIters, message])
 
+  // ── Файлы, созданные/изменённые в этом сообщении ───────────────────────
+  // Плоский список шагов всех итераций — для чипов в конце ответа.
+  // Для live-пузыря не считаем вовсе: чипы показываются только на готовом
+  // (сохранённом) сообщении, а во время стрима шаги меняются на каждом
+  // tool-событии — незачем гонять flatMap и пересборку списка файлов.
+  const messageSteps = useMemo<ToolStep[]>(() => {
+    if (isLiveBubble) return []
+    return msgIters?.length ? msgIters.flatMap(it => it.steps) : (toolSteps ?? [])
+  }, [isLiveBubble, msgIters, toolSteps])
+
   // ── Итоговый ответ по тегу <final_answer> ─────────────────────────────
   // Модель иногда пишет ответ, а потом всё равно вызывает тул (save_memory,
   // update_todo). Без тега такой текст попадал в textBefore СЛЕДУЮЩЕЙ
@@ -2348,6 +2359,22 @@ const MessageContent = memo(function MessageContent({
               <React.Fragment key={att.id}>{renderAttachChip(att, onPreviewAttachment)}</React.Fragment>
             ))}
           </div>
+        )}
+
+        {/* Файлы, которые агент создал/изменил в этом сообщении — чипами в
+            конце ответа (визуально как inline-вложения [[attach:...]]).
+            Данные целиком из шагов сообщения: отдельного состояния нет,
+            поэтому карточка работает и на старых чатах.
+
+            ТОЛЬКО на готовом ответе: live-пузырь (id 'live-streaming-bubble')
+            во время рана не считается — иначе список файлов появлялся бы и
+            прыгал прямо во время генерации. Персистентное сообщение приходит
+            из main в CHAT_STREAM_DONE (saveMessageAndDeleteStreamingBuffer),
+            т.е. в момент, когда ответ действительно завершён (в т.ч. ошибка
+            или ручная остановка). isStreaming — вторая страховка на случай
+            live-рендера с нестандартным id. */}
+        {!isUser && !editorActive && !isLiveBubble && !isStreaming && messageSteps.length > 0 && (
+          <MessageFileChanges steps={messageSteps} workdir={workdir} />
         )}
 
         {/* Footer: кнопки действий + время + панель статистики */}

@@ -47,10 +47,13 @@ interface ChatInputProps {
   onStop?: () => void
   contextInfo?: ContextInfo | null
   showContextRing?: boolean
-  /** Контролируемое значение поля ввода (черновик). Родитель хранит
-   *  draft-стейт и персистит его в БД. Раньше value был внутренним
-   *  useState и терялся при смене чата / перезапуске. */
+  /** ВНЕШНЕЕ значение поля ввода (черновик). Родитель держит его как
+   *  «снимок»: смена чата (черновик из БД), очистка после отправки, голос,
+   *  программная подстановка. Набор текста сюда НЕ идёт — ChatInput держит
+   *  живой текст локально и сообщает его через onChangeValue (иначе ре-рендер
+   *  всей страницы чата на каждый символ). */
   value: string
+  /** Колбэк на каждое изменение текста (локальный стейт + персист). */
   onChangeValue: (text: string) => void
   /** История предыдущих запросов чата (DESC — самый свежий первым),
    *  уже дедуплицирована от подряд-дубликатов. Используется для навигации
@@ -202,6 +205,9 @@ function ChatInput({
   const [mentionIdx, setMentionIdx] = useState(0)
   const mentionTokenRef = useRef<{ start: number; end: number; query: string } | null>(null)
   const mentionFetchIdRef = useRef(0) // race-condition guard для асинхронных fetchей
+  // Debounce IPC mentions:search (main однопоточный — на каждый символ он
+  // заново собирал списки скиллов/команд + читал SQLite).
+  const mentionDebounceRef = useRef<number | null>(null)
   // ── Autocomplete-провайдеры плагинов (registerAutocomplete) ──
   // pluginAuto — открытое меню: ответ провайдера + выбранный индекс.
   const [pluginAuto, setPluginAuto] = useState<{ data: PluginAutoResult; idx: number } | null>(null)
@@ -214,12 +220,57 @@ function ChatInput({
   const editorApiRef = useRef<EditorApi | null>(null)
   const boxRef = useRef<HTMLDivElement>(null)
 
+  // ── Живой текст поля (источник истины для UI) ─────────────────────────────
+  // value от родителя — ВНЕШНЕЕ значение: смена чата (черновик из БД), очистка
+  // после отправки, голос, программная подстановка. Раньше родитель вызывал
+  // setDraft на КАЖДЫЙ символ → ре-рендер всей страницы чата (виртуализатор,
+  // ~500 строк JSX, минимап) на каждое нажатие; при стриме (20 рендеров/сек)
+  // это складывалось в видимые статтеры. Теперь печать меняет только локальный
+  // стейт инпут-бара, а наружу текст уходит через onChangeValue (ref + debounce
+  // в БД) — страница чата при наборе не перерисовывается вообще.
+  //
+  // Синхронизация value → liveText строго по условиям: value реально сменился
+  // (не ре-рендер с тем же значением), он не равен текущему тексту и это не эхо
+  // нашего же ввода (родитель может возвращать то, что мы отдали). Иначе можно
+  // затереть более свежий текст и прыгнуть кареткой. Исключение — смена chatId:
+  // там value применяется безусловно (см. ниже).
+  const [liveText, setLiveText] = useState(value)
+  const liveTextRef = useRef(value)
+  const lastEmittedRef = useRef<string | null>(null)
+  const prevValuePropRef = useRef(value)
+  const prevChatIdForTextRef = useRef(chatId)
+  useEffect(() => {
+    // Смена чата — черновик приходит из БД позже (асинхронно), и если он
+    // совпадёт со «старым» значением пропа (например оба пустые), обычная
+    // проверка на изменение не сработает — поле сохранило бы текст прошлого
+    // чата. Поэтому на смену chatId принимаем value безусловно.
+    const chatChanged = prevChatIdForTextRef.current !== chatId
+    prevChatIdForTextRef.current = chatId
+    const prev = prevValuePropRef.current
+    prevValuePropRef.current = value
+    if (!chatChanged) {
+      if (value === prev) return
+      if (value === liveTextRef.current) return
+      if (value === lastEmittedRef.current) return
+    }
+    liveTextRef.current = value
+    lastEmittedRef.current = null
+    setLiveText(value)
+  }, [value, chatId])
+  // Единая точка изменения текста: локальный стейт + уведомление родителя.
+  const applyLive = useCallback((next: string) => {
+    liveTextRef.current = next
+    lastEmittedRef.current = next
+    setLiveText(next)
+    onChangeValue(next)
+  }, [onChangeValue])
+
   // ── Голосовой ввод (STT) в инпут-баре — вынесен в хук useChatInputVoice ──
   // Провайдер и размер модели читаются из персистентных настроек (electron-store).
   // 'local' — локальный Whisper (оффлайн), 'groq' — Groq API fallback.
   const { voice, isVoiceTyping, handleMicClick } = useChatInputVoice({
-    value,
-    onChangeValue,
+    value: liveText,
+    onChangeValue: applyLive,
     textareaRef,
   })
 
@@ -332,20 +383,27 @@ function ChatInput({
     }
   }
 
-  // Авто-ресайз contentEditable-редактора
+  // Авто-ресайз contentEditable-редактора.
+  // В rAF, а не синхронно в эффекте: `height:'auto'` + чтение scrollHeight —
+  // это два полных layout'а содержимого подряд, и в фазе commit они попадали
+  // ровно между input-событием и кадром (лишний forced reflow на каждый ввод).
+  // В кадре результат тот же — визуально ничего не меняется.
   useEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    // Крупный текст (вставленный лог/JSON): высота всё равно упирается в
-    // max-height 200px, а замер через height:'auto' + scrollHeight — это два
-    // полных layout'а содержимого подряд. Сразу ставим предел.
-    if (value.length > 50_000) {
-      el.style.height = '200px'
-      return
-    }
-    el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 200) + 'px'
-  }, [value])
+    const id = requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      // Крупный текст (вставленный лог/JSON): высота всё равно упирается в
+      // max-height 200px, а замер через height:'auto' + scrollHeight — это два
+      // полных layout'а содержимого подряд. Сразу ставим предел.
+      if (liveText.length > 50_000) {
+        el.style.height = '200px'
+        return
+      }
+      el.style.height = 'auto'
+      el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+    })
+    return () => cancelAnimationFrame(id)
+  }, [liveText])
 
   // Сброс навигации по истории при смене чата — индекс относится к
   // inputHistory предыдущего чата и не валиден для нового.
@@ -358,7 +416,7 @@ function ChatInput({
     // Любой ручной ввод сбрасывает режим навигации по истории — иначе
     // следующий ArrowUp продолжил бы с устаревшего индекса.
     historyIdxRef.current = null
-    onChangeValue(text)
+    applyLive(text)
     // Показываем меню только если строка начинается с / и нет пробелов после
     // команды. Длину ограничиваем: после вставки мегабайтного текста фильтр
     // команд по всей строке не нужен (и команда такой длины не бывает).
@@ -418,7 +476,12 @@ function ChatInput({
     // после вставки сотен КБ проход назад до пробела по всему тексту на каждый
     // ввод — лишний фриз. Индексы возвращаются абсолютные — по ним selectMention
     // заменяет токен в value; поведение для обычного текста идентично прежнему.
-    const caretPos = editorApiRef.current?.getCaretOffset() ?? text.length
+    // Позицию каретки спрашиваем ТОЛЬКО если в тексте есть '@': getCaretOffset —
+    // это полный обход DOM редактора, и без '@' mention-токена быть не может
+    // (findMentionTokenNearCaret всё равно вернёт null).
+    const caretPos = text.includes('@')
+      ? (editorApiRef.current?.getCaretOffset() ?? text.length)
+      : text.length
     const token = findMentionTokenNearCaret(text, caretPos, MENTION_SCAN_CHARS)
     mentionTokenRef.current = token
     if (token) {
@@ -426,19 +489,31 @@ function ChatInput({
       // (не показываем два меню одновременно).
       pluginAutoReqRef.current++
       setPluginAuto(null)
-      // Асинхронный fetch с race-guard — если юзер быстро печатает, оставляем только последний
+      // Асинхронный fetch с race-guard — если юзер быстро печатает, оставляем
+      // только последний. Плюс debounce: main однопоточный, и на каждый символ
+      // он заново собирал скиллы/команды (чтение каталогов с диска) + SQLite —
+      // набор `@abc` превращался в лавину IPC, которая тормозила ввод.
+      // 120 мс незаметны (меню открывается после паузы в наборе).
       const fetchId = ++mentionFetchIdRef.current
-      window.syntee.mentions.search({ workdir, query: token.query, limit: 30, chatId })
-        .then((items: MentionItem[]) => {
-          if (fetchId !== mentionFetchIdRef.current) return // устарел
-          setMentionItems(items)
-          setMentionIdx(0)
-        })
-        .catch(() => {
-          if (fetchId !== mentionFetchIdRef.current) return
-          setMentionItems([])
-        })
+      if (mentionDebounceRef.current !== null) clearTimeout(mentionDebounceRef.current)
+      mentionDebounceRef.current = window.setTimeout(() => {
+        mentionDebounceRef.current = null
+        window.syntee.mentions.search({ workdir, query: token.query, limit: 30, chatId })
+          .then((items: MentionItem[]) => {
+            if (fetchId !== mentionFetchIdRef.current) return // устарел
+            setMentionItems(items)
+            setMentionIdx(0)
+          })
+          .catch(() => {
+            if (fetchId !== mentionFetchIdRef.current) return
+            setMentionItems([])
+          })
+      }, 120)
     } else {
+      if (mentionDebounceRef.current !== null) {
+        clearTimeout(mentionDebounceRef.current)
+        mentionDebounceRef.current = null
+      }
       setMentionItems([])
     }
   }
@@ -447,7 +522,7 @@ function ChatInput({
     // Заменяем ввод на "/command " и фокусируем
     const next = `/${cmd.name} `
     historyIdxRef.current = null
-    onChangeValue(next)
+    applyLive(next)
     setSlashCmds([])
     // Если у команды есть первый аргумент с choices — открываем пикер.
     const firstArg = cmd.arguments?.[0]
@@ -473,11 +548,11 @@ function ChatInput({
     // Парсим структуру /cmdname [args...] через slice (а не regex m[2],
     // который жадно съедает trailing-пробел и ломает определение endsWithSpace
     // для начального состояния `/cmd ` → rest="" → push-ветка не срабатывала).
-    const head = value.match(/^\/(\S+)/)
+    const head = liveText.match(/^\/(\S+)/)
     if (!head || head[1].toLowerCase() !== cmd.name.toLowerCase()) {
       setArgPickerCmd(null); setArgPickerChoices([]); return
     }
-    const after = value.slice(head[0].length) // всё после /cmdname
+    const after = liveText.slice(head[0].length) // всё после /cmdname
     const trimmed = after.trim()
     const endsWithSpace = after.length > 0 && /\s$/.test(after)
     const tokens = trimmed === '' ? [] : trimmed.split(/\s+/)
@@ -491,7 +566,7 @@ function ChatInput({
     }
     const newText = `/${cmd.name} ` + newTokens.join(' ') + ' '
     historyIdxRef.current = null
-    onChangeValue(newText)
+    applyLive(newText)
     // Переоткрываем для следующего уровня (если есть choices).
     const nextLevel = argPickerLevel + 1
     const nextArg = cmd.arguments?.[nextLevel]
@@ -516,16 +591,16 @@ function ChatInput({
 
   const handleSend = () => {
     // Пустой = нет текста (токены не считаем) И нет вложений
-    const cleanText = stripAttachTokens(value).trim()
+    const cleanText = stripAttachTokens(liveText).trim()
     if (!cleanText && attachments.length === 0) return
     if (disabled && !isGenerating) return
     // Отправляем value С токенами — ChatPage положит его в message.content
     // (рендер в чате восстановит чипы на местах), а в AI уйдёт чистый текст.
-    onSend(value.trim())
+    onSend(liveText.trim())
     historyIdxRef.current = null
     pluginAutoReqRef.current++
     setPluginAuto(null)
-    onChangeValue('')
+    applyLive('')
     setSlashCmds([])
     setMentionItems([])
     mentionTokenRef.current = null
@@ -544,14 +619,14 @@ function ChatInput({
   // в chat:send, поэтому при наличии вложений жест просто ничего не делает —
   // пользователь отправляет обычным кликом.
   const handleSteer = () => {
-    const cleanText = stripAttachTokens(value).trim()
+    const cleanText = stripAttachTokens(liveText).trim()
     if (!cleanText || attachments.length > 0) return
     if (disabled && !isGenerating) return
-    const payload = value.trim()
+    const payload = liveText.trim()
     historyIdxRef.current = null
     pluginAutoReqRef.current++
     setPluginAuto(null)
-    onChangeValue('')
+    applyLive('')
     setSlashCmds([])
     setMentionItems([])
     mentionTokenRef.current = null
@@ -585,16 +660,16 @@ function ChatInput({
     pluginAutoReqRef.current++
     setPluginAuto(null)
     if (s.command) {
-      const parts = value.trim().split(/\s+/)
+      const parts = liveText.trim().split(/\s+/)
       parts.shift() // trigger-слово провайдера
       const args = parts.join(' ')
       const text = ('/' + s.command + (args ? ' ' + args : '')).trim()
-      onChangeValue('')
+      applyLive('')
       handleSendText(text)
       return
     }
     const insert = s.insertText !== undefined ? s.insertText : s.label
-    onChangeValue(insert)
+    applyLive(insert)
     setTimeout(() => editorApiRef.current?.focus(), 0)
   }
 
@@ -602,7 +677,7 @@ function ChatInput({
   // Показываем меню, только если текст НЕ начинается со '/' (слеш-меню имеет
   // приоритет) и первое слово совпадает с trigger провайдера.
   useEffect(() => {
-    const text = value.trim()
+    const text = liveText.trim()
     const ext = getPluginsExt()
     if (!ext.autocomplete) return
     if (!text || text.startsWith('/') || argPickerCmd || text.length > PLUGIN_AUTO_MAX_CHARS) { setPluginAuto(null); return }
@@ -628,7 +703,7 @@ function ChatInput({
     }, 250)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value])
+  }, [liveText])
 
   // Смена чата/очистка поля — закрываем меню.
   useEffect(() => {
@@ -655,14 +730,14 @@ function ChatInput({
     const canAdd =
       attachments.length < maxAttachments &&
       !attachments.some(a => a.kind === newAtt.kind && dupKey(a) !== undefined && dupKey(a) === dupKey(newAtt))
-    const before = value.slice(0, token.start)
-    const after = value.slice(token.end)
+    const before = liveText.slice(0, token.start)
+    const after = liveText.slice(token.end)
     const insertion = canAdd ? `[[attach:${newAtt.id}]]` : `@${item.label}`
     const newText = `${before}${insertion} ${after}`
     mentionTokenRef.current = null
     setMentionItems([])
     if (canAdd) onAttachmentsChange?.([...attachments, newAtt])
-    onChangeValue(newText)
+    applyLive(newText)
     // Фокус + каретка после вставки (rebuild DOM в useEffect, потом позиция)
     setTimeout(() => {
       editorApiRef.current?.focus()
@@ -672,7 +747,7 @@ function ChatInput({
 
   // Подставить запись из истории в поле (rebuild поставит каретку в конец).
   const applyHistoryEntry = (entry: string) => {
-    onChangeValue(entry)
+    applyLive(entry)
   }
 
   // ── Клик по чипу в редакторе инпута ──
@@ -720,7 +795,7 @@ function ChatInput({
     }
     // Autocomplete-провайдер плагинов — навигация. Активен только когда
     // слеш/@mention меню закрыты (приоритет у штатных меню).
-    if (pluginAuto && slashCmds.length === 0 && mentionItems.length === 0 && !value.startsWith('/')) {
+    if (pluginAuto && slashCmds.length === 0 && mentionItems.length === 0 && !liveText.startsWith('/')) {
       const n = pluginAuto.data.suggestions.length
       if (e.key === 'ArrowUp') {
         e.preventDefault()
@@ -806,7 +881,7 @@ function ChatInput({
         }
         // Старт навигации только с пустого поля — иначе ArrowUp двигает
         // каретку вверх в многострочном вводе.
-        if (value === '') {
+        if (liveText === '') {
           e.preventDefault()
           historyIdxRef.current = 0
           applyHistoryEntry(inputHistory[0])
@@ -819,7 +894,7 @@ function ChatInput({
         const nextIdx = cur - 1
         if (nextIdx < 0) {
           historyIdxRef.current = null
-          onChangeValue('')
+          applyLive('')
         } else {
           historyIdxRef.current = nextIdx
           applyHistoryEntry(inputHistory[nextIdx])
@@ -845,7 +920,7 @@ function ChatInput({
       // есть текст, идёт генерация, нет вложений — то есть обычный Enter ушёл
       // бы в очередь. Отправку НЕ делаем сразу: ждём keyup (короткое нажатие)
       // либо порога STEER_HOLD_MS (внедрение).
-      const canSteerKeyboard = !!onSteer && !!stripAttachTokens(value).trim() &&
+      const canSteerKeyboard = !!onSteer && !!stripAttachTokens(liveText).trim() &&
         !!isGenerating && attachments.length === 0
       if (canSteerKeyboard) {
         // Автоповтор удержания не должен перезапускать таймер.
@@ -879,10 +954,15 @@ function ChatInput({
   }
 
   // Размонтирование/смена чата посреди удержания — таймер не должен выстрелить.
+  // Там же гасим отложенный IPC @mention-поиска.
   useEffect(() => () => {
     if (enterHoldTimer.current !== null) {
       clearTimeout(enterHoldTimer.current)
       enterHoldTimer.current = null
+    }
+    if (mentionDebounceRef.current !== null) {
+      clearTimeout(mentionDebounceRef.current)
+      mentionDebounceRef.current = null
     }
   }, [])
 
@@ -893,7 +973,7 @@ function ChatInput({
   // кнопке mic крутится спиннер, но запись можно начать (инференс подождёт
   // готовности модели). Преварма при старте НЕТ — воркер спавнится только
   // по факту использования голоса (см. voice.ipc.ts).
-  const micBusy = voice.modelLoading && !voiceActive && !value.trim() && !isGenerating
+  const micBusy = voice.modelLoading && !voiceActive && !liveText.trim() && !isGenerating
   // language — 'ru' (default) | 'en'. Selects persona name/description variant.
   const lang = useSettingsStore(s => (s.settings['language'] as 'ru' | 'en') ?? 'ru')
 
@@ -1036,13 +1116,13 @@ function ChatInput({
           <PluginInputActions
             onInsertCommand={(text) => {
               historyIdxRef.current = null
-              onChangeValue(text)
+              applyLive(text)
               setTimeout(() => editorApiRef.current?.focus(), 0)
             }}
           />
 
           <ChatInputEditor
-            value={value}
+            value={liveText}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onKeyUp={handleKeyUp}
@@ -1087,7 +1167,7 @@ function ChatInput({
           )}
 
           <ChatInputActionButton
-            value={value}
+            value={liveText}
             isGenerating={isGenerating}
             voice={voice}
             micBusy={micBusy}
@@ -1095,7 +1175,7 @@ function ChatInput({
             onStop={onStop}
             onSend={handleSend}
             onSteer={onSteer ? handleSteer : undefined}
-            holdActive={enterHold && !!isGenerating && !!stripAttachTokens(value).trim() && attachments.length === 0}
+            holdActive={enterHold && !!isGenerating && !!stripAttachTokens(liveText).trim() && attachments.length === 0}
             onMicClick={handleMicClick}
           />
         </div>

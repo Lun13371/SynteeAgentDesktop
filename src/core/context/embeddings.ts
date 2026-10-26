@@ -37,6 +37,37 @@ let _neuralInitAttempted = false
 let _neuralInitFailed = false
 let _useNeural = false
 
+/**
+ * Общие опции загрузки ONNX-моделей (MiniLM и E5).
+ *
+ * ⚠️ dtype: 'q8' — квантованные веса (model_quantized.onnx, ~113 МБ вместо
+ * 448 МБ fp32). В @huggingface/transformers v4 опция `quantized` УДАЛЕНА и
+ * молча игнорируется: код качал fp32-модель и держал ~845 МБ private RAM в
+ * main-процессе против ~508 МБ на q8 (замер 26.10.2026). Размерность вектора
+ * не меняется (384), поэтому контракт E5Embedder.dim стабилен.
+ *
+ * ⚠️ session_options.intraOpNumThreads — у onnxruntime-node по умолчанию
+ * потоков столько же, сколько ядер. Фоновая индексация выжирала до ~5 ядер
+ * (cpuUserMs 489% в 10-секундном сэмпле performance-main.jsonl). Ограничение
+ * только на wasm-бэкенд (env.backends.onnx.wasm.numThreads) не влияло на
+ * нативный CPU-провайдер. Двух потоков фоновой задаче достаточно.
+ */
+const ONNX_SESSION_OPTIONS = {
+  intraOpNumThreads: 2,
+  interOpNumThreads: 1,
+  executionMode: 'sequential' as const,
+  graphOptimizationLevel: 'all' as const,
+}
+
+/** Опции pipeline для neural/E5 — единая точка, чтобы dtype не разъезжался. */
+function modelLoadOptions(dtype: 'q8' | 'fp32') {
+  return {
+    dtype,
+    cache_dir: process.env.TRANSFORMERS_CACHE || undefined,
+    session_options: ONNX_SESSION_OPTIONS,
+  }
+}
+
 /** Включить/выключить neural embeddings (ONNX). По умолчанию выключено. */
 export function setUseNeuralEmbeddings(enabled: boolean): void {
   _useNeural = enabled
@@ -60,10 +91,8 @@ async function initNeural(): Promise<void> {
     try {
       env.backends.onnx.wasm.numThreads = 1
     } catch { /* onnx may not be configured */ }
-    _pipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-      quantized: true,
-      cache_dir: process.env.TRANSFORMERS_CACHE || undefined,
-    })
+    _pipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2',
+      modelLoadOptions('q8'))
   } catch (e) {
     _neuralInitFailed = true
     console.warn('[embeddings] neural init failed, using TF-IDF fallback:', e instanceof Error ? e.message : e)
@@ -106,6 +135,21 @@ const FAST_TFIDF_DIM = 2048
 export const E5_MODEL = 'Xenova/multilingual-e5-small'
 export const E5_DIM = 384
 
+/**
+ * Точность весов E5. q8 → model_quantized.onnx (~113 МБ) вместо fp32 (448 МБ).
+ * Выигрыш по private RAM main-процесса: ~340 МБ (замер 26.10.2026).
+ */
+export const E5_DTYPE = 'q8' as const
+
+/**
+ * Тег модели для колонки semantic_embeddings.model. Векторы fp32 и q8 лежат в
+ * немного разных пространствах, поэтому смена dtype обязана инвалидировать
+ * старый индекс: строки с прежним тегом не матчатся ни в поиске (WHERE model
+ * = ?), ни в инкрементальной индексации (existing.model === embedder.model) и
+ * перезаписываются в первом же цикле.
+ */
+export const E5_MODEL_TAG = `${E5_MODEL}@${E5_DTYPE}`
+
 export interface E5Embedder {
   /** Embed поискового запроса (префикс "query: "). */
   embedQuery(text: string): Promise<Embedding>
@@ -137,11 +181,8 @@ async function initE5(): Promise<void> {
     try {
       env.backends.onnx.wasm.numThreads = 1
     } catch { /* onnx may not be configured */ }
-    _e5Pipeline = await pipeline('feature-extraction', E5_MODEL, {
-      quantized: true,
-      cache_dir: process.env.TRANSFORMERS_CACHE || undefined,
-    })
-    console.log('[embeddings] E5 pipeline ready:', E5_MODEL)
+    _e5Pipeline = await pipeline('feature-extraction', E5_MODEL, modelLoadOptions(E5_DTYPE))
+    console.log('[embeddings] E5 pipeline ready:', E5_MODEL, `(${E5_DTYPE}, threads=${ONNX_SESSION_OPTIONS.intraOpNumThreads})`)
   } catch (e) {
     _e5InitFailed = true
     _e5LastFailureAt = Date.now()
@@ -169,7 +210,7 @@ function createE5Embedder(): E5Embedder | null {
     embedQuery: (text: string) => embedE5(text, 'query'),
     embedPassage: (text: string) => embedE5(text, 'passage'),
     dim: E5_DIM,
-    model: E5_MODEL,
+    model: E5_MODEL_TAG,
   }
 }
 

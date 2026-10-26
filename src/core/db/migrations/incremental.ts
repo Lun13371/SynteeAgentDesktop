@@ -1,5 +1,5 @@
 ﻿import type Database from 'better-sqlite3'
-import { migrateChatsToProjects, migrateLegacyMemoryToMemoryItems } from './dataMigrations'
+import { migrateChatsToProjects, migrateLegacyMemoryToMemoryItems, stripMessageAttachmentDataUrls } from './dataMigrations'
 
 /** Инкрементальные миграции: ALTER TABLE, новые таблицы, data-миграции. */
 export function runIncrementalMigrations(db: Database.Database): void {
@@ -59,6 +59,11 @@ export function runIncrementalMigrations(db: Database.Database): void {
   // новую унифицированную memory_items. Идемпотентна — повторный запуск
   // не дублирует (проверка по metadata->legacy_id).
   migrateLegacyMemoryToMemoryItems(db)
+
+  // base64 вложений в БД: одноразовая чистка исторических сообщений. Новые
+  // сообщения пишутся уже без dataUrl (writeMessageRow), а файлы на диске
+  // (path) остаются единственным источником — renderer рендерит file://.
+  stripMessageAttachmentDataUrls(db)
 
   // Автомиграция: добавляем title колонку к memory_items (если ещё нет).
   // Для существующих записей без title — переносим content в title

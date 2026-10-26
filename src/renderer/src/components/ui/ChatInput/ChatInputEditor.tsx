@@ -446,6 +446,12 @@ export function ChatInputEditor({
   useEffect(() => {
     onUserInputRef.current = onUserInput
   })
+  // Что мы отдали в onChange последним. Пока родитель не переопределил value,
+  // DOM уже соответствует этому тексту — сравнивать сериализацию (полный
+  // обход дерева) на каждый символ не нужно.
+  const lastEmittedRef = useRef<string | null>(null)
+  // Есть ли сейчас реплай-чипы в DOM (быстрый выход из sync-эффекта).
+  const hasReplyChipsRef = useRef(false)
 
   // Стабильные обёртки для DOM-чипов: читают cbsRef В МОМЕНТ события.
   // Чип живёт в DOM дольше рендера — прямая ссылка на колбэк захватила бы
@@ -465,6 +471,7 @@ export function ChatInputEditor({
     const el = editorRef.current
     if (!el) return
     const serialized = serializeEditor(el)
+    lastEmittedRef.current = serialized
     el.dataset.empty = serialized === '' ? '1' : ''
     onChangeRef.current(serialized)
     // Синхронизация вложений — ТОЛЬКО на пользовательский ввод (Backspace по
@@ -474,12 +481,15 @@ export function ChatInputEditor({
     // Реплай-чипы: Backspace/Delete выкинул чип из DOM, но реплай ещё в
     // state родителя — синхронизируем (иначе чип вернётся при следующем
     // sync-эффекте). Крестик на чипе вызывает onRemoveReply сам.
+    // Обход DOM только когда реплаи вообще есть — в обычном наборе их нет.
+    const replies = cbsRef.current.replies ?? []
+    if (replies.length === 0) return
     const presentReplies = new Set<string>()
     el.querySelectorAll('.ce-reply').forEach(n => {
       const id = (n as HTMLElement).dataset.id
       if (id) presentReplies.add(id)
     })
-    for (const r of cbsRef.current.replies ?? []) {
+    for (const r of replies) {
       if (!presentReplies.has(r.id)) cbsRef.current.onRemoveReply?.(r.id)
     }
   }, [editorRef])
@@ -494,9 +504,19 @@ export function ChatInputEditor({
     const el = editorRef.current
     if (!el) return
     const hasMissing = el.querySelector('.ce-attach--missing') !== null
-    if (!hasMissing && serializeEditor(el) === value) {
-      el.dataset.empty = value === '' ? '1' : ''
-      return
+    if (!hasMissing) {
+      // Быстрый путь: value — это ровно то, что мы сами отдали в onChange,
+      // значит DOM уже актуален. Раньше здесь на каждый символ гонялся
+      // serializeEditor (полный обход дерева) только чтобы убедиться в этом.
+      if (lastEmittedRef.current === value) {
+        el.dataset.empty = value === '' ? '1' : ''
+        return
+      }
+      if (serializeEditor(el) === value) {
+        el.dataset.empty = value === '' ? '1' : ''
+        lastEmittedRef.current = value
+        return
+      }
     }
     el.innerHTML = ''
     for (const seg of splitByAttachTokens(value)) {
@@ -519,6 +539,9 @@ export function ChatInputEditor({
     }
     placeCaretEnd(el)
     el.dataset.empty = value === '' ? '1' : ''
+    // DOM собран ровно из value — фиксируем, чтобы следующие рендеры с тем же
+    // value (attachment-массив, реплаи) не пересобирали редактор заново.
+    lastEmittedRef.current = value
   }, [value, attachments, editorRef, stableRemove, stablePreview])
 
   // ── Синхронизация реплай-чипов (ПОСЛЕ rebuild — он вытирает innerHTML) ──
@@ -531,17 +554,22 @@ export function ChatInputEditor({
     const el = editorRef.current
     if (!el) return
     const list = replies ?? []
+    // Быстрый выход: реплаев нет и чипов в DOM тоже нет. Иначе на КАЖДЫЙ
+    // символ выполнялся querySelectorAll по всему содержимому редактора.
+    if (list.length === 0 && !hasReplyChipsRef.current) return
     const listIds = list.map(r => r.id).join('\u0000')
     const domIds: string[] = []
     el.querySelectorAll('.ce-reply').forEach(n => {
       const id = (n as HTMLElement).dataset.id
       if (id) domIds.push(id)
     })
+    hasReplyChipsRef.current = domIds.length > 0
     if (listIds === domIds.join('\u0000')) return
     el.querySelectorAll('.ce-reply').forEach(n => n.remove())
     for (let i = list.length - 1; i >= 0; i--) {
       el.insertBefore(createReplyChipEl(list[i], stableRemoveReply), el.firstChild)
     }
+    hasReplyChipsRef.current = list.length > 0
   }, [value, replies, editorRef, stableRemoveReply])
 
   // ── Вставка чипа вложения на каретку ──

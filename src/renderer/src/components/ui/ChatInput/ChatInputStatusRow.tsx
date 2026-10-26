@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect, useCallback } from 'react'
+import { useState, useRef, useLayoutEffect, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
@@ -102,7 +102,23 @@ export function ChatInputStatusRow({
   // очередь, изменения, режимы) — пересчитываем переполнение. Только чтения
   // (scrollWidth/clientWidth/scrollLeft), без записей между ними — layout
   // не трэшится. setState с теми же значениями — no-op (React бейлит).
-  useLayoutEffect(() => { updateScrollState() })
+  //
+  // В rAF, а не синхронно в useLayoutEffect: чтение scrollWidth/clientWidth
+  // форсирует layout прямо в фазе commit. Инпут-бар рендерится на каждый
+  // символ (и ~20×/сек при стриме) — эти замеры попадали в критический путь
+  // ввода. Батчинг в один замер на кадр убирает лишние reflow; классы
+  // переполнения применяются в том же кадре, визуально ничего не меняется.
+  const measureRafRef = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    if (measureRafRef.current !== null) return
+    measureRafRef.current = requestAnimationFrame(() => {
+      measureRafRef.current = null
+      updateScrollState()
+    })
+  })
+  useEffect(() => () => {
+    if (measureRafRef.current !== null) cancelAnimationFrame(measureRafRef.current)
+  }, [])
 
   // ── Hover-поповер на workdir-бейдже ──
   // При наведении на бейдж рабочей директории — выезжает аккуратная плашка

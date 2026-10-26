@@ -1,6 +1,5 @@
 export type TaskSummaryStatus = 'running' | 'done' | 'error' | 'cancelled' | 'interrupted'
 export type TaskSummaryTodoStatus = 'pending' | 'in_progress' | 'done' | 'skipped'
-export interface TaskSummaryResult { id: string; title: string; kind: 'file' | 'url' | 'image'; target: string; messageId: string }
 export interface TaskSummaryChange { path: string; diff?: string; messageId: string }
 export interface TaskSummaryCheck { id: string; title: string; status: 'passed' | 'failed' | 'unknown'; detail: string; messageId: string }
 export type TaskSummaryParticipantStatus = 'starting' | 'queued' | 'running' | 'done' | 'error' | 'cancelled' | 'interrupted' | 'idle'
@@ -13,7 +12,7 @@ export interface TaskSummary {
   id: string; chatId: string; title: string; status: TaskSummaryStatus; createdAt: number; updatedAt: number
   messageIds: string[]; todo: Array<{ text: string; status: TaskSummaryTodoStatus }>
   participants?: TaskSummaryParticipant[]
-  results: TaskSummaryResult[]; changes: TaskSummaryChange[]; checks: TaskSummaryCheck[]; summary?: string; remaining?: string
+  changes: TaskSummaryChange[]; checks: TaskSummaryCheck[]; summary?: string; remaining?: string
 }
 export interface TaskSummaryState {
   tasks: TaskSummary[]; selectedTaskId?: string; pinned: boolean
