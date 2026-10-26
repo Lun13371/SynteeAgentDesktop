@@ -16,10 +16,11 @@ export const GIT_TIMEOUT_MS = 8000
  * execFile передаёт аргументы напрямую git без shell-обработки — % сохраняются.
  * maxBuffer 4MB — достаточно для status/log/diff типичных репо.
  */
-export async function runGit(workdir: string, args: string[]): Promise<string> {
+export async function runGit(workdir: string, args: string[], options?: { timeoutMs?: number }): Promise<string> {
   const { stdout } = await execFileAsync('git', ['-C', workdir, ...args], {
-    timeout: GIT_TIMEOUT_MS,
+    timeout: options?.timeoutMs ?? GIT_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   })
   return stdout
 }

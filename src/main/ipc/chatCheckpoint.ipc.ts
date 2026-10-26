@@ -2,10 +2,10 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { IPC_EVENTS } from '../../shared/constants'
 import {
-  getCheckpoints, getLastCheckpoint, getMessages, getSnapshotsForCheckpoint,
+  getCheckpoints, getLastCheckpoint, getMessages, getSnapshotsForCheckpoint, getConsumedPerFileUndoPaths,
   getContextSnapshot, setWorkingMemory, setChatSummary, deleteMessagesAfter, getMessageCount,
   deleteCheckpointsAfter, saveMessage, saveRewindHistory, getRewindHistory, deleteRewindHistory,
-  deleteMessageById, getLastRewindMessage, getChatWorkdirContext,
+  deleteMessageById, getLastRewindMessage, getChatWorkdirContext, getDB,
   getTurnSnapshotsOrdered, getLaterTurnSnapshots, type FileSnapshotRow,
 } from '../../core/db'
 import { resolveSnapshotPath } from '../../core/db/snapshotPaths'
@@ -39,10 +39,26 @@ function chatSnapshotPath(chatId: string, p: string): string {
  * файл, правленный несколько раз за turn, восстанавливался в произвольное
  * промежуточное состояние (см. core/db/snapshotMerge.ts).
  */
+function consumedFilePathKey(chatId: string, filePath: string): string {
+  return chatSnapshotPath(chatId, filePath).replace(/\\/g, '/').toLowerCase()
+}
+
 function turnSnapshotsForUndo(chatId: string, userMessageId: string) {
   let workdir: string | undefined
-  try { workdir = getChatWorkdirContext(chatId).workdir } catch { /* ok */ }
-  return firstSnapshotPerPath(getSnapshotsForCheckpoint(chatId, userMessageId), workdir)
+  try { workdir = getChatWorkdirContext(chatId).workdir } catch { /* use fallback */ }
+  const snapshots = firstSnapshotPerPath(getSnapshotsForCheckpoint(chatId, userMessageId), workdir)
+  const db = getDB()
+  const consumed = new Set((db.prepare(`
+    SELECT path_key as pathKey FROM per_file_undo_consumed WHERE chat_id = ? AND user_message_id = ?
+  `).all(chatId, userMessageId) as Array<{ pathKey: string }>).map(row => row.pathKey))
+  return snapshots.filter(s => !consumed.has(consumedFilePathKey(chatId, s.path)))
+}
+
+function consumePerFileUndo(chatId: string, userMessageId: string, filePath: string): void {
+  getDB().prepare(`
+    INSERT OR IGNORE INTO per_file_undo_consumed (chat_id, user_message_id, path_key, consumed_at)
+    VALUES (?, ?, ?, ?)
+  `).run(chatId, userMessageId, consumedFilePathKey(chatId, filePath), Date.now())
 }
 
 /**
@@ -226,6 +242,17 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
     }
   })
 
+  ipcMain.handle('chat:getConsumedPerFileUndoPaths', (_, chatId: string, userMessageId: string) => {
+    try {
+      let workdir: string | undefined
+      try { workdir = getChatWorkdirContext(chatId).workdir } catch { /* fallback */ }
+      const consumed = new Set(getConsumedPerFileUndoPaths(chatId, userMessageId))
+      return firstSnapshotPerPath(getSnapshotsForCheckpoint(chatId, userMessageId), workdir)
+        .filter(snapshot => consumed.has(consumedFilePathKey(chatId, snapshot.path)))
+        .map(snapshot => snapshot.path)
+    } catch { return [] }
+  })
+
   // ── Undo правок файлов последнего turn'а (БЕЗ удаления сообщений) ────────
   // Восстанавливает файлы из file_snapshots последнего checkpoint'а.
   // contentBefore = null → файл был создан → удаляем. Иначе → перезаписываем.
@@ -265,6 +292,7 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
           failed.push(`${snap.path}: ${(e as Error).message}`)
         }
       }
+      for (const path of restored) consumePerFileUndo(chatId, cp.userMessageId, path)
       const win = BrowserWindow.getAllWindows()[0] ?? null
       win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
       log('[chat:undoLastTurnFiles] chatId=%s restored=%d failed=%d', chatId, restored.length, failed.length)
@@ -302,6 +330,7 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
         try { mkdirSync(dirname(absPath), { recursive: true }) } catch { /* ok */ }
         writeFileSync(absPath, snap.contentBefore, 'utf-8')
       }
+      consumePerFileUndo(chatId, cp.userMessageId, snap.path)
       const win = BrowserWindow.getAllWindows()[0] ?? null
       win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
       log('[chat:undoFile] chatId=%s path=%s', chatId, filePath)
@@ -497,10 +526,8 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
           // чата: без этого запись/удаление уходили в папку установки.
           const absPath = chatSnapshotPath(chatId, snap.path)
           if (snap.contentBefore === null) {
-            if (existsSync(absPath)) {
-              unlinkSync(absPath)
-              restored.push(snap.path)
-            }
+            if (existsSync(absPath)) unlinkSync(absPath)
+            restored.push(snap.path)
           } else {
             try { mkdirSync(dirname(absPath), { recursive: true }) } catch { /* ok */ }
             writeFileSync(absPath, snap.contentBefore, 'utf-8')
@@ -510,6 +537,7 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
           failed.push(`${snap.path}: ${(e as Error).message}`)
         }
       }
+      for (const path of restored) consumePerFileUndo(chatId, userMessageId, path)
       const win = BrowserWindow.getAllWindows()[0] ?? null
       win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
       log('[chat:undoCheckpointFiles] chatId=%s userMsgId=%s restored=%d failed=%d',
@@ -543,6 +571,10 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
         try { mkdirSync(dirname(absPath), { recursive: true }) } catch { /* ok */ }
         writeFileSync(absPath, snap.contentBefore, 'utf-8')
       }
+      // §per-file-undo-no-redo — одноразовый ledger consumed хранит факт undo
+      // отдельно от исторических file_snapshots: rewind остаётся целым, redo
+      // для этой операции не появляется.
+      consumePerFileUndo(chatId, userMessageId, snap.path)
       const win = BrowserWindow.getAllWindows()[0] ?? null
       win?.webContents.send(IPC_EVENTS.CHAT_FILES_RESTORED, { chatId })
       log('[chat:undoCheckpointFile] chatId=%s userMsgId=%s path=%s', chatId, userMessageId, filePath)

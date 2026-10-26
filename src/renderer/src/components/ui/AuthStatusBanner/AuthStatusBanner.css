@@ -1,0 +1,43 @@
+.auth-status-banner {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(760px, calc(100% - 32px));
+  padding: 7px 10px;
+  transform: translateX(-50%);
+  border: 1px solid color-mix(in srgb, var(--warning, #eab308) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-secondary) 94%, #eab308 6%);
+  color: var(--text-secondary);
+  font-size: 12px;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, .18);
+}
+
+.auth-status-banner > span {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.auth-status-banner__retry {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 5px;
+  padding: 4px 8px;
+  background: var(--overlay-8);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.auth-status-banner__retry:hover:not(:disabled) {
+  background: var(--overlay-12);
+}
+
+.auth-status-banner__retry:disabled {
+  cursor: default;
+  opacity: .55;
+}

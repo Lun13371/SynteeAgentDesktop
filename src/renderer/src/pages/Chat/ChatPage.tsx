@@ -38,6 +38,8 @@ import { useChatStore, EMPTY_LIVE, selectIsLargeChat } from '../../store/chat.st
 import { computeLiveChanges } from '../../utils/changes'
 import { useExtensionsStore } from '../../store/extensions.store'
 import { useNavStore } from '../../store/nav.store'
+import { useUIStore } from '../../store/ui.store'
+import { useRightPanelTabsStore } from '../../store/rightPanelTabs.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom, hydrateCommands } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
@@ -228,6 +230,7 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const activeMode = useChatStore(s => s.activeMode)
   const projects = useChatStore(s => s.projects)
   const activeProjectId = useChatStore(s => s.activeProjectId)
+  const [gitSyncState, setGitSyncState] = useState<import('../../../../shared/types').GitSyncState | null>(null)
   // Сплит-режим: второй чат рядом с основным (50/50). Рендерим панель только
   // если сплит-чат жив, ≠ текущему (подписка в tabs.store закрывает такой
   // сплит, здесь — страховка от кадра-гонки) и не в архиве.
@@ -2509,6 +2512,33 @@ const chatId = compactingCurrentChatIdRef.current
     if (currentProject) setSettingsModalProject(currentProject)
   }, [currentProject])
 
+  useEffect(() => {
+    let cancelled = false
+    void window.syntee.gitSync.getState().then(state => { if (!cancelled) setGitSyncState(state) }).catch(() => {})
+    const off = window.syntee.gitSync.onState(state => { if (!cancelled) setGitSyncState(state) })
+    return () => { cancelled = true; off() }
+  }, [])
+
+  const gitSyncProjects = useMemo(() => {
+    if (!currentWorkdir || !gitSyncState) return []
+    return gitSyncState.projects.filter(project => project.workdir === currentWorkdir)
+  }, [currentWorkdir, gitSyncState])
+  const handleGitSyncApply = useCallback(async (projectId: string) => {
+    const result = await window.syntee.gitSync.apply(projectId)
+    if (!result.success && result.error) useToast.getState().add(result.error, 'error', 5000)
+  }, [])
+  const handleGitSyncLater = useCallback((projectId: string) => { void window.syntee.gitSync.later(projectId) }, [])
+  const handleGitSyncOpenGit = useCallback((projectId: string) => {
+    const project = gitSyncState?.projects.find(item => item.projectId === projectId)
+    useNavStore.getState().toggleMainPage('chat')
+    useRightPanelTabsStore.getState().openPanel('git')
+    useUIStore.getState().setAgentPanelTab('git')
+    useUIStore.getState().setAgentPanelOpen(true)
+    void window.syntee.settings.set('agentPanelTab', 'git')
+    void window.syntee.settings.set('agentPanelOpen', true)
+    if (project?.workdir) useToast.getState().add(`Git-панель: ${project.projectName}`, 'info', 2500)
+  }, [gitSyncState])
+
   // ── Загрузка кастомных slash-команд (из .md-файлов) ──
   // Грузим при mount и при смене workdir (проектные команды из .syntee/commands/).
   // builtin из SLASH_COMMANDS не входят в этот список — они в filterCommands.
@@ -3116,6 +3146,10 @@ const chatId = compactingCurrentChatIdRef.current
               lastTurnChanges={badgeChanges}
               badgeLive={badgeLive}
               onOpenProjectSettings={currentWorkdir ? handleOpenProjectSettings : undefined}
+              gitSyncProjects={gitSyncProjects}
+              onGitSyncApply={handleGitSyncApply}
+              onGitSyncLater={handleGitSyncLater}
+              onGitSyncOpenGit={handleGitSyncOpenGit}
               projectId={currentProject?.id ?? null}
               projectName={currentProject?.name}
             />

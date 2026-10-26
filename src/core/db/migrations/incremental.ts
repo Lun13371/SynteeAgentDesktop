@@ -204,6 +204,18 @@ export function runIncrementalMigrations(db: Database.Database): void {
   // dot_runs — история пробуждений (триггер, статус report/silent/error,
   // резюме, токены). Чат Dot'а — обычный чат в chats (FK без CASCADE:
   // удаление чата Dot'а чистит dot через DotManager, не через БД).
+  // Одноразовый per-file undo. Снапшоты остаются в file_snapshots для rewind;
+  // таблица хранит только факт использованной кнопки (redo для неё нет).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS per_file_undo_consumed (
+      chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      user_message_id TEXT NOT NULL,
+      path_key TEXT NOT NULL,
+      consumed_at INTEGER NOT NULL,
+      PRIMARY KEY(chat_id, user_message_id, path_key)
+    )
+  `)
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS dots (
       id              TEXT PRIMARY KEY,

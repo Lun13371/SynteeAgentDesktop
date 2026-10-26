@@ -84,6 +84,7 @@ import { registerAudioVisualizerIPC, stopAudioVisualizerIPC } from './ipc/audioV
 import { registerNotificationIPC } from './ipc/notification.ipc'
 import { initNotificationManager } from './managers/NotificationManager'
 import { initActivityManager } from './managers/ActivityManager'
+import { initGitSyncManager, registerGitSyncIPC } from './managers/GitSyncManager'
 import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
 import { ensureUpdater } from './updater/LauncherBridge'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
@@ -257,6 +258,7 @@ let notificationWindow: NotificationWindow
 let overlayManager: OverlayManager
 let notificationManager: ReturnType<typeof initNotificationManager>
 let activityManager: ReturnType<typeof initActivityManager>
+let gitSyncManager: ReturnType<typeof initGitSyncManager>
 let trayManager: TrayManager
 let hotkeyManager: HotkeyManager
 let sidecarAppRestarted = false
@@ -458,6 +460,11 @@ app.whenReady().then(async () => {
     notificationManager.handleAction(payload)
   })
 
+  // ── Git Sync Monitor ───────────────────────────────────────────────
+  // Фоновый fetch работает независимо от видимости Git-панели.
+  gitSyncManager = initGitSyncManager(store, mainWindow, notificationManager)
+  registerGitSyncIPC(gitSyncManager)
+
   // ── Activity overlay (информер активности ИИ) ──────────────────────
   // ActivityManager решает показывать ли activity-виджет в overlay-хабе
   // (по настройке activityMonitor.enabled + состоянию окна).
@@ -512,6 +519,7 @@ app.whenReady().then(async () => {
   // Прикрепляем listeners на главное окно (теперь оно создано).
   notificationManager.attachWindowListeners()
   activityManager.attachWindowListeners()
+  gitSyncManager.start()
 
   // MCP: фиксируем sender + прогреваем глобальные серверы (нужно окно).
   mcpManager.setWindow(mainWindow.getWindow())
@@ -615,8 +623,9 @@ app.on('before-quit', () => {
   try { flushAllActiveRuns() } catch { /* ok — best-effort */ }
   mainWindow?.flushBounds()
   ptyManager.killAll()
-  // Останавливаем опрос обновлений.
+  // Останавливаем опрос обновлений и Git Sync Monitor.
   stopUpdatePolling()
+  gitSyncManager?.stop()
   stopAudioDevicesIPC()
   stopAudioVisualizerIPC()
   // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.

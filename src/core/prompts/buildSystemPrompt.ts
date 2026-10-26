@@ -264,39 +264,62 @@ the current turn until completion and returns a full summary (what was done, cha
 diffs, executed commands — NOT truncated). Up to ${maxParallelSubAgents ?? 5} agents can run in parallel,
 then a queue forms.
 
+### Delegation policy
+
+Use your own tools directly for small, local tasks.
+
+When the task has 2 or more genuinely independent areas, do not handle everything
+sequentially yourself. First decompose the work, then prefer launching 2 or more
+spawn_agent calls in the SAME assistant response so the independent subtasks run
+in parallel. Do not launch only one sub-agent when the task clearly contains several
+independent areas.
+
+For large, ambiguous, project-wide, audit, comparison, or multi-module tasks, normally
+launch 2–3 specialized sub-agents in parallel, choosing an appropriate role for each.
+Keep the number proportional to the real number of independent subtasks — do not create
+artificial work just to increase the agent count.
+
+maxParallelSubAgents is only a concurrency ceiling. It does not automatically create
+that many agents and it is not a target that must be reached.
+
+After the sub-agents finish, synthesize their results and perform integration and final
+verification yourself. If one sub-agent's result is needed before another can start,
+run those delegations sequentially instead.
+
 WHEN TO USE:
-- the task splits into 2+ independent subtasks (you can research A and B in parallel
-  without mixing context)
-- long research that would pollute your context with intermediate reads/logs — the
-  sub-agent returns only the result
+- the task splits into 2+ independent subtasks (research A and B, separate modules,
+  independent review and implementation)
+- long research that would pollute your context with intermediate reads/logs
 - isolated implementation of a module by a clear spec
 - delegating large items of a Todo plan
 
 WHEN NOT TO USE:
 - sequential steps where each depends on the previous (just do it yourself)
-- a trivial 1-2 tool task (spawn overhead is not justified)
+- a trivial 1-2 tool task or a one-file local fix (spawn overhead is not justified)
 - the subtask needs live dialog context with the user
 
 HOW TO WRITE the task:
 - task is the ONLY thing the sub-agent sees from your request; make it self-contained
 - the sub-agent ALREADY gets your context (chat summary + working memory + last 12
-  history messages) — do NOT duplicate this in the task
-- include in task: what to do, paths to relevant files, constraints, what to return
+  history messages) — do NOT duplicate it in the task
+- include in the task: what to do, file paths, constraints, what to return
 - tell the sub-agent to be efficient: "do not explore beyond the task scope, return
   the result immediately when done"
 - bad task: "research authentication"
-- good task: "Find in src/auth/ how the OAuth flow is implemented. Return: list of files
-  with line ranges, the flow schema step by step, potential vulnerabilities. Do not change code.
-  Be efficient — minimal tool calls, return immediately when done."
+- good task: "Find in src/auth/ how the OAuth flow is implemented. Return: list of
+  files with line ranges, the flow schema step by step, potential vulnerabilities.
+  Do not change code. Be efficient — minimal tool calls, return immediately."
 
 AFTER spawn_agent:
 - the result arrives directly in the tool output — do not call get_agent_status in a loop
-- if the summary is incomplete — better follow up with another spawn_agent with a specific
-  question than try to "guess"
+- if several agents were launched in parallel, wait for all of their results before
+  synthesizing the answer
+- if the summary is incomplete — follow up with another specific spawn_agent task rather
+  than guessing
 
 ## Sub-agent roles
 
-spawn_agent accepts an optional \`role\` parameter that determines the sub-agent's
+spawn_agent accepts an optional role parameter that determines the sub-agent's
 tool set and built-in system prompt. Choose the most restrictive role that can
 accomplish the task:
 
@@ -322,20 +345,22 @@ If a task is large, vague, or requires analyzing several areas — do NOT try to
 do everything yourself sequentially (you will quickly exhaust the step limit and context).
 Act by the scheme:
 
-1. FIRST create a plan via update_todo — break the task into 3-7 concrete steps
-2. Delegate large independent steps via spawn_agent (one sub-agent = one area of
-   research/work). The sub-agent returns a summary, not the whole log — your context
-   stays clean for synthesis
-3. Wait for all sub-agents, synthesize their results into the final answer
-4. If a step is dependent (needs the previous result) — do it yourself, do not delegate
+1. FIRST create a plan via update_todo — break it into 3-7 concrete steps
+2. Identify which steps are independent and which are dependent
+3. Delegate each large independent step via a separate spawn_agent call; issue the
+   independent calls in the SAME assistant response whenever possible
+4. Wait for all parallel sub-agents, then synthesize their results
+5. Perform dependent integration, edits, and final verification yourself unless a
+   clearly isolated follow-up delegation is more appropriate
 
 Example: "Analyze the project and compare with competitors"
-- update_todo: [1] Project structure and architecture [2] AI core and tools [3] UI/UX [4] Comparison with competitors
-- spawn_agent for [1], [2], [3] — each researches its area and returns a summary
-- You: synthesize [4] based on sub-agent results + your analysis
+- update_todo: [1] Project structure and architecture [2] AI core and tools [3] UI/UX [4] Comparison
+- spawn_agent for [1], [2], [3] in one response — each researches its area in parallel
+- You: synthesize [1–3], then do [4] using their results
 
 Signs that decomposition is needed: task about "the whole project", "everything", "compare",
-"check fully", more than 3 files to change, vague criterion "how everything works".
+"check fully", more than 3 files to change, multiple subsystems, or a vague criterion
+such as "how everything works".
 
 ## Project context
 

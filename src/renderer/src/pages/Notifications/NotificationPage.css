@@ -28,13 +28,14 @@ html:has(.notif-root) #root {
 
 .notif-stack {
   position: absolute;
-  top: 20px;
+  top: 18px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 9px;
+  width: min(390px, calc(100vw - 28px));
 }
 
 .notif-card-wrapper {
@@ -48,14 +49,17 @@ html:has(.notif-root) #root {
    overflow:hidden чтобы контент не вылезал во время morph. */
 .notif-card {
   pointer-events: auto;
-  width: 340px;
-  max-width: 90vw;
-  border-radius: 14px;
-  background: rgba(20, 20, 26, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  width: 100%;
+  max-width: 390px;
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.035) 42%, rgba(6, 8, 18, 0.22)),
+    rgba(18, 20, 31, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   box-shadow:
-    0 12px 40px rgba(0, 0, 0, 0.45),
-    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+    0 24px 70px rgba(0, 0, 0, 0.42),
+    0 8px 24px rgba(0, 0, 0, 0.24),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
   overflow: hidden;
   position: relative;
   /* Только композиторные свойства: раньше здесь были width/height — они
@@ -76,14 +80,15 @@ html:has(.notif-root) #root {
    CSS filter: blur() даёт НАСТОЯЩИЙ блюр desktop content. */
 .notif-blur-bg {
   position: absolute;
-  inset: 0;
+  inset: -18px;
   background-size: cover;
   background-position: center;
-  filter: blur(28px) brightness(0.7) saturate(1.3);
-  transform: scale(1.15); /* scale чтобы blur не показывал края */
+  filter: blur(30px) brightness(0.62) saturate(1.5);
+  transform: scale(1.08); /* scale чтобы blur не показывал края */
   z-index: -1;
   pointer-events: none;
   border-radius: inherit;
+  opacity: 0.82;
 }
 
 /* Glass highlight overlay (поверх blur) */
@@ -124,8 +129,8 @@ html:has(.notif-root) #root {
 .notif-card-inner {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 13px 14px 14px;
   position: relative;
   z-index: 1;
   overflow: hidden; /* контент не вылезает во время morph */
@@ -134,15 +139,17 @@ html:has(.notif-root) #root {
 /* ── Icon ── */
 .notif-icon-wrap {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
-  background: rgba(var(--notif-accent-rgb), 0.14);
-  border: 1px solid rgba(var(--notif-accent-rgb), 0.2);
-  margin-top: 1px;
+  border-radius: 12px;
+  background:
+    linear-gradient(145deg, rgba(var(--notif-accent-rgb), 0.28), rgba(var(--notif-accent-rgb), 0.08));
+  border: 1px solid rgba(var(--notif-accent-rgb), 0.3);
+  box-shadow: 0 0 22px rgba(var(--notif-accent-rgb), 0.16), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  margin-top: 0;
 }
 
 /* ── Content ── */
@@ -153,10 +160,10 @@ html:has(.notif-root) #root {
 
 .notif-title {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--notif-text);
-  line-height: 1.3;
-  margin-bottom: 1px;
+  line-height: 1.35;
+  margin-bottom: 3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -165,8 +172,8 @@ html:has(.notif-root) #root {
 
 .notif-body {
   font-size: 12px;
-  color: var(--notif-text-2);
-  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.64);
+  line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -182,21 +189,23 @@ html:has(.notif-root) #root {
 }
 
 .notif-action-btn {
-  padding: 4px 10px;
+  padding: 6px 11px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--notif-text);
-  background: rgba(var(--notif-accent-rgb), 0.16);
-  border: 1px solid rgba(var(--notif-accent-rgb), 0.22);
-  border-radius: 6px;
+  background: rgba(var(--notif-accent-rgb), 0.17);
+  border: 1px solid rgba(var(--notif-accent-rgb), 0.3);
+  border-radius: 9px;
   cursor: pointer;
-  transition: background 0.15s, transform 0.1s;
+  transition: background 0.18s, border-color 0.18s, transform 0.18s, box-shadow 0.18s;
   white-space: nowrap;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 .notif-action-btn:hover {
-  background: rgba(var(--notif-accent-rgb), 0.28);
+  background: rgba(var(--notif-accent-rgb), 0.3);
+  border-color: rgba(var(--notif-accent-rgb), 0.48);
+  box-shadow: 0 5px 18px rgba(var(--notif-accent-rgb), 0.16);
   transform: translateY(-1px);
 }
 
@@ -207,52 +216,94 @@ html:has(.notif-root) #root {
 /* ── Close button ── */
 .notif-close {
   flex-shrink: 0;
-  width: 20px;
-  height: 20px;
+  width: 25px;
+  height: 25px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
   cursor: pointer;
-  border-radius: 5px;
-  transition: background 0.15s, opacity 0.15s;
+  border-radius: 8px;
+  transition: background 0.18s, border-color 0.18s, opacity 0.18s, transform 0.18s;
   z-index: 2;
-  opacity: 0.5;
+  opacity: 0.62;
 }
 
 .notif-close:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.18);
   opacity: 1;
+  transform: scale(1.06);
 }
 
-/* ── Priority variants (left border accent) ── */
+/* ── Priority variants: акцент теперь живёт в glow, а не в резкой полосе ── */
 .notif-card--info {
-  border-left: 2px solid rgba(77, 159, 255, 0.5);
+  --notif-accent-rgb: 77, 159, 255;
 }
 .notif-card--success {
-  border-left: 2px solid rgba(74, 222, 128, 0.5);
+  --notif-accent-rgb: 74, 222, 128;
 }
 .notif-card--warning {
-  border-left: 2px solid rgba(245, 158, 11, 0.55);
+  --notif-accent-rgb: 245, 158, 11;
 }
 .notif-card--urgent {
-  border-left: 2px solid rgba(255, 80, 80, 0.6);
+  --notif-accent-rgb: 255, 80, 80;
+  border-color: rgba(255, 100, 110, 0.38);
   box-shadow:
-    0 12px 40px rgba(255, 80, 80, 0.12),
-    0 0 0 1px rgba(255, 80, 80, 0.06) inset;
+    0 24px 70px rgba(0, 0, 0, 0.42),
+    0 0 34px rgba(255, 80, 80, 0.14),
+    0 0 0 1px rgba(255, 80, 80, 0.1) inset;
+}
+
+.notif-card:hover {
+  border-color: rgba(255, 255, 255, 0.23);
+  box-shadow:
+    0 28px 78px rgba(0, 0, 0, 0.48),
+    0 0 28px rgba(var(--notif-accent-rgb), 0.12),
+    0 0 0 1px rgba(255, 255, 255, 0.055) inset;
+}
+
+.notif-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  transform-origin: left center;
+  background: linear-gradient(90deg, rgba(var(--notif-accent-rgb), 0.9), rgba(var(--notif-accent-rgb), 0.15));
+  animation: notif-progress linear forwards;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+@keyframes notif-progress {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
 }
 
 /* ── Droplet link ── */
 .notif-droplet-link {
   position: absolute;
   left: 50%;
-  top: -6px;
+  top: -9px;
   transform: translateX(-50%);
-  width: 2px;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.1);
+  width: 1px;
+  height: 9px;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.2));
   border-radius: 0 0 2px 2px;
   pointer-events: none;
   transform-origin: top center;
+  opacity: 0.7;
+}
+
+@media (max-width: 520px) {
+  .notif-stack { top: 12px; width: calc(100vw - 20px); }
+  .notif-card { border-radius: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notif-card,
+  .notif-card-inner,
+  .notif-droplet-link { transition: none !important; }
 }

@@ -64,6 +64,7 @@ import type { Dot, DotConfig } from '../../shared/types'
 import { getNotificationManager } from '../managers/NotificationManager'
 import { persistApprovalGrant } from '../services/approvalAllowlist'
 import { getActivityManager } from '../managers/ActivityManager'
+import { getGitSyncManager } from '../managers/GitSyncManager'
 
 import { v4 as uuid } from 'uuid'
 import {
@@ -2702,6 +2703,7 @@ function pathHash(value: string): string {
               imageUrl: rawStep.imageUrl,
               imagePaths: rawStep.imagePaths,
               visualAnalysis: rawStep.visualAnalysis,
+              fileSnapshots: rawStep.fileSnapshots,
               diff: rawStep.diff,
               callId: rawStep.callId,
               pendingCallId: rawStep.pendingCallId,
@@ -2712,6 +2714,24 @@ function pathHash(value: string): string {
               steerApplied: rawStep.steerApplied,
             }
             run.bufferedSteps.push(ts)
+            run.checkpointDirty = true
+            // §rollback-subagent — снапшоты merge-back'а уже встроены в
+            // tool_result spawn_agent; добавляем их в live-буфер родителя
+            // сразу, чтобы Stop/краш родительского worker'а тоже переживался.
+            if (rawStep.type === 'tool_result' && rawStep.toolName === 'spawn_agent' && Array.isArray(rawStep.fileSnapshots)) {
+              for (const snap of rawStep.fileSnapshots as Array<{ path?: unknown; contentBefore?: unknown }>) {
+                if (typeof snap.path === 'string') {
+                  const normalized = {
+                    path: snap.path,
+                    contentBefore: typeof snap.contentBefore === 'string' ? snap.contentBefore : null,
+                  }
+                  const duplicate = run.liveSnapshots.some(existing =>
+                    existing.path === normalized.path && existing.contentBefore === normalized.contentBefore,
+                  )
+                  if (!duplicate) run.liveSnapshots.push(normalized)
+                }
+              }
+            }
             if (rawStep.type === 'steer' && typeof rawStep.steerId === 'string') {
               const card = run.bufferedLiveState.steers.find(s => s.steerId === rawStep.steerId)
               if (card) card.applied = true
@@ -2984,6 +3004,13 @@ function pathHash(value: string): string {
               approvalMode: msg.approval_mode as 'auto' | 'ask' | 'full' | undefined,
               isolation: msg.isolation as 'auto' | 'worktree' | 'none' | undefined,
               role: msg.role as string | undefined,
+              onFileSnapshot: (snapshots) => {
+                const parentRun = activeRuns.get(msg.chatId as string)
+                if (parentRun && !parentRun.doneSent) {
+                  parentRun.liveSnapshots.push(...snapshots)
+                  parentRun.checkpointDirty = true
+                }
+              },
               mode: chatMode,
               storeData,
               context: {
@@ -4576,6 +4603,18 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
       chatQueues.set(params.chatId, q)
       // Эмитим обновление очереди — UI покажет новый ожидающий запрос.
       emitQueueUpdate(win, params.chatId)
+      // Даже queued-сообщение считается отправленным: Git-проверка запускается
+      // отдельно и не ждёт освобождения AI-слота.
+      if (!params.incognito) {
+        setImmediate(() => {
+          try {
+            const workdir = getChatWorkdirContext(params.chatId).workdir
+            if (workdir) getGitSyncManager()?.checkWorkdir(workdir, true)
+          } catch (error) {
+            log('[chat:send] queued git sync background check skipped: %s', String((error as Error)?.message ?? error))
+          }
+        })
+      }
       return { userMsg, assistantMsgId, queued: true }
     }
 
@@ -4589,6 +4628,21 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     // вложений. Без этого пользователь видит пустой чат всё время обработки.
     void runChatSend(params, win, chatMode, agentSettings, userMsg, history, assistantMsgId)
       .catch((e) => failRunCleanup(win, params.chatId, assistantMsgId, e))
+
+    // Git Sync — не входит в критический путь отправки. Сначала chat:send
+    // возвращает результат и запускает AI-run, затем в следующем event-loop
+    // тике фоном проверяем только репозиторий этого чата. Ошибка/таймаут Git
+    // не влияет на текущий запрос и не останавливает его.
+    if (!params.incognito) {
+      setImmediate(() => {
+        try {
+          const workdir = getChatWorkdirContext(params.chatId).workdir
+          if (workdir) getGitSyncManager()?.checkWorkdir(workdir, true)
+        } catch (error) {
+          log('[chat:send] git sync background check skipped: %s', String((error as Error)?.message ?? error))
+        }
+      })
+    }
     return { userMsg, assistantMsgId }
   }
 

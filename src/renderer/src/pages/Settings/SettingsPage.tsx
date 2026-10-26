@@ -124,6 +124,7 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   // Общие
   { section: 'general', id: 'userName', label: 'Имя пользователя', keywords: ['имя', 'ник', 'nickname'] },
   { section: 'general', id: 'autostart', label: 'Запуск с Windows', keywords: ['автозапуск', 'автостарт', 'старт'] },
+  { section: 'general', id: 'gitSyncEnabled', label: 'Git Sync Monitor', keywords: ['git', 'github', 'fetch', 'репозиторий', 'коммиты', 'синхронизация'] },
   { section: 'general', id: 'language', label: 'Язык интерфейса', keywords: ['язык', 'english', 'русский', 'language'] },
   { section: 'general', id: 'closeAction', label: 'При закрытии окна', keywords: ['трей', 'закрытие', 'выход', 'quit'] },
   { section: 'general', id: 'showContextRing', label: 'Счётчик контекста', keywords: ['контекст', 'кольцо', 'ring'] },
@@ -785,6 +786,9 @@ const GeneralSection = memo(function GeneralSection({ settings, onSet }: { setti
         </Field>
         <Field id="autostart" label="Запуск с Windows">
           <Toggle value={autostart} onChange={toggleAutostart} />
+        </Field>
+        <Field id="gitSyncEnabled" label="Git Sync Monitor" description="Проверять Git-репозитории при запуске и каждые 15 минут; показывать новые remote-коммиты над полем ввода">
+          <Toggle value={(settings['gitSyncEnabled'] as boolean) ?? true} onChange={v => onSet('gitSyncEnabled', v)} />
         </Field>
         <Field id="language" label="Язык интерфейса">
           <Select
@@ -2889,6 +2893,7 @@ const NOTIF_TYPES: { id: import('../../../../shared/types').NotificationType; la
   { id: 'messenger', label: 'Сообщения мессенджера' },
   { id: 'updates', label: 'Обновления' },
   { id: 'system', label: 'Системные события' },
+  { id: 'git_sync', label: 'Git Sync Monitor' },
 ]
 
 const SHOW_WHEN_LABELS: Record<string, string> = {

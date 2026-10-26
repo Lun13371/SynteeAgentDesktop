@@ -22,7 +22,7 @@ import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow
 import { getChatBrowserMode } from '../../core/db/chats'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import { stripFinalMarkers } from '../../shared/finalAnswer'
-import { confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
+import { activeRuns, confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
 import { getNotificationManager } from './NotificationManager'
 import { searchAllSources, saveMemoryItem, type SaveMemoryInput } from '../../core/memory/MemoryStore'
 import { bumpMemoryHit } from '../../core/memory/store/utils'
@@ -408,7 +408,7 @@ class AgentManager {
    * суб-агентов одного проекта выстраиваются в цепочку, чтобы `git apply`
    * не соревновался за index родителя.
    */
-  private serializedMerge(workdir: string, info: WorktreeInfo): Promise<{ ok: boolean; conflict: boolean; worktreeKept: boolean; error?: string }> {
+  private serializedMerge(workdir: string, info: WorktreeInfo): Promise<import('./WorktreeIsolation').MergeResult> {
     const prev = this.mergeChain.get(workdir) ?? Promise.resolve()
     const result = prev.then(() => mergeWorktreeBack(workdir, info))
     // В цепочку кладём promise без rejection — чтобы один упавший merge не валил всех.
@@ -426,6 +426,28 @@ class AgentManager {
       ? 'проект не является git-репозиторием'
       : 'не удалось создать worktree'
     record.summary += `\n\n[Внимание: worktree-изоляция не сработала (${reason}) — суб-агент работал в общей рабочей папке проекта напрямую.]`
+  }
+
+  /**
+   * §rollback-subagent — merge worktree физически меняет родительский workdir
+   * из main-процесса, поэтому локальный undoStack основного Agent этого не
+   * видит. Добавляем снапшоты в liveSnapshots активного родительского turn'а.
+   * При следующем sendDone они попадут в тот же file_snapshots/checkpoint.
+   */
+  private appendMergedSnapshots(chatId: string, snapshots: Array<{ path: string; contentBefore: string | null }>): void {
+    if (snapshots.length === 0) return
+    const run = activeRuns.get(chatId)
+    if (!run || run.doneSent) return
+    for (const snapshot of snapshots) {
+      // Agent-side callback may deliver the same snapshot immediately after
+      // this main-process append. Avoid duplicate identical events while still
+      // preserving two different edits of the same file.
+      const duplicate = run.liveSnapshots.some(existing =>
+        existing.path === snapshot.path && existing.contentBefore === snapshot.contentBefore,
+      )
+      if (!duplicate) run.liveSnapshots.push(snapshot)
+    }
+    run.checkpointDirty = true
   }
 
   /**
@@ -458,6 +480,7 @@ class AgentManager {
     approvalMode?: 'auto' | 'ask' | 'full'  // §1.10 — override глобального режима
     isolation?: IsolationMode  // §изоляция — override режима worktree
     role?: string  // §roles — специализация суб-агента (researcher/editor/...)
+    onFileSnapshot?: (snapshots: Array<{ path: string; contentBefore: string | null }>) => void
   }): Promise<{ summary: string; error?: string }> {
     const maxParallel = this.getMaxParallel()
     const running = this.getRunningCount()
@@ -527,7 +550,7 @@ class AgentManager {
     this.persist(record)
     this.broadcast('agent:update', record)
 
-    return this._runWorker(record, subStoreData, opts.context, opts.approvalMode)
+    return this._runWorker(record, subStoreData, opts.context, opts.approvalMode, opts.onFileSnapshot)
   }
 
   private async _runWorker(
@@ -535,6 +558,7 @@ class AgentManager {
     storeData: Record<string, unknown>,
     context?: SubagentContext,
     approvalModeOverride?: 'auto' | 'ask' | 'full',
+    onFileSnapshot?: (snapshots: Array<{ path: string; contentBefore: string | null }>) => void,
   ): Promise<{ summary: string; error?: string }> {
     // §roles — получаем roleDef из record.role (roleDef из spawn здесь не виден).
     const roleDef = getSubagentRole(record.role)
@@ -787,6 +811,21 @@ ${subModeOutro}`
               .catch(() => worker.postMessage({ replyId, token: null }))
             break
           }
+          case 'file_snapshot': {
+            // Worktree paths are disposable copies. Parent-side snapshots are
+            // captured immediately before git apply; never store those paths.
+            if (record.worktreeInfo) break
+            const snapshot = msg.snapshot as { path?: unknown; contentBefore?: unknown } | undefined
+            if (snapshot && typeof snapshot.path === 'string') {
+              const normalized = {
+                path: snapshot.path,
+                contentBefore: typeof snapshot.contentBefore === 'string' ? snapshot.contentBefore : null,
+              }
+              onFileSnapshot?.([normalized])
+              if (!onFileSnapshot) this.appendMergedSnapshots(record.chatId, [normalized])
+            }
+            break
+          }
           case 'step': {
             const step = msg.step as AgentStep & { imageUrl?: string }
             if (step.type === 'tool_call' || step.type === 'tool_result') {
@@ -878,6 +917,8 @@ ${subModeOutro}`
               ;(async () => {
                 try {
                   const mergeResult = await this.serializedMerge(record.workdir!, record.worktreeInfo!)
+                  onFileSnapshot?.(mergeResult.fileSnapshots)
+                  if (!onFileSnapshot) this.appendMergedSnapshots(record.chatId, mergeResult.fileSnapshots)
                   if (mergeResult.conflict) {
                     record.summary += `\n\n[Внимание: конфликт слияния worktree с WIP родителя. Конфликтные файлы возвращены к версии родителя; изменения суб-агента полностью сохранены в worktree: ${record.worktreeInfo!.worktreePath}. Часть неконфликтных правок могла примениться — проверь git status.]`
                   } else if (!mergeResult.ok) {
@@ -889,15 +930,15 @@ ${subModeOutro}`
                  } catch (e: any) {
                    record.summary += `\n\n[Необработанная ошибка merge worktree: ${e.message}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
                  }
-                 this.persistNow(record)
-                 this.broadcast('agent:update', record)
-                 resolve({ summary: record.summary })
-               })()
-             } else {
-               this.persistNow(record)
-               this.broadcast('agent:update', record)
-               resolve({ summary: record.summary })
-             }
+                this.persistNow(record)
+                this.broadcast('agent:update', record)
+resolve({ summary: record.summary })
+              })()
+            } else {
+              this.persistNow(record)
+              this.broadcast('agent:update', record)
+              resolve({ summary: record.summary })
+            }
              break
            }
              case 'error': {
@@ -931,13 +972,13 @@ ${subModeOutro}`
                  await this.finalizeWorktreeOnError(record)
                  this.persistNow(record)
                  this.broadcast('agent:update', record)
-                 resolve({ summary: record.summary, error: record.error })
-               })()
-             } else {
-               this.persistNow(record)
-               this.broadcast('agent:update', record)
-               resolve({ summary: record.summary, error: record.error })
-             }
+resolve({ summary: record.summary, error: record.error })
+              })()
+            } else {
+              this.persistNow(record)
+              this.broadcast('agent:update', record)
+resolve({ summary: record.summary, error: record.error })
+            }
              break
            }
 
@@ -1188,9 +1229,9 @@ ${subModeOutro}`
         } else {
           this.persistNow(record)
           this.broadcast('agent:update', record)
-          resolve({ summary: '', error: e.message })
-        }
-      })
+resolve({ summary: '', error: e.message })
+          }
+        })
 
       worker.on('exit', (code) => {
         if (record.status === 'running') {

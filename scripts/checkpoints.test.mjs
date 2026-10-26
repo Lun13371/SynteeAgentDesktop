@@ -106,13 +106,13 @@ test('разные файлы не склеиваются', () => {
 })
 
 // ── 4. Стрим снапшотов (Stop / краш воркера) ───────────────────────────────
-test('pickSnapshots: финальный undoStack авторитетнее стрима', () => {
+test('pickSnapshots: live-буфер авторитетнее локального undoStack (включая саб-агентов)', () => {
   const live = [{ path: FILE, contentBefore: 'ORIGINAL' }]
   const finalList = [
     { path: FILE, contentBefore: 'ORIGINAL' },
     { path: FILE, contentBefore: 'AFTER' },
   ]
-  assert.equal(pickSnapshots(live, finalList), finalList)
+  assert.equal(pickSnapshots(live, finalList), live)
 })
 
 test('pickSnapshots: при Stop/краше (finalList undefined) берётся стрим', () => {
@@ -151,11 +151,14 @@ const src = {
   checkpoints: readFileSync('src/core/db/checkpoints.ts', 'utf8'),
   ipc: readFileSync('src/main/ipc/chatCheckpoint.ipc.ts', 'utf8'),
   chatIpc: readFileSync('src/main/ipc/chat.ipc.ts', 'utf8'),
+  sessionPanel: readFileSync('src/renderer/src/components/ui/SessionChangesPanel/SessionChangesPanel.tsx', 'utf8'),
   agent: readFileSync('src/core/agent/Agent.ts', 'utf8'),
   agentTypes: readFileSync('src/core/agent/types.ts', 'utf8'),
   worker: readFileSync('src/main/workers/ai-worker.ts', 'utf8'),
   messages: readFileSync('src/core/db/messages.ts', 'utf8'),
   chatShared: readFileSync('src/main/ipc/chatShared.ts', 'utf8'),
+  worktree: readFileSync('src/main/managers/WorktreeIsolation.ts', 'utf8'),
+  agentManager: readFileSync('src/main/managers/AgentManager.ts', 'utf8'),
 }
 
 // Комментарии (// и /** */) упоминают старые баги («раньше был ORDER BY id
@@ -222,6 +225,31 @@ test('main: file_snapshot копится в ActiveRun.liveSnapshots и попа�
 
 test('main: filesChanged считает файлы, а не правки (дедуп по пути)', () => {
   assert.match(src.chatIpc, /const filePaths = firstSnapshotPerPath\(snaps, chatWorkdir\)\.map\(s => s\.path\)/)
+})
+
+test('subagent: worktree merge возвращает состояния файлов до git apply', () => {
+  assert.match(src.worktree, /fileSnapshots: MergeFileSnapshot\[\]/)
+  assert.match(src.worktree, /readFileSync\(absolutePath, 'utf-8'\)/)
+  assert.match(src.worktree, /return \{ ok: true, conflict: false, worktreeKept: false, fileSnapshots \}/)
+  assert.match(src.agentManager, /onFileSnapshot\?\.\(mergeResult\.fileSnapshots\)/)
+})
+
+test('subagent: shared/worktree snapshots стримятся в родительский ActiveRun без tool history', () => {
+  assert.match(src.agentManager, /case 'file_snapshot'/)
+  assert.match(src.agentManager, /onFileSnapshot\?\.\(\[normalized\]\)/)
+  assert.match(src.chatIpc, /onFileSnapshot: \(snapshots\) =>/)
+  assert.match(src.chatIpc, /parentRun\.liveSnapshots\.push\(\.\.\.snapshots\)/)
+  assert.doesNotMatch(src.agent, /delegatedSnapshots/)
+  assert.doesNotMatch(src.worker, /spawnSnapshots/)
+})
+
+test('per-file undo: consumed ledger persists without modifying snapshots or checkpoint metadata', () => {
+  assert.match(src.ipc, /INSERT OR IGNORE INTO per_file_undo_consumed/)
+  assert.match(src.ipc, /consumePerFileUndo\(chatId, userMessageId, snap\.path\)/)
+  assert.match(src.ipc, /for \(const path of restored\) consumePerFileUndo\(chatId, cp\.userMessageId, path\)/)
+  assert.match(src.ipc, /SELECT path_key as pathKey FROM per_file_undo_consumed/)
+  assert.doesNotMatch(src.ipc, /UPDATE chat_checkpoints SET files_changed/)
+  assert.match(src.sessionPanel, /getConsumedPerFileUndoPaths/)
 })
 
 test('БД: удаление сообщения не оставляет осиротевшие снапшоты', () => {

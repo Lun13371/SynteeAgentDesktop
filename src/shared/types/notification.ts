@@ -8,6 +8,7 @@ export type NotificationType =
   | 'messenger'
   | 'updates'
   | 'system'
+  | 'git_sync'
 
 export type NotificationPriority = 'info' | 'success' | 'warning' | 'urgent'
 

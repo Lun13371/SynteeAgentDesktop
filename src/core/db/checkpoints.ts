@@ -56,6 +56,10 @@ export function saveFileSnapshots(
   const tx = db.transaction((items: FileSnapshotEntry[]) => {
     db.prepare(`DELETE FROM file_snapshots WHERE chat_id = ? AND user_message_id = ?`)
       .run(chatId, userMessageId)
+    // Повторная генерация того же user_message_id — новый turn: одноразовые
+    // undo-маркеры прошлого запуска нельзя переносить на новый undoStack.
+    db.prepare(`DELETE FROM per_file_undo_consumed WHERE chat_id = ? AND user_message_id = ?`)
+      .run(chatId, userMessageId)
     if (items.length === 0) return
     const now = Date.now()
     const stmt = db.prepare(`
@@ -141,6 +145,14 @@ export function saveNamedSnapshot(chatId: string, name: string): CheckpointMeta 
     createdAt: now,
     name,
   }
+}
+
+export function getConsumedPerFileUndoPaths(chatId: string, userMessageId: string): string[] {
+  const rows = getDB().prepare(`
+    SELECT path_key as pathKey FROM per_file_undo_consumed
+    WHERE chat_id = ? AND user_message_id = ?
+  `).all(chatId, userMessageId) as Array<{ pathKey: string }>
+  return rows.map(row => row.pathKey)
 }
 
 export function getCheckpoints(chatId: string): CheckpointMeta[] {
