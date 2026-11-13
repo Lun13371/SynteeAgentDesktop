@@ -19,7 +19,6 @@ import {
   getChatReasoning, setChatReasoning,
   getChatModes, setChatModes, setChatPlanningMode, setChatImageMode, setChatAskMode,
   getChatBrowserMode,
-  getChatPersona, setChatPersona,
   getChatDraft, setChatDraft, getUserMessageContents,
   setChatLastUsage, getChatLastUsage, clearChatLastUsage,
   getAllProjects,
@@ -4322,9 +4321,6 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
   ipcMain.handle('chat:setPlanningMode', (_, chatId: string, val: boolean) => { setChatPlanningMode(chatId, val); return true })
   ipcMain.handle('chat:setImageMode', (_, chatId: string, val: boolean) => { setChatImageMode(chatId, val); return true })
   ipcMain.handle('chat:setAskMode', (_, chatId: string, val: boolean) => { setChatAskMode(chatId, val); return true })
-  // Persona — single-select run mode (classic/architect/debugger/...).
-  ipcMain.handle('chat:getPersona', (_, chatId: string) => getChatPersona(chatId))
-  ipcMain.handle('chat:setPersona', (_, chatId: string, persona: import('../../shared/modes').PersonaId) => { setChatPersona(chatId, persona); return true })
   // Per-chat модель: NULL = глобальное назначение role:'main'. Пишется при
   // смене модели в пикере чата; новый чат наследует модель чата-родителя.
   ipcMain.handle('chat:getModel', (_, chatId: string) => getChatModel(chatId))

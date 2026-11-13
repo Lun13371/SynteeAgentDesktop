@@ -134,7 +134,6 @@ export default function HelpModal({ open, onClose, customCommands = [] }: HelpMo
               <ul className="help-modal-tips">
                 <li><code>/fork</code> — дублировать чат для &quot;what-if&quot; экспериментов без потери оригинала.</li>
                 <li><code>/snapshot &lt;имя&gt;</code> + <code>/restore</code> — именованные точки отката (поверх авто-чекпоинтов на каждый turn).</li>
-                <li><code>/review</code>, <code>/tests</code>, <code>/debug</code>, <code>/refactor</code>, <code>/git</code> — встроенные режимы с активацией скиллов.</li>
                 <li>Создайте файл <code>.syntee/commands/my-cmd.md</code> в проекте для кастомной команды.</li>
                 <li>Файл <code>AGENTS.md</code> или <code>.syntee/instructions.md</code> в корне проекта даёт агенту проектные инструкции.</li>
               </ul>

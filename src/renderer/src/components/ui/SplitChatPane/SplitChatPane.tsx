@@ -4,7 +4,6 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { v4 as uuid } from 'uuid'
 import type { Message, Attachment, ToolOutputMode, ReplyTarget } from '../../../../../shared/types'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
-import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../../../../shared/modes'
 import { initChatSend, hydrateFromMain, enqueuePendingUserMsg } from '../../../hooks/useChatRunSubscription'
 import { useChatAutoscroll } from '../../../hooks/useChatAutoscroll'
 import { useBackgroundLoadFullChat } from '../../../hooks/useBackgroundLoadFullChat'
@@ -193,13 +192,11 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const [planningMode, setPlanningMode] = useState(false)
   const [imageMode, setImageMode] = useState(false)
   const [askMode, setAskMode] = useState(false)
-  const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA)
   const [draftAttachments, setDraftAttachments] = useState<Attachment[]>([])
   const draftAttachmentsRef = useRef<Attachment[]>([])
   const planningModeRef = useRef(false)
   const imageModeRef = useRef(false)
   const askModeRef = useRef(false)
-  const personaRef = useRef<PersonaId>(DEFAULT_PERSONA)
   useEffect(() => { draftAttachmentsRef.current = draftAttachments }, [draftAttachments])
   useEffect(() => { planningModeRef.current = planningMode }, [planningMode])
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
@@ -210,7 +207,6 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       imageModeRef.current = info.enabled
     }
   }), [chatId])
-  useEffect(() => { personaRef.current = persona }, [persona])
 
   const [replyTo, setReplyTo] = useState<Message[]>([])
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
@@ -273,7 +269,6 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
         setPlanningMode(false)
         setImageMode(false)
         setAskMode(false)
-        setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
         setDraftAttachments([])
         return
       }
@@ -299,12 +294,11 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
           }
           if (typeof r === 'string') setReasoningValue(r)
         }).catch(() => {})
-        const [modes, draftText, history, attachments, loadedPersona] = await Promise.all([
+        const [modes, draftText, history, attachments] = await Promise.all([
           window.syntee.chat.getModes(chatId).catch(() => null),
           window.syntee.chat.getDraft(chatId).catch(() => null),
           window.syntee.chat.getInputHistory(chatId).catch(() => null),
           window.syntee.draft.getAttachments(chatId).catch(() => null),
-          window.syntee.chat.getPersona(chatId).catch(() => null),
         ])
         if (cancelled) return
         if (modes) {
@@ -312,8 +306,6 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
           setImageMode(!!modes.imageMode)
           setAskMode(!!modes.askMode)
         }
-        const safePersona = isValidPersona(loadedPersona) ? loadedPersona : DEFAULT_PERSONA
-        setPersonaState(safePersona); personaRef.current = safePersona
         setDraft(typeof draftText === 'string' ? draftText : '')
         setDraftAttachments(Array.isArray(attachments) ? attachments as Attachment[] : [])
         setInputHistory(Array.isArray(history) ? history.reverse() : [])
@@ -496,11 +488,6 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
   const persistAskMode = useCallback((v: boolean) => {
     if (!chatId || isIncognito) return
     window.syntee.chat.setAskMode(chatId, v).catch(() => {})
-  }, [chatId, isIncognito])
-
-  const persistPersona = useCallback((v: PersonaId) => {
-    if (!chatId || isIncognito) return
-    window.syntee.chat.setPersona(chatId, v).catch(() => {})
   }, [chatId, isIncognito])
 
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -701,12 +688,10 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
     let oneShotSkill: { name: string; instructions: string } | undefined
     let oneShotAllowedTools: string[] | undefined
     let oneShotMode: 'ask' | 'plan' | 'code' | undefined
-    let oneShotPersona: PersonaId | undefined
 
     if (slash) {
       const sysPrompt = slash.command.systemPrompt(slash.args)
       if (sysPrompt) aiContent = sysPrompt
-      if (slash.command.personaOverride) oneShotPersona = slash.command.personaOverride
       if (slash.command.custom) {
         if (slash.command.mode) oneShotMode = slash.command.mode
         if (slash.command.allowedTools?.length) oneShotAllowedTools = slash.command.allowedTools
@@ -766,9 +751,8 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       planningMode,
       askMode: askMode || slash?.command.name === 'ask',
       imageMode,
-      persona,
       mode: activeMode,
-      oneShotSkill, oneShotAllowedTools, oneShotMode, oneShotPersona,
+      oneShotSkill, oneShotAllowedTools, oneShotMode,
       // Уровень мышления из UI на момент клика (source of truth, см. ChatPage).
       reasoningValue: reasoningValue,
       attachments: attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
@@ -783,7 +767,7 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
       initChatSend(chatId)
       requestAnimationFrame(() => pinAutoscroll(true))
     }
-  }, [chatId, customCommands, replyTo, isIncognito, planningMode, askMode, imageMode, persona, activeMode, reasoningValue, addMessage, setMessagesWindow, pinAutoscroll, chat])
+  }, [chatId, customCommands, replyTo, isIncognito, planningMode, askMode, imageMode, activeMode, reasoningValue, addMessage, setMessagesWindow, pinAutoscroll, chat])
 
   const chatTitle = chat?.title ?? 'Чат'
 
@@ -968,8 +952,6 @@ function SplitChatPane({ chatId, onClose }: { chatId: string; onClose: () => voi
           onImageModeChange={(v) => { setImageMode(v); persistImageMode(v) }}
           askMode={askMode}
           onAskModeChange={(v) => { setAskMode(v); persistAskMode(v) }}
-          persona={persona}
-          onPersonaChange={(v) => { setPersonaState(v); personaRef.current = v; persistPersona(v) }}
           workdir={currentWorkdir}
           compactSessionStats={compactSessionStats}
           customCommands={customCommands}

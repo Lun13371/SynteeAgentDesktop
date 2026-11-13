@@ -81,7 +81,7 @@ export function renderMirrorContent(text: string): JSX.Element {
   )
 }
 
-// Framer-motion variants для меню «+» (attach/mode/persona picker).
+// Framer-motion variants для меню «+» (attach/mode toggles).
 export const menuContainer = {
   hidden: { opacity: 0, scale: 0.5 },
   visible: {

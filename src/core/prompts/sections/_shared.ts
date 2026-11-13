@@ -35,20 +35,6 @@ export interface GraphStats {
   fileHubs?: Array<{ label: string; degree: number; topImports: string[] }>
 }
 
-/** Persona — single-select run mode profile. */
-export interface PersonaInfo {
-  id: string
-  nameEn: string
-  toolsProfile: 'full' | 'readonly'
-  skillId?: string
-}
-
-/** Resolved instructions for a persona that wraps a builtin skill. */
-export interface PersonaSkill {
-  name: string
-  instructions: string
-}
-
 /** One-shot skill — instructions temporarily injected for this run. */
 export interface OneShotSkill {
   name: string

@@ -1,17 +1,21 @@
 .usercard {
   flex-shrink: 0;
-  border-top: 1px solid var(--border);
-  padding: 8px;
-  background: var(--bg-secondary);
+  border-top: none;
+  padding: 4px 8px 8px;
+  background: transparent;
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .usercard-btn {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 4px 6px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -22,7 +26,27 @@
 }
 
 .usercard-btn:hover {
-  background: var(--accent-subtle);
+  background: var(--overlay-3);
+}
+
+.usercard-quick {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.usercard-quick:hover {
+  background: var(--overlay-3);
+  color: var(--text-primary);
 }
 
 .usercard-info {
@@ -32,7 +56,7 @@
 
 .usercard-name {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -68,8 +92,8 @@
 }
 
 .usercard-avatar-placeholder {
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -84,24 +108,24 @@
 .usercard-panel {
   display: flex;
   flex-direction: column;
-  padding: 10px;
-  gap: 8px;
-  background: var(--bg-secondary);
+  padding: 8px;
+  gap: 6px;
+  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
   backdrop-filter: blur(24px) saturate(var(--glass-saturate, 1.4));
   -webkit-backdrop-filter: blur(24px) saturate(var(--glass-saturate, 1.4));
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg, 0 20px 60px rgba(0, 0, 0, 0.6));
+  border: 1px solid var(--border);
+  border-radius: var(--layout-radius, 12px);
+  box-shadow: 0 12px 40px rgba(var(--shadow-rgb), 0.45), inset 0 1px 0 var(--overlay-3);
   transform-origin: bottom left;
   overflow-y: auto;
 }
 
-/* Header панели — аватар + имя + план */
+/* Header панели — аватар + имя */
 .usercard-panel-header {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 4px 8px;
+  padding: 6px 6px 8px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -112,7 +136,7 @@
 
 .usercard-panel-name {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -120,7 +144,7 @@
 }
 
 .usercard-panel-email {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -214,16 +238,19 @@
   white-space: nowrap;
 }
 
-/* ── Баланс (компактная строка в шапке панели) ── */
+/* ── Баланс — отдельный чип-строка под шапкой ── */
 .usercard-panel-balance {
-  margin-top: 4px;
-  font-size: 10px;
-  font-family: var(--font-mono, monospace);
-  line-height: 1.2;
   display: flex;
   align-items: baseline;
-  gap: 5px;
-  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 2px;
+  padding: 6px 8px;
+  background: var(--overlay-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.2;
 }
 
 .usercard-panel-balance-value {
@@ -233,34 +260,37 @@
 
 .usercard-panel-balance-held {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 /* ── Кнопки действий ── */
 .usercard-panel-actions {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .usercard-panel-action {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 8px;
+  gap: 9px;
+  padding: 7px 8px;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 8px;
   background: transparent;
   cursor: pointer;
-  color: var(--text-primary);
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
   text-align: left;
-  transition: background 0.12s;
+  transition: background 0.12s, color 0.12s;
 }
 
 .usercard-panel-action:hover {
-  background: var(--accent-subtle);
+  background: var(--overlay-3);
+  color: var(--text-primary);
 }
 
 .usercard-panel-action--danger {
@@ -269,10 +299,11 @@
 
 .usercard-panel-action--danger:hover {
   background: rgba(255, 80, 80, 0.1);
+  color: #ff8a8a;
 }
 
 .usercard-panel-divider {
   height: 1px;
   background: var(--border);
-  margin: 3px 0;
+  margin: 2px 4px;
 }

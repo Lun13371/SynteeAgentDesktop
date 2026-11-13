@@ -28,9 +28,7 @@ import AppIcon from '../../components/ui/AppIcon/AppIcon'
 import ToastContainer, { useToast } from '../../components/ui/Toast/Toast'
 import ChatSearch from '../../components/ui/ChatSearch/ChatSearch'
 import HelpModal from '../../components/ui/HelpModal/HelpModal'
-import { PersonaSuggestionModal } from '../../components/ui/PersonaSuggestionModal/PersonaSuggestionModal'
 import { ProjectSettingsModal } from '../../components/ui/ProjectSettingsModal/ProjectSettingsModal'
-import { detectPersona, isPersonaSuggestionsDisabled, disablePersonaSuggestions } from '../../utils/personaDetect'
 import Logo from '../../components/ui/Logo/Logo'
 import SplitChatPane from '../../components/ui/SplitChatPane/SplitChatPane'
 import ChatMinimap from '../../components/ui/ChatMinimap/ChatMinimap'
@@ -59,7 +57,6 @@ async function repairDraftAttachments(chatId: string, atts: Attachment[]): Promi
     return atts
   }
 }
-import { DEFAULT_PERSONA, isValidPersona, type PersonaId } from '../../../../shared/modes'
 import { DEFAULT_HOTKEYS } from '../../../../shared/constants'
 import './ChatPage.css'
 import type { ChatGoal } from '../../../../shared/types/goal'
@@ -374,9 +371,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // вручную (плюс-меню) или через подтверждение request_access от AI.
   const [browserMode, setBrowserMode] = useState(false)
   const browserModeRef = useRef(false)
-  // Persona — single-select run mode (classic/architect/debugger/...).
-  // Orthogonal to the three toggles above. Persisted per-chat in chats.persona.
-  const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA)
   // ── Вложения черновика (attachments) — переживают рестарт как и draft. ──
   // Хранятся в chat_draft_attachments + файлы в userData/draft-attachments/.
   // При отправке передаются в chat.send, draft очищается.
@@ -400,7 +394,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const planningModeRef = useRef(false)
   const imageModeRef = useRef(false)
   const askModeRef = useRef(false)
-  const personaRef = useRef<PersonaId>(DEFAULT_PERSONA)
   const prevChatIdRef = useRef<string | null>(null)
   const prevIsIncognitoRef = useRef(false)
   // In-memory история для инкогнито-чатов (chatId → DESC массив), чтобы
@@ -424,7 +417,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => { imageModeRef.current = imageMode }, [imageMode])
   useEffect(() => { askModeRef.current = askMode }, [askMode])
   useEffect(() => { browserModeRef.current = browserMode }, [browserMode])
-  useEffect(() => { personaRef.current = persona }, [persona])
 
   const [showContextRing, setShowContextRing] = useState(true)
   const [mainModelId, setMainModelId] = useState('claude-sonnet-4-6')
@@ -470,12 +462,6 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const [customCommands, setCustomCommands] = useState<SlashCommand[]>([])
   // ── /help модалка ──
   const [showHelp, setShowHelp] = useState(false)
-  // Persona auto-suggest modal: показываем когда detect находит персону по
-  // первой реплике нового чата. Блокирующий — пользователь выбирает до send.
-  const [personaSuggest, setPersonaSuggest] = useState<{ id: PersonaId; preview: string; pendingText: string } | null>(null)
-  // Флаг для повторного handleSend после ответа в modal — пропускаем детект,
-  // иначе уйдём в рекурсию (модал → accept → handleSend → детект → модал).
-  const skipPersonaSuggestRef = useRef(false)
   // ── /restore пикер именованных снапшотов ──
   const [snapshotPicker, setSnapshotPicker] = useState<CheckpointMeta[] | null>(null)
   // ── Модалка настроек проекта (открывается из hover-поповера на workdir-бейдже) ──
@@ -836,46 +822,6 @@ const chatId = compactingCurrentChatIdRef.current
     return () => window.removeEventListener('keydown', handler)
   }, [handleAskModeChange, handlePlanningModeChange])
 
-  // ── Persona — single-select run mode. Persisted in chats.persona (one
-  //  UPDATE per change). 'classic' is the neutral default (no badge, no
-  //  injection). Invalid stored values fall back to 'classic' on load.
-  const handlePersonaChange = useCallback((v: PersonaId) => {
-    setPersonaState(v)
-    personaRef.current = v
-    if (!currentChatId || isIncognito) return
-    window.syntee.chat.setPersona(currentChatId, v).catch(() => {})
-  }, [currentChatId, isIncognito])
-
-  // ── Persona auto-suggest modal handlers ──
-  // accept: переключаем персону + повторный handleSend (skip-detect ref,
-  // чтобы не уйти в рекурсию). dismiss: повторный handleSend с classic.
-  // never: opt-out + повторный handleSend с classic.
-  const handlePersonaSuggestAccept = useCallback(() => {
-    if (!personaSuggest) return
-    const { id, pendingText } = personaSuggest
-    setPersonaSuggest(null)
-    handlePersonaChange(id)
-    skipPersonaSuggestRef.current = true
-    void handleSend(pendingText)
-  }, [personaSuggest, handlePersonaChange])
-
-  const handlePersonaSuggestDismiss = useCallback(() => {
-    if (!personaSuggest) return
-    const { pendingText } = personaSuggest
-    setPersonaSuggest(null)
-    skipPersonaSuggestRef.current = true
-    void handleSend(pendingText)
-  }, [personaSuggest])
-
-  const handlePersonaSuggestNever = useCallback(() => {
-    if (!personaSuggest) return
-    const { pendingText } = personaSuggest
-    setPersonaSuggest(null)
-    disablePersonaSuggestions()
-    skipPersonaSuggestRef.current = true
-    void handleSend(pendingText)
-  }, [personaSuggest])
-
   // ── Черновик: debounced-сохранение в БД ──
   // 300мс задержка — чтобы не дёргать IPC на каждое нажатие. При смене
   // чата / размонтировании pending-таймер отменяется и сохранение идёт
@@ -957,9 +903,6 @@ const chatId = compactingCurrentChatIdRef.current
       // Режимы (planning/image/ask) НЕ сохраняем при свитче — они пишутся
       // немедленно при тумблинге через индивидуальные IPC-сеттеры. Save-on-switch
       // здесь вызывал race condition: stale ref'ы затирали режимы чужого чата.
-      if (personaRef.current !== DEFAULT_PERSONA) {
-        window.syntee.chat.setPersona(prevId, personaRef.current).catch(() => {})
-      }
     }
     prevChatIdRef.current = currentChatId
     prevIsIncognitoRef.current = isIncognito
@@ -969,7 +912,6 @@ const chatId = compactingCurrentChatIdRef.current
       setDraftLive('')
       setInputHistory([])
       setPlanningMode(false); setImageMode(false); setAskMode(false)
-      setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setDraftAttachments([])
       draftRef.current = ''
       draftAttachmentsRef.current = []
@@ -990,7 +932,6 @@ const chatId = compactingCurrentChatIdRef.current
       setDraft('')
       setDraftLive('')
       setPlanningMode(false); setImageMode(false); setAskMode(false)
-      setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setDraftAttachments([])
       draftRef.current = ''
       draftAttachmentsRef.current = []
@@ -1006,7 +947,7 @@ const chatId = compactingCurrentChatIdRef.current
 
     // ── Восстановление модели + уровня мышления ────────────────────────────
     // ОТДЕЛЬНАЯ цепочка от modes/draft-загрузки: раньше модель сидела в общем
-    // Promise.all, и падение ЛЮБОГО запроса (draft/persona/history) уводило
+    // Promise.all, и падение ЛЮБОГО запроса (draft/history) уводило
     // весь chain в .catch — модель прошлого чата оставалась висеть. Теперь
     // модель восстанавливается независимо, с индивидуальными catch.
     // PICK-GUARD: если пользователь уже выбрал модель/reasoning в этом чате
@@ -1049,9 +990,8 @@ const chatId = compactingCurrentChatIdRef.current
       window.syntee.chat.getDraft(currentChatId).catch(() => null),
       window.syntee.chat.getInputHistory(currentChatId).catch(() => null),
       window.syntee.draft.getAttachments(currentChatId).catch(() => null),
-      window.syntee.chat.getPersona(currentChatId).catch(() => null),
       window.syntee.chat.getLastTurnChanges?.(currentChatId).catch(() => null),
-    ]).then(([modes, browserModeLoaded, draftText, history, attachments, loadedPersona, lastChanges]) => {
+    ]).then(([modes, browserModeLoaded, draftText, history, attachments, lastChanges]) => {
       if (cancelled || currentChatId !== prevChatIdRef.current) return
       useChatStore.getState().setLastTurnChanges(currentChatId, lastChanges ?? null)
       if (modes) {
@@ -1067,9 +1007,6 @@ const chatId = compactingCurrentChatIdRef.current
         setBrowserMode(browserModeLoaded)
         browserModeRef.current = browserModeLoaded
       }
-      const safePersona = isValidPersona(loadedPersona) ? loadedPersona : DEFAULT_PERSONA
-      setPersonaState(safePersona)
-      personaRef.current = safePersona
       const d = typeof draftText === 'string' ? draftText : ''
       setDraft(d)
       setDraftLive(d)
@@ -1100,7 +1037,6 @@ const chatId = compactingCurrentChatIdRef.current
       if (cancelled) return
       setDraft(''); setDraftLive(''); setPlanningMode(false); setImageMode(false); setAskMode(false); setBrowserMode(false)
       browserModeRef.current = false
-      setPersonaState(DEFAULT_PERSONA); personaRef.current = DEFAULT_PERSONA
       setInputHistory([])
       setDraftAttachments([]); draftAttachmentsRef.current = []
     })
@@ -1119,9 +1055,6 @@ const chatId = compactingCurrentChatIdRef.current
           window.syntee.chat.setDraft(id, draftRef.current).catch(() => {})
           window.syntee.draft.setAttachments(id, draftAttachmentsRef.current).catch(() => {})
           // Режимы НЕ сохраняем — они уже сохранены при тумблинге.
-          if (personaRef.current !== DEFAULT_PERSONA) {
-            window.syntee.chat.setPersona(id, personaRef.current).catch(() => {})
-          }
         } catch { /* окно уже закрывается — ок */ }
       }
     }
@@ -1897,30 +1830,6 @@ const chatId = compactingCurrentChatIdRef.current
       return
     }
 
-    // ── /persona [name] — sticky switch чата ──
-    // Short-circuit: НЕ отправляет сообщение агенту, только переключает персону.
-    // /persona без арг → ошибка (choices-picker обрабатывается в SlashMenu на
-    //   этапе выбора, но если пользователь ввёл вручную — подсказываем).
-    // /persona architect → setPersona + chat:setPersona + toast.
-    // Аргументы — короткие имена (classic/architect/debug/review/refactor/test/mentor);
-    // маппим в полный PersonaId.
-    if (slash?.command.name === 'persona') {
-      const SHORT_TO_ID: Record<string, PersonaId> = {
-        classic: 'classic', architect: 'architect', debug: 'debugger',
-        review: 'reviewer', refactor: 'refactorer', test: 'test-writer', mentor: 'mentor',
-      }
-      const arg = slash.args?.trim().toLowerCase()
-      if (!arg || !(arg in SHORT_TO_ID)) {
-        toast('Укажи персону: /persona classic | architect | debug | review | refactor | test | mentor', 'info')
-        return
-      }
-      const id = SHORT_TO_ID[arg]
-      handlePersonaChange(id)
-      const label = id === 'classic' ? 'Classic (без персоны)' : id.charAt(0).toUpperCase() + id.slice(1)
-      toast(`Персона чата: ${label}`, 'success')
-      return
-    }
-
     // /compact — ручное сжатие контекста чата. Не создаёт user-сообщения
     // (по поведению ближе к rewind): main гоняет applyRollingWindowAsync с
     // forceCompress=true, вставляет в БД system-разделитель «Контекст сжат»
@@ -2039,25 +1948,16 @@ const chatId = compactingCurrentChatIdRef.current
     let aiContent: string = goalPrompt ?? stripAttachTokens(raw)
 
     // ── One-shot параметры для команд ──
-    // Поддерживаются и custom (.md) и builtin (personaOverride/skill).
-    //   - personaOverride: /debug /review /architect ... — одно сообщение
-    //     в указанной персоне, без персистенции (sticky persona не меняется).
+    // Поддерживаются и custom (.md) и builtin (skill).
     //   - skill: инструкции скилла инъектируются на этот прогон.
     //   - mode/allowedTools: только для custom .md-команд.
     let oneShotSkill: { name: string; instructions: string } | undefined
     let oneShotAllowedTools: string[] | undefined
     let oneShotMode: 'ask' | 'plan' | 'code' | undefined
-    let oneShotPersona: PersonaId | undefined
 
     if (slash) {
       const sysPrompt = slash.command.systemPrompt(slash.args)
       if (sysPrompt) aiContent = sysPrompt
-
-      // Per-message persona override — работает для builtin (/debug, /review,
-      // /architect, ...) и для custom .md-команд с `personaOverride` в frontmatter.
-      if (slash.command.personaOverride) {
-        oneShotPersona = slash.command.personaOverride
-      }
 
       // Custom-команды: mode + allowedTools (builtin управляют режимом сами).
       if (slash.command.custom) {
@@ -2067,8 +1967,8 @@ const chatId = compactingCurrentChatIdRef.current
         }
       }
 
-      // Skill — резолвится для builtin и custom (новые builtin /debug /review
-      // /refactor /test имеют skill, ссылающийся на resources/skills/*.md).
+      // Skill — резолвится для custom .md-команд с `skill:` в frontmatter
+      // (ссылается на resources/skills/*.md или пользовательский скилл).
       if (slash.command.skill) {
         try {
           const skills = await window.syntee.skills.getAll({
@@ -2113,31 +2013,6 @@ const chatId = compactingCurrentChatIdRef.current
       }
     }
     const mergedAttachments = [...draftAttachmentsRef.current, ...replyAttachments]
-
-    // ── Persona auto-suggest (блокирующий modal) ──
-    // Только для первой реплики нового чата, когда sticky persona = classic
-    // и пользователь не отключил предложения. Detect ищет совпадение по
-    // ключевым словам (ru/en). Если найдено — показываем modal: пользователь
-    // выбирает Switch (persona меняется + send продолжается), Not now
-    // (send с classic), или Never (opt-out + send с classic).
-    // Блокирует ДО создания userMsg и очистки draft — иначе потеряли бы текст.
-    if (
-      !isGoalCommand && !skipPersonaSuggestRef.current &&
-      persona === 'classic' &&
-      messages.filter(m => m.role === 'user').length === 0 &&
-      !oneShotPersona &&
-      !isPersonaSuggestionsDisabled() &&
-      !slash // slash-команда — не детектим (/debug сам задаст персону)
-    ) {
-      const detected = detectPersona(raw)
-      if (detected) {
-        // Сохраняем весь контекст для продолжения send после ответа.
-        setPersonaSuggest({ id: detected, preview: raw, pendingText: raw })
-        return
-      }
-    }
-    // Если пришли из modal-обработчика — сбрасываем флаг.
-    skipPersonaSuggestRef.current = false
 
     const userMsg: Message = {
       id: uuid(), chatId,
@@ -2213,18 +2088,11 @@ const chatId = compactingCurrentChatIdRef.current
       // Тумблер «Управление браузером»: browser_* тулы (main также читает
       // chats.browser_mode — включение через request_access учитывается).
       browserMode: browserModeRef.current,
-      // persona из ref — мгновенно отражает актуальное значение (state
-      // асинхронно). Важно для persona auto-suggest modal: после accept
-      // повторный handleSend должен увидеть новую персону, а не старую.
-      persona: personaRef.current,
       mode: activeMode,
       // One-shot параметры кастомной команды (skill/mode/allowedTools).
       oneShotSkill,
       oneShotAllowedTools,
       oneShotMode,
-      // Per-message persona override (/debug, /review, ...). Не персистится —
-      // sticky persona чата не меняется, только этот прогон.
-      oneShotPersona,
       // Уровень мышления из UI на момент клика (source of truth). Гарантирует:
       // что видно в селекторе — то и уходит в запрос, независимо от гонок
       // restore-цепочки и записи chat:setReasoning в БД.
@@ -2282,7 +2150,7 @@ const chatId = compactingCurrentChatIdRef.current
       if (isGoalCommand) toast('Не удалось запустить цель: ' + String(e), 'error')
       else throw e
     } finally { if (isGoalCommand) goalActionRef.current = false }
-  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, persona, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll, handleDraftChange, applyGoal, stopChatRun])
+  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll, handleDraftChange, applyGoal, stopChatRun])
 
   // ── plugins:chat-action — действия из плагинов в текущем чате ──
   //   send:   отправить сообщение от имени пользователя (silent — вставить в инпут;
@@ -3137,8 +3005,6 @@ const chatId = compactingCurrentChatIdRef.current
               onAskModeChange={handleAskModeChange}
               browserMode={browserMode}
               onBrowserModeChange={handleBrowserModeChange}
-              persona={persona}
-              onPersonaChange={handlePersonaChange}
               workdir={currentWorkdir}
               compactSessionStats={compactSessionStats}
               customCommands={customCommands}
@@ -3204,15 +3070,6 @@ const chatId = compactingCurrentChatIdRef.current
             }}
             onInit={() => { void handleSend('/init') }}
           />
-          {personaSuggest && (
-            <PersonaSuggestionModal
-              personaId={personaSuggest.id}
-              messagePreview={personaSuggest.preview}
-              onAccept={handlePersonaSuggestAccept}
-              onDismiss={handlePersonaSuggestDismiss}
-              onNeverAsk={handlePersonaSuggestNever}
-            />
-          )}
 
           {/* /restore пикер именованных снапшотов */}
           {snapshotPicker && createPortal(

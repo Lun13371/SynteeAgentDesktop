@@ -6,7 +6,6 @@ import type { Chat, Message } from './chat'
 import type { Attachment } from './attachment'
 import type { SystemInfo } from './system'
 import type { DisplayInfo } from './system'
-import type { PersonaId } from '../modes'
 
 export interface IPCChannels {
   // Window
@@ -32,15 +31,6 @@ export interface IPCChannels {
     oneShotSkill?: { name: string; instructions: string }
     oneShotAllowedTools?: string[]
     oneShotMode?: 'ask' | 'plan' | 'code'
-    /** Per-message persona override (Aider-style). If set — this single run
-     *  uses the named persona, WITHOUT persisting to the chat's sticky
-     *  persona. Used by /debug, /review, /architect, ... builtin commands.
-     *  The sticky switch is /persona <name>. */
-    oneShotPersona?: PersonaId
-    /** Single-select persona run mode (classic/architect/debugger/...).
-     *  Orthogonal to planning/ask/image toggles — injects a mode-specific
-     *  block into the system prompt and may restrict the tool set. */
-    persona?: PersonaId
     /** Уровень мышления из UI на момент отправки (source of truth для main:
      *  приоритет над chats.reasoning_value и глобальной настройкой). */
     reasoningValue?: string

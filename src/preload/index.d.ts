@@ -559,17 +559,12 @@ declare const synteeAPI: {
             /** Тумблер «Управление браузером»: browser_* тулы + request_access. */
             browserMode?: boolean;
             mode?: "code" | "work";
-            /** Single-select persona run mode (classic/architect/debugger/...).
-             *  Orthogonal to planning/ask/image toggles. */
-            persona?: import("../../shared/modes").PersonaId;
             oneShotSkill?: {
                 name: string;
                 instructions: string;
             };
             oneShotAllowedTools?: string[];
             oneShotMode?: "ask" | "plan" | "code";
-            /** Per-message persona override (/debug, /review, ...). */
-            oneShotPersona?: import("../../shared/modes").PersonaId;
             /** Уровень мышления из UI на момент отправки (source of truth для main). */
             reasoningValue?: string;
             attachments?: import("../../shared/types").Attachment[];
@@ -664,9 +659,6 @@ declare const synteeAPI: {
         setAskMode: (chatId: string, val: boolean) => Promise<any>;
         getBrowserMode: (chatId: string) => Promise<boolean>;
         setBrowserMode: (chatId: string, val: boolean) => Promise<any>;
-        /** Single-select persona run mode (classic/architect/debugger/...). */
-        getPersona: (chatId: string) => Promise<import("../../shared/modes").PersonaId>;
-        setPersona: (chatId: string, persona: import("../../shared/modes").PersonaId) => Promise<any>;
         /** Per-chat модель: null = глобальное назначение role:'main'. */
         getModel: (chatId: string) => Promise<{
             modelId: string;
@@ -1312,6 +1304,7 @@ declare const synteeAPI: {
         getSettings: () => Promise<import("../../shared/assistants").AssistantsSettings>;
         updateSettings: (patch: Partial<import("../../shared/assistants").AssistantsSettings>) => Promise<import("../../shared/assistants").AssistantsSettings>;
         getLog: (since?: number) => Promise<import("../../shared/assistants").AssistantLogEntry[]>;
+        getStats: () => Promise<import("../../shared/assistants").AgentStatsMap>;
         getStatus: () => Promise<{
             serverState: string;
             modelSize: string;
@@ -1319,7 +1312,6 @@ declare const synteeAPI: {
             binaryReady: boolean;
             idleUnloaded: boolean;
         }>;
-        getStats: () => Promise<import("../../shared/assistants").AgentStatsMap>;
         setup: () => Promise<{
             ok: boolean;
             error?: string;

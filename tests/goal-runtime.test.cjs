@@ -154,7 +154,7 @@ const { Agent } = load('src/core/agent/Agent.ts', {
   '../context/structuredMemory': empty, '../tools': tools,
   '../context/contextManager': { getContextSettings: () => ({}), getModelContextWindow: () => 128000, getHardLimitTokens: () => 120000, getHardLimitTargetTokens: () => 100000 },
   '../tokens/usageTracker': { computeContextSnapshot: () => ({ promptTokens: 0, breakdown: {} }) },
-  '../ai/shared': { MAX_TOOL_TIMEOUT_MS: 100 }, '../../shared/modes': empty, '../../shared/subagent-roles': empty,
+  '../ai/shared': { MAX_TOOL_TIMEOUT_MS: 100 }, '../../shared/subagent-roles': empty,
   '../logger': { log() {} }, './utils': { FALLBACK_SYSTEM_PROMPT: 'test', normalizeToolName: x => x, isSequentialTool: () => true, dropOldestRoundsIfOverflow: x => x },
   './validateArgs': empty, './toolDispatcher': { ToolDispatcher: class { maskSecretValuesInText(text) { return text } } }, jsonrepair: { jsonrepair: x => x },
   '../../shared/toolSettings': { getToolSettings: () => ({}), filterToolSchemas: x => x, isToolDisabled: () => false },

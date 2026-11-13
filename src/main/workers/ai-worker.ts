@@ -32,8 +32,6 @@ const imageMode: boolean = !!(workerData as Record<string, unknown>).imageMode
 // the worker or its initial tool snapshot.
 let runBrowserMode = browserMode
 let runImageMode = imageMode
-const workerPersona = (workerData as Record<string, unknown>).persona as import('../../shared/modes').PersonaId | undefined
-const workerPersonaInjection = ((workerData as Record<string, unknown>).personaInjection as string | undefined) ?? ''
 const workerMode: 'code' | 'work' = ((workerData as Record<string, unknown>).mode as 'code' | 'work') ?? 'code'
 
 // Инициализируем каталог моделей из кэш-файла (записанного main-процессом)
@@ -369,7 +367,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           planningMode,
           askMode,
           imageMode,
-          persona: workerPersona,
           browserMode,
           mode: workerMode,
           mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
@@ -388,7 +385,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       const enableCapabilityMidRun = (capability: 'browser_control' | 'image_generation'): number => {
         const names = new Set(runTools.map(t => t.function.name))
         const permitted = filterToolSchemas(getToolSchemas({
-          planningMode, askMode, imageMode: capability === 'image_generation' || runImageMode, persona: workerPersona,
+          planningMode, askMode, imageMode: capability === 'image_generation' || runImageMode,
           browserMode: capability === 'browser_control' || runBrowserMode, mode: workerMode, ...toolSettings,
         }), toolSettings)
         const capabilitySchemas = capability === 'browser_control'
@@ -1052,15 +1049,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         // новым user-сообщением) — максимальный вес у LLM. Раньше инъекция
         // стояла в начале history и при длинной истории «забывалась» моделью.
         // planning имеет приоритет над ask (он строже — требует <plan>).
-        // Persona — ортогональна: её injection добавляется после planning/ask
-        // (если есть), чтобы роль сохранялась в длинном чате после компакции.
-        // Дублируется в самом system prompt (buildSystemPrompt → buildPersonaInjection)
-        // для надёжности при компакции истории.
         (() => {
           let h = history
           if (planningMode) h = [...h, { role: 'system', content: buildPlanningInjection() }]
           else if (askMode) h = [...h, { role: 'system', content: buildAskInjection() }]
-          if (workerPersonaInjection) h = [...h, { role: 'system', content: workerPersonaInjection }]
           return h
         })(),
         runTools,        {
@@ -1070,7 +1062,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,
           fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, import('../../core/context/fileCacheTypes').FileCacheEntry> | undefined,
           planningMode,
-          persona: workerPersona,
           subagentRole,
           imageParts: imageParts as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> | undefined,
         }

@@ -2,7 +2,6 @@
 
 import type { McpToolRuntime, PluginToolRuntime } from '../../../shared/types'
 import { filterToolSchemas, type ToolSettings } from '../../../shared/toolSettings'
-import { isReadonlyPersona, getPersonaAllowedTools } from '../../../shared/modes'
 import { READ_TOOL_SCHEMAS } from './read'
 import { EDIT_TOOL_SCHEMAS } from './edit'
 import { COMMAND_TOOL_SCHEMAS } from './command'
@@ -60,10 +59,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
    *  click/type/...). ВЫКЛ → browser-тулы скрыты, но request_access остаётся.
    *  ВКЛ → browser-тулы доступны с учётом режима. */
   browserMode?: boolean
-  /** Persona — single-select run mode. Read-only personas get the same
-   *  restricted tool set as planning/ask (no edit/write/run). Full personas
-   *  keep the full toolset. Orthogonal to planning/ask. */
-  persona?: import('../../../shared/modes').PersonaId
   /** MCP tools — dynamically added to the set (only enabled ones). */
   mcpTools?: McpToolRuntime[]
   /** Plugin tools — dynamically added (only enabled + running plugins). */
@@ -76,7 +71,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     imageMode = false,
     multiAgentMode = false,
     browserMode = false,
-    persona,
     mcpTools,
     pluginTools,
   } = options
@@ -94,14 +88,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   // (toggled in the plus-menu or one-shot via /ask <text>).
   // planning takes priority (stricter), but the tool set is identical —
   // the difference is only in the system injection.
-  //
-  // Persona allowlist: when a persona defines `allowedTools`, that list
-  // OVERRIDES the binary readonly/full branching below. Only the listed
-  // builtin tools are provided (plus all MCP tools, always allowed).
-  // This lets architect (edits, no run_command), debugger (full + run),
-  // reviewer (strict read-only research), mentor (read-only + ask_user) get
-  // a non-standard mix tailored to their workflow.
-  const personaAllowed = persona ? getPersonaAllowedTools(persona) : undefined
 
   const names: string[] = [
     'read_file',
@@ -147,58 +133,39 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     names.push('request_access')
   }
   if (browserMode) {
-    const researchOnly = planningMode || askMode || !!(persona && isReadonlyPersona(persona))
+    const researchOnly = planningMode || askMode
     names.push(...BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
       .filter(name => !researchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name)))
   }
 
-  if (personaAllowed) {
-    // Fine-grained persona allowlist: use ONLY the persona's list (intersected
-    // with builtin TOOL_SCHEMAS). MCP tools are appended later regardless.
-    // generate_image is gated by imageMode even if the persona lists it.
-    names.length = 0
-    for (const t of personaAllowed) {
-      if (t === 'generate_image') continue
-      names.push(t)
-    }
-    // Ensure research tools are available if the persona is read-only-ish
-    // (allowlists already include them explicitly — this is a safety net).
-    if (!names.includes('get_diagnostics') && isReadonlyPersona(persona!)) {
-      names.push('get_diagnostics', 'get_fast_context')
-    }
-  } else if (planningMode || askMode || (persona && isReadonlyPersona(persona))) {
-    // Planning / Ask / read-only persona (legacy path): research tools, read-only checks, no edits.
+  if (planningMode || askMode) {
+    // Planning / Ask: research tools, read-only checks, no edits.
     names.push('get_diagnostics')
     names.push('get_fast_context')
   } else {
-    // Normal mode (or full persona without explicit allowlist): file edits + commands + verification.
+    // Normal mode: file edits + commands + verification.
     names.push('edit_file')
     names.push('write_file')
     names.push('run_command')
     names.push('get_diagnostics')
     names.push('get_fast_context')
     // Dots: управление always-on агентами — только в normal-режиме.
-    // ask/planning/read-only и фоновые wake-раны Dot'ов (oneShotMode:'ask')
+    // ask/planning и фоновые wake-раны Dot'ов (oneShotMode:'ask')
     // тул не получают: Dot не должен создавать других Dot'ов.
     names.push('manage_dots')
   }
 
   if (imageMode) {
-    // generate_image only when imageMode is on AND the persona allows it
-    // (allowlist personas that don't list it are denied; undefined/legacy
-    // personas inherit the previous behavior — allowed in imageMode).
-    if (!personaAllowed || personaAllowed.includes('generate_image')) {
-      names.push('generate_image')
-    }
+    names.push('generate_image')
   }
   // multiAgentMode/webMode are no longer needed for enabling — kept as
   // function parameters for compatibility with the calling code.
   void webMode
   void multiAgentMode
 
-  // Browser access remains orthogonal to personas. Research modes can navigate
-  // and inspect, but cannot enter data, execute JS, upload or modify private state.
-  const browserResearchOnly = planningMode || askMode || !!(persona && isReadonlyPersona(persona))
+  // Research modes can navigate and inspect, but cannot enter data, execute
+  // JS, upload or modify private state.
+  const browserResearchOnly = planningMode || askMode
   const browserNames = [
     ...(browserMode
       ? BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
@@ -210,7 +177,7 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     ...names.filter(name => !name.startsWith('browser_') && name !== 'request_access'),
     ...browserNames,
   ])]
-  // Subtract only AFTER mode/persona/access gating. Never restore restricted core tools.
+  // Subtract only AFTER mode/access gating. Never restore restricted core tools.
   const schemas = filterToolSchemas(pickTools(finalNames), {
     customToolsEnabled: options.customToolsEnabled === true,
     disabledTools: options.disabledTools ?? [],

@@ -1,11 +1,20 @@
-import { useState, useRef, useEffect } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { motion, AnimatePresence } from 'framer-motion'
-import { PERSONAS, type PersonaId } from '../../../../../shared/modes'
-import { whileHoverBtn, whileTapBtn, springHover } from '../../../utils/motionPresets'
-import { menuContainer, menuItem } from './ChatInputHelpers'
+import { AnimatePresence, motion, type Variants } from 'framer-motion'
+import AppIcon from '../AppIcon/AppIcon'
+import { SLASH_COMMANDS, type SlashCommand } from '../../../../../shared/slashCommands'
+import type { Attachment, MentionItem } from '../../../../../shared/types'
+import { useExtensionsStore } from '../../../store/extensions.store'
+
+type IconName = Parameters<typeof AppIcon>[0]['name']
+type SectionId = 'files' | 'skills' | 'mcp' | 'commands'
+type SkillRow = ReturnType<typeof useExtensionsStore.getState>['skills'][number]
+type McpRow = ReturnType<typeof useExtensionsStore.getState>['mcpServers'][number]
 
 interface ChatInputPlusMenuProps {
+  /** Контейнер инпут-бара (.chat-input-box) — панель встаёт на всю его ширину от левого края. */
+  anchorRef: React.RefObject<HTMLDivElement | null>
   onAttachClick: () => void
   /** Кол-во защищённых переменных (секретов) — бейдж у пункта меню. */
   secretsCount?: number
@@ -19,17 +28,135 @@ interface ChatInputPlusMenuProps {
   onAskModeChange?: (v: boolean) => void
   browserMode?: boolean
   onBrowserModeChange?: (v: boolean) => void
-  persona?: PersonaId
-  onPersonaChange?: (v: PersonaId) => void
   lang: 'ru' | 'en'
+  chatId?: string
+  workdir?: string
+  projectId?: string | null
+  attachments?: Attachment[]
+  maxAttachments?: number
+  /** Прикрепить файл/картинку из поиска проекта (возвращает false при лимите/дубликате). */
+  onAttachItem?: (item: MentionItem) => boolean
+  customCommands?: SlashCommand[]
+  /** Вставить slash-команду в инпут (ChatInput.selectCommand). */
+  onInsertCommand?: (cmd: SlashCommand) => void
+}
+
+// ── Анимации ─────────────────────────────────────────────────────────────
+// Появление — каскад строго в порядке чтения: левый верхний угол → вправо →
+// следующая строка → категории сверху вниз. Явная задержка на каждый элемент
+// (без вложенной оркестрации variants, которая давала разнобой и «вязкость»).
+const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1]
+
+/** Каскад верхнего уровня: i — порядковый номер в порядке чтения. */
+const reveal = (i: number) => ({
+  initial: { opacity: 0, y: 10 },
+  animate: { opacity: 1, y: 0, transition: { delay: 0.04 + i * 0.05, duration: 0.3, ease: EASE } },
+})
+
+/** Каскад внутри раскрытой категории (строки/плитки по порядку). */
+const rowReveal = (i: number) => ({
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0, transition: { delay: Math.min(i * 0.03, 0.36), duration: 0.26, ease: EASE } },
+})
+
+const panelVariants: Variants = {
+  hidden: { opacity: 0, y: 14, scale: 0.97 },
+  visible: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring', stiffness: 420, damping: 30 } },
+  exit: { opacity: 0, y: 8, scale: 0.98, transition: { duration: 0.14, ease: [0.4, 0, 1, 1] } },
+}
+
+const bodyVariants: Variants = {
+  hidden: { height: 0, opacity: 0 },
+  visible: {
+    height: 'auto',
+    opacity: 1,
+    transition: { height: { duration: 0.26, ease: [0.32, 0.72, 0, 1] }, opacity: { duration: 0.18, delay: 0.03 } },
+  },
+  exit: {
+    height: 0,
+    opacity: 0,
+    transition: { height: { duration: 0.18, ease: [0.4, 0, 1, 1] }, opacity: { duration: 0.1 } },
+  },
+}
+
+/** Визуальный тумблер (клик обрабатывает строка/плитка целиком). */
+function Switch({ on }: { on: boolean }) {
+  return (
+    <span className={`plus-switch${on ? ' plus-switch--on' : ''}`} aria-hidden="true">
+      <motion.span
+        className="plus-switch-thumb"
+        animate={{ x: on ? 16 : 2 }}
+        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+      />
+    </span>
+  )
+}
+
+function Category({ icon, tint, label, sub, count, open, onToggle, quick, order, children }: {
+  icon: IconName
+  tint: string
+  label: string
+  sub?: string
+  count?: number
+  open: boolean
+  onToggle: () => void
+  quick?: { icon: IconName; title: string; onClick: () => void }
+  /** Порядковый номер в каскаде появления панели. */
+  order: number
+  children: ReactNode
+}) {
+  return (
+    <motion.div {...reveal(order)} className={`plus-cat${open ? ' plus-cat--open' : ''}`} style={{ '--cat': tint } as React.CSSProperties}>
+      <div className="plus-cat-headrow">
+        <button type="button" className="plus-cat-head" onClick={onToggle} aria-expanded={open}>
+          <span className="plus-cat-icon"><AppIcon name={icon} size="sm" /></span>
+          <span className="plus-cat-text">
+            <span className="plus-cat-label">{label}</span>
+            {sub && <span className="plus-cat-sub">{sub}</span>}
+          </span>
+          {!!count && <span className="plus-cat-count">{count}</span>}
+          <motion.span className="plus-cat-chev" animate={{ rotate: open ? 180 : 0 }} transition={{ type: 'spring', stiffness: 400, damping: 28 }}>
+            <AppIcon name="chevronDown" size="xs" />
+          </motion.span>
+        </button>
+        {quick && (
+          <button
+            type="button"
+            className="plus-cat-quick"
+            title={quick.title}
+            aria-label={quick.title}
+            onClick={e => { e.stopPropagation(); quick.onClick() }}
+          >
+            <AppIcon name={quick.icon} size="xs" />
+          </button>
+        )}
+      </div>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div className="plus-cat-body" variants={bodyVariants} initial="hidden" animate="visible" exit="exit">
+            <motion.div
+              className="plus-cat-inner"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0, transition: { delay: 0.04, duration: 0.22, ease: EASE } }}
+            >
+              {children}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  )
 }
 
 /**
- * Кнопка «+» с выпадающим меню: «Прикрепить файл», toggles режимов
- * (планирование / генерация изображений / ask) и пикер персоны.
- * Управляет собственным состоянием открытия и позицией меню (portal в body).
+ * Кнопка «+» → панель на всю ширину инпут-бара (от его левого края), со скроллом
+ * и раскрывающимися категориями: файлы проекта, скиллы, MCP-серверы, команды.
+ * Тумблеры режимов — сетка в две колонки (одиночная кнопка — на всю ширину),
+ * текстовые действия — строки на всю ширину. Portal в body, позиция меряется
+ * по anchorRef и пересчитывается при ресайзе окна и раскрытии категорий.
  */
 export function ChatInputPlusMenu({
+  anchorRef,
   onAttachClick,
   secretsCount = 0,
   onProtectedVarsClick,
@@ -41,219 +168,514 @@ export function ChatInputPlusMenu({
   onAskModeChange,
   browserMode,
   onBrowserModeChange,
-  persona,
-  onPersonaChange,
   lang,
+  chatId,
+  workdir,
+  projectId,
+  attachments = [],
+  maxAttachments = 10,
+  onAttachItem,
+  customCommands = [],
+  onInsertCommand,
 }: ChatInputPlusMenuProps) {
-  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
-  const plusBtnRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
+  const t = (ru: string, en: string) => (lang === 'en' ? en : ru)
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; maxH: number; openUp: boolean } | null>(null)
+  const [sections, setSections] = useState<Record<SectionId, boolean>>({ files: false, skills: false, mcp: false, commands: false })
+  const [fileQuery, setFileQuery] = useState('')
+  const [fileResults, setFileResults] = useState<MentionItem[]>([])
+  const [fileLoading, setFileLoading] = useState(false)
+  const [skillQuery, setSkillQuery] = useState('')
+  const [pendingSkill, setPendingSkill] = useState<string | null>(null)
+  const [pendingMcp, setPendingMcp] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const noticeTimer = useRef<number | null>(null)
+  const fileToken = useRef(0)
 
-  // Закрытие + меню по клику снаружи
+  const plusBtnRef = useRef<HTMLButtonElement>(null)
   const plusWrapRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  const skills = useExtensionsStore(s => s.skills)
+  const skillsLoading = useExtensionsStore(s => s.skillsLoading)
+  const skillsError = useExtensionsStore(s => s.skillsError)
+  const mcpServers = useExtensionsStore(s => s.mcpServers)
+  const mcpLoading = useExtensionsStore(s => s.mcpLoading)
+  const loadSkills = useExtensionsStore(s => s.loadSkills)
+  const loadMcpServers = useExtensionsStore(s => s.loadMcpServers)
+  const setSkillState = useExtensionsStore(s => s.setSkillState)
+
+  const showNotice = useCallback((msg: string) => {
+    setNotice(msg)
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current)
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 2600)
+  }, [])
+  useEffect(() => () => { if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current) }, [])
+
+  // ── Позиция: полная ширина инпут-бара, рост вверх от его верхней кромки ──
+  const place = useCallback(() => {
+    const anchor = anchorRef.current
+    if (!anchor) return
+    const r = anchor.getBoundingClientRect()
+    const above = r.top > 240
+    const maxH = above
+      ? Math.max(200, Math.min(560, r.top - 16))
+      : Math.max(200, Math.min(560, window.innerHeight - r.bottom - 16))
+    const h = menuRef.current ? Math.min(menuRef.current.offsetHeight, maxH) : 340
+    const top = above ? Math.max(8, r.top - h - 10) : r.bottom + 10
+    const next = { top, left: r.left, width: r.width, maxH, openUp: above }
+    setPos(prev => (prev && prev.top === next.top && prev.left === next.left && prev.width === next.width && prev.maxH === next.maxH && prev.openUp === next.openUp) ? prev : next)
+  }, [anchorRef])
+
+  useLayoutEffect(() => {
+    if (!open) return
+    place()
+    const ro = new ResizeObserver(() => place())
+    if (menuRef.current) ro.observe(menuRef.current)
+    window.addEventListener('resize', place)
+    return () => { ro.disconnect(); window.removeEventListener('resize', place) }
+  }, [open, place])
+
+  // ── Закрытие: клик снаружи + Esc ──
   useEffect(() => {
-    if (!plusMenuOpen) return
+    if (!open) return
     const close = (e: MouseEvent) => {
       if (plusWrapRef.current?.contains(e.target as Node)) return
       if (menuRef.current?.contains(e.target as Node)) return
-      setPlusMenuOpen(false)
+      setOpen(false)
     }
-    const t = setTimeout(() => document.addEventListener('mousedown', close), 0)
-    return () => { clearTimeout(t); document.removeEventListener('mousedown', close) }
-  }, [plusMenuOpen])
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    const t0 = window.setTimeout(() => document.addEventListener('mousedown', close), 0)
+    window.addEventListener('keydown', key)
+    return () => { window.clearTimeout(t0); document.removeEventListener('mousedown', close); window.removeEventListener('keydown', key) }
+  }, [open])
 
-  // Корректировка позиции меню после mount: начальная оценка menuH может
-  // отличаться от реальной высоты (меню содержит скролл-секцию персонов).
-  // После первого paint измеряем menuRef и сдвигаем top, чтобы меню
-  // поместилось на экране и не обрезалось.
+  // ── Данные категорий: грузим при открытии панели (счётчики в шапках) ──
   useEffect(() => {
-    if (!plusMenuOpen || !menuPos || !menuRef.current || !plusBtnRef.current) return
-    // offsetHeight НЕ зависит от CSS-трансформов (scale) — даёт реальную высоту.
-    // getBoundingClientRect вернула бы ~половину из-за scale: 0.5 на старте анимации.
-    const menuH = menuRef.current.offsetHeight + 8
-    const btnRect = plusBtnRef.current.getBoundingClientRect()
-    let top = btnRect.top - menuH
-    if (top < 8) top = btnRect.bottom + 8
-    const maxTop = window.innerHeight - menuH - 8
-    if (top > maxTop) top = Math.max(8, maxTop)
-    setMenuPos({ top, left: menuPos.left, openUp: top < btnRect.top })
-  }, [plusMenuOpen, menuPos?.left])
+    if (!open) return
+    void loadSkills(projectId ?? undefined)
+    void loadMcpServers(projectId ?? undefined)
+  }, [open, projectId, loadSkills, loadMcpServers])
+
+  // ── Поиск файлов проекта (debounce + race-guard) ──
+  useEffect(() => {
+    if (!open || !sections.files) return
+    const q = fileQuery.trim()
+    if (!q) { setFileResults([]); setFileLoading(false); return }
+    setFileLoading(true)
+    const token = ++fileToken.current
+    const timer = window.setTimeout(() => {
+      window.syntee.mentions.search({ workdir, query: q, limit: 24, chatId })
+        .then((items: MentionItem[]) => {
+          if (token !== fileToken.current) return
+          setFileResults((items ?? []).filter(i => i.type === 'file' || i.type === 'image'))
+          setFileLoading(false)
+        })
+        .catch(() => {
+          if (token !== fileToken.current) return
+          setFileResults([])
+          setFileLoading(false)
+        })
+    }, 160)
+    return () => window.clearTimeout(timer)
+  }, [fileQuery, sections.files, open, workdir, chatId])
+
+  const toggleSection = useCallback((id: SectionId) => {
+    setSections(s => ({ ...s, [id]: !s[id] }))
+  }, [])
+
+  const commands = useMemo(() => {
+    const customNames = new Set(customCommands.map(c => c.name))
+    return [...SLASH_COMMANDS.filter(c => !customNames.has(c.name)), ...customCommands]
+  }, [customCommands])
+
+  const filteredSkills = useMemo(() => {
+    const q = skillQuery.trim().toLowerCase()
+    if (!q) return skills
+    return skills.filter(s => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
+  }, [skills, skillQuery])
+
+  const enabledSkills = skills.filter(s => s.state.enabled).length
+  const enabledMcp = mcpServers.filter(s => s.enabled).length
+
+  const toggles: Array<{ key: string; icon: IconName; tint: string; label: string; title: string; on: boolean; change?: (v: boolean) => void }> = [
+    { key: 'planning', icon: 'fileText', tint: '#60a5fa', label: t('Планирование', 'Planning'), title: t('Режим плана: исследование + план без правок', 'Plan mode: research + plan, no edits'), on: !!planningMode, change: onPlanningModeChange },
+    { key: 'image', icon: 'image', tint: '#f472b6', label: t('Генерация изображений', 'Image generation'), title: t('Генерация изображений по описанию', 'Generate images from a description'), on: !!imageMode, change: onImageModeChange },
+    { key: 'ask', icon: 'messageSquare', tint: '#34d399', label: t('Ask — только чтение', 'Ask — read only'), title: t('Ответ без правок кода и запуска команд', 'Answer without editing code or running commands'), on: !!askMode, change: onAskModeChange },
+    { key: 'browser', icon: 'monitor', tint: '#22d3ee', label: t('Управление браузером', 'Browser control'), title: t('browser_*-тулы для встроенного браузера', 'browser_* tools for the built-in browser'), on: !!browserMode, change: onBrowserModeChange },
+  ]
+
+  const attachFromSearch = (item: MentionItem) => {
+    if (attachments.some(a => a.path && a.path === item.path)) {
+      showNotice(t('Этот файл уже прикреплён', 'This file is already attached'))
+      return
+    }
+    if (attachments.length >= maxAttachments) {
+      showNotice(t(`Лимит вложений — ${maxAttachments}`, `Attachment limit is ${maxAttachments}`))
+      return
+    }
+    if (onAttachItem?.(item) === false) showNotice(t('Не удалось прикрепить файл', 'Could not attach the file'))
+  }
+
+  const toggleSkill = async (sk: SkillRow) => {
+    const next = !sk.state.enabled
+    setPendingSkill(sk.id)
+    useExtensionsStore.setState(s => ({ skills: s.skills.map(x => x.id === sk.id ? { ...x, state: { ...x.state, enabled: next } } : x) }))
+    try {
+      await setSkillState(sk.id, { ...sk.state, enabled: next }, sk.source)
+    } catch {
+      useExtensionsStore.setState(s => ({ skills: s.skills.map(x => x.id === sk.id ? { ...x, state: sk.state } : x) }))
+      showNotice(t('Не удалось переключить скилл', 'Could not toggle the skill'))
+    } finally {
+      setPendingSkill(null)
+    }
+  }
+
+  const toggleMcp = async (srv: McpRow) => {
+    const next = !srv.enabled
+    setPendingMcp(srv.id)
+    useExtensionsStore.setState(s => ({ mcpServers: s.mcpServers.map(x => x.id === srv.id ? { ...x, enabled: next } : x) }))
+    try {
+      await window.syntee.mcp.setServerState({ serverId: srv.id, projectId: projectId ?? undefined, enabled: next })
+      await loadMcpServers(projectId ?? undefined)
+    } catch {
+      useExtensionsStore.setState(s => ({ mcpServers: s.mcpServers.map(x => x.id === srv.id ? { ...x, enabled: srv.enabled } : x) }))
+      showNotice(t('Не удалось переключить MCP-сервер', 'Could not toggle the MCP server'))
+    } finally {
+      setPendingMcp(null)
+    }
+  }
+
+  const mcpStatus = (srv: McpRow): { text: string; tone: string } => {
+    if (!srv.enabled) return { text: t('Выключен', 'Disabled'), tone: 'off' }
+    if (srv.status === 'connected') return { text: t(`Подключён · ${srv.tools.length} тулов`, `Connected · ${srv.tools.length} tools`), tone: 'ok' }
+    if (srv.status === 'connecting') return { text: t('Подключение…', 'Connecting…'), tone: 'warn' }
+    if (srv.status === 'error') return { text: srv.error || t('Ошибка подключения', 'Connection error'), tone: 'err' }
+    return { text: t('Не подключён', 'Disconnected'), tone: 'off' }
+  }
 
   return (
     <div className="chat-input-plus-wrap" ref={plusWrapRef}>
       <motion.button
         ref={plusBtnRef}
-        className={`chat-input-plus-btn${plusMenuOpen ? ' chat-input-plus-btn--open' : ''}`}
+        type="button"
+        className={`chat-input-plus-btn${open ? ' chat-input-plus-btn--open' : ''}`}
         onClick={() => {
-          if (!plusBtnRef.current) return
-          const r = plusBtnRef.current.getBoundingClientRect()
-          // Начальная оценка высоты: attach + divider + 3 toggle + divider
-          // + persona-section (7 компактных пунктов + заголовок). Реальная
-          // высота измеряется после mount через useEffect-корректировку выше.
-          const menuH = 380
-          setMenuPos({
-            top: r.top - menuH - 8,
-            left: r.left,
-            openUp: true,
-          })
-          setPlusMenuOpen(v => !v)
+          if (open) { setOpen(false); return }
+          const r = anchorRef.current?.getBoundingClientRect()
+          if (r) {
+            const above = r.top > 240
+            setPos({
+              top: above ? Math.max(8, r.top - 350) : r.bottom + 10,
+              left: r.left,
+              width: r.width,
+              maxH: above ? Math.max(200, Math.min(560, r.top - 16)) : Math.max(200, Math.min(560, window.innerHeight - r.bottom - 16)),
+              openUp: above,
+            })
+          }
+          setOpen(true)
         }}
-        whileHover={whileHoverBtn}
-        whileTap={whileTapBtn}
-        transition={springHover}
-        title="Прикрепить / Режим"
+        whileHover={{ scale: 1.06 }}
+        whileTap={{ scale: 0.94 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 18 }}
+        title={t('Прикрепить / режимы / команды', 'Attach / modes / commands')}
+        aria-expanded={open}
       >
-        <motion.svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" animate={{ rotate: plusMenuOpen ? 45 : 0 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
+        <motion.svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" animate={{ rotate: open ? 45 : 0 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </motion.svg>
       </motion.button>
 
       {createPortal(
         <AnimatePresence>
-          {plusMenuOpen && menuPos && (
+          {open && pos && (
             <motion.div
               ref={menuRef}
               className="chat-input-plus-menu"
-              variants={menuContainer}
+              variants={panelVariants}
               initial="hidden"
               animate="visible"
               exit="exit"
-              style={{ position: 'fixed', left: menuPos.left, top: menuPos.top, zIndex: 9999, transformOrigin: menuPos.openUp ? 'bottom left' : 'top left' }}
+              style={{ position: 'fixed', left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxH, zIndex: 9999, transformOrigin: pos.openUp ? 'bottom left' : 'top left' }}
               onMouseDown={e => e.stopPropagation()}
+              role="dialog"
+              aria-label={t('Меню действий', 'Actions menu')}
             >
-              <motion.button variants={menuItem} className="chat-input-plus-item" onClick={() => { onAttachClick(); setPlusMenuOpen(false) }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-                </svg>
-                Прикрепить файл
-              </motion.button>
-              <motion.button variants={menuItem} className="chat-input-plus-item" onClick={() => { onProtectedVarsClick?.(); setPlusMenuOpen(false) }} title="Защищённые переменные — секреты (IP, пароли, ключи), которые AI использует, не спрашивая каждый раз">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="3" y="11" width="18" height="11" rx="2"/>
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                </svg>
-                Защищённые переменные
-                {secretsCount > 0 && (
-                  <span className="chat-input-plus-badge">{secretsCount}</span>
-                )}
-              </motion.button>
-              <div className="chat-input-plus-divider" />
-              <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onPlanningModeChange?.(!planningMode) }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/>
-                  <line x1="16" y1="17" x2="8" y2="17"/>
-                </svg>
-                Планирование
-                <motion.button
-                  className={`plus-menu-toggle${planningMode ? ' plus-menu-toggle--on' : ''}`}
-                  onClick={e => { e.stopPropagation(); onPlanningModeChange?.(!planningMode) }}
-                  whileTap={{ scale: 0.93 }}
-                >
-                  <motion.span
-                    className="plus-menu-toggle-thumb"
-                    animate={{ x: planningMode ? 16 : 2 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                  />
-                </motion.button>
-              </motion.div>
-              <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onImageModeChange?.(!imageMode) }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="3" y="3" width="18" height="18" rx="2"/>
-                  <circle cx="8.5" cy="8.5" r="1.5"/>
-                  <polyline points="21 15 16 10 5 21"/>
-                </svg>
-                Генерация изображений
-                <motion.button
-                  className={`plus-menu-toggle${imageMode ? ' plus-menu-toggle--on' : ''}`}
-                  onClick={e => { e.stopPropagation(); onImageModeChange?.(!imageMode) }}
-                  whileTap={{ scale: 0.93 }}
-                >
-                  <motion.span
-                    className="plus-menu-toggle-thumb"
-                    animate={{ x: imageMode ? 16 : 2 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                  />
-                </motion.button>
-              </motion.div>
-              <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onAskModeChange?.(!askMode) }}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-                {lang === 'en' ? 'Ask — read only' : 'Ask — только чтение'}
-                <motion.button
-                  className={`plus-menu-toggle${askMode ? ' plus-menu-toggle--on' : ''}`}
-                  onClick={e => { e.stopPropagation(); onAskModeChange?.(!askMode) }}
-                  whileTap={{ scale: 0.93 }}
-                >
-                  <motion.span
-                    className="plus-menu-toggle-thumb"
-                    animate={{ x: askMode ? 16 : 2 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                  />
-                </motion.button>
-              </motion.div>
-              <motion.div variants={menuItem} className="chat-input-plus-item chat-input-plus-item--toggle" onClick={() => { onBrowserModeChange?.(!browserMode) }} title={lang === 'en' ? 'Browser control: the agent gets browser_* tools to drive the built-in browser (right panel)' : 'Управление браузером: агент получает browser_*-тулы для управления встроенным браузером (правая панель)'}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2"/>
-                  <path d="M2 8h20"/>
-                  <path d="m9.5 10 3.2 8 1.1-3.3 3.3-1.1z"/>
-                </svg>
-                {lang === 'en' ? 'Browser control' : 'Управление браузером'}
-                <motion.button
-                  className={`plus-menu-toggle${browserMode ? ' plus-menu-toggle--on' : ''}`}
-                  onClick={e => { e.stopPropagation(); onBrowserModeChange?.(!browserMode) }}
-                  whileTap={{ scale: 0.93 }}
-                >
-                  <motion.span
-                    className="plus-menu-toggle-thumb"
-                    animate={{ x: browserMode ? 16 : 2 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                  />
-                </motion.button>
-              </motion.div>
+              <div className="plus-head">
+                <span className="plus-head-icon"><AppIcon name="sparkles" size="sm" /></span>
+                <span className="plus-head-title">{t('Быстрые действия', 'Quick actions')}</span>
+                <kbd className="plus-head-kbd">Esc</kbd>
+                <button type="button" className="plus-head-close" onClick={() => setOpen(false)} aria-label={t('Закрыть', 'Close')}>
+                  <AppIcon name="x" size="xs" />
+                </button>
+              </div>
 
-              <div className="chat-input-plus-divider" />
-              <motion.div variants={menuItem} className="chat-input-plus-section-label">
-                {lang === 'en' ? 'Mode' : 'Режим'}
-              </motion.div>
-              <motion.div variants={menuItem} className="chat-input-plus-personas">
-                {PERSONAS.map(p => {
-                  const selected = p.id === persona
-                  return (
-                    <div
-                      key={p.id}
-                      className={`chat-input-persona-item${selected ? ' chat-input-persona-item--selected' : ''}${p.id === 'classic' ? ' chat-input-persona-item--classic' : ''}`}
-                      style={p.color ? ({ '--persona-color': p.color } as React.CSSProperties) : undefined}
-                      onClick={() => { onPersonaChange?.(p.id); setPlusMenuOpen(false) }}
+              <div className="plus-scroll">
+                {/* Тумблеры режимов — две колонки; каскад слева направо, сверху вниз */}
+                <div className="plus-grid plus-grid--toggles">
+                  {toggles.map((tg, i) => (
+                    <motion.button
+                      key={tg.key}
+                      type="button"
+                      {...reveal(i)}
+                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                      className={`plus-tile${tg.on ? ' plus-tile--on' : ''}`}
+                      style={{ '--cat': tg.tint } as React.CSSProperties}
+                      onClick={() => tg.change?.(!tg.on)}
+                      whileHover={{ y: -1.5 }}
+                      whileTap={{ scale: 0.98 }}
+                      title={tg.title}
+                      aria-pressed={tg.on}
                     >
-                      <span className="chat-input-persona-icon">
-                        {p.iconSvg
-                          ? <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: p.iconSvg }} />
-                          : <span className="chat-input-persona-dot" />}
-                      </span>
-                      <span className="chat-input-persona-text">
-                        <span className="chat-input-persona-name">{lang === 'en' ? p.nameEn : p.nameRu}</span>
-                        <span className="chat-input-persona-desc">{lang === 'en' ? p.descEn : p.descRu}</span>
-                      </span>
-                      {selected && (
-                        <motion.span
-                          className="chat-input-persona-check"
-                          initial={{ scale: 0 }}
-                          animate={{ scale: 1 }}
-                          transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                        >
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="20 6 9 17 4 12"/>
-                          </svg>
-                        </motion.span>
-                      )}
+                      <span className="plus-tile-icon"><AppIcon name={tg.icon} size="sm" /></span>
+                      <span className="plus-tile-label">{tg.label}</span>
+                      <Switch on={tg.on} />
+                    </motion.button>
+                  ))}
+                </div>
+
+                {/* Текстовые действия — строки на всю ширину */}
+                <motion.button
+                  type="button"
+                  {...reveal(4)}
+                  className="plus-row plus-row--action"
+                  onClick={() => { onProtectedVarsClick?.(); setOpen(false) }}
+                  title={t('Секреты (IP, пароли, ключи), которые AI подставляет без вопросов', 'Secrets (IPs, passwords, keys) the AI uses without asking')}
+                >
+                  <span className="plus-row-icon" style={{ '--cat': '#f59e0b' } as React.CSSProperties}><AppIcon name="lock" size="sm" /></span>
+                  <span className="plus-row-text">
+                    <span className="plus-row-label">{t('Защищённые переменные', 'Protected variables')}</span>
+                    <span className="plus-row-sub">{t('Секреты для тулов и промпта', 'Secrets for tools and prompt')}</span>
+                  </span>
+                  {secretsCount > 0 && <span className="plus-cat-count">{secretsCount}</span>}
+                  <span className="plus-row-chev"><AppIcon name="chevronRight" size="xs" /></span>
+                </motion.button>
+
+                <motion.div className="plus-divider" {...reveal(5)} />
+
+                <Category
+                  order={6}
+                  icon="paperclip" tint="#f59e0b"
+                  label={t('Прикрепить файл', 'Attach file')}
+                  sub={t('Поиск по файлам проекта', 'Search project files')}
+                  count={attachments.length}
+                  open={sections.files}
+                  onToggle={() => toggleSection('files')}
+                  quick={{ icon: 'folder', title: t('Выбрать с диска…', 'Browse disk…'), onClick: () => { onAttachClick(); setOpen(false) } }}
+                >
+                  <motion.div className="plus-search" {...rowReveal(0)}>
+                    <AppIcon name="search" size="xs" />
+                    <input
+                      autoFocus
+                      value={fileQuery}
+                      onChange={e => setFileQuery(e.target.value)}
+                      placeholder={t('Имя файла или картинки…', 'File or image name…')}
+                      aria-label={t('Поиск файлов проекта', 'Search project files')}
+                    />
+                    {fileQuery && (
+                      <button type="button" className="plus-search-clear" onClick={() => setFileQuery('')} aria-label={t('Очистить', 'Clear')}>
+                        <AppIcon name="x" size="xs" />
+                      </button>
+                    )}
+                  </motion.div>
+                  {!fileQuery.trim() ? (
+                    <>
+                      <div className="plus-grid">
+                        <motion.button type="button" {...rowReveal(0)} className="plus-row plus-row--action" onClick={() => { onAttachClick(); setOpen(false) }}>
+                          <span className="plus-row-icon" style={{ '--cat': '#f59e0b' } as React.CSSProperties}><AppIcon name="upload" size="sm" /></span>
+                          <span className="plus-row-text">
+                            <span className="plus-row-label">{t('Выбрать с диска…', 'Browse disk…')}</span>
+                            <span className="plus-row-sub">{t('Несколько файлов через диалог', 'Multiple files via dialog')}</span>
+                          </span>
+                        </motion.button>
+                      </div>
+                      <motion.div className="plus-hint" {...rowReveal(1)}>{t('Или перетащите файлы в инпут / вставьте из буфера (Ctrl+V).', 'Or drag files onto the input / paste from clipboard (Ctrl+V).')}</motion.div>
+                    </>
+                  ) : fileLoading ? (
+                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Ищем файлы…', 'Searching files…')}</motion.div>
+                  ) : fileResults.length === 0 ? (
+                    <motion.div className="plus-hint" {...rowReveal(0)}>{t(`Ничего не найдено по «${fileQuery.trim()}»`, `Nothing found for “${fileQuery.trim()}”`)}</motion.div>
+                  ) : (
+                    <div className="plus-list">
+                      {fileResults.map((item, i) => {
+                        const attached = attachments.some(a => a.path && a.path === item.path)
+                        return (
+                          <motion.button
+                            key={item.id}
+                            type="button"
+                            {...rowReveal(i)}
+                            className={`plus-row${attached ? ' plus-row--attached' : ''}`}
+                            onClick={() => attachFromSearch(item)}
+                            title={item.path}
+                          >
+                            <span className="plus-row-icon" style={{ '--cat': item.type === 'image' ? '#f472b6' : '#f59e0b' } as React.CSSProperties}>
+                              <AppIcon name={item.type === 'image' ? 'image' : 'fileText'} size="sm" />
+                            </span>
+                            <span className="plus-row-text">
+                              <span className="plus-row-label">{item.label}</span>
+                              <span className="plus-row-sub">{item.relPath || item.description || item.path}</span>
+                            </span>
+                            {attached
+                              ? <span className="plus-row-check"><AppIcon name="check" size="xs" /></span>
+                              : <span className="plus-row-add"><AppIcon name="plus" size="xs" /></span>}
+                          </motion.button>
+                        )
+                      })}
                     </div>
-                  )
-                })}
-              </motion.div>
+                  )}
+                </Category>
+
+                <Category
+                  order={7}
+                  icon="sparkles" tint="#a78bfa"
+                  label={t('Прикрепить скилл', 'Attach skill')}
+                  sub={t('Инструкции в system prompt агента', 'Instructions in the agent system prompt')}
+                  count={enabledSkills}
+                  open={sections.skills}
+                  onToggle={() => toggleSection('skills')}
+                >
+                  <motion.div className="plus-search" {...rowReveal(0)}>
+                    <AppIcon name="search" size="xs" />
+                    <input
+                      autoFocus
+                      value={skillQuery}
+                      onChange={e => setSkillQuery(e.target.value)}
+                      placeholder={t('Фильтр скиллов…', 'Filter skills…')}
+                      aria-label={t('Фильтр скиллов', 'Filter skills')}
+                    />
+                    {skillQuery && (
+                      <button type="button" className="plus-search-clear" onClick={() => setSkillQuery('')} aria-label={t('Очистить', 'Clear')}>
+                        <AppIcon name="x" size="xs" />
+                      </button>
+                    )}
+                  </motion.div>
+                  {skillsLoading && skills.length === 0 ? (
+                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем скиллы…', 'Loading skills…')}</motion.div>
+                  ) : skillsError && skills.length === 0 ? (
+                    <motion.div className="plus-hint plus-hint--err" {...rowReveal(0)}>{skillsError}</motion.div>
+                  ) : filteredSkills.length === 0 ? (
+                    <motion.div className="plus-hint" {...rowReveal(0)}>{skills.length === 0 ? t('Скиллов пока нет — добавьте .md в .syntee/skills/', 'No skills yet — add .md files to .syntee/skills/') : t('Ничего не найдено', 'Nothing found')}</motion.div>
+                  ) : (
+                    <div className="plus-list">
+                      {filteredSkills.map((sk, i) => (
+                        <motion.button
+                          key={sk.id}
+                          type="button"
+                          {...rowReveal(i)}
+                          className={`plus-row${sk.state.enabled ? ' plus-row--on' : ''}`}
+                          style={{ '--cat': '#a78bfa' } as React.CSSProperties}
+                          onClick={() => { if (pendingSkill !== sk.id) void toggleSkill(sk) }}
+                          aria-pressed={sk.state.enabled}
+                          title={sk.description}
+                        >
+                          <span className="plus-row-icon"><AppIcon name="sparkles" size="sm" /></span>
+                          <span className="plus-row-text">
+                            <span className="plus-row-label">{sk.name}</span>
+                            <span className="plus-row-sub">{sk.description || sk.relativePath}</span>
+                          </span>
+                          <span className="plus-chip">{sk.source === 'builtin' ? t('встроенный', 'builtin') : sk.source === 'project' ? t('проект', 'project') : t('мой', 'user')}</span>
+                          {pendingSkill === sk.id
+                            ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
+                            : <Switch on={sk.state.enabled} />}
+                        </motion.button>
+                      ))}
+                    </div>
+                  )}
+                </Category>
+
+                <Category
+                  order={8}
+                  icon="server" tint="#22d3ee"
+                  label={t('Прикрепить MCP', 'Attach MCP')}
+                  sub={t('Внешние серверы с инструментами', 'External tool servers')}
+                  count={enabledMcp}
+                  open={sections.mcp}
+                  onToggle={() => toggleSection('mcp')}
+                >
+                  {mcpLoading && mcpServers.length === 0 ? (
+                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем серверы…', 'Loading servers…')}</motion.div>
+                  ) : mcpServers.length === 0 ? (
+                    <motion.div className="plus-hint" {...rowReveal(0)}>{t('MCP-серверов нет. Добавьте их в Настройки → Расширения или в .mcp.json проекта.', 'No MCP servers. Add them in Settings → Extensions or in the project .mcp.json.')}</motion.div>
+                  ) : (
+                    <div className="plus-list">
+                      {mcpServers.map((srv, i) => {
+                        const st = mcpStatus(srv)
+                        return (
+                          <motion.button
+                            key={srv.id}
+                            type="button"
+                            {...rowReveal(i)}
+                            className={`plus-row${srv.enabled ? ' plus-row--on' : ''}`}
+                            style={{ '--cat': '#22d3ee' } as React.CSSProperties}
+                            onClick={() => { if (pendingMcp !== srv.id) void toggleMcp(srv) }}
+                            aria-pressed={srv.enabled}
+                            title={srv.command || srv.url || srv.name}
+                          >
+                            <span className="plus-row-icon"><AppIcon name="server" size="sm" /></span>
+                            <span className="plus-row-text">
+                              <span className="plus-row-label">{srv.name}</span>
+                              <span className={`plus-row-sub plus-row-sub--${st.tone}`}>{st.text}</span>
+                            </span>
+                            <span className={`plus-dot plus-dot--${st.tone}`} />
+                            {pendingMcp === srv.id
+                              ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
+                              : <Switch on={srv.enabled} />}
+                          </motion.button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </Category>
+
+                <Category
+                  order={9}
+                  icon="terminal" tint="#34d399"
+                  label={t('Команды', 'Commands')}
+                  sub={t('Вставить slash-команду в инпут', 'Insert a slash command into the input')}
+                  count={commands.length}
+                  open={sections.commands}
+                  onToggle={() => toggleSection('commands')}
+                >
+                  <div className="plus-grid plus-grid--commands">
+                    {commands.map((cmd, i) => (
+                      <motion.button
+                        key={cmd.name}
+                        type="button"
+                        {...rowReveal(i)}
+                        transition={{ duration: 0.16, ease: 'easeOut' }}
+                        className="plus-cmd"
+                        style={{ '--cat': '#34d399' } as React.CSSProperties}
+                        onClick={() => { onInsertCommand?.(cmd); setOpen(false) }}
+                        whileHover={{ y: -1.5 }}
+                        whileTap={{ scale: 0.98 }}
+                        title={cmd.description}
+                      >
+                        <span className="plus-cmd-icon"><AppIcon name={cmd.icon as IconName} size="sm" /></span>
+                        <span className="plus-cmd-text">
+                          <span className="plus-cmd-label">{cmd.label}</span>
+                          <span className="plus-cmd-desc">{cmd.description}</span>
+                        </span>
+                      </motion.button>
+                    ))}
+                  </div>
+                </Category>
+              </div>
+
+              <AnimatePresence>
+                {notice && (
+                  <motion.div
+                    className="plus-notice"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    transition={{ duration: 0.16 }}
+                    role="status"
+                  >
+                    <AppIcon name="alertCircle" size="xs" />
+                    {notice}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
           )}
         </AnimatePresence>,

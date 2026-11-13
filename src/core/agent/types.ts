@@ -316,9 +316,6 @@ export type AgentRuntimeOptions = {
   /** Режим планирования активен — defense-in-depth в executeTool выдаёт
     *  явное напоминание вместо generic-блока (см. Agent.ts ~line 469). */
   planningMode?: boolean
-  /** Persona — single-select run mode. Read-only personas get an explicit
-    *  reminder in defense-in-depth (same mechanism as planningMode). */
-  persona?: import('../../shared/modes').PersonaId
   /** §roles — role of this sub-agent (researcher/editor/implementer/...).
     *  When set, defense-in-depth in executeTool issues a role-specific
     *  blocked message for tools outside the role's allowlist. */
