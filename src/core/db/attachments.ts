@@ -20,6 +20,7 @@ interface DraftAttachmentRow {
   data_url: string | null
   skill_id: string | null
   command_name: string | null
+  mcp_server_id: string | null
   snippet: string | null
   attached_at: number
 }
@@ -37,6 +38,7 @@ function rowToAttachment(r: DraftAttachmentRow): Attachment {
     dataUrl: r.data_url ?? undefined,
     skillId: r.skill_id ?? undefined,
     commandName: r.command_name ?? undefined,
+    mcpServerId: r.mcp_server_id ?? undefined,
     snippet: r.snippet ?? undefined,
     attachedAt: r.attached_at,
   }
@@ -45,7 +47,7 @@ function rowToAttachment(r: DraftAttachmentRow): Attachment {
 /** Возвращает все вложения черновика чата (в порядке прикрепления). */
 export function getDraftAttachments(chatId: string): Attachment[] {
   const rows = getDB().prepare(
-    `SELECT id, chat_id, kind, name, path, rel_path, mime, size, source, data_url, skill_id, command_name, snippet, attached_at
+    `SELECT id, chat_id, kind, name, path, rel_path, mime, size, source, data_url, skill_id, command_name, mcp_server_id, snippet, attached_at
      FROM chat_draft_attachments WHERE chat_id = ?
      ORDER BY attached_at ASC`
   ).all(chatId) as DraftAttachmentRow[]
@@ -60,15 +62,15 @@ export function setDraftAttachments(chatId: string, attachments: Attachment[]): 
     db.prepare(`DELETE FROM chat_draft_attachments WHERE chat_id = ?`).run(chatId)
     const stmt = db.prepare(
       `INSERT INTO chat_draft_attachments
-       (id, chat_id, kind, name, path, rel_path, mime, size, source, data_url, skill_id, command_name, snippet, attached_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, chat_id, kind, name, path, rel_path, mime, size, source, data_url, skill_id, command_name, mcp_server_id, snippet, attached_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     for (const a of attachments) {
       stmt.run(
         a.id, chatId, a.kind, a.name,
         a.path ?? null, a.relPath ?? null, a.mime ?? null, a.size ?? null,
         a.source, a.dataUrl ?? null, a.skillId ?? null, a.commandName ?? null,
-        a.snippet ?? null, a.attachedAt,
+        a.mcpServerId ?? null, a.snippet ?? null, a.attachedAt,
       )
     }
   })

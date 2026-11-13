@@ -468,7 +468,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       agent.onFileSnapshot = (snapshot) => {
         send({ type: 'file_snapshot', chatId, msgId, snapshot })
       }
-      // Канал для LLM-зависимых мини-агентов (doctor/navigator/archivist/
+      // Канал для LLM-зависимых мини-агентов (navigator/archivist/
       // constitution/janitor_refine) — main решает, запускать ли локальную модель.
       agent.onAssistantEvent = (evt) => {
         send({ type: 'assistant_event', chatId, ...evt })
@@ -623,7 +623,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               currentIterSteps.push(ts)
               send({ type: 'step', chatId, msgId, step })
             } else if (step.type === 'hint' || step.type === 'janitor') {
-              // Мини-агенты (watcher/constitution/briefing/doctor/navigator/
+              // Мини-агенты (watcher/constitution/briefing/navigator/
               // economist/janitor): карточка в ленте + персист в toolSteps.
               const ts = {
                 id: `${Date.now()}-${Math.random()}`,

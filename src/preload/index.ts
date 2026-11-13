@@ -1318,7 +1318,7 @@ const synteeAPI = {
       ipcRenderer.invoke('assistants:updateSettings', patch) as Promise<import('../../shared/assistants').AssistantsSettings>,
     getLog: (since?: number) => ipcRenderer.invoke('assistants:getLog', since) as Promise<import('../../shared/assistants').AssistantLogEntry[]>,
     getStats: () => ipcRenderer.invoke('assistants:getStats') as Promise<import('../../shared/assistants').AgentStatsMap>,
-    getStatus: () => ipcRenderer.invoke('assistants:getStatus') as Promise<{ serverState: string; modelSize: string; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded: boolean }>,
+    getStatus: () => ipcRenderer.invoke('assistants:getStatus') as Promise<{ serverState: string; modelSize: string; modelDownloaded: boolean; binaryReady: boolean; active: number; queueLength: number; idleUnloaded: boolean }>,
     setup: () => ipcRenderer.invoke('assistants:setup') as Promise<{ ok: boolean; error?: string }>,
     onSetupProgress: (cb: (p: { phase: string; percent: number; error?: string }) => void) => {
       const handler = (_: unknown, p: { phase: string; percent: number; error?: string }) => cb(p)

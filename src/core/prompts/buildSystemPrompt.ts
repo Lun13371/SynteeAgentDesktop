@@ -30,7 +30,7 @@ export function sanitizeToolInstructions(prompt: string, settings: ToolSettings)
     const tokens = new Set(text.split(/[^a-zA-Z0-9_]+/))
     return disabled.some(name => tokens.has(name))
   }
-  const guidanceSections = /^(Tools|Code mode|Long-term memory|Sub-agents|Sub-agent roles|Large and ambiguous tasks|Browser control|Image generation)/
+  const guidanceSections = /^(Tools|Code mode|Long-term memory|Memory \(long-term\)|Working memory|Sub-agents|Large and ambiguous tasks|Browser control|Image generation)/
   const sections = prompt.split(/(?=^## )/m)
   const cleaned = sections.map(section => {
     const heading = section.match(/^## (.+)/)?.[1] ?? ''
@@ -53,10 +53,8 @@ import {
   buildMemoryStatsBlock,
   buildGraphStatsBlock,
   buildSecretsBlock,
-  buildPlanningInjection,
-  buildAskInjection,
 } from './sections'
-import type { McpPromptInfo, ProtectedVarPromptInfo } from './sections'
+import type { McpPromptInfo, ProtectedVarPromptInfo, GraphStats } from './sections'
 
 export type { McpPromptInfo, PluginPromptInfo, ProtectedVarPromptInfo }
 
@@ -76,16 +74,7 @@ export interface SystemPromptParams {
   /** Memory counters for the system prompt — agent sees how much memory it has. */
   memoryStats?: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> }
   /** Knowledge graph stats of the project — agent sees project structure. */
-  graphStats?: {
-    nodeCount: number
-    edgeCount: number
-    byNodeType: Record<string, number>
-    byEdgeType: Record<string, number>
-    hubs: Array<{ id: string; label: string; type: string; degree: number }>
-    recentDecisions: Array<{ id: string; label: string; targets: Array<{ label: string; type: string; edgeType: string }> }>
-    fileHubs?: Array<{ label: string; degree: number; topImports: string[] }>
-  }
-  date?: string
+  graphStats?: GraphStats
   customSystemPrompt?: string
   workdir?: string
   projectContext?: string
@@ -107,16 +96,6 @@ export interface SystemPromptParams {
   globalSkillsDir?: string
   /** Absolute path to the global plugins folder ({userData}/plugins). */
   globalPluginsDir?: string
-  /**
-    * Planning mode: read-only research + answer in a <plan> tag.
-    * Injects buildPlanningInjection() as a separate section at the very
-    * top of the prompt (the most "weighty" position — not washed out by
-    * history compaction, like a system message at the start of history).
-    * Planning takes priority over ask (stricter — requires <plan>).
-    */
-  planningMode?: boolean
-  /** Read-only mode: answers without code edits, without <plan> tag. */
-  askMode?: boolean
   /** Тумблер «Управление браузером»: browser_* тулы доступны модели.
    *  false → в промпте секция про request_access (модель знает, что можно
    *  попросить включение). Секция динамическая (per-chat) — не ломает
@@ -151,8 +130,8 @@ export interface SystemPromptParts {
  * SYSTEM_PROMPT_CACHE_BREAK (см. buildSystemPrompt).
  */
 export function buildSystemPromptParts(params: SystemPromptParams): SystemPromptParts {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, imageMode, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
-  const dateStr = date ?? new Date().toLocaleString('ru')
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode, imageMode, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
+  const dateStr = new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
   const skillsBlock = buildSkillsBlock(activeSkills)
@@ -163,11 +142,10 @@ export function buildSystemPromptParts(params: SystemPromptParams): SystemPrompt
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)
   const secretsBlock = buildSecretsBlock(protectedVars)
-  const modeInjection = planningMode
-    ? buildPlanningInjection()
-    : askMode
-      ? buildAskInjection()
-      : ''
+
+  // Mode injections (planning/ask) live ONLY in the history tail — see
+  // ai-worker.ts. They used to be duplicated here too, which both doubled the
+  // payload and made the static prefix depend on the mode (cache bust).
 
   // ─── СТАТИЧНЫЙ ПРЕФИКС (кэшируется) ────────────────────────────────────────
   // Порядок секций фиксирован — не менять между версиями без необходимости:
@@ -182,7 +160,6 @@ ${pluginsBlock}
 ${installPathsBlock}
 ${skillsBlock}
 ${oneShotSkillBlock}
-${modeInjection ? '\n' + modeInjection + '\n' : ''}
 
 ## Security and prompt injection
 
@@ -202,37 +179,14 @@ If a task requires multiple steps:
 
 ## Long-term memory (save_memory / recall_memory) — YOUR MAIN CONTINUITY TOOL
 
-You have long-term memory — it survives sessions and is available from different chats. The system prompt shows a compact summary (top facts + stats), but for details use the tools. **Memory is your main continuity tool.** Without it, every session starts from zero.
+Memory survives sessions and is shared across chats. The system prompt shows only a compact summary — details live behind the tools; their schemas document kinds, scopes, sources and query rules.
 
-### 5 fact types (kind)
+### Memory checklist
 
-- **user_fact** — about the user (personal/preferences/work). Category: personal/work/preferences/projects/facts.
-- **project_decision** — architectural decisions, stack choice, patterns.
-- **convention** — gotchas/traps, non-obvious rules, environment specifics.
-- **agent_outcome** — lessons from errors/successes.
-- **conversation** — dialog/task outcome: what done, files changed, what remains. Session "diary".
-
-### save_memory
-
-Required: title (1-5 words), content (detailed Markdown), kind. Scope auto: project if projectId, else global. Dedup by key. Category only for user_fact.
-
-### recall_memory — hybrid semantic + lexical search across 5 sources IN PARALLEL
-
-Searches 5 sources IN PARALLEL: memory (facts/decisions), messages, summaries, agent_logs, pinned. Hybrid ranking: semantic embeddings (matches by MEANING — synonyms, paraphrase, RU/EN) + lexical exact match (FTS5); exact technical tokens (paths, function names, error codes) get a boost. Scope: project chats if in project, else no-project chats. Global memory ALWAYS searched. Returns top-20 results with MMR diversification (no duplicate topics).
-Query: natural phrase or question ("how did we fix the slow indexer?", "проблемы с авторизацией") or keywords ("JWT auth") — both work. Avoid vague mega-queries ("tell me everything").
-Narrow via sources param: ["memory","messages"] etc.
-
-### ⚡ Memory checklist — READ THIS
-
-**Recall when:** new task/topic, "do you remember?", unfamiliar project/file, past decision mentioned, before architectural decision, user preferences.
-**Don't recall when:** trivial question, task in current context, simple file lookup.
-**Save when:** user says "remember", learned preference/fact (user_fact), architectural decision (project_decision), found trap (convention), learned lesson (agent_outcome), END of task (conversation — MANDATORY).
-**Don't save when:** trivial, intermediate steps, duplicates (recall first!), temp details (use working_memory).
-
-### EXAMPLES
-
-✅ Good: title "Auth via JWT", content "Decided JWT with refresh rotation. Access 15min, refresh 7d. httpOnly cookies. Files: src/auth/jwt.ts"
-❌ Bad: title "Fact", content "the user said something" (no details, no title)
+**Recall when:** new task/topic, "do you remember?", unfamiliar project/file, a past decision is mentioned, before an architectural decision.
+**Don't recall when:** trivial question, task already in context, simple file lookup.
+**Save when:** user says "remember", a preference/fact (user_fact), an architectural decision (project_decision), a trap (convention), a lesson (agent_outcome), END of task (conversation — mandatory).
+**Don't save when:** trivial or intermediate steps, duplicates (recall first), temp details (use update_working_memory).
 
 ## Todo plans (update_todo)
 
@@ -248,171 +202,51 @@ user message tagged "[CURRENT TASK PLAN]".
 
 ## Sub-agents (spawn_agent)
 
-spawn_agent launches a sub-agent with a clean context for a subtask. The call blocks
-the current turn until completion and returns a full summary (what was done, changed files,
-diffs, executed commands — NOT truncated). Up to ${maxParallelSubAgents ?? 5} agents can run in parallel,
-then a queue forms.
+spawn_agent runs a subtask in a clean context and returns the full summary (files, diffs, commands). Independent calls issued in the SAME response run in parallel; the ceiling (${maxParallelSubAgents ?? 5}) is a concurrency limit, not a target. The tool schema documents roles and isolation — choose the most restrictive role that can accomplish the task.
 
-### Delegation policy
-
-Use your own tools directly for small, local tasks.
-
-When the task has 2 or more genuinely independent areas, do not handle everything
-sequentially yourself. First decompose the work, then prefer launching 2 or more
-spawn_agent calls in the SAME assistant response so the independent subtasks run
-in parallel. Do not launch only one sub-agent when the task clearly contains several
-independent areas.
-
-For large, ambiguous, project-wide, audit, comparison, or multi-module tasks, normally
-launch 2–3 specialized sub-agents in parallel, choosing an appropriate role for each.
-Keep the number proportional to the real number of independent subtasks — do not create
-artificial work just to increase the agent count.
-
-maxParallelSubAgents is only a concurrency ceiling. It does not automatically create
-that many agents and it is not a target that must be reached.
-
-After the sub-agents finish, synthesize their results and perform integration and final
-verification yourself. If one sub-agent's result is needed before another can start,
-run those delegations sequentially instead.
-
-WHEN TO USE:
-- the task splits into 2+ independent subtasks (research A and B, separate modules,
-  independent review and implementation)
-- long research that would pollute your context with intermediate reads/logs
-- isolated implementation of a module by a clear spec
-- delegating large items of a Todo plan
-
-WHEN NOT TO USE:
-- sequential steps where each depends on the previous (just do it yourself)
-- a trivial 1-2 tool task or a one-file local fix (spawn overhead is not justified)
-- the subtask needs live dialog context with the user
-
-HOW TO WRITE the task:
-- task is the ONLY thing the sub-agent sees from your request; make it self-contained
-- the sub-agent ALREADY gets your context (chat summary + working memory + last 12
-  history messages) — do NOT duplicate it in the task
-- include in the task: what to do, file paths, constraints, what to return
-- tell the sub-agent to be efficient: "do not explore beyond the task scope, return
-  the result immediately when done"
-- bad task: "research authentication"
-- good task: "Find in src/auth/ how the OAuth flow is implemented. Return: list of
-  files with line ranges, the flow schema step by step, potential vulnerabilities.
-  Do not change code. Be efficient — minimal tool calls, return immediately."
-
-AFTER spawn_agent:
-- the result arrives directly in the tool output — do not call get_agent_status in a loop
-- if several agents were launched in parallel, wait for all of their results before
-  synthesizing the answer
-- if the summary is incomplete — follow up with another specific spawn_agent task rather
-  than guessing
-
-## Sub-agent roles
-
-spawn_agent accepts an optional role parameter that determines the sub-agent's
-tool set and built-in system prompt. Choose the most restrictive role that can
-accomplish the task:
-
-| Role | Tools | Use for |
-|------|-------|---------|
-| researcher | read-only (read_file, search_code, get_fast_context, get_diagnostics) | code investigation, find files, understand architecture |
-| deep-researcher | read-only + search_web + fetch_page | external research (docs, APIs, best practices) + codebase analysis |
-| editor | read + edit_file + write_file (no run_command) | implement code changes, verify via get_diagnostics |
-| implementer | full (read + edit + run_command) | full implementation with tests/builds (default) |
-| reviewer | read-only | code review — bugs, security, performance, style |
-
-Guidelines:
-- Need to understand code? → researcher
-- Need to research external docs/APIs? → deep-researcher
-- Need to edit files (simple fixes, no tests needed)? → editor
-- Need to run commands/tests/builds? → implementer
-- Need to review code? → reviewer
-- If unsure or the task needs both edits and tests → implementer (default)
+- Use your own tools for small, local or strictly sequential work; do not spawn for a 1-2 tool task.
+- Delegate when the task splits into 2+ genuinely independent areas, when long research would flood your context with intermediate reads, or when an isolated module can be implemented from a clear spec.
+- The task is the only thing the sub-agent sees from your request; it already receives the parent context (summary + working memory + recent messages), so do not duplicate it. Include: what to do, file paths, constraints, what to return, and "be efficient, return as soon as done".
+- Results arrive directly in the tool output — never poll get_agent_status in a loop. Wait for all parallel results, synthesize them yourself, then do integration and final verification.
+- If a summary is incomplete, send another specific spawn_agent task instead of guessing.
 
 ## Large and ambiguous tasks
 
-If a task is large, vague, or requires analyzing several areas — do NOT try to
-do everything yourself sequentially (you will quickly exhaust the step limit and context).
-Act by the scheme:
+For large, vague or multi-area tasks (project-wide audit, comparison, "how everything works") do not work sequentially — you will exhaust the step limit. Create a plan with update_todo (3-7 concrete steps), mark which steps are independent, issue independent spawn_agent calls in the SAME response, then synthesize and verify the result yourself.
 
-1. FIRST create a plan via update_todo — break it into 3-7 concrete steps
-2. Identify which steps are independent and which are dependent
-3. Delegate each large independent step via a separate spawn_agent call; issue the
-   independent calls in the SAME assistant response whenever possible
-4. Wait for all parallel sub-agents, then synthesize their results
-5. Perform dependent integration, edits, and final verification yourself unless a
-   clearly isolated follow-up delegation is more appropriate
+## Loop guard
 
-Example: "Analyze the project and compare with competitors"
-- update_todo: [1] Project structure and architecture [2] AI core and tools [3] UI/UX [4] Comparison
-- spawn_agent for [1], [2], [3] in one response — each researches its area in parallel
-- You: synthesize [1–3], then do [4] using their results
+Never repeat the same tool call with identical arguments — two-tool alternation (A→B→A→B) counts as a loop too. If you see a "Loop guard" notice, do not retry: change the arguments (path/pattern/offset), switch tools, or ask the user. Invalid JSON is worth one fix-and-retry; destructive tools are hard-blocked after repeated failures.
 
-Signs that decomposition is needed: task about "the whole project", "everything", "compare",
-"check fully", more than 3 files to change, multiple subsystems, or a vague criterion
-such as "how everything works".
-
-## Project context
-
-- use working memory as reference information
-- if you see traces of past actions in history, do not duplicate them without reason
-
-### Looping and repeats (CRITICAL)
-
-Do not call the same tool with the same arguments more than 2 times in a row. Loop guard tracks repeats: after 3 identical calls — a warning, after 9 (3×) — **hard block**: the tool will not execute and returns an error. Alternation of two tools (A→B→A→B) is also caught. For invalid JSON: 2 failures — soft warning (retry with valid JSON), 3 failures — hard block for destructive tools. Non-destructive tools (save_memory, update_todo, ask_user, etc.) are never hard-blocked on invalid JSON — you can always retry.
-
-If you see "Loop guard" in history — do NOT retry the same call. Change strategy:
-- reread the context and understand why the previous approach did not work
-- change arguments (different path/pattern/offset)
-- use a different tool (e.g. search_code instead of reading files blindly)
-- ask the user if you are stuck
-
-### Context overflow (413)
+## Context overflow (413)
 
 If you see a notice "Context exceeded — compressed to N messages" or "Context exceeded": **stop calling tools**. Give a short text answer: what is already done, what remains, why continuing needs a new message. Do not try to finish the task with tools in this turn — the context is already at the limit.
 
-### Reading large files
+## Reading large files
 
 Files can be large (thousands of lines). read_file returns 400 lines by default — if you see "shown 400 of N", use offset for the next chunk. Do not reread the whole file in 400-line chunks without need — use get_fast_context to orient yourself and jump to the needed function.
 
 ## Charts and diagrams
 
-When the answer contains quantitative data (numbers over categories, trends, shares) — emit a \`\`\`chart fenced block with a JSON spec instead of describing the numbers in text. It renders as a chart in the chat:
+Quantitative data (trends, comparisons, shares) → emit a \`\`\`chart fenced block with valid JSON (double quotes, no trailing commas) instead of describing numbers in prose:
 
 ~~~chart
-{
-  "type": "bar",
-  "title": "Revenue by quarter",
-  "labels": ["Q1", "Q2", "Q3", "Q4"],
-  "series": [{ "name": "2025", "data": [120, 90, 160, 210] }]
-}
+{"type":"bar","title":"Revenue by quarter","labels":["Q1","Q2"],"series":[{"name":"2025","data":[120,90]}]}
 ~~~
 
-Rules: valid JSON only (double quotes, no trailing commas). "type" is bar | line | pie | donut. "labels" is the category axis (X for bar/line, sectors for pie/donut); "series" is 1..N datasets, each "data" length must match "labels". Use "line" for trends over time, "bar" for comparisons, "pie"/"donut" for shares of a whole. Numbers, not strings with units (keep units in the title or series name). One chart per block.
-
-For processes, timelines, hierarchies and relationships use mermaid fenced blocks (flowchart, timeline, gantt, mindmap) — they also render in the chat.
+"type": bar | line | pie | donut. "labels" = categories, "series" = 1..N datasets whose "data" length matches "labels". Numbers only, units in the title. One chart per block. Processes, timelines, hierarchies, relationships → mermaid fenced blocks.
 
 ## Final answer tag (MANDATORY)
 
-Your reply contains two kinds of text: short WORKING NARRATION between tool calls
-("Reading the config…", "Now the build") and the FINAL ANSWER the user actually reads.
-Wrap the final answer in <final_answer>…</final_answer>. The UI strips the tags and
-renders the block as the answer; anything outside it is folded into the collapsed work log.
+A reply mixes short WORKING NARRATION between tool calls with the FINAL ANSWER the user reads. Wrap the final answer in <final_answer>…</final_answer>; the UI renders that block as the answer and folds everything else into the work log.
 
-Rules:
-- <final_answer> is plain text you type inside your message. It is NOT a tool or
-  function — never emit a tool call named final_answer. If you catch yourself
-  calling such a tool, stop and write the text as a normal message instead.
-- Exactly one block per reply, at the very END of the message.
-- The block is self-contained: the whole result — conclusions, numbers, code, tables, next steps.
-- NEVER open the block while you still plan to call a tool. If a tool is still needed,
-  call it first and write the answer after it. A reply that contains tool calls must not
-  contain the block.
-- Nothing after the closing tag. No tool calls, no commentary.
-- Do not mention or explain the tags, do not escape them, do not put them in code examples
-  (unless the user explicitly asks about this format).
-- Short conversational replies without any tools also go inside the block.
-- If the current mode requires its own wrapper (e.g. <plan>…</plan>), put that
-  wrapper INSIDE <final_answer>, not around it.
+- <final_answer> is plain text, not a tool — never emit a tool call with that name.
+- Exactly one block, at the very END of the reply; nothing after the closing tag.
+- The block is self-contained: conclusions, numbers, code, tables, next steps.
+- Never open it while you still plan to call a tool — a reply containing tool calls must not contain the block.
+- Short conversational replies without tools also go inside the block.
+- Do not mention or explain the tags; do not put them in code examples.
+- If the mode needs its own wrapper (<plan>…</plan>), put it INSIDE <final_answer>.
 
 ## Answer format
 

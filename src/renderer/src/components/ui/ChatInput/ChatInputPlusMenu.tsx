@@ -8,9 +8,10 @@ import type { Attachment, MentionItem } from '../../../../../shared/types'
 import { useExtensionsStore } from '../../../store/extensions.store'
 
 type IconName = Parameters<typeof AppIcon>[0]['name']
-type SectionId = 'files' | 'skills' | 'mcp' | 'commands'
+type SectionId = 'files' | 'skills' | 'mcp' | 'plugins' | 'commands'
 type SkillRow = ReturnType<typeof useExtensionsStore.getState>['skills'][number]
 type McpRow = ReturnType<typeof useExtensionsStore.getState>['mcpServers'][number]
+type PluginRow = ReturnType<typeof useExtensionsStore.getState>['plugins'][number]
 
 interface ChatInputPlusMenuProps {
   /** Контейнер инпут-бара (.chat-input-box) — панель встаёт на всю его ширину от левого края. */
@@ -36,6 +37,8 @@ interface ChatInputPlusMenuProps {
   maxAttachments?: number
   /** Прикрепить файл/картинку из поиска проекта (возвращает false при лимите/дубликате). */
   onAttachItem?: (item: MentionItem) => boolean
+  /** Прикрепить MCP-сервер к сообщению (чип в тексте; main инжектит его тулы). */
+  onAttachMcp?: (server: { id: string; name: string }) => boolean
   customCommands?: SlashCommand[]
   /** Вставить slash-команду в инпут (ChatInput.selectCommand). */
   onInsertCommand?: (cmd: SlashCommand) => void
@@ -175,19 +178,21 @@ export function ChatInputPlusMenu({
   attachments = [],
   maxAttachments = 10,
   onAttachItem,
+  onAttachMcp,
   customCommands = [],
   onInsertCommand,
 }: ChatInputPlusMenuProps) {
   const t = (ru: string, en: string) => (lang === 'en' ? en : ru)
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top: number; left: number; width: number; maxH: number; openUp: boolean } | null>(null)
-  const [sections, setSections] = useState<Record<SectionId, boolean>>({ files: false, skills: false, mcp: false, commands: false })
+  const [sections, setSections] = useState<Record<SectionId, boolean>>({ files: false, skills: false, mcp: false, plugins: false, commands: false })
   const [fileQuery, setFileQuery] = useState('')
   const [fileResults, setFileResults] = useState<MentionItem[]>([])
   const [fileLoading, setFileLoading] = useState(false)
   const [skillQuery, setSkillQuery] = useState('')
   const [pendingSkill, setPendingSkill] = useState<string | null>(null)
   const [pendingMcp, setPendingMcp] = useState<string | null>(null)
+  const [pendingPlugin, setPendingPlugin] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const noticeTimer = useRef<number | null>(null)
   const fileToken = useRef(0)
@@ -201,8 +206,11 @@ export function ChatInputPlusMenu({
   const skillsError = useExtensionsStore(s => s.skillsError)
   const mcpServers = useExtensionsStore(s => s.mcpServers)
   const mcpLoading = useExtensionsStore(s => s.mcpLoading)
+  const plugins = useExtensionsStore(s => s.plugins)
+  const pluginsLoading = useExtensionsStore(s => s.pluginsLoading)
   const loadSkills = useExtensionsStore(s => s.loadSkills)
   const loadMcpServers = useExtensionsStore(s => s.loadMcpServers)
+  const loadPlugins = useExtensionsStore(s => s.loadPlugins)
   const setSkillState = useExtensionsStore(s => s.setSkillState)
 
   const showNotice = useCallback((msg: string) => {
@@ -255,7 +263,8 @@ export function ChatInputPlusMenu({
     if (!open) return
     void loadSkills(projectId ?? undefined)
     void loadMcpServers(projectId ?? undefined)
-  }, [open, projectId, loadSkills, loadMcpServers])
+    void loadPlugins(projectId ?? undefined)
+  }, [open, projectId, loadSkills, loadMcpServers, loadPlugins])
 
   // ── Поиск файлов проекта (debounce + race-guard) ──
   useEffect(() => {
@@ -297,6 +306,7 @@ export function ChatInputPlusMenu({
 
   const enabledSkills = skills.filter(s => s.state.enabled).length
   const enabledMcp = mcpServers.filter(s => s.enabled).length
+  const enabledPlugins = plugins.filter(p => p.state.enabled).length
 
   const toggles: Array<{ key: string; icon: IconName; tint: string; label: string; title: string; on: boolean; change?: (v: boolean) => void }> = [
     { key: 'planning', icon: 'fileText', tint: '#60a5fa', label: t('Планирование', 'Planning'), title: t('Режим плана: исследование + план без правок', 'Plan mode: research + plan, no edits'), on: !!planningMode, change: onPlanningModeChange },
@@ -352,6 +362,59 @@ export function ChatInputPlusMenu({
     if (srv.status === 'connecting') return { text: t('Подключение…', 'Connecting…'), tone: 'warn' }
     if (srv.status === 'error') return { text: srv.error || t('Ошибка подключения', 'Connection error'), tone: 'err' }
     return { text: t('Не подключён', 'Disconnected'), tone: 'off' }
+  }
+
+  // Прикрепление MCP-сервера к сообщению: как файл — чип в тексте. Выключенный
+  // сервер сначала включаем (иначе его тулов нет в ране).
+  const attachMcpServer = async (srv: McpRow) => {
+    if (attachments.some(a => a.kind === 'mcp' && a.mcpServerId === srv.id)) {
+      showNotice(t('Сервер уже прикреплён', 'Server is already attached'))
+      return
+    }
+    if (attachments.length >= maxAttachments) {
+      showNotice(t(`Лимит вложений — ${maxAttachments}`, `Attachment limit is ${maxAttachments}`))
+      return
+    }
+    if (!srv.enabled) {
+      setPendingMcp(srv.id)
+      useExtensionsStore.setState(s => ({ mcpServers: s.mcpServers.map(x => x.id === srv.id ? { ...x, enabled: true } : x) }))
+      try {
+        await window.syntee.mcp.setServerState({ serverId: srv.id, projectId: projectId ?? undefined, enabled: true })
+        await loadMcpServers(projectId ?? undefined)
+      } catch {
+        useExtensionsStore.setState(s => ({ mcpServers: s.mcpServers.map(x => x.id === srv.id ? { ...x, enabled: false } : x) }))
+        showNotice(t('Не удалось включить MCP-сервер', 'Could not enable the MCP server'))
+        setPendingMcp(null)
+        return
+      }
+      setPendingMcp(null)
+    }
+    if (onAttachMcp?.({ id: srv.id, name: srv.name }) === false) {
+      showNotice(t('Не удалось прикрепить сервер', 'Could not attach the server'))
+    }
+  }
+
+  const togglePlugin = async (pl: PluginRow) => {
+    const next = !pl.state.enabled
+    setPendingPlugin(pl.id)
+    useExtensionsStore.setState(s => ({ plugins: s.plugins.map(x => x.id === pl.id ? { ...x, state: { ...x.state, enabled: next } } : x) }))
+    try {
+      await window.syntee.plugins.setState({ pluginId: pl.id, enabled: next })
+      await loadPlugins(projectId ?? undefined)
+    } catch {
+      useExtensionsStore.setState(s => ({ plugins: s.plugins.map(x => x.id === pl.id ? { ...x, state: pl.state } : x) }))
+      showNotice(t('Не удалось переключить плагин', 'Could not toggle the plugin'))
+    } finally {
+      setPendingPlugin(null)
+    }
+  }
+
+  const pluginStatus = (pl: PluginRow): { text: string; tone: string } => {
+    if (!pl.state.enabled) return { text: t('Выключен', 'Disabled'), tone: 'off' }
+    if (pl.status === 'running') return { text: t(`Работает · ${pl.tools.length} тулов`, `Running · ${pl.tools.length} tools`), tone: 'ok' }
+    if (pl.status === 'starting') return { text: t('Запуск…', 'Starting…'), tone: 'warn' }
+    if (pl.status === 'error') return { text: pl.error || t('Ошибка плагина', 'Plugin error'), tone: 'err' }
+    return { text: t('Остановлен', 'Stopped'), tone: 'off' }
   }
 
   return (
@@ -600,27 +663,44 @@ export function ChatInputPlusMenu({
                     <div className="plus-list">
                       {mcpServers.map((srv, i) => {
                         const st = mcpStatus(srv)
+                        const attached = attachments.some(a => a.kind === 'mcp' && a.mcpServerId === srv.id)
                         return (
-                          <motion.button
+                          <motion.div
                             key={srv.id}
-                            type="button"
                             {...rowReveal(i)}
-                            className={`plus-row${srv.enabled ? ' plus-row--on' : ''}`}
+                            className={`plus-row plus-row--mcp${srv.enabled ? ' plus-row--on' : ''}`}
                             style={{ '--cat': '#22d3ee' } as React.CSSProperties}
-                            onClick={() => { if (pendingMcp !== srv.id) void toggleMcp(srv) }}
-                            aria-pressed={srv.enabled}
-                            title={srv.command || srv.url || srv.name}
                           >
-                            <span className="plus-row-icon"><AppIcon name="server" size="sm" /></span>
-                            <span className="plus-row-text">
-                              <span className="plus-row-label">{srv.name}</span>
-                              <span className={`plus-row-sub plus-row-sub--${st.tone}`}>{st.text}</span>
-                            </span>
-                            <span className={`plus-dot plus-dot--${st.tone}`} />
-                            {pendingMcp === srv.id
-                              ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
-                              : <Switch on={srv.enabled} />}
-                          </motion.button>
+                            <button
+                              type="button"
+                              className="plus-row-main"
+                              onClick={() => { if (pendingMcp !== srv.id) void toggleMcp(srv) }}
+                              aria-pressed={srv.enabled}
+                              title={srv.command || srv.url || srv.name}
+                            >
+                              <span className="plus-row-icon"><AppIcon name="server" size="sm" /></span>
+                              <span className="plus-row-text">
+                                <span className="plus-row-label">{srv.name}</span>
+                                <span className={`plus-row-sub plus-row-sub--${st.tone}`}>{st.text}</span>
+                              </span>
+                              <span className={`plus-dot plus-dot--${st.tone}`} />
+                              {pendingMcp === srv.id
+                                ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
+                                : <Switch on={srv.enabled} />}
+                            </button>
+                            <button
+                              type="button"
+                              className={`plus-row-attach${attached ? ' plus-row-attach--done' : ''}`}
+                              onClick={() => { void attachMcpServer(srv) }}
+                              title={attached
+                                ? t('Сервер прикреплён к сообщению', 'Server attached to the message')
+                                : t('Прикрепить сервер к сообщению', 'Attach the server to the message')}
+                              aria-label={t('Прикрепить MCP-сервер к сообщению', 'Attach MCP server to the message')}
+                              aria-pressed={attached}
+                            >
+                              <AppIcon name={attached ? 'check' : 'paperclip'} size="xs" />
+                            </button>
+                          </motion.div>
                         )
                       })}
                     </div>
@@ -629,6 +709,50 @@ export function ChatInputPlusMenu({
 
                 <Category
                   order={9}
+                  icon="puzzle" tint="#f472b6"
+                  label={t('Подключить плагин', 'Connect plugin')}
+                  sub={t('Локальные расширения с тулами', 'Local extensions with tools')}
+                  count={enabledPlugins}
+                  open={sections.plugins}
+                  onToggle={() => toggleSection('plugins')}
+                >
+                  {pluginsLoading && plugins.length === 0 ? (
+                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем плагины…', 'Loading plugins…')}</motion.div>
+                  ) : plugins.length === 0 ? (
+                    <motion.div className="plus-hint" {...rowReveal(0)}>{t('Плагинов нет. Установите их в Настройки → Расширения.', 'No plugins. Install them in Settings → Extensions.')}</motion.div>
+                  ) : (
+                    <div className="plus-list">
+                      {plugins.map((pl, i) => {
+                        const st = pluginStatus(pl)
+                        return (
+                          <motion.button
+                            key={pl.id}
+                            type="button"
+                            {...rowReveal(i)}
+                            className={`plus-row${pl.state.enabled ? ' plus-row--on' : ''}`}
+                            style={{ '--cat': '#f472b6' } as React.CSSProperties}
+                            onClick={() => { if (pendingPlugin !== pl.id) void togglePlugin(pl) }}
+                            aria-pressed={pl.state.enabled}
+                            title={pl.manifest.name}
+                          >
+                            <span className="plus-row-icon"><AppIcon name="puzzle" size="sm" /></span>
+                            <span className="plus-row-text">
+                              <span className="plus-row-label">{pl.manifest.name}</span>
+                              <span className={`plus-row-sub plus-row-sub--${st.tone}`}>{st.text}</span>
+                            </span>
+                            <span className={`plus-dot plus-dot--${st.tone}`} />
+                            {pendingPlugin === pl.id
+                              ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
+                              : <Switch on={pl.state.enabled} />}
+                          </motion.button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </Category>
+
+                <Category
+                  order={10}
                   icon="terminal" tint="#34d399"
                   label={t('Команды', 'Commands')}
                   sub={t('Вставить slash-команду в инпут', 'Insert a slash command into the input')}

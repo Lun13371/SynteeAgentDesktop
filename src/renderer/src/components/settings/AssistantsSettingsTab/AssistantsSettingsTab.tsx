@@ -11,7 +11,7 @@ import type { AssistantsSettings, AssistantLogEntry, AgentStatsMap } from '../..
 import { DEFAULT_ASSISTANTS_SETTINGS } from '../../../../../shared/assistants'
 import './AssistantsSettingsTab.css'
 
-type Status = { serverState: string; modelSize: string; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded?: boolean }
+type Status = { serverState: string; modelSize: string; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded?: boolean; active?: number; queueLength?: number }
 type SetupPhase = { phase: string; percent: number; error?: string }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -22,7 +22,7 @@ const PHASE_LABELS: Record<string, string> = {
   error: 'Ошибка',
 }
 
-type AgentKey = 'watcherEnabled' | 'janitorEnabled' | 'doctorEnabled' | 'briefingEnabled' | 'navigatorEnabled' | 'archivistEnabled' | 'economistEnabled'
+type AgentKey = 'watcherEnabled' | 'janitorEnabled' | 'briefingEnabled' | 'navigatorEnabled' | 'archivistEnabled' | 'economistEnabled'
 
 interface AgentDef {
   key: AgentKey
@@ -55,15 +55,6 @@ const AGENTS: AgentDef[] = [
     how: ['Находит одинаковые вызовы тулов и повторные read_file.', 'Оставляет последнюю версию, старое сворачивает.', 'Старые tool-результаты сжимает в резюме (путь, строки, ошибки).', 'Оригиналы кладёт в архив — агент может вернуть их через recall.', 'Не трогает «конституцию» и не сжимает, если экономия мала (бережёт кэш промпта).'],
     effect: 'Меньше токенов и денег на длинных сессиях без потери важных фактов.',
     llm: 'Опционально — улучшает структурные резюме.',
-  },
-  {
-    key: 'doctorEnabled', name: 'Loop doctor', icon: 'zap', color: '#fb923c',
-    short: 'На зацикливании предлагает альтернативу вместо простого блока.',
-    what: 'Лечит лупы: когда агент повторяет один и тот же тул или ошибку, предлагает конкретный другой подход.',
-    when: 'На первом мягком срабатывании loop-guard и на ошибке тула.',
-    how: ['Ловит повтор тула с теми же аргументами / чередование A-B-A-B.', 'Читает недавний контекст и текст ошибки.', 'Локальная модель предлагает одну конкретную альтернативу.', 'Инжектит её как подсказку — агент меняет стратегию, а не долбит в стену.'],
-    effect: 'Меньше сожжённых токенов на бесконечных повторах.',
-    llm: 'Да — генерация альтернативы.',
   },
   {
     key: 'briefingEnabled', name: 'Briefing', icon: 'brain', color: '#38bdf8',
@@ -187,7 +178,7 @@ export default function AssistantsSettingsTab() {
       {isReady && !isSettingUp && (
         <div className="assistants-ready">
           <span className="assistants-dot assistants-dot--ready" />
-          <span>Работает · {status.modelSize} · всё локально</span>
+          <span>Работает · {status.modelSize} · всё локально{(status.active ?? 0) > 0 ? ` · в работе ${status.active}${status.queueLength ? `, в очереди ${status.queueLength}` : ''}` : ''}</span>
         </div>
       )}
 

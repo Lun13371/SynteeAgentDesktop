@@ -36,7 +36,7 @@ export const COMMAND_TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'get_system_info',
-      description: 'Получить информацию о системе (OS, память, uptime).',
+      description: 'Get system information (OS, memory, uptime).',
       parameters: { type: 'object', properties: {} },
     },
   },

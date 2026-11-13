@@ -756,6 +756,7 @@ function ChatInput({
   // чат → tabActions.selectChat (глобальный мост ChatPage), проект → самый
   // свежий чат проекта. Превью-модалка чатам/проектам не подходит (нет path).
   const handleChipPreview = useCallback((a: Attachment) => {
+    if (a.kind === 'mcp') return
     if (a.kind === 'chat' && a.chatId) {
       tabActions.selectChat?.(a.chatId)
       return
@@ -781,6 +782,25 @@ function ChatInput({
     if (attachments.some(a => a.kind === newAtt.kind && dupKey(a) !== undefined && dupKey(a) === dupKey(newAtt))) return false
     onAttachmentsChange?.([...attachments, newAtt])
     editorApiRef.current?.insertAttachmentAtCaret(newAtt)
+    return true
+  }, [attachments, maxAttachments, onAttachmentsChange])
+
+  // ── Прикрепление MCP-сервера из плюс-панели ──
+  // Чип kind='mcp' в тексте сообщения; main по нему инжектит имя сервера
+  // и его инструменты в контекст этого запроса (как файл-вложение).
+  const handleMenuAttachMcp = useCallback((server: { id: string; name: string }): boolean => {
+    if (attachments.length >= maxAttachments) return false
+    if (attachments.some(a => a.kind === 'mcp' && a.mcpServerId === server.id)) return false
+    const att: Attachment = {
+      id: crypto.randomUUID(),
+      kind: 'mcp',
+      name: server.name,
+      mcpServerId: server.id,
+      source: 'mention',
+      attachedAt: Date.now(),
+    }
+    onAttachmentsChange?.([...attachments, att])
+    editorApiRef.current?.insertAttachmentAtCaret(att)
     return true
   }, [attachments, maxAttachments, onAttachmentsChange])
 
@@ -1132,6 +1152,7 @@ function ChatInput({
             attachments={attachments}
             maxAttachments={maxAttachments}
             onAttachItem={handleMenuAttach}
+            onAttachMcp={handleMenuAttachMcp}
             customCommands={customCommands}
             onInsertCommand={selectCommand}
           />

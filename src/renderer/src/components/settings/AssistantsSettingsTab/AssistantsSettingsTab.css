@@ -309,7 +309,6 @@
 }
 
 /* цвета ролей в живом логе для новых агентов */
-.assistants-log-entry--doctor .assistants-log-role { color: #fb923c; }
 .assistants-log-entry--briefing .assistants-log-role { color: #38bdf8; }
 .assistants-log-entry--navigator .assistants-log-role { color: #a78bfa; }
 .assistants-log-entry--archivist .assistants-log-role { color: #34d399; }

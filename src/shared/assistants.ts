@@ -6,15 +6,14 @@ export const CONSTITUTION_MARKER = '[Конституция проекта — �
 
 export const BRIEFING_MARKER = '[Брифинг на старте задачи — состояние проекта от локального помощника]'
 
-export type AssistantRole = 'watcher' | 'janitor' | 'doctor' | 'briefing' | 'navigator' | 'archivist' | 'economist'
+export type AssistantRole = 'watcher' | 'janitor' | 'briefing' | 'navigator' | 'archivist' | 'economist'
 
-export type HintSource = 'memory' | 'skill' | 'capability' | 'doctor' | 'briefing' | 'navigator' | 'archivist' | 'economist' | 'constitution'
+export type HintSource = 'memory' | 'skill' | 'capability' | 'briefing' | 'navigator' | 'archivist' | 'economist' | 'constitution'
 
 export interface AssistantsSettings {
   enabled: boolean
   watcherEnabled: boolean
   janitorEnabled: boolean
-  doctorEnabled: boolean
   briefingEnabled: boolean
   navigatorEnabled: boolean
   archivistEnabled: boolean
@@ -34,7 +33,6 @@ export const DEFAULT_ASSISTANTS_SETTINGS: AssistantsSettings = {
   enabled: false,
   watcherEnabled: true,
   janitorEnabled: true,
-  doctorEnabled: true,
   briefingEnabled: true,
   navigatorEnabled: true,
   archivistEnabled: true,

@@ -25,6 +25,7 @@ export interface ManagerStatus {
   port: number
   restarts: number
   queueLength: number
+  active: number
   idleUnloaded: boolean
   lastError?: string
 }
@@ -51,6 +52,13 @@ const HEALTH_INTERVAL_MS = 10_000
 const IDLE_UNLOAD_MS = 5 * 60_000
 const STARTUP_TIMEOUT_MS = 60_000
 const MAX_QUEUE = 8
+// llama-server стартует с n_slots=4 и общим KV-пулом, но декод CPU-bound:
+// при 3 параллельных запросах каждый становится ~2.5× медленнее. Два слота
+// дают лучший баланс — длинный janitor/archivist больше не блокирует
+// короткие watcher запросы (замер: 9.3с → 6.8с на смешанной пачке).
+const MAX_PARALLEL = 2
+const TIMEOUT_PER_PEER_MS = 10_000
+const MAX_TIMEOUT_MS = 45_000
 const MAX_RESTARTS = 3
 const RESTART_BACKOFF_MS = [1000, 3000, 8000]
 const PRIORITY_ORDER: Record<QueuePriority, number> = { watcher: 0, default: 1, janitor: 2 }
@@ -65,7 +73,7 @@ class LocalModelManager {
   private restarts = 0
   private lastError: string | undefined
   private queue: QueueItem[] = []
-  private processing = false
+  private inFlight = 0
   private stateListeners: Array<(s: ManagerState) => void> = []
   private progressListeners: Array<(p: SetupProgress) => void> = []
   private shuttingDown = false
@@ -88,6 +96,7 @@ class LocalModelManager {
       port: this.port,
       restarts: this.restarts,
       queueLength: this.queue.length,
+      active: this.inFlight,
       idleUnloaded: this.idleUnloaded,
       lastError: this.lastError,
     }
@@ -252,7 +261,7 @@ class LocalModelManager {
 
   /** Простой > 5 мин без вызовов — выгружаем сервер, RAM свободна; следующий вызов поднимет его сам. */
   private checkIdle(): boolean {
-    if (this.queue.length > 0 || this.processing) return false
+    if (this.queue.length > 0 || this.inFlight > 0) return false
     if (Date.now() - this.lastActivity < IDLE_UNLOAD_MS) return false
     log('[LocalModels] idle >%d min — unloading server to free RAM', IDLE_UNLOAD_MS / 60_000)
     this.stopWatchdog()
@@ -324,28 +333,41 @@ class LocalModelManager {
         resolve, reject, ts: Date.now(),
       })
       this.queue.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || a.ts - b.ts)
-      void this.processQueue()
+      this.dispatch()
     })
   }
 
-  private async processQueue(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return
-    this.processing = true
-    while (this.queue.length > 0) {
+  /**
+   * Диспетчер: запускает до MAX_PARALLEL запросов одновременно, остальное
+   * ждёт в приоритетной очереди. Голова очереди берётся на каждый
+   * освободившийся слот, поэтому короткий watcher не ждёт длинный janitor.
+   */
+  private dispatch(): void {
+    while (this.inFlight < MAX_PARALLEL && this.queue.length > 0) {
       const item = this.queue.shift()!
-      try {
-        item.resolve(await this.callLlm(item))
-      } catch (err) {
-        item.reject(err as Error)
-      }
+      this.inFlight++
+      void this.runItem(item)
     }
-    this.processing = false
+  }
+
+  private async runItem(item: QueueItem): Promise<void> {
+    try {
+      item.resolve(await this.callLlm(item))
+    } catch (err) {
+      item.reject(err as Error)
+    } finally {
+      this.inFlight--
+      this.dispatch()
+    }
   }
 
   private async callLlm(item: QueueItem): Promise<string> {
     this.lastActivity = Date.now()
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), item.timeoutMs)
+    // Параллельный декод CPU-bound: при 2 занятых слотах каждый запрос идёт
+    // заметно медленнее, поэтому таймаут растёт с числом соседей.
+    const timeoutMs = Math.min(MAX_TIMEOUT_MS, item.timeoutMs + (this.inFlight - 1) * TIMEOUT_PER_PEER_MS)
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const res = await fetch(`${this.getBaseUrl()}/v1/chat/completions`, {
         method: 'POST',
