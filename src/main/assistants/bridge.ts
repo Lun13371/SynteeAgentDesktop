@@ -1,7 +1,7 @@
 import { Watcher, type WatcherTrigger, type Capability, prefilterCapabilities, hashContext } from '../../core/agent/watcher'
 import { DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type HintCandidate, type AssistantLogEntry, type AgentStatsMap, ASSISTANTS_LOG_MAX_ENTRIES, ASSISTANTS_LOG_RETENTION_MS } from '../../shared/assistants'
 import { log } from '../../core/logger'
-import { judgeRelevance, suggestFix, judgeDrift, distillSession, extractConstraints, summarizeTool, judgeCapability } from './llmClient'
+import { judgeRelevance, judgeDrift, distillSession, extractConstraints, summarizeTool, judgeCapability } from './llmClient'
 import { getServerState } from './llmServer'
 import { saveMemoryItem, decayAutoFacts } from '../../core/memory/MemoryStore'
 import { sidecarSemanticSearch, resolveSemanticModelPaths } from '../../core/context/fastContext/sidecarClient'
@@ -185,17 +185,6 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
       }
       if (hints.length === 0) bump('watcher', 'skipped')
     }
-    // W2 error-doctor: на ошибке тула локальная модель предлагает фикс/альтернативу.
-    if (trigger.kind === 'tool_error' && a.settings.doctorEnabled && ready) {
-      const fix = await suggestFix(trigger.toolName, trigger.error)
-      if (fix) {
-        a.worker?.postMessage({ type: 'hint', hint: { id: `errdoc-${Date.now()}`, source: 'doctor', content: fix, score: 1, title: trigger.toolName } })
-        appendLog({ ts: Date.now(), role: 'doctor', kind: 'error_fix', detail: fix.slice(0, 80) })
-        bump('doctor', 'fired')
-      } else {
-        bump('doctor', 'skipped')
-      }
-    }
   } catch (err) {
     log('[Assistants] watcher error for chat %s: %s', chatId, (err as Error).message)
   }
@@ -280,12 +269,6 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
       case 'watcher_trigger': {
         const t = evt.trigger as WatcherTrigger | undefined
         if (t) await onAgentEvent(chatId, t)
-        break
-      }
-      case 'doctor': {
-        if (!s.doctorEnabled || !ready) return
-        const fix = await suggestFix(String(evt.toolName ?? ''), String(evt.context ?? ''))
-        if (fix) post({ id: `doctor-${Date.now()}`, source: 'doctor', content: fix, score: 1, title: String(evt.toolName ?? '') })
         break
       }
       case 'navigator': {

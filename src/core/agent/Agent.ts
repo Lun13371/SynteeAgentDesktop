@@ -72,6 +72,19 @@ const NON_DESTRUCTIVE_TOOLS = new Set([
   'ask_user',
 ])
 
+// Жёсткий потолок ЛЮБОГО tool-результата — стоп-клапан отравления контекста.
+// Тулы из noTruncTool (search_code/read_file/spawn_agent/mcp__*) доверяют
+// обрезке автора, но один сбойный путь может вернуть мегабайты. Реальный
+// инцидент: PowerShell-fallback search_code выдал 5.59MB по минифицированному
+// бандлу → шаг сохранился в БД сырым → messageToContextMessages развернул
+// его в ~1.7M «токенов» оценки → автокомпакция на КАЖДОМ сообщении (divider
+// ставится перед гигантским Message целиком и не может его разрезать).
+// Потолок применяется и к UI/БД-копии (visibleToolContent), иначе сырой
+// гигант вернулся бы в контекст из истории на следующих ходах. 200k симв
+// (~50k токенов) с запасом покрывает самый большой легитимный вывод
+// (fetch_page ~50k симв, plugin_docs ~40k) — легитимные тулы его не замечают.
+const TOOL_RESULT_HARD_CEILING = 200_000
+
 // §steer — реплики пользователя, внедрённые в контекст посреди рана: маркер
 // живёт в shared/steer.ts (он же используется при пересборке истории в
 // chatContextHelpers, чтобы следующий ход видел правку пользователя).
@@ -176,7 +189,7 @@ export class Agent {
   private continuityStarted = false
   /** Ссылка на messages текущего рана — для J3 guard и J4 refine из worker-хендлеров. */
   private liveMessages: AgentMessage[] | null = null
-  /** Канал worker→main для LLM-зависимых мини-агентов (doctor/critic/navigator/
+  /** Канал worker→main для LLM-зависимых мини-агентов (navigator/
    *  archivist/constitution/janitor_refine). Ставится ai-worker'ом. */
   onAssistantEvent?: (evt: Record<string, unknown>) => void
 
@@ -218,7 +231,6 @@ export class Agent {
     const s = this.assistantsSettings
     switch (source) {
       case 'memory': case 'skill': case 'capability': return s.watcherEnabled
-      case 'doctor': return s.doctorEnabled
       case 'briefing': return s.briefingEnabled
       case 'navigator': return s.navigatorEnabled
       case 'archivist': return s.archivistEnabled
@@ -1398,11 +1410,6 @@ export class Agent {
                 const blockKey = `${fingerprint.toolName}|${fingerprint.argsKey}`
                 const guardHits = (this.loopGuardHits.get(blockKey) ?? 0) + 1
                 this.loopGuardHits.set(blockKey, guardHits)
-                // Loop doctor: на первом мягком предупреждении просим локальную модель
-                // предложить альтернативу (async, не блокирует тул).
-                if (guardHits === 1 && this.assistantsSettings.enabled && this.assistantsSettings.doctorEnabled && this.onAssistantEvent) {
-                  this.onAssistantEvent({ kind: 'doctor', toolName: fn.name, args: JSON.stringify(args).slice(0, 300), context: formatTranscript(messages.slice(-6) as ChatMessage[]).slice(0, 800) })
-                }
                 // edit_file exempt от hard block: тул имеет undo-stack,
                 // возвращает diff, не деструктивен. Hard block убивал
                 // edit_file на весь session из-за ложных срабатываний
@@ -1915,6 +1922,14 @@ export class Agent {
           const rawContent = imageUrl
             ? 'Image generated and shown to the user.'
             : (result.output || (result.success ? '' : `Error: ${result.error}`))
+          // См. TOOL_RESULT_HARD_CEILING — раньше const; потолок режет до
+          // injection-скана и маскировки, чтобы не сканировать/маскировать мегабайты.
+          let cappedRawContent = rawContent
+          if (!imageUrl && cappedRawContent.length > TOOL_RESULT_HARD_CEILING) {
+            cappedRawContent = truncateToolResult(cappedRawContent, TOOL_RESULT_HARD_CEILING)
+            log('[Agent] tool %s вернул %d симв — обрезан до %d (TOOL_RESULT_HARD_CEILING)',
+              fn.name, rawContent.length, cappedRawContent.length)
+          }
           const errorHint = !result.success ? getToolErrorHint(fn.name, result.error ?? '') : ''
 
           // §injection — скан результатов внешнего/файлового контента.
@@ -1922,7 +1937,7 @@ export class Agent {
           // открываем окно эскалации (мутирующие тулы → подтверждение всегда).
           // §secrets — маскирование значений при чтении секретных файлов:
           // модель видит структуру .env, но не сами секреты.
-          let finalContent = (rawContent || '') + errorHint
+          let finalContent = (cappedRawContent || '') + errorHint
           if (!imageUrl && finalContent) {
             if (isScannedTool(fn.name)) {
               // §v2 — эскалация ТОЛЬКО для внешнего контента (web-туры) при
@@ -2048,7 +2063,15 @@ export class Agent {
             }
           }
           const nativeVisualHandoff = fn.name === 'analyze_image' && result.success && !!acceptedImageParts?.length
-          const visibleToolContent = imageUrl ? 'Изображение сгенерировано' : this.toolDispatcher.maskSecretValuesInText(result.output || result.error || '')
+          // UI/БД-копия: потолок обязателен — messageToContextMessages на
+          // следующих ходах разворачивает toolSteps из БД целиком, сырой
+          // гигант здесь вернулся бы в контекст (см. TOOL_RESULT_HARD_CEILING).
+          const maskedVisible = this.toolDispatcher.maskSecretValuesInText(result.output || result.error || '')
+          const visibleToolContent = imageUrl
+            ? 'Изображение сгенерировано'
+            : (maskedVisible.length > TOOL_RESULT_HARD_CEILING
+              ? truncateToolResult(maskedVisible, TOOL_RESULT_HARD_CEILING)
+              : maskedVisible)
           if (nativeVisualHandoff) nativeImageAnalysis.add(callId, visibleToolContent, result.imagePaths)
           callbacks.onStep({
             type: 'tool_result',

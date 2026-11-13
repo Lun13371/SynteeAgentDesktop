@@ -387,13 +387,19 @@ async function searchCodePowerShell(
 
   // -File (вместо -not $_.PSIsContainer) — чище и быстрее.
   // .Line БЕЗ .Trim() — отступы контекста важны (раньше терялись).
+  // Потолок длины строки у ИСТОЧНИКА (500 симв): в минифицированных бандлах
+  // (asar/дистрибутивы) одна строка — мегабайты, и Select-String печатает её
+  // целиком. Раньше fallback возвращал их без обрезки — 5.59MB результат
+  // сохранялся в БД и разворачивался в контекст (~1.7M токенов оценки),
+  // вызывая автокомпакцию на каждом сообщении. Обрезка здесь же защищает
+  // и maxBuffer execAsync (10MB).
   const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ` +
     `$r = Get-ChildItem -Path '${sq(absPath)}' -Recurse -Force -File -ErrorAction SilentlyContinue | ` +
     `Where-Object { $_.FullName -notmatch '${ignoreRegex}' }` +
     (extFilter ? ` ${extFilter}` : '') + ` | ` +
     `Select-String ${strFlags} -Pattern '${sq(pattern)}' -Context ${context},${context} -ErrorAction SilentlyContinue | ` +
     `Select-Object -First ${maxResults}; ` +
-    `if ($r) { $r | ForEach-Object { $_.Path + ':' + $_.LineNumber + ': ' + $_.Line } } else { 'No matches found' }`
+    `if ($r) { $r | ForEach-Object { $l = [string]$_.Line; if ($l.Length -gt 500) { $l = $l.Substring(0,500) + ' …[line truncated]' }; $_.Path + ':' + $_.LineNumber + ': ' + $l } } else { 'No matches found' }`
   const encoded = Buffer.from(psScript, 'utf16le').toString('base64')
   const psCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
   try {
@@ -410,9 +416,19 @@ async function searchCodePowerShell(
       const m = l.match(/^(.+?):(\d+):/)
       if (m) fileSet.add(m[1])
     }
+    // Финальный потолок вывода — parity с rg-путём (maxChars, дефолт 20000).
+    // Строки уже порезаны у источника, это страховка на итоговый размер.
+    const maxChars = opts?.maxChars ?? 20000
+    const output = `[search_code: ${lines.length} matches in ${fileSet.size} files (PowerShell fallback)]\n${trimmed}`
+    if (output.length > maxChars) {
+      return {
+        success: true,
+        output: output.slice(0, maxChars) + `\n...[truncated, ${maxChars} of ${output.length} chars — narrow file_glob/path or raise max_chars]`,
+      }
+    }
     return {
       success: true,
-      output: `[search_code: ${lines.length} matches in ${fileSet.size} files (PowerShell fallback)]\n${trimmed}`,
+      output,
     }
   } catch (e: any) {
     return { success: false, output: '', error: 'search_code: ' + e.message }

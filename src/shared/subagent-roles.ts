@@ -191,3 +191,37 @@ export function getSubagentRole(id: string | undefined | null): SubagentRoleDef 
 export function isValidSubagentRole(id: string | undefined | null): id is SubagentRole {
   return !!id && id in SUBAGENT_ROLE_MAP
 }
+
+/**
+ * System prompt for a spawned sub-agent. Single source of truth for the
+ * chat.ipc.ts spawn path and the AgentManager fallback — they used to carry
+ * two diverging copies of the same wrapper.
+ */
+export function buildSubagentSystemPrompt(params: {
+  role: SubagentRoleDef
+  task: string
+  parentSummary?: string
+  parentWorkingMemory?: string
+}): string {
+  const { role, task, parentSummary, parentWorkingMemory } = params
+  const label = role.id !== DEFAULT_SUBAGENT_ROLE ? ` (${role.nameEn})` : ''
+  const parentParts = [
+    parentSummary ?? '',
+    parentWorkingMemory ? `Working memory:\n${parentWorkingMemory}` : '',
+  ].filter(Boolean)
+  const parent = parentParts.length > 0
+    ? `Parent context:\n${parentParts.join('\n\n')}`
+    : 'No parent context.'
+  return `You are a sub-agent${label}. Your task: ${task}
+
+${role.systemPromptInjection}
+
+${parent}
+
+Work only within this subtask. First understand the relevant code and constraints, then do only your part.
+
+Final answer — the result only, no reasoning:
+- what was found or done
+- which files matter (paths + key lines)
+- risks or next step`
+}

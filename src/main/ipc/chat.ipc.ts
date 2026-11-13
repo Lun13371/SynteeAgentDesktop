@@ -7,7 +7,7 @@ import { agentManager } from '../managers/AgentManager'
 import { assertContextChat, getContextPreferences, setContextPreferences, filterContextHistory, setContextMessageHidden, setContextMessagePinned } from '../../core/db/contextControls'
 import { invalidateHistoryCache } from './historyCache'
 import type { ContextInspection, ContextPreferences } from '../../shared/types/contextControls'
-import { getSubagentRole } from '../../shared/subagent-roles'
+import { getSubagentRole, buildSubagentSystemPrompt } from '../../shared/subagent-roles'
 import {
   createChat, getAllChats, getMessages, getMessagesPage, saveMessage, saveMessageAndDeleteStreamingBuffer,
   deleteChat, renameChat, pinMessage, unpinMessage, initDB, getDB,
@@ -732,7 +732,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
   } catch { /* БД ещё пуста — ок */ }
 
-  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, planningMode?: boolean, askMode?: boolean, inspection?: Pick<ContextInspection, 'sources' | 'files'>, imageModeOverride?: boolean): Promise<string> => {
+  const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, inspection?: Pick<ContextInspection, 'sources' | 'files'>, imageModeOverride?: boolean): Promise<string> => {
     const contextPrefs = getContextPreferences(chatId)
     const userName = store.get('userName') as string || ''
     let memoryContext = ''
@@ -968,7 +968,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         { key: 'tools', label: 'История инструментов', enabled: sources.tools, detail: 'Прошлые tool calls и результаты. Доступность инструментов текущего запуска не меняется.', characters: 0 },
       ]
     }
-    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode: promptBrowserMode, imageMode: promptImageMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
+    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode: promptBrowserMode, imageMode: promptImageMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).
@@ -1287,6 +1287,37 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           textBlocks.push(`[Ссылка на проект «${att.name}» недоступна: ${errMsg}]`)
           processedFiles.push({ name: att.name, kind: att.kind, status: 'error', detail: errMsg })
         }
+        continue
+      }
+
+      // ── MCP-сервер, прикреплённый к сообщению (чип kind='mcp'): модель
+      //    получает имя сервера и список его инструментов в контексте этого
+      //    запроса (сервер включён, тулы уже в тулсете рана). ──
+      if (att.kind === 'mcp') {
+        let toolNames: string[] = []
+        try {
+          const { workdir: mcpWorkdir } = getChatWorkdirContext(chatId)
+          const mcpProjectId = mcpWorkdir ? getAllProjects().find(p => p.workdir === mcpWorkdir)?.id : undefined
+          toolNames = getMcpManager().getActiveToolsForChat({
+            projectWorkdir: mcpWorkdir,
+            projectId: mcpProjectId,
+            isIncognito: false,
+          })
+            .filter(t => t.serverId === att.mcpServerId)
+            .map(t => t.shortName)
+        } catch { /* сервер ещё подключается — блок без списка тулов */ }
+        const lines = [`MCP-сервер «${att.name}» прикреплён к этому запросу.`]
+        lines.push(toolNames.length > 0
+          ? `Инструменты сервера: ${toolNames.join(', ')}.`
+          : 'Его инструменты доступны как mcp__<server>__<tool>, когда сервер подключён.')
+        lines.push('Используй его инструменты, когда они уместны для задачи; остальное — обычным набором.')
+        textBlocks.push(`─── ${lines.join('\n')} ───`)
+        processedFiles.push({
+          name: att.name,
+          kind: att.kind,
+          status: 'text_inlined',
+          detail: toolNames.length > 0 ? `MCP: ${toolNames.length} тулов` : 'MCP-сервер',
+        })
         continue
       }
 
@@ -1902,7 +1933,7 @@ function pathHash(value: string): string {
     // same snapshot even if settings/memory change between asynchronous phases.
     const sendSystemPrompt = params.sideChatParentId
       ? undefined
-      : await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode, undefined,
+      : await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, undefined,
         !!params.imageMode || params.slashCommand?.name === 'image' || getChatModes(dbChatId).imageMode)
     if (ctxSettings.tokenCounterEnabled) {
       const contextWindow = getModelContextWindow(storeData)
@@ -2618,7 +2649,7 @@ function pathHash(value: string): string {
           break
         }
 
-        // Мини-агенты (doctor/critic/navigator/archivist/constitution/refine):
+        // Мини-агенты (navigator/archivist/constitution/refine):
         // worker шлёт событие, main решает запускать ли локальную модель.
         case 'assistant_event': {
           void onAssistantEvent(params.chatId, msg as Record<string, unknown>)
@@ -3000,21 +3031,7 @@ function pathHash(value: string): string {
             })
             const parentSummary = getChatSummary(msg.chatId as string)
             const parentWorkingMemory = getWorkingMemory(msg.chatId as string)
-            const subModeIntro = `Сначала пойми релевантный код и ограничения, потом выполни только свою часть работы.
-
-Ты суб-агент, а не основной агент. Будь эффективным:
-- Делай только то, что нужно для задачи — не исследуй лишнее.
-- Используй минимальное количество tool calls. Не повторяй уже сделанные действия.
-- Не читай файлы «для полноты картины» — только те, что нужны для задачи.
-- Как только задача выполнена — сразу давай финальный ответ, не продолжай исследовать.`
-            const subModeOutro = `Финальный ответ дай по существу, без искусственного ограничения длины:
-- что найдено или сделано
-- какие файлы важны (пути + ключевые строки)
-- какие есть риски или следующий шаг
-Не включай рассуждения, только результат.`
-            // §roles — role injection в system prompt суб-агента
             const roleDef = getSubagentRole(msg.role as string | undefined)
-            const roleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''
             // Every role, including the default implementer, must receive its
             // specialized instructions. Previously implementer was omitted,
             // making its role prompt effectively dead code.
@@ -3037,13 +3054,12 @@ function pathHash(value: string): string {
               mode: chatMode,
               storeData,
               context: {
-                systemPrompt: `Ты суб-агент${roleLabel}. Твоя задача: ${msg.task as string}
-\n${roleDef.systemPromptInjection}
-\nКонтекст родителя:
-${parentSummary ? `${parentSummary}\n\n` : ''}${parentWorkingMemory ? `Рабочая память:\n${parentWorkingMemory}` : 'Рабочая память отсутствует.'}
-
-${subModeIntro}
-${subModeOutro}`,
+                systemPrompt: buildSubagentSystemPrompt({
+                  role: roleDef,
+                  task: msg.task as string,
+                  parentSummary,
+                  parentWorkingMemory,
+                }),
                 history: processedHistory.slice(-12),
                 workingMemory: parentWorkingMemory,
                 mode: chatMode,
@@ -3914,7 +3930,7 @@ ${subModeOutro}`,
 
 Ниже — системный промпт и контекст основного чата (проект, рабочая память, сводка):
 
-${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effectivePlanningMode, effectiveAskMode)}`
+${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
       : undefined
 
     let sideToolSchemas = getToolSchemas({
@@ -4367,7 +4383,7 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill, effecti
     assertContextChat(chatId)
     const preferences = getContextPreferences(chatId)
     const inspection: ContextInspection = { preferences, sources: [], files: [], messages: [] }
-    await getSystemPrompt(chatId, false, undefined, undefined, undefined, inspection)
+    await getSystemPrompt(chatId, false, undefined, inspection)
     const included = filterContextHistory(chatId, getMessagesAfterLatestCompactCached(chatId))
     const ids = new Set(included.map(m => m.id))
     inspection.messages = getMessagesCached(chatId).map(m => ({

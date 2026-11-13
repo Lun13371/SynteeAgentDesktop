@@ -20,7 +20,7 @@ import {
 } from './WorktreeIsolation'
 import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
 import { getChatBrowserMode } from '../../core/db/chats'
-import { getSubagentRole } from '../../shared/subagent-roles'
+import { getSubagentRole, buildSubagentSystemPrompt } from '../../shared/subagent-roles'
 import { stripFinalMarkers } from '../../shared/finalAnswer'
 import { activeRuns, confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
 import { getNotificationManager } from './NotificationManager'
@@ -753,27 +753,9 @@ class AgentManager {
       // §roles — subagentRole для Agent.run() options (defense-in-depth в Agent.ts)
       const subagentRole = record.role
 
-      // Work-режим удалён — всегда Code-формулировка для суб-агентов.
-      const subModeIntro = `Работай только в рамках этой подзадачи.
-Сначала пойми релевантный код и контекст, затем выполни работу.
-
-Ты суб-агент, а не основной агент. Будь эффективным:
-- Делай только то, что нужно для задачи — не исследуй лишнее.
-- Используй минимальное количество tool calls. Не повторяй уже сделанные действия.
-- Как только задача выполнена — сразу давай финальный ответ.`
-      const subModeOutro = `- что найдено или сделано
-- какие файлы важны
-- какие есть риски или следующий шаг
-Не включай рассуждения, только результат.`
-      // §roles — fallback systemPrompt с role injection (когда context?.systemPrompt
-      // не передан, т.е. chat.ipc.ts не сформировал промпт).
-      const fallbackRoleInjection = `\n${roleDef.systemPromptInjection}\n`
-      const fallbackRoleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''
-      const fallbackSystemPrompt = `Ты суб-агент${fallbackRoleLabel}. Твоя задача: ${record.task}
-
-${fallbackRoleInjection}${subModeIntro}
-Финальный ответ дай кратко:
-${subModeOutro}`
+      // §roles — fallback systemPrompt (когда context?.systemPrompt не передан,
+      // т.е. chat.ipc.ts не сформировал промпт). Same builder as the primary path.
+      const fallbackSystemPrompt = buildSubagentSystemPrompt({ role: roleDef, task: record.task })
       // §worktree — добавляем блок с реальной workdir суб-агента (worktree или
       // workdir проекта) к промпту из контекста или fallback.
       const effectiveSystemPrompt = (context?.systemPrompt ?? fallbackSystemPrompt) + workdirNotice

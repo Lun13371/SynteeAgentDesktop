@@ -29,6 +29,8 @@ export function registerAssistantsIPC(): void {
       modelDownloaded: s.modelDownloaded,
       binaryReady: s.binaryReady,
       restarts: s.restarts,
+      active: s.active,
+      queueLength: s.queueLength,
       idleUnloaded: s.idleUnloaded,
       lastError: s.lastError,
     }

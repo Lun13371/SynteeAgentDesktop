@@ -82,12 +82,6 @@ export async function expandQuery(text: string): Promise<string[]> {
   } catch { return [] }
 }
 
-/** Loop doctor / W2: предложить альтернативу при повторе/ошибке. */
-export async function suggestFix(toolName: string, context: string): Promise<string> {
-  const prompt = `A coding agent is stuck repeating tool "${toolName}". Recent context:\n${context.slice(0, 700)}\n\nGive ONE concrete alternative approach in 1-2 sentences. Be specific, no preamble.`
-  try { return (await enqueue(prompt, 'watcher', 120)).trim() } catch { return '' }
-}
-
 /** Navigator: drift-судья + нарушения закреплённых ограничений (бинарные вердикты). */
 export async function judgeDrift(objective: string, transcript: string, constraints: string[] = []): Promise<{ drift: boolean; violation: boolean; reason: string }> {
   const goalPart = objective ? `Goal: ${objective.slice(0, 300)}` : 'Goal: (none — check constraints only)'

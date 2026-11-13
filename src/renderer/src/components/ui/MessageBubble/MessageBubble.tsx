@@ -1640,11 +1640,13 @@ function renderAttachChip(
 ): React.ReactNode {
   if (!att) return null
   const isEntity = att.kind === 'chat' || att.kind === 'project'
-  const clickable = isEntity || !!onPreviewAttachment
+  const clickable = (isEntity || !!onPreviewAttachment) && att.kind !== 'mcp'
   const title = att.kind === 'chat'
     ? `Чат: ${att.name}${att.snippet ? `\n${att.snippet}` : ''}`
     : att.kind === 'project'
     ? `Проект: ${att.name}${att.snippet ? `\n${att.snippet}` : ''}`
+    : att.kind === 'mcp'
+    ? `MCP-сервер: ${att.name} — его инструменты доступны в этом запросе`
     : att.relPath || att.path || att.name
   return (
     <span
@@ -1678,6 +1680,13 @@ function renderAttachChip(
           ) : att.kind === 'project' ? (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          ) : att.kind === 'mcp' ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="2" width="20" height="8" rx="2" />
+              <rect x="2" y="14" width="20" height="8" rx="2" />
+              <line x1="6" y1="6" x2="6.01" y2="6" />
+              <line x1="6" y1="18" x2="6.01" y2="18" />
             </svg>
           ) : (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

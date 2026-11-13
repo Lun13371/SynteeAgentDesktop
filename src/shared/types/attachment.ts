@@ -14,7 +14,7 @@
  *           summary + последние сообщения, клик в чате → переход в чат).
  *  'project' — ссылка на проект (@пикер; инлайнится имя+workdir+контекст,
  *           клик → переход в последний чат проекта). */
-export type AttachmentKind = 'file' | 'image' | 'audio' | 'video' | 'skill' | 'command' | 'chat' | 'project'
+export type AttachmentKind = 'file' | 'image' | 'audio' | 'video' | 'skill' | 'command' | 'chat' | 'project' | 'mcp'
 
 /** Источник прикрепления (для UI-бейджа и логирования).
  *  'reply' — вложение пришло из реплайнутого сообщения (дублируется в
@@ -38,6 +38,8 @@ export type AttachmentSource = 'mention' | 'dragdrop' | 'paste' | 'dialog' | 're
  *  - skillId / commandName: для kind='skill'/'command' — идентификатор сущности.
  *  - chatId / projectId: для kind='chat'/'project' — ссылка на сущность
  *    (path у них нет — файловой привязки нет).
+ *  - mcpServerId: для kind='mcp' — id MCP-сервера (McpManager). Main инжектит
+ *    имя сервера и его инструменты в контекст этого запроса.
  *  - snippet: краткий preview содержимого (первые ~200 символов) для tooltip.
  */
 export interface Attachment {
@@ -56,6 +58,8 @@ export interface Attachment {
   chatId?: string
   /** ID проекта (для kind='project') — ссылка на проект. */
   projectId?: string
+  /** ID MCP-сервера (для kind='mcp') — его инструменты инжектятся в запрос. */
+  mcpServerId?: string
   snippet?: string
   /** Время прикрепления (для сортировки недавних в @-пикере). */
   attachedAt: number

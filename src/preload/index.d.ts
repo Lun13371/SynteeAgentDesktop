@@ -1310,6 +1310,8 @@ declare const synteeAPI: {
             modelSize: string;
             modelDownloaded: boolean;
             binaryReady: boolean;
+            active: number;
+            queueLength: number;
             idleUnloaded: boolean;
         }>;
         setup: () => Promise<{

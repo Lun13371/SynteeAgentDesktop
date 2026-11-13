@@ -24,14 +24,13 @@ export interface MemoryStats {
   projectByKind: Record<string, number>
 }
 
-/** Knowledge graph stats of the project — agent sees project structure. */
+/** Knowledge graph stats rendered in the system prompt — only the fields
+ *  buildGraphStatsBlock actually shows (see memorySection.ts). */
 export interface GraphStats {
   nodeCount: number
   edgeCount: number
-  byNodeType: Record<string, number>
-  byEdgeType: Record<string, number>
-  hubs: Array<{ id: string; label: string; type: string; degree: number }>
-  recentDecisions: Array<{ id: string; label: string; targets: Array<{ label: string; type: string; edgeType: string }> }>
+  hubs: Array<{ label: string; degree: number }>
+  recentDecisions: Array<{ label: string; targets: Array<{ label: string }> }>
   fileHubs?: Array<{ label: string; degree: number; topImports: string[] }>
 }
 

@@ -124,6 +124,8 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     'manage_chats',
     'list_extensions',
     'get_skill',
+    // Read-only system info (OS, version, uptime) — bundled skills reference it.
+    'get_system_info',
     // Универсальный тул запроса доступа к выключенным возможностям.
     // Пока выключена хотя бы одна capability, модель должна иметь возможность
     // попросить её включить (browser_control / image_generation).
