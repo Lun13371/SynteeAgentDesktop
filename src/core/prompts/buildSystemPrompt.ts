@@ -8,7 +8,7 @@
  * English, etc.) — see the language instruction in the base prompt.
  *
  * CACHE-FRIENDLY STRUCTURE (prompt caching):
- * The prompt is split into a STATIC PREFIX (persona, rules, tool notes,
+ * The prompt is split into a STATIC PREFIX (rules, tool notes,
  * project instructions — constant within a session) and a DYNAMIC TAIL
  * (date, memory stats, recall results, working memory — changes every turn).
  * They are joined via SYSTEM_PROMPT_CACHE_BREAK. Providers cache by prefix:
@@ -41,7 +41,7 @@ export function sanitizeToolInstructions(prompt: string, settings: ToolSettings)
     if (!heading.startsWith('Tools')) return ''
     return section.split(/\n\n/).filter(paragraph => !mentionsDisabled(paragraph)).join('\n\n') + '\n\n'
   }).join('')
-  return cleaned + `\n\n## Tool availability\nDisabled by the user's tool settings: ${disabled.join(', ')}. Do not call these tools or require them in your workflow. Use only tools in the supplied schemas; if a tool is unavailable, use an available alternative or explain the limitation. These settings do not grant tools restricted by mode, persona, role, or access permissions.\n`
+  return cleaned + `\n\n## Tool availability\nDisabled by the user's tool settings: ${disabled.join(', ')}. Do not call these tools or require them in your workflow. Use only tools in the supplied schemas; if a tool is unavailable, use an available alternative or explain the limitation. These settings do not grant tools restricted by mode, role, or access permissions.\n`
 }
 import {
   buildCodeModeBlock,
@@ -55,7 +55,6 @@ import {
   buildSecretsBlock,
   buildPlanningInjection,
   buildAskInjection,
-  buildPersonaInjection,
 } from './sections'
 import type { McpPromptInfo, ProtectedVarPromptInfo } from './sections'
 
@@ -125,17 +124,6 @@ export interface SystemPromptParams {
   browserMode?: boolean
   /** Тумблер генерации изображений: generate_image доступен модели. */
   imageMode?: boolean
-  /**
-    * Persona — single-select run mode (classic/architect/debugger/...).
-    * Orthogonal to planning/ask. 'classic' (or undefined) → no injection.
-    * When set, buildPersonaInjection() is appended to the prompt. If the
-    * persona wraps a builtin skill, personaSkill carries its instructions
-    * (resolved in main via SkillManager) and is inlined alongside the
-    * persona framing — reusing the one-shot skill mechanism.
-    */
-  persona?: { id: string; nameEn: string; toolsProfile: 'full' | 'readonly'; skillId?: string }
-  /** Resolved instructions for a persona that wraps a builtin skill. */
-  personaSkill?: { name: string; instructions: string }
   /** Max parallel sub-agents — injected into the spawn_agent section. */
   maxParallelSubAgents?: number
   /** Контент context providers плагинов (registerContextProvider) —
@@ -163,7 +151,7 @@ export interface SystemPromptParts {
  * SYSTEM_PROMPT_CACHE_BREAK (см. buildSystemPrompt).
  */
 export function buildSystemPromptParts(params: SystemPromptParams): SystemPromptParts {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, imageMode, persona, personaSkill, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
+  const { userName, memoryContext, memoryStats, graphStats, workingMemory, date, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, planningMode, askMode, browserMode, imageMode, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
   const dateStr = date ?? new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -180,13 +168,12 @@ export function buildSystemPromptParts(params: SystemPromptParams): SystemPrompt
     : askMode
       ? buildAskInjection()
       : ''
-  const personaInjection = persona && persona.id !== 'classic' ? buildPersonaInjection(persona, personaSkill) : ''
 
   // ─── СТАТИЧНЫЙ ПРЕФИКС (кэшируется) ────────────────────────────────────────
   // Порядок секций фиксирован — не менять между версиями без необходимости:
   // любое изменение сбрасывает prompt cache у всех пользователей (один раз,
   // это нормально, но не должно случаться случайно).
-  const staticPart = `${personaInjection ? personaInjection + '\n\n---\n\n' : ''}You are Syntee — a personal AI assistant for Windows.
+  const staticPart = `You are Syntee — a personal AI assistant for Windows.
 ${userName ? `The user's name is ${userName}. Address them by name.` : ''}
 **Answer the user in the SAME language they write in.** If they write in Russian — answer in Russian. If in English — answer in English. If mixed — match the dominant language. Code, file paths, commands, and technical identifiers always stay in their original form regardless of language.
 ${customSystemPrompt ? `\n## Custom instruction\n${customSystemPrompt}\n` : ''}
@@ -424,7 +411,7 @@ Rules:
 - Do not mention or explain the tags, do not escape them, do not put them in code examples
   (unless the user explicitly asks about this format).
 - Short conversational replies without any tools also go inside the block.
-- If the current mode/persona requires its own wrapper (e.g. <plan>…</plan>), put that
+- If the current mode requires its own wrapper (e.g. <plan>…</plan>), put that
   wrapper INSIDE <final_answer>, not around it.
 
 ## Answer format
@@ -508,4 +495,4 @@ export function buildSystemPrompt(params: SystemPromptParams): string {
 }
 
 // Re-exports (backward compat: ai-worker.ts imports these from here)
-export { buildPlanningInjection, buildAskInjection, buildPersonaInjection } from './sections'
+export { buildPlanningInjection, buildAskInjection } from './sections'

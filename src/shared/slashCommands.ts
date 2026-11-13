@@ -61,15 +61,6 @@ export interface SlashCommand {
   /** id скилла для one-shot активации (для команд типа /review → skill:code-review).
    *  Скилл инъектируется в system prompt только на этот прогон, без записи в skillsState. */
   skill?: string
-  /**
-   * Persona override for this single message (per-message mode, Aider-style).
-   * If set — this one `chat:send` runs in the named persona, WITHOUT
-   * persisting the change to the chat's sticky persona (the UI badge does
-   * not switch). Used by builtin `/debug`, `/review`, `/architect`, ... so
-   * the user can say "answer this one as a debugger" without leaving their
-   * current persona. The sticky switch is `/persona <name>` instead.
-   */
-  personaOverride?: import('./modes').PersonaId
   /** Маркер что это команда из .md-файла (а не из захардкоженного SLASH_COMMANDS). */
   custom?: boolean
   /** Команда плагина (registerCommand). ChatPage перехватывает её ДО агента
@@ -397,114 +388,6 @@ Do not launch sub-agents unnecessarily and do not duplicate work between them.`,
     placeholder: 'имя снапшота...',
     source: 'builtin',
     // restore обрабатывается в ChatPage.tsx — открывает пикер снапшотов.
-    systemPrompt: () => '',
-  },
-  // ── Per-message persona commands (Aider-style /ask /code) ───────────────
-  // Each runs ONE message in the named persona, WITHOUT switching the chat's
-  // sticky persona. The user's next message goes back to the sticky persona.
-  // The sticky switch is /persona <name> below.
-  {
-    name: 'classic',
-    label: '/classic',
-    description: 'Одно сообщение в классическом режиме (без персоны)',
-    icon: 'circle',
-    placeholder: 'сообщение...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'classic',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'architect',
-    label: '/architect',
-    description: 'Одно сообщение в режиме Архитектора',
-    icon: 'building',
-    placeholder: 'сообщение...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'architect',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'debug',
-    label: '/debug',
-    description: 'Одно сообщение в режиме Дебаггера',
-    icon: 'bug',
-    placeholder: 'опиши баг или ошибку...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'debugger',
-    skill: 'debug-helper',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'review',
-    label: '/review',
-    description: 'Одно сообщение в режиме Ревьюера',
-    icon: 'check-square',
-    placeholder: 'что ревьюить (файл/модуль/diff)...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'reviewer',
-    skill: 'code-review',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'refactor',
-    label: '/refactor',
-    description: 'Одно сообщение в режиме Рефакторщика',
-    icon: 'shuffle',
-    placeholder: 'что рефакторить...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'refactorer',
-    skill: 'refactor',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'test',
-    label: '/test',
-    description: 'Одно сообщение в режиме Тестописателя',
-    icon: 'flask',
-    placeholder: 'для чего написать тесты...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'test-writer',
-    skill: 'test-generation',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'mentor',
-    label: '/mentor',
-    description: 'Одно сообщение в режиме Ментора',
-    icon: 'graduation',
-    placeholder: 'что объяснить...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'mentor',
-    systemPrompt: (a: string) => a,
-  },
-  // ── Sticky persona switch — persists until changed ──────────────────────
-  // /persona (no arg) → opens picker (arguments[0].choices).
-  // /persona architect → switches the chat's sticky persona.
-  // Handled as a short-circuit in ChatPage.handleSend (like /clear) — does
-  // NOT send a message to the agent; calls chat:setPersona + setPersona.
-  {
-    name: 'persona',
-    label: '/persona',
-    description: 'Переключить персону чата (sticky)',
-    icon: 'users',
-    argumentHint: 'classic | architect | debug | review | refactor | test | mentor',
-    placeholder: 'выбери персону...',
-    source: 'builtin',
-    arguments: [
-      {
-        name: 'persona',
-        description: 'Имя персоны',
-        choices: ['classic', 'architect', 'debug', 'review', 'refactor', 'test', 'mentor'],
-        required: true,
-      },
-    ],
     systemPrompt: () => '',
   },
 ]

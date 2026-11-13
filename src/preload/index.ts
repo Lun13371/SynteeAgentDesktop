@@ -563,14 +563,9 @@ const synteeAPI = {
       /** Тумблер «Управление браузером»: browser_* тулы + request_access. */
       browserMode?: boolean
       mode?: 'code' | 'work'
-      /** Single-select persona run mode (classic/architect/debugger/...).
-       *  Orthogonal to planning/ask/image toggles. */
-      persona?: import('../../shared/modes').PersonaId
       oneShotSkill?: { name: string; instructions: string }
       oneShotAllowedTools?: string[]
       oneShotMode?: 'ask' | 'plan' | 'code'
-      /** Per-message persona override (/debug, /review, ...). */
-      oneShotPersona?: import('../../shared/modes').PersonaId
       /** Уровень мышления из UI на момент отправки (source of truth для main). */
       reasoningValue?: string
       attachments?: import('../../shared/types').Attachment[]
@@ -704,9 +699,6 @@ const synteeAPI = {
     // Тумблер «Управление браузером» (browser_* тулы для AI).
     getBrowserMode: (chatId: string) => ipcRenderer.invoke('browser:getMode', chatId) as Promise<boolean>,
     setBrowserMode: (chatId: string, val: boolean) => ipcRenderer.invoke('browser:setMode', chatId, val),
-    /** Single-select persona run mode (classic/architect/debugger/...). */
-    getPersona: (chatId: string) => ipcRenderer.invoke('chat:getPersona', chatId) as Promise<import('../../shared/modes').PersonaId>,
-    setPersona: (chatId: string, persona: import('../../shared/modes').PersonaId) => ipcRenderer.invoke('chat:setPersona', chatId, persona),
     /** Per-chat модель: null = глобальное назначение role:'main'. */
     getModel: (chatId: string) => ipcRenderer.invoke('chat:getModel', chatId) as Promise<{ modelId: string; modelProvider: string } | null>,
     setModel: (chatId: string, modelId: string | null, modelProvider: string | null) => ipcRenderer.invoke('chat:setModel', chatId, modelId, modelProvider),

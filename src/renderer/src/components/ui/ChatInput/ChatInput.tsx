@@ -8,7 +8,6 @@ import { filterCommands } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { findMentionTokenNearCaret, mentionToAttachment } from '../../../../../shared/mentions'
 import type { Attachment, MentionItem, ApprovalMode, AutoModeSettings, LastTurnChanges, ProjectPermissionOverride } from '../../../../../shared/types'
-import { DEFAULT_PERSONA, type PersonaId } from '../../../../../shared/modes'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import { useUIStore } from '../../../store/ui.store'
 import { useSettingsStore } from '../../../store/settings.store'
@@ -77,10 +76,6 @@ interface ChatInputProps {
   /** Тумблер «Управление браузером»: browser_* тулы для AI (правая панель). */
   browserMode?: boolean
   onBrowserModeChange?: (v: boolean) => void
-  /** Single-select persona run mode (classic/architect/debugger/...).
-   *  Orthogonal to the three toggles above — a radio choice, not a boolean. */
-  persona?: PersonaId
-  onPersonaChange?: (v: PersonaId) => void
   rateLimitSec?: number
   /** Рабочая директория текущего чата (режим "Код"). Показывается как
     *  бейдж над инпутом — как cwd-indicator в Codex CLI. */
@@ -155,8 +150,6 @@ function ChatInput({
   onAskModeChange,
   browserMode = false,
   onBrowserModeChange,
-  persona = DEFAULT_PERSONA,
-  onPersonaChange,
   rateLimitSec = 0,
   workdir,
   compactSessionStats,
@@ -777,6 +770,20 @@ function ChatInput({
     setPreviewAttachment(a)
   }, [])
 
+  // ── Прикрепление из плюс-панели (поиск файлов проекта) ──
+  // Тот же чип в тексте, что и у @mention: токен [[attach:id]] на позиции
+  // каретки, файл-ссылка без копирования (path принадлежит проекту).
+  const handleMenuAttach = useCallback((item: MentionItem): boolean => {
+    const newAtt = mentionToAttachment(item)
+    const dupKey = (a: Attachment): string | undefined =>
+      a.kind === 'chat' ? a.chatId : a.kind === 'project' ? a.projectId : a.path
+    if (attachments.length >= maxAttachments) return false
+    if (attachments.some(a => a.kind === newAtt.kind && dupKey(a) !== undefined && dupKey(a) === dupKey(newAtt))) return false
+    onAttachmentsChange?.([...attachments, newAtt])
+    editorApiRef.current?.insertAttachmentAtCaret(newAtt)
+    return true
+  }, [attachments, maxAttachments, onAttachmentsChange])
+
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // Навигация по пикеру аргументов команды — высший приоритет
     // (открыт после выбора команды, пока юзер выбирает enum-опцию).
@@ -982,7 +989,7 @@ function ChatInput({
   // готовности модели). Преварма при старте НЕТ — воркер спавнится только
   // по факту использования голоса (см. voice.ipc.ts).
   const micBusy = voice.modelLoading && !voiceActive && !liveText.trim() && !isGenerating
-  // language — 'ru' (default) | 'en'. Selects persona name/description variant.
+  // language — 'ru' (default) | 'en'. Selects localized toggle labels.
   const lang = useSettingsStore(s => (s.settings['language'] as 'ru' | 'en') ?? 'ru')
 
   // Breadcrumb пути рабочей директории: показываем последние 2 сегмента
@@ -1048,8 +1055,6 @@ function ChatInput({
         onAskModeChange={onAskModeChange}
         browserMode={browserMode}
         onBrowserModeChange={onBrowserModeChange}
-        persona={persona}
-        onPersonaChange={onPersonaChange}
         lang={lang}
         mainModelId={mainModelId}
         mainModelProviderId={mainModelProviderId}
@@ -1108,6 +1113,7 @@ function ChatInput({
         <div className="chat-input-row">
           {/* + кнопка с меню */}
           <ChatInputPlusMenu
+            anchorRef={boxRef}
             onAttachClick={handleAttachClick}
             secretsCount={secretsCount}
             onProtectedVarsClick={() => setProtectedVarsOpen(true)}
@@ -1119,9 +1125,15 @@ function ChatInput({
             onAskModeChange={onAskModeChange}
             browserMode={browserMode}
             onBrowserModeChange={onBrowserModeChange}
-            persona={persona}
-            onPersonaChange={onPersonaChange}
             lang={lang}
+            chatId={chatId}
+            workdir={workdir}
+            projectId={projectId}
+            attachments={attachments}
+            maxAttachments={maxAttachments}
+            onAttachItem={handleMenuAttach}
+            customCommands={customCommands}
+            onInsertCommand={selectCommand}
           />
 
           {/* Кнопки плагинов над инпутом (registerInputAction) */}

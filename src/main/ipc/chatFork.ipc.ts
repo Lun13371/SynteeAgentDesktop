@@ -4,7 +4,6 @@ import {
   getMessages, getAllChats, createChat, renameChat, saveMessage, getDB,
   getWorkingMemory, setWorkingMemory, getChatSummary, setChatSummary,
   getChatModes, setChatModes, getChatBrowserMode, setChatBrowserMode,
-  getChatPersona, setChatPersona,
   saveNamedSnapshot, getNamedSnapshots,
 } from '../../core/db'
 import { searchAllSources } from '../../core/memory/MemoryStore'
@@ -50,11 +49,11 @@ async function forkChat(sourceChatId: string, title?: string): Promise<{
     // Копируем остальные sticky-настройки чата. Не копируем transient draft,
     // pin/archive и last_usage — форк является независимым новым чатом.
     db.prepare(`UPDATE chats SET color = ?, project_context = ?, planning_mode = ?, image_mode = ?,
-      ask_mode = ?, browser_mode = ?, persona = ? WHERE id = ?`).run(
+      ask_mode = ?, browser_mode = ? WHERE id = ?`).run(
       sourceRow.color ?? null, sourceRow.project_context ?? null,
       sourceRow.planning_mode ?? 0, sourceRow.image_mode ?? 0,
       sourceRow.ask_mode ?? 0, sourceRow.browser_mode ?? 0,
-      sourceRow.persona ?? 'classic', forkedChatId,
+      forkedChatId,
     )
 
     for (const msg of sourceMessages) {
@@ -66,7 +65,6 @@ async function forkChat(sourceChatId: string, title?: string): Promise<{
     if (summary) setChatSummary(forkedChatId, summary)
     setChatModes(forkedChatId, getChatModes(sourceChatId))
     setChatBrowserMode(forkedChatId, getChatBrowserMode(sourceChatId))
-    setChatPersona(forkedChatId, getChatPersona(sourceChatId))
 
     log('[chat:fork] source=%s → forked=%s, messages=%d, title=%s', sourceChatId, forkedChatId, sourceMessages.length, forkTitle)
     return { chatId: forkedChatId, messages: slimMessagesForUI(getMessages(forkedChatId)), title: forkTitle }

@@ -1344,3 +1344,64 @@ body {
   opacity: 0;
   z-index: -1;
 }
+
+/* ========== Плавающая карточка контента ==========
+   Чат и правая панель образуют одну карточку со скруглением на фоне окна;
+   сайдбар, шапка и док остаются на прозрачном фоне окна. Карточка собрана
+   из двух смежных поверхностей (chat-main + right-panel-wrapper) с
+   комплементарными углами — без общей обёртки, чтобы не ломать keep-alive
+   чата и width-анимацию панели. Отступы маленькие, как в референсе. */
+.app-root {
+  --layout-gap: 8px;
+  --layout-radius: 12px;
+}
+
+.app-root .titlebar { background: transparent; border-bottom: none; }
+.app-root .sidebar { background: transparent; border-right: none; }
+.app-root .bottom-dock { background: transparent; border-top: none; }
+
+.app-root .chat-main {
+  margin: var(--layout-gap);
+  width: auto;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--layout-radius);
+  box-shadow: 0 6px 24px rgba(var(--shadow-rgb), 0.28), inset 0 1px 0 var(--overlay-3);
+}
+.app-root:has(.right-panel-wrapper--open) .chat-main {
+  margin-right: 0;
+  border-right: none;
+  border-radius: var(--layout-radius) 0 0 var(--layout-radius);
+}
+
+.app-root .right-panel-wrapper {
+  height: auto;
+  align-self: stretch;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+}
+.app-root .right-panel-wrapper--open {
+  margin: var(--layout-gap) var(--layout-gap) var(--layout-gap) 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 var(--layout-radius) var(--layout-radius) 0;
+  box-shadow: 0 6px 24px rgba(var(--shadow-rgb), 0.28), inset 0 1px 0 var(--overlay-3);
+}
+.app-root .right-panel {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-left: 1px solid var(--border);
+}
+
+/* Прочие страницы (настройки/память/мессенджер/Dots) — та же карточка
+   на всю ширину контент-зоны, сайдбара там нет. */
+.app-root .page-motion-host {
+  margin: var(--layout-gap);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--layout-radius);
+  box-shadow: 0 6px 24px rgba(var(--shadow-rgb), 0.28), inset 0 1px 0 var(--overlay-3);
+}
