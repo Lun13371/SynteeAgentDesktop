@@ -1512,19 +1512,17 @@ function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesCh
   toolProgress?: Record<string, { stage: string; detail?: string; ts: number }>
 }) {
   const [phraseIdx, setPhraseIdx] = useState(0)
-  const [visible, setVisible] = useState(true)
 
   useEffect(() => {
     // При ретрае/ошибке/rate-limit морозим ротацию фраз — пользователь видит
     // причину вместо generic «Думаю…». Раньше статус ретрая затирался
     // следующим onStatus, и индикатор молчал о происходящем.
     if (agentStatus || rateLimitSec || retry || lastError) return
+    // Смена фразы БЕЗ полного гашения: раньше visible=false на 300мс каждые
+    // 2.5с — индикатор «мигал» (пропадал/появлялся). Теперь текст меняется
+    // сразу, а появление анимирует мягкий fade-in через key.
     const interval = setInterval(() => {
-      setVisible(false)
-      setTimeout(() => {
-        setPhraseIdx(i => (i + 1) % WAITING_PHRASES.length)
-        setVisible(true)
-      }, 300)
+      setPhraseIdx(i => (i + 1) % WAITING_PHRASES.length)
     }, 2500)
     return () => clearInterval(interval)
   }, [agentStatus, rateLimitSec, retry, lastError])
@@ -1567,8 +1565,8 @@ function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesCh
   return (
     <span className="msg-waiting-wrap">
       <span
+        key={phraseIdx}
         className={`msg-waiting-shimmer${cls}`}
-        style={{ opacity: visible ? 1 : 0, transition: 'opacity 0.3s ease' }}
       >
         {text}
       </span>
@@ -1892,6 +1890,16 @@ const MessageContent = memo(function MessageContent({
     [chainSections],
   )
 
+  // Мини-агенты (Briefing/конституция/Economist) кидают карточки ДО первого
+  // токена модели — они создают live-итерацию, но это не «ход работы».
+  // Индикатор ожидания не должен из-за них исчезать: пока в ленте только
+  // такие карточки и нет текста/рассуждения — «Думаю…» остаётся видимым.
+  const assistantCardsOnly = !!liveIters?.length && liveIters.every(it =>
+    (!it.textBefore || !it.textBefore.trim()) &&
+    it.steps.length > 0 &&
+    it.steps.every(s => s.type === 'hint' || s.type === 'janitor'),
+  )
+
   // Бежит ли ещё ход работы (для живого окна): незавершённые тулы, идущий
   // визуальный анализ или стримящееся рассуждение. Когда пошёл финальный
   // текст ответа — false, и лента сама сворачивается, освобождая место.
@@ -2190,8 +2198,10 @@ const MessageContent = memo(function MessageContent({
           />
         )}
 
-        {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
-        {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && !liveIters?.length && (
+        {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать.
+            Исключение: в ленте только карточки мини-агентов (assistantCardsOnly)
+            — это старт рана, «Думаю…» должен остаться видимым. */}
+        {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && (!liveIters?.length || assistantCardsOnly) && (
                     <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} toolProgress={toolProgress} />
         )}
 

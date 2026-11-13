@@ -25,7 +25,7 @@ import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { resolve } from 'path'
-import { execSync } from 'child_process'
+import { execFile } from 'child_process'
 import { log } from '../logger'
 import type {
   AgentCallbacks, AgentSummaryDetails, AgentMessage, ContentPart,
@@ -173,6 +173,7 @@ export class Agent {
   private pendingApproxTokens = 0
   private navigatorRoundCounter = 0
   private briefingDone = false
+  private continuityStarted = false
   /** Ссылка на messages текущего рана — для J3 guard и J4 refine из worker-хендлеров. */
   private liveMessages: AgentMessage[] | null = null
   /** Канал worker→main для LLM-зависимых мини-агентов (doctor/critic/navigator/
@@ -243,13 +244,19 @@ export class Agent {
     if (block) messages.push({ role: 'user', content: block })
   }
 
-  /** Continuity для Briefing: последние коммиты + незакоммиченные изменения. Детерминированно, без LLM. */
-  private readContinuity(): string {
-    if (!this.workdir) return ''
-    try {
-      const opts = { cwd: this.workdir, timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] as const }
-      const logOut = execSync('git log -3 --pretty=format:%h %s', opts).toString().trim()
-      const status = execSync('git status --porcelain', opts).toString().trim()
+  /** Continuity для Briefing: git асинхронно, не блокируя старт рана. */
+  private computeContinuity(): Promise<string> {
+    const workdir = this.workdir
+    if (!workdir) return Promise.resolve('')
+    const run = (args: string[]): Promise<string> => new Promise(resolve => {
+      execFile('git', args, { cwd: workdir, timeout: 3000, windowsHide: true, maxBuffer: 64 * 1024 }, (err, stdout) => {
+        resolve(err ? '' : String(stdout).trim())
+      })
+    })
+    return Promise.all([
+      run(['log', '-3', '--pretty=format:%h %s']),
+      run(['status', '--porcelain']),
+    ]).then(([logOut, status]) => {
       const parts: string[] = []
       if (logOut) parts.push(`Последние коммиты: ${logOut.split('\n').join('; ').slice(0, 220)}`)
       if (status) {
@@ -257,8 +264,8 @@ export class Agent {
         const files = lines.slice(0, 8).map(l => l.slice(3).trim()).join(', ')
         parts.push(`Не закоммичено (${lines.length}): ${files.slice(0, 180)}`)
       }
-      return parts.length ? `Где остановились:\n${parts.join('\n')}` : ''
-    } catch { return '' }
+      return parts.join('\n')
+    })
   }
 
   /** J2: якорь кэша на последнем сообщении эпохи; между компакциями не двигается. */
@@ -559,8 +566,6 @@ export class Agent {
       const wm = this.onGetWorkingMemory?.(this.chatId ?? '') ?? ''
       const parts: string[] = []
       if (wm) parts.push(wm.slice(0, 600))
-      const continuity = this.readContinuity()
-      if (continuity) parts.push(continuity)
       const constit = this.constitution.serialize()
       if (constit) parts.push(constit)
       if (parts.length > 0) {
@@ -568,6 +573,15 @@ export class Agent {
         messages.push({ role: 'user', content: brief })
         callbacks.onStep({ type: 'hint', hintSource: 'briefing', content: brief.slice(0, 300) })
         this.onAssistantEvent?.({ kind: 'briefing' })
+      }
+      // Continuity (git) — в фоне: не тормозим старт запроса. Результат
+      // вкидывается обычным hint-пайплайном на следующей границе раунда.
+      if (!this.continuityStarted) {
+        this.continuityStarted = true
+        void this.computeContinuity().then(text => {
+          if (!text) return
+          this.pendingHints.push({ id: `continuity-${Date.now()}`, source: 'briefing', content: text, score: 1, title: 'continuity' })
+        }).catch(() => {})
       }
     }
     this.liveMessages = messages
@@ -629,7 +643,14 @@ export class Agent {
     // Keep the worker's array identity: request_access appends permitted browser
     // schemas mid-run. Never mutate the global registry when no override is supplied.
     if (this.assistantsSettings.enabled && this.assistantsSettings.watcherEnabled && this.onAssistantEvent) {
-      this.onAssistantEvent({ kind: 'capabilities', capabilities: this.buildCapabilities(activeSchemas) })
+      // Каталог скиллов читается с диска синхронно — строим после старта
+      // первого запроса (setImmediate сработает на первом await), чтобы
+      // не задерживать начало ответа модели.
+      setImmediate(() => {
+        try {
+          this.onAssistantEvent?.({ kind: 'capabilities', capabilities: this.buildCapabilities(activeSchemas) })
+        } catch { /* каталог не критичен */ }
+      })
     }
     const filteredSchemas = filterToolSchemas(activeSchemas, toolSettings)
     activeSchemas.splice(0, activeSchemas.length, ...filteredSchemas)
