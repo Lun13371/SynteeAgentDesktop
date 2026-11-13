@@ -657,7 +657,10 @@ declare const synteeAPI: {
         }) => Promise<any>;
         setPlanningMode: (chatId: string, val: boolean) => Promise<any>;
         setImageMode: (chatId: string, val: boolean) => Promise<any>;
-        onImageModeChanged: (cb: (info: { chatId: string; enabled: boolean }) => void) => () => Electron.IpcRenderer;
+        onImageModeChanged: (cb: (info: {
+            chatId: string;
+            enabled: boolean;
+        }) => void) => () => Electron.IpcRenderer;
         setAskMode: (chatId: string, val: boolean) => Promise<any>;
         getBrowserMode: (chatId: string) => Promise<boolean>;
         setBrowserMode: (chatId: string, val: boolean) => Promise<any>;
@@ -986,10 +989,6 @@ declare const synteeAPI: {
         }) => Promise<any>;
         setFolderState: (params: SkillFolderUpdate) => Promise<any>;
         reload: () => Promise<any>;
-        getActive: (params: {
-            chatId: string;
-            isIncognito?: boolean;
-        }) => Promise<any>;
         installFromUrl: (params: {
             url: string;
             scope: "global" | {
@@ -1008,10 +1007,6 @@ declare const synteeAPI: {
         getAll: (params?: {
             projectId?: string;
             chatId?: string;
-        }) => Promise<any>;
-        getActiveForChat: (params: {
-            chatId: string;
-            isIncognito?: boolean;
         }) => Promise<any>;
         save: (config: unknown) => Promise<any>;
         delete: (id: string) => Promise<any>;
@@ -1312,6 +1307,28 @@ declare const synteeAPI: {
     clipboard: {
         writeText: (text: string) => Promise<boolean>;
         readText: () => Promise<string>;
+    };
+    assistants: {
+        getSettings: () => Promise<import("../../shared/assistants").AssistantsSettings>;
+        updateSettings: (patch: Partial<import("../../shared/assistants").AssistantsSettings>) => Promise<import("../../shared/assistants").AssistantsSettings>;
+        getLog: (since?: number) => Promise<import("../../shared/assistants").AssistantLogEntry[]>;
+        getStatus: () => Promise<{
+            serverState: string;
+            modelSize: string;
+            modelDownloaded: boolean;
+            binaryReady: boolean;
+            idleUnloaded: boolean;
+        }>;
+        getStats: () => Promise<import("../../shared/assistants").AgentStatsMap>;
+        setup: () => Promise<{
+            ok: boolean;
+            error?: string;
+        }>;
+        onSetupProgress: (cb: (p: {
+            phase: string;
+            percent: number;
+            error?: string;
+        }) => void) => () => Electron.IpcRenderer;
     };
 };
 export type SynteeAPI = typeof synteeAPI;

@@ -135,6 +135,13 @@ export function useToolProgress() {
       // §steer — реплика пользователя, внедрённая в контекст активного рана.
       steerId?: string
       steerApplied?: boolean
+      // Мини-агенты: подсказки и оптимизация контекста (live-карточки).
+      hintSource?: string
+      hintId?: string
+      janitorKind?: string
+      janitorTokensSaved?: number
+      janitorArchiveId?: string
+      janitorActions?: Array<{ kind: string; description: string; tokensSaved: number; archiveId?: string }>
     }) => {
       if (!step.chatId) return
       const chatId = step.chatId
@@ -464,6 +471,25 @@ export function useToolProgress() {
           iters: [...buf.iters],
           steps: [...buf.steps],
           text: buf.text,
+          isAgentRunning: true,
+          isTyping: true,
+        })
+      } else if (step.type === 'hint' || step.type === 'janitor') {
+        // Мини-агенты: карточка подсказки/оптимизации в live-ленте текущей итерации.
+        const aStep: ToolStep = {
+          id: uuid(), type: step.type as 'hint' | 'janitor',
+          content: step.content, timestamp: Date.now(),
+          hintSource: step.hintSource as ToolStep['hintSource'], hintId: step.hintId,
+          janitorKind: step.janitorKind, janitorTokensSaved: step.janitorTokensSaved,
+          janitorArchiveId: step.janitorArchiveId, janitorActions: step.janitorActions,
+        }
+        buf.steps.push(aStep)
+        const last = buf.iters[buf.iters.length - 1]
+        if (last) buf.iters = [...buf.iters.slice(0, -1), { ...last, steps: [...last.steps, aStep] }]
+        else buf.iters = [{ textBefore: buf.text, steps: [aStep] }]
+        liveSet(chatId, {
+          iters: [...buf.iters],
+          steps: [...buf.steps],
           isAgentRunning: true,
           isTyping: true,
         })

@@ -485,30 +485,6 @@ export class McpManager {
   }
 
   /**
-   * Возвращает id активных MCP-серверов для конкретного чата — для бейджа.
-   * Фильтрует по enabled + scope + статусу (connected/connecting).
-   * Симметрично getActiveSkillsForChat в skillManager.
-   */
-  getActiveServerIdsForChat(opts: {
-    projectWorkdir?: string
-    projectId?: string
-    isIncognito?: boolean
-  }): string[] {
-    if (opts.isIncognito) return []
-    const configs = this.loadConfigs(opts.projectWorkdir, opts.projectId)
-    const out: string[] = []
-    for (const config of configs) {
-      if (!this.getServerEnabled(config)) continue
-      if (!this.scopeApplies(this.getServerScope(config), opts.projectId)) continue
-      const client = this.clients.get(config.id)
-      if (client && (client.status === 'connected' || client.status === 'connecting')) {
-        out.push(config.id)
-      }
-    }
-    return out
-  }
-
-  /**
    * Вызов тулза по имени. Маршрутизация: mcp__serverName__toolName → клиент.
    * serverName извлекается из имени (после mcp__).
    */

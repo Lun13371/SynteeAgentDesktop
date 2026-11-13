@@ -75,6 +75,7 @@ import {
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
+import { attachAssistants, detachAssistants, onAgentEvent, onJanitorAction, onAssistantEvent, onRunDone } from '../assistants/bridge'
 import { registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
 import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
@@ -505,6 +506,7 @@ function failRunCleanup(
       void cancelledRun.worker?.terminate()
       dismissPendingQuestions(win, cancelledRun)
       activeRuns.delete(chatId)
+      detachAssistants(chatId)
     }
     if (activeRunMeta.get(chatId)?.msgId === assistantMsgId) activeRunMeta.delete(chatId)
     updateForegroundBusy()
@@ -534,6 +536,7 @@ function failRunCleanup(
   }
   if (run) dismissPendingQuestions(win, run)
   activeRuns.delete(chatId)
+  detachAssistants(chatId)
   activeRunMeta.delete(chatId)
   updateForegroundBusy()
   emitRunStatus(win, chatId, 'error', assistantMsgId, message)
@@ -2451,6 +2454,8 @@ function pathHash(value: string): string {
     })
     run.worker = worker
     activeRuns.set(params.chatId, run)
+    attachAssistants(params.chatId, worker, { projectWorkdir: chatWorkdir, projectId: fastContextProjectId })
+    void onAgentEvent(params.chatId, { kind: 'task_start', text: params.message?.slice(0, 300) ?? '' })
     updateForegroundBusy()
 
     // Plugins: хук chat:message — fire-and-forget, не блокирует чат.
@@ -2614,6 +2619,12 @@ function pathHash(value: string): string {
           break
         }
 
+        // Мини-агенты (doctor/critic/navigator/archivist/constitution/refine):
+        // worker шлёт событие, main решает запускать ли локальную модель.
+        case 'assistant_event': {
+          void onAssistantEvent(params.chatId, msg as Record<string, unknown>)
+          break
+        }
         // §rollback-live — воркер отдаёт {path, contentBefore} на каждую
         // правку файла. Копим в run.liveSnapshots: если финальный done не
         // придёт (Stop/краш воркера), sendDone возьмёт этот буфер, и правки
@@ -2768,11 +2779,21 @@ function pathHash(value: string): string {
                 run.pendingTextAfter = ''
               }
               run.currentIterSteps.push(ts)
-            } else if (rawStep.type === 'tool_result' || rawStep.type === 'steer') {
+            } else if (rawStep.type === 'tool_result' || rawStep.type === 'steer' || rawStep.type === 'hint' || rawStep.type === 'janitor') {
               // §steer — карточка встаёт в текущую итерацию: хронологически
               // реплика приходит после tool_result предыдущего раунда и до
               // tool_call следующего, то есть в хвост уже открытой итерации.
               run.currentIterSteps.push(ts)
+              if (rawStep.type === 'tool_result' && rawStep.success === false && rawStep.toolName) {
+                const errText = String(rawStep.content ?? '')
+                void onAgentEvent(params.chatId, { kind: 'tool_error', toolName: String(rawStep.toolName), error: errText.slice(0, 200) })
+                if (/unavailable in the current run|is disabled|not available in the current mode|Permission denied|blocked by/i.test(errText)) {
+                  void onAgentEvent(params.chatId, { kind: 'capability_gap', toolName: String(rawStep.toolName), text: errText.slice(0, 200) })
+                }
+              }
+              if (rawStep.type === 'janitor') {
+                onJanitorAction(params.chatId, String(rawStep.janitorKind ?? ''), String(rawStep.content ?? ''), Number(rawStep.janitorTokensSaved ?? 0))
+              }
             }
           }
           // Фаза 4: логирование tool-вызовов в agent_logs для outcome-extraction.
@@ -3735,6 +3756,7 @@ ${subModeOutro}`,
           break
 
         case 'done':
+          void onRunDone(params.chatId, String((msg as { answer?: unknown; content?: unknown }).answer ?? (msg as { content?: unknown }).content ?? ''))
           if (msg.updatedProviders) {
             store.set('providers', msg.updatedProviders)
           }

@@ -70,6 +70,18 @@ interface OpenAIMessage {
   // converter — kept here for documentation so the input type matches what
   // chatContextHelpers/Agent actually produce. Anthropic uses thinking_blocks.
   reasoning_content?: string
+  // J2 cache-friendly: стабильная граница истории. Agent ставит флаг на
+  // последнем сообщении эпохи компакции; конвертер вешает cache_control на
+  // его последний блок → префикс истории кэшируется между компакциями.
+  cacheAnchor?: boolean
+}
+
+/** Вешает cache_control на последний content-блок, если сообщение — якорь. */
+function anchorBlocks(blocks: Array<Record<string, unknown>>, anchor?: boolean): Array<Record<string, unknown>> {
+  if (anchor && blocks.length > 0) {
+    blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } }
+  }
+  return blocks
 }
 
 // ─── Конвертер tools: OpenAI → Anthropic ─────────────────────────────────────
@@ -199,8 +211,10 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
     // tool → user с tool_result блоками (объединяем consecutive)
     if (m.role === 'tool') {
       const toolResults: Array<Record<string, unknown>> = []
+      let groupAnchor = false
       while (i < messages.length && messages[i].role === 'tool') {
         const tr = messages[i]
+        if (tr.cacheAnchor) groupAnchor = true
         // content может быть строкой ИЛИ массивом content-блоков (multipart —
         // analyze_image прямой пас: image_url + text). Anthropic официально
         // поддерживает image-блоки внутри tool_result — конвертируем их так
@@ -232,6 +246,9 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
           content: trContent,
         })
         i++
+      }
+      if (groupAnchor && toolResults.length > 0) {
+        toolResults[toolResults.length - 1] = { ...toolResults[toolResults.length - 1], cache_control: { type: 'ephemeral' } }
       }
       result.push({ role: 'user', content: toolResults })
       continue
@@ -274,7 +291,7 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
           input,
         })
       }
-      result.push({ role: 'assistant', content: blocks })
+      result.push({ role: 'assistant', content: anchorBlocks(blocks, m.cacheAnchor) })
       i++
       continue
     }
@@ -295,7 +312,7 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
       if (m.content && typeof m.content === 'string' && m.content.trim()) {
         blocks.push({ type: 'text', text: m.content })
       }
-      result.push({ role: 'assistant', content: blocks })
+      result.push({ role: 'assistant', content: anchorBlocks(blocks, m.cacheAnchor) })
       i++
       continue
     }
@@ -316,13 +333,15 @@ export function convertMessagesToAnthropic(messages: OpenAIMessage[]): Anthropic
           }
         }
       }
-      result.push({ role: m.role as 'user' | 'assistant', content: blocks.length > 0 ? blocks : '' })
+      result.push({ role: m.role as 'user' | 'assistant', content: blocks.length > 0 ? anchorBlocks(blocks, m.cacheAnchor) : '' })
       i++
       continue
     }
     result.push({
       role: m.role as 'user' | 'assistant',
-      content: typeof m.content === 'string' ? m.content : '',
+      content: m.cacheAnchor && typeof m.content === 'string' && m.content
+        ? [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }]
+        : (typeof m.content === 'string' ? m.content : ''),
     })
     i++
   }

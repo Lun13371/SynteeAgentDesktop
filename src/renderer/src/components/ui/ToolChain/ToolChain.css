@@ -1379,3 +1379,127 @@
 
 
 
+
+/* ── Assistant chips (watcher hints + janitor actions) ── */
+.tc2-assistant-chip {
+  position: relative;
+  display: inline-flex;
+  margin: 4px 0 4px 28px;
+}
+
+.tc2-assistant-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  background: rgba(128, 128, 128, 0.05);
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.tc2-assistant-chip-btn:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.tc2-assistant-chip--hint .tc2-assistant-chip-btn {
+  border-color: rgba(99, 102, 241, 0.25);
+  color: #818cf8;
+}
+
+.tc2-assistant-chip--janitor .tc2-assistant-chip-btn {
+  border-color: rgba(34, 197, 94, 0.25);
+  color: #4ade80;
+}
+
+.tc2-assistant-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 100;
+  min-width: 240px;
+  max-width: 380px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-elevated, #1e1e2e);
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tc2-assistant-popover p {
+  margin: 0 0 6px;
+  opacity: 0.85;
+  word-break: break-word;
+}
+
+.tc2-assistant-recall {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+.tc2-assistant-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.4;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.tc2-assistant-close:hover { opacity: 1; }
+
+/* ── Assistant cards (watcher / janitor) ── */
+.tc2-assistant-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 8px;
+  background: rgba(74, 222, 128, 0.12);
+  color: #4ade80;
+}
+
+.tc2-assistant-body {
+  padding: 8px 12px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tc2-assistant-text {
+  margin: 0;
+  opacity: 0.85;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.tc2-assistant-actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tc2-assistant-actions li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tc2-assistant-action-desc {
+  opacity: 0.85;
+  flex: 1;
+}

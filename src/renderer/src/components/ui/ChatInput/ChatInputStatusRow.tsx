@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import QueuePanel from '../QueuePanel/QueuePanel'
-import ExtensionsBadge from '../ExtensionsBadge/ExtensionsBadge'
 import ChangesBadge from '../ChangesBadge/ChangesBadge'
 import ModelSelector from '../ModelSelector/ModelSelector'
 import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
@@ -315,10 +314,6 @@ export function ChatInputStatusRow({
       {/* Бейдж очереди запросов — раскрывается в панель управления при
           hover/клике. Показывается только когда есть active/queued запросы. */}
       {chatId && <QueuePanel chatId={chatId} />}
-
-      {/* Бейдж активных расширений (MCP + Skills) — drill-down popup.
-          Скрыт когда ничего не включено или инкогнито. */}
-      {chatId && <ExtensionsBadge chatId={chatId} isIncognito={isIncognito} />}
 
       {/* Бейдж изменений последнего запроса — +N -M строк, popup с undo. */}
       <AnimatePresence>

@@ -19,12 +19,14 @@ import {
   truncateToolResult, getContextSettings, getModelContextWindow,
   getHardLimitTokens, getHardLimitTargetTokens,
 } from '../context/contextManager'
+import type { ChatMessage } from '../context/contextManager'
 import { computeContextSnapshot } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { isReadonlyPersona, getPersonaAllowedTools } from '../../shared/modes'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { resolve } from 'path'
+import { execSync } from 'child_process'
 import { log } from '../logger'
 import type {
   AgentCallbacks, AgentSummaryDetails, AgentMessage, ContentPart,
@@ -48,6 +50,11 @@ import { filterToolSchemas, getToolSettings, isToolDisabled } from '../../shared
 import { sanitizeToolInstructions } from '../prompts/buildSystemPrompt'
 import { executeCode, EphemeralArtifactStore } from '../codeMode'
 import type { CodeTraceEntry } from '../codeMode'
+import { Janitor } from '../context/janitor'
+import { Constitution } from '../context/constitution'
+import { getSkillManager } from '../skills/skillManager'
+import type { Capability } from './watcher'
+import { HINT_MARKER, JANITOR_MARKER, CONSTITUTION_MARKER, BRIEFING_MARKER, DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type HintCandidate } from '../../shared/assistants'
 
 // Ограниченное хранилище Code Mode живёт в worker-процессе, а записи изолированы chatId.
 // Если worker завершён, артефакты очищаются вместе с ним.
@@ -154,6 +161,25 @@ export class Agent {
    */
   private pendingSteers: Array<{ id: string; text: string }> = []
 
+  private pendingHints: HintCandidate[] = []
+  private hintCooldown = 0
+  private recentHintIds = new Set<string>()
+  private janitor: Janitor
+  private assistantsSettings: AssistantsSettings = { ...DEFAULT_ASSISTANTS_SETTINGS }
+  private janitorRoundCounter = 0
+  private constitution = new Constitution()
+  private forceJanitorMode: 'light' | 'deep' | null = null
+  private ecoStage = 0
+  private tokenCalibration = 1
+  private pendingApproxTokens = 0
+  private navigatorRoundCounter = 0
+  private briefingDone = false
+  /** Ссылка на messages текущего рана — для J3 guard и J4 refine из worker-хендлеров. */
+  private liveMessages: AgentMessage[] | null = null
+  /** Канал worker→main для LLM-зависимых мини-агентов (doctor/critic/navigator/
+   *  archivist/constitution/janitor_refine). Ставится ai-worker'ом. */
+  onAssistantEvent?: (evt: Record<string, unknown>) => void
+
   /**
    * Вызывается из ai-worker по сообщению {type:'steer'}. Пустой текст — no-op.
    * Метод потокобезопасен по смыслу: worker_threads однопоточны в рамках
@@ -179,6 +205,147 @@ export class Agent {
     const before = this.pendingSteers.length
     this.pendingSteers = this.pendingSteers.filter(s => s.id !== id)
     return this.pendingSteers.length !== before
+  }
+
+  pushHint(hint: HintCandidate): void {
+    if (!this.assistantsSettings.enabled || !this.hintSourceEnabled(hint.source)) return
+    if (this.recentHintIds.has(hint.id)) return
+    if (this.pendingHints.length >= 3) return
+    this.pendingHints.push(hint)
+  }
+
+  private hintSourceEnabled(source: HintCandidate['source']): boolean {
+    const s = this.assistantsSettings
+    switch (source) {
+      case 'memory': case 'skill': case 'capability': return s.watcherEnabled
+      case 'doctor': return s.doctorEnabled
+      case 'briefing': return s.briefingEnabled
+      case 'navigator': return s.navigatorEnabled
+      case 'archivist': return s.archivistEnabled
+      case 'economist': return s.economistEnabled
+      case 'constitution': return true
+      default: return true
+    }
+  }
+
+  /** LLM-экстрактор конституции прислал пункты из main — мержим и ре-инжектим. */
+  mergeConstitution(items: string[]): void {
+    const added = this.constitution.merge(items)
+    if (added.length > 0) log('[Agent] constitution merged %d items (total=%d)', added.length, this.constitution.size)
+  }
+
+  /** J1: держим конституцию в контексте всегда — после любой компакции/дропа. */
+  private reinjectConstitution(messages: AgentMessage[]): void {
+    const block = this.constitution.serialize()
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const c = messages[i].content
+      if (typeof c === 'string' && c.includes(CONSTITUTION_MARKER)) messages.splice(i, 1)
+    }
+    if (block) messages.push({ role: 'user', content: block })
+  }
+
+  /** Continuity для Briefing: последние коммиты + незакоммиченные изменения. Детерминированно, без LLM. */
+  private readContinuity(): string {
+    if (!this.workdir) return ''
+    try {
+      const opts = { cwd: this.workdir, timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] as const }
+      const logOut = execSync('git log -3 --pretty=format:%h %s', opts).toString().trim()
+      const status = execSync('git status --porcelain', opts).toString().trim()
+      const parts: string[] = []
+      if (logOut) parts.push(`Последние коммиты: ${logOut.split('\n').join('; ').slice(0, 220)}`)
+      if (status) {
+        const lines = status.split('\n')
+        const files = lines.slice(0, 8).map(l => l.slice(3).trim()).join(', ')
+        parts.push(`Не закоммичено (${lines.length}): ${files.slice(0, 180)}`)
+      }
+      return parts.length ? `Где остановились:\n${parts.join('\n')}` : ''
+    } catch { return '' }
+  }
+
+  /** J2: якорь кэша на последнем сообщении эпохи; между компакциями не двигается. */
+  private markCacheAnchor(messages: AgentMessage[]): void {
+    for (const m of messages) {
+      if ((m as { cacheAnchor?: boolean }).cacheAnchor) (m as { cacheAnchor?: boolean }).cacheAnchor = false
+    }
+    if (messages.length > 0) (messages[messages.length - 1] as { cacheAnchor?: boolean }).cacheAnchor = true
+  }
+
+  /** Применяет отчёт janitor + пост-обработка (конституция, якорь, refine-запросы). */
+  private applyJanitorReport(messages: AgentMessage[], report: import('../../shared/assistants').JanitorReport, callbacks: AgentCallbacks, step: number): void {
+    const optimized = this.janitor.apply(messages as ChatMessage[], report)
+    messages.length = 0
+    messages.push(...(optimized as AgentMessage[]))
+    this.reinjectConstitution(messages)
+    this.markCacheAnchor(messages)
+    callbacks.onStep({
+      type: 'janitor',
+      content: `Оптимизировано: ${report.actions.length} действ., −${report.totalTokensSaved} токенов`,
+      janitorTokensSaved: report.totalTokensSaved,
+      janitorActions: report.actions.map(a => ({ kind: a.kind, description: a.description, tokensSaved: a.tokensSaved, archiveId: a.archiveId })),
+    })
+    // J4: просим локальную модель улучшить структурные резюме (async, не блокирует).
+    if (this.onAssistantEvent) {
+      for (const a of report.actions) {
+        if (a.kind === 'summarize_stale' && a.archiveId) {
+          const orig = this.janitor.recall(a.archiveId)?.[0]
+          if (orig && typeof orig.content === 'string') {
+            this.onAssistantEvent({ kind: 'janitor_refine', archiveId: a.archiveId, toolName: orig.name ?? 'tool', content: orig.content.slice(0, 1500) })
+          }
+        }
+      }
+    }
+    log('[Agent] janitor: %d actions, %d tokens saved (%dms)', report.actions.length, report.totalTokensSaved, report.durationMs)
+  }
+
+  /** J3: контент файла ещё в контексте? (ищем tool-результат read с этим путём). */
+  private hasReadInContext(absPath: string): boolean {
+    if (!this.liveMessages) return false
+    const base = absPath.replace(/\\/g, '/').split('/').pop() ?? ''
+    for (const m of this.liveMessages) {
+      if (m.role !== 'tool' || typeof m.content !== 'string') continue
+      if (m.content.includes(absPath) || (base && m.content.includes(base))) return true
+    }
+    return false
+  }
+
+  /** J4: локальная модель улучшила резюме — заменяем текст в messages по archiveId. */
+  refineJanitorSummary(archiveId: string, summary: string): void {
+    if (!this.liveMessages || !summary) return
+    const tag = `[recall:${archiveId}]`
+    for (const m of this.liveMessages) {
+      if (typeof m.content === 'string' && m.content.includes(tag)) {
+        m.content = `${JANITOR_MARKER} ${summary} ${tag}`
+      }
+    }
+  }
+
+  /** Watcher v2: каталог возможностей, доступных в этом ране (тулы/MCP/plugin/скиллы). */
+  private buildCapabilities(schemas: Array<{ function: { name: string; description?: string } }>): Capability[] {
+    const caps: Capability[] = []
+    for (const s of schemas) {
+      const name = s.function?.name ?? ''
+      if (!name) continue
+      const kind: Capability['kind'] = name.startsWith('mcp__') ? 'mcp' : name.startsWith('plugin__') ? 'plugin' : 'tool'
+      caps.push({ id: name, kind, name, desc: (s.function?.description ?? '').slice(0, 120) })
+    }
+    try {
+      const skills = getSkillManager().getActiveSkillsForChat({ projectWorkdir: this.workdir, projectId: this.projectId })
+      for (const sk of skills) caps.push({ id: sk.name, kind: 'skill', name: sk.name, desc: (sk.description ?? '').slice(0, 120) })
+    } catch { /* skills недоступны — не критично */ }
+    return caps
+  }
+
+  get hasPendingHints(): boolean {
+    return this.pendingHints.length > 0
+  }
+
+  setAssistantsSettings(settings: AssistantsSettings): void {
+    this.assistantsSettings = settings
+    this.janitor.updateSettings(settings)
+  }
+
+  recallJanitorArchive(archiveId: string): ChatMessage[] | null {
+    return this.janitor.recall(archiveId)
   }
 
   // Персистентный кэш read_file — переживает несколько run() вызовов,
@@ -277,6 +444,7 @@ export class Agent {
     this.store = store
     this.role = role
     this.client = new AIClient(store)
+    this.janitor = new Janitor(this.assistantsSettings)
     this.toolDispatcher = new ToolDispatcher({
       store,
       workdir: this.workdir,
@@ -376,6 +544,35 @@ export class Agent {
     ]
 
     if (goalRuntime) messages.push({ role: 'system', content: goalRuntime.instruction() })
+
+    // J1: детерминированное извлечение ограничений из нового user-сообщения.
+    if (this.assistantsSettings.enabled && typeof userMessage === 'string') {
+      const added = this.constitution.addFromUserText(userMessage)
+      if (added.length > 0) {
+        callbacks.onStep({ type: 'hint', hintSource: 'constitution', content: `Запомнил ограничения: ${added.join('; ')}` })
+        this.onAssistantEvent?.({ kind: 'constitution_extract', text: userMessage.slice(0, 800) })
+      }
+      this.reinjectConstitution(messages)
+    }
+    // Briefing: компактное состояние проекта на старте сессии (детерминированно).
+    if (this.assistantsSettings.enabled && this.assistantsSettings.briefingEnabled && !this.briefingDone && this.role === 'main') {
+      this.briefingDone = true
+      const wm = this.onGetWorkingMemory?.(this.chatId ?? '') ?? ''
+      const parts: string[] = []
+      if (wm) parts.push(wm.slice(0, 600))
+      const continuity = this.readContinuity()
+      if (continuity) parts.push(continuity)
+      const constit = this.constitution.serialize()
+      if (constit) parts.push(constit)
+      if (parts.length > 0) {
+        const brief = `${BRIEFING_MARKER}\n${parts.join('\n')}`
+        messages.push({ role: 'user', content: brief })
+        callbacks.onStep({ type: 'hint', hintSource: 'briefing', content: brief.slice(0, 300) })
+        this.onAssistantEvent?.({ kind: 'briefing' })
+      }
+    }
+    this.liveMessages = messages
+    this.toolDispatcher.rereadGuard = (p) => this.hasReadInContext(p)
     const modifiedFiles = new Set<string>()
     let successfulEditCount = 0
     let lastVerifiedEditCount = 0
@@ -432,6 +629,9 @@ export class Agent {
     }>
     // Keep the worker's array identity: request_access appends permitted browser
     // schemas mid-run. Never mutate the global registry when no override is supplied.
+    if (this.assistantsSettings.enabled && this.assistantsSettings.watcherEnabled && this.onAssistantEvent) {
+      this.onAssistantEvent({ kind: 'capabilities', capabilities: this.buildCapabilities(activeSchemas) })
+    }
     const filteredSchemas = filterToolSchemas(activeSchemas, toolSettings)
     activeSchemas.splice(0, activeSchemas.length, ...filteredSchemas)
     // execute_code — обычный тул реестра (schemas/code.ts). Набор приходит из
@@ -573,6 +773,100 @@ export class Agent {
         callbacks.onStatus?.('Учтено сообщение пользователя')
       }
 
+      if (this.pendingHints.length > 0 && !signal?.aborted && this.hintCooldown <= 0) {
+        const budget = this.assistantsSettings.hintBudgetTokens
+        const incoming = this.pendingHints.splice(0)
+        let injected = 0
+        for (const hint of incoming) {
+          if (injected >= budget) break
+          const text = hint.title ? `[${hint.source}: ${hint.title}] ${hint.content}` : `[${hint.source}] ${hint.content}`
+          messages.push({ role: 'user', content: `${HINT_MARKER}\n\n${text}` })
+          this.recentHintIds.add(hint.id)
+          if (this.recentHintIds.size > 50) {
+            const first = this.recentHintIds.values().next().value
+            if (first) this.recentHintIds.delete(first)
+          }
+          callbacks.onStep({ type: 'hint', content: text, hintSource: hint.source, hintId: hint.id })
+          injected += text.length
+          log('[Agent] hint injected (round %s): %s', step, text.slice(0, 100))
+        }
+        this.hintCooldown = this.assistantsSettings.hintCooldownRounds
+      }
+      if (this.hintCooldown > 0) this.hintCooldown--
+
+      this.janitorRoundCounter++
+      // Economist + умный триггер Janitor: не спамим компакцией на ранних
+      // ходах. Сжимаем только когда ран созрел (>25 шагов), есть реальные
+      // повторы тулов, или контекст подбирается к лимиту.
+      const approxTokens = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0) / 4, 0)
+      this.pendingApproxTokens = approxTokens
+      // Калибровка chars/4 по реальным prompt_tokens из API (EMA): для русского
+      // текста chars/4 занижает токены в ~1.5-2 раза, пороги должны быть точными.
+      const calibratedTokens = approxTokens * this.tokenCalibration
+      // Economist: порог относительно окна контекста модели.
+      // 1M → 30%, 500k → 60%, 256k → 70%, <256k → 80%.
+      const ecoFrac = realContextWindow >= 1_000_000 ? 0.3 : realContextWindow >= 500_000 ? 0.6 : realContextWindow >= 256_000 ? 0.7 : 0.8
+      const ecoThreshold = realContextWindow * ecoFrac
+      const contextPressure = calibratedTokens > ecoThreshold
+      if (this.assistantsSettings.enabled && this.assistantsSettings.economistEnabled) {
+        // Ступени: порог → лёгкий дедуп; порог+15% → глубокое сжатие.
+        const stage = calibratedTokens > ecoThreshold * 1.15 ? 2 : contextPressure ? 1 : 0
+        if (stage > this.ecoStage) {
+          this.ecoStage = stage
+          this.forceJanitorMode = stage === 2 ? 'deep' : 'light'
+          const pct = Math.round(calibratedTokens / realContextWindow * 100)
+          callbacks.onStep({
+            type: 'hint', hintSource: 'economist',
+            content: stage === 2
+              ? `Контекст ~${Math.round(calibratedTokens)} токенов (${pct}% окна ${Math.round(realContextWindow / 1000)}k) — глубокое сжатие: порог +15% превышен.`
+              : `Контекст ~${Math.round(calibratedTokens)} токенов (${pct}% окна ${Math.round(realContextWindow / 1000)}k) — лёгкая оптимизация: дедуп и перечитывания.`,
+          })
+          this.onAssistantEvent?.({ kind: 'economist', stage })
+        } else if (stage === 0) {
+          this.ecoStage = 0
+        }
+      }
+      const fpCounts = new Map<string, number>()
+      for (const f of this.recentToolFingerprints) {
+        const k = `${f.toolName}|${f.argsKey}`
+        fpCounts.set(k, (fpCounts.get(k) ?? 0) + 1)
+      }
+      const heavyRepeats = [...fpCounts.values()].some(c => c >= 3)
+      const matureRun = step >= 25
+      const janitorDue = typeof this.janitor?.shouldScan === 'function'
+        && this.janitor.shouldScan(this.janitorRoundCounter)
+        && (matureRun || heavyRepeats || contextPressure)
+      if (janitorDue || this.forceJanitorMode) {
+        const scanMode = this.forceJanitorMode ?? 'deep'
+        this.forceJanitorMode = null
+        const report = this.janitor.scan(messages as ChatMessage[], this.janitorRoundCounter, scanMode)
+        log('[Agent] janitor scan round=%s mode=%s actions=%d saved=%d enabled=%s', this.janitorRoundCounter, scanMode, report.actions.length, report.totalTokensSaved, this.assistantsSettings.enabled)
+        // J2: не применяем микро-компакции — они инвалидируют кэш чаще, чем экономят.
+        if (report.actions.length > 0 && report.totalTokensSaved >= this.assistantsSettings.janitorMinSavingsTokens) {
+          this.applyJanitorReport(messages, report, callbacks, step)
+        } else {
+          this.onAssistantEvent?.({ kind: 'janitor_skip' })
+        }
+      }
+      // Navigator: mid-run drift-судья при активной цели ИЛИ активных ограничениях (LLM в main).
+      const navConstraints = this.constitution.list()
+      if (this.assistantsSettings.enabled && this.assistantsSettings.navigatorEnabled && (this.goal || navConstraints.length > 0) && this.onAssistantEvent) {
+        this.navigatorRoundCounter++
+        if (this.navigatorRoundCounter % this.assistantsSettings.navigatorInterval === 0) {
+          this.onAssistantEvent({ kind: 'navigator', objective: this.goal?.objective ?? '', constraints: navConstraints, transcript: formatTranscript(messages.slice(-12) as ChatMessage[]).slice(0, 1500) })
+        }
+      }
+      // Watcher v2: периодический само-подход раз в 15 раундов + stuck-сигнал.
+      if (this.assistantsSettings.enabled && this.assistantsSettings.watcherEnabled && this.onAssistantEvent) {
+        if (step > 0 && step % 15 === 0) {
+          this.onAssistantEvent({ kind: 'capabilities', capabilities: this.buildCapabilities(activeSchemas) })
+          this.onAssistantEvent({ kind: 'watcher_trigger', trigger: { kind: 'periodic', text: formatTranscript(messages.slice(-8) as ChatMessage[]).slice(0, 600) } })
+        }
+        if (heavyRepeats) {
+          this.onAssistantEvent({ kind: 'watcher_trigger', trigger: { kind: 'stuck', text: `agent repeating tools: ${formatTranscript(messages.slice(-4) as ChatMessage[]).slice(0, 300)}` } })
+        }
+      }
+
       try {
         callbacks.onStatus?.('Waiting for response...')
         console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, activeSchemas.length)
@@ -605,6 +899,16 @@ export class Agent {
           }, INACTIVITY_TIMEOUT_MS)
         }
         resetInactivityTimer()
+        // Калибровка Economist: реальные prompt_tokens этого раунда против
+        // нашей оценки chars/4 → EMA-коэффициент (clamp 0.5..4).
+        const trackUsage = (promptTokens: number, completionTokens: number, cacheRead?: number, cacheWrite?: number) => {
+          if (this.pendingApproxTokens > 0 && promptTokens > 0) {
+            const ratio = Math.min(4, Math.max(0.5, promptTokens / this.pendingApproxTokens))
+            this.tokenCalibration = this.tokenCalibration * 0.7 + ratio * 0.3
+          }
+          if (goalRuntime) goalRuntime.addTokens(promptTokens + completionTokens)
+          callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
+        }
         let response!: Awaited<ReturnType<typeof this.client.chatWithTools>>
         try {
           response = await goalWait(Promise.race([
@@ -630,10 +934,9 @@ export class Agent {
               goalRuntime
                 ? (promptTokens: number, completionTokens: number, cacheRead?: number, cacheWrite?: number) => {
                   // Расход цикла цели — для статуса /goal (как token spend в [CC]).
-                  goalRuntime.addTokens(promptTokens + completionTokens)
-                  callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
+                  trackUsage(promptTokens, completionTokens, cacheRead, cacheWrite)
                 }
-                : callbacks.onUsage,
+                : trackUsage,
               (tok) => { resetInactivityTimer(); callbacks.onThinkingToken?.(tok) },
               callbacks.onThinkingDone,
               (index, rawToolName) => {
@@ -829,6 +1132,9 @@ export class Agent {
           }
           // §goal больше не подменяет финальный ответ синтетикой — цель
           // закрывается в блоке выше и отдаёт реальный ответ модели.
+          if (this.assistantsSettings.enabled && this.assistantsSettings.archivistEnabled && this.onAssistantEvent && this.role === 'main') {
+            this.onAssistantEvent({ kind: 'archivist', transcript: formatTranscript(messages.slice(-16) as ChatMessage[]).slice(0, 2000), modifiedFiles: Array.from(modifiedFiles), projectId: this.projectId, chatId: this.chatId })
+          }
           callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
 
           if (this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {
@@ -1075,6 +1381,11 @@ export class Agent {
                 const blockKey = `${fingerprint.toolName}|${fingerprint.argsKey}`
                 const guardHits = (this.loopGuardHits.get(blockKey) ?? 0) + 1
                 this.loopGuardHits.set(blockKey, guardHits)
+                // Loop doctor: на первом мягком предупреждении просим локальную модель
+                // предложить альтернативу (async, не блокирует тул).
+                if (guardHits === 1 && this.assistantsSettings.enabled && this.assistantsSettings.doctorEnabled && this.onAssistantEvent) {
+                  this.onAssistantEvent({ kind: 'doctor', toolName: fn.name, args: JSON.stringify(args).slice(0, 300), context: formatTranscript(messages.slice(-6) as ChatMessage[]).slice(0, 800) })
+                }
                 // edit_file exempt от hard block: тул имеет undo-stack,
                 // возвращает diff, не деструктивен. Hard block убивал
                 // edit_file на весь session из-за ложных срабатываний
@@ -1821,6 +2132,8 @@ export class Agent {
         if (overflowedMessages !== messages) {
           messages.length = 0
           messages.push(...overflowedMessages)
+          this.reinjectConstitution(messages)
+          this.markCacheAnchor(messages)
         }
 
         if (callbacks.onContextUpdate) {
@@ -1878,6 +2191,8 @@ export class Agent {
           if (overflowed !== messages && overflowed.length < beforeLen) {
             messages.length = 0
             messages.push(...overflowed)
+            this.reinjectConstitution(messages)
+            this.markCacheAnchor(messages)
             log('[Agent] 413/context_length — аварийная компрессия: %d→%d сообщений', beforeLen, messages.length)
             callbacks.onStep({ type: 'tool_result', toolName: '_error', content: `Context exceeded — compressed to ${messages.length} messages. Try to simplify the request.`, success: false })
             // Не push user — это только увеличит контекст. Continue даёт

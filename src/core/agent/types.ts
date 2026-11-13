@@ -6,7 +6,7 @@ export interface AgentStep {
   // tool_call_pending — модель только начала генерировать этот вызов (имя
   // уже известно, аргументы ещё стримятся) — ранний сигнал для UI, чтобы
   // блок тула появлялся сразу, а не после долгой генерации большого diff/content.
-  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'tool_result_update' | 'answer' | 'steer'
+  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'tool_result_update' | 'answer' | 'steer' | 'hint' | 'janitor'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -31,6 +31,15 @@ export interface AgentStep {
   pendingCallId?: string
   /** Code Mode execution source and internal tool trace, rendered by expandable tool UI. */
   codeMode?: { code: string; trace: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }> }
+  /** type:'hint' — подсказка от watcher-агента, инжектированная между ходами. */
+  hintSource?: import('../../shared/assistants').HintSource
+  hintId?: string
+  /** type:'janitor' — действие по оптимизации контекста. */
+  janitorKind?: string
+  janitorTokensSaved?: number
+  janitorArchiveId?: string
+  /** type:'janitor' — все действия одного скана (одна карточка на скан). */
+  janitorActions?: Array<{ kind: string; description: string; tokensSaved: number; archiveId?: string }>
 }
 
 export interface ContextCountedInfo {
