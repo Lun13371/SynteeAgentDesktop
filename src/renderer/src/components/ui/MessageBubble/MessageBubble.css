@@ -151,6 +151,10 @@
 .msg-waiting-dots span:nth-child(3) { animation-delay: 0.4s; }
 
 /* Shimmer-текст "Думаю..." */
+@keyframes msg-phrase-in {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
+}
 .msg-waiting-shimmer {
   display: inline-block;
   padding: 2px 0 6px;
@@ -168,7 +172,7 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: msg-shimmer 2.4s ease-in-out infinite;
+  animation: msg-shimmer 2.4s ease-in-out infinite, msg-phrase-in 0.35s ease;
   will-change: background-position;
 }
 

@@ -148,10 +148,11 @@ export function useToolProgress() {
       const buf = getBuf(chatId)
       if (!buf.streamMsgId) return
 
-      // Усваиваем реальный msgId из первого события (как в offToken)
-      if (buf.streamMsgId === 'streaming-pending' && step.msgId) {
+      // Усваиваем реальный msgId из первого события. null трактуем как
+      // 'streaming-pending' (буфер создан ранним событием до ответа chat:send).
+      if ((!buf.streamMsgId || buf.streamMsgId === 'streaming-pending') && step.msgId) {
         buf.streamMsgId = step.msgId
-        liveSet(chatId, { msgId: step.msgId })
+        liveSet(chatId, { msgId: step.msgId, isTyping: true })
       }
       if (step.msgId && step.msgId !== buf.streamMsgId) return
 

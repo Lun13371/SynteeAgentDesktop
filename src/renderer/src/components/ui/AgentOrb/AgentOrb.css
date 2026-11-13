@@ -1,0 +1,105 @@
+/* AgentOrb — iridescent identity orb for sub-agent cards.
+   While the agent works, a GPU-composited conic wheel rotates via the
+   individual `rotate` property (no per-frame gradient repaint — same technique
+   as ToolChain's border arc) so the colors continuously iridesce into one
+   another; a counter-rotating film adds organic shimmer and a glossy sheen
+   gives sphere depth. No bloom/halo. Once the agent settles the motion stops
+   and the palette switches to a static gradient: green on success, red on
+   error, slate on cancel. */
+
+.agent-orb {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: var(--orb-size, 18px);
+  height: var(--orb-size, 18px);
+  border-radius: 50%;
+  isolation: isolate;
+}
+
+/* ── Sphere body — clips the rotating layers, carries volume + rim ── */
+.agent-orb__body {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow:
+    inset 0 -2px 3px rgba(0, 0, 0, 0.38),
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    0 1px 2px rgba(0, 0, 0, 0.28);
+}
+.agent-orb__body::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* ── Rotating iridescent wheel + counter-rotating film ── */
+.agent-orb__spin,
+.agent-orb__iris {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 185%;
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  rotate: 0deg;
+}
+.agent-orb__spin {
+  background: conic-gradient(from 0deg,
+    var(--orb-c1) 0deg,
+    var(--orb-c2) 120deg,
+    var(--orb-c3) 240deg,
+    var(--orb-c1) 360deg);
+  z-index: 1;
+}
+.agent-orb__iris {
+  background: conic-gradient(from 60deg,
+    var(--orb-c3) 0deg,
+    var(--orb-c1) 120deg,
+    var(--orb-c2) 240deg,
+    var(--orb-c3) 360deg);
+  mix-blend-mode: soft-light;
+  opacity: 0.55;
+  z-index: 2;
+}
+.agent-orb--live .agent-orb__spin {
+  will-change: rotate;
+  animation: agent-orb-spin 7s linear infinite;
+}
+.agent-orb--live .agent-orb__iris {
+  will-change: rotate;
+  animation: agent-orb-spin 11s linear infinite reverse;
+}
+@keyframes agent-orb-spin { to { rotate: 360deg; } }
+
+/* ── Specular highlight — glossy sphere, drifts gently while live ── */
+.agent-orb__sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 33% 27%, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.32) 20%, transparent 47%),
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.1) 0%, transparent 34%);
+  z-index: 3;
+  pointer-events: none;
+}
+.agent-orb--live .agent-orb__sheen {
+  will-change: transform;
+  animation: agent-orb-sheen 5.5s ease-in-out infinite;
+}
+@keyframes agent-orb-sheen {
+  0%, 100% { transform: translate(0, 0); }
+  50%      { transform: translate(7%, 5%); }
+}
+
+/* ── Accessibility: honor reduced-motion (static palette still iridescent) ── */
+@media (prefers-reduced-motion: reduce) {
+  .agent-orb__spin,
+  .agent-orb__iris,
+  .agent-orb__sheen { animation: none !important; }
+}

@@ -101,8 +101,12 @@ export function getBuf(chatId: string): ChatBuffers {
  * не трогаем его, новый send встанет в очередь в main-процессе.
  */
 export function initChatSend(chatId: string) {
-  // Если буфер уже есть и активен — не перезаписываем (main поставит в очередь)
-  if (buffers.has(chatId)) return
+  // Если буфер уже инициализирован (есть streamMsgId) — не перезаписываем
+  // (main поставит в очередь). Пустой буфер мог создать getBuf из раннего
+  // события агента (agent:status/step пришёл раньше ответа chat:send) —
+  // его надо доинициализировать, иначе live-пузырь не появится вовсе.
+  const existing = buffers.get(chatId)
+  if (existing && existing.streamMsgId) return
   const buf = getBuf(chatId)
   buf.streamMsgId = 'streaming-pending'
   buf.text = ''
