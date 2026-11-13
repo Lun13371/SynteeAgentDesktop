@@ -71,6 +71,8 @@ let steerAgent: Agent | null = null
  * переливаем в agent.pushSteer сразу после создания — иначе молча теряем.
  */
 const earlySteers: Array<{ id: string; text: string }> = []
+const earlyHints: Array<import('../../shared/assistants').HintCandidate> = []
+let earlyAssistantsSettings: import('../../shared/assistants').AssistantsSettings | null = null
 
 // set() мутирует локальную копию storeData — иначе API key round-robin
 // (AIClient.getClientForRole -> getNextApiKey -> store.set('providers', ...))
@@ -142,6 +144,30 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     if (steerAgent) steerAgent.cancelSteer(steerId)
     const idx = earlySteers.findIndex(s => s.id === steerId)
     if (idx >= 0) earlySteers.splice(idx, 1)
+    return
+  }
+  if (msg.type === 'hint') {
+    const hint = msg.hint as import('../../shared/assistants').HintCandidate | undefined
+    if (!hint?.id || !hint?.content) return
+    if (steerAgent) steerAgent.pushHint(hint)
+    else earlyHints.push(hint)
+    return
+  }
+  if (msg.type === 'constitution') {
+    const items = msg.items as string[] | undefined
+    if (items?.length && steerAgent) steerAgent.mergeConstitution(items)
+    return
+  }
+  if (msg.type === 'janitor_refined') {
+    const archiveId = msg.archiveId as string | undefined
+    const summary = msg.summary as string | undefined
+    if (archiveId && summary && steerAgent) steerAgent.refineJanitorSummary(archiveId, summary)
+    return
+  }
+  if (msg.type === 'assistants_settings') {
+    const settings = msg.settings as import('../../shared/assistants').AssistantsSettings | undefined
+    if (settings && steerAgent) steerAgent.setAssistantsSettings(settings)
+    else if (settings) earlyAssistantsSettings = settings
     return
   }
   // --- Reply от main (spawn_agent_reply, get_agent_status_reply) ---
@@ -329,6 +355,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // сливаем реплики, пришедшие пока воркер ещё не был готов.
       steerAgent = agent
       for (const s of earlySteers.splice(0)) agent.pushSteer(s.id, s.text)
+      for (const h of earlyHints.splice(0)) agent.pushHint(h)
+      if (earlyAssistantsSettings) { agent.setAssistantsSettings(earlyAssistantsSettings); earlyAssistantsSettings = null }
 
       // Мутабельный тулсет рана: request_access может включить browser-тулы
       // ПОСРЕДИ рана (подтверждение юзера) — Agent держит ссылку на массив
@@ -442,6 +470,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // было откатить вообще (чекпоинт с filesChanged=0).
       agent.onFileSnapshot = (snapshot) => {
         send({ type: 'file_snapshot', chatId, msgId, snapshot })
+      }
+      // Канал для LLM-зависимых мини-агентов (doctor/navigator/archivist/
+      // constitution/janitor_refine) — main решает, запускать ли локальную модель.
+      agent.onAssistantEvent = (evt) => {
+        send({ type: 'assistant_event', chatId, ...evt })
       }
 
       // Синхронизируем workdir/projectId/chatId/gateway/колбэки в ToolDispatcher —
@@ -588,6 +621,24 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 timestamp: Date.now(),
                 steerId: step.steerId,
                 steerApplied: step.steerApplied !== false,
+              }
+              collectedSteps.push(ts)
+              currentIterSteps.push(ts)
+              send({ type: 'step', chatId, msgId, step })
+            } else if (step.type === 'hint' || step.type === 'janitor') {
+              // Мини-агенты (watcher/constitution/briefing/doctor/navigator/
+              // economist/janitor): карточка в ленте + персист в toolSteps.
+              const ts = {
+                id: `${Date.now()}-${Math.random()}`,
+                type: step.type,
+                content: step.content,
+                timestamp: Date.now(),
+                hintSource: step.hintSource,
+                hintId: step.hintId,
+                janitorKind: step.janitorKind,
+                janitorTokensSaved: step.janitorTokensSaved,
+                janitorArchiveId: step.janitorArchiveId,
+                janitorActions: step.janitorActions,
               }
               collectedSteps.push(ts)
               currentIterSteps.push(ts)

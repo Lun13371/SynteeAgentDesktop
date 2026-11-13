@@ -43,6 +43,7 @@ import { initOverlayManager, OverlayManager } from './overlay/OverlayManager'
 import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
+import { initAssistants } from './assistants/bridge'
 import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
@@ -383,6 +384,13 @@ app.whenReady().then(async () => {
   hotkeyManager.registerAll()
 
   registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow, trayMenuWindow, hotkeyManager })
+  initAssistants({
+    load: () => store.get('assistantsSettings') as Record<string, unknown> | undefined,
+    persist: (s: unknown) => store.set('assistantsSettings', s),
+    dbPath: () => join(app.getPath('userData'), 'syntee.db'),
+    loadStats: () => store.get('assistantsStats') as import('../shared/assistants').AgentStatsMap | undefined,
+    persistStats: (s) => store.set('assistantsStats', s),
+  })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerVoiceIPC(store, () => mainWindow.getWindow())

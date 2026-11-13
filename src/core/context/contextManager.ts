@@ -162,6 +162,10 @@ export interface ChatMessage {
    *  is round-tripped. Filled from message.thinking in chatContextHelpers.
    *  Anthropic native path ignores it (convertMessagesToAnthropic drops it). */
   reasoning_content?: string
+  /** J2 cache-friendly: маркер стабильной границы истории для Anthropic prompt
+   *  caching. Ставится Agent'ом только в момент компакции (эпохи), между
+   *  компакциями не двигается → префикс до якоря кэшируется и даёт cache hit. */
+  cacheAnchor?: boolean
 }
 
 export interface CompressResult {

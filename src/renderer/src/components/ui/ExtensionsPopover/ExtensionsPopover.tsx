@@ -28,7 +28,6 @@ import SkillsInstalledList from './SkillsInstalledList'
 import ScopeSelector, { scopeLabel } from './ScopeSelector'
 export { scopeLabel } from './ScopeSelector'
 import { useExtensionsStore } from '../../../store/extensions.store'
-import { useChatStore } from '../../../store/chat.store'
 import { CURATED_MCP_SERVERS, getCuratedCommand, type CuratedMcpServer, type CuratedMcpCategory } from '../../../../../core/marketplace/curatedMcp'
 import { CURATED_SKILL_REPOS, type CuratedSkillRepo } from '../../../../../core/marketplace/curatedSkills'
 import type {
@@ -362,7 +361,6 @@ function McpInstalledList({ servers, projects, projectId, onBrowseCatalog }: { s
   const [filter, setFilter] = useState<McpFilter>('all')
   const [bulkBusy, setBulkBusy] = useState(false)
   const reloadMcp = useExtensionsStore(s => s.loadMcpServers)
-  const loadActiveForChat = useExtensionsStore(s => s.loadActiveForChat)
 
   const disableAllMcp = async () => {
     const targets = servers.filter(server => server.enabled)
@@ -376,8 +374,6 @@ function McpInstalledList({ servers, projects, projectId, onBrowseCatalog }: { s
         enabled: false,
       })
       await reloadMcp(projectId)
-      const currentChatId = useChatStore.getState().currentChatId
-      if (currentChatId) await loadActiveForChat(currentChatId)
     } finally {
       setBulkBusy(false)
     }

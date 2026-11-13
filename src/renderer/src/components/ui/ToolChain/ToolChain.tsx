@@ -17,7 +17,7 @@ export interface ToolStep {
   id: string
   /** 'steer' — реплика пользователя, внедрённая в контекст активного рана
    *  (long-press на кнопке отправки). Рендерится отдельной карточкой ленты. */
-  type: 'tool_call' | 'tool_result' | 'steer'
+  type: 'tool_call' | 'tool_result' | 'steer' | 'hint' | 'janitor'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -47,6 +47,12 @@ export interface ToolStep {
   /** §steer: id реплики (ключ оптимистичной карточки) и признак применения. */
   steerId?: string
   steerApplied?: boolean
+  hintSource?: import('../../../../../shared/assistants').HintSource
+  hintId?: string
+  janitorKind?: string
+  janitorTokensSaved?: number
+  janitorArchiveId?: string
+  janitorActions?: Array<{ kind: string; description: string; tokensSaved: number; archiveId?: string }>
 }
 
 // Группируем шаги: каждая итерация = один вызов тула + его результат
@@ -173,6 +179,7 @@ type ChainEntry =
   | { kind: 'single'; key: string; iter: Iteration; si: number }
   | { kind: 'group'; key: string; meta: ReturnType<typeof getToolMeta>; iters: Iteration[]; si: number }
   | { kind: 'steer'; key: string; step: ToolStep; si: number }
+  | { kind: 'assistant'; key: string; step: ToolStep; si: number }
 
 /**
  * §steer — шаги итерации в ХРОНОЛОГИЧЕСКОМ порядке: обычные тулы группируются
@@ -182,8 +189,8 @@ type ChainEntry =
  */
 function buildSectionItems(
   steps: ToolStep[],
-): Array<{ kind: 'iter'; iter: Iteration } | { kind: 'steer'; step: ToolStep }> {
-  const out: Array<{ kind: 'iter'; iter: Iteration } | { kind: 'steer'; step: ToolStep }> = []
+): Array<{ kind: 'iter'; iter: Iteration } | { kind: 'steer'; step: ToolStep } | { kind: 'assistant'; step: ToolStep }> {
+  const out: Array<{ kind: 'iter'; iter: Iteration } | { kind: 'steer'; step: ToolStep } | { kind: 'assistant'; step: ToolStep }> = []
   let segment: ToolStep[] = []
   const flush = () => {
     if (segment.length === 0) return
@@ -194,6 +201,9 @@ function buildSectionItems(
     if (step.type === 'steer') {
       flush()
       out.push({ kind: 'steer', step })
+    } else if (step.type === 'hint' || step.type === 'janitor') {
+      flush()
+      out.push({ kind: 'assistant', step })
     } else {
       segment.push(step)
     }
@@ -217,6 +227,7 @@ function buildChain(
     const items = sec.steps ? buildSectionItems(sec.steps) : iters.map(iter => ({ kind: 'iter' as const, iter }))
     for (const item of items) {
       if (item.kind === 'steer') flat.push({ kind: 'steer', key: `steer-${item.step.id}`, step: item.step, si })
+      else if (item.kind === 'assistant') flat.push({ kind: 'assistant', key: `asst-${item.step.id}`, step: item.step, si })
       else flat.push({ kind: 'single', key: item.iter.id, iter: item.iter, si })
     }
   })
@@ -325,6 +336,84 @@ const SteerCard = memo(function SteerCard({ step, chatId }: { step: ToolStep; ch
     </motion.div>
   )
 }, (prev, next) => prev.step === next.step && prev.chatId === next.chatId)
+
+const ASSISTANT_SOURCE_META: Record<string, { label: string; color: string; icon: string }> = {
+  memory: { label: 'Watcher · память', color: '#818cf8', icon: 'sparkles' },
+  skill: { label: 'Watcher · скилл', color: '#818cf8', icon: 'sparkles' },
+  capability: { label: 'Watcher · возможность', color: '#818cf8', icon: 'sparkles' },
+  constitution: { label: 'Конституция · ограничения', color: '#f472b6', icon: 'shield' },
+  briefing: { label: 'Briefing · состояние проекта', color: '#38bdf8', icon: 'brain' },
+  doctor: { label: 'Loop doctor · альтернатива', color: '#fb923c', icon: 'zap' },
+  navigator: { label: 'Navigator · курс на цель', color: '#a78bfa', icon: 'compass' },
+  archivist: { label: 'Archivist · память', color: '#34d399', icon: 'archive' },
+  economist: { label: 'Economist · бюджет', color: '#4ade80', icon: 'gauge' },
+}
+
+const AssistantCard = memo(function AssistantCard({ step, isRunning, animateEntrance }: {
+  step: ToolStep
+  isRunning: boolean
+  animateEntrance: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [working, setWorking] = useState(false)
+  const isHint = step.type === 'hint'
+  const meta = ASSISTANT_SOURCE_META[step.hintSource ?? 'memory'] ?? ASSISTANT_SOURCE_META.memory
+  const color = isHint ? meta.color : '#4ade80'
+  const icon = isHint ? meta.icon : 'filter'
+
+  useEffect(() => {
+    if (!isRunning) return
+    setWorking(true)
+    const t = setTimeout(() => setWorking(false), 700)
+    return () => clearTimeout(t)
+  }, [isRunning, step.id])
+
+  const title = isHint ? meta.label : 'Janitor · оптимизация контекста'
+  const preview = isHint
+    ? step.content.slice(0, 80)
+    : `${step.janitorActions?.length ?? 1} действ.${step.janitorTokensSaved ? ` · −${step.janitorTokensSaved} tok` : ''}`
+
+  return (
+    <div className={`tc2-iter${animateEntrance ? ' tc2-iter--enter' : ''}`}>
+      <div className="tc2-rail">
+        <div
+          className={`tc2-dot ${working ? 'tc2-dot--pulse' : 'tc2-dot--done'}`}
+          style={{ '--dot-color': color } as React.CSSProperties}
+        >
+          {working ? <AppIcon name={icon as 'zap'} size="xs" /> : (
+            <svg className="tc2-dot-check" viewBox="0 0 16 16" fill="none">
+              <path d="M3.5 8.5l3 3L12.5 5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </div>
+      </div>
+      <div className="tc2-iter-body">
+        <button className={`tc2-iter-header ${open ? 'tc2-iter-header--open' : ''}`} onClick={() => setOpen(v => !v)}>
+          <span className="tc2-iter-icon" style={{ color }}><AppIcon name={icon as 'zap'} size="sm" /></span>
+          <span className="tc2-iter-name" style={{ color }}>{title}</span>
+          <span className="tc2-iter-preview">{working ? 'Анализирую…' : preview}</span>
+          {!isHint && step.janitorTokensSaved ? <span className="tc2-assistant-badge">−{step.janitorTokensSaved} tok</span> : null}
+        </button>
+        {open && (
+          <div className="tc2-assistant-body">
+            {isHint ? (
+              <p className="tc2-assistant-text">{step.content}</p>
+            ) : (
+              <ul className="tc2-assistant-actions">
+                {(step.janitorActions ?? [{ kind: step.janitorKind ?? '', description: step.content, tokensSaved: step.janitorTokensSaved ?? 0 }]).map((a, i) => (
+                  <li key={i}>
+                    <span className="tc2-assistant-action-desc">{a.description}</span>
+                    {a.tokensSaved ? <span className="tc2-assistant-badge">−{a.tokensSaved}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+})
 
 function codeTraceArgs(value: unknown): string {
   let parsed = value
@@ -1454,6 +1543,7 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
               </button>
             )}
             {visibleChain.map((entry, vIdx) => {
+              const isLastVisible = vIdx === visibleChain.length - 1
               // Рассуждение — строкой ленты (Think внутри окна хода работы).
               if (entry.kind === 'thinking') {
                 return (
@@ -1476,6 +1566,9 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
                 // §steer — реплика пользователя, внедрённая по ходу рана.
                 return <SteerCard key={entry.key} step={entry.step} chatId={chatId} />
               }
+              if (entry.kind === 'assistant') {
+                return <AssistantCard key={entry.key} step={entry.step} isRunning={!!isRunning} animateEntrance={liveMode && isLastVisible} />
+              }
               if (entry.kind === 'group') {
                 return (
                   <GroupBlock
@@ -1490,7 +1583,6 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
                 )
               }
               const iter = entry.iter
-              const isLastVisible = vIdx === visibleChain.length - 1
               // Тул-карточки по умолчанию закрыты.
               // Дополнительный контент под шагом (Fast Context / карточка
               // саб-агента) — ВНУТРИ ленты, сразу под своей итерацией.

@@ -205,3 +205,15 @@ export function updateMemoryItemImportance(id: string, importance: number): bool
   const result = getDB().prepare(`UPDATE memory_items SET importance = ? WHERE id = ?`).run(clamped, id)
   return result.changes > 0
 }
+
+/** Decay авто-фактов: не вспоминались 14 дней → importance −0.1 (пол 0.2). Без удаления. */
+export function decayAutoFacts(maxAgeMs = 14 * 24 * 3600 * 1000): number {
+  const cutoff = Date.now() - maxAgeMs
+  const result = getDB().prepare(
+    `UPDATE memory_items SET importance = MAX(0.2, importance - 0.1)
+     WHERE source = 'auto_extract' AND pinned = 0 AND importance > 0.2
+       AND (last_accessed_at IS NULL OR last_accessed_at < ?) AND created_at < ?`
+  ).run(cutoff, cutoff)
+  if (result.changes > 0) invalidateIdfCache()
+  return result.changes
+}

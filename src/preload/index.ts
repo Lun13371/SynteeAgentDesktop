@@ -1020,15 +1020,12 @@ const synteeAPI = {
   // getAll — все скиллы (с состоянием) для popover; projectId опционально.
   // setState — обновить enabled/scope скилла.
   // reload — сбросить кэш и перечитать .md с диска.
-  // getActive — активные скиллы для конкретного чата (для бейджа).
   skills: {
     getAll: (params?: { projectId?: string; chatId?: string }) => ipcRenderer.invoke('skills:getAll', params),
     setState: (params: { skillId: string; state: unknown; source: 'builtin' | 'user' | 'project' }) =>
       ipcRenderer.invoke('skills:setState', params),
     setFolderState: (params: SkillFolderUpdate) => ipcRenderer.invoke('skills:setFolderState', params),
     reload: () => ipcRenderer.invoke('skills:reload'),
-    getActive: (params: { chatId: string; isIncognito?: boolean }) =>
-      ipcRenderer.invoke('skills:getActive', params),
     installFromUrl: (params: { url: string; scope: 'global' | { workdir: string } }) =>
       ipcRenderer.invoke('skills:installFromUrl', params),
   },
@@ -1050,8 +1047,6 @@ const synteeAPI = {
   // setToolState — per-tool enabled/requireApproval.
   mcp: {
     getAll: (params?: { projectId?: string; chatId?: string }) => ipcRenderer.invoke('mcp:getAll', params),
-    getActiveForChat: (params: { chatId: string; isIncognito?: boolean }) =>
-      ipcRenderer.invoke('mcp:getActiveForChat', params),
     save: (config: unknown) => ipcRenderer.invoke('mcp:save', config),
     delete: (id: string) => ipcRenderer.invoke('mcp:delete', id),
     connect: (serverId: string) => ipcRenderer.invoke('mcp:connect', serverId),
@@ -1323,6 +1318,21 @@ const synteeAPI = {
   clipboard: {
     writeText: (text: string) => ipcRenderer.invoke('clipboard:writeText', text) as Promise<boolean>,
     readText: () => ipcRenderer.invoke('clipboard:readText') as Promise<string>,
+  },
+
+  assistants: {
+    getSettings: () => ipcRenderer.invoke('assistants:getSettings') as Promise<import('../../shared/assistants').AssistantsSettings>,
+    updateSettings: (patch: Partial<import('../../shared/assistants').AssistantsSettings>) =>
+      ipcRenderer.invoke('assistants:updateSettings', patch) as Promise<import('../../shared/assistants').AssistantsSettings>,
+    getLog: (since?: number) => ipcRenderer.invoke('assistants:getLog', since) as Promise<import('../../shared/assistants').AssistantLogEntry[]>,
+    getStats: () => ipcRenderer.invoke('assistants:getStats') as Promise<import('../../shared/assistants').AgentStatsMap>,
+    getStatus: () => ipcRenderer.invoke('assistants:getStatus') as Promise<{ serverState: string; modelSize: string; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded: boolean }>,
+    setup: () => ipcRenderer.invoke('assistants:setup') as Promise<{ ok: boolean; error?: string }>,
+    onSetupProgress: (cb: (p: { phase: string; percent: number; error?: string }) => void) => {
+      const handler = (_: unknown, p: { phase: string; percent: number; error?: string }) => cb(p)
+      ipcRenderer.on('assistants:setupProgress', handler)
+      return () => ipcRenderer.removeListener('assistants:setupProgress', handler)
+    },
   },
 }
 

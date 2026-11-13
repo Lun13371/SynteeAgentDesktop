@@ -269,7 +269,7 @@ export const IPC_EVENTS = {
   MCP_TOOLS_UPDATED: 'mcp:tools:updated',
   MCP_LOGS: 'mcp:logs',
   // Список серверов изменился (новые/удалённые в .mcp.json) — renderer
-  // должен перезагрузить mcpServers и activeMcpServerIds для бейджа.
+  // должен перезагрузить mcpServers.
   MCP_SERVERS_CHANGED: 'mcp:servers-changed',
   // Fast Context: live progress при реиндексе + уведомление об обновлении индекса
   FASTCONTEXT_PROGRESS: 'fastcontext:progress',

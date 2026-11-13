@@ -17,6 +17,7 @@ import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
 import ToolsSettingsTab from '../../components/settings/ToolsSettingsTab/ToolsSettingsTab'
+import AssistantsSettingsTab from '../../components/settings/AssistantsSettingsTab/AssistantsSettingsTab'
 import ChangelogSettingsTab from '../../components/settings/ChangelogSettingsTab/ChangelogSettingsTab'
 import ProfileSection from '../../components/settings/ProfileSection/ProfileSection'
 import ModelStatusSection from '../../components/settings/ModelStatusSection/ModelStatusSection'
@@ -58,7 +59,7 @@ import './SettingsPage.css'
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
   | 'agent' | 'security' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
-|  'changelog' | 'notifications' | 'stats' | 'tools'
+|  'changelog' | 'notifications' | 'stats' | 'tools' | 'assistants'
 
 interface SectionDef { id: Section; label: string; icon: IconName; keywords?: string[] }
 interface SectionGroup { title: string; items: SectionDef[] }
@@ -89,6 +90,7 @@ const SECTION_GROUPS: SectionGroup[] = [
       { id: 'indexing',   label: 'Индексация',     icon: 'cpu',    keywords: ['индексация', 'поиск', 'файлы'] },
       { id: 'tools',      label: 'Инструменты',    icon: 'wrench', keywords: ['tools', 'тулы', 'встроенные', 'дополнительные'] },
       { id: 'agent',      label: 'Агент',          icon: 'bot',    keywords: ['агент', 'инструменты', 'суб-агент', 'циклы'] },
+      { id: 'assistants', label: 'Мини-агенты',   icon: 'bot',    keywords: ['мини-агенты', 'помощники', 'watcher', 'janitor', 'локальная', 'llm', 'подсказки', 'сжатие'] },
       { id: 'security',   label: 'Безопасность',   icon: 'shield', keywords: ['безопасность', 'права', 'подтверждение', 'approval', 'запрещённые', 'опасные'] },
     ],
   },
@@ -696,6 +698,7 @@ export default function SettingsPage() {
               <IndexingSettingsTab />
             )}
             {section === 'tools' && <ToolsSettingsTab />}
+            {section === 'assistants' && <AssistantsSettingsTab />}
             {section === 'appearance' && (
               <AppearanceSection settings={settings} onSet={handleSet} />
             )}

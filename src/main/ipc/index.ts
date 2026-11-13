@@ -12,6 +12,7 @@ import type { VoiceWindow } from '../windows/VoiceWindow'
 import type { SpotlightWindow } from '../windows/SpotlightWindow'
 import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
 import type { HotkeyManager } from '../hotkeys/HotkeyManager'
+import { registerAssistantsIPC } from './assistants.ipc'
 
 interface IPCContext {
   store: Store
@@ -30,6 +31,7 @@ export function registerAllIPC(ctx: IPCContext): void {
   registerOverlayIPC(ctx)
   registerSpotlightIPC(ctx)
   registerTrayMenuIPC(ctx)
+  registerAssistantsIPC()
 }
 
 function registerWindowIPC({ mainWindow }: IPCContext): void {

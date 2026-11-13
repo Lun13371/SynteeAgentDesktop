@@ -62,6 +62,9 @@ export class ToolDispatcher {
   dirtyFileCacheKeys = new Set<string>()
   filesReadInSession = new Set<string>()
   readFileMaxLine = new Map<string, number>()
+  /** J3: Agent сообщает, лежит ли контент файла ещё в контексте. Если да и файл
+   *  не менялся — повторный read подавляется (экономия токенов без потери данных). */
+  rereadGuard?: (absPath: string) => boolean
   commandsRun: Array<{ command: string; exitCode?: string; success: boolean; cwd?: string }> = []
   lastShellCwd: string | undefined
   pendingDiffEntries: DiffEntry[] = []
@@ -246,6 +249,9 @@ export class ToolDispatcher {
         if (this.readFileCacheEnabled && this.readFileCache.has(cacheKey)) {
           try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
           this.updateReadFileMaxLine(absPath, this.readFileCache.get(cacheKey)!)
+          if (this.rereadGuard?.(absPath)) {
+            return { success: true, output: `[Re-read suppressed: ${filePath} is unchanged and its content is already in the context above. Reuse the earlier read; pass offset/limit or full=true only if you truly need it again.]` }
+          }
           return { success: true, output: this.readFileCache.get(cacheKey)! }
         }
 
@@ -259,6 +265,9 @@ export class ToolDispatcher {
                 this.readFileCache.set(cacheKey, cached.output)
                 try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
                 this.updateReadFileMaxLine(absPath, cached.output)
+                if (this.rereadGuard?.(absPath)) {
+                  return { success: true, output: `[Re-read suppressed: ${filePath} is unchanged and its content is already in the context above. Reuse the earlier read; pass offset/limit or full=true only if you truly need it again.]` }
+                }
                 return { success: true, output: cached.output }
               }
             } catch { /* statSync упал — продолжаем */ }

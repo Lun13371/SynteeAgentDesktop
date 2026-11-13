@@ -53,26 +53,6 @@ export function registerMcpIPC(store: Store, getWindow: () => BrowserWindow | nu
     return mgr().getAllServers({ projectWorkdir, projectId })
   })
 
-  // Активные MCP-серверы для конкретного чата (для бейджа над инпутом).
-  // Фильтрует по enabled + scope + статусу — симметрично skills:getActive.
-  ipcMain.handle('mcp:getActiveForChat', (_e, params: { chatId: string; isIncognito?: boolean }) => {
-    let projectWorkdir: string | undefined
-    let projectId: string | undefined
-    try {
-      const ctx = getChatWorkdirContext(params.chatId)
-      if (ctx.workdir) {
-        projectWorkdir = ctx.workdir
-        const found = getAllProjects().find(p => p.workdir === ctx.workdir)
-        projectId = found?.id
-      }
-    } catch { /* чат без проекта — projectWorkdir/projectId останутся undefined */ }
-    return mgr().getActiveServerIdsForChat({
-      projectWorkdir,
-      projectId,
-      isIncognito: params.isIncognito,
-    })
-  })
-
   ipcMain.handle('mcp:save', (_e, config: McpServerConfig) => {
     mgr().saveGlobalServer(config)
     return { ok: true }
