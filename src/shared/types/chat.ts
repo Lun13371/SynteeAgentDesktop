@@ -1,5 +1,7 @@
 // ── Chat core types: Chat, Project, Message, ToolStep, Checkpoints ──
 
+import type { SteerAttachmentMeta } from './attachment'
+
 export type ChatMode = 'code' | 'work'
 
 export interface Chat {
@@ -66,6 +68,9 @@ export interface ToolStep {
   /** true — агент уже вставил реплику в messages (дошёл до границы раунда).
    *  false/undefined — карточка «ждёт границы раунда». */
   steerApplied?: boolean
+  /** §steer — вложения реплики (чипы/миниатюры в карточке). id совпадает с
+   *  токенами [[attach:id]] в content; путь к файлу ведёт в draft-attachments. */
+  attachments?: SteerAttachmentMeta[]
   /** Native analyze_image lifecycle (основная модель получает пиксели напрямую).
    *  Исходный tool_result помечается 'pending' — пиксели уже отданы модели, но
    *  визуальный ответ ещё не пришёл. Позже приходит отдельный tool_result_update

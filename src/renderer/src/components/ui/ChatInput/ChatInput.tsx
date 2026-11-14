@@ -34,8 +34,10 @@ interface ChatInputProps {
   /**
    * §steer — внедрить текст в контекст РАБОТАЮЩЕГО агента (long-press кнопки
    * отправки 0,5с). Без колбэка удержание выключено, клик работает как раньше.
+   * Второй аргумент — вложения чипов (текст с [[attach:id]]-токенами уходит
+   * как есть: main чистит токены и инлайнит файлы в контекст).
    */
-  onSteer?: (text: string) => void
+  onSteer?: (text: string, attachments: Attachment[]) => void
   disabled?: boolean
   isIncognito?: boolean
   /** Реплаи в инпуте: Message[] из state чата (роль шире — 'system' тоже
@@ -616,12 +618,13 @@ function ChatInput({
   // контекст работающего агента (Agent вставит его на границе раунда).
   // Поле очищаем сразу, как при обычном send: если активного рана уже нет,
   // ChatPage откатится на обычную отправку этим же текстом.
-  // Вложения не поддерживаем: их пайплайн (processAttachmentsAndStream) живёт
-  // в chat:send, поэтому при наличии вложений жест просто ничего не делает —
-  // пользователь отправляет обычным кликом.
+  // Вложения поддерживаются как в обычной отправке: текст летит с
+  // [[attach:id]]-токенами, main их чистит и инлайнит файлы в контекст рана
+  // (processAttachmentsAndStream). Чипы ChatPage снимет после acceptance.
   const handleSteer = () => {
+    const hasAttachments = attachments.length > 0
     const cleanText = stripAttachTokens(liveText).trim()
-    if (!cleanText || attachments.length > 0) return
+    if (!cleanText && !hasAttachments) return
     if (disabled && !isGenerating) return
     const payload = liveText.trim()
     historyIdxRef.current = null
@@ -634,7 +637,7 @@ function ChatInput({
     closeArgPicker()
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSteerSound()
-    onSteer?.(payload)
+    onSteer?.(payload, attachments)
   }
 
   // Отправка текста без «живого» значения value (для command-подсказки).
@@ -952,11 +955,12 @@ function ChatInput({
       if (document.querySelector('.agent-confirm-overlay')) return
       // §steer — удержание Enter = внедрить реплику в контекст работающего
       // агента (клавиатурный аналог удержания кнопки отправки). Условия те же:
-      // есть текст, идёт генерация, нет вложений — то есть обычный Enter ушёл
+      // есть текст или вложения, идёт генерация — то есть обычный Enter ушёл
       // бы в очередь. Отправку НЕ делаем сразу: ждём keyup (короткое нажатие)
       // либо порога STEER_HOLD_MS (внедрение).
-      const canSteerKeyboard = !!onSteer && !!stripAttachTokens(liveText).trim() &&
-        !!isGenerating && attachments.length === 0
+      const canSteerKeyboard = !!onSteer &&
+        (!!stripAttachTokens(liveText).trim() || attachments.length > 0) &&
+        !!isGenerating
       if (canSteerKeyboard) {
         // Автоповтор удержания не должен перезапускать таймер.
         if (e.repeat || enterHoldTimer.current !== null) return

@@ -3,8 +3,8 @@ import { log } from '../../core/logger'
 
 export type { QueuePriority }
 
-export function enqueue(prompt: string, priority: QueuePriority, maxTokens = 100): Promise<string> {
-  return localModels.complete(prompt, { priority, maxTokens })
+export function enqueue(prompt: string, priority: QueuePriority, maxTokens = 100, timeoutMs?: number): Promise<string> {
+  return localModels.complete(prompt, { priority, maxTokens, timeoutMs })
 }
 
 export async function judgeRelevance(stepContext: string, hintContent: string): Promise<{ relevant: boolean; reason: string }> {
@@ -73,13 +73,24 @@ export function isProcessing(): boolean { return localModels.isReady() }
 
 // ─── Новые мини-агенты (все advisory, короткие промпты, низкий приоритет) ───
 
-/** W1: query expansion — 2 перефразировки для более точного ретрива. */
-export async function expandQuery(text: string): Promise<string[]> {
-  const prompt = `Rewrite this coding-task query into 2 short alternative search queries (different wording, same intent). One per line, no numbering, no extra text.\n\nQuery: ${text.slice(0, 300)}`
-  try {
-    const out = await enqueue(prompt, 'watcher', 80)
-    return out.split('\n').map(l => l.replace(/^[-*\d.\s]+/, '').trim()).filter(l => l.length > 3).slice(0, 2)
-  } catch { return [] }
+/** Мелкие модели заворачивают JSON в ```-фенсы, prose или {"facts":[...]} —
+ *  вытаскиваем массив перебором кандидатов. null = ничего парсибельного. */
+function parseJsonArray(text: string): Array<Record<string, unknown>> | null {
+  const cleaned = text.replace(/```(?:json)?/gi, '').trim()
+  const m = cleaned.match(/\[[\s\S]*\]/)
+  for (const candidate of [cleaned, m?.[0] ?? '']) {
+    if (!candidate) continue
+    try {
+      const arr: unknown = JSON.parse(candidate)
+      if (Array.isArray(arr)) return arr as Array<Record<string, unknown>>
+      if (arr && typeof arr === 'object') {
+        for (const v of Object.values(arr as Record<string, unknown>)) {
+          if (Array.isArray(v)) return v as Array<Record<string, unknown>>
+        }
+      }
+    } catch { /* пробуем следующий кандидат */ }
+  }
+  return null
 }
 
 /** Navigator: drift-судья + нарушения закреплённых ограничений (бинарные вердикты). */
@@ -99,15 +110,29 @@ export async function judgeDrift(objective: string, transcript: string, constrai
 
 /** Archivist: дистиллировать сессию в 1-3 факта для долгосрочной памяти (JSON). */
 export async function distillSession(transcript: string): Promise<Array<{ content: string; kind: string }>> {
-  const prompt = `From this coding session transcript, extract 1-3 durable facts worth remembering (decisions, gotchas, user constraints, project conventions). Skip transient task details.\n\n${transcript.slice(0, 1500)}\n\nOutput JSON array: [{"content":"...","kind":"project"}] where kind is project|feedback|user. Only JSON.`
+  const prompt = `From this coding session transcript, extract 1-3 durable facts worth remembering (decisions, gotchas, user constraints, project conventions). The transcript contains tool-call noise — ignore it. If there is nothing durable, return [].\n\n${transcript.slice(0, 1500)}\n\nOutput JSON array: [{"content":"...","kind":"project"}] where kind is project|feedback|user. Only JSON.`
   try {
-    const text = await enqueue(prompt, 'janitor', 250)
-    const m = text.match(/\[[\s\S]*\]/)
-    if (!m) return []
-    const arr = JSON.parse(m[0]) as Array<{ content?: string; kind?: string }>
-    return arr.filter(x => typeof x.content === 'string' && x.content.length > 5).slice(0, 3)
+    // Дистилляция — самое длинное поколение мини-агентов (русский текст в JSON
+    // ест токены): дефолтные 15с на CPU-декоде не хватало, вызов молча умирал
+    // по таймауту → «Archivist: 0 срабатываний». Даём 40с и 400 токенов.
+    const text = await enqueue(prompt, 'janitor', 400, 40_000)
+    if (!text.trim()) {
+      log('[LlmClient] distill: empty output (timeout or model refusal)')
+      return []
+    }
+    const arr = parseJsonArray(text)
+    if (!arr) {
+      log('[LlmClient] distill: unparseable output (%d chars): %s', text.length, text.slice(0, 200))
+      return []
+    }
+    return arr
+      .filter(x => typeof x.content === 'string' && (x.content as string).length > 5)
+      .slice(0, 3)
       .map(x => ({ content: String(x.content).slice(0, 400), kind: ['project', 'feedback', 'user'].includes(String(x.kind)) ? String(x.kind) : 'project' }))
-  } catch { return [] }
+  } catch (err) {
+    log('[LlmClient] distill failed: %s', (err as Error).message)
+    return []
+  }
 }
 
 /** J1: LLM-экстракция ограничений из user-текста (JSON array строк). */
@@ -147,9 +172,15 @@ export async function judgeCapability(context: string, catalog: Array<{ id: stri
     const m = text.match(/\{[\s\S]*\}/)
     if (!m) return none
     const p = JSON.parse(m[0]) as Partial<CapabilityVerdict>
+    const id = String(p.id ?? '')
+    const action = String(p.action ?? '')
+    // Валидация качества: маленькие модели вместо «одной конкретной инструкции»
+    // часто эхом повторяют имя тулa/скилла («edit_file») — это нулевая
+    // информация, фильтруем на корню.
+    const meaningful = action.length > 16 && action.toLowerCase() !== id.toLowerCase()
     return {
-      helpful: p.helpful === true && typeof p.id === 'string' && p.id.length > 0 && typeof p.action === 'string' && p.action.length > 3,
-      id: String(p.id ?? ''), action: String(p.action ?? ''), confidence: Number(p.confidence ?? 0),
+      helpful: p.helpful === true && id.length > 0 && meaningful,
+      id, action, confidence: Number(p.confidence ?? 0),
     }
   } catch { return none }
 }

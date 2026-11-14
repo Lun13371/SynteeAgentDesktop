@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { v4 as uuid } from 'uuid'
-import type { ToolStep } from '../../../shared/types'
+import type { ToolStep, SteerAttachmentMeta } from '../../../shared/types'
 import { useChatStore } from '../store/chat.store'
 import { buffers, getBuf, liveSet, drainBufs, isAuxWindow } from './chatRunRuntime'
 
@@ -135,6 +135,7 @@ export function useToolProgress() {
       // §steer — реплика пользователя, внедрённая в контекст активного рана.
       steerId?: string
       steerApplied?: boolean
+      attachments?: SteerAttachmentMeta[]
       // Мини-агенты: подсказки и оптимизация контекста (live-карточки).
       hintSource?: string
       hintId?: string
@@ -444,6 +445,7 @@ export function useToolProgress() {
           timestamp: Date.now(),
           steerId: step.steerId,
           steerApplied: true,
+          ...(step.attachments?.length ? { attachments: step.attachments } : {}),
         }
         let replaced = false
         if (step.steerId) {

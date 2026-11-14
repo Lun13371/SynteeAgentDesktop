@@ -4,7 +4,7 @@ import { existsSync } from 'fs'
 import { cpus } from 'os'
 import { app, webContents } from 'electron'
 import { log } from '../../core/logger'
-import { getModelPath, detectModelSize, isModelDownloaded, downloadModel, type ModelSize } from '../assistants/modelManager'
+import { getModelPath, detectModelSize, isModelDownloaded, downloadModel, resolveCtxSize, type ModelSize, type CtxSizeSetting } from '../assistants/modelManager'
 import { getLlamaServerPath, isBinaryReady, downloadBinary } from '../assistants/binaryManager'
 
 export type ManagerState = 'idle' | 'preparing' | 'starting' | 'ready' | 'error'
@@ -20,6 +20,10 @@ export interface CompleteOptions {
 export interface ManagerStatus {
   state: ManagerState
   modelSize: ModelSize
+  /** Действующий контекст сервера (токенов на все слоты). */
+  ctxSize: number
+  /** Выбранная настройка контекста ('auto' | фиксированный размер). */
+  ctxSetting: CtxSizeSetting
   modelDownloaded: boolean
   binaryReady: boolean
   port: number
@@ -68,6 +72,9 @@ class LocalModelManager {
   private process: ChildProcess | null = null
   private port = DEFAULT_PORT
   private modelSize: ModelSize = detectModelSize()
+  /** Настройка контекста (то, что выбрал пользователь) и её разрешённое значение. */
+  private ctxSetting: CtxSizeSetting = 'auto'
+  private ctxSize: number = resolveCtxSize('auto')
   private ensurePromise: Promise<boolean> | null = null
   private watchdog: NodeJS.Timeout | null = null
   private restarts = 0
@@ -87,10 +94,35 @@ class LocalModelManager {
   getPort(): number { return this.port }
   getBaseUrl(): string { return `http://127.0.0.1:${this.port}` }
 
+  /** Действующий размер контекста (токенов всего, на все слоты). */
+  getCtxSize(): number { return this.ctxSize }
+  getCtxSetting(): CtxSizeSetting { return this.ctxSetting }
+
+  /**
+   * Сколько токенов реально доступно ОДНОМУ запросу: llama-server делит
+   * --ctx-size между слотами (--parallel), плюс надо оставить место под ответ.
+   */
+  getPromptTokenBudget(maxTokens = 0): number {
+    const perSlot = Math.floor(this.ctxSize / MAX_PARALLEL)
+    return Math.max(256, perSlot - maxTokens - 64)
+  }
+
+  setCtxSetting(setting: CtxSizeSetting): void {
+    const next = resolveCtxSize(setting)
+    if (setting === this.ctxSetting && next === this.ctxSize) return
+    this.ctxSetting = setting
+    if (next === this.ctxSize) return
+    this.ctxSize = next
+    // Контекст задаётся аргументом запуска — меняется только рестартом.
+    if (this.state === 'ready') void this.restart()
+  }
+
   getStatus(): ManagerStatus {
     return {
       state: this.state,
       modelSize: this.modelSize,
+      ctxSize: this.ctxSize,
+      ctxSetting: this.ctxSetting,
       modelDownloaded: isModelDownloaded(this.modelSize),
       binaryReady: isBinaryReady(),
       port: this.port,
@@ -200,7 +232,11 @@ class LocalModelManager {
       '--port', String(this.port),
       '--host', '127.0.0.1',
       '--threads', String(threads),
-      '--ctx-size', '4096',
+      // --ctx-size — общий пул на все слоты. --parallel фиксируем равным
+      // MAX_PARALLEL: при дефолтном значении llama.cpp контекст делится
+      // на неизвестное число слотов и бюджет запроса становится непредсказуемым.
+      '--ctx-size', String(this.ctxSize),
+      '--parallel', String(MAX_PARALLEL),
       '--batch-size', '512',
       '--log-disable',
     ]

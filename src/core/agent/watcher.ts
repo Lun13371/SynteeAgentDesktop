@@ -42,7 +42,10 @@ export function hashContext(s: string): string {
 }
 
 const MAX_HINTS_PER_TRIGGER = 2
-const MIN_E5_SCORE = 0.55
+// E5-cosine: 0.55–0.65 набирает почти любой текст «на похожую тему» — раньше
+// планка 0.55 была главным источником мусорных memory-хинтов. 0.65 отсекает
+// маргинальную корреляцию, осмысленные совпадения у e5 обычно 0.7+.
+const MIN_E5_SCORE = 0.65
 const SKILL_KEYWORD_MIN_MATCH = 2
 
 function buildQuery(trigger: WatcherTrigger): string {
@@ -142,6 +145,8 @@ export class Watcher {
   private recentIds = new Set<string>()
   private lastTriggerTs = 0
   private minIntervalMs = 3000
+  /** W1 feedback: вес источника из bridge (0.5–1.5, корректируется после ранов). 1 = без коррекции. */
+  private sourceWeightFn: (source: string) => number = () => 1
 
   constructor(settings: AssistantsSettings, dbPath: string, projectOpts: { projectWorkdir?: string; projectId?: string } = {}) {
     this.settings = settings
@@ -151,6 +156,10 @@ export class Watcher {
 
   updateSettings(settings: AssistantsSettings): void {
     this.settings = settings
+  }
+
+  setSourceWeightProvider(fn: (source: string) => number): void {
+    this.sourceWeightFn = fn
   }
 
   updateProject(opts: { projectWorkdir?: string; projectId?: string }): void {
@@ -178,6 +187,11 @@ export class Watcher {
 
     const all = [...memoryHints, ...skillHints]
       .filter(h => !this.recentIds.has(h.id))
+      // Feedback-петля в деле: вес источника умножается на скор. Для memory это
+      // поднимает E5-планку у «расстроенного» источника (0.5 → нужен скор ≥1.3,
+      // т.е. фактически замолкает). На skill порог не распространяем — его
+      // keyword-score несравним с E5-cosine.
+      .filter(h => h.source !== 'memory' || h.score * this.sourceWeightFn('memory') >= MIN_E5_SCORE)
       .sort((a, b) => b.score - a.score)
       .slice(0, MAX_HINTS_PER_TRIGGER)
 

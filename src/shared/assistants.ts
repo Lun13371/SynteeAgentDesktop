@@ -8,6 +8,16 @@ export const BRIEFING_MARKER = '[Брифинг на старте задачи �
 
 export type AssistantRole = 'watcher' | 'janitor' | 'briefing' | 'navigator' | 'archivist' | 'economist'
 
+/**
+ * Контекст локального сервера llama.cpp в токенах.
+ * 'auto' — подбирается по объёму RAM (см. resolveCtxSize), остальное — жёстко.
+ *
+ * llama-server делит контекст между слотами (--parallel), поэтому «сколько
+ * видит один запрос» = ctxSize / слоты. Больше контекста = больше KV-кэш
+ * и медленнее prefill на CPU — отсюда консервативный дефолт.
+ */
+export type AssistantCtxSize = 'auto' | 4096 | 8192 | 16384 | 24576 | 32768
+
 export type HintSource = 'memory' | 'skill' | 'capability' | 'briefing' | 'navigator' | 'archivist' | 'economist' | 'constitution'
 
 export interface AssistantsSettings {
@@ -19,6 +29,8 @@ export interface AssistantsSettings {
   archivistEnabled: boolean
   economistEnabled: boolean
   modelSize: 'auto' | '1.2B' | '1B' | '0.8B'
+  /** Контекст локальной модели: 'auto' — по RAM. */
+  ctxSize: AssistantCtxSize
   hintBudgetTokens: number
   hintCooldownRounds: number
   janitorScanInterval: number
@@ -38,6 +50,7 @@ export const DEFAULT_ASSISTANTS_SETTINGS: AssistantsSettings = {
   archivistEnabled: true,
   economistEnabled: true,
   modelSize: 'auto',
+  ctxSize: 'auto',
   hintBudgetTokens: 300,
   hintCooldownRounds: 1,
   janitorScanInterval: 8,

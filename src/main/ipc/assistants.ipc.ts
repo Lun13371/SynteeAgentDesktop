@@ -26,6 +26,8 @@ export function registerAssistantsIPC(): void {
     return {
       serverState: s.state,
       modelSize: s.modelSize,
+      ctxSize: s.ctxSize,
+      ctxSetting: s.ctxSetting,
       modelDownloaded: s.modelDownloaded,
       binaryReady: s.binaryReady,
       restarts: s.restarts,

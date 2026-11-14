@@ -95,6 +95,21 @@ export interface AttachmentProcessingResult {
 }
 
 /**
+ * Лёгкие метаданные вложения §steer (ToolStep.attachments): их достаточно
+ * InlineAttachmentRenderer для чипов/миниатюр в карточке реплики. Полные
+ * Attachment не храним — dataUrl (base64-превью из paste) и snippet не нужны
+ * в БД, файлы уже лежат на диске в draft-attachments.
+ */
+export interface SteerAttachmentMeta {
+  id: string
+  kind: AttachmentKind
+  name: string
+  path?: string
+  mime?: string
+  size?: number
+}
+
+/**
  * MentionItem — элемент плоского списка в @-дропдауне.
  *
  * types: 'file' | 'image' | 'skill' | 'command' | 'chat' | 'project' —

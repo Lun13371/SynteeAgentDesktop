@@ -11,7 +11,7 @@ import type { AssistantsSettings, AssistantLogEntry, AgentStatsMap } from '../..
 import { DEFAULT_ASSISTANTS_SETTINGS } from '../../../../../shared/assistants'
 import './AssistantsSettingsTab.css'
 
-type Status = { serverState: string; modelSize: string; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded?: boolean; active?: number; queueLength?: number }
+type Status = { serverState: string; modelSize: string; ctxSize?: number; ctxSetting?: string; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded?: boolean; active?: number; queueLength?: number }
 type SetupPhase = { phase: string; percent: number; error?: string }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -204,6 +204,24 @@ export default function AssistantsSettingsTab() {
               { value: '1.2B', label: 'LFM2.5-1.2B · 731 МБ · лучший' },
               { value: '1B', label: 'Gemma 3 1B · 810 МБ · IFEval 80%' },
               { value: '0.8B', label: 'Qwen3.5-0.8B · 580 МБ · ultra-light' },
+            ]}
+            disabled={!s.enabled}
+          />
+        </Field>
+        <Field
+          label="Контекст модели"
+          description={`Токенов на все слоты. Действует сейчас: ${status.ctxSize ? `${Math.round(status.ctxSize / 1024)}K · на запрос ~${Math.round(status.ctxSize / 2048)}K` : '—'}. Больше контекста — длиннее диффы и подсказки, но медленнее декод и больше RAM`}
+        >
+          <Select
+            value={String(s.ctxSize)}
+            onChange={v => upd({ ctxSize: (v === 'auto' ? 'auto' : Number(v)) as AssistantsSettings['ctxSize'] })}
+            options={[
+              { value: 'auto', label: 'Авто (по объёму RAM)' },
+              { value: '4096', label: '4K токенов' },
+              { value: '8192', label: '8K токенов' },
+              { value: '16384', label: '16K токенов' },
+              { value: '24576', label: '24K токенов' },
+              { value: '32768', label: '32K токенов' },
             ]}
             disabled={!s.enabled}
           />

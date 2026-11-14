@@ -1377,6 +1377,32 @@
   color: #ef4444;
 }
 
+/* Кнопка «скопировать» — в обоих состояниях карточки. У applied-карточки
+   крестика нет, поэтому копия сама прижимается вправо (--end). */
+.tc2-steer-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tc2-steer-copy--end {
+  margin-left: auto;
+}
+
+.tc2-steer-copy:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
 
 
 

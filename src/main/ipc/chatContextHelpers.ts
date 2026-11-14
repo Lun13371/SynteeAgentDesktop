@@ -110,7 +110,14 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
 
   for (const step of steps) {
     if (step.type === 'steer') {
-      if (typeof step.content === 'string' && step.content.trim()) steerTexts.push(step.content.trim())
+      // §steer — content хранится с [[attach:id]]-токенами (карточка рендерит
+      // по ним чипы); в контекст истории они не должны попадать — вычищаем.
+      // Сами вложения, как у обычных user-сообщений, пикселями в историю не
+      // возвращаются: инлайн-блоки файлов модель видела в момент внедрения.
+      if (typeof step.content === 'string' && step.content.trim()) {
+        const clean = stripAttachTokens(step.content).trim()
+        if (clean) steerTexts.push(clean)
+      }
       continue
     }
     if (step.type === 'tool_call') {

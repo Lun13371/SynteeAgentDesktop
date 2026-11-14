@@ -1,5 +1,5 @@
 import type { FileCacheEntry } from '../context/fileCacheTypes'
-import type { QuestionSpec, QuestionAnswer, AllowScope } from '../../shared/types'
+import type { QuestionSpec, QuestionAnswer, AllowScope, SteerAttachmentMeta } from '../../shared/types'
 import type Store from 'electron-store'
 
 export interface AgentStep {
@@ -25,6 +25,8 @@ export interface AgentStep {
    *  карточки в renderer) и флаг, что она уже вставлена в messages. */
   steerId?: string
   steerApplied?: boolean
+  /** type:'steer' — вложения реплики (чипы/миниатюры в карточке, БД шага). */
+  attachments?: SteerAttachmentMeta[]
   // Связывает финальный tool_call с более ранним tool_call_pending той же
   // генерации (см. onToolCallStarted) — фронтенд заменяет pending-карточку
   // на настоящую вместо создания второго блока.

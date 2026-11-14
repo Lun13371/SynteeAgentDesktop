@@ -67,8 +67,11 @@ let steerAgent: Agent | null = null
  * §steer — реплики, пришедшие ДО создания Agent'а (worst case: пользователь
  * зажал кнопку в тот момент, когда воркер ещё инициализируется). Храним и
  * переливаем в agent.pushSteer сразу после создания — иначе молча теряем.
+ * Форма совпадает с extra-аргументом pushSteer (displayText/imageParts/
+ * attachments) — переливаем запись целиком.
  */
-const earlySteers: Array<{ id: string; text: string }> = []
+type SteerEntry = { id: string; text: string; displayText?: string; imageParts?: import('../../core/agent/types').ContentPart[]; attachments?: import('../../shared/types').SteerAttachmentMeta[] }
+const earlySteers: SteerEntry[] = []
 const earlyHints: Array<import('../../shared/assistants').HintCandidate> = []
 let earlyAssistantsSettings: import('../../shared/assistants').AssistantsSettings | null = null
 
@@ -130,9 +133,22 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   if (msg.type === 'steer') {
     const text = typeof msg.text === 'string' ? msg.text : ''
     const steerId = typeof msg.steerId === 'string' && msg.steerId ? msg.steerId : `steer-${Date.now()}`
-    if (!text.trim()) return
-    if (steerAgent) steerAgent.pushSteer(steerId, text)
-    else earlySteers.push({ id: steerId, text })
+    // §steer — вложения: text уже инлайнен main'ом (processAttachmentsAndStream),
+    // imageParts — пиксели для vision, displayText — как написал пользователь
+    // (с [[attach:id]]-токенами), attachments — мета для карточки/БД.
+    const imageParts = Array.isArray(msg.imageParts)
+      ? msg.imageParts as import('../../core/agent/types').ContentPart[]
+      : undefined
+    const attachments = Array.isArray(msg.attachments)
+      ? msg.attachments as import('../../shared/types').SteerAttachmentMeta[]
+      : undefined
+    if (!text.trim() && !imageParts?.length) return
+    const entry: SteerEntry = { id: steerId, text }
+    if (typeof msg.displayText === 'string' && msg.displayText.trim()) entry.displayText = msg.displayText
+    if (imageParts?.length) entry.imageParts = imageParts
+    if (attachments?.length) entry.attachments = attachments
+    if (steerAgent) steerAgent.pushSteer(steerId, text, entry)
+    else earlySteers.push(entry)
     return
   }
   // --- §steer: пользователь передумал, реплику снимаем до внедрения ---
@@ -352,7 +368,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // §steer — exposing the instance to the shared on('message') handler +
       // сливаем реплики, пришедшие пока воркер ещё не был готов.
       steerAgent = agent
-      for (const s of earlySteers.splice(0)) agent.pushSteer(s.id, s.text)
+      for (const s of earlySteers.splice(0)) agent.pushSteer(s.id, s.text, s)
       for (const h of earlyHints.splice(0)) agent.pushHint(h)
       if (earlyAssistantsSettings) { agent.setAssistantsSettings(earlyAssistantsSettings); earlyAssistantsSettings = null }
 
@@ -618,6 +634,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 timestamp: Date.now(),
                 steerId: step.steerId,
                 steerApplied: step.steerApplied !== false,
+                attachments: (step as { attachments?: import('../../shared/types').SteerAttachmentMeta[] }).attachments,
               }
               collectedSteps.push(ts)
               currentIterSteps.push(ts)

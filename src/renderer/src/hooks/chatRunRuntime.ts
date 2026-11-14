@@ -1,4 +1,4 @@
-import type { Message, ToolStep, QueueItemMeta } from '../../../shared/types'
+import type { Message, ToolStep, QueueItemMeta, SteerAttachmentMeta } from '../../../shared/types'
 import { useChatStore, type LiveIter, type ChatLiveState } from '../store/chat.store'
 
 // Per-chat mutable буферы для высокочастотных обновлений (токены стриминга).
@@ -167,7 +167,7 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       liveState?: {
         toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
         spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
-        steers?: Array<{ steerId: string; text: string; ts: number; applied: boolean }>
+        steers?: Array<{ steerId: string; text: string; ts: number; applied: boolean; attachments?: SteerAttachmentMeta[] }>
       }
       meta: QueueItemMeta | null
     } | null
@@ -214,6 +214,7 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
           timestamp: s.ts,
           steerId: s.steerId,
           steerApplied: false,
+          ...(s.attachments?.length ? { attachments: s.attachments } : {}),
         }))
         const last = buf.iters[buf.iters.length - 1]
         if (last) buf.iters = [...buf.iters.slice(0, -1), { ...last, steps: [...last.steps, ...steps] }]
@@ -257,7 +258,7 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
  * произошло». Живёт в хвосте последней итерации; когда придёт настоящий шаг
  * (steerApplied:true) useToolProgress заменит её по steerId.
  */
-export function appendPendingSteer(chatId: string, text: string, steerId: string): void {
+export function appendPendingSteer(chatId: string, text: string, steerId: string, attachments?: SteerAttachmentMeta[]): void {
   const buf = getBuf(chatId)
   if (!buf.streamMsgId) return
   // Синхронно сливаем буферизованные токены, чтобы карточка встала ПОСЛЕ уже
@@ -271,6 +272,7 @@ export function appendPendingSteer(chatId: string, text: string, steerId: string
     timestamp: Date.now(),
     steerId,
     steerApplied: false,
+    ...(attachments?.length ? { attachments } : {}),
   }
   const iters = buf.iters
   const last = iters[iters.length - 1]
