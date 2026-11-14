@@ -42,7 +42,6 @@ export const TOOL_META: Record<string, ToolMeta> = {
   fetch_page:    { label: 'Чтение страницы',    icon: 'downloadCloud', color: '#10b981' },
   search_images: { label: 'Поиск картинок',     icon: 'camera',       color: '#f472b6' },
   search_code:   { label: 'Поиск кода',          icon: 'code',       color: '#818cf8' },
-  get_fast_context:{ label: 'Быстрый контекст',  icon: 'compass',     color: '#06b6d4' },
 
   // ── Система и генерация ──
   get_system_info:{ label: 'Система',            icon: 'monitor',     color: '#38bdf8' },

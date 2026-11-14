@@ -25,6 +25,7 @@ import { usePluginPanelStore } from '../../../store/pluginPanel.store'
 // refractor 5: именованный экспорт { refractor } (в v4 был default).
 import { refractor } from 'refractor/core'
 import { highlightCodeToHtml } from '../../../utils/codeHighlightHTML'
+import { useIsLightTheme } from '../../../utils/themeBase'
 
 // Регистрируем только нужные языки (~23 вместо ~270 в полном Prism).
 // refractor 5 (пришёл с react-syntax-highlighter 16) поменял exports-мап:
@@ -99,8 +100,8 @@ import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain, { hasUnfinishedCalls } from '../ToolChain/ToolChain'
 import MessageFileChanges from '../MessageFileChanges/MessageFileChanges'
+import { collectFileChanges } from '../../../../../shared/fileChanges'
 import TodoChecklist from '../TodoChecklist/TodoChecklist'
-import FastContextBlock, { type FastContextResultData } from '../FastContextBlock/FastContextBlock'
 import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
 import MermaidBlock from './MermaidBlock'
 import ChartBlock from './ChartBlock'
@@ -206,7 +207,9 @@ const PRE_STYLE: React.CSSProperties = {
 }
 
 const CodeHighlighter = memo(function CodeHighlighter({ raw, lang }: { raw: string; lang: string }) {
-  const html = useMemo(() => highlightCodeToHtml(raw, lang), [raw, lang])
+  // Палитра подсветки зависит от базы темы: на светлой oneDark нечитаем.
+  const isLight = useIsLightTheme()
+  const html = useMemo(() => highlightCodeToHtml(raw, lang, isLight), [raw, lang, isLight])
   return <pre style={PRE_STYLE} dangerouslySetInnerHTML={{ __html: html }} />
 }, (prev, next) => prev.raw === next.raw && prev.lang === next.lang)
 
@@ -1583,38 +1586,6 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many
 }
 
-/** Извлекает результат get_fast_context из steps итерации.
- *  Мемоизирован по content-строке: JSON.parse выполняется только при первом
- *  вызове с данным content, повторные вызовы берут результат из кэша.
- *  Раньше JSON.parse звался на каждом рендере MessageContent (внутри IIFE
- *  в liveIters.map и savedIters.map) — лишний CPU на каждый tool step. */
-const _fcResultCache = new Map<string, FastContextResultData>()
-
-/** Пустой result для live-режима FastContextBlock. Модульная константа:
- *  инлайн-литерал в JSX создавал новый объект на каждый рендер MessageBubble
- *  и ломал memo-компаратор FastContextBlock (prev.result === next.result) —
- *  блок (stages/chips/shimmer) перерисовывался на каждый token-flush стрима,
- *  хотя liveProgress не менялся. */
-const EMPTY_FC_RESULT: FastContextResultData = { files: [], summary: '', ms: 0, indexedFilesCount: 0 }
-
-function extractFastContextResult(steps: Array<{ type: string; toolName?: string; content?: string }>): FastContextResultData | null {
-  for (const s of steps) {
-    if (s.type === 'tool_result' && s.toolName === 'get_fast_context' && s.content) {
-      const cached = _fcResultCache.get(s.content)
-      if (cached) return cached
-      try {
-        const parsed = JSON.parse(s.content) as FastContextResultData
-        if (parsed && Array.isArray(parsed.files)) {
-          if (_fcResultCache.size > 200) _fcResultCache.clear()
-          _fcResultCache.set(s.content, parsed)
-          return parsed
-        }
-      } catch { /* skip */ }
-    }
-  }
-  return null
-}
-
 // ── renderClickablePlainText: кликабельные пути в plain-text user-сообщениях ─
 // Для user-сообщений без markdown (userMarkdown=false) — парсим пути в тексте
 // и делаем их кликабельными. Также обрабатывает inline-вложения через токены.
@@ -1925,25 +1896,13 @@ const MessageContent = memo(function MessageContent({
     : undefined
 
   // ── Контент под шагом ВНУТРИ ленты ────────────────────────────────────
-  // FastContextBlock и карточки саб-агентов раньше рендерились отдельными
-  // блоками рядом с плашкой (и в live, и в истории — дублированным кодом).
-  // Теперь это один слот под своей итерацией: блок стоит прямо под шагом
-  // get_fast_context / spawn_agent, скроллится вместе с лентой и
+  // Карточки саб-агентов рендерятся одним слотом под своей итерацией: блок
+  // стоит прямо под шагом spawn_agent, скроллится вместе с лентой и
   // сворачивается вместе с ходом работы.
   // ВАЖНО: решение принимается по шагу ИМЕННО этой итерации — иначе карточка
   // дублировалась бы под каждым шагом секции (у секции общий список steps).
   const renderIterExtra = useCallback((iter: { call: MsgIter['steps'][number]; result?: MsgIter['steps'][number] }, isLastSection: boolean) => {
     const toolName = iter.call.toolName
-
-    // Fast Context — под своим шагом; live-прогресс только для последней секции.
-    if (toolName === 'get_fast_context') {
-      const fcLive = isStreaming && isLastSection ? toolProgress?.['get_fast_context'] : undefined
-      if (fcLive && fcLive.stage !== 'done') {
-        return <FastContextBlock result={EMPTY_FC_RESULT} liveProgress={fcLive} />
-      }
-      const fcSaved = extractFastContextResult([iter.call, ...(iter.result ? [iter.result] : [])])
-      return fcSaved ? <FastContextBlock result={fcSaved} /> : null
-    }
 
     // Карточка саб-агента — под своим spawn_agent.
     if (toolName === 'spawn_agent') {
@@ -1967,13 +1926,12 @@ const MessageContent = memo(function MessageContent({
     return null
   }, [isStreaming, toolProgress, spawnedAgents])
 
-  // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
+  // Живой счётчик (§4.2): N файлов изменено · M команд выполнено.
+  // Файлы считаем через collectFileChanges — он же учитывает правки внутри
+  // execute_code (у скрипта нет собственных tool_result-шагов).
   const agentCounts = useMemo(() => {
     if (!toolSteps) return { filesChanged: 0, commandsRun: 0 }
-    const filesChanged = toolSteps.filter(s =>
-      s.type === 'tool_result' && s.success &&
-      ['write_file', 'edit_file'].includes(s.toolName || '')
-    ).length
+    const filesChanged = collectFileChanges(toolSteps).length
     const commandsRun = toolSteps.filter(s =>
       s.type === 'tool_call' && s.toolName === 'run_command'
     ).length
@@ -2127,7 +2085,7 @@ const MessageContent = memo(function MessageContent({
                       renderIterExtra={renderIterExtra}
                     />
                   )}
-                  {/* Fast Context и карточки саб-агентов рендерит сам ToolChain
+                  {/* Карточки саб-агентов рендерит сам ToolChain
                       внутри ленты (renderIterExtra) — здесь их больше нет,
                       иначе в чате было бы два одинаковых блока. */}
                   {/* Сгенерированные изображения внутри persisted-итерации */}
@@ -2264,7 +2222,7 @@ const MessageContent = memo(function MessageContent({
                       <ParsedContent text={iterText} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
                   )}
-                  {/* Fast Context и карточки саб-агентов больше не рендерятся
+                  {/* Карточки саб-агентов больше не рендерятся
                       здесь: они живут ВНУТРИ ленты, под своим шагом
                       (см. renderIterExtra → ToolChain). */}
                   {/* Сгенерированные изображения внутри live-итерации */}

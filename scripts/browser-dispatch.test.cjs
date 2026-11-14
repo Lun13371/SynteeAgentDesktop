@@ -7,7 +7,7 @@ const source = fs.readFileSync('src/core/agent/toolDispatcher.ts', 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 const mod = { exports: {} }
 new Function('require', 'module', 'exports', compiled)(id => {
-  if (id === '../tools' || id === '../context/contextManager' || id === '../context/fastContext') return {}
+  if (id === '../tools' || id === '../context/contextManager') return {}
   if (id.endsWith('secretsSection')) return { SECRET_PLACEHOLDER_PREFIX: '${{', SECRET_PLACEHOLDER_SUFFIX: '}}' }
   return require(id)
 }, mod, mod.exports)

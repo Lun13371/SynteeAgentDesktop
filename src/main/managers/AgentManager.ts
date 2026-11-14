@@ -155,8 +155,6 @@ export interface SubagentContext {
   mode?: ChatMode
   workdir?: string
   projectId?: string
-  fastContextDbPath?: string
-  fastContextWasmDir?: string
   /** Запрошенный режим изоляции (default 'auto'). */
   isolation?: IsolationMode
 }
@@ -664,8 +662,6 @@ class AgentManager {
             // §worktree — маппинг путей projectRoot → worktreePath (Agent.worktreeMap)
             worktreeMap,
             projectId: context?.projectId,
-            fastContextDbPath: context?.fastContextDbPath,
-            fastContextWasmDir: context?.fastContextWasmDir,
             // Тумблер «Управление браузером» чата — суб-агент наследует.
             browserMode,
           },

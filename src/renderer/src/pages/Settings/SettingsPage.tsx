@@ -15,7 +15,6 @@ import SoundsPanel from '../../components/settings/SoundsPanel/SoundsPanel'
 import Popover from '../../components/ui/Popover/Popover'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
-import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
 import ToolsSettingsTab from '../../components/settings/ToolsSettingsTab/ToolsSettingsTab'
 import AssistantsSettingsTab from '../../components/settings/AssistantsSettingsTab/AssistantsSettingsTab'
 import ChangelogSettingsTab from '../../components/settings/ChangelogSettingsTab/ChangelogSettingsTab'
@@ -58,7 +57,7 @@ import './SettingsPage.css'
 
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
-  | 'agent' | 'security' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
+  | 'agent' | 'security' | 'data' | 'appearance' | 'integrations' | 'context'
 |  'changelog' | 'notifications' | 'stats' | 'tools' | 'assistants'
 
 interface SectionDef { id: Section; label: string; icon: IconName; keywords?: string[] }
@@ -87,7 +86,6 @@ const SECTION_GROUPS: SectionGroup[] = [
       { id: 'ai',         label: 'ИИ и Модели',    icon: 'brain',  keywords: ['модели', 'провайдер', 'api', 'ключ', 'llm'] },
       { id: 'modelStatus', label: 'Статус моделей', icon: 'server', keywords: ['статус', 'сервер', 'доступность'] },
       { id: 'context',    label: 'Контекст',       icon: 'layers', keywords: ['компакция', 'токены', 'лимит'] },
-      { id: 'indexing',   label: 'Индексация',     icon: 'cpu',    keywords: ['индексация', 'поиск', 'файлы'] },
       { id: 'tools',      label: 'Инструменты',    icon: 'wrench', keywords: ['tools', 'тулы', 'встроенные', 'дополнительные'] },
       { id: 'agent',      label: 'Агент',          icon: 'bot',    keywords: ['агент', 'инструменты', 'суб-агент', 'циклы'] },
       { id: 'assistants', label: 'Мини-агенты',   icon: 'bot',    keywords: ['мини-агенты', 'помощники', 'watcher', 'janitor', 'локальная', 'llm', 'подсказки', 'сжатие'] },
@@ -206,17 +204,6 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   { section: 'context', id: 'ctx-diffJournal', label: 'Diff журнал правок', keywords: ['diff', 'журнал', 'правки'] },
   { section: 'context', id: 'ctx-fileMap', label: 'File Map', keywords: ['карта', 'файлы'] },
   { section: 'context', id: 'ctx-readFileCache', label: 'Кэш файлов внутри запроса', keywords: ['кэш', 'файлы'] },
-  // Индексация
-  { section: 'indexing', id: 'idx-enabled', label: 'Индексация проекта', keywords: ['индекс', 'tree-sitter', 'fast context'] },
-  { section: 'indexing', id: 'idx-neural', label: 'Neural embeddings', keywords: ['эмбеддинги', 'minilm', 'семантика', 'onnx'] },
-  { section: 'indexing', id: 'idx-maxFiles', label: 'Макс. файлов в проекте', keywords: ['лимит', 'файлы'] },
-  { section: 'indexing', id: 'idx-maxFileSize', label: 'Макс. размер файла', keywords: ['лимит', 'размер', 'kb'] },
-  { section: 'indexing', id: 'idx-watch', label: 'Фоновый watcher', keywords: ['watcher', 'chokidar', 'мониторинг', 'изменения'] },
-  { section: 'indexing', id: 'idx-debounce', label: 'Debounce watcher', keywords: ['watcher', 'задержка', 'debounce'] },
-  { section: 'indexing', id: 'idx-prewarm', label: 'Pre-warm при старте', keywords: ['prewarm', 'старт', 'прогрев'] },
-  { section: 'indexing', id: 'idx-prewarmDelay', label: 'Задержка pre-warm', keywords: ['prewarm', 'задержка'] },
-  { section: 'indexing', id: 'idx-ignoreDirs', label: 'Игнорируемые директории', keywords: ['ignore', 'директории', 'папки', 'исключить'] },
-  { section: 'indexing', id: 'idx-actions', label: 'Реиндексировать проект', keywords: ['реиндекс', 'действия', 'очистить индекс'] },
 ]
 
 export default function SettingsPage() {
@@ -693,9 +680,6 @@ export default function SettingsPage() {
             )}
             {section === 'context' && (
               <ContextSettingsTab />
-            )}
-            {section === 'indexing' && (
-              <IndexingSettingsTab />
             )}
             {section === 'tools' && <ToolsSettingsTab />}
             {section === 'assistants' && <AssistantsSettingsTab />}

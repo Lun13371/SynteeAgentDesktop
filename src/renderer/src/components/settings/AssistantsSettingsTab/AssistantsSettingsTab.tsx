@@ -154,17 +154,6 @@ export default function AssistantsSettingsTab() {
         Мини-агенты
       </SectionTitle>
 
-      {!s.enabled && !isSettingUp && (
-        <div className="assistants-banner">
-          <span className="assistants-banner-icon">✦</span>
-          <div>
-            <strong>Попробуйте мини-агентов</strong>
-            <p>Семь фоновых агентов на локальной модели: подсказки из памяти и возможностей, сжатие контекста, защита от лупов и drift, накопление памяти. Всё локально, ничего не отправляет наружу. Включите — настроится само.</p>
-          </div>
-          <Toggle value={s.enabled} onChange={v => upd({ enabled: v })} />
-        </div>
-      )}
-
       {isSettingUp && (
         <div className="assistants-setup">
           <div className="assistants-setup-spinner" />

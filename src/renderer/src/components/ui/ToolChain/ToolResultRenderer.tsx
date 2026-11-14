@@ -3,7 +3,7 @@ import { useState, memo } from 'react'
 // в MessageBubble.tsx (общий singleton). Здесь дорегистрируем те, что
 // нужны только тул-выводам (getLanguage ниже может их вернуть).
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
 import scss from 'react-syntax-highlighter/dist/esm/languages/prism/scss'
 import powershell from 'react-syntax-highlighter/dist/esm/languages/prism/powershell'
@@ -13,6 +13,8 @@ import type { ToolStep } from './ToolChain'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import { copyToClipboard } from '../../../utils/clipboard'
 import { tabActions } from '../../../store/tabs.store'
+import { useIsLightTheme } from '../../../utils/themeBase'
+import FileChip from './FileChip'
 import { useNavStore } from '../../../store/nav.store'
 import './ToolResultRenderer.css'
 
@@ -59,31 +61,139 @@ function tryParseJSON(text: string): unknown | null {
 
 const CODE_CHUNK = 60
 
-// ── Суб-рендеры ────────────────────────────────────────────────────────────
+// ── Единая «поверхность» кода ──────────────────────────────────────────────
+// Раньше каждый тул рисовал свой блок: read_file — Prism с одной рамкой,
+// search_code — голые <pre> с другим фоном, diff — кастомная рамка,
+// edit_file — плашка «Записан». Теперь у всех код-выводов один фрейм
+// (шапка с путём + копирование), один шрифт и один стиль подсветки.
 
-const CodeResult = memo(function CodeResult({ content, lang, initialLines }: { content: string; lang: string; initialLines: number }) {
-  const [extra, setExtra] = useState(0)
-  const visible = initialLines + extra
-  const total = content.split('\n').length
-  const { text, truncated } = truncateLines(content, visible)
+const CopyBtn = memo(function CopyBtn({ value, label, title }: {
+  value: string
+  label?: string
+  title?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const onCopy = () => {
+    void copyToClipboard(value).then(ok => {
+      if (!ok) return
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
   return (
-    <div className="trr-code-wrap">
-      <SyntaxHighlighter
-        language={lang}
-        style={oneDark}
-        customStyle={{ margin: 0, borderRadius: 8, fontSize: 12, maxHeight: 400, overflow: 'auto' }}
-        showLineNumbers={total > 3}
-      >
-        {text}
-      </SyntaxHighlighter>
+    <button type="button" className="trr-copy-btn" onClick={onCopy} title={title ?? 'Копировать'}>
+      {copied ? '✓' : (label ?? 'Копировать')}
+    </button>
+  )
+}, (prev, next) => prev.value === next.value && prev.label === next.label)
+
+interface CodeSurfaceProps {
+  code: string
+  lang: string
+  /** Файл в шапке блока — рисуется плашкой [JS] file.mjs. */
+  filePath?: string
+  /** Доп. подпись рядом с плашкой файла (например «+3 файла»). */
+  title?: string
+  initialLines: number
+  maxHeight?: number
+  /** Доп. элемент в шапке справа (бейджи +N/−M и т.п.). */
+  meta?: React.ReactNode
+  /** plain — без Prism (вывод/совпадения поиска), подсветка строк через lineClass. */
+  mode?: 'highlight' | 'plain'
+  lineClass?: (line: string) => string
+  /** Что копировать; по умолчанию — весь код. */
+  copyValue?: string
+}
+
+export const CodeSurface = memo(function CodeSurface({
+  code, lang, filePath, title, initialLines, maxHeight = 400, meta, mode = 'highlight', lineClass, copyValue,
+}: CodeSurfaceProps) {
+  const [extra, setExtra] = useState(0)
+  // Палитра подсветки должна совпадать с темой: на светлой oneDark нечитаем.
+  const isLight = useIsLightTheme()
+  const visible = initialLines + extra
+  const allLines = code.replace(/\n+$/, '').split('\n')
+  const shown = allLines.slice(0, visible)
+  const truncated = allLines.length > visible
+  return (
+    <div className={`trr-code${mode === 'plain' ? ' trr-code--plain' : ''}`}>
+      {(title || meta || filePath) && (
+        <div className="trr-code-head">
+          {filePath
+            ? <FileChip path={filePath} showDir={false} />
+            : title && <span className="trr-code-title" title={title}>{title}</span>}
+          {filePath && title && <span className="trr-code-title" title={title}>{title}</span>}
+          {meta}
+          <span className="trr-code-head-spacer" />
+          <CopyBtn value={copyValue ?? code} title="Копировать содержимое" />
+        </div>
+      )}
+      {mode === 'highlight' ? (
+        <SyntaxHighlighter
+          language={lang}
+          style={isLight ? oneLight : oneDark}
+          // Тема красит background на <code>, а он inline: фон рисуется
+          // ОТДЕЛЬНЫМ прямоугольником на каждой строке (та самая «обводка»
+          // строк в чтении файла). Гасим фон/тень у <code> — фон даёт наш
+          // .trr-code из переменных темы.
+          codeTagProps={{ style: { background: 'transparent', textShadow: 'none' } }}
+          customStyle={{
+            margin: 0,
+            padding: '10px 12px',
+            background: 'transparent',
+            textShadow: 'none',
+            fontSize: 12,
+            maxHeight,
+            overflow: 'auto',
+          }}
+          lineNumberStyle={{ opacity: 0.32, minWidth: '2.1em', userSelect: 'none' }}
+          showLineNumbers={allLines.length > 3}
+        >
+          {shown.join('\n')}
+        </SyntaxHighlighter>
+      ) : (
+        <div className="trr-code-lines" style={{ maxHeight }}>
+          {shown.map((line, i) => (
+            <div key={i} className={`trr-code-line${lineClass ? ` ${lineClass(line)}` : ''}`}>
+              {line || '\u00a0'}
+            </div>
+          ))}
+        </div>
+      )}
       {truncated && (
-        <button className="trr-expand-btn" onClick={() => setExtra(e => e + CODE_CHUNK)}>
-          Показать ещё {Math.min(CODE_CHUNK, total - visible)} из {total} строк
+        <button className="trr-expand-btn trr-code-more" onClick={() => setExtra(e => e + CODE_CHUNK)}>
+          Показать ещё {Math.min(CODE_CHUNK, allLines.length - visible)} из {allLines.length} строк
         </button>
       )}
     </div>
   )
-}, (prev, next) => prev.content === next.content && prev.lang === next.lang && prev.initialLines === next.initialLines)
+}, (prev, next) =>
+  prev.code === next.code && prev.lang === next.lang && prev.title === next.title &&
+  prev.filePath === next.filePath &&
+  prev.initialLines === next.initialLines && prev.mode === next.mode &&
+  prev.copyValue === next.copyValue)
+
+// ── Суб-рендеры ────────────────────────────────────────────────────────────
+
+const CodeResult = memo(function CodeResult({ content, lang, filePath, title, initialLines }: {
+  content: string
+  lang: string
+  filePath?: string
+  title?: string
+  initialLines: number
+}) {
+  return (
+    <CodeSurface
+      code={content}
+      lang={lang}
+      filePath={filePath}
+      title={title}
+      initialLines={initialLines}
+    />
+  )
+}, (prev, next) =>
+  prev.content === next.content && prev.lang === next.lang && prev.filePath === next.filePath &&
+  prev.title === next.title && prev.initialLines === next.initialLines)
 
 const TerminalResult = memo(function TerminalResult({ content, initialLines }: { content: string; initialLines: number }) {
   const [extra, setExtra] = useState(0)
@@ -103,8 +213,41 @@ const TerminalResult = memo(function TerminalResult({ content, initialLines }: {
   )
 }, (prev, next) => prev.content === next.content && prev.initialLines === next.initialLines)
 
-const FILELIST_CHUNK = 200
+// ── Терминал одной карточкой: команда сверху, вывод ниже ───────────────────
+// Раньше это был ДВА блока: «Аргументы → command» и «Результат → вывод».
+// Теперь одна рамка: полная команда (видна и во время выполнения — сюда же
+// стримится live-вывод) и её вывод под ней, без разделителей и подписей.
+const TerminalCall = memo(function TerminalCall({ command, content, success, initialLines }: {
+  command: string
+  content: string
+  success?: boolean
+  initialLines: number
+}) {
+  const [extra, setExtra] = useState(0)
+  const visible = initialLines + extra
+  const trimmed = (content ?? '').trim()
+  const lines = trimmed ? trimmed.split('\n') : []
+  const shown = lines.slice(0, visible)
+  return (
+    <div className={`trr-term${success === false ? ' trr-term--fail' : ''}`}>
+      <div className="trr-term-cmd">
+        <span className="trr-term-prompt">$</span>
+        <code className="trr-term-cmd-text">{command || '(команда не записана)'}</code>
+        {command && <CopyBtn value={command} label="Копировать" title="Копировать команду" />}
+      </div>
+      <pre className="trr-term-out">{shown.length ? shown.join('\n') : '(пустой вывод)'}</pre>
+      {lines.length > visible && (
+        <button className="trr-expand-btn trr-term-more" onClick={() => setExtra(e => e + CODE_CHUNK)}>
+          Показать ещё {Math.min(CODE_CHUNK, lines.length - visible)} из {lines.length} строк
+        </button>
+      )}
+    </div>
+  )
+}, (prev, next) =>
+  prev.command === next.command && prev.content === next.content &&
+  prev.success === next.success && prev.initialLines === next.initialLines)
 
+const FILELIST_CHUNK = 200
 const FileListResult = memo(function FileListResult({ content }: { content: string }) {
   const [extra, setExtra] = useState(0)
   const visible = FILELIST_CHUNK + extra
@@ -189,48 +332,57 @@ const KeyValueResult = memo(function KeyValueResult({ content }: { content: stri
   return <pre className="trr-pre">{content.slice(0, 400)}</pre>
 }, (prev, next) => prev.content === next.content)
 
-function FileWrittenResult({ content, args }: { content: string; args?: Record<string, unknown> }) {
+function FileWrittenResult({ content, args, success }: {
+  content: string
+  args?: Record<string, unknown>
+  success?: boolean
+}) {
   const path = String(args?.path ?? args?.file_path ?? '')
+  const note = (content ?? '').trim().split('\n')[0] ?? ''
+  const isFail = success === false
+  // Сырой ответ тула («File updated: C:\... (2 lines changed)») в карточке не
+  // показываем: путь уже в плашке, статус — галочкой. Из текста вытаскиваем
+  // только число строк, если оно там есть.
+  const changed = Number((/(\d+)\s*(?:lines?|строк)/i.exec(note) ?? [])[1] ?? NaN)
+  const linesNote = Number.isFinite(changed) ? `${changed} стр.` : ''
   return (
-    <div className="trr-file-written">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="20 6 9 17 4 12"/>
-      </svg>
-      <span>{path ? `Записан: ${path}` : content.slice(0, 120)}</span>
+    <div className={`trr-file-op${isFail ? ' trr-file-op--fail' : ''}`}>
+      <span className="trr-file-op-icon">{isFail ? '✕' : '✓'}</span>
+      <div className="trr-file-op-info">
+        {path ? <FileChip path={path} /> : <span className="trr-file-op-note">{note || 'файл'}</span>}
+        {linesNote && <span className="trr-file-op-note">{linesNote}</span>}
+      </div>
+      {path && <CopyBtn value={path} title="Копировать путь" />}
     </div>
   )
 }
 
 const MATCHES_CHUNK = 20
 
+// Совпадения поиска по коду — та же «поверхность», что у чтения файла:
+// шапка со статистикой, моношрифт, подсветка строк-совпадений (>) и контекста (-).
 const SearchCodeResult = memo(function SearchCodeResult({ content }: { content: string }) {
-  const [extra, setExtra] = useState(0)
-  const visible = MATCHES_CHUNK + extra
   const allLines = content.split('\n')
   // Парсим шапку статистики: "[search_code: N совпадений в M файлах...]"
   const header = allLines[0] ?? ''
   const statsMatch = header.match(/\[search_code:\s*(.+?)\]/)
   const stats = statsMatch?.[1]
-  // Тело — всё кроме шапки; фильтруем пустые строки
   const body = (stats ? allLines.slice(1) : allLines).filter(l => l.trim())
   return (
-    <div className="trr-code-matches">
-      {stats && (
-        <div className="trr-code-matches-stats">
-          <span className="trr-code-matches-badge">{stats}</span>
-        </div>
-      )}
-      {body.slice(0, visible).map((line, i) => (
-        <div key={i} className="trr-code-match-line">
-          <pre>{line}</pre>
-        </div>
-      ))}
-      {body.length > visible && (
-        <button className="trr-expand-btn" onClick={() => setExtra(e => e + MATCHES_CHUNK)}>
-          Показать ещё {Math.min(MATCHES_CHUNK, body.length - visible)} из {body.length} строк
-        </button>
-      )}
-    </div>
+    <CodeSurface
+      mode="plain"
+      code={body.join('\n')}
+      lang="text"
+      title={stats ? `search_code · ${stats}` : 'Совпадения'}
+      initialLines={MATCHES_CHUNK}
+      maxHeight={320}
+      lineClass={line =>
+        line.startsWith('>') ? 'is-match'
+          : line.startsWith('-') ? 'is-context'
+            : line.trim() === '...' ? 'is-gap'
+              : ''
+      }
+    />
   )
 }, (prev, next) => prev.content === next.content)
 
@@ -378,9 +530,12 @@ const FetchPageResult = memo(function FetchPageResult({ content, initialLines }:
 
 // ── Главный компонент ──────────────────────────────────────────────────────
 
+// Рендеру нужны только имя/аргументы вызова и содержимое/статус результата —
+// этот же компонент переиспользуется для вложенных вызовов execute_code
+// (там нет полных ToolStep-объектов, только записи трейса).
 interface Props {
-  call: ToolStep
-  result: ToolStep
+  call: Pick<ToolStep, 'toolName'> & Partial<Pick<ToolStep, 'toolArgs'>>
+  result: Pick<ToolStep, 'content'> & Partial<Pick<ToolStep, 'success' | 'diff'>>
   mode: ToolOutputMode
 }
 
@@ -390,33 +545,9 @@ interface Props {
 const NORMAL_LINES = 60
 const DETAILED_LINES = 500
 
-// Аргументы этих тулов показываем ВСЕГДА, не только в detailed-режиме:
-// для run_command полная команда — ключевая информация (что именно AI
-// выполнил). Раньше в normal-режиме команда была видна только обрезанным
-// 80-символьным preview в свёрнутом заголовке — раскрытие её прятало.
-const ALWAYS_SHOW_ARGS = new Set(['run_command'])
-
-// Полная команда run_command: без обрезки в 500 символов (длинные
-// PowerShell-однострочники) + кнопка копирования.
-const CommandArgValue = memo(function CommandArgValue({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false)
-  const onCopy = () => {
-    void copyToClipboard(value).then(ok => {
-      if (ok) {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
-      }
-    })
-  }
-  return (
-    <div className="trr-arg-cmd">
-      <pre className="trr-arg-val trr-arg-val--full">{value}</pre>
-      <button className="trr-copy-btn" onClick={onCopy} title="Копировать команду">
-        {copied ? '✓' : 'Копировать'}
-      </button>
-    </div>
-  )
-}, (prev, next) => prev.value === next.value)
+// Аргументы showArgs — в detailed-режиме для любого тула. Для run_command
+// аргументы отдельно не печатаем: команда живёт в шапке единой терминальной
+// карточки (см. TerminalCall), иначе команда дублировалась в двух местах.
 
 const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode }: Props) {
   const toolName = call.toolName ?? ''
@@ -424,8 +555,38 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
   const args = call.toolArgs ?? {}
   const initialLines = mode === 'detailed' ? DETAILED_LINES : NORMAL_LINES
 
-  // ── detailed + ALWAYS_SHOW_ARGS: показываем аргументы ──
-  const showArgs = mode === 'detailed' || ALWAYS_SHOW_ARGS.has(toolName)
+  // ── run_command: ОДНА карточка — команда сверху, вывод снизу ──
+  // Никакого деления на «Аргументы» и «Результат»: это был один и тот же
+  // вызов, разорванный на два блока с дублирующимся текстом.
+  if (toolName === 'run_command') {
+    const extraArgs = Object.entries(args).filter(([k]) => k !== 'command')
+    return (
+      <div className="trr-wrap">
+        <TerminalCall
+          command={String(args.command ?? '')}
+          content={content}
+          success={result.success}
+          initialLines={initialLines}
+        />
+        {mode === 'detailed' && extraArgs.length > 0 && (
+          <div className="trr-args-section">
+            <div className="trr-section-label">Параметры</div>
+            <div className="trr-args">
+              {extraArgs.map(([k, v]) => (
+                <div key={k} className="trr-arg-row">
+                  <span className="trr-arg-key">{k}</span>
+                  <pre className="trr-arg-val">{String(v).slice(0, 500)}</pre>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── detailed: показываем аргументы ──
+  const showArgs = mode === 'detailed'
 
   return (
     <div className="trr-wrap">
@@ -436,31 +597,24 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
             {Object.entries(args).map(([k, v]) => (
               <div key={k} className="trr-arg-row">
                 <span className="trr-arg-key">{k}</span>
-                {toolName === 'run_command' && k === 'command' ? (
-                  <CommandArgValue value={String(v)} />
-                ) : (
-                  <pre className="trr-arg-val">{String(v).slice(0, 500)}</pre>
-                )}
+                <pre className="trr-arg-val">{String(v).slice(0, 500)}</pre>
               </div>
             ))}
           </div>
         </div>
       )}
 
+      {/* Никаких подписей «Результат/Ошибка»: вывод карточки — это и есть
+          результат, а статус уже виден в шапке (✓ / «ошибка»). Подпись только
+          дублировала смысл и добавляла лишнюю строку в каждую карточку. */}
       <div className="trr-result-section">
-        {mode !== 'compact' && (
-          <div className="trr-section-label" style={{ color: result.success === false ? '#f87171' : '#4ade80' }}>
-            {result.success === false ? 'Ошибка' : 'Результат'}
-          </div>
-        )}
-
         {result.success === false
           ? (
             <div className="trr-error-block">
               <pre className="trr-error-pre">{content || '(нет деталей ошибки)'}</pre>
             </div>
           )
-          : renderResult(toolName, content, args, initialLines)}
+          : renderResult(toolName, content, args, initialLines, result.success)}
       </div>
     </div>
   )
@@ -468,7 +622,13 @@ const ToolResultRenderer = memo(function ToolResultRenderer({ call, result, mode
 
 export default ToolResultRenderer
 
-function renderResult(toolName: string, content: string, args: Record<string, unknown>, initialLines: number) {
+function renderResult(
+  toolName: string,
+  content: string,
+  args: Record<string, unknown>,
+  initialLines: number,
+  success?: boolean,
+) {
   if (toolName === 'manage_chats') {
     const data = tryParseJSON(content) as { chat_id?: string; title?: string; status?: string; content?: string; chats?: Array<{ chat_id: string; title: string; status?: string }> } | null
     const chats = data?.chats ?? (data?.chat_id ? [{ chat_id: data.chat_id, title: data.title ?? 'Открыть чат', status: data.status }] : [])
@@ -486,22 +646,29 @@ function renderResult(toolName: string, content: string, args: Record<string, un
       </div>
     )
   }
-  // read_file → code с подсветкой
+  // read_file → код с подсветкой (единая «поверхность» кода)
   if (toolName === 'read_file' || toolName === 'read_files') {
-    const path = String(args.path ?? args.file_path ?? '')
+    const list = Array.isArray(args.paths) ? (args.paths as string[]) : []
+    const path = String(args.path ?? args.file_path ?? list[0] ?? '')
     const lang = getLanguage(path)
-    return <CodeResult content={content} lang={lang} initialLines={initialLines} />
+    const extra = list.length > 1 ? `+${list.length - 1} файл(а)` : undefined
+    return (
+      <CodeResult
+        content={content}
+        lang={lang}
+        filePath={path}
+        title={extra}
+        initialLines={initialLines}
+      />
+    )
   }
 
-  // write_file / edit_file → плашка успеха
+  // write_file / edit_file → плашка файловой операции
   if (toolName === 'write_file' || toolName === 'edit_file') {
-    return <FileWrittenResult content={content} args={args} />
+    return <FileWrittenResult content={content} args={args} success={success} />
   }
 
-  // run_command → terminal
-  if (toolName === 'run_command') {
-    return <TerminalResult content={content} initialLines={initialLines} />
-  }
+  // run_command обрабатывается выше (единая терминальная карточка)
 
   // find_files / list_directory → файловое дерево
   if (toolName === 'find_files' || toolName === 'list_directory') {

@@ -271,9 +271,6 @@ export const IPC_EVENTS = {
   // Список серверов изменился (новые/удалённые в .mcp.json) — renderer
   // должен перезагрузить mcpServers.
   MCP_SERVERS_CHANGED: 'mcp:servers-changed',
-  // Fast Context: live progress при реиндексе + уведомление об обновлении индекса
-  FASTCONTEXT_PROGRESS: 'fastcontext:progress',
-  FASTCONTEXT_UPDATED: 'fastcontext:updated',
   // Skills: пуш при изменении .syntee/skills/ (watcher обнаружил новые/удалённые .md)
   SKILLS_UPDATED: 'skills:updated',
   // Plugins: список/статус/тулы плагинов изменились — renderer перезагружает

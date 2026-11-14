@@ -6,8 +6,8 @@ import { buffers, getBuf, liveSet, drainBufs, isAuxWindow } from './chatRunRunti
 
 // ── Time-based throttle для agent:tool_progress → liveSet ──────────────
 // Паттерн как у tokenBuf (FLUSH_MS в chatRunRuntime): события прогресса
-// копятся в buf.toolProgress, store-обновление — не чаще 80мс. Индексатор
-// fastContext эмитит прогресс per-batch (каждый батч файлов), run_command —
+// копятся в buf.toolProgress, store-обновление — не чаще 80мс. Долгие тулы
+// эмитят прогресс per-batch (например process_attachments), run_command —
 // построчно: без троттлинга каждое событие = store-обновление + полный
 // ре-рендер стримящегося сообщения. Trailing-флеш доносит последнее
 // состояние; guard по buffers.get — если стрим уже завершён (buffers.delete
@@ -41,8 +41,8 @@ export function useToolProgress() {
   useEffect(() => {
     if (isAuxWindow()) return
 
-    // agent:tool_progress — live progress для долгих тулов (get_fast_context,
-    // run_command, process_attachments). Эфемерный — не персистится в БД.
+    // agent:tool_progress — live progress для долгих тулов
+    // (run_command, process_attachments). Эфемерный — не персистится в БД.
     const offToolProgress = window.syntee.on('agent:tool_progress', (data: {
       msgId: string; chatId: string; toolName: string; stage: string
       detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number
@@ -128,7 +128,7 @@ export function useToolProgress() {
       msgId?: string; callId?: string; pendingCallId?: string; chatId?: string
       diff?: string
       // execute_code: trace должен попасть в live ToolStep так же, как в сохранённый.
-      codeMode?: { code: string; trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }> }
+      codeMode?: { code: string; trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure'; diff?: string }> }
       // Native analyze_image lifecycle: 'tool_result' несёт pending, отдельный
       // 'tool_result_update' (тот же callId) — responded/failed + findings.
       visualAnalysis?: { status: 'pending' | 'responded' | 'failed'; findings?: string }

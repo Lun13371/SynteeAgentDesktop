@@ -1,14 +1,11 @@
 //! Native tree-sitter symbol extraction.
 //!
-//! The TypeScript side used `web-tree-sitter` with WASM grammars, loaded through
-//! a hand-rolled Emscripten bootstrap that needed its own `.wasm` directory and
-//! an `initFastContextWasmDir()` call in every thread. The same grammars
-//! compiled into the sidecar remove that whole loading path: parsing happens in
-//! a process that is already dedicated to CPU-heavy work, and the caller just
-//! gets symbols back over the JSONL protocol.
+//! Grammars are compiled into the sidecar: parsing happens in a process that
+//! is already dedicated to CPU-heavy work, and the caller just gets symbols
+//! back over the JSONL protocol.
 //!
 //! Scope: languages with a maintained Rust grammar crate. Everything else
-//! (markdown, yaml, toml, …) keeps the lexical scanner in `symbols.rs`, so the
+//! (markdown, yaml, toml, …) keeps the lexical scanner in `lexical.rs`, so the
 //! module reports `None` instead of pretending to understand the file.
 
 use std::cell::RefCell;
@@ -16,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::fast_context::symbols::{FileSymbols, SymbolDef};
+use crate::symbols::{FileSymbols, SymbolDef};
 
 /// Node kinds that represent a definition.
 ///

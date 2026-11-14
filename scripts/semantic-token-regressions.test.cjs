@@ -6,8 +6,8 @@ const fs = require('node:fs')
 const { getEncoding } = require('js-tiktoken')
 const root = require('node:path').join(__dirname, '..')
 
-// The TypeScript fast-context worker queue is gone: indexing/watching lives in
-// the Rust sidecar. These regressions cover the remaining TypeScript pieces.
+// Heavy lifting (semantic indexing, token counting) lives in the Rust sidecar.
+// These regressions cover the remaining TypeScript pieces.
 
 test('semantic indexing lives in Rust: no ONNX or foreground wait left in TypeScript', () => {
   const tsPath = require('node:path').join(root, 'src/core/memory/semanticIndex.ts')

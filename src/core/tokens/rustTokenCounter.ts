@@ -10,7 +10,7 @@
  * sidecar child, so each thread registers its own adapter pointing at that child.
  */
 
-import { sidecarTokensCountBatch, sidecarTokensTruncate } from '../context/fastContext/sidecarClient'
+import { sidecarTokensCountBatch, sidecarTokensTruncate } from '../sidecar/sidecarClient'
 import { setRemoteTokenCounter, hasRemoteTokenCounter } from './usageTracker'
 
 /**

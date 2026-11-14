@@ -66,19 +66,16 @@ test('execute_code is a normal registered tool: available in every mode, individ
   assert.ok(!names({ customToolsEnabled: true, disabledTools: ['execute_code'] }).includes('execute_code'))
   assert.ok(settings.OPTIONAL_TOOL_GROUPS.some(group => group.tools.some(tool => tool.name === 'execute_code')))
 })
-test('execute_code description lists the tools available inside the script but excludes get_fast_context', () => {
+test('execute_code description lists the tools available inside the script but excludes execute_code itself', () => {
   const schema = options => getToolSchemas(options).find(s => s.function.name === 'execute_code')
   const normal = schema({}).function.description
   assert.match(normal, /Tools available inside this run: /)
   assert.ok(normal.includes('read_file') && normal.includes('run_command'))
-  assert.ok(!normal.includes('get_fast_context'))
-  // Ordinary get_fast_context remains available as a direct tool in normal runs.
-  assert.ok(names({}).includes('get_fast_context'))
+  assert.ok(!normal.includes('execute_code'))
   // Read-only run must not advertise mutation tools — the bridge would reject them.
   const ask = schema({ askMode: true }).function.description
   assert.ok(!ask.includes('run_command'), ask)
   assert.ok(!ask.includes('write_file,'), ask)
-  assert.ok(!ask.includes('get_fast_context'), ask)
   // Long families are grouped, not enumerated (otherwise ~550 extra tokens per request).
   assert.ok(schema({ browserMode: true }).function.description.includes('browser_* (45)'))
 })

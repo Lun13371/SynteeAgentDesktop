@@ -11,7 +11,7 @@ import { execAsync, execFileAsync, DEFAULT_IGNORE_DIRS, type ToolResult } from '
 //     rg --json: путь/номер/тип строки приходят структурированно — регэкспов
 //     на путях больше нет, баг невозможен.
 //  2. Принудительный case-sensitive (-s) убит → smart-case (-S): lowercase-
-//     паттерн находит CamelCase (getfastcontext → getFastContext). Главный
+//     паттерн находит CamelCase (getuserbyid → getUserById). Главный
 //     класс «не находит».
 //  3. path стал опциональным (дефолт — корень проекта); несуществующий путь
 //     даёт явную ошибку вместо молчаливого «No matches».
@@ -228,7 +228,7 @@ function buildEmptyHint(pattern: string, opts: SearchOpts | undefined, literalMo
     hints.push('Pattern has regex metachars — retry with literal=true if you meant them as text.')
   }
   if (!opts?.fileGlob) hints.push('Narrow file_glob (e.g. "*.ts") or path to a subfolder.')
-  hints.push('Do NOT loop over pattern variants — switch tool: find_files (file names) / get_fast_context (concepts / "where is X") / read_file outline (browse a file).')
+  hints.push('Do NOT loop over pattern variants — switch tool: find_files (file names) / read_file outline (browse a file).')
   return hints.join(' ')
 }
 

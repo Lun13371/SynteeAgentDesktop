@@ -10,7 +10,7 @@ const ts = require('typescript')
 
 // The lock registry lives in TypeScript and is bundled by electron-vite, so the
 // test transpiles just that file to run it in plain Node (main + worker thread).
-const sourcePath = resolve(__dirname, '../src/core/context/fastContext/sidecarLock.ts')
+const sourcePath = resolve(__dirname, '../src/core/sidecar/sidecarLock.ts')
 const outDir = mkdtempSync(join(tmpdir(), 'syntee-lock-module-'))
 const modulePath = join(outDir, 'sidecarLock.js')
 

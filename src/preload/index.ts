@@ -728,22 +728,9 @@ const synteeAPI = {
     setAppearance: (id: string, color: string, icon: string) => ipcRenderer.invoke('projects:setAppearance', id, color, icon),
   },
 
-  // Fast Context — статус индекса проекта, реиндекс, live progress
-  fastContext: {
-    getStatus: (projectId: string) => ipcRenderer.invoke('fastcontext:getStatus', projectId),
-    reindex: (projectId: string) => ipcRenderer.invoke('fastcontext:reindex', projectId),
-    clearIndex: (projectId: string) => ipcRenderer.invoke('fastcontext:clearIndex', projectId),
-    setActive: (projectId: string | null) => ipcRenderer.invoke('fastcontext:setActive', projectId),
-    onProgress: (cb: (data: { projectId: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number }) => void) => {
-      const handler = (_e: unknown, data: { projectId: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number }) => cb(data)
-      ipcRenderer.on('fastcontext:progress', handler)
-      return () => ipcRenderer.removeListener('fastcontext:progress', handler)
-    },
-    onUpdated: (cb: (projectId: string) => void) => {
-      const handler = (_e: unknown, projectId: string) => cb(projectId)
-      ipcRenderer.on('fastcontext:updated', handler)
-      return () => ipcRenderer.removeListener('fastcontext:updated', handler)
-    },
+  // Extensions — активация проекта для авто-детекта MCP/skills
+  extensions: {
+    setActiveProject: (projectId: string | null) => ipcRenderer.invoke('extensions:setActiveProject', projectId),
   },
 
   // Память (MemoryStore: гибридный TF-IDF + embeddings, 4 kind, 3 scope)

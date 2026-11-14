@@ -45,12 +45,6 @@ const ROLE_META: Record<
 > = {
   main: { label: 'Основной чат', desc: 'Для всех сообщений в чате', icon: 'bot' },
   fast: { label: 'Быстрые ответы', desc: 'Автоназвания, короткие задачи', icon: 'zap' },
-  fastContext: {
-    label: 'Быстрый контекст',
-    desc: 'Tree-sitter retrieval + LLM сборка контекста по проекту',
-    icon: 'compass',
-    filterCaps: ['tools', 'code']
-  },
   vision: {
     label: 'Vision / Картинки',
     desc: 'Анализ изображений; metadata модели, не гарантия поддержки транспортом',
@@ -78,7 +72,7 @@ const ROLE_META: Record<
     icon: 'brain',
     filterCaps: ['embedding']
   },
-  memory: { label: 'Память', desc: 'Анализ и сохранение воспоминаний', icon: 'database' },
+  memory: { label: 'Память', desc: 'Экстракция фактов, исходов и графа памяти', icon: 'database' },
   summary: { label: 'Суммаризация', desc: 'Авто-заголовки чатов', icon: 'fileText' }
 }
 

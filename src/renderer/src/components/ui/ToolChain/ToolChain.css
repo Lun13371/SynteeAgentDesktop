@@ -386,7 +386,7 @@
 }
 /* Live-вывод run_command внутри того же окна: без своего cap'а один
    npm install съедает всю высоту и «ход работы» превращается в терминал. */
-.tc2--running .tc2-live-terminal-pre {
+.tc2--running .trr-term-out {
   max-height: 277px;
   overflow-y: auto;
 }
@@ -401,11 +401,9 @@
 .tc2--running .tc2-thinking-embed .tb-body-inner { max-height: 252px; }
 
 /* ── Контент под шагом внутри ленты ────────────────────────────────
-   Fast Context и карточки саб-агентов раньше рендерились ОТДЕЛЬНЫМИ
-   блоками рядом с плашкой хода работы: они визуально выпадали из ленты и
-   при сворачивании блока оставались висеть в сообщении. Теперь они живут
-   ВНУТРИ ленты — прямо под своим шагом (get_fast_context / spawn_agent),
-   с отступом на уровне тела шага. */
+   Карточки саб-агентов живут ВНУТРИ ленты — прямо под своим шагом
+   (spawn_agent), с отступом на уровне тела шага, и сворачиваются
+   вместе с ходом работы. */
 .tc2-iter-extra {
   padding-left: 30px;   /* 20px рельса + 10px gap — выравнивание с телом шага */
   margin: 2px 0 6px;
@@ -731,26 +729,6 @@
   font-weight: 600;
 }
 
-/* Live-терминал для run_command пока команда выполняется */
-.tc2-live-terminal {
-  margin-top: 6px;
-}
-.tc2-live-terminal-pre {
-  margin: 0;
-  padding: 8px 10px;
-  background: #0d1117;
-  border-radius: 8px;
-  border: 1px solid var(--overlay-4);
-  font-size: 12px;
-  font-family: var(--font-mono);
-  color: #e2e8f0;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 200px;
-  overflow-y: auto;
-  line-height: 1.4;
-}
-
 .tc2-code-block {
   background: var(--bg-tertiary);
   border-radius: 6px;
@@ -770,62 +748,143 @@
   font-size: 11px;
   user-select: none;
 }
-.tc2-code-summary {
+/* ── Внутренние вызовы execute_code ──
+   Тот же язык, что у обычных тулов: иконка + название + превью аргумента/файла
+   + ✓/✗. В свёрнутом виде — компактный список с направляющей линией, как рельс
+   между шагами в ленте хода работы. */
+.tc2-trace-list {
+  position: relative;
   display: grid;
-  gap: 3px;
-  margin: 0 4px 6px 31px;
-  padding: 4px 7px;
-  border-left: 2px solid #a78bfa66;
-  color: var(--text-muted);
-  font: 10px/1.35 var(--font-mono);
+  gap: 1px;
+  margin: 0 8px 6px 31px;
+  padding: 3px 0 3px 11px;
 }
-.tc2-code-summary-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 7px; }
-.tc2-code-summary-row code { color: #a78bfa; white-space: nowrap; }
-.tc2-code-summary-row--failure code { color: #f87171; }
-.tc2-code-summary-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tc2-code-summary-result {
-  grid-column: 2;
-  color: var(--text-secondary);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow-wrap: anywhere;
+.tc2-trace-list::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  border-radius: 1px;
+  background: var(--overlay-4, rgba(255, 255, 255, 0.1));
 }
-.tc2-code-summary-more { color: var(--text-muted); font-family: var(--font-sans); }
-.tc2-code-mode { margin-top: 4px; }
-.tc2-code-trace { display: grid; gap: 6px; }
-.tc2-code-trace-row {
+.tc2-trace-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   min-width: 0;
-  padding: 7px 8px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-tertiary);
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
   color: var(--text-secondary);
+  text-align: left;
 }
-.tc2-code-trace-row--failure { border-color: color-mix(in srgb, #f87171 35%, var(--border)); }
-.tc2-code-trace-head { display: flex; align-items: center; gap: 7px; font: 11px/1.35 var(--font-mono); }
-.tc2-code-trace-head code { color: #a78bfa; font-weight: 600; }
-.tc2-code-trace-status { color: #4ade80; }
-.tc2-code-trace-row--failure .tc2-code-trace-status { color: #f87171; }
-.tc2-code-trace-args {
-  margin-top: 4px;
+.tc2-trace-icon { display: inline-flex; flex-shrink: 0; }
+.tc2-trace-label {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.tc2-trace-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   color: var(--text-muted);
-  font: 10px/1.4 var(--font-mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
-.tc2-code-trace-result {
-  margin: 5px 0 0;
-  max-height: 96px;
-  overflow: auto;
-  color: var(--text-secondary);
-  font: 10px/1.4 var(--font-mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.tc2-trace-preview .file-chip { font-size: 11px; }
+.tc2-trace-preview .file-chip-name { max-width: 240px; }
+.tc2-trace-status {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #3fb950;
 }
-.tc2-code-empty { color: var(--text-muted); font-size: 11px; }
-.tc2-code-details { margin-top: 8px; }
+.tc2-trace-row--fail .tc2-trace-status { color: #f85149; }
+.tc2-trace-row--fail .tc2-trace-label { color: #f87171; }
+
+/* «Ещё N вызовов» — настоящая кнопка: раскрывает карточку скрипта. */
+.tc2-trace-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: start;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.tc2-trace-more:hover {
+  background: var(--overlay-2);
+  color: var(--text-primary);
+}
+
+/* Раскрытый вид: каждый вызов — самостоятельная тул-карточка,
+   заголовок раскрывает вывод (закрыто по умолчанию, как у тулов ленты). */
+.tc2-trace { display: grid; gap: 8px; }
+.tc2-trace-cards {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding-left: 11px;
+}
+.tc2-trace-cards::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  border-radius: 1px;
+  background: var(--overlay-4, rgba(255, 255, 255, 0.1));
+}
+.tc2-trace-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--overlay-1);
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.tc2-trace-card:hover { border-color: var(--overlay-5); }
+.tc2-trace-card--open { background: var(--overlay-2); }
+.tc2-trace-card--fail { border-color: color-mix(in srgb, #f85149 32%, var(--border)); }
+.tc2-trace-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.tc2-trace-card-head:hover { background: var(--overlay-2); }
+.tc2-trace-card-head .tc2-trace-row {
+  flex: 1;
+  padding: 0;
+  border-radius: 0;
+}
+.tc2-trace-body {
+  padding: 7px 8px 8px;
+  min-width: 0;
+  border-top: 1px solid var(--overlay-2);
+}
+.tc2-trace-empty { font-size: 11px; color: var(--text-muted); }
+
 .tc2-arg-row {
   display: flex;
   gap: 8px;
@@ -869,10 +928,61 @@
 }
 
 /* ── Diff блок ── */
+/* Единая карточка правки: шапка (путь + +N/−M) и тело diff. Раньше блок
+   выводился без заголовка под общей подписью «Результат», и непонятно было,
+   какой файл изменён. */
+.tc2-diff {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tc2-diff--fail { border-color: rgba(248, 113, 113, 0.35); }
+.tc2-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border-bottom: 1px solid var(--overlay-4, rgba(255, 255, 255, 0.08));
+}
+/* Синтетический diff без пути (write_file целиком) вместо плашки файла. */
+.tc2-diff-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+/* Плашка файла в шапке карточки: имя может сжиматься, счётчики не уезжают. */
+.tc2-iter-header .file-chip { min-width: 0; }
+.tc2-iter-header .file-chip-name { max-width: 260px; }
+.tc2-iter-files-more {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Счётчики строк правки в шапке карточки: +N −M (видно без раскрытия). */
+.tc2-iter-diffstat {
+  display: inline-flex;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.tc2-diff-stat-add { color: #3fb950; }
+.tc2-diff-stat-del { color: #f85149; }
+
+.tc2-diff .tc2-diff-head > * { min-width: 0; }
+.tc2-diff .tc2-diff-pre {
+  border: none;
+  border-radius: 0;
+}
+
 .tc2-diff-pre {
   font-family: var(--font-mono);
   font-size: 11px;
-  background: #0d1117;
+  background: var(--overlay-1);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 0;

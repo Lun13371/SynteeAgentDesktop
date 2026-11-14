@@ -548,10 +548,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     }).catch(() => {})
   }, [])
 
-  // Уведомляем fast context watcher о смене активного проекта —
-  // активный проект индексируется быстрее (priority, progress events).
+  // Уведомляем extensions-detector о смене активного проекта —
+  // авто-детект MCP/skills сканирует .mcp.json / .syntee/skills/ проекта.
   useEffect(() => {
-    window.syntee.fastContext.setActive(activeProjectId).catch(() => {})
+    window.syntee.extensions.setActiveProject(activeProjectId).catch(() => {})
     // Перезагружаем списки MCP/skills для этого проекта — иначе бейдж и
     // ExtensionsPopover показывают только глобальные серверы, без проектных
     // из .mcp.json. Без этого проектные MCP появляются только после ручного

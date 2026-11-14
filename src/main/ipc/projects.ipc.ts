@@ -1,7 +1,5 @@
 import { ipcMain, BrowserWindow, dialog } from 'electron'
 import { analyzeProject } from '../../core/tools'
-import { stopWatching as stopFastContextWatch, registerProjectWorkdir } from '../../core/context/fastContextWatcher'
-import { sidecarClear } from '../../core/context/fastContext/sidecarClient'
 import {
   createProject, getAllProjects, renameProject, deleteProject, getProjectById, touchProject,
   setProjectVerificationCommand, setProjectContextFiles, setProjectAppearance,
@@ -65,8 +63,6 @@ export function registerProjectsIPC(mainWindow: ProjectsIPCWindow): void {
     // (UNIQUE constraint). Скан запускаем только если project_context пуст.
     const existing = getAllProjects().find(p => p.workdir === workdir)
     if (existing && existing.projectContext) {
-      // Регистрируем workdir — watcher стартует при активации проекта (setActiveProject).
-      registerProjectWorkdir(existing.id, existing.workdir)
       return existing
     }
     let projectContext: string | undefined
@@ -78,20 +74,12 @@ export function registerProjectsIPC(mainWindow: ProjectsIPCWindow): void {
       log('[projects:create] analyzeProject exception для workdir=%s: %s', workdir, (e as Error).message)
     }
     const project = createProject(workdir, projectContext)
-    // Регистрируем workdir нового проекта — watcher стартует при активации.
-    registerProjectWorkdir(project.id, project.workdir)
     return project
   })
 
   ipcMain.handle('projects:getAll', () => getAllProjects())
   ipcMain.handle('projects:rename', (_, id: string, name: string) => renameProject(id, name))
   ipcMain.handle('projects:delete', async (_, id: string, deleteChats: boolean) => {
-    // Останавливаем fast context watcher перед удалением проекта
-    try { await stopFastContextWatch(id) } catch { /* watcher опционален */ }
-    // Строки индекса удаляются и напрямую в SQL (deleteProject), но FTS-таблица
-    // живёт только в sidecar — просим его почистить, чтобы полнотекстовый
-    // акселератор не копил осиротевшие записи удалённых проектов.
-    try { await sidecarClear(id) } catch { /* sidecar опционален */ }
     deleteProject(id, deleteChats)
   })
   ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))

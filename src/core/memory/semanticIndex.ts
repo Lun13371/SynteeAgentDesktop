@@ -30,7 +30,7 @@ import {
   sidecarSemanticIndex,
   sidecarSemanticSearch,
   type SidecarSemanticHit,
-} from '../context/fastContext/sidecarClient'
+} from '../sidecar/sidecarClient'
 import { perfMark, perfEvent } from '../performanceDiagnostics'
 
 // ─── Типы ────────────────────────────────────────────────────────────────────

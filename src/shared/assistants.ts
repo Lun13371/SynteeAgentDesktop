@@ -42,7 +42,7 @@ export interface AssistantsSettings {
 }
 
 export const DEFAULT_ASSISTANTS_SETTINGS: AssistantsSettings = {
-  enabled: false,
+  enabled: true,
   watcherEnabled: true,
   janitorEnabled: true,
   briefingEnabled: true,

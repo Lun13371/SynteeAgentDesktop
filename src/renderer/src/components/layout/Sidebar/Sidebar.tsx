@@ -8,7 +8,6 @@ import PluginSidebarSlots from '../../ui/PluginSlot/PluginSidebarSlots'
 import IconButton from '../../ui/IconButton/IconButton'
 import ChatContextMenu, { type ContextMenuPos } from '../../ui/ChatContextMenu/ChatContextMenu'
 import ExtensionsPopover from '../../ui/ExtensionsPopover/ExtensionsPopover'
-import { ProjectIndexModal } from '../../ui/ProjectIndexModal/ProjectIndexModal'
 import { ProjectSettingsModal } from '../../ui/ProjectSettingsModal/ProjectSettingsModal'
 import ShareChatModal from '../../ui/ShareChatModal/ShareChatModal'
 import Identicon from '../../ui/Identicon/Identicon'
@@ -186,7 +185,6 @@ function Sidebar({
   const renameProjectRef = useRef<HTMLInputElement>(null)
   const verifyCmdRef = useRef<HTMLInputElement>(null)
   const [extPopoverOpen, setExtPopoverOpen] = useState(false)
-  const [indexModalProject, setIndexModalProject] = useState<{ id: string; name: string } | null>(null)
   const [settingsModalProject, setSettingsModalProject] = useState<Project | null>(null)
   const [shareTarget, setShareTarget] = useState<{ id: string; title: string } | null>(null)
   // Модалка удаления проекта: хранит проект + состояние чекбокса «удалить чаты».
@@ -1218,7 +1216,6 @@ function Sidebar({
           onOpenFolder: handleProjectOpenFolder,
           onNewChat: (p) => { onNewChat?.(p.id); setProjectCtxMenu(null) },
           onEditVerifyCmd: handleEditVerifyCmd,
-          onIndexStatus: (p) => setIndexModalProject({ id: p.id, name: p.name }),
           onSettings: (p) => setSettingsModalProject(p),
         }}
       />
@@ -1243,13 +1240,6 @@ function Sidebar({
         projectId={activeProjectId ?? undefined}
         onClose={() => setExtPopoverOpen(false)}
         onInstalled={onExtensionInstalled}
-      />
-
-      <ProjectIndexModal
-        open={!!indexModalProject}
-        projectId={indexModalProject?.id ?? null}
-        projectName={indexModalProject?.name}
-        onClose={() => setIndexModalProject(null)}
       />
 
       <ProjectSettingsModal
@@ -1613,7 +1603,6 @@ function ProjectContextMenu({ state, menuRef, handlers }: {
     onOpenFolder: (p: Project) => void
     onNewChat: (p: Project) => void
     onEditVerifyCmd: (p: Project) => void
-    onIndexStatus: (p: Project) => void
     onSettings: (p: Project) => void
   }
 }) {
@@ -1658,10 +1647,6 @@ function ProjectContextMenu({ state, menuRef, handlers }: {
           <button className="ctx-item" onClick={() => { handlers.onEditVerifyCmd(project); handlers.onClose() }}>
             <AppIcon name="terminal" size="sm" />
             <span>Команда проверки</span>
-          </button>
-          <button className="ctx-item" onClick={() => { handlers.onIndexStatus(project); handlers.onClose() }}>
-            <AppIcon name="database" size="sm" />
-            <span>Статус индекса</span>
           </button>
           <button className="ctx-item" onClick={() => { handlers.onSettings(project); handlers.onClose() }}>
             <AppIcon name="settings" size="sm" />

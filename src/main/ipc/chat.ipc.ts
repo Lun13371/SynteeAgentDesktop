@@ -77,7 +77,7 @@ import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core
 import { attachAssistants, detachAssistants, onAgentEvent, onJanitorAction, onAssistantEvent, onRunDone, getAssistantsSettings } from '../assistants/bridge'
 import { compressStoredMessages } from '../../core/context/historyCompressor'
 import { getMessagesAfterLatestCompact, updateMessageToolSteps } from '../../core/db/messages'
-import { registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
+import { setForegroundBusy } from '../../core/sidecar/sidecarClient'
 import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
 import { perfMark, perfEvent, perfPhase, perfPhaseAsync } from '../../core/performanceDiagnostics'
@@ -406,7 +406,7 @@ const cancelledDelegatedStarts = new Set<string>()
 let chatStopImpl: ((chatId: string, requestId: string) => boolean) | null = null
 let chatSendImpl: ((params: ProgrammaticChatSendParams) => Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }>) | null = null
 
-/** Обновляет дешёвый сигнал для fast-context worker после изменения chat state. */
+/** Обновляет дешёвый сигнал для sidecar: фоновая индексация уступает фореграунду. */
 function updateForegroundBusy(): void {
   setForegroundBusy(activeRuns.size > 0 || activeRunMeta.size > 0 || compactRuns.size > 0)
 }
@@ -718,22 +718,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     }
   }
   setGlobalMemorySettingsStore(store)
-
-  // Fast Context: индексацию, поиск и парсинг делает Rust sidecar в своей
-  // таблице (WAL → concurrent safe). В main-процессе connection к БД больше
-  // не нужен: статус приходит из sidecar через fastContext.ipc.
-
-  // Watcher стартует ТОЛЬКО для активного проекта (через setActiveProject из
-  // fastContext.ipc при активации чата). Раньше здесь был цикл по всем проектам —
-  // это порождало N chokidar-watchers в простое и N pre-warm job'ов, которые
-  // блокировали main-процесс. Pre-warm теперь откладывается на 30с и идёт в
-  // worker_thread (мягкий режим, BATCH=1).
-  // Здесь только регистрируем workdir'ы — setActiveProject подхватит при активации.
-  try {
-    for (const p of getAllProjects()) {
-      registerProjectWorkdir(p.id, p.workdir)
-    }
-  } catch { /* БД ещё пуста — ок */ }
 
   const getSystemPrompt = async (chatId?: string, isIncognito?: boolean, oneShotSkill?: { name: string; instructions: string }, inspection?: Pick<ContextInspection, 'sources' | 'files'>, imageModeOverride?: boolean): Promise<string> => {
     const contextPrefs = getContextPreferences(chatId)
@@ -2413,19 +2397,17 @@ function pathHash(value: string): string {
       console.error('[chat:send] plugins load failed:', (e as Error).message)
     }
 
-    // projectId для fast context indexing (tree-sitter индекс привязан к проекту)
-    let fastContextProjectId: string | undefined
+    // projectId для привязки памяти/графа к проекту
+    let chatProjectId: string | undefined
     if (chatWorkdir) {
       // Нормализуем через path.resolve — иначе trailing slash / регистр
       // на Windows дают path-mismatch и projectId не резолвится.
       const normWorkdir = path.resolve(chatWorkdir)
       const found = getAllProjects().find(p => path.resolve(p.workdir) === normWorkdir)
-      fastContextProjectId = found?.id
+      chatProjectId = found?.id
     }
 
-    // Пути для fast context (worker не имеет доступа к electron app):
-    //   dbPath   — абсолютный путь к syntee.db (worker открывает своё connection, WAL safe)
-    //   wasmDir  — директория с tree-sitter .wasm файлами
+    // dbPath — абсолютный путь к syntee.db (worker открывает своё connection, WAL safe)
     // ── Применение one-shot параметров кастомной команды ──
     // oneShotSkill инъектирует инструкции скилла в system prompt.
     // oneShotAllowedTools фильтрует schemas до указанного списка.
@@ -2466,7 +2448,7 @@ function pathHash(value: string): string {
         // файла-вложения (без полного пути).
         userDataPath: app.getPath('userData'),
         verificationCommand,
-        projectId: fastContextProjectId,
+        projectId: chatProjectId,
         mcpTools,
         mcpApprovalMap,
         pluginTools,
@@ -2487,7 +2469,7 @@ function pathHash(value: string): string {
     })
     run.worker = worker
     activeRuns.set(params.chatId, run)
-    attachAssistants(params.chatId, worker, { projectWorkdir: chatWorkdir, projectId: fastContextProjectId })
+    attachAssistants(params.chatId, worker, { projectWorkdir: chatWorkdir, projectId: chatProjectId })
     void onAgentEvent(params.chatId, { kind: 'task_start', text: params.message?.slice(0, 300) ?? '' })
     updateForegroundBusy()
 
@@ -2884,7 +2866,7 @@ function pathHash(value: string): string {
           // Регистрируем callback в глобальной Map — NotificationManager
           // вызовет resolveConfirm() напрямую (тот же процесс, без IPC).
           confirmCallbacks.set(reqId, (approved: boolean, always?: string, toolWide?: boolean) => {
-            const grant = persistApprovalGrant(store, { toolName, args, chatId: params.chatId, projectId: fastContextProjectId, workdir: chatWorkdir, approved, always, toolWide })
+            const grant = persistApprovalGrant(store, { toolName, args, chatId: params.chatId, projectId: chatProjectId, workdir: chatWorkdir, approved, always, toolWide })
             worker.postMessage({ type: 'confirm_reply', replyId: `confirm-reply-${reqId}`, approved, always: grant?.scope, match: grant?.match })
           })
           // ipcMain.once — для главного окна (AgentConfirmDialog шлёт через ipcRenderer.send)
@@ -2972,7 +2954,7 @@ function pathHash(value: string): string {
           break
 
         case 'tool_progress':
-          // Progress для долгих тулов (get_fast_context) — live-индикация этапов.
+          // Progress для долгих тулов — live-индикация этапов.
           // Не персистим в БД (ephemeral), только в live state renderer'а.
           // Накапливаем в ActiveRun.bufferedLiveState чтобы при переключении
           // чата и возврате hydrateFromMain мог восстановить прогресс.
@@ -3074,7 +3056,7 @@ function pathHash(value: string): string {
                 workingMemory: parentWorkingMemory,
                 mode: chatMode,
                 workdir: chatWorkdir,
-                projectId: fastContextProjectId,
+                projectId: chatProjectId,
               },
             })
             worker.postMessage({
@@ -3939,7 +3921,7 @@ function pathHash(value: string): string {
     // Для side-чата строим кастомный промпт: базовый промпт родителя +
     // инструкция о доступе к основному чату через тул get_main_chat_messages.
     const sideSystemPrompt = params.sideChatParentId
-      ? `Ты параллельный доп-агент в правой панели. У тебя есть read-only доступ к файловой системе (read_file, read_files, list_directory, find_files, search_code, get_fast_context) и к основному чату через тул get_main_chat_messages — используй его чтобы запросить конкретные сообщения из истории основного чата, если нужен контекст или детали диалога. Ты НЕ можешь изменять файлы или выполнять команды — только читать и искать.
+      ? `Ты параллельный доп-агент в правой панели. У тебя есть read-only доступ к файловой системе (read_file, read_files, list_directory, find_files, search_code) и к основному чату через тул get_main_chat_messages — используй его чтобы запросить конкретные сообщения из истории основного чата, если нужен контекст или детали диалога. Ты НЕ можешь изменять файлы или выполнять команды — только читать и искать.
 
 Ниже — системный промпт и контекст основного чата (проект, рабочая память, сводка):
 
@@ -3968,7 +3950,6 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
         'list_directory',
         'find_files',
         'search_code',
-        'get_fast_context',
         'update_todo',
       ])
       sideToolSchemas = sideToolSchemas.filter(

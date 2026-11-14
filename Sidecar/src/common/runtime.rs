@@ -14,12 +14,12 @@ use crate::protocol::{Request, Response};
 
 /// Methods that may run off the reader thread.
 ///
-/// The reader loop is synchronous by design: indexing holds a walk and a SQLite
-/// transaction, and letting two of those interleave would be worse than a
-/// queue. But that same queue would put a `tokensCountBatch` on the chat send
-/// path behind a five-thousand-file walk. These methods are pure and read-only,
-/// so they are handed to a small worker pool instead. Responses are matched by
-/// `id`, so out-of-order replies are already handled by the TypeScript client.
+/// The reader loop is synchronous by design: a `semanticIndex` cycle holds a
+/// SQLite transaction, and letting two of those interleave would be worse than
+/// a queue. But that same queue would put a `tokensCountBatch` on the chat send
+/// path behind a long cycle. These methods are pure and read-only, so they are
+/// handed to a small worker pool instead. Responses are matched by `id`, so
+/// out-of-order replies are already handled by the TypeScript client.
 ///
 /// `semanticEmbed`/`semanticSearch` are here for the same reason: a background
 /// `semanticIndex` cycle can occupy the reader thread for up to its budget

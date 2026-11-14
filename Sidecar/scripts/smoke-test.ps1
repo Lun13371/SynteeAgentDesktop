@@ -11,8 +11,8 @@ $requests = @(
     '{"id":2,"method":"capabilities","params":{}}',
     '{"id":3,"method":"tokensCount","params":{"text":"Hello, world!"}}',
     '{"id":4,"method":"tokensTruncate","params":{"text":"one two three four","maxTokens":2}}',
-    '{"id":5,"method":"symbols","params":{"path":"src/ast.rs","skipReferences":true}}',
-    '{"id":6,"method":"symbols","params":{"path":"src/symbols.rs","skipReferences":false}}',
+    '{"id":5,"method":"symbols","params":{"path":"src/symbols/ast.rs","skipReferences":true}}',
+    '{"id":6,"method":"symbols","params":{"path":"src/symbols/lexical.rs","skipReferences":false}}',
     '{"id":7,"method":"shutdown","params":{}}'
 ) -join "`n"
 

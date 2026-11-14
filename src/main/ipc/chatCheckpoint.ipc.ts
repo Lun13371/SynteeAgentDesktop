@@ -11,6 +11,7 @@ import {
 import { resolveSnapshotPath } from '../../core/db/snapshotPaths'
 import { firstSnapshotPerPath } from '../../core/db/snapshotMerge'
 import { makeDiff, normalizeLineEndings } from '../../core/tools/_shared'
+import { asArgsObject, synthesizeDiffFromArgs } from '../../shared/fileChanges'
 import { slimMessagesForUI } from './slimMessages'
 import { activeRuns } from './chatShared'
 import { log } from '../../core/logger'
@@ -187,12 +188,31 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
 
       // ── Fallback: старые turn'ы без снапшотов — прежний парсинг ──
       const messages = getMessages(chatId) as Array<{
-        id: string; toolSteps?: Array<{ type: string; diff?: string; toolName?: string; toolArgs?: Record<string, unknown> }>
+        id: string
+        toolSteps?: Array<{
+          type: string
+          diff?: string
+          toolName?: string
+          toolArgs?: Record<string, unknown>
+          codeMode?: { trace?: Array<{ name: string; args: unknown; status: string; diff?: string }> }
+        }>
       }>
       const assistantMsg = messages.find(m => m.id === cp.assistantMessageId)
       if (!assistantMsg?.toolSteps) return null
 
       const fileMap = new Map<string, { added: number; deleted: number }>()
+      // Правки из execute_code: у скрипта нет собственных tool_result-шагов,
+      // всё лежит в codeMode.trace. Без этого такие файлы не попадали в сводку.
+      const nestedDiffs: Array<{ diff: string; argsPath?: string }> = []
+      for (const step of assistantMsg.toolSteps) {
+        for (const entry of step.codeMode?.trace ?? []) {
+          if (entry.status !== 'success') continue
+          if (entry.name !== 'edit_file' && entry.name !== 'write_file') continue
+          const entryArgs = asArgsObject(entry.args)
+          const diff = entry.diff ?? synthesizeDiffFromArgs(entry.name, entryArgs)
+          if (diff) nestedDiffs.push({ diff, argsPath: entryArgs.path as string | undefined })
+        }
+      }
       for (const step of assistantMsg.toolSteps) {
         if (step.type !== 'tool_result' || !step.diff) continue
         // Извлекаем path из +++ строки, fallback — toolArgs.path.
@@ -208,6 +228,24 @@ export function registerCheckpointIPC(mainWindow: CheckpointIPCWindow): void {
         // Считаем + и - строки (пропуская +++/--- заголовки)
         let added = 0, deleted = 0
         for (const line of step.diff.split('\n')) {
+          if (line.startsWith('+++') || line.startsWith('---')) continue
+          if (line.startsWith('+')) added++
+          else if (line.startsWith('-')) deleted++
+        }
+        const existing = fileMap.get(filePath)
+        if (existing) { existing.added += added; existing.deleted += deleted }
+        else fileMap.set(filePath, { added, deleted })
+      }
+      // ── Правки из вложенных вызовов execute_code ──
+      for (const nested of nestedDiffs) {
+        const pathMatch = nested.diff.match(/^\+\+\+\s+(.+)$/m)
+        let filePath = pathMatch?.[1]?.trim() ?? nested.argsPath
+        if (!filePath) continue
+        if (filePath.startsWith('"') && filePath.endsWith('"')) {
+          filePath = filePath.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"')
+        }
+        let added = 0, deleted = 0
+        for (const line of nested.diff.split('\n')) {
           if (line.startsWith('+++') || line.startsWith('---')) continue
           if (line.startsWith('+')) added++
           else if (line.startsWith('-')) deleted++

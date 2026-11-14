@@ -20,9 +20,9 @@ import './ChatMinimap.css'
 const MIN_MESSAGES = 3
 /** Максимальная высота полосы — доля от высоты контейнера. */
 const STRIP_MAX_RATIO = 0.45
-const DOT_GAP = 4
-const DOT_MAX = 7
-const DOT_MIN = 3
+/** Длина палочки: короткие реплики — короткие штрихи, длинные — длиннее. */
+const BAR_MIN = 6
+const BAR_MAX = 14
 
 /** Ховер точки дольше этого → открывается панель «все сообщения». */
 const PANEL_OPEN_DELAY = 700
@@ -139,36 +139,17 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
     }
   }, [virtualizer, scrollContainerRef, messages.length])
 
-  // Размер точки: при переполнении полосы точки ужимаются до DOT_MIN,
-  // дальше полоса сама скроллится (overflow-y: auto).
-  const [dotSize, setDotSize] = useState(DOT_MAX)
-  useEffect(() => {
-    let raf = 0
-    let cancelled = false
-    let ro: ResizeObserver | undefined
-    const apply = () => {
-      const el = scrollContainerRef.current
-      if (!el) return
-      // Минус высота кнопки-лупы и отступы обёртки.
-      const maxH = el.clientHeight * STRIP_MAX_RATIO - 30
-      const fit = Math.floor((maxH + DOT_GAP) / (dots.length + DOT_GAP / Math.max(DOT_MAX, 1)))
-      setDotSize(Math.max(DOT_MIN, Math.min(DOT_MAX, fit)))
-    }
-    const attach = () => {
-      if (cancelled) return
-      const el = scrollContainerRef.current
-      if (!el) { raf = requestAnimationFrame(attach); return }
-      apply()
-      ro = new ResizeObserver(apply)
-      ro.observe(el)
-    }
-    attach()
-    return () => {
-      cancelled = true
-      if (raf) cancelAnimationFrame(raf)
-      ro?.disconnect()
-    }
-  }, [scrollContainerRef, dots.length])
+  // Длина палочек — по примерной длине сообщения: лента читается как миникарта,
+  // а не набор одинаковых точек. Полоса при необходимости прокручивается.
+  const barLengths = useMemo(() => {
+    const lengths = dots.map(dot => {
+      const text = String(messages[dot.origIndex]?.content ?? '').trim()
+      const words = text.length
+      const scaled = Math.log2(Math.max(words, 1) + 1) * 1.7 + BAR_MIN
+      return Math.round(Math.max(BAR_MIN, Math.min(BAR_MAX, scaled)))
+    })
+    return lengths
+  }, [dots, messages])
 
   // Если полоса скроллится (точек больше, чем влезает) — держим активную
   // точку в поле зрения. Ручной расчёт (не scrollIntoView — тот может
@@ -284,7 +265,7 @@ function ChatMinimap({ virtualizer, messages, scrollContainerRef, onJump }: Chat
               `chat-minimap-dot--${d.role}`,
               i === activeDotIdx ? 'chat-minimap-dot--active' : '',
             ].filter(Boolean).join(' ')}
-            style={{ width: dotSize, height: dotSize, '--dot-size': `${dotSize}px` } as React.CSSProperties}
+            style={{ '--bar-len': `${barLengths[i] ?? BAR_MIN}px` } as React.CSSProperties}
             onClick={() => handleClick(d.origIndex)}
             onMouseEnter={e => handleDotEnter(d.origIndex, e.clientY)}
             onMouseLeave={handleDotLeave}

@@ -1,4 +1,4 @@
-import { sidecarSemanticSearch, resolveSemanticModelPaths, type SidecarSemanticHit } from '../context/fastContext/sidecarClient'
+import { sidecarSemanticSearch, resolveSemanticModelPaths, type SidecarSemanticHit } from '../sidecar/sidecarClient'
 import { getSkillManager } from '../skills/skillManager'
 import type { HintCandidate, AssistantsSettings } from '../../shared/assistants'
 import { log } from '../logger'

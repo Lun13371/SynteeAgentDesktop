@@ -124,7 +124,7 @@ User focus (optional): ${args || '(none — cover everything)'}
 
 ## Steps (STRICT order)
 
-1. **Analyze.** Map the current workdir yourself with read tools: call \`get_fast_context\` (query: "project structure, entry points, main modules"), \`list_directory\` on the workdir root, and read the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\` via \`read_file\`. You will get: tech stack, deps, scripts, entry points, git-tracked layout.
+1. **Analyze.** Map the current workdir yourself with read tools: \`list_directory\` on the workdir root, \`search_code\` for entry points and main modules, and read the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\` via \`read_file\`. You will get: tech stack, deps, scripts, entry points, git-tracked layout.
 
 2. **Recommend.** Based on the analysis, pick relevant MCP servers and skills from your knowledge of the popular MCP ecosystem. Match by detected tech stack:
    - React/Next/Vue/Svelte/Vite frontend → context7 (docs), shadcn-ui (UI components)
@@ -211,7 +211,7 @@ User focus (optional): ${args || '(none — cover everything)'}
 
 ## Steps (STRICT order)
 
-1. **Analyze.** Map the current workdir yourself with read tools: \`get_fast_context\` (query: "project structure, entry points, main modules"), \`list_directory\` on the workdir root, and \`read_file\` on the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\`. Study: tech stack, frameworks, build/test commands, git status.
+1. **Analyze.** Map the current workdir yourself with read tools: \`list_directory\` on the workdir root, \`search_code\` for entry points and main modules, and \`read_file\` on the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\`. Study: tech stack, frameworks, build/test commands, git status.
 
 2. **Check existing instructions.** Use \`read_file\` to check if any of these already exist in the workdir root:
    - AGENTS.md, CLAUDE.md, GEMINI.md, .cursorrules, .windsurfrules, .clinerules

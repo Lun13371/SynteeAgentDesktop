@@ -183,10 +183,10 @@ export class AIClient {
     return provider?.id === 'syntee-gateway' || provider?.type === 'syntee-gateway'
   }
 
-  private getModel(type: 'main' | 'fast' | 'fastContext' | 'vision' | 'summary' | 'router' | 'emotion' | 'subagent'): string {
+  private getModel(type: 'main' | 'fast' | 'memory' | 'vision' | 'summary' | 'router' | 'emotion' | 'subagent'): string {
     const defaults: Record<string, string> = {
       main: 'claude-sonnet-4-6', fast: 'mimo-v2.5-free',
-      fastContext: 'inclusionai/ling-3.0-flash:free',
+      memory: 'inclusionai/ling-3.0-flash:free',
       vision: 'gpt-4o', summary: 'claude-haiku-4-5',
       router: 'claude-haiku-4-5', emotion: 'claude-haiku-4-5',
       subagent: '',
@@ -403,7 +403,7 @@ export class AIClient {
   async streamChat(
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
-    modelType: 'main' | 'fast' | 'fastContext' | 'summary' = 'main',
+    modelType: 'main' | 'fast' | 'memory' | 'summary' = 'main',
     systemPrompt?: string,
     signal?: AbortSignal,
     temperatureOverride?: number,
@@ -690,7 +690,7 @@ export class AIClient {
 
   async complete(
     messages: ChatMessage[],
-    modelType: 'main' | 'fast' | 'fastContext' | 'summary' | 'router' | 'emotion' = 'fast',
+    modelType: 'main' | 'fast' | 'memory' | 'summary' | 'router' | 'emotion' = 'fast',
     systemPrompt?: string,
     opts?: { model?: string; maxTokens?: number },
   ): Promise<string> {

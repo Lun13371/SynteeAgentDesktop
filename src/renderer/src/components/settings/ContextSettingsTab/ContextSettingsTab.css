@@ -5,7 +5,7 @@
 }
 
 /* ctx-* классы используются внутри карточек (.settings-card-body) в
-   ContextSettingsTab и IndexingSettingsTab. Класс .ctx-section больше
+   ContextSettingsTab. Класс .ctx-section больше
    не нужен — карточку рендерит компонент Group. */
 
 .ctx-fields { display: flex; flex-direction: column; gap: 12px; padding: 4px 10px 6px; }

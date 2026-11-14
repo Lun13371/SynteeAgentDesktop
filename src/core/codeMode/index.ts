@@ -2,7 +2,14 @@ import { getQuickJS } from 'quickjs-emscripten'
 import ts from 'typescript'
 
 export interface CodeToolResult { success: boolean; output: string; error?: string; [key: string]: unknown }
-export interface CodeTraceEntry { name: string; args: unknown; result: string; status: 'success' | 'failure'; }
+export interface CodeTraceEntry {
+  name: string
+  args: unknown
+  result: string
+  status: 'success' | 'failure'
+  /** unified diff для правок/записи файлов — в ленте вызова он и есть «вывод». */
+  diff?: string
+}
 export interface ArtifactStore {
   save(chatId: string, value: unknown): string
   load(chatId: string, id: string): unknown | undefined
@@ -147,7 +154,17 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
         // output plus an error field; recording only output made those calls
         // look like successful calls with no content.
         const traceResult = bounded.output || String(value.error ?? '')
-        pushTrace({ name, args: safeArgs, result: traceResult.slice(0, 1000), status })
+        // Дифф правил не входит в текстовый output тула, но именно он — вывод
+        // edit_file/write_file. Прокидываем в трейс, иначе карточка правки
+        // внутри скрипта оставалась пустой (только плашка файла).
+        const traceDiff = typeof value.diff === 'string' && value.diff ? value.diff.slice(0, 8_000) : undefined
+        pushTrace({
+          name,
+          args: safeArgs,
+          result: traceResult.slice(0, 1000),
+          status,
+          ...(traceDiff ? { diff: traceDiff } : {}),
+        })
         const text = JSON.stringify(bounded)
         if (Buffer.byteLength(text, 'utf8') > CODE_MODE_LIMITS.bridgeJsonChars) { deferred.resolve(ctx.newString(JSON.stringify({ success: false, output: '', error: 'Tool result exceeds bridge size limit' }))) }
         else deferred.resolve(ctx.newString(text))

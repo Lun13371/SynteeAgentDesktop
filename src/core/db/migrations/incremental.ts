@@ -33,21 +33,18 @@ export function runIncrementalMigrations(db: Database.Database): void {
     }
   }
 
-  // Автомиграция: добавляем relevance_boost колонку для существующих БД.
-  // PRAGMA table_info возвращает колонки; если relevance_boost нет — ALTER TABLE ADD COLUMN.
+  // Fast Context удалён из приложения: убираем его таблицы (TS-индекс,
+  // история, Rust-зеркала) и узлы графа с source_kind='fast_context'.
+  // Идемпотентно — на свежих БД таблиц уже нет.
   {
-    const cols = db.prepare(`PRAGMA table_info(fast_context_index)`).all() as Array<{ name: string }>
-    if (!cols.find(c => c.name === 'relevance_boost')) {
-      db.exec(`ALTER TABLE fast_context_index ADD COLUMN relevance_boost REAL NOT NULL DEFAULT 0`)
-    }
-    if (!cols.find(c => c.name === 'embedding')) {
-      db.exec(`ALTER TABLE fast_context_index ADD COLUMN embedding BLOB`)
-    }
-    // content_hash — быстрый content hash (FNV-1a первых 4KB + size) для точного
-    // детекта изменений вместо mtime+size (mtime может меняться без content change).
-    if (!cols.find(c => c.name === 'content_hash')) {
-      db.exec(`ALTER TABLE fast_context_index ADD COLUMN content_hash INTEGER NOT NULL DEFAULT 0`)
-    }
+    db.exec(`
+      DROP TABLE IF EXISTS fast_context_index;
+      DROP TABLE IF EXISTS fast_context_index_history;
+      DROP TABLE IF EXISTS fast_context_sidecar_index;
+      DROP TABLE IF EXISTS fast_context_sidecar_meta;
+      DROP TABLE IF EXISTS fast_context_sidecar_fts;
+      DELETE FROM memory_graph_nodes WHERE source_kind = 'fast_context';
+    `)
   }
 
   // Автомиграция: для каждого уникального workdir из chats создаём проект

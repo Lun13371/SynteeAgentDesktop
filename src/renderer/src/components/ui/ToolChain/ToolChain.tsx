@@ -2,7 +2,9 @@
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
-import ToolResultRenderer from './ToolResultRenderer'
+import ToolResultRenderer, { CodeSurface } from './ToolResultRenderer'
+import FileChip from './FileChip'
+import { synthesizeDiffFromArgs, countDiffLines, asArgsObject } from '../../../utils/synthesizeDiff'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import type { ToolOutputMode, SteerAttachmentMeta, Attachment } from '../../../../../shared/types'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
@@ -12,7 +14,7 @@ import { stripAttachTokens } from '../../../../../shared/attachmentMarkdown'
 import { copyToClipboard } from '../../../utils/clipboard'
 import renderInlineAttachments from '../InlineAttachmentRenderer/InlineAttachmentRenderer'
 
-import { getToolMeta } from '../../../../../shared/toolMeta'
+import { getToolMeta, TOOL_META } from '../../../../../shared/toolMeta'
 import { isFinalAnswerToolName } from '../../../../../shared/finalAnswer'
 import './ToolChain.css'
 
@@ -45,7 +47,7 @@ export interface ToolStep {
   }
   codeMode?: {
     code: string
-    trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }>
+    trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure'; diff?: string }>
   }
   /** §steer: id реплики (ключ оптимистичной карточки) и признак применения. */
   steerId?: string
@@ -173,10 +175,9 @@ export interface ToolChainSection {
 // Схлопываем длинные цепочки однотипных тулов (6 read_file подряд) в
 // одну раскрывающуюся группу. Только в финальном состоянии (!isRunning),
 // чтобы во время live-прогона не дезориентировать внезапным коллапсом.
-// get_fast_context и spawn_agent не группируем: у них внутри ленты живут
-// собственные карточки (FastContextBlock / карточка саб-агента) — в группе
-// они бы исчезли вместе с телом шага.
-const NO_GROUP_TOOLS = new Set(['spawn_agent', 'ask_user', 'update_todo', 'get_fast_context'])
+// spawn_agent не группируем: у него внутри ленты живёт собственная карточка
+// саб-агента — в группе она бы исчезла вместе с телом шага.
+const NO_GROUP_TOOLS = new Set(['spawn_agent', 'ask_user', 'update_todo'])
 
 type ChainEntry =
   | { kind: 'thinking'; key: string; text: string; ms?: number; si: number }
@@ -479,50 +480,165 @@ function codeTraceSummary(trace: NonNullable<ToolStep['codeMode']>['trace']): st
   return `${trace.length} вызов${trace.length === 1 ? '' : trace.length < 5 ? 'а' : 'ов'}: ${tools.join(', ')}${failed ? ` · ошибок: ${failed}` : ''}`
 }
 
-function CodeModeSummary({ trace }: { trace: NonNullable<ToolStep['codeMode']>['trace'] }) {
+// ── Внутренние вызовы execute_code ───────────────────────────────────────
+// Раньше это был отдельный «журнал»: фиолетовая полоса слева, сырой mono-текст,
+// собственные карточки — карточка скрипта выглядела чужеродно рядом с обычными
+// тулами. Теперь внутренние вызовы — те же строки, что у тулов (иконка, название,
+// превью аргумента/файла, ✓/✗), а их вывод рендерится тем же ToolResultRenderer.
+
+interface TraceEntry {
+  name: string
+  args: unknown
+  result: string
+  status: 'success' | 'failure'
+  /** unified diff правки — в ленте он и есть вывод edit_file/write_file. */
+  diff?: string
+}
+
+/** Аргументы вложенного вызова как объект (в трейсе они приходят JSON-строкой). */
+function traceArgsObject(args: unknown): Record<string, unknown> {
+  return asArgsObject(args)
+}
+
+/** Путь файла из аргументов вложенного вызова — чтобы рисовать плашку файла. */
+function traceFilePath(args: unknown): string {
+  const a = traceArgsObject(args)
+  const single = a.path ?? a.file_path ?? a.filePath
+  if (typeof single === 'string' && single) return single
+  const list = Array.isArray(a.paths) ? a.paths : []
+  return (list.find(x => typeof x === 'string') as string | undefined) ?? ''
+}
+
+// Строка вложенного вызова — span'ы, чтобы её можно было положить внутрь
+// кнопки-заголовка карточки (в button блочные div'ы невалидны).
+const TraceRow = memo(function TraceRow({ entry }: { entry: TraceEntry }) {
+  const meta = getToolMeta(entry.name)
+  const path = traceFilePath(entry.args)
+  const argsText = codeTraceArgs(entry.args) || 'без аргументов'
+  // Счётчики правки — как в шапке обычной карточки edit_file. Если в трейсе
+  // diff нет (старые записи), он собирается из аргументов вызова.
+  const diff = entry.diff ?? synthesizeDiffFromArgs(entry.name, traceArgsObject(entry.args))
+  const stat = diff ? countDiffLines(diff) : null
+  // У этих тулов path — всегда каталог; для search_code решает сам путь
+  // (папка без расширения / файл с расширением).
+  const pathIsDir = entry.name === 'list_directory' || entry.name === 'find_files'
+  return (
+    <span className={`tc2-trace-row${entry.status === 'failure' ? ' tc2-trace-row--fail' : ''}`}>
+      <span className="tc2-trace-icon" style={{ color: meta.color }}>
+        <AppIcon name={meta.icon as 'zap'} size="xs" />
+      </span>
+      <span className="tc2-trace-label">{meta.label}</span>
+      <span className="tc2-trace-preview" title={argsText}>
+        {path
+          ? <FileChip path={path} showDir={false} isDir={pathIsDir || undefined} added={stat ? stat.adds : undefined} deleted={stat ? stat.dels : undefined} />
+          : argsText}
+      </span>
+      <span className="tc2-trace-status">{entry.status === 'success' ? '✓' : '✗'}</span>
+    </span>
+  )
+}, (prev, next) => prev.entry === next.entry)
+
+/** Вложенный вызов в раскрытом виде — обычная тул-карточка: заголовок
+ *  раскрывает вывод, как у тулов ленты (закрыто по умолчанию). */
+const TraceCard = memo(function TraceCard({ entry, mode }: {
+  entry: TraceEntry
+  mode: ToolOutputMode
+}) {
+  const [open, setOpen] = useState(false)
+  // Настоящий diff из трейса, а для старых записей — собранный из аргументов.
+  const diff = entry.diff ?? synthesizeDiffFromArgs(entry.name, traceArgsObject(entry.args))
+  const hasBody = Boolean(diff || entry.result?.trim())
+  return (
+    <div className={`tc2-trace-card${entry.status === 'failure' ? ' tc2-trace-card--fail' : ''}${open ? ' tc2-trace-card--open' : ''}`}>
+      <button
+        type="button"
+        className="tc2-trace-card-head"
+        onClick={() => { if (hasBody) setOpen(value => !value) }}
+        aria-expanded={open}
+      >
+        <TraceRow entry={entry} />
+        {hasBody && <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="xs" />}
+      </button>
+      <AnimatePresence initial={false}>
+        {open && hasBody && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{
+              height: { duration: 0.24, ease: [0.22, 1, 0.36, 1] },
+              opacity: { duration: 0.16, ease: 'easeOut' },
+            }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div className="tc2-trace-body">
+              {diff ? (
+                <DiffBlock
+                  diff={diff}
+                  path={traceFilePath(entry.args)}
+                  isFail={entry.status === 'failure'}
+                />
+              ) : (
+                <ToolResultRenderer
+                  call={{ toolName: entry.name, toolArgs: traceArgsObject(entry.args) }}
+                  result={{ content: entry.result, success: entry.status === 'success' }}
+                  mode={mode}
+                />
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}, (prev, next) => prev.entry === next.entry && prev.mode === next.mode)
+
+function CodeModeSummary({ trace, onExpand }: {
+  trace: NonNullable<ToolStep['codeMode']>['trace']
+  onExpand?: () => void
+}) {
   if (!trace?.length) return null
   const shown = trace.slice(0, 3)
+  const rest = trace.length - shown.length
   return (
-    <div className="tc2-code-summary">
+    <div className="tc2-trace-list">
       {shown.map((entry, index) => (
-        <div key={`${entry.name}-${index}`} className={`tc2-code-summary-row tc2-code-summary-row--${entry.status}`}>
-          <code>{entry.name}</code>
-          <span className="tc2-code-summary-args">{codeTraceArgs(entry.args) || 'без аргументов'}</span>
-          <span className="tc2-code-summary-result">{entry.result || '(пустой вывод)'}</span>
-        </div>
+        <TraceRow key={`${entry.name}-${index}`} entry={entry} />
       ))}
-      {trace.length > shown.length && <div className="tc2-code-summary-more">ещё {trace.length - shown.length} вызовов — нажмите, чтобы раскрыть</div>}
+      {rest > 0 && (
+        <button type="button" className="tc2-trace-more" onClick={onExpand}>
+          <span>ещё {rest} вызовов — раскрыть</span>
+          <AppIcon name="chevronDown" size="xs" />
+        </button>
+      )}
     </div>
   )
 }
 
-function CodeModeDetails({ details }: { details: NonNullable<ToolStep['codeMode']> }) {
+function CodeModeDetails({ details, mode }: {
+  details: NonNullable<ToolStep['codeMode']>
+  mode: ToolOutputMode
+}) {
   const trace = details.trace ?? []
   return (
-    <div className="tc2-section tc2-code-mode">
-      <div className="tc2-section-title" style={{ color: '#a78bfa' }}>
-        Внутренние вызовы · {trace.length}
-      </div>
+    <div className="tc2-trace">
       {trace.length > 0 ? (
-        <div className="tc2-code-trace">
+        <div className="tc2-trace-cards">
           {trace.map((entry, index) => (
-            <div key={`${entry.name}-${index}`} className={`tc2-code-trace-row tc2-code-trace-row--${entry.status}`}>
-              <div className="tc2-code-trace-head">
-                <code>{entry.name}</code>
-                <span className="tc2-code-trace-status">{entry.status === 'success' ? '✓' : '✗'}</span>
-              </div>
-              <div className="tc2-code-trace-args">{codeTraceArgs(entry.args) || 'без аргументов'}</div>
-              <pre className="tc2-code-trace-result">{entry.result || '(пустой вывод)'}</pre>
-            </div>
+            <TraceCard key={`${entry.name}-${index}`} entry={entry} mode={mode} />
           ))}
         </div>
       ) : (
-        <div className="tc2-code-empty">Внутренние вызовы не записаны.</div>
+        <div className="tc2-trace-empty">Внутренние вызовы не записаны</div>
       )}
-      <details className="tc2-code-details">
-        <summary>Показать TypeScript-код</summary>
-        <pre className="tc2-code-block">{details.code}</pre>
-      </details>
+
+      {/* Сам скрипт — та же «поверхность» кода, что у read_file/diff. */}
+      <CodeSurface
+        code={details.code}
+        lang="typescript"
+        title="Скрипт TypeScript"
+        initialLines={mode === 'detailed' ? 500 : 60}
+      />
     </div>
   )
 }
@@ -543,7 +659,10 @@ function stripAnsiRenderer(text: string): string {
 // маркер __SYNTEE_DONE вырезан) в <pre> с авто-скроллом. rAF-throttle чтобы
 // не ре-рендерить на каждый чанк. Buffer capped 50KB (хвост) — иначе длинный
 // вывод (npm install) раздул бы DOM.
-const LiveCommandOutput = memo(function LiveCommandOutput({ sessionId }: { sessionId: string }) {
+const LiveCommandOutput = memo(function LiveCommandOutput({ sessionId, command }: {
+  sessionId?: string
+  command: string
+}) {
   const [output, setOutput] = useState('')
   const bufRef = useRef('')
   const rafRef = useRef<number | null>(null)
@@ -551,6 +670,7 @@ const LiveCommandOutput = memo(function LiveCommandOutput({ sessionId }: { sessi
   const preRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
+    if (!sessionId) return
     bufRef.current = ''
     setOutput('')
     const off = window.syntee.on('pty:data', (sid: unknown, data: unknown) => {
@@ -590,20 +710,50 @@ const LiveCommandOutput = memo(function LiveCommandOutput({ sessionId }: { sessi
     if (nearBottom) pre.scrollTop = pre.scrollHeight
   }, [output])
 
-  if (!output) return null
+  // Одна и та же карточка, что и у завершённой команды: команда сверху,
+  // потоковый вывод ниже — без отдельного блока «Вывод».
   return (
-    <div className="tc2-section tc2-live-terminal">
-      <div className="tc2-section-title">Вывод</div>
-      <pre ref={preRef} className="tc2-live-terminal-pre">{output}</pre>
+    <div className="trr-term">
+      <div className="trr-term-cmd">
+        <span className="trr-term-prompt">$</span>
+        <code className="trr-term-cmd-text">{command || '(команда не записана)'}</code>
+        {command && <CopyCommandButton value={command} />}
+      </div>
+      <pre ref={preRef} className="trr-term-out">{output || 'ожидание вывода…'}</pre>
     </div>
   )
-}, (prev, next) => prev.sessionId === next.sessionId)
+}, (prev, next) => prev.sessionId === next.sessionId && prev.command === next.command)
+
+/** Копирование команды прямо из живой карточки (без импорта рендера результата). */
+const CopyCommandButton = memo(function CopyCommandButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      className="trr-copy-btn"
+      title="Копировать команду"
+      onClick={() => {
+        void copyToClipboard(value).then(ok => {
+          if (!ok) return
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1500)
+        })
+      }}
+    >
+      {copied ? '✓' : 'Копировать'}
+    </button>
+  )
+}, (prev, next) => prev.value === next.value)
 
 // Цветной diff блок. memo + чанкование: большие diff'ы (тысячи строк) раньше
 // монтировали div на КАЖДУЮ строку при раскрытии итерации → фриз. Теперь
 // первые DIFF_CHUNK строк + кнопка «Показать ещё».
 const DIFF_CHUNK = 500
-const DiffBlock = memo(function DiffBlock({ diff }: { diff: string }) {
+const DiffBlock = memo(function DiffBlock({ diff, path, isFail }: {
+  diff: string
+  path?: string
+  isFail?: boolean
+}) {
   const [extra, setExtra] = useState(0)
   const visible = DIFF_CHUNK + extra
   const lines = diff.split('\n').filter((_, i, arr) => {
@@ -611,25 +761,39 @@ const DiffBlock = memo(function DiffBlock({ diff }: { diff: string }) {
     return !(i === arr.length - 1 && arr[i] === '')
   })
   const shown = lines.slice(0, visible)
+  // Счётчики как в шапке карточки правки: +добавлено / −удалено.
+  let added = 0
+  let removed = 0
+  for (const line of lines) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue
+    if (line.startsWith('+')) added++
+    else if (line.startsWith('-')) removed++
+  }
   return (
-    <div className="tc2-diff-pre">
-      {shown.map((line, i) => {
-        let cls = 'tc2-diff-line'
-        if (line.startsWith('+++') || line.startsWith('---')) cls += ' tc2-diff-meta'
-        else if (line.startsWith('+')) cls += ' tc2-diff-add'
-        else if (line.startsWith('-')) cls += ' tc2-diff-del'
-        else if (line.startsWith('@@')) cls += ' tc2-diff-hunk'
-        else cls += ' tc2-diff-ctx'
-        return <div key={i} className={cls}>{line || '\u00a0'}</div>
-      })}
-      {lines.length > visible && (
-        <button className="tc2-show-more" onClick={() => setExtra(e => e + DIFF_CHUNK)}>
-          Показать ещё {Math.min(DIFF_CHUNK, lines.length - visible)} из {lines.length} строк
-        </button>
-      )}
+    <div className={`tc2-diff${isFail ? ' tc2-diff--fail' : ''}`}>
+      <div className="tc2-diff-head">
+        {/* Синтетический diff без пути (write_file целиком) — без лишней плашки файла. */}
+        {path ? <FileChip path={path} added={added} deleted={removed} /> : <span className="tc2-diff-title">изменения</span>}
+      </div>
+      <div className="tc2-diff-pre">
+        {shown.map((line, i) => {
+          let cls = 'tc2-diff-line'
+          if (line.startsWith('+++') || line.startsWith('---')) cls += ' tc2-diff-meta'
+          else if (line.startsWith('+')) cls += ' tc2-diff-add'
+          else if (line.startsWith('-')) cls += ' tc2-diff-del'
+          else if (line.startsWith('@@')) cls += ' tc2-diff-hunk'
+          else cls += ' tc2-diff-ctx'
+          return <div key={i} className={cls}>{line || '\u00a0'}</div>
+        })}
+        {lines.length > visible && (
+          <button className="tc2-show-more" onClick={() => setExtra(e => e + DIFF_CHUNK)}>
+            Показать ещё {Math.min(DIFF_CHUNK, lines.length - visible)} из {lines.length} строк
+          </button>
+        )}
+      </div>
     </div>
   )
-}, (prev, next) => prev.diff === next.diff)
+}, (prev, next) => prev.diff === next.diff && prev.path === next.path && prev.isFail === next.isFail)
 
 // Один блок итерации
 const IterationBlock = memo(function IterationBlock({
@@ -677,9 +841,26 @@ const IterationBlock = memo(function IterationBlock({
   // ── Раскрытие тела: закрыто по умолчанию ─────────────────────────────
   // Карточки остаются компактными; содержимое открывается только по клику.
   const [open, setOpen] = useState(false)
+  const userToggledRef = useRef(false)
   const toggleOpen = useCallback(() => {
+    userToggledRef.current = true
     setOpen(value => !value)
   }, [])
+
+  // run_command: пока команда выполняется, её текст должен быть виден целиком,
+  // а вывод — доезжать в той же карточке. Раскрываем сами; закрываем обратно,
+  // только если пользователь карточку не трогал.
+  const autoOpenedRef = useRef(false)
+  useEffect(() => {
+    if (iter.call.toolName !== 'run_command') return
+    if (running && !userToggledRef.current) {
+      autoOpenedRef.current = true
+      setOpen(true)
+    } else if (!running && autoOpenedRef.current && !userToggledRef.current) {
+      autoOpenedRef.current = false
+      setOpen(false)
+    }
+  }, [running, iter.call.toolName])
 
   // НЕТ авто-раскрытия при сбое: в больших чатах failed-итерации при скролле
   // монтировали полные тела (подсветка/diff) → фризы. Ошибка видна по бейджу
@@ -696,6 +877,35 @@ const IterationBlock = memo(function IterationBlock({
   // (первое значение args может быть другим ключом), title показывает полный
   // текст — раньше команду было не видно нигде: preview обрезан 80 символами,
   // а в раскрытом теле аргументы показывались только в detailed-режиме.
+  // Счётчики правки прямо в свёрнутой карточке: видно, что изменилось и
+  // насколько, без раскрытия diff.
+  const diffStats = useMemo(() => {
+    const d = iter.result?.diff
+    if (!d) return null
+    let added = 0
+    let removed = 0
+    for (const line of d.split('\n')) {
+      if (line.startsWith('+++') || line.startsWith('---')) continue
+      if (line.startsWith('+')) added++
+      else if (line.startsWith('-')) removed++
+    }
+    return { added, removed }
+  }, [iter.result?.diff])
+
+  // Файловые тулы показывают в свёрнутой шапке не сырой путь, а плашку файла
+  // ([JS] inspect-chat.mjs) — как в примере; для правок с +N −M.
+  const isFileTool = iter.call.toolName === 'read_file' || iter.call.toolName === 'read_files'
+    || iter.call.toolName === 'edit_file' || iter.call.toolName === 'write_file'
+  const filePathsArg = useMemo(() => {
+    const a = iter.call.toolArgs ?? {}
+    const single = a.path ?? a.file_path ?? a.filePath
+    if (typeof single === 'string' && single) return [single]
+    const list = Array.isArray(a.paths) ? a.paths : []
+    return list.filter((x): x is string => typeof x === 'string' && !!x)
+  }, [iter.call.toolArgs])
+  const filePathArg = filePathsArg[0] ?? ''
+  const extraFiles = Math.max(0, filePathsArg.length - 1)
+
   const previewText = iter.call.toolName === 'execute_code'
     ? iter.result?.codeMode
       ? codeTraceSummary(iter.result.codeMode.trace)
@@ -746,8 +956,8 @@ const IterationBlock = memo(function IterationBlock({
           {meta.isMcp && meta.server && (
             <span className="tc2-iter-server">{meta.server}</span>
           )}
-          {iter.call.toolName && !meta.isMcp && (
-            <code className="tc2-iter-name">{iter.call.toolName}</code>
+          {iter.call.toolName && !meta.isMcp && !TOOL_META[iter.call.toolName] && (
+            <code className="tc2-iter-name" title={iter.call.toolName}>{iter.call.toolName}</code>
           )}
           {iter.call.toolName === 'spawn_agent' && typeof iter.call.toolArgs?.role === 'string' && (
             <span
@@ -759,9 +969,26 @@ const IterationBlock = memo(function IterationBlock({
           )}
 
 
-          {!open && (iter.call.toolArgs || iter.call.toolName === 'execute_code') && (
+          {!open && filePathArg && (isFileTool ? (
+            <>
+              <FileChip
+                path={filePathArg}
+                added={diffStats?.added}
+                deleted={diffStats?.removed}
+                showDir={false}
+              />
+              {extraFiles > 0 && <span className="tc2-iter-files-more">+{extraFiles}</span>}
+            </>
+          ) : (
             <span className="tc2-iter-preview" title={previewText}>
               {truncate(previewText)}
+            </span>
+          ))}
+
+          {diffStats && (diffStats.added > 0 || diffStats.removed > 0) && (
+            <span className="tc2-iter-diffstat" title="Строк добавлено / удалено">
+              {diffStats.added > 0 && <span className="tc2-diff-stat-add">+{diffStats.added}</span>}
+              {diffStats.removed > 0 && <span className="tc2-diff-stat-del">−{diffStats.removed}</span>}
             </span>
           )}
 
@@ -787,7 +1014,7 @@ const IterationBlock = memo(function IterationBlock({
         </button>
 
         {iter.call.toolName === 'execute_code' && iter.result?.codeMode && !open && mode !== 'compact' && (
-          <CodeModeSummary trace={iter.result.codeMode.trace} />
+          <CodeModeSummary trace={iter.result.codeMode.trace} onExpand={toggleOpen} />
         )}
 
         <AnimatePresence initial={false}>
@@ -809,7 +1036,7 @@ const IterationBlock = memo(function IterationBlock({
 
               {iter.result && mode !== 'compact' && (() => {
                 if (iter.result.codeMode) {
-                  return <CodeModeDetails details={iter.result.codeMode} />
+                  return <CodeModeDetails details={iter.result.codeMode} mode={mode} />
                 }
                 // ask_user — рендер вопросов и ответов пользователя
                 if (iter.call.toolName === 'ask_user' && iter.call.toolArgs?.questions) {
@@ -910,17 +1137,11 @@ const IterationBlock = memo(function IterationBlock({
                     </div>
                   )
                 }
-                // diff — DiffBlock
+                // diff — единая карточка правки: шапка с путём и +N/−M, тело diff
                 if (iter.result.diff) {
                   const isFail = iter.result.success === false
-                  return (
-                    <div className="tc2-section">
-                      <div className="tc2-section-title" style={{ color: isFail ? '#f87171' : '#4ade80' }}>
-                        {isFail ? 'Ошибка' : 'Результат'}
-                      </div>
-                      <DiffBlock diff={iter.result.diff} />
-                    </div>
-                  )
+                  const path = String(iter.call.toolArgs?.path ?? iter.call.toolArgs?.file_path ?? '')
+                  return <DiffBlock diff={iter.result.diff} path={path} isFail={isFail} />
                 }
                 // умный рендер через ToolResultRenderer
                 return (
@@ -977,15 +1198,19 @@ const IterationBlock = memo(function IterationBlock({
 
               {running && (
                 <>
-                  {/* Live-вывод для run_command пока команда выполняется.
-                      Подписывается на pty:data по sessionId из toolProgress. */}
-                  {iter.call.toolName === 'run_command' && liveSessionId && (
-                    <LiveCommandOutput sessionId={liveSessionId} />
+                  {/* run_command: команда + потоковый вывод в одной карточке —
+                      ровно та же вёрстка, что придёт вместе с результатом. */}
+                  {iter.call.toolName === 'run_command' ? (
+                    <LiveCommandOutput
+                      sessionId={liveSessionId}
+                      command={String(iter.call.toolArgs?.command ?? '')}
+                    />
+                  ) : (
+                    <div className="tc2-section tc2-section--running">
+                      <span className="tc2-spinner" />
+                      <span className="tc2-running-text">Выполняется…</span>
+                    </div>
                   )}
-                  <div className="tc2-section tc2-section--running">
-                    <span className="tc2-spinner" />
-                    <span className="tc2-running-text">Выполняется…</span>
-                  </div>
                 </>
               )}
             </motion.div>
@@ -1224,7 +1449,7 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
   /** Текущее стримящееся рассуждение — последней строкой ленты (isLive). */
   liveThinking?: { isLive: boolean; ms?: number; storeChatId?: string }
   /** Дополнительный контент под конкретной итерацией (внутри ленты):
-   *  карточка Fast Context, карточка саб-агента и т.п. Раньше такие блоки
+   *  карточка саб-агента и т.п. Раньше такие блоки
    *  рендерились снаружи, рядом с плашкой, и разрывали «ход работы».
    *  iter — именно эта итерация (call+result): решение, рисовать ли блок,
    *  принимается по её шагу, иначе карточка дублировалась бы под каждым
@@ -1619,7 +1844,7 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
               }
               const iter = entry.iter
               // Тул-карточки по умолчанию закрыты.
-              // Дополнительный контент под шагом (Fast Context / карточка
+              // Дополнительный контент под шагом (карточка
               // саб-агента) — ВНУТРИ ленты, сразу под своей итерацией.
               // Передаём САМУ итерацию: иначе карточка рисовалась бы под
               // каждым шагом секции (шаги секции одинаковы для всех её итераций).

@@ -87,14 +87,13 @@ export function getNextApiKey(store: Store, providerId: string): string {
 const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
   { role: 'main',      modelId: 'claude-sonnet-4-6',  providerId: 'anthropic' },
   { role: 'fast',      modelId: 'mimo-v2.5-free',     providerId: 'opencode-free' },
-  { role: 'fastContext', modelId: 'inclusionai/ling-3.0-flash:free', providerId: 'openrouter' },
   { role: 'vision',    modelId: 'gpt-4o',             providerId: 'openai' },
   { role: 'video',     modelId: '',                   providerId: '' },
   { role: 'audio',     modelId: '',                   providerId: '' },
   { role: 'stt',       modelId: '',                   providerId: '' },
   { role: 'tts',       modelId: '',                   providerId: '' },
   { role: 'embedding', modelId: '',                   providerId: '' },
-  { role: 'memory',    modelId: 'claude-haiku-4-5',   providerId: 'anthropic' },
+  { role: 'memory',    modelId: 'inclusionai/ling-3.0-flash:free', providerId: 'openrouter' },
   { role: 'summary',   modelId: 'claude-haiku-4-5',   providerId: 'anthropic' },
 ]
 

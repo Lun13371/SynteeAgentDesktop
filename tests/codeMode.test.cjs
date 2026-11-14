@@ -86,10 +86,9 @@ test('denied nested call is returned to the guest instead of aborting the progra
   })
   assert.equal(r.success, true); assert.match(r.output, /false,true,true/)
 })
-test('Agent blocks get_fast_context inside execute_code at the bridge', () => {
+test('Agent blocks execute_code recursion and unknown tools at the bridge', () => {
   const source = readFileSync('src/core/agent/Agent.ts', 'utf8')
-  assert.match(source, /toolName === 'get_fast_context'/)
-  assert.match(source, /get_fast_context is not available inside execute_code/)
+  assert.match(source, /toolName === 'execute_code' \|\| !allowedSchemas\.has\(toolName\)/)
 })
 test('ToolChain shows execute_code calls in the collapsed card and arguments/results after opening', () => {
   const source = readFileSync('src/renderer/src/components/ui/ToolChain/ToolChain.tsx', 'utf8')

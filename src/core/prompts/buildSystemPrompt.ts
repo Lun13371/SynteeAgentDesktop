@@ -224,7 +224,7 @@ If you see a notice "Context exceeded — compressed to N messages" or "Context 
 
 ## Reading large files
 
-Files can be large (thousands of lines). read_file returns 400 lines by default — if you see "shown 400 of N", use offset for the next chunk. Do not reread the whole file in 400-line chunks without need — use get_fast_context to orient yourself and jump to the needed function.
+Files can be large (thousands of lines). read_file returns 400 lines by default — if you see "shown 400 of N", use offset for the next chunk. Do not reread the whole file in 400-line chunks without need — use search_code or the read_file outline to orient yourself and jump to the needed function.
 
 ## Charts and diagrams
 

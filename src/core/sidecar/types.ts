@@ -1,8 +1,8 @@
 /**
- * Shared symbol shapes for Fast Context.
+ * Shared symbol shapes produced by the Rust sidecar `symbols` command.
  *
- * Kept separate from any parser implementation: the Rust sidecar produces these
- * over the protocol, and the remaining TypeScript consumers (snippets, memory
+ * Kept separate from any parser implementation: the sidecar produces these
+ * over the protocol, and TypeScript consumers (read_file outline, memory
  * graph) only need the shape.
  */
 
@@ -12,7 +12,7 @@ export interface SymbolDef {
   kind: string
   lineStart: number
   lineEnd: number
-  /** First line of the definition, for repo-map slices. */
+  /** First line of the definition. */
   signature: string
   /** Enclosing class/interface/module name, when there is one. */
   parentName?: string

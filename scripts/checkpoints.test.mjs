@@ -9,8 +9,7 @@
 //  4. Снапшоты, накопленные стримом (Stop/краш воркера), используются, если
 //     финальный undoStack не пришёл.
 //  5. Резолв пути снапшота против workdir чата (а не process.cwd()).
-//  6. Проводка: Agent → worker → main → БД (source-инварианты, как в
-//     tests/fastcontext-rust-only.test.cjs).
+//  6. Проводка: Agent → worker → main → БД (source-инварианты).
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
