@@ -1690,7 +1690,7 @@ export class Agent {
             && fn.name !== 'read_file' && fn.name !== 'read_files' && fn.name !== 'find_files'
             && fn.name !== 'search_code' && fn.name !== 'list_directory'
             && fn.name !== 'get_diagnostics'
-            && fn.name !== 'recall_memory' && fn.name !== 'get_system_info') {
+            && fn.name !== 'recall_memory') {
             approval.block = true
             approval.reason = 'Code Mode настроен только для чтения и анализа'
           }
@@ -1793,8 +1793,9 @@ export class Agent {
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
           let codeTrace: CodeTraceEntry[] | undefined
-          // Пост-фактум подсказка для execute_code: скрипт, сделавший <2
-          // вложенных вызовов тула, потратил раунд-трип впустую. Подсказка
+          // Пост-фактум подсказка для execute_code: скрипт-минималка (<2
+          // вложенных вызовов — раунд-трип впустую) или ровно 2 вызова
+          // (модель пишет минимальные скрипты вместо цепочки). Подсказка
           // идёт ТОЛЬКО модели (contentForAI) — в UI шаге показывается
           // codeMode: { code, trace }, и дублировать её пользователю не нужно.
           let codeModeHint = ''
@@ -1862,7 +1863,11 @@ export class Agent {
               if (codeResult.success) {
                 const nestedCalls = (codeResult.trace ?? []).filter(t => !t.name.startsWith('__artifact_')).length
                 if (nestedCalls < 2) {
-                  codeModeHint = `\n[execute_code hint: this script made ${nestedCalls} nested tool call(s) — that was a wasted round-trip. When 1 tool call is enough, call that tool directly; use execute_code only for scripts that make 2+ nested tool calls.]`
+                  codeModeHint = `\n[execute_code hint: this script made ${nestedCalls} nested tool call(s) — a wasted round-trip. When 1 tool call is enough, call that tool directly.]`
+                } else if (nestedCalls === 2) {
+                  // Пол минималки модель соблюдает, но стала писать РОВНО 2 вызова
+                  // вместо цепочки. Мягко пинаем к батчингу: «2 — это пол, а не цель».
+                  codeModeHint = `\n[execute_code hint: 2 nested calls is the floor, not the goal. If more steps of this task are coming, batch them ALL into one script instead of running several minimal ones.]`
                 }
               }
             } else {

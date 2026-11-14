@@ -685,8 +685,8 @@ function renderResult(
     return <SearchCodeResult content={content} />
   }
 
-  // get_system_info / get_file_outline → key-value
-  if (toolName === 'get_system_info' || toolName === 'get_file_outline') {
+  // get_file_outline → key-value
+  if (toolName === 'get_file_outline') {
     return <KeyValueResult content={content} />
   }
 

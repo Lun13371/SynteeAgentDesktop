@@ -985,7 +985,11 @@ const IterationBlock = memo(function IterationBlock({
             </span>
           ))}
 
-          {diffStats && (diffStats.added > 0 || diffStats.removed > 0) && (
+          {/* Счётчики живут ВНУТРИ плашки файла (FileChip) — раньше рядом
+              рисовался ещё и отдельный diffstat, и цифры дублировались
+              («+27 +27»). Отдельный блок нужен только когда плашки нет:
+              у правки без пути в аргументах. */}
+          {diffStats && (diffStats.added > 0 || diffStats.removed > 0) && !(isFileTool && filePathArg) && (
             <span className="tc2-iter-diffstat" title="Строк добавлено / удалено">
               {diffStats.added > 0 && <span className="tc2-diff-stat-add">+{diffStats.added}</span>}
               {diffStats.removed > 0 && <span className="tc2-diff-stat-del">−{diffStats.removed}</span>}

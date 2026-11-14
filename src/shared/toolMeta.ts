@@ -44,7 +44,6 @@ export const TOOL_META: Record<string, ToolMeta> = {
   search_code:   { label: 'Поиск кода',          icon: 'code',       color: '#818cf8' },
 
   // ── Система и генерация ──
-  get_system_info:{ label: 'Система',            icon: 'monitor',     color: '#38bdf8' },
   generate_image: { label: 'Генерация',          icon: 'image',       color: '#fb923c' },
   analyze_image:  { label: 'Распознавание',      icon: 'eye',         color: '#2dd4bf' },
 
