@@ -1,7 +1,13 @@
+import { statSync } from 'fs'
 import type { Message, ToolStep } from '../../shared/types'
 import { JANITOR_MARKER } from '../../shared/assistants'
 import { estimateTokens } from '../tokens/usageTracker'
-import { summarizeToolResult } from './janitor'
+import {
+  summarizeToolResult, parseReadSections, rangesCover, normalizePath, stableStringify, toolCallDetail,
+  PINNED_TOOLS, FILE_MUTATORS, UNKNOWN_MUTATORS, READ_TOOLS,
+  STALE_MIN_CHARS, STALE_MIN_SAVED, MIN_STUB_CHARS,
+  type ParsedReadSection,
+} from './janitor'
 
 /**
  * Персистентная компрессия истории (вариант B): детерминированное сжатие
@@ -10,21 +16,27 @@ import { summarizeToolResult } from './janitor'
  * заново (кольцо контекста осциллирует 130k → 280k). Здесь те же правила
  * применяются к сохранённым записям, и сжатие становится постоянным.
  *
- * Принципы:
+ * Принципы точности:
  *  - Заменяется ТОЛЬКО content у tool_result (call+result пары сохраняются) —
  *    структура итераций остаётся валидной для провайдера, кэш UI не ломается.
- *  - Правила детерминированные: префикс истории стабилен между запросами.
- *  - Свежий хвост (tailKeep последних assistant-сообщений с тулами) не трогаем.
- *  - Степы с визуалом (imagePaths/imageUrl), diff'ами, вопросами пользователю
- *    и ошибками никогда не сжимаются.
+ *  - Активный хвост = последние tailKeep ходов (assistant-сообщений с тулами)
+ *    не трогаем; всё старее — сжимаем.
+ *  - Перечитывания сворачиваются диапазонно: старое чтение гибнет, только
+ *    если файл после него правился, изменился на диске (mtime) или его
+ *    диапазон строк полностью перекрыт более поздними чтениями. Иначе —
+ *    информативное резюме с точной атрибуцией: что именно прочитано и как.
+ *  - Дедуп идентичных вызовов валиден, только если между ними не было мутаций.
+ *  - Степы с визуалом (imagePaths/imageUrl), diff'ами, ошибками и pinned-тулы
+ *    никогда не сжимаются. Анализ (покрытие/сталость) учитывает и хвостовые
+ *    ходы — заменяется только история за хвостом.
  *  - Оригинал не сохраняется (по дизайну B: «лишнее зачем хранить») — резюме
- *    сохраняет пути, строки и ошибки.
+ *    сохраняет пути, диапазоны строк и ошибки.
  */
 
 export interface CompressOptions {
   /** Порог экономии для UPDATE строки сообщения (janitorMinSavingsTokens). */
   minSavingsTokens: number
-  /** Сколько последних assistant-сообщений с тулами не трогать. */
+  /** Сколько последних ходов (assistant-сообщений с тулами) не трогать. */
   tailKeep: number
 }
 
@@ -37,13 +49,6 @@ export interface CompressionPlan {
   /** Обновлённая копия iterations (UI рендерит именно её). */
   iterations?: Message['iterations']
 }
-
-const STALE_MIN_CHARS = 1200   // как в janitor.scan: короче — резюме не дешевле
-const STALE_MIN_SAVED = 150    // как в janitor.scan: замена должна окупиться
-const MIN_STUB_CHARS = 800     // дедуп/перечитывание коротких результатов — шум
-
-/** Тулы, чьи результаты трогать нельзя (структурное состояние для агента). */
-const PINNED_TOOLS = new Set(['update_todo', 'update_working_memory', 'ask_user', 'request_access'])
 
 /** Замена: контент уже сжат локальным помощником — не обрабатываем повторно. */
 function alreadyCompressed(content: string): boolean {
@@ -59,27 +64,12 @@ function isProtected(result: ToolStep): boolean {
   return false
 }
 
-/** Стабильно канонизирует аргументы тула для фингерпринта (сортировка ключей). */
-function stableStringify(v: unknown): string {
-  if (Array.isArray(v)) return '[' + v.map(x => stableStringify(x)).join(',') + ']'
-  if (v && typeof v === 'object') {
-    const entries = Object.entries(v as Record<string, unknown>)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    return '{' + entries.map(([k, val]) => `${JSON.stringify(k)}:${stableStringify(val)}`).join(',') + '}'
-  }
-  return JSON.stringify(v)
-}
-
-function readPathOf(call: ToolStep): string {
-  const args = (call.toolArgs ?? {}) as { path?: unknown; paths?: unknown }
-  const raw = args.path ?? (Array.isArray(args.paths) ? args.paths.join('|') : '')
-  return String(raw).toLowerCase().replace(/\//g, '\\')
-}
-
 interface StepPair {
   msg: Message
   call: ToolStep
   result: ToolStep
+  /** Глобальный хронологический номер пары (по всем ходам, включая хвост). */
+  seq: number
 }
 
 /** Собирает валидные пары call→result из toolSteps сообщения (по callId). */
@@ -95,10 +85,19 @@ function collectPairs(m: Message): StepPair[] {
     if (s.toolName && PINNED_TOOLS.has(s.toolName)) continue
     const result = resultByCall.get(s.callId)
     if (result && !alreadyCompressed(result.content) && !isProtected(result)) {
-      pairs.push({ msg: m, call: s, result })
+      pairs.push({ msg: m, call: s, result, seq: 0 })
     }
   }
   return pairs
+}
+
+/** mtime файла по нормализованному пути; null — путь не прочитать (нет данных). */
+function statMtime(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -110,67 +109,141 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
   const stepMessages = messages.filter(m => m.role === 'assistant' && (m.toolSteps?.length ?? 0) > 0)
   if (stepMessages.length <= opts.tailKeep) return plans
   const candidates = stepMessages.slice(0, -opts.tailKeep)
+  const candidateMsgs = new Set(candidates)
 
-  const pairs = candidates.flatMap(collectPairs)
-  if (pairs.length === 0) return plans
+  // Анализ — по всем ходам (чтения/правки в хвосте тоже перекрывают и
+  // устаревают старую историю), замены — только для кандидатов.
+  const allPairs = stepMessages.flatMap(collectPairs)
+  allPairs.forEach((p, seq) => { p.seq = seq })
+  if (allPairs.length === 0) return plans
 
-  // callId результата → новый контент. Замены применяются к toolSteps и
-  // к копиям в iterations (по callId, для старых записей без callId — по позиции).
+  // Мутации: явные правки по путям + недетерминированные тулы.
+  const editsByPath = new Map<string, number[]>()
+  const unknownMutSeqs: number[] = []
+  for (const p of allPairs) {
+    const name = p.call.toolName ?? ''
+    if (FILE_MUTATORS.has(name)) {
+      const path = normalizePath(String((p.call.toolArgs as { path?: unknown } | undefined)?.path ?? ''))
+      if (path) {
+        const arr = editsByPath.get(path)
+        if (arr) arr.push(p.seq)
+        else editsByPath.set(path, [p.seq])
+      }
+    } else if (UNKNOWN_MUTATORS.has(name)) {
+      unknownMutSeqs.push(p.seq)
+    }
+  }
+  const editedAfter = (path: string, seq: number): boolean => (editsByPath.get(path) ?? []).some(s => s > seq)
+  const unknownBetween = (a: number, b: number): boolean => unknownMutSeqs.some(s => s > a && s < b)
+  const anyEditBetween = (a: number, b: number): boolean => {
+    for (const arr of editsByPath.values()) {
+      if (arr.some(s => s > a && s < b)) return true
+    }
+    return false
+  }
+
+  // mtime-кэш: файл реально менялся после чтения (внешне)? null — нет данных.
+  const mtimeCache = new Map<string, number | null>()
+  const fileChangedAfter = (path: string, tsMs: number): boolean | null => {
+    let mtime = mtimeCache.get(path)
+    if (mtime === undefined) {
+      mtime = statMtime(path)
+      mtimeCache.set(path, mtime)
+    }
+    if (mtime === null) return null
+    // slop 3с — гранулярность mtime на FAT/сетевых дисках.
+    return mtime > tsMs + 3000
+  }
+
+  // Замены: result-степ → финальный контент (с маркером).
   const replace = new Map<ToolStep, string>()
+  const kindOf = new Map<ToolStep, 'dedup' | 'reread' | 'stale'>()
+  const put = (p: StepPair, text: string, kind: 'dedup' | 'reread' | 'stale'): void => {
+    if (replace.has(p.result)) return
+    const finalText = `${JANITOR_MARKER} ${text}`
+    const saved = estimateTokens(p.result.content ?? '') - estimateTokens(finalText)
+    if (saved < STALE_MIN_SAVED) return
+    replace.set(p.result, finalText)
+    kindOf.set(p.result, kind)
+  }
 
-  // 1) Дедуп: тот же тул с теми же аргументами — остаётся только свежий результат.
+  // 1) Дедуп: тот же тул с теми же аргументами (не чтения/мутаторы/pinned).
+  //    Свёртка валидна, только если между повторами не было мутаций — иначе
+  //    результаты могли различаться и «идентичен» было бы ложью. Группа — по
+  //    всем ходам (эталон может быть в хвосте), замена — только у кандидатов.
   const byFingerprint = new Map<string, StepPair[]>()
-  for (const p of pairs) {
-    const key = `${p.call.toolName ?? 'tool'}|${stableStringify(p.call.toolArgs ?? {})}`
+  for (const p of allPairs) {
+    const name = p.call.toolName ?? ''
+    if (!name || READ_TOOLS.has(name) || FILE_MUTATORS.has(name) || UNKNOWN_MUTATORS.has(name) || PINNED_TOOLS.has(name)) continue
+    const key = `${name}|${stableStringify(p.call.toolArgs ?? {})}`
     const arr = byFingerprint.get(key)
     if (arr) arr.push(p)
     else byFingerprint.set(key, [p])
   }
   for (const arr of byFingerprint.values()) {
-    if (arr.length < 2) continue
-    for (const p of arr.slice(0, -1)) {
-      const content = p.result.content ?? ''
+    arr.sort((a, b) => a.seq - b.seq)
+    for (let k = 0; k < arr.length - 1; k++) {
+      const a = arr[k]
+      if (!candidateMsgs.has(a.msg)) continue
+      const content = a.result.content ?? ''
       if (content.length < MIN_STUB_CHARS) continue
-      const saved = estimateTokens(content) - 40
-      if (saved < STALE_MIN_SAVED) continue
-      replace.set(p.result, `${JANITOR_MARKER} Результат идентичен более свежему вызову ${p.call.toolName ?? 'tool'} с теми же аргументами (ниже по истории) — свёрнуто локальным помощником.`)
+      if (anyEditBetween(a.seq, arr[k + 1].seq) || unknownBetween(a.seq, arr[k + 1].seq)) continue
+      put(a, `Результат вызова ${a.call.toolName ?? 'tool'} с теми же аргументами уже есть ниже по истории (между вызовами мутаций не было) — свёрнуто локальным помощником.`, 'dedup')
     }
   }
 
-  // 2) Перечитывания одного файла (read_file/read_files по нормализованному пути).
-  const byPath = new Map<string, StepPair[]>()
-  for (const p of pairs) {
+  // 2) Перечитывания: диапазонная логика по parsed-секциям.
+  interface ReadOcc { pair: StepPair; sections: ParsedReadSection[] }
+  const readOccs: ReadOcc[] = []
+  for (const p of allPairs) {
     const name = p.call.toolName ?? ''
-    if (name !== 'read_file' && name !== 'read_files') continue
-    const path = readPathOf(p.call)
-    if (!path) continue
-    const key = `${name}|${path}`
-    const arr = byPath.get(key)
-    if (arr) arr.push(p)
-    else byPath.set(key, [p])
+    if (!READ_TOOLS.has(name)) continue
+    readOccs.push({ pair: p, sections: parseReadSections(name, p.result.content ?? '') })
   }
-  for (const [key, arr] of byPath) {
-    if (arr.length < 2) continue
-    for (const p of arr.slice(0, -1)) {
-      if (replace.has(p.result)) continue
-      const content = p.result.content ?? ''
-      if (content.length < MIN_STUB_CHARS) continue
-      const saved = estimateTokens(content) - 40
-      if (saved < STALE_MIN_SAVED) continue
-      replace.set(p.result, `${JANITOR_MARKER} ${key.split('|')[1]} перечитан позже — актуальное содержимое в более свежем вызове read_file, свёрнуто локальным помощником.`)
+  readOccs.sort((a, b) => a.pair.seq - b.pair.seq)
+  for (let k = 0; k < readOccs.length; k++) {
+    const occ = readOccs[k]
+    if (!candidateMsgs.has(occ.pair.msg)) continue
+    const content = occ.pair.result.content ?? ''
+    const ts = occ.pair.result.timestamp ?? 0
+    const later = readOccs.slice(k + 1)
+    const decisions = occ.sections.map(sec => {
+      const laterRanges = later.flatMap(o => o.sections.filter(s => s.path === sec.path && s.range).map(s => s.range!))
+      if (editedAfter(sec.path, occ.pair.seq)) return { sec, kind: 'stale-edit' as const, changed: true }
+      const mtimeChanged = fileChangedAfter(sec.path, ts)
+      if (mtimeChanged === true) return { sec, kind: 'stale-mtime' as const, changed: true }
+      if (sec.range && laterRanges.length && rangesCover(sec.range, laterRanges)) return { sec, kind: 'covered' as const, changed: false }
+      return { sec, kind: 'keep' as const, changed: mtimeChanged === false ? false : null }
+    })
+    if (decisions.length && decisions.every(d => d.kind !== 'keep')) {
+      const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — ${d.kind === 'stale-edit' ? 'устарело: файл правился после чтения' : d.kind === 'stale-mtime' ? 'устарело: файл изменялся после чтения' : 'перекрыто свежим чтением ниже'}`).join('; ')
+      put(occ.pair, `Результат чтения свёрнут: ${list}.`, 'reread')
+      continue
+    }
+    // Уникальное (не перекрытое) чтение — информативное резюме с атрибуцией:
+    // что именно прочитано и актуально ли ещё содержимое.
+    if (content.length >= STALE_MIN_CHARS) {
+      const statKnown = decisions.some(d => d.kind === 'keep' && d.changed !== null)
+      const note = statKnown
+        ? 'файл после чтения не менялся (проверено по mtime), при необходимости перечитай с нужным offset'
+        : unknownMutSeqs.some(s => s > occ.pair.seq)
+          ? 'после чтения выполнялись команды — файл мог измениться'
+          : 'правок файла после чтения в истории нет, при необходимости перечитай с нужным offset'
+      put(occ.pair, summarizeToolResult(occ.pair.call.toolName ?? 'read_file', content, undefined, note), 'stale')
     }
   }
 
-  // 3) Старьё: большие результаты старых сообщений → структурное резюме
-  //    (голова/хвост сохраняют пути, строки, ошибки — как summarize_stale в ране).
-  for (const p of pairs) {
-    if (replace.has(p.result)) continue
+  // 3) Старьё: прочие большие результаты старых ходов → структурное резюме
+  //    с атрибуцией. Результаты правок (diff) не трогаем — они несут
+  //    уникальное состояние файлов.
+  for (const p of allPairs) {
+    if (replace.has(p.result) || !candidateMsgs.has(p.msg)) continue
+    const name = p.call.toolName ?? ''
+    if (PINNED_TOOLS.has(name) || FILE_MUTATORS.has(name) || READ_TOOLS.has(name)) continue
     const content = p.result.content ?? ''
     if (content.length < STALE_MIN_CHARS) continue
-    const summary = summarizeToolResult(p.call.toolName ?? p.result.toolName ?? 'tool', content)
-    const saved = estimateTokens(content) - estimateTokens(`${JANITOR_MARKER} ${summary}`)
-    if (saved < STALE_MIN_SAVED) continue
-    replace.set(p.result, `${JANITOR_MARKER} ${summary}`)
+    const detail = toolCallDetail((p.call.toolArgs ?? {}) as Record<string, unknown>)
+    put(p, summarizeToolResult(name, content, detail || undefined), 'stale')
   }
 
   if (replace.size === 0) return plans
@@ -202,13 +275,12 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
       }))
     }
 
-    const actions: string[] = []
-    const dedups = msgReplacements.filter(s => (replace.get(s) ?? '').includes('идентичен более свежему вызову')).length
-    const rereads = msgReplacements.filter(s => (replace.get(s) ?? '').includes('перечитан позже')).length
-    const stale = msgReplacements.length - dedups - rereads
-    if (dedups) actions.push(`дедуп ×${dedups}`)
-    if (rereads) actions.push(`перечитывания ×${rereads}`)
-    if (stale) actions.push(`старьё ×${stale}`)
+    const counts: Record<string, number> = {}
+    for (const s of msgReplacements) {
+      const label = kindOf.get(s) === 'dedup' ? 'дедуп' : kindOf.get(s) === 'reread' ? 'перечитывания' : kindOf.get(s) === 'stale' ? 'резюме старья' : 'прочее'
+      counts[label] = (counts[label] ?? 0) + 1
+    }
+    const actions = Object.entries(counts).map(([label, n]) => `${label} ×${n}`)
 
     plans.set(m.id, { messageId: m.id, savedTokens, actions, toolSteps: newSteps, iterations })
   }

@@ -1,83 +1,182 @@
 import type { ChatMessage } from './contextManager'
 import { estimateTokens } from '../tokens/usageTracker'
-import { JANITOR_MARKER, CONSTITUTION_MARKER, BRIEFING_MARKER, type JanitorAction, type JanitorReport, type AssistantsSettings } from '../../shared/assistants'
+import { JANITOR_MARKER, type JanitorAction, type JanitorActionKind, type JanitorReport, type AssistantsSettings } from '../../shared/assistants'
 
-interface ToolCallFingerprint {
-  name: string
-  argsKey: string
-  indices: number[]
+// ── Классификация тулов ──────────────────────────────────────────────────────
+/** Тулы, чьи результаты — структурное состояние для агента: не трогаем. */
+export const PINNED_TOOLS = new Set(['update_todo', 'update_working_memory', 'ask_user', 'request_access'])
+/** Явные мутаторы файла: правка после чтения делает чтение устаревшим. */
+export const FILE_MUTATORS = new Set(['edit_file', 'write_file'])
+/** Недетерминированное влияние на диск: между дедуплицируемыми вызовами
+ *  такого тула не должно быть — иначе «идентичные» результаты могли отличаться. */
+export const UNKNOWN_MUTATORS = new Set(['run_command', 'execute_code'])
+export const READ_TOOLS = new Set(['read_file', 'read_files'])
+
+export const STALE_MIN_CHARS = 1200   // короче — резюме не дешевле
+export const STALE_MIN_SAVED = 150    // замена должна окупиться
+export const MIN_STUB_CHARS = 800     // дедуп/перечитывание коротких результатов — шум
+
+// ── Разбор результатов чтения ────────────────────────────────────────────────
+export interface ReadRange {
+  from: number
+  to: number
+  total?: number
 }
 
-function fingerprintToolCalls(messages: ChatMessage[]): ToolCallFingerprint[] {
-  const map = new Map<string, ToolCallFingerprint>()
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i]
-    if (msg.role !== 'assistant' || !msg.tool_calls?.length) continue
-    for (const tc of msg.tool_calls) {
-      const name = tc.function?.name ?? ''
-      let argsKey = ''
-      try { argsKey = JSON.stringify(JSON.parse(tc.function?.arguments ?? '{}')) } catch { argsKey = tc.function?.arguments ?? '' }
-      const key = `${name}|${argsKey}`
-      const existing = map.get(key)
-      if (existing) existing.indices.push(i)
-      else map.set(key, { name, argsKey, indices: [i] })
+export interface ParsedReadSection {
+  /** Нормализованный путь (lowercase, \). */
+  path: string
+  /** Путь как в заголовке результата. */
+  displayPath: string
+  range: ReadRange | null
+}
+
+export function normalizePath(p: string): string {
+  return String(p).toLowerCase().replace(/\//g, '\\')
+}
+
+/**
+ * Разбирает результат read_file/read_files на секции с путями и диапазонами
+ * строк. Форматы (см. fileRead.ts):
+ *  - `[File: path | Lines A-B of Z | full mode]`
+ *  - `[File: path | Lines A-B of Z]`
+ *  - `[File: path | Z lines]` (+ опц. `...[shown N of Z lines ...]`)
+ *  - read_files: `=== path | Z lines ===` на секцию.
+ */
+export function parseReadSections(toolName: string, content: string): ParsedReadSection[] {
+  if (toolName === 'read_file') {
+    let m = content.match(/\[File: ([^\]|]+?)\s*\|\s*Lines (\d+)-(\d+) of (\d+)/)
+    if (m) {
+      return [{ path: normalizePath(m[1]), displayPath: m[1], range: { from: Number(m[2]), to: Number(m[3]), total: Number(m[4]) } }]
     }
-  }
-  return [...map.values()].filter(f => f.indices.length > 1)
-}
-
-function findRepeatedReads(messages: ChatMessage[]): Map<string, number[]> {
-  const reads = new Map<string, number[]>()
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i]
-    if (msg.role !== 'assistant' || !msg.tool_calls?.length) continue
-    for (const tc of msg.tool_calls) {
-      if (tc.function?.name !== 'read_file' && tc.function?.name !== 'read_files') continue
-      try {
-        const args = JSON.parse(tc.function.arguments ?? '{}')
-        const path = String(args.path ?? args.paths ?? '').toLowerCase().replace(/\//g, '\\')
-        if (!path) continue
-        const existing = reads.get(path)
-        if (existing) existing.push(i)
-        else reads.set(path, [i])
-      } catch { /* skip malformed */ }
+    m = content.match(/\[File: ([^\]|]+?)\s*\|\s*(\d+) lines?\]/)
+    if (m) {
+      const total = Number(m[2])
+      const shown = content.match(/\.\.\.\[shown (\d+) of (\d+) lines/)
+      const to = shown ? Number(shown[1]) : total
+      return [{ path: normalizePath(m[1]), displayPath: m[1], range: { from: 1, to, total } }]
     }
+    return []
   }
-  return reads
+  if (toolName === 'read_files') {
+    const sections: ParsedReadSection[] = []
+    const headerRe = /=== (.+?) \| (\d+) lines? ===/g
+    const matches = [...content.matchAll(headerRe)]
+    for (const m of matches) {
+      const headerEnd = (m.index ?? 0) + m[0].length
+      const body = content.slice(headerEnd)
+      const total = Number(m[2])
+      const shown = body.match(/\.\.\.\[shown (\d+) of (\d+) lines/)
+      const numbered = body.match(/^\d+\|/gm)?.length ?? 0
+      const to = shown ? Number(shown[1]) : (numbered || Math.min(total, 250))
+      sections.push({ path: normalizePath(m[1]), displayPath: m[1], range: { from: 1, to, total } })
+    }
+    return sections
+  }
+  return []
 }
 
-function isPinned(msg: ChatMessage, index: number, total: number, coldThreshold: number): boolean {
-  if (msg.role === 'system') return true
-  if (index >= total - coldThreshold) return true
-  if (typeof msg.content === 'string' && (msg.content.includes('[Пользователь написал') || msg.content.includes(JANITOR_MARKER) || msg.content.includes(CONSTITUTION_MARKER) || msg.content.includes(BRIEFING_MARKER))) return true
-  if (msg.tool_calls?.some(tc => tc.function?.name === 'update_todo' || tc.function?.name === 'update_working_memory')) return true
-  return false
+/** Целевой диапазон полностью покрыт объединением более поздних диапазонов. */
+export function rangesCover(target: ReadRange, later: ReadRange[]): boolean {
+  const sorted = [...later].sort((a, b) => a.from - b.from)
+  let cursor = target.from
+  for (const r of sorted) {
+    if (r.to < cursor) continue
+    if (r.from > cursor) return false // дыра: старые строки нигде не перечитаны
+    cursor = Math.max(cursor, r.to + 1)
+    if (cursor > target.to) return true
+  }
+  return cursor > target.to
 }
 
-/** Детерминированное структурное резюме tool-результата (пути/строки/ошибки).
- *  Используется и в ране (summarize_stale), и в персистентной компрессии БД. */
-export function summarizeToolResult(toolName: string, content: string): string {
-  const chars = content.length
+/** Стабильно канонизирует аргументы тула для фингерпринта (сортировка ключей). */
+export function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return '[' + v.map(x => stableStringify(x)).join(',') + ']'
+  if (v && typeof v === 'object') {
+    const entries = Object.entries(v as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    return '{' + entries.map(([k, val]) => `${JSON.stringify(k)}:${stableStringify(val)}`).join(',') + '}'
+  }
+  return JSON.stringify(v)
+}
+
+function headTail(body: string, headLen = 160, tailLen = 80): string {
+  const head = body.slice(0, headLen).replace(/\n/g, ' ')
+  const tail = body.length > headLen + tailLen ? ` … ${body.slice(-tailLen).replace(/\n/g, ' ')}` : ''
+  return `${head}${tail}`
+}
+
+/** Аргумент вызова для атрибуции в резюме: команда / паттерн / путь. */
+export function toolCallDetail(args: Record<string, unknown> | null | undefined): string {
+  if (!args) return ''
+  for (const key of ['command', 'code', 'pattern', 'query', 'path']) {
+    const v = args[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return ''
+}
+
+/**
+ * Структурное резюме tool-результата с точной атрибуцией: сохраняет путь и
+ * ДИАПАЗОН прочитанных строк, запрос поиска и топ-файлы, команду и ошибки.
+ * `note` — вердикт о свежести («файл после чтения не менялся» и т.п.).
+ * Используется и в ране (summarize_stale), и в персистентной компрессии БД.
+ */
+export function summarizeToolResult(toolName: string, content: string, detail?: string, note?: string): string {
   const lines = content.split('\n').length
+  const notePart = note ? ` — ${note}` : ''
+
   if (toolName === 'read_file' || toolName === 'read_files') {
-    const fileMatch = content.match(/\[(?:Файл|File): ([^\]|]+)/)
-    const file = fileMatch?.[1]?.trim() ?? '?'
     const body = content.replace(/\[(?:Файл|File):[^\]]*\]/g, '').trim()
-    const head = body.slice(0, 160).replace(/\n/g, ' ')
-    const tail = body.length > 240 ? ` … ${body.slice(-80).replace(/\n/g, ' ')}` : ''
-    return `[read] ${file} (${lines} строк): ${head}${tail}`
+    const sections = parseReadSections(toolName, content)
+    if (sections.length) {
+      const list = sections.slice(0, 4).map(s => {
+        const r = s.range
+        return `${s.displayPath}${r ? `, строки ${r.from}-${r.to}${r.total ? ` из ${r.total}` : ''}` : ''}`
+      }).join('; ')
+      const more = sections.length > 4 ? ` +${sections.length - 4}` : ''
+      return `[read] ${list}${more}${notePart}: ${headTail(body)}`
+    }
+    return `[read] ${detail ?? '?'} (${lines} строк)${notePart}: ${headTail(body)}`
   }
-  if (toolName === 'run_command') {
+  if (toolName === 'search_code' || toolName === 'find_files') {
+    const header = content.match(/\[(?:search_code|find_files): ([^\]]+)\]/)?.[1]
+    const files = [...content.matchAll(/^● (.+?)$/gm)].map(m => m[1].trim()).slice(0, 5)
+    const detailPart = detail ? `«${detail.slice(0, 80)}»` : ''
+    if (header || files.length) {
+      const filesPart = files.length ? `: ${files.join(', ')}` : ''
+      return `[search] ${detailPart}${header ? ` — ${header}` : ''}${filesPart}${notePart}. Повтори поиск при необходимости.`.replace('  ', ' ')
+    }
+    return `[search] ${detailPart} ${content.length} симв, ${lines} строк${notePart}: ${headTail(content)}`
+  }
+  if (toolName === 'run_command' || toolName === 'execute_code') {
     const errLines = content.split('\n').filter(l => /error|failed|exception|не найден|not found/i.test(l)).slice(0, 3)
     const tail = content.slice(-200).replace(/\n/g, ' ').trim()
+    const cmdPart = detail ? `${detail.slice(0, 120)} — ` : ''
     const errPart = errLines.length ? ` ошибки: ${errLines.join(' | ').slice(0, 200)};` : ''
-    return `[cmd] ${lines} строк вывода;${errPart} хвост: ${tail}`
+    return `[cmd] ${cmdPart}${lines} строк вывода;${errPart} хвост: ${tail}`
   }
   if (toolName === 'edit_file' || toolName === 'write_file') {
     const fileMatch = content.match(/([^\s]+\.[a-z]+)/i)
-    return `[${toolName}] ${fileMatch?.[1] ?? '?'} (${chars} симв)`
+    return `[${toolName}] ${fileMatch?.[1] ?? detail ?? '?'} (${content.length} симв)${notePart}`
   }
-  return `[${toolName}] ${chars} симв, ${lines} строк: ${content.slice(0, 150).replace(/\n/g, ' ')}…`
+  const namePart = detail ? `${detail.slice(0, 80)} — ` : ''
+  return `[${toolName}] ${namePart}${content.length} симв, ${lines} строк: ${headTail(content, 150, 0)}…`
+}
+
+/** Граница «активного хвоста»: индекс последнего из N ходов (assistant-сообщений
+ *  с тулами). Всё с этим индексом и позже джанитор не трогает. Если ходов
+ *  меньше N — возвращает 0 (заморожена вся история). */
+export function computeTailBoundary(messages: ChatMessage[], tailSteps: number): number {
+  let count = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      count++
+      if (count >= tailSteps) return i
+    }
+  }
+  return 0
 }
 
 export interface JanitorArchiveEntry {
@@ -87,6 +186,17 @@ export interface JanitorArchiveEntry {
   ts: number
 }
 
+/**
+ * Джанитор рана: сжимает контекст в памяти. Принципы точности:
+ *  - Активный хвост = последние janitorTailSteps ходов — не трогаем вовсе.
+ *  - Заменяется ТОЛЬКО content у tool-результатов (парные tool_call остаются):
+ *    структура сообщений валидна для провайдера, кэш инвалидируется минимально.
+ *  - Перечитывания сворачиваются диапазонно: старое чтение гибнет, только если
+ *    файл после него правился ИЛИ его диапазон строк полностью перекрыт более
+ *    поздними чтениями. Иначе — информативное резюме с атрибуцией.
+ *  - Дедуп идентичных вызовов валиден, только если между ними не было мутаций.
+ *  - Результаты правок (diff) и визуала никогда не сжимаются.
+ */
 export class Janitor {
   private archive = new Map<string, JanitorArchiveEntry>()
   private archiveCounter = 0
@@ -109,63 +219,182 @@ export class Janitor {
   scan(messages: ChatMessage[], currentRound: number, mode: 'light' | 'deep' = 'deep'): JanitorReport {
     const start = Date.now()
     this.lastScanRound = currentRound
-    const actions: JanitorAction[] = []
     const total = messages.length
-    const cold = this.settings.janitorColdThreshold
+    const boundary = computeTailBoundary(messages, Math.max(1, this.settings.janitorTailSteps ?? 10))
 
-    const duplicates = fingerprintToolCalls(messages)
-    for (const dup of duplicates) {
-      const keepIndex = dup.indices[dup.indices.length - 1]
-      const removeIndices = dup.indices.slice(0, -1).filter(i => !isPinned(messages[i], i, total, cold))
-      if (removeIndices.length === 0) continue
-      const tokensSaved = removeIndices.reduce((sum, i) => sum + estimateTokens(messages[i].content ?? ''), 0)
-      actions.push({
-        kind: 'dedup_tool_call',
-        messageIndices: removeIndices,
-        description: `${dup.name} вызван ${dup.indices.length}× с одинаковыми аргументами — свёрнуто ${removeIndices.length} повтор(ов)`,
-        tokensSaved,
-      })
-    }
-
-    const reads = findRepeatedReads(messages)
-    for (const [path, indices] of reads) {
-      if (indices.length < 2) continue
-      const removeIndices = indices.slice(0, -1).filter(i => !isPinned(messages[i], i, total, cold))
-      if (removeIndices.length === 0) continue
-      const tokensSaved = removeIndices.reduce((sum, i) => sum + estimateTokens(messages[i].content ?? ''), 0)
-      actions.push({
-        kind: 'collapse_reread',
-        messageIndices: removeIndices,
-        description: `${path} перечитан ${indices.length}× — оставлена последняя версия`,
-        tokensSaved,
-      })
-    }
-
-    // light-режим (Economist, ступень 1): только дедуп/перечитывания,
-    // без свёртки старых результатов — бережём кэш и recall-архив.
-    if (mode === 'deep') {
-      for (let i = 0; i < total - cold; i++) {
-        const msg = messages[i]
-        if (isPinned(msg, i, total, cold)) continue
-        if (msg.role !== 'tool') continue
-        const content = msg.content ?? ''
-        if (content.length < 1200) continue
-        const toolName = msg.name ?? 'tool'
-        const summary = summarizeToolResult(toolName, content)
-        const tokensSaved = estimateTokens(content) - estimateTokens(summary)
-        if (tokensSaved < 150) continue
-        const archiveId = `jan-${++this.archiveCounter}-${Date.now()}`
-        this.archive.set(archiveId, { id: archiveId, originalMessages: [{ ...msg }], summary, ts: Date.now() })
-        actions.push({
-          kind: 'summarize_stale',
-          messageIndices: [i],
-          description: `[${toolName}] ${content.length} симв → резюме (${tokensSaved} токенов сэкономлено)`,
-          tokensSaved,
-          archiveId,
-        })
+    // callId → аргументы; callId → индекс tool-сообщения. Анализ — по всей
+    // истории (чтения в хвосте тоже перекрывают старые), замены — только
+    // за границей хвоста.
+    interface CallInfo { name: string; args: Record<string, unknown> | null }
+    const callInfo = new Map<string, CallInfo>()
+    const resultIndex = new Map<string, number>()
+    const mutationIdxs: number[] = []
+    const editsByPath = new Map<string, number[]>()
+    const unknownMutIdxs: number[] = []
+    for (let i = 0; i < total; i++) {
+      const msg = messages[i]
+      if (msg.role === 'assistant' && msg.tool_calls?.length) {
+        for (const tc of msg.tool_calls) {
+          let args: Record<string, unknown> | null = null
+          try { args = JSON.parse(tc.function?.arguments ?? '{}') } catch { args = null }
+          callInfo.set(tc.id, { name: tc.function?.name ?? '', args })
+        }
+      } else if (msg.role === 'tool' && msg.tool_call_id) {
+        resultIndex.set(msg.tool_call_id, i)
+        const info = callInfo.get(msg.tool_call_id)
+        if (info) {
+          if (FILE_MUTATORS.has(info.name)) {
+            const p = normalizePath(String(info.args?.path ?? ''))
+            if (p) {
+              const arr = editsByPath.get(p)
+              if (arr) arr.push(i)
+              else editsByPath.set(p, [i])
+            }
+            mutationIdxs.push(i)
+          } else if (UNKNOWN_MUTATORS.has(info.name)) {
+            unknownMutIdxs.push(i)
+            mutationIdxs.push(i)
+          }
+        }
       }
     }
 
+    const editedAfter = (path: string, idx: number): boolean => (editsByPath.get(path) ?? []).some(mi => mi > idx)
+    const unknownAfter = (idx: number): boolean => unknownMutIdxs.some(mi => mi > idx)
+    const hasMutationBetween = (a: number, b: number): boolean => mutationIdxs.some(mi => mi > a && mi < b)
+
+    const contentOf = (i: number): string => {
+      const c = messages[i]?.content
+      return typeof c === 'string' ? c : ''
+    }
+    const frozen = (idx: number): boolean => idx >= boundary
+    const skippable = (idx: number): boolean => frozen(idx) || contentOf(idx).includes(JANITOR_MARKER) || (messages[idx]?.imagePaths?.length ?? 0) > 0
+
+    // Замены: индекс tool-сообщения → финальный контент (с маркером).
+    const replacements = new Map<number, string>()
+    const reasons = new Map<number, { kind: JanitorActionKind; what: string; saved: number }>()
+    const archiveIdByIndex = new Map<number, string>()
+
+    const put = (idx: number, text: string, kind: JanitorActionKind, what: string): void => {
+      if (replacements.has(idx)) return
+      const content = contentOf(idx)
+      let finalText = `${JANITOR_MARKER} ${text}`
+      if (kind === 'summarize_stale') {
+        const archiveId = `jan-${++this.archiveCounter}-${Date.now()}`
+        this.archive.set(archiveId, { id: archiveId, originalMessages: [{ ...messages[idx] }], summary: text, ts: Date.now() })
+        archiveIdByIndex.set(idx, archiveId)
+        finalText += ` [recall:${archiveId}]`
+      }
+      const saved = estimateTokens(content) - estimateTokens(finalText)
+      if (saved < STALE_MIN_SAVED) return
+      replacements.set(idx, finalText)
+      reasons.set(idx, { kind, what, saved })
+    }
+
+    // 1) Дедуп: тот же тул с теми же аргументами. Не для чтений (их ведёт
+    //    диапазонная логика ниже), не для мутаторов/pinned-тулов. Свёртка
+    //    валидна, только если между повторами не было мутаций — иначе
+    //    результаты могли различаться и «идентичен» было бы ложью.
+    const byFingerprint = new Map<string, Array<{ name: string; idx: number }>>()
+    for (const [callId, info] of callInfo) {
+      if (!info.name || READ_TOOLS.has(info.name)) continue
+      if (FILE_MUTATORS.has(info.name) || UNKNOWN_MUTATORS.has(info.name) || PINNED_TOOLS.has(info.name)) continue
+      const ri = resultIndex.get(callId)
+      if (ri === undefined || skippable(ri)) continue
+      const key = `${info.name}|${stableStringify(info.args ?? {})}`
+      const arr = byFingerprint.get(key)
+      if (arr) arr.push({ name: info.name, idx: ri })
+      else byFingerprint.set(key, [{ name: info.name, idx: ri }])
+    }
+    for (const arr of byFingerprint.values()) {
+      arr.sort((x, y) => x.idx - y.idx)
+      for (let k = 0; k < arr.length - 1; k++) {
+        const a = arr[k]
+        const content = contentOf(a.idx)
+        if (content.length < MIN_STUB_CHARS) continue
+        if (hasMutationBetween(a.idx, arr[k + 1].idx)) continue
+        put(a.idx, `Результат вызова ${a.name} с теми же аргументами уже есть ниже по истории (между вызовами мутаций не было) — свёрнуто локальным помощником.`, 'dedup_tool_call', `${a.name}: дубликат аргументов`)
+      }
+    }
+
+    // 2) Перечитывания: диапазонная логика. Чтение сворачивается, только если
+    //    (а) файл после него правился — чтение устарело, или (б) его диапазон
+    //    строк полностью перекрыт более поздними чтениями того же файла.
+    //    Иначе — информативное резюме: точно что прочитано и как.
+    //    Анализ — по всей истории (чтение в хвосте тоже перекрывает старое),
+    //    замена — только за границей хвоста.
+    interface ReadOcc { idx: number; frozen: boolean; sections: ParsedReadSection[] }
+    const readOccs: ReadOcc[] = []
+    for (const [callId, info] of callInfo) {
+      if (!READ_TOOLS.has(info.name)) continue
+      const ri = resultIndex.get(callId)
+      if (ri === undefined || contentOf(ri).includes(JANITOR_MARKER) || (messages[ri]?.imagePaths?.length ?? 0) > 0) continue
+      readOccs.push({ idx: ri, frozen: frozen(ri), sections: parseReadSections(info.name, contentOf(ri)) })
+    }
+    readOccs.sort((x, y) => x.idx - y.idx)
+    for (let k = 0; k < readOccs.length; k++) {
+      const occ = readOccs[k]
+      if (occ.frozen || replacements.has(occ.idx)) continue
+      const content = contentOf(occ.idx)
+      const later = readOccs.slice(k + 1)
+      const decisions = occ.sections.map(sec => {
+        const laterRanges = later.flatMap(o => o.sections.filter(s => s.path === sec.path && s.range).map(s => s.range!))
+        if (editedAfter(sec.path, occ.idx)) return { sec, kind: 'stale-edit' as const }
+        if (sec.range && laterRanges.length && rangesCover(sec.range, laterRanges)) return { sec, kind: 'covered' as const }
+        return { sec, kind: 'keep' as const }
+      })
+      if (decisions.length && decisions.every(d => d.kind !== 'keep')) {
+        const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — ${d.kind === 'stale-edit' ? 'устарело: файл правился после чтения' : 'перекрыто свежим чтением ниже'}`).join('; ')
+        put(occ.idx, `Результат чтения свёрнут: ${list}.`, 'collapse_reread', 'перечитывание свёрнуто')
+        continue
+      }
+      // Уникальное (не перекрытое) чтение — в deep-режиме сжимаем в резюме
+      // с атрибуцией: что именно прочитано и актуально ли ещё.
+      if (mode === 'deep' && content.length >= STALE_MIN_CHARS) {
+        const note = unknownAfter(occ.idx)
+          ? 'после чтения выполнялись команды — файл мог измениться'
+          : 'правок файла после чтения в истории нет, при необходимости перечитай с нужным offset'
+        put(occ.idx, summarizeToolResult('read_file', content, undefined, note), 'summarize_stale', `чтение → резюме с атрибуцией`)
+      }
+    }
+
+    // 3) Старьё: прочие большие результаты старых сообщений → структурное
+    //    резюме с атрибуцией. Результаты правок (diff) не трогаем — они
+    //    несут уникальное состояние файлов.
+    if (mode === 'deep') {
+      for (let i = 0; i < boundary; i++) {
+        if (replacements.has(i)) continue
+        const msg = messages[i]
+        if (msg.role !== 'tool' || !msg.tool_call_id) continue
+        if (skippable(i)) continue
+        const info = callInfo.get(msg.tool_call_id)
+        if (!info) continue
+        if (PINNED_TOOLS.has(info.name) || FILE_MUTATORS.has(info.name) || READ_TOOLS.has(info.name)) continue
+        const content = contentOf(i)
+        if (content.length < STALE_MIN_CHARS) continue
+        const detail = toolCallDetail(info.args)
+        put(i, summarizeToolResult(info.name, content, detail || undefined), 'summarize_stale', `[${info.name}] ${content.length} симв → резюме`)
+      }
+    }
+
+    if (replacements.size === 0) {
+      return { actions: [], totalTokensSaved: 0, scannedMessages: total, durationMs: Date.now() - start }
+    }
+
+    // Отчёт: по одному действию на каждую замену — описание честно говорит,
+    // что именно свёрнуто и почему (UI рендерит их списком в карточке).
+    const actions: JanitorAction[] = []
+    for (const [idx, finalText] of replacements) {
+      const { kind, what, saved } = reasons.get(idx)!
+      actions.push({
+        kind,
+        messageIndices: [idx],
+        description: `${what} (−${saved} ток.)`,
+        tokensSaved: saved,
+        replacement: finalText,
+        ...(kind === 'summarize_stale' ? { archiveId: archiveIdByIndex.get(idx) } : {}),
+      })
+    }
     const totalTokensSaved = actions.reduce((s, a) => s + a.tokensSaved, 0)
     return { actions, totalTokensSaved, scannedMessages: total, durationMs: Date.now() - start }
   }
@@ -173,39 +402,15 @@ export class Janitor {
   apply(messages: ChatMessage[], report: JanitorReport): ChatMessage[] {
     if (report.actions.length === 0) return messages
     const result = [...messages]
-    const toRemove = new Set<number>()
-    const toReplace = new Map<number, string>()
-
     for (const action of report.actions) {
-      if (action.kind === 'dedup_tool_call' || action.kind === 'collapse_reread') {
-        for (const idx of action.messageIndices) {
-          toRemove.add(idx)
-          const msg = result[idx]
-          if (msg?.tool_calls?.length) {
-            const names = msg.tool_calls.map(tc => tc.function?.name).join(', ')
-            toReplace.set(idx, `${JANITOR_MARKER} ${action.description} (оригинал: ${names})`)
-          }
-        }
-      } else if (action.kind === 'summarize_stale' && action.archiveId) {
-        const entry = this.archive.get(action.archiveId)
-        if (entry) {
-          for (const idx of action.messageIndices) {
-            toReplace.set(idx, `${JANITOR_MARKER} ${entry.summary} [recall:${action.archiveId}]`)
-          }
-        }
+      for (const idx of action.messageIndices) {
+        const msg = result[idx]
+        if (!msg || msg.role !== 'tool' || typeof msg.content !== 'string') continue
+        const text = action.replacement ?? `${JANITOR_MARKER} ${action.description}`
+        result[idx] = { ...msg, content: text }
       }
     }
-
-    const filtered: ChatMessage[] = []
-    for (let i = 0; i < result.length; i++) {
-      if (toRemove.has(i) && !toReplace.has(i)) continue
-      if (toReplace.has(i)) {
-        filtered.push({ ...result[i], content: toReplace.get(i)!, tool_calls: undefined })
-      } else {
-        filtered.push(result[i])
-      }
-    }
-    return filtered
+    return result
   }
 
   recall(archiveId: string): ChatMessage[] | null {

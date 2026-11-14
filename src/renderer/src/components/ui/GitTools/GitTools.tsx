@@ -63,7 +63,6 @@ interface RepoSummary {
 interface BranchItem {
   name: string
   current?: boolean
-  remote?: boolean
 }
 
 interface LiveTodoItem {
@@ -187,17 +186,21 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     }
   }, [workdir, lang])
 
+  // Список для переключения — ТОЛЬКО локальные ветки: git:branchList без all
+  // отдаёт именно их (удалённые не переключаются напрямую — отсюда detached HEAD).
   const loadBranches = useCallback(async (): Promise<void> => {
     if (!workdir) return
     try {
-      const res = await window.syntee.git.branchList(workdir, true)
+      const res = await window.syntee.git.branchList(workdir)
       const list = (res?.branches ?? []) as Array<BranchItem | string>
       const current = (res?.current ?? null) as string | null
       setBranches(
-        list.map(b => {
-          if (typeof b === 'string') return { name: b, current: b === current }
-          return { name: b.name, current: b.current ?? b.name === current, remote: b.remote }
-        }),
+        list
+          .map(b => {
+            if (typeof b === 'string') return { name: b, current: b === current }
+            return { name: b.name, current: b.current ?? b.name === current }
+          })
+          .sort((a, b) => Number(!!b.current) - Number(!!a.current) || a.name.localeCompare(b.name)),
       )
     } catch {
       setBranches([])
@@ -344,6 +347,16 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         await refresh()
         await loadBranches()
         setView('panel')
+        // main сам прячет незакоммиченные правки в stash и возвращает их обратно,
+        // поэтому при успехе честно говорим: изменения на месте.
+        useToast.getState().add(
+          res.stashed
+            ? t(`Переключено на ${branch} (правки сохранены)`, `Switched to ${branch} (changes kept)`)
+            : t(`Переключено на ${branch}`, `Switched to ${branch}`),
+          'success',
+        )
+      } catch (e) {
+        useToast.getState().add(String((e as Error)?.message ?? e), 'error')
       } finally {
         setBusy(false)
       }
@@ -382,8 +395,8 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   const filteredBranches = branchQuery.trim()
     ? branches.filter(b => b.name.toLowerCase().includes(branchQuery.trim().toLowerCase()))
     : branches
-  const localBranches = filteredBranches.filter(b => !b.remote)
-  const remoteBranches = filteredBranches.filter(b => b.remote)
+  // branches уже без remote (см. loadBranches) — здесь только поиск по имени.
+  const localBranches = filteredBranches
   const requestAdded = lastTurnChanges?.totalAdded ?? 0
   const requestDeleted = lastTurnChanges?.totalDeleted ?? 0
   const requestFiles = lastTurnChanges?.files.length ?? 0
@@ -659,24 +672,6 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                         </span>
                       </button>
                     ))}
-                    {remoteBranches.length > 0 && (
-                      <>
-                        <div className="git-tools-branch-group">{t('Удалённые', 'Remote')}</div>
-                        {remoteBranches.slice(0, 20).map(b => (
-                          <button
-                            key={b.name}
-                            type="button"
-                            className="git-tools-branch-item is-remote"
-                            onClick={() => void switchBranch(b.name)}
-                          >
-                            <span className="git-tools-branch-check"><GitBranch size={12} /></span>
-                            <span className="git-tools-branch-body">
-                              <span className="git-tools-branch-name">{b.name}</span>
-                            </span>
-                          </button>
-                        ))}
-                      </>
-                    )}
                     {filteredBranches.length === 0 && (
                       <div className="git-tools-empty">{t('Ничего не найдено', 'Nothing found')}</div>
                     )}

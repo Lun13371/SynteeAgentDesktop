@@ -254,8 +254,8 @@ export default function AssistantsSettingsTab() {
         <Field label="Интервал скана janitor (ходов)" description="Каждые N ходов janitor анализирует контекст">
           <Stepper value={s.janitorScanInterval} onChange={v => upd({ janitorScanInterval: v })} min={2} max={20} step={1} />
         </Field>
-        <Field label="Порог «холодного» контекста (ходов)" description="Сообщения старше K ходов могут сжиматься">
-          <Stepper value={s.janitorColdThreshold} onChange={v => upd({ janitorColdThreshold: v })} min={5} max={50} step={5} />
+        <Field label="Активный хвост janitor (ходов)" description="Последние N ходов джанитор не трогает; всё старее — сжимает (в ране и в БД)">
+          <Stepper value={s.janitorTailSteps} onChange={v => upd({ janitorTailSteps: v })} min={3} max={30} step={1} />
         </Field>
         <Field label="Мин. экономия janitor (токенов)" description="Не сжимать, если экономия меньше — бережёт кэш промпта">
           <Stepper value={s.janitorMinSavingsTokens} onChange={v => upd({ janitorMinSavingsTokens: v })} min={0} max={2000} step={50} />

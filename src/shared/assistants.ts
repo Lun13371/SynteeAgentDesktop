@@ -34,7 +34,8 @@ export interface AssistantsSettings {
   hintBudgetTokens: number
   hintCooldownRounds: number
   janitorScanInterval: number
-  janitorColdThreshold: number
+  /** Активный хвост: последние N ходов (assistant-сообщений с тулами) джанитор не трогает. */
+  janitorTailSteps: number
   janitorMinSavingsTokens: number
   navigatorInterval: number
   relevanceThreshold: number
@@ -54,7 +55,7 @@ export const DEFAULT_ASSISTANTS_SETTINGS: AssistantsSettings = {
   hintBudgetTokens: 300,
   hintCooldownRounds: 1,
   janitorScanInterval: 8,
-  janitorColdThreshold: 12,
+  janitorTailSteps: 10,
   janitorMinSavingsTokens: 300,
   navigatorInterval: 6,
   relevanceThreshold: 0.6,
@@ -69,6 +70,9 @@ export interface JanitorAction {
   description: string
   tokensSaved: number
   archiveId?: string
+  /** Точный текст замены tool-результата (скан уже его вычислил — apply
+   *  просто записывает; fallback: маркер + description). */
+  replacement?: string
 }
 
 export interface JanitorReport {

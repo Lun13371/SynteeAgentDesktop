@@ -424,14 +424,19 @@
   padding: 2px 0 6px 0;
 }
 .tc2-note-text {
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
+  /* Текст модели в ленте выглядит как обычный ответ: тот же markdown-пайплайн
+     (ParsedContent), тот же шрифт/цвет/интерлиньяж из .message-content.
+     Раньше был серый 12.5px pre-wrap — отсюда и «провалы»: pre-wrap сохранял
+     пустые строки из стрима, а цвет/размер отличались от ответа. */
+  white-space: normal;
   overflow-wrap: anywhere;
   /* Текст модели показываем полностью — без искусственного лимита высоты,
      обрезания хвоста и градиентной маски. */
 }
+
+/* markdown-элементы внутри ленты не должны раздувать вертикаль */
+.tc2-note-text > :first-child { margin-top: 0; }
+.tc2-note-text > :last-child { margin-bottom: 0; }
 
 /* ── Одна итерация ── */
 .tc2-iter {
