@@ -17,7 +17,7 @@ function load(path, source = readFileSync(path, 'utf8')) {
 }
 
 const { parseBranchList, localBranchesOnly } = load('src/shared/git/parseBranches.ts')
-const { buildCheckoutPlan, explainCheckoutError } = load('src/shared/git/checkoutPlan.ts')
+const { buildCheckoutArgs, explainCheckoutError } = load('src/shared/git/checkoutPlan.ts')
 
 // ── Регрессия №1: в шапке чата был виден только текущий бранч ───────────
 // git выравнивает колонки пробелами, поэтому TAB стоит не в начале строки.
@@ -81,39 +81,15 @@ test('фильтр: остаются только локальные ветки'
   assert.equal(local.every(b => !b.remote), true)
 })
 
-// ── Регрессия №3: checkout падал на незакоммиченных правках ─────────────
-// «Your local changes to the following files would be overwritten by checkout» —
-// при живом агенте правки есть почти всегда, поэтому панель не переключала ветки.
-test('checkout-план: грязное дерево → stash, checkout, stash pop', () => {
-  const { steps } = buildCheckoutPlan('master', {
-    localBranches: ['dev', 'master'],
-    remoteBranches: [],
-    dirty: true,
-  })
-  assert.deepEqual(steps.map(s => s.args.slice(0, 2)), [
-    ['stash', 'push'],
-    ['checkout', 'master'],
-    ['stash', 'pop'],
-  ])
+// ── Регрессия №3: авто-stash ломал переключение ────────────────────────
+// «Command failed: git -C … stash push --include-untracked -m syntee: авто-stash…»
+// в тосте, и ветка не переключалась. Теперь — один обычный checkout, как в VS Code.
+test('checkout: одна команда, без stash-шагов', () => {
+  assert.deepEqual(buildCheckoutArgs('master'), ['checkout', 'master', '--'])
 })
 
-test('checkout-план: чистое дерево → только checkout', () => {
-  const { steps } = buildCheckoutPlan('master', { localBranches: ['dev', 'master'], remoteBranches: [], dirty: false })
-  assert.deepEqual(steps.map(s => s.args), [['checkout', 'master']])
-})
-
-test('checkout-план: ветка только в remote → создаём локальную с трекингом', () => {
-  const { steps } = buildCheckoutPlan('feature-x', {
-    localBranches: ['dev'],
-    remoteBranches: ['origin/feature-x'],
-    dirty: false,
-  })
-  assert.deepEqual(steps.map(s => s.args), [['checkout', '--track', 'origin/feature-x']])
-})
-
-test('checkout-план: неизвестное имя → отдаём git, он сам разберётся', () => {
-  const { steps } = buildCheckoutPlan('v1.0.0', { localBranches: [], remoteBranches: [], dirty: false })
-  assert.deepEqual(steps.map(s => s.args), [['checkout', 'v1.0.0']])
+test('checkout: имя тримится, двусмысленность с путём отсекается через --', () => {
+  assert.deepEqual(buildCheckoutArgs('  feature/x  '), ['checkout', 'feature/x', '--'])
 })
 
 test('ошибка checkout: сырой git-вывод превращается в читаемую причину', () => {
@@ -126,10 +102,19 @@ test('ошибка checkout: сырой git-вывод превращается 
     'Aborting',
   ].join('\n')
   const msg = explainCheckoutError(raw)
-  assert.match(msg, /незакоммиченные правки/iu)
+  // Называем конкретный файл — по нему сразу понятно, что мешает
+  assert.match(msg, /src\/main\/ipc\/git\.ipc\.ts/u)
   assert.equal(msg.includes('\n'), false, 'в тост не должен попадать многострочный дамп')
+  assert.equal(/Command failed/u.test(msg), false, 'служебная обёртка exec не должна попадать в тост')
   assert.match(explainCheckoutError('error: pathspec "nope" did not match any file(s) known to git'), /не существует/iu)
   assert.match(explainCheckoutError('fatal: branch is already checked out at /other'), /worktree/i)
+  assert.match(explainCheckoutError('fatal: Unable to create index.lock: File exists'), /повтори/iu)
+})
+
+test('ошибка checkout: совсем неизвестный вывод не остаётся пустым', () => {
+  const msg = explainCheckoutError('')
+  assert.equal(typeof msg, 'string')
+  assert.ok(msg.length > 0)
 })
 
 // ── Контракт с реальным git: формат вывода не изменился ─────────────────

@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 import { runGit } from '../git/runGit'
 import { parseBranchList } from '../../shared/git/parseBranches'
-import { buildCheckoutPlan, explainCheckoutError } from '../../shared/git/checkoutPlan'
+import { buildCheckoutArgs, explainCheckoutError } from '../../shared/git/checkoutPlan'
 import { readGraph } from '../git/graph'
 import { generateCommitMessage } from '../git/commitMessage'
 import { readFile, stat } from 'fs/promises'
@@ -409,44 +409,16 @@ export function registerGitIPC(): void {
   })
 
   // ── git checkout — переключение ветки ────────────────────────────────
-  // Правки в рабочем дереве почти всегда есть (агент правит файлы), поэтому
-  // голый `checkout` падал с "local changes would be overwritten". План команд
-  // (stash → checkout → stash pop) строится в src/shared/git/checkoutPlan.ts.
+  // Обычное переключение, как в VS Code: один `git checkout <branch>`. Никакого
+  // авто-stash — он падал на большом дереве и подменял понятную ошибку сырым
+  // «Command failed: git … stash push». Не-конфликтующие правки git переносит
+  // сам, а при конфликте отдаём читаемую причину (buildCheckoutArgs/explain в
+  // src/shared/git/checkoutPlan.ts).
   ipcMain.handle('git:checkout', async (_e, params: { workdir: string; branch: string }) => {
     if (!params.workdir || !params.branch) return { success: false, error: 'workdir and branch are required' }
     try {
-      const { workdir, branch } = params
-      const [statusOut, localOut, remoteOut] = await Promise.all([
-        runGit(workdir, ['status', '--porcelain']).catch(() => ''),
-        runGit(workdir, ['branch', '--list', '--format=%(refname:short)']).catch(() => ''),
-        runGit(workdir, ['branch', '--remotes', '--format=%(refname:short)']).catch(() => ''),
-      ])
-      const lines = (s: string): string[] => s.split('\n').map(l => l.trim()).filter(Boolean)
-
-      const plan = buildCheckoutPlan(branch, {
-        localBranches: lines(localOut),
-        remoteBranches: lines(remoteOut),
-        dirty: lines(statusOut).length > 0,
-      })
-
-      let stashed = false
-      const output: string[] = []
-      for (let i = 0; i < plan.steps.length; i++) {
-        try {
-          output.push(await runGit(workdir, plan.steps[i].args))
-          if (plan.steps[i].args[0] === 'stash' && plan.steps[i].args[1] === 'push') stashed = true
-        } catch (stepErr) {
-          const raw = String((stepErr as Error)?.message ?? stepErr)
-          // Правки спрятаны, но переключение не удалось — вернуть их обратно,
-          // иначе пользователь останется на старой ветке без своих изменений.
-          if (plan.restoreOnFailureAt.includes(i) && stashed) {
-            await runGit(workdir, ['stash', 'pop']).catch(() => {})
-          }
-          return { success: false, error: explainCheckoutError(raw), stashed }
-        }
-      }
-
-      return { success: true, output: output.join('\n'), stashed }
+      const out = await runGit(params.workdir, buildCheckoutArgs(params.branch))
+      return { success: true, output: out }
     } catch (e) {
       return { success: false, error: explainCheckoutError(String((e as Error)?.message ?? e)) }
     }

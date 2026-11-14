@@ -570,6 +570,25 @@
   color: var(--text-muted, rgba(255, 255, 255, 0.4));
 }
 
+/* Переключение ветки: спиннер на целевой строке + блокировка остальных строк.
+   Панель больше не закрывается после переключения, поэтому нужен видимый отклик. */
+.git-tools-branch-item:disabled {
+  cursor: default;
+}
+
+.git-tools-branch-item.is-switching,
+.git-tools-branch-item.is-switching:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.git-tools-branch-item .is-spinning {
+  animation: git-tools-spin 1s linear infinite;
+}
+
+@keyframes git-tools-spin {
+  to { transform: rotate(360deg); }
+}
+
 .git-tools-branch-group {
   padding: 8px 8px 4px;
   font-size: 10.5px;

@@ -1132,20 +1132,15 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
     if (!workdir) return
     setBranchSwitchLoading(branch)
     try {
+      // Обычный checkout без авто-stash. Успех — без тоста (тихо, как в VS Code),
+      // ошибку показываем, иначе панель выглядит «не переключающей ветки».
       const result = await window.syntee.git.checkout({ workdir, branch }) as
-        { success: boolean; error?: string; stashed?: boolean }
+        { success: boolean; error?: string }
       if (result.success) {
         setBranchDropdownOpen(false)
         await refresh()
         await loadBranches()
-        useToast.getState().add(
-          result.stashed
-            ? `Переключено на ${branch} (правки сохранены в stash и возвращены)`
-            : `Переключено на ${branch}`,
-          'success',
-        )
       } else {
-        // Раньше ошибка молча терялась — выглядело как «панель не переключает ветки».
         useToast.getState().add(result.error ?? 'Не удалось переключить ветку', 'error')
       }
     } catch (e) {

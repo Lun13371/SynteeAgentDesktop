@@ -127,6 +127,8 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   const [branches, setBranches] = useState<BranchItem[]>([])
   const [branchQuery, setBranchQuery] = useState('')
   const [newBranch, setNewBranch] = useState<string | null>(null)
+  /** Ветка, на которую сейчас переключаемся — спиннер на её строке. */
+  const [switching, setSwitching] = useState<string | null>(null)
 
   const [draft, setDraft] = useState('')
   const [includeUnstaged, setIncludeUnstaged] = useState(true)
@@ -188,6 +190,8 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
 
   // Список для переключения — ТОЛЬКО локальные ветки: git:branchList без all
   // отдаёт именно их (удалённые не переключаются напрямую — отсюда detached HEAD).
+  // Порядок оставляем git-овский: список не пересобирается после переключения,
+  // поэтому строки не «прыгают» под курсором.
   const loadBranches = useCallback(async (): Promise<void> => {
     if (!workdir) return
     try {
@@ -195,12 +199,10 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
       const list = (res?.branches ?? []) as Array<BranchItem | string>
       const current = (res?.current ?? null) as string | null
       setBranches(
-        list
-          .map(b => {
-            if (typeof b === 'string') return { name: b, current: b === current }
-            return { name: b.name, current: b.current ?? b.name === current }
-          })
-          .sort((a, b) => Number(!!b.current) - Number(!!a.current) || a.name.localeCompare(b.name)),
+        list.map(b => {
+          if (typeof b === 'string') return { name: b, current: b === current }
+          return { name: b.name, current: b.current ?? b.name === current }
+        }),
       )
     } catch {
       setBranches([])
@@ -338,30 +340,25 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     async (branch: string): Promise<void> => {
       if (!workdir || busy) return
       setBusy(true)
+      setSwitching(branch)
       try {
+        // Обычный checkout, как в VS Code. Никаких stash-манипуляций и тостов
+        // на успех: переключение должно быть тихим и мгновенным. Остаёмся в
+        // списке веток — галка просто переезжает на новую строку.
         const res = await window.syntee.git.checkout({ workdir, branch })
         if (!res?.success) {
           useToast.getState().add(res?.error ?? t('Не удалось переключить ветку', 'Failed to switch branch'), 'error')
           return
         }
-        await refresh()
-        await loadBranches()
-        setView('panel')
-        // main сам прячет незакоммиченные правки в stash и возвращает их обратно,
-        // поэтому при успехе честно говорим: изменения на месте.
-        useToast.getState().add(
-          res.stashed
-            ? t(`Переключено на ${branch} (правки сохранены)`, `Switched to ${branch} (changes kept)`)
-            : t(`Переключено на ${branch}`, `Switched to ${branch}`),
-          'success',
-        )
+        await Promise.all([refresh(), loadBranches()])
       } catch (e) {
         useToast.getState().add(String((e as Error)?.message ?? e), 'error')
       } finally {
+        setSwitching(null)
         setBusy(false)
       }
     },
-    [workdir, busy, refresh, loadBranches, lang, setView, t],
+    [workdir, busy, refresh, loadBranches, lang, t],
   )
 
   const createBranch = useCallback(
@@ -658,10 +655,20 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                       <button
                         key={b.name}
                         type="button"
-                        className={`git-tools-branch-item${b.current ? ' is-current' : ''}`}
+                        className={`git-tools-branch-item${b.current ? ' is-current' : ''}${switching === b.name ? ' is-switching' : ''}`}
+                        disabled={switching !== null}
+                        title={b.current ? t('Текущая ветка', 'Current branch') : t(`Переключиться на ${b.name}`, `Switch to ${b.name}`)}
                         onClick={() => (b.current ? setView('panel') : void switchBranch(b.name))}
                       >
-                        <span className="git-tools-branch-check">{b.current ? <Check size={12} /> : <GitBranch size={12} />}</span>
+                        <span className="git-tools-branch-check">
+                          {switching === b.name ? (
+                            <Loader2 size={12} className="is-spinning" />
+                          ) : b.current ? (
+                            <Check size={12} />
+                          ) : (
+                            <GitBranch size={12} />
+                          )}
+                        </span>
                         <span className="git-tools-branch-body">
                           <span className="git-tools-branch-name">{b.name}</span>
                           {b.current && dirty > 0 && (
