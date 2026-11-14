@@ -73,14 +73,13 @@ export interface ModelMeta {
 export type ModelRole =
   | 'main'        // основной чат
   | 'fast'        // быстрые ответы, автотайтлы
-  | 'fastContext' // fast context retrieval (tree-sitter + fast LLM)
   | 'vision'      // анализ изображений
   | 'video'       // анализ видео с текстовым ответом (не генерация)
   | 'audio'       // анализ аудио с текстовым ответом (не TTS)
   | 'stt'         // speech-to-text
   | 'tts'         // text-to-speech
   | 'embedding'   // векторный поиск / память
-  | 'memory'      // анализ памяти
+  | 'memory'      // анализ памяти: экстракция фактов/исходов/графа
   | 'summary'     // авто-заголовки чатов
   | 'subagent'    // суб-агенты (generic fallback)
   // Per-subagent-role overrides: `subagent:researcher`, `subagent:editor`, ...

@@ -72,8 +72,6 @@ export interface Attachment {
  * в message.attachmentResult для отображения после рестарта. Live-стриминг
  * идёт через toolProgress['process_attachments'] с полями {stage, detail,
  * filesProcessed, filesTotal}.
- *
- * Структура как у FastContextResultData — files[], summary, ms.
  */
 export interface AttachmentProcessingFile {
   name: string

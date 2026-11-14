@@ -1,7 +1,7 @@
 import { existsSync } from 'fs'
 import { readFile as fsReadFile, stat as fsStat } from 'fs/promises'
 import { resolveToolPath, isBinaryFile, formatSize, type ToolResult } from './_shared'
-import { sidecarSymbols, type SidecarDefinition } from '../context/fastContext/sidecarClient'
+import { sidecarSymbols, type SidecarDefinition } from '../sidecar/sidecarClient'
 
 const MAX_READ_FILE_SIZE = 20 * 1024 * 1024  // 20MB — больше не читаем целиком в память
 

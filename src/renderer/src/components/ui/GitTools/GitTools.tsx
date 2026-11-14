@@ -83,7 +83,7 @@ interface GitToolsProps {
   lastTurnChanges?: LastTurnChanges | null
 }
 
-const POPOVER_WIDTH = 420
+const POPOVER_WIDTH = 320
 /** Отступ от стенки окна: тот же, что у кластера chat-topright-actions (right: 10px). */
 const EDGE_GAP = 10
 
@@ -129,6 +129,20 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     if (visible.length === 0) return null
     return { items: visible, done: visible.filter(i => i.status === 'done').length, total: visible.length }
   }, [todo])
+
+  // Длинный план не должен растягивать панель: по умолчанию видно только
+  // хвост (последние 4 пункта — то, над чем идёт работа), остальное по кнопке.
+  const PLAN_TAIL = 4
+  // Раскрытие привязано к конкретному плану: пришёл новый — снова показываем хвост.
+  const [expandedPlanKey, setExpandedPlanKey] = useState<string | null>(null)
+  const planKey = progress ? `${progress.total}:${progress.items[0]?.text ?? ''}` : ''
+  const planExpanded = planKey !== '' && expandedPlanKey === planKey
+  const planItems = useMemo(() => {
+    if (!progress) return []
+    if (planExpanded || progress.items.length <= PLAN_TAIL) return progress.items
+    return progress.items.slice(-PLAN_TAIL)
+  }, [progress, planExpanded])
+  const planHidden = progress ? progress.items.length - planItems.length : 0
 
   const refresh = useCallback(async (): Promise<void> => {
     if (!workdir) return
@@ -424,7 +438,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
             <motion.div
               ref={popRef}
               className="git-tools-popover"
-              style={{ left: pos.left, top: pos.top, width: POPOVER_WIDTH }}
+              style={{ left: pos.left, top: pos.top }}
               initial={{ opacity: 0, y: -6, scale: 0.985 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -6, scale: 0.985 }}
@@ -551,6 +565,18 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                         <ListChecks size={12} className="git-tools-row-icon" />
                         <span className="git-tools-plan-title">{t('План задачи', 'Task plan')}</span>
                         <span className="git-tools-plan-count">{progress.done}/{progress.total}</span>
+                        {progress.items.length > PLAN_TAIL && (
+                          <button
+                            type="button"
+                            className="git-tools-plan-toggle"
+                            onClick={() => setExpandedPlanKey(planExpanded ? null : planKey)}
+                            aria-expanded={planExpanded}
+                            title={planExpanded ? t('Свернуть план', 'Collapse plan') : t('Показать весь план', 'Show full plan')}
+                          >
+                            {planExpanded ? t('Свернуть', 'Less') : `+${planHidden}`}
+                            <ChevronDown size={11} className={planExpanded ? 'is-expanded' : ''} />
+                          </button>
+                        )}
                       </div>
                       <div className="git-tools-plan-bar">
                         <div
@@ -559,7 +585,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                         />
                       </div>
                       <ul className="git-tools-plan-list">
-                        {progress.items.map((item, i) => (
+                        {planItems.map((item, i) => (
                           <li key={`${i}-${item.text.slice(0, 24)}`} className={`git-tools-plan-item is-${item.status}`}>
                             <span className="git-tools-plan-mark">
                               {item.status === 'done' ? (

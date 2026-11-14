@@ -82,16 +82,6 @@ export function deleteProject(id: string, deleteChats = false): void {
       ).run(id)
     }
     db.prepare('DELETE FROM projects WHERE id = ?').run(id)
-    // Индексные строки проекта больше не нужны: без этой очистки тысячи
-    // записей (TS + Rust) остаются в БД навсегда и никем не читаются.
-    db.prepare('DELETE FROM fast_context_index WHERE project_id = ?').run(id)
-    db.prepare('DELETE FROM fast_context_index_history WHERE project_id = ?').run(id)
-    try {
-      db.prepare('DELETE FROM fast_context_sidecar_index WHERE project_id = ?').run(id)
-    } catch { /* таблица sidecar появляется только после первого Rust-индекса */ }
-    try {
-      db.prepare('DELETE FROM fast_context_sidecar_meta WHERE project_id = ?').run(id)
-    } catch { /* таблица meta появляется только после первого Rust-индекса */ }
   })()
 }
 

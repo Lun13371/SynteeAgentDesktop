@@ -685,19 +685,8 @@ declare const synteeAPI: {
         setContextFiles: (id: string, files: string[], autoDiscover: boolean, disabledDiscoveryFiles?: string[]) => Promise<any>;
         setAppearance: (id: string, color: string, icon: string) => Promise<any>;
     };
-    fastContext: {
-        getStatus: (projectId: string) => Promise<any>;
-        reindex: (projectId: string) => Promise<any>;
-        clearIndex: (projectId: string) => Promise<any>;
-        setActive: (projectId: string | null) => Promise<any>;
-        onProgress: (cb: (data: {
-            projectId: string;
-            stage: string;
-            detail?: string;
-            filesProcessed?: number;
-            filesTotal?: number;
-        }) => void) => () => Electron.IpcRenderer;
-        onUpdated: (cb: (projectId: string) => void) => () => Electron.IpcRenderer;
+    extensions: {
+        setActiveProject: (projectId: string | null) => Promise<any>;
     };
     memory: {
         getAll: (filter?: unknown) => Promise<any>;

@@ -182,7 +182,7 @@ function scheduleNextPoll(): void {
 
 /**
  * Переключает детектор на активный проект. projectId=null — остановить.
- * Вызывается из fastcontext:setActive handler и/или при активации чата.
+ * Вызывается из extensions:setActiveProject handler и/или при активации чата.
  * Немедленный scan + запуск polling на POLL_INTERVAL_MS.
  */
 export function setActiveExtensionsProject(projectId: string | null, workdir?: string): void {

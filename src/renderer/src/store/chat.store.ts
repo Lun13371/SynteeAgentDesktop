@@ -27,7 +27,7 @@ export interface ChatLiveState {
   rateLimitSec: number
   isTyping: boolean
   isAgentRunning: boolean
-  /** Live progress для долгих тулов (get_fast_context / run_command): {toolName → {stage, detail, sessionId, files...}} */
+  /** Live progress для долгих тулов (run_command / process_attachments): {toolName → {stage, detail, sessionId, files...}} */
   toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
   /** Live-маппинг саб-агентов, запущенных в текущем стриме. Ключ — agentId.
    *  Заполняется событием agent:spawn (эмитится из main ДО запуска worker'а

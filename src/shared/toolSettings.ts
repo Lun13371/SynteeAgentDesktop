@@ -12,9 +12,6 @@ export const PROTECTED_CORE_TOOLS = [
 const coreTools = new Set<string>(PROTECTED_CORE_TOOLS)
 const tools = (entries: Array<[string, string]>) => entries.map(([name, label]) => ({ name, label }))
 export const OPTIONAL_TOOL_GROUPS = [
-  { label: 'Исследование проекта', tools: tools([
-    ['get_fast_context', 'Быстрый контекст проекта'],
-  ]) },
   { label: 'Оркестрация', tools: tools([
     ['execute_code', 'Скрипт вместо серии вызовов (Code Mode)'],
   ]) },

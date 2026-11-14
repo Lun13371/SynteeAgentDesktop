@@ -299,10 +299,13 @@
   font-family: var(--font-mono);
 }
 
+/* Фон код-блока живёт здесь, а не в inline-стиле <pre>: так он берётся из
+   темы (--overlay-*) и одинаково выглядит на светлой и тёмной. */
 .code-block {
   border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border);
+  background: var(--overlay-2);
   margin: 8px 0;
 }
 

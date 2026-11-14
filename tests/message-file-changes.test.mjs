@@ -96,6 +96,83 @@ test('упавший вызов и не файловые тулы не попа�
   assert.deepEqual(collectFileChanges(steps), [])
 })
 
+test('правки внутри execute_code берутся из trace вложенных вызовов', () => {
+  // У скрипта нет собственных tool_result-шагов для вложенных тулов: их
+  // правки живут в codeMode.trace. Раньше они полностью терялись в чипах.
+  const steps = [
+    call('s', 'execute_code', { code: 'await tools.edit_file({...})' }),
+    {
+      ...result('s', 'execute_code'),
+      codeMode: {
+        code: 'x',
+        trace: [
+          { name: 'edit_file', args: { path: 'src/a.ts' }, result: 'ok', status: 'success', diff: EDIT_DIFF },
+          { name: 'write_file', args: { path: 'data.csv' }, result: 'ok', status: 'success', diff: CREATE_DIFF },
+          { name: 'edit_file', args: { path: 'src/broken.ts' }, result: 'fail', status: 'failure', diff: EDIT_DIFF },
+          { name: 'run_command', args: { command: 'npm test' }, result: 'ok', status: 'success' },
+        ],
+      },
+    },
+  ]
+  const byPath = Object.fromEntries(collectFileChanges(steps).map(f => [f.path, f]))
+  assert.deepEqual(Object.keys(byPath).sort(), ['data.csv', 'src/a.ts'])
+  assert.equal(byPath['src/a.ts'].adds, 2)
+  assert.equal(byPath['src/a.ts'].dels, 1)
+  assert.equal(byPath['data.csv'].created, true)
+})
+
+test('трейс execute_code с JSON-строкой args учитывает вложенную правку', () => {
+  // Настоящий Agent сохраняет args как JSON-строку после sanitizeTrace.
+  // Это было точной причиной: сборщик проверял typeof args === 'object' и
+  // молча выбрасывал все edit_file/write_file из скрипта.
+  const steps = [
+    call('s', 'execute_code', { code: 'x' }),
+    {
+      ...result('s', 'execute_code'),
+      codeMode: {
+        code: 'x',
+        trace: [
+          {
+            name: 'edit_file',
+            args: JSON.stringify({ path: 'src/string-args.ts', old_str: 'before', new_str: 'after\nsecond' }),
+            result: 'ok',
+            status: 'success',
+          },
+        ],
+      },
+    },
+  ]
+  const files = collectFileChanges(steps)
+  assert.equal(files.length, 1)
+  assert.equal(files[0].path, 'src/string-args.ts')
+  assert.equal(files[0].adds, 2)
+  assert.equal(files[0].dels, 1)
+  assert.equal(files[0].patches.length, 1)
+})
+
+test('старый трейс без diff — правка восстанавливается из аргументов вызова', () => {
+  // Записи, сохранённые до появления поля diff: вывод карточки и счётчики
+  // собираются из old_str/new_str (edit_file) и content (write_file).
+  const steps = [
+    call('s', 'execute_code', { code: 'x' }),
+    {
+      ...result('s', 'execute_code'),
+      codeMode: {
+        code: 'x',
+        trace: [
+          { name: 'edit_file', args: JSON.stringify({ path: 'src/a.ts', old_str: 'old line', new_str: 'new line\nextra line' }), result: 'ok', status: 'success' },
+          { name: 'write_file', args: JSON.stringify({ path: 'new.ts', content: 'a\nb' }), result: 'ok', status: 'success' },
+        ],
+      },
+    },
+  ]
+  const byPath = Object.fromEntries(collectFileChanges(steps).map(f => [f.path, f]))
+  assert.equal(byPath['src/a.ts'].dels, 1)
+  assert.equal(byPath['src/a.ts'].adds, 2)
+  assert.equal(byPath['new.ts'].adds, 2)
+  assert.equal(byPath['new.ts'].created, true)
+})
+
 test('нет шагов — пустой результат (сообщение без тулов)', () => {
   assert.deepEqual(collectFileChanges(undefined), [])
   assert.deepEqual(collectFileChanges([]), [])

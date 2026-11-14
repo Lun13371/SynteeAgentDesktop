@@ -8,6 +8,7 @@
 // refractor 5: именованный экспорт { refractor } (в v4 был default).
 import { refractor } from 'refractor/core'
 import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark'
+import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light'
 
 // Тип HAST-ноды (упрощённый, от refractor — без внешних типов)
 interface HastNode {
@@ -116,7 +117,8 @@ function hastToHtml(
   let styleStr = ''
   if (isToken) {
     // CSS-кэш: токен 'token keyword' всегда даёт одинаковый CSS.
-    const clsKey = classNames.join(' ')
+    // Ключ включает палитру: тот же токен в светлой теме красится иначе.
+    const clsKey = (stylesheet === lightStyleOverride ? 'l\x01' : 'd\x01') + classNames.join(' ')
     const cachedCss = cssCache.get(clsKey)
     if (cachedCss !== undefined) {
       styleStr = cachedCss
@@ -188,7 +190,10 @@ const codeStyleOverride: Record<string, Record<string, string>> = {
     ...((oneDark as Record<string, Record<string, string>>)['pre[class*="language-"]']),
     margin: '0',
     padding: '14px 16px',
-    background: '#0d0d0f',
+    // Фон задаёт CSS (.code-block → var(--overlay-*)), чтобы блок подстраивался
+    // под тему. Раньше тут был жёсткий #0d0d0f: на светлых темах он выглядел
+    // чужеродным чёрным прямоугольником.
+    background: 'transparent',
     borderRadius: '0 0 8px 8px',
     fontSize: '13px',
     lineHeight: CODE_LH,
@@ -201,12 +206,45 @@ const codeStyleOverride: Record<string, Record<string, string>> = {
   },
 }
 
+// Светлая версия того же стиля: палитра токенов из oneLight, а фон/отступы —
+// те же самые. Выбор палитры делает highlightCodeToHtml по флагу isLight.
+const lightStyleOverride: Record<string, Record<string, string>> = {
+  ...(oneLight as unknown as Record<string, Record<string, string>>),
+  'pre[class*="language-"]': {
+    ...((oneLight as unknown as Record<string, Record<string, string>>)['pre[class*="language-"]']),
+    margin: '0',
+    padding: '14px 16px',
+    background: 'transparent',
+    borderRadius: '0 0 8px 8px',
+    fontSize: '13px',
+    lineHeight: CODE_LH,
+  },
+  'code[class*="language-"]': {
+    ...((oneLight as unknown as Record<string, Record<string, string>>)['code[class*="language-"]']),
+    background: 'transparent',
+    fontSize: '13px',
+    lineHeight: CODE_LH,
+  },
+}
+
+/** Палитра токенов по базе темы. */
+function sheetFor(isLight: boolean): Record<string, Record<string, string>> {
+  return isLight ? lightStyleOverride : codeStyleOverride
+}
+
+/** Ключ палитры для кэшей: один и тот же код в тёмной и светлой теме
+ *  даёт разный HTML, поэтому кэшировать его под одним ключом нельзя. */
+function paletteTag(isLight: boolean): string {
+  return isLight ? 'l\x01' : 'd\x01'
+}
+
 // ── Module-level: allClasses Set и CSS-кэш ────────────────────────────
 // allClasses — все классы из stylesheet. Вычисляется ОДИН раз (раньше
 // пересоздавался для КАЖДОЙ ноды в hastToHtml — тысячи Set-конструкций
-// на один код-блок).
+// на один код-блок). Берём объединение обеих палитр: набор классов,
+// которые вырезаются из className, должен быть одинаковым в любой теме.
 const ALL_CLASSES = new Set<string>()
-for (const sel of Object.keys(codeStyleOverride)) {
+for (const sel of [...Object.keys(codeStyleOverride), ...Object.keys(lightStyleOverride)]) {
   sel.split('.').forEach(c => { if (c) ALL_CLASSES.add(c.trim()) })
 }
 
@@ -234,19 +272,20 @@ function getLineNumbersHtml(lineCount: number): string {
 // При стриме raw растёт. Вместо полной Prism-токенизации каждый раз —
 // кэшируем HTML для полных строк (до последнего \n). При следующем вызове
 // догоняем только новые строки. Результат идентичен полному highlight.
-function highlightWithCache(raw: string, lang: string): string {
+function highlightWithCache(raw: string, lang: string, isLight: boolean): string {
+  const sheet = sheetFor(isLight)
   if (!lang || lang === 'text') {
     return escapeHtml(raw)
   }
 
-  const streamKey = lang + '\x01'
+  const streamKey = paletteTag(isLight) + lang + '\x01'
   const cached = streamCache.get(streamKey)
 
   // Если нет кэша или кэш не префикс текущего raw — полная подсветка
   if (!cached || !raw.startsWith(cached.raw)) {
     try {
       const tree = refractor.highlight(raw, lang) as unknown as HastNode[]
-      const html = tree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+      const html = tree.map(node => hastToHtml(node, sheet)).join('')
       // Кэшируем стабильный префикс (до последнего \n) для следующих флешей
       const lastNl = raw.lastIndexOf('\n')
       const stableEnd = lastNl + 1 // 0 если нет \n
@@ -254,7 +293,7 @@ function highlightWithCache(raw: string, lang: string): string {
       if (stableEnd > 0) {
         const stableRaw = raw.slice(0, stableEnd)
         const stableTree = refractor.highlight(stableRaw, lang) as unknown as HastNode[]
-        stableHtml = stableTree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+        stableHtml = stableTree.map(node => hastToHtml(node, sheet)).join('')
       }
       streamCache.set(streamKey, { raw, stableEnd, stableHtml })
       return html
@@ -277,7 +316,7 @@ function highlightWithCache(raw: string, lang: string): string {
   let tailHtml: string
   try {
     const tailTree = refractor.highlight(tailRaw, lang) as unknown as HastNode[]
-    tailHtml = tailTree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+    tailHtml = tailTree.map(node => hastToHtml(node, sheet)).join('')
   } catch {
     tailHtml = escapeHtml(tailRaw)
   }
@@ -296,7 +335,7 @@ function highlightWithCache(raw: string, lang: string): string {
     let newStableTailHtml: string
     try {
       const newStableTailTree = refractor.highlight(newStableTail, lang) as unknown as HastNode[]
-      newStableTailHtml = newStableTailTree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+      newStableTailHtml = newStableTailTree.map(node => hastToHtml(node, sheet)).join('')
     } catch {
       newStableTailHtml = escapeHtml(newStableTail)
     }
@@ -318,21 +357,21 @@ function highlightWithCache(raw: string, lang: string): string {
 }
 
 // ── Главный экспорт: code → HTML-строка с подсветкой ─────────────────────
-export function highlightCodeToHtml(raw: string, lang: string): string {
-  const key = lang + '\0' + raw
+export function highlightCodeToHtml(raw: string, lang: string, isLight = false): string {
+  const key = paletteTag(isLight) + lang + '\0' + raw
   const cached = htmlCache.get(key)
   if (cached) return cached
 
   // Инкрементальная подсветка: при стриме кэшируем по строкам.
   // highlightWithCache возвращает готовую HTML-строку — стабильный
   // префикс берётся из кэша, подсвечивается только хвост.
-  const highlightedHtml = highlightWithCache(raw, lang)
+  const highlightedHtml = highlightWithCache(raw, lang, isLight)
 
   // Стиль для <pre> и <code> (из codeStyleOverride)
   // При наличии номеров строк — pre становится flex-контейнером, чтобы
   // колонка номеров и код всегда были рядом (float:left ломается при
   // длинном коде — код проваливается под колонку номеров).
-  const codeStyle = codeStyleOverride['code[class*="language-"]'] || {}
+  const codeStyle = sheetFor(isLight)['code[class*="language-"]'] || {}
 
   // Номера строк (если > 4 строк)
   const lineCount = raw.replace(/\n$/, '').split('\n').length
@@ -354,7 +393,7 @@ export function highlightCodeToHtml(raw: string, lang: string): string {
       paddingRight: '12px',
       textAlign: 'right',
       userSelect: 'none',
-      color: '#4a4a5a',
+      color: isLight ? '#9aa0a6' : '#4a4a5a',
       fontSize: '11px',
       lineHeight: CODE_LH,
       minWidth,

@@ -89,6 +89,9 @@ export interface ToolStep {
       args: unknown
       result: string
       status: 'success' | 'failure'
+      /** unified diff вложенной правки: у edit_file/write_file это и есть
+       *  вывод, без него карточка вложенного вызова оставалась пустой. */
+      diff?: string
     }>
   }
 }

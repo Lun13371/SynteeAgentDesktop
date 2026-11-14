@@ -43,7 +43,6 @@ const FEED_LABELS: Record<string, string> = {
   edit_file: 'Edit file',
   write_file: 'Write file',
   list_directory: 'List directory',
-  get_fast_context: 'Fast context',
   get_diagnostics: 'Diagnostics',
   execute_code: 'Run code',
   fetch_page: 'Fetch page',
@@ -85,7 +84,7 @@ function truncate(s: string, n: number): string {
   return clean.length > n ? clean.slice(0, n) + '…' : clean
 }
 
-// File-backed tools render their target as a chip (reference: [fastContext.ipc.ts]).
+// File-backed tools render their target as a chip.
 function fileChips(name: string, args?: Record<string, unknown>): string[] | null {
   if (name === 'read_files') {
     const paths = args?.paths
@@ -110,7 +109,6 @@ function previewFor(name: string, args?: Record<string, unknown>): { text: strin
     return { text: pat + path, mono: true }
   }
   if (name === 'list_directory') return { text: String(args?.path ?? fa), mono: true }
-  if (name === 'get_fast_context') return { text: String(args?.query ?? args?.task ?? fa), mono: false }
   return { text: fa, mono: false }
 }
 

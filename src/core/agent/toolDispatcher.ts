@@ -7,12 +7,11 @@
 import type Store from 'electron-store'
 import { resolve } from 'path'
 import { statSync, existsSync } from 'fs'
-import { createHash } from 'crypto'
 import {
   runCommand, readFile, writeFile, listDirectory,
   findFiles,
   searchWeb, getSystemInfo, generateImage, analyzeImageFile, analyzeVideoFile, analyzeAudioFile,
-  readFiles, searchCode, analyzeProject,
+  readFiles, searchCode,
   fetchPage, searchImages, getDiagnostics,
   type SearchImagesOpts,
   type ToolResult, editFile,
@@ -20,7 +19,6 @@ import {
 import {
   getContextSettings,
 } from '../context/contextManager'
-import { runFastContext, type FastContextResult } from '../context/fastContext'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import type { DiffEntry } from '../context/structuredMemory'
 import type { AgentCallbacks, AgentSummaryDetails } from './types'
@@ -428,47 +426,6 @@ export class ToolDispatcher {
             workdir: this.workdir,
           }
         )
-      case 'get_fast_context': {
-        const fcQuery = resolvedArgs.query as string
-        if (!fcQuery) return { success: false, output: '', error: 'query is required' }
-        if (!this.workdir) {
-          const fallback = await analyzeProject(this.workdir ?? '.', this.workdir)
-          return {
-            success: true,
-            output: JSON.stringify({
-              files: [],
-              summary: 'Fast context недоступен (нет workdir). Использован встроенный анализ проекта как fallback. ' + (fallback.output.slice(0, 200)),
-              ms: 0,
-              indexedFilesCount: 0,
-              fallback: true,
-            } as FastContextResult & { fallback: boolean }),
-          }
-        }
-        const fcProjectId = this.projectId
-          ?? `fc:${createHash('sha1').update(resolve(this.workdir ?? process.cwd())).digest('hex').slice(0, 16)}`
-        const fcResult = await runFastContext(
-          fcProjectId,
-          this.workdir,
-          fcQuery,
-          this.store,
-          {
-            maxFiles: resolvedArgs.maxFiles as number | undefined,
-            maxTokens: resolvedArgs.maxTokens as number | undefined,
-            signal: callbacks?.signal,
-          },
-          (p) => {
-            callbacks?.onToolProgress?.({
-              toolName: 'get_fast_context',
-              stage: p.stage,
-              detail: p.detail,
-              filesProcessed: p.filesProcessed,
-              filesTotal: p.filesTotal,
-              filesFound: p.filesFound,
-            })
-          },
-        )
-        return { success: true, output: JSON.stringify(fcResult) }
-      }
       case 'spawn_agent': {
         if (!callbacks?.onSpawnAgent) {
           return { success: false, output: '', error: 'spawn_agent is not supported in this context' }

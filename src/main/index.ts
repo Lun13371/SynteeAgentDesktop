@@ -12,8 +12,8 @@ app.setName('SynteeHelper')
 // позволяет поднять второй инстанс с отдельным userData, не конфликтуя
 // с singleton-lock и данными живого инстанса юзера.
 app.setPath('userData', process.env.SYNTEE_USER_DATA_DIR || join(app.getPath('appData'), 'SynteeHelper'))
-// Fast Context Sidecar получает тот же путь через env: его клиент также
-// используется из worker_threads, где импорт Electron ненадёжен.
+// The Rust sidecar gets the same path via env: its client is also used
+// from worker_threads, where importing Electron is unreliable.
 process.env.SYNTEE_DB_PATH = join(app.getPath('userData'), 'syntee.db')
 
 // Кэш моделей @huggingface/transformers (E5 для semantic-поиска, whisper для
@@ -57,10 +57,9 @@ import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
-import { stopAllWatchers as stopAllFastContextWatchers } from '../core/context/fastContextWatcher'
 import {
   shutdownSidecar, sidecarHealth, addSidecarFailureHandler,
-} from '../core/context/fastContext/sidecarClient'
+} from '../core/sidecar/sidecarClient'
 import { installRustTokenCounter } from '../core/tokens/rustTokenCounter'
 import { stopSemanticIndexer } from '../core/memory/semanticIndex'
 import { registerFsIPC } from './ipc/fs.ipc'
@@ -70,7 +69,7 @@ import { registerMcpIPC } from './ipc/mcp.ipc'
 import { registerPluginsIPC } from './ipc/plugins.ipc'
 import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
 import { registerPtyIPC } from './ipc/pty.ipc'
-import { registerFastContextIPC } from './ipc/fastContext.ipc'
+import { registerExtensionsIPC } from './ipc/extensions.ipc'
 import { registerCommandsIPC } from './ipc/commands.ipc'
 import { registerMentionsIPC, shutdownMentions } from './ipc/mentions.ipc'
 import { registerProtectedVarsIPC } from './ipc/protectedVars.ipc'
@@ -275,12 +274,12 @@ function maybeRestartForSidecarFailure(): void {
   ) return
   sidecarAppRestarted = true
   process.env.SYNTEE_SIDECAR_RESTARTED = '1'
-  log('[fast-context] restarting Electron once after Rust sidecar failure')
+  log('[sidecar] restarting Electron once after Rust sidecar failure')
   try {
     app.relaunch({ args: process.argv.slice(1) })
     app.exit(0)
   } catch (error) {
-    log('[fast-context] Electron restart failed: %s', error instanceof Error ? error.message : String(error))
+    log('[sidecar] Electron restart failed: %s', error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -421,11 +420,11 @@ app.whenReady().then(async () => {
   registerPluginsIPC(store, () => mainWindow.getWindow())
   registerMarketplaceIPC(store)
   registerPtyIPC(mainWindow)
-  registerFastContextIPC(store, () => mainWindow.getWindow())
-  // Fast Context runs exclusively on the Rust sidecar; a failure is reported,
-  // never silently replaced by another backend.
+  registerExtensionsIPC(() => mainWindow.getWindow())
+  // The Rust sidecar serves token counting, symbols and semantic memory;
+  // a failure is reported, never silently replaced by another backend.
   addSidecarFailureHandler(error => {
-    log('[fast-context] Rust sidecar unavailable (%s): %s', error.code, error.message)
+    log('[sidecar] Rust sidecar unavailable (%s): %s', error.code, error.message)
     maybeRestartForSidecarFailure()
   })
   // Token counting for the whole app runs on the sidecar's native cl100k_base
@@ -434,9 +433,9 @@ app.whenReady().then(async () => {
   try {
     const health = await sidecarHealth()
     if (!health.ok) throw new Error('Rust sidecar health check returned not-ok')
-    log('[fast-context] Rust sidecar ready')
+    log('[sidecar] Rust sidecar ready')
   } catch (error) {
-    log('[fast-context] Rust sidecar startup unavailable: %s', error instanceof Error ? error.message : String(error))
+    log('[sidecar] Rust sidecar startup unavailable: %s', error instanceof Error ? error.message : String(error))
   }
   registerCommandsIPC()
   registerMentionsIPC()
@@ -636,8 +635,6 @@ app.on('before-quit', () => {
   gitSyncManager?.stop()
   stopAudioDevicesIPC()
   stopAudioVisualizerIPC()
-  // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.
-  stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
   // Останавливаем фоновую semantic E5-индексацию (semantic_embeddings):
   // снимаем таймеры, останавливаем текущий цикл, освобождаем ONNX pipeline.
   try { stopSemanticIndexer() } catch { /* ok — best-effort */ }
@@ -647,7 +644,7 @@ app.on('before-quit', () => {
   import('./tools/spaRenderer')
     .then(({ destroySpaPool }) => destroySpaPool())
     .catch(() => { /* spaRenderer опционален */ })
-  // Optional Fast Context sidecar: ask it to exit cleanly before Electron
+  // Optional Rust sidecar: ask it to exit cleanly before Electron
   // tears down stdio; an absent/crashed sidecar is harmless.
   void shutdownSidecar()
 })

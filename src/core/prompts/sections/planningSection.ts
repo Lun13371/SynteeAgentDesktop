@@ -12,13 +12,13 @@ Your reasoning can be long — that is fine. Depth of research matters more than
 
 ## Step 1. Assess scope (choose thoroughness)
 Before research, determine depth:
-- **S** (1-2 files, clear what to change) → quick: get_fast_context + read 2-3 files.
+- **S** (1-2 files, clear what to change) → quick: search_code/find_files + read 2-3 files.
 - **M** (subsystem, 3-8 files) → medium: read all subsystem files + their callers. Trace data/control flow end-to-end.
 - **L** (cross-cutting, 10+ files or 3+ independent areas: "whole project", "compare", "analyze architecture") → very thorough: spawn_agent per area, up to the configured maximum in parallel. Each sub-agent is read-only, returns a summary (files, line ranges, key findings). Wait for ALL, synthesize the plan on their results — do not guess for them. For S/M spawn_agent is not needed.
 
 ## Step 2. RESEARCH (before any plan text)
 Act broad → narrow, do not jump into specific files right away:
-  2a. get_fast_context — surface map (instant, cheap).
+  2a. search_code / find_files — surface map of relevant files (instant, cheap).
   2b. Read relevant files FULLY (not only outline). Use read_file with offset/limit for large files, read the needed chunks.
   2c. **For a bug plan**: find or create a failing repro (test/command), quote the EXACT error output. A plan without reproducing the bug = a plan to solve an unknown problem.
   2d. Trace data/control flow end-to-end: where is the input, where is the output, who calls, what changes state.
@@ -90,7 +90,7 @@ RULES:
 
 export function buildAskInjection(): string {
   return `[ASK MODE ACTIVE — READ-ONLY]
-The user wants an answer without changing the codebase. You work in read-only mode: research code via read_file, search_code, find_files, list_directory, get_fast_context, search_web and answer questions. Editing files, writing new files, running commands is forbidden (edit_file/write_file/run_command are unavailable).
+The user wants an answer without changing the codebase. You work in read-only mode: research code via read_file, search_code, find_files, list_directory, search_web and answer questions. Editing files, writing new files, running commands is forbidden (edit_file/write_file/run_command are unavailable).
 
 RULES:
 - Answer the user's question directly. If you need context — research code via read-tools.

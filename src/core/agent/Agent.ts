@@ -115,8 +115,8 @@ export class Agent {
    */
   worktreeMap?: { projectRoot: string; worktreePath: string }
   /**
-   * ID проекта (из таблицы projects) — используется fast context для
-   * привязки tree-sitter индекса к проекту. undefined для чатов без проекта.
+   * ID проекта (из таблицы projects) — используется для привязки памяти и
+   * графа к проекту. undefined для чатов без проекта.
    */
   projectId?: string  /**
    * Команда авто-верификации проекта (напр. "npm test"), запускаемая
@@ -1250,7 +1250,7 @@ export class Agent {
         })
         console.log('[Agent] tool_calls=%d, executing...', response.tool_calls.length)
 
-        const resultMap = new Map<string, { contentForAI: string; callId: string; name: string; imageParts?: ContentPart[]; success?: boolean }>()
+        const resultMap = new Map<string, { contentForAI: string; callId: string; name: string; imageParts?: ContentPart[]; success?: boolean; diff?: string }>()
         const pendingMutations: Array<() => void> = []
 
         const normalizedCalls: NormalizedToolCall[] = response.tool_calls.map((call, callIndex) => {
@@ -1617,7 +1617,7 @@ export class Agent {
             // В planning-режиме даём явное напоминание вместо generic-блока —
             // модель могла скопировать edit/run тулы из старой истории чата.
             const blockedMsg = planningMode
-              ? `You are in PLANNING MODE (read-only). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Return to the protocol: Step 2 — read-only research (get_fast_context, read_file, search_code, spawn_agent) + ask_user about hard parts. Step 3 — plan inside <plan title="..." summary="...">…</plan> with per-phase Ownership/Verification/Edge cases. Step 4 — review against the original request. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
+              ? `You are in PLANNING MODE (read-only). "${fn.name}" is forbidden — edit/write/run tools are unavailable. Return to the protocol: Step 2 — read-only research (read_file, search_code, spawn_agent) + ask_user about hard parts. Step 3 — plan inside <plan title="..." summary="...">…</plan> with per-phase Ownership/Verification/Edge cases. Step 4 — review against the original request. Allowed tools: ${allowed}. Do not call "${fn.name}" again.`
               : subagentRoleDef
                 ? `You are a ${subagentRoleDef.nameEn} sub-agent. "${fn.name}" is not available for this role. Allowed tools: ${allowed}. Sub-agents CANNOT spawn nested sub-agents — if the task genuinely needs "${fn.name}", report this to the parent agent. Do not call "${fn.name}" again.`
                 : `Tool "${fn.name}" is unavailable in the current mode (read-only/planning/side-chat). Allowed only: ${allowed}. Do not call it again — use the allowed tools for research.`
@@ -1688,7 +1688,7 @@ export class Agent {
           }
           if (codeModeInternal && codeModePolicy === 'read-only'
             && fn.name !== 'read_file' && fn.name !== 'read_files' && fn.name !== 'find_files'
-            && fn.name !== 'search_code' && fn.name !== 'list_directory' && fn.name !== 'get_fast_context'
+            && fn.name !== 'search_code' && fn.name !== 'list_directory'
             && fn.name !== 'get_diagnostics'
             && fn.name !== 'recall_memory' && fn.name !== 'get_system_info') {
             approval.block = true
@@ -1793,6 +1793,11 @@ export class Agent {
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
           let codeTrace: CodeTraceEntry[] | undefined
+          // Пост-фактум подсказка для execute_code: скрипт, сделавший <2
+          // вложенных вызовов тула, потратил раунд-трип впустую. Подсказка
+          // идёт ТОЛЬКО модели (contentForAI) — в UI шаге показывается
+          // codeMode: { code, trace }, и дублировать её пользователю не нужно.
+          let codeModeHint = ''
           try {
             // execute_code — обычный тул реестра, тот же путь, что у остальных.
             // Гард нужен только на случай, когда его нет в наборе: персона с
@@ -1818,10 +1823,8 @@ export class Agent {
                 callTool: async (toolName, toolArgs, childSignal) => {
                   if (childSignal?.aborted || signal?.aborted) return { success: false, output: '', error: 'Execution aborted' }
                   const allowedSchemas = new Set(activeSchemas.map(s => s.function.name))
-                  if (toolName === 'execute_code' || toolName === 'get_fast_context' || !allowedSchemas.has(toolName)) {
-                    const reason = toolName === 'get_fast_context'
-                      ? 'get_fast_context is not available inside execute_code; use search_code, find_files, or read_file instead.'
-                      : `Tool "${toolName}" is unavailable in the current run.`
+                  if (toolName === 'execute_code' || !allowedSchemas.has(toolName)) {
+                    const reason = `Tool "${toolName}" is unavailable in the current run.`
                     return { success: false, output: '', error: reason }
                   }
                   const internalId = `code-${callId}-${Math.random().toString(36).slice(2, 9)}`
@@ -1843,11 +1846,25 @@ export class Agent {
                   const failed = internalResult.success === false || /(?:Action blocked|Rejected by the user|Действие отклонено пользователем|Approval required; tool not executed|unavailable in the current run|Permission block|Permission denied|blocked by loop guard|Hard loop guard|Loop guard|is disabled|unavailable in the current mode|not available in the current mode)/i.test(text)
                   // Failure/отказ НЕ обрывает скрипт: возвращаем его внутрь гостя как
                   // {success:false, error}, чтобы try/catch мог продолжить.
-                  return { success: !failed, output: text, ...(failed ? { error: text } : {}) }
+                  return {
+                    success: !failed,
+                    output: text,
+                    ...(failed ? { error: text } : {}),
+                    ...(internalResult.diff ? { diff: internalResult.diff } : {}),
+                  }
                 },
               }) } finally { signal?.removeEventListener('abort', forwardAbort) }
               codeTrace = codeResult.trace
               result = { success: codeResult.success, output: codeResult.output, error: codeResult.error }
+              // Подсказка только при успешном прогоне: у упавшего скрипта в
+              // результате уже есть error. Артефакт-операции (artifacts.save
+              // и т.п.) реальными вызовами тула не считаются.
+              if (codeResult.success) {
+                const nestedCalls = (codeResult.trace ?? []).filter(t => !t.name.startsWith('__artifact_')).length
+                if (nestedCalls < 2) {
+                  codeModeHint = `\n[execute_code hint: this script made ${nestedCalls} nested tool call(s) — that was a wasted round-trip. When 1 tool call is enough, call that tool directly; use execute_code only for scripts that make 2+ nested tool calls.]`
+                }
+              }
             } else {
             const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId)
             if (fn.name === 'spawn_agent') {
@@ -2043,9 +2060,12 @@ export class Agent {
           const perToolMax = (fn.name === 'search_code' || fn.name === 'get_file_outline')
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars
-          const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
+          const truncatedContent = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
             ? truncateToolResult(finalContent, perToolMax)
             : finalContent
+          // Подсказка приклеивается ПОСЛЕ обрезки — она гарантированно доходит
+          // до модели, даже если вывод скрипта упёрся в потолок.
+          const contentForAI = codeModeHint ? `${truncatedContent}${codeModeHint}` : truncatedContent
 
           if (!result.success && !isHiddenTool) {
             // Fingerprint ошибки включает args (через buildToolFingerprint —
@@ -2133,11 +2153,13 @@ export class Agent {
           // analyze_image прямой пас: тул может вернуть imageParts (картинка
           // для vision-способной основной модели) — прокидываем их в
           // tool-сообщение ниже.
+          const toolDiff = (result as { diff?: string }).diff
           resultMap.set(callId, {
             contentForAI: imageBudgetNote ? `${contentForAI}${imageBudgetNote}` : contentForAI,
             callId,
             name: fn.name,
             success: result.success,
+            ...(toolDiff ? { diff: toolDiff } : {}),
             ...(acceptedImageParts?.length ? { imageParts: acceptedImageParts } : {}),
           })
         }

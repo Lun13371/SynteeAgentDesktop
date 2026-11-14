@@ -1,0 +1,67 @@
+/* ── Плашка файла в карточках инструментов ───────────────────────────────
+   [JS] inspect-chat.mjs  scratch/dbinspect  +41 −7
+   Один вид для чтения, правки и записи. Тема — через CSS-переменные. */
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+/* Бейдж расширения: цвет языка на его же 13%-подложке. */
+.file-chip-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+/* Папка вместо бейджа расширения (list_directory, поиск по каталогу). */
+.file-chip-badge--dir {
+  padding: 0 3px;
+}
+
+.file-chip-name {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.file-chip-dir {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.file-chip-stats {
+  display: inline-flex;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-chip-added { color: #3fb950; }
+.file-chip-deleted { color: #f85149; }
+.file-chip-nostat { color: var(--text-muted); font-weight: 500; }

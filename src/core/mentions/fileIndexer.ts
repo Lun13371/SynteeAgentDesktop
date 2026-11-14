@@ -1,12 +1,11 @@
 /**
  * FileIndexer — индексатор файлов проекта для @mention-пикера.
  *
- * Watcher: fs.watch(recursive: true) на корень workdir — тот же паттерн, что
- * у fastContext-worker: на Windows это ReadDirectoryChangesW (kernel-level
- * callback, 0% CPU в простое, один handle на всё дерево). chokidar здесь
- * заменён сознательно: он держит тысячи FS-handles + stat-calls и грузит
- * main-процесс даже в простое. Рекурсивные события приходят с полным
- * путём — игнор-фильтрация та же, что и в scanDir.
+ * Watcher: fs.watch(recursive: true) на корень workdir — на Windows это
+ * ReadDirectoryChangesW (kernel-level callback, 0% CPU в простое, один handle
+ * на всё дерево). chokidar здесь заменён сознательно: он держит тысячи
+ * FS-handles + stat-calls и грузит main-процесс даже в простое. Рекурсивные
+ * события приходят с полным путём — игнор-фильтрация та же, что и в scanDir.
  *
  * API:
  *  - startIndexing(workdir) — запускает watcher + первичный scan
@@ -16,7 +15,7 @@
  *  - getRecentFiles(workdir, limit) — последние изменённые файлы (для @ без query)
  *
  * Лимиты: maxFiles=20000 на проект (защита от гигантских mono-repo),
- * maxDepth=10 (как fastContextWatcher, но 10 вместо 8 — глубже для полноты).
+ * maxDepth=10 — глубже обычного обхода для полноты.
  */
 import { watch, type FSWatcher } from 'fs'
 import { basename, relative, sep } from 'path'
@@ -44,8 +43,8 @@ interface IndexEntry {
 
 const _indexes = new Map<string, IndexEntry>()
 
-// Игнорируемые директории (union из fastContextWatcher.IGNORED_DIRS_DEFAULT
-// и fs.ipc.DEFAULT_IGNORE_DIRS). Дополнительно — типичные мусорные папки.
+// Игнорируемые директории (синхронно с fs.ipc.DEFAULT_IGNORE_DIRS).
+// Дополнительно — типичные мусорные папки.
 const IGNORED_DIRS = new Set([
   'node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build',
   '.next', 'coverage', '.cache', '.turbo', '.parcel-cache', 'target',

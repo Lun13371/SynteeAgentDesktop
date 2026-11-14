@@ -21,7 +21,7 @@ export type NodeType = 'decision' | 'concept' | 'file' | 'symbol' | 'conversatio
 export type EdgeType =
   | 'affects' | 'mentions' | 'implemented_in' | 'depends_on' | 'supersedes'
   | 'references' | 'imports' | 'calls' | 'implements'
-export type NodeSourceKind = 'memory_item' | 'fast_context' | 'message' | 'chat_summary' | 'llm_extract' | 'manual'
+export type NodeSourceKind = 'memory_item' | 'message' | 'chat_summary' | 'llm_extract' | 'manual'
 
 export interface GraphNode {
   id: string

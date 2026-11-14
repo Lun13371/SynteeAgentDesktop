@@ -6,7 +6,7 @@ import {
   type SidecarLockSnapshot,
 } from './sidecarLock'
 
-/** Wire format used by the optional Rust Fast Context sidecar. */
+/** Wire format used by the Rust sidecar. */
 export interface SidecarDefinition {
   name: string
   kind: string
@@ -16,34 +16,6 @@ export interface SidecarDefinition {
   parentName?: string
 }
 
-export interface SidecarTopFile {
-  path: string
-  score: number
-  definitions: SidecarDefinition[]
-  imports?: string[]
-  content?: string
-}
-
-export interface SidecarSearchResult {
-  slice: string
-  topFiles: SidecarTopFile[]
-  indexedFilesCount?: number
-  /** `exact` — every query token matched, `partial` — some, `fallback` — none. */
-  matchKind?: 'exact' | 'partial' | 'fallback'
-  /** Query tokens the sidecar actually searched for (after stemming/translation). */
-  queryTokens?: string[]
-}
-
-export interface SidecarIndexResult {
-  filesFound?: number
-  filesChanged?: number
-  filesRemoved?: number
-  hitCap?: boolean
-  complete?: boolean
-  hadErrors?: boolean
-  [key: string]: unknown
-}
-
 export interface SidecarHealthResult {
   ok: boolean
   status?: string
@@ -51,29 +23,13 @@ export interface SidecarHealthResult {
   [key: string]: unknown
 }
 
-export interface SidecarStatusResult {
-  active: boolean
-  foregroundBusy: boolean
-  pendingPaths: number
-  filesChanged: number
-  filesRemoved: number
-  batches: number
-  debounceMs: number
-  lastError: string | null
-  indexedFilesCount?: number | null
-  [key: string]: unknown
-}
-
 export type SidecarAvailability = 'unknown' | 'starting' | 'ready' | 'unavailable' | 'stopped'
 
 export type SidecarErrorCode =
-  | 'disabled'
   | 'binary_missing'
-  | 'database_missing'
   | 'spawn_failed'
   | 'protocol_error'
   | 'request_failed'
-  | 'index_unavailable'
   | 'timeout'
   | 'unavailable'
 
@@ -121,11 +77,6 @@ export function getSidecarProcesses(): SidecarLockSnapshot {
   return getSidecarLockSnapshot()
 }
 
-export function setSidecarFailureHandler(handler: ((error: SidecarError) => void) | null): void {
-  failureHandlers.clear()
-  if (handler) failureHandlers.add(handler)
-}
-
 export function addSidecarFailureHandler(handler: (error: SidecarError) => void): () => void {
   failureHandlers.add(handler)
   return () => failureHandlers.delete(handler)
@@ -159,7 +110,7 @@ function errorMessage(error: unknown): string {
 function logSidecar(message: string, error?: unknown): void {
   // Sidecar is optional. Logging must never make the main process fail.
   try {
-    console.warn(`[fast-context-sidecar] ${message}${error ? `: ${errorMessage(error)}` : ''}`)
+    console.warn(`[sidecar] ${message}${error ? `: ${errorMessage(error)}` : ''}`)
   } catch { /* best effort */ }
 }
 
@@ -188,14 +139,6 @@ export function resolveSidecarPath(): string | null {
   }
   return null
 }
-
-/** Rust is the only Fast Context backend.
- *
- * There used to be a TypeScript fallback behind `SYNTEE_USE_SIDECAR=0` /
- * `SYNTEE_USE_TYPESCRIPT_FAST_CONTEXT=1`. It is gone on purpose: two
- * implementations with different indexing rules and ranking made failures
- * invisible and results unreproducible. A missing or crashed sidecar is now a
- * typed SidecarError the caller has to handle. */
 
 function rejectPending(error: Error): void {
   for (const [id, request] of pending) {
@@ -265,7 +208,7 @@ function ensureChild(): ChildProcessWithoutNullStreams {
   if (child && !child.killed) return child
   const executable = resolveSidecarPath()
   if (!executable) {
-    throw new SidecarError('binary_missing', 'Rust Fast Context sidecar executable not found', { retryable: false })
+    throw new SidecarError('binary_missing', 'Rust sidecar executable not found', { retryable: false })
   }
   shuttingDown = false
   availability = 'starting'
@@ -369,63 +312,6 @@ function sidecarParams(extra: JsonRecord): JsonRecord {
   return { dbPath, ...extra }
 }
 
-function normalizeSearchResult(result: JsonRecord, maxFiles: number, maxTokens: number): SidecarSearchResult {
-  const rawFiles = result.topFiles ?? result.top_files ?? result.files ?? result.results
-  const topFiles: SidecarTopFile[] = Array.isArray(rawFiles) ? rawFiles.flatMap(raw => {
-    if (!raw || typeof raw !== 'object') return []
-    const file = raw as JsonRecord
-    const path = typeof file.path === 'string' ? file.path
-      : typeof file.filePath === 'string' ? file.filePath
-        : typeof file.file_path === 'string' ? file.file_path : ''
-    if (!path) return []
-    const rawDefinitions = file.definitions ?? file.symbols
-    const definitions = Array.isArray(rawDefinitions)
-      ? rawDefinitions.flatMap(definition => { const normalized = normalizeDefinition(definition); return normalized ? [normalized] : [] })
-      : []
-    return [{
-      path,
-      score: typeof file.score === 'number' ? file.score
-        : typeof file.rankedScore === 'number' ? file.rankedScore
-          : typeof file.ranked_score === 'number' ? file.ranked_score : 0,
-      definitions,
-      imports: Array.isArray(file.imports) ? file.imports.filter((v): v is string => typeof v === 'string') : undefined,
-      content: typeof file.content === 'string' ? file.content : undefined,
-    }]
-  }).slice(0, maxFiles) : []
-
-  let slice = typeof result.slice === 'string' ? result.slice
-    : typeof result.repoMap === 'string' ? result.repoMap
-      : typeof result.repo_map === 'string' ? result.repo_map : ''
-  if (!slice) {
-    const lines: string[] = []
-    let tokenEstimate = 0
-    for (const file of topFiles) {
-      const rows = [file.path]
-      if (file.content) rows.push(file.content)
-      else rows.push(...file.definitions.slice(0, 12).map(d => `  L${d.lineStart} ${d.kind} ${d.signature}`))
-      const cost = rows.reduce((sum, row) => sum + Math.ceil(row.length / 4), 0)
-      if (tokenEstimate + cost > maxTokens && lines.length > 0) break
-      lines.push(...rows, '')
-      tokenEstimate += cost
-    }
-    slice = lines.join('\n')
-  }
-  return {
-    slice,
-    topFiles,
-    indexedFilesCount: typeof result.indexedFilesCount === 'number' ? result.indexedFilesCount
-      : typeof result.indexed_files_count === 'number' ? result.indexed_files_count
-        : typeof result.totalFiles === 'number' ? result.totalFiles
-          : typeof result.appliedMaxFiles === 'number' ? result.appliedMaxFiles : undefined,
-    matchKind: result.matchKind === 'exact' || result.matchKind === 'partial' || result.matchKind === 'fallback'
-      ? result.matchKind
-      : undefined,
-    queryTokens: Array.isArray(result.queryTokens)
-      ? result.queryTokens.filter((value): value is string => typeof value === 'string')
-      : undefined,
-  }
-}
-
 async function requestWithRecovery(command: string, payload: JsonRecord = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<JsonRecord> {
   try {
     const result = await request(command, payload, timeoutMs)
@@ -449,84 +335,23 @@ async function requestWithRecovery(command: string, payload: JsonRecord = {}, ti
   }
 }
 
-export async function sidecarIndex(
-  projectId: string,
-  workdir: string,
-  settings?: JsonRecord,
-  opts: { maxAgeMs?: number } = {},
-): Promise<SidecarIndexResult> {
-  const options = settings ? {
-    maxFiles: typeof settings.maxFiles === 'number' ? settings.maxFiles : undefined,
-    maxFileSizeKb: typeof settings.maxFileSizeKb === 'number' ? settings.maxFileSizeKb : undefined,
-    ignoreDirs: Array.isArray(settings.ignoreDirs) ? settings.ignoreDirs : undefined,
-    // Identifiers matter for lexical retrieval: without references a query like
-    // "module manager" misses files that only mention those names in code.
-    skipReferences: false,
-  } : undefined
-  const maxAgeMs = opts.maxAgeMs && opts.maxAgeMs > 0 ? opts.maxAgeMs : undefined
-  return await requestWithRecovery('index', {
-    params: sidecarParams({
-      projectId,
-      workdir,
-      ...(options ? { options } : {}),
-      ...(maxAgeMs ? { maxAgeMs } : {}),
-    }),
-  }) as SidecarIndexResult
-}
+// ─── Foreground busy (cooperative yielding for background indexing) ─────────
 
-export async function sidecarSearch(
-  projectId: string,
-  query: string,
-  maxFiles = 50,
-  maxTokens = 8000,
-): Promise<SidecarSearchResult> {
-  const result = await requestWithRecovery('search', {
-    params: sidecarParams({ projectId, query, maxFiles, maxTokens }),
-  })
-  return normalizeSearchResult(result, maxFiles, maxTokens)
-}
+let _foregroundBusy = false
 
-export async function sidecarStartWatching(
-  projectId: string,
-  workdir: string,
-  settings?: JsonRecord,
-): Promise<JsonRecord> {
-  const options = settings ? {
-    maxFiles: typeof settings.maxFiles === 'number' ? settings.maxFiles : undefined,
-    maxFileSizeKb: typeof settings.maxFileSizeKb === 'number' ? settings.maxFileSizeKb : undefined,
-    ignoreDirs: Array.isArray(settings.ignoreDirs) ? settings.ignoreDirs : undefined,
-    skipReferences: false,
-  } : undefined
-  return requestWithRecovery('startWatching', {
-    params: sidecarParams({ projectId, workdir, ...(options ? { options } : {}) }),
-  })
-}
-
-export async function sidecarStopWatching(): Promise<JsonRecord> {
-  return requestWithRecovery('stopWatching', { params: sidecarParams({}) })
+/**
+ * Кооперативный сигнал для sidecar: активный чат не блокирует SQLite и не
+ * прерывает транзакции, но low-priority индексация уступает CPU/диск.
+ */
+export function setForegroundBusy(busy: boolean): void {
+  if (_foregroundBusy === busy) return
+  _foregroundBusy = busy
+  void sidecarForegroundBusy(busy).catch(error =>
+    logSidecar('foregroundBusy failed', error))
 }
 
 export async function sidecarForegroundBusy(busy: boolean): Promise<JsonRecord> {
   return requestWithRecovery('foregroundBusy', { params: { busy } })
-}
-
-export async function sidecarStatus(): Promise<SidecarStatusResult> {
-  return await requestWithRecovery('status', { params: sidecarParams({}) }, HEALTH_TIMEOUT_MS) as SidecarStatusResult
-}
-
-export async function sidecarIndexChangedPaths(
-  projectId: string,
-  workdir: string,
-  changedPaths: string[],
-  settings?: JsonRecord,
-): Promise<SidecarIndexResult> {
-  return await requestWithRecovery('indexChangedPaths', {
-    params: sidecarParams({ projectId, workdir, changedPaths, options: settings ?? {} }),
-  }) as SidecarIndexResult
-}
-
-export async function sidecarClear(projectId: string): Promise<JsonRecord> {
-  return requestWithRecovery('clear', { params: sidecarParams({ projectId }) })
 }
 
 export async function sidecarHealth(): Promise<SidecarHealthResult> {

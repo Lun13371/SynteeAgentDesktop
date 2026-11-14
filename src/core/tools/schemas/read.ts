@@ -55,22 +55,6 @@ export const READ_TOOL_SCHEMAS = [
   {
     type: 'function' as const,
     function: {
-      name: 'get_fast_context',
-      description: 'Map relevant project files, symbols, and relationships (including callers/imports) for unfamiliar, feature-level, architectural, or cross-file code tasks; includes compact code snippets. Prefer this FIRST when the relevant files/dependencies are unclear or a change spans multiple files, then verify by reading the actual implementation. For a known exact file/symbol/error and a narrow local task, use find_files/search_code/read_file directly instead. Not for non-code questions.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'What to find: a feature, function/class name, file, concept. Example: "where is the OAuth flow implemented", "User data model", "payment processing"' },
-          maxFiles: { type: 'number', description: 'Max files to return (default 50)' },
-          maxTokens: { type: 'number', description: 'Repo-map slice token budget (default 8000)' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
       name: 'find_files',
       description: 'Find files by name or regex pattern. Use when you need to find a file by name: "where is ChatPage.tsx?", "find all *.config.ts". Ignores node_modules/dist/.git.',
       parameters: {

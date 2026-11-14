@@ -1,82 +1,17 @@
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::fast_context::ast;
-use crate::common::config::{IndexOptions, PROTOCOL_VERSION};
+use crate::common::config::PROTOCOL_VERSION;
 use crate::common::error::{Result, SidecarError};
-use crate::fast_context::indexer::Indexer;
-use crate::fast_context::language::language_for_path;
 use crate::protocol::Request;
-use crate::fast_context::search::SearchOptions;
-use crate::fast_context::symbols::extract_symbols;
+use crate::symbols::{ast, extract_symbols, language::language_for_path};
 use crate::text::tokens;
-use crate::fast_context::watcher::WatchManager;
 
 pub struct CommandOutcome {
     pub result: Value,
     pub shutdown: bool,
-}
-
-static WATCHER: OnceLock<WatchManager> = OnceLock::new();
-
-fn watcher() -> &'static WatchManager {
-    WATCHER.get_or_init(WatchManager::new)
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexParams {
-    db_path: PathBuf,
-    project_id: String,
-    workdir: PathBuf,
-    #[serde(default)]
-    options: IndexOptions,
-    /// Skip the pass when the index was written more recently than this.
-    /// `get_fast_context` uses it so a query does not re-walk the project that
-    /// the watcher is already keeping current.
-    #[serde(default)]
-    max_age_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ChangedPathsParams {
-    db_path: PathBuf,
-    project_id: String,
-    workdir: PathBuf,
-    changed_paths: Vec<PathBuf>,
-    #[serde(default)]
-    options: IndexOptions,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchParams {
-    db_path: PathBuf,
-    project_id: String,
-    query: String,
-    #[serde(flatten)]
-    options: SearchOptions,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProjectParams {
-    db_path: PathBuf,
-    project_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WatchParams {
-    db_path: PathBuf,
-    project_id: String,
-    workdir: PathBuf,
-    #[serde(default)]
-    options: IndexOptions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,7 +105,13 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
     match request.method.as_str() {
         "health" => {
             let params: HealthParams = parse_params(request.params)?;
-            let db_ready = params.db_path.as_deref().map(|path| Indexer::open(path).is_ok());
+            let db_ready = params.db_path.as_deref().map(|path| {
+                rusqlite::Connection::open_with_flags(
+                    path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+                )
+                .is_ok()
+            });
             Ok(CommandOutcome {
                 result: json!({
                     "status": if db_ready != Some(false) { "ok" } else { "degraded" },
@@ -187,14 +128,7 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                 methods: vec![
                     "health",
                     "capabilities",
-                    "index",
-                    "indexChangedPaths",
-                    "search",
-                    "clear",
-                    "startWatching",
-                    "stopWatching",
                     "foregroundBusy",
-                    "status",
                     "tokensCount",
                     "tokensCountBatch",
                     "tokensTruncate",
@@ -206,65 +140,19 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                     "shutdown",
                 ],
                 parser_backend: "tree-sitter (native) + lexical fallback",
-                ranking: "field-weighted + idf + ru-en synonyms + graph rank; semantic: E5 cosine (onnx)",
+                ranking: "semantic: E5 cosine (onnx)",
             })?,
             shutdown: false,
         }),
-        "index" => {
-            let params: IndexParams = parse_params(request.params)?;
-            let result = Indexer::open(&params.db_path)?.index(
-                &params.project_id,
-                &params.workdir,
-                &params.options,
-                params.max_age_ms,
-            )?;
-            Ok(CommandOutcome { result: serde_json::to_value(result)?, shutdown: false })
-        }
-        "indexChangedPaths" => {
-            let params: ChangedPathsParams = parse_params(request.params)?;
-            let result = Indexer::open(&params.db_path)?.index_changed_paths(
-                &params.project_id,
-                &params.workdir,
-                &params.changed_paths,
-                &params.options,
-            )?;
-            Ok(CommandOutcome { result: serde_json::to_value(result)?, shutdown: false })
-        }
-        "search" => {
-            let params: SearchParams = parse_params(request.params)?;
-            let result = Indexer::open(&params.db_path)?.search(
-                &params.project_id,
-                &params.query,
-                &params.options,
-            )?;
-            Ok(CommandOutcome { result: serde_json::to_value(result)?, shutdown: false })
-        }
-        "clear" => {
-            let params: ProjectParams = parse_params(request.params)?;
-            let removed = Indexer::open(&params.db_path)?.clear(&params.project_id)?;
-            Ok(CommandOutcome { result: json!({ "removed": removed }), shutdown: false })
-        }
-        "startWatching" => {
-            let params: WatchParams = parse_params(request.params)?;
+        "foregroundBusy" => {
+            let params: BusyParams = parse_params(request.params)?;
+            // Semantic-индексатор памяти уступает фореграунду, пока флаг поднят.
+            crate::semantic::set_foreground_busy(params.busy);
             Ok(CommandOutcome {
-                result: watcher().start(
-                    params.db_path,
-                    params.project_id,
-                    params.workdir,
-                    params.options,
-                )?,
+                result: json!({ "foregroundBusy": params.busy }),
                 shutdown: false,
             })
         }
-        "stopWatching" => Ok(CommandOutcome { result: watcher().stop()?, shutdown: false }),
-        "foregroundBusy" => {
-            let params: BusyParams = parse_params(request.params)?;
-            // Один флаг на все фоновые задачи: watcher файлового индекса и
-            // semantic-индексатор памяти уступают фореграунду одинаково.
-            crate::semantic::set_foreground_busy(params.busy);
-            Ok(CommandOutcome { result: watcher().foreground_busy(params.busy), shutdown: false })
-        }
-        "status" => Ok(CommandOutcome { result: watcher().status(), shutdown: false }),
         "tokensCount" => {
             let params: TokensCountParams = parse_params(request.params)?;
             Ok(CommandOutcome {
@@ -337,7 +225,6 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
             })
         }
         "shutdown" => {
-            watcher().shutdown()?;
             crate::semantic::unload_embedder();
             Ok(CommandOutcome { result: json!({ "status": "shutting_down" }), shutdown: true })
         }

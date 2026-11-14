@@ -16,7 +16,7 @@ import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
-import { teardownSidecar } from '../../core/context/fastContext/sidecarClient'
+import { teardownSidecar } from '../../core/sidecar/sidecarClient'
 import { installRustTokenCounter } from '../../core/tokens/rustTokenCounter'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
@@ -1049,7 +1049,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             })
           },
           onToolProgress: (p) => {
-            // Progress для долгих тулов (get_fast_context) — транслируем в main
+            // Progress для долгих тулов — транслируем в main
             // для live-индикации этапов в UI ToolChain
             send({
               type: 'tool_progress', chatId, msgId,

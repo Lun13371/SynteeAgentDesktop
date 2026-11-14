@@ -77,7 +77,7 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
 
   // Work mode removed — always a full Code tool set.
   // In planning mode — read-only + research: all research tools are available
-  // (get_fast_context, search_code, read_file, ...), the
+  // (search_code, read_file, ...), the
   // ask_user clarifying-question tool, but edits are FORBIDDEN (edit/write/
   // run_command/revert). The planner researches code → clarifies with the
   // user → writes the plan directly in the answer, wrapped in
@@ -143,14 +143,12 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   if (planningMode || askMode) {
     // Planning / Ask: research tools, read-only checks, no edits.
     names.push('get_diagnostics')
-    names.push('get_fast_context')
   } else {
     // Normal mode: file edits + commands + verification.
     names.push('edit_file')
     names.push('write_file')
     names.push('run_command')
     names.push('get_diagnostics')
-    names.push('get_fast_context')
     // Dots: управление always-on агентами — только в normal-режиме.
     // ask/planning и фоновые wake-раны Dot'ов (oneShotMode:'ask')
     // тул не получают: Dot не должен создавать других Dot'ов.
@@ -228,7 +226,7 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
   if (codeIndex >= 0) {
     const all = schemas
       .map(s => (s as { function: { name: string } }).function.name)
-      .filter(name => name !== 'execute_code' && name !== 'get_fast_context')
+      .filter(name => name !== 'execute_code')
     const families = [
       ['browser_', 'browser_*'],
       ['mcp__', 'mcp__*'],

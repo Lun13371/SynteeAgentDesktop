@@ -12,26 +12,29 @@ fn health_reports_protocol_version() {
 }
 
 #[test]
-fn capabilities_expose_rust_watcher_commands() {
+fn capabilities_expose_shared_commands() {
     let outcome =
         dispatch(Request { id: json!(1), method: "capabilities".to_owned(), params: json!({}) })
             .unwrap();
     let methods = outcome.result["methods"].as_array().unwrap();
     for method in [
-        "startWatching",
-        "stopWatching",
+        "health",
+        "capabilities",
         "foregroundBusy",
-        "status",
         "tokensCount",
         "tokensCountBatch",
         "tokensTruncate",
         "symbols",
+        "semanticEmbed",
+        "semanticIndex",
+        "semanticSearch",
+        "semanticUnload",
         "shutdown",
     ] {
         assert!(methods.iter().any(|value| value == method));
     }
     assert_eq!(outcome.result["parserBackend"], "tree-sitter (native) + lexical fallback");
-    assert!(outcome.result["ranking"].as_str().unwrap().contains("idf"));
+    assert!(outcome.result["ranking"].as_str().unwrap().contains("E5"));
 }
 
 #[test]
@@ -86,10 +89,7 @@ fn symbols_use_tree_sitter_for_supported_languages() {
 }
 
 #[test]
-fn watcher_status_and_busy_are_wire_compatible() {
-    let status =
-        dispatch(Request { id: json!(2), method: "status".to_owned(), params: json!({}) }).unwrap();
-    assert_eq!(status.result["active"], false);
+fn foreground_busy_is_wire_compatible() {
     let busy = dispatch(Request {
         id: json!(3),
         method: "foregroundBusy".to_owned(),
@@ -118,7 +118,7 @@ fn response_result_and_params_are_wire_compatible() {
     let request: Request = serde_json::from_value(json!({
         "id": "x",
         "method": "health",
-        "params": {"dbPath": "syntee.db", "projectId": "p", "workdir": ".", "options": {}}
+        "params": {"dbPath": "syntee.db"}
     }))
     .unwrap();
     assert_eq!(request.method, "health");
@@ -129,138 +129,15 @@ fn response_result_and_params_are_wire_compatible() {
 }
 
 #[test]
-fn fresh_index_is_reused_when_max_age_is_set() {
-    let root = std::env::temp_dir().join(format!("syntee-sidecar-fresh-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("repo/src")).unwrap();
-    std::fs::write(root.join("repo/src/app.ts"), "export function boot() {}\n").unwrap();
-    let db_path = root.join("syntee.db");
-    let connection = rusqlite::Connection::open(&db_path).unwrap();
-    connection.execute_batch("CREATE TABLE projects (id TEXT PRIMARY KEY);").unwrap();
-    drop(connection);
-    let workdir = root.join("repo");
-
-    let first = dispatch(Request {
-        id: json!(1),
-        method: "index".to_owned(),
-        params: json!({
-            "dbPath": db_path, "projectId": "p", "workdir": workdir,
-            "options": {"maxFiles": 10, "maxFileSizeKb": 1500, "ignoreDirs": []}
-        }),
-    })
-    .unwrap();
-    assert_eq!(first.result["skipped"], false);
-    assert_eq!(first.result["filesChanged"], 1);
-
-    let second = dispatch(Request {
-        id: json!(2),
-        method: "index".to_owned(),
-        params: json!({
-            "dbPath": db_path, "projectId": "p", "workdir": workdir,
-            "options": {"maxFiles": 10, "maxFileSizeKb": 1500, "ignoreDirs": []},
-            "maxAgeMs": 60_000
-        }),
-    })
-    .unwrap();
-    assert_eq!(second.result["skipped"], true);
-    assert_eq!(second.result["filesChanged"], 0);
-    assert_eq!(second.result["filesFound"], 1);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn search_bridges_a_russian_query_to_english_identifiers() {
-    let root = std::env::temp_dir().join(format!("syntee-sidecar-ru-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("repo/src")).unwrap();
-    std::fs::write(
-        root.join("repo/src/cacheStore.ts"),
-        "export const cacheStore = { get(key: string) { return key } }\n",
-    )
-    .unwrap();
-    std::fs::write(root.join("repo/src/Button.tsx"), "export function Button() { return null }\n")
-        .unwrap();
-    let db_path = root.join("syntee.db");
-    let connection = rusqlite::Connection::open(&db_path).unwrap();
-    connection.execute_batch("CREATE TABLE projects (id TEXT PRIMARY KEY);").unwrap();
-    drop(connection);
-    let workdir = root.join("repo");
-
-    dispatch(Request {
-        id: json!(1),
-        method: "index".to_owned(),
-        params: json!({
-            "dbPath": db_path, "projectId": "p", "workdir": workdir,
-            "options": {"maxFiles": 10, "maxFileSizeKb": 1500, "ignoreDirs": []}
-        }),
-    })
-    .unwrap();
-
-    let searched = dispatch(Request {
-        id: json!(2),
-        method: "search".to_owned(),
-        params: json!({
-            "dbPath": db_path, "projectId": "p", "query": "кеш хранилище",
-            "maxFiles": 5, "maxTokens": 1000
-        }),
-    })
-    .unwrap();
-    assert_ne!(searched.result["matchKind"], "fallback");
-    assert!(searched.result["topFiles"][0]["path"].as_str().unwrap().ends_with("cacheStore.ts"));
-    // The trimmed payload must not carry every definition of every hit.
-    assert!(searched.result["topFiles"][0]["definitions"].as_array().unwrap().len() <= 12);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn capped_index_prioritizes_source_and_search_returns_it() {
-    let root = std::env::temp_dir().join(format!("syntee-sidecar-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("repo/assets/minecraft/lang")).unwrap();
-    std::fs::create_dir_all(root.join("repo/src")).unwrap();
-    std::fs::write(root.join("repo/assets/minecraft/lang/a.json"), "{\\\"hello\\\":\\\"world\\\"}")
-        .unwrap();
-    std::fs::write(
-        root.join("repo/src/RenderPipeline.java"),
-        "class RenderPipeline { void renderFrame() {} }",
-    )
-    .unwrap();
-    let db_path = root.join("syntee.db");
-    let connection = rusqlite::Connection::open(&db_path).unwrap();
-    connection.execute_batch("CREATE TABLE projects (id TEXT PRIMARY KEY);").unwrap();
-    drop(connection);
-    let workdir = root.join("repo");
-
-    let indexed = dispatch(Request {
-        id: json!(1),
-        method: "index".to_owned(),
-        params: json!({
-            "dbPath": db_path,
-            "projectId": "p",
-            "workdir": workdir,
-            "options": {"maxFiles": 1, "maxFileSizeKb": 1500, "ignoreDirs": []}
-        }),
-    })
-    .unwrap();
-    assert_eq!(indexed.result["filesFound"], 1);
-    assert_eq!(indexed.result["hitCap"], true);
-    assert_eq!(indexed.result["hadErrors"], false);
-
-    let searched = dispatch(Request {
-        id: json!(2),
-        method: "search".to_owned(),
-        params: json!({
-            "dbPath": db_path,
-            "projectId": "p",
-            "query": "RenderPipeline",
-            "maxFiles": 10,
-            "maxTokens": 1000
-        }),
-    })
-    .unwrap();
-    assert_eq!(
-        searched.result["topFiles"][0]["path"],
-        workdir.join("src").join("RenderPipeline.java").to_string_lossy().as_ref()
-    );
-    let _ = std::fs::remove_dir_all(root);
+fn removed_fast_context_methods_are_unsupported() {
+    for method in ["index", "search", "clear", "startWatching", "stopWatching", "status"] {
+        let error = dispatch(Request {
+            id: json!(1),
+            method: method.to_owned(),
+            params: json!({}),
+        })
+        .err()
+        .expect("removed method must fail");
+        assert!(matches!(error, syntee_sidecar::common::error::SidecarError::UnsupportedMethod(_)));
+    }
 }

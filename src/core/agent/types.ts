@@ -150,11 +150,11 @@ export interface AgentCallbacks {
    */
   onQuestion?: (questions: QuestionSpec[]) => Promise<QuestionAnswer[]>
   /**
-   * Progress callback для долгих тулов (например get_fast_context):
+   * Progress callback для долгих тулов:
    * транслирует stage-прогресс в main для live-индикации этапов в UI.
    */
   onToolProgress?: (p: { toolName: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }> }) => void
-  /** AbortSignal для долгих тулов — позволяет отменить get_fast_context и т.п. */
+  /** AbortSignal для долгих тулов — позволяет отменить долгий tool-call. */
   signal?: AbortSignal
   /**
    * save_memory-тул: сохранить факт в долгосрочную память. Round-trip в main-

@@ -53,11 +53,11 @@ export function initDB(): void {
 
 /**
  * Worker-friendly init: открывает connection к тому же syntee.db БЕЗ electron
- * (app.getPath недоступен в worker_threads). Используется fastContext-worker'ом
+ * (app.getPath недоступен в worker_threads). Используется ai-worker'ом
  * чтобы graph-функции (graphStore/graphExtractor, которые дергают getDB())
  * работали в воркере и не блокировали main-процесс тяжёлым graph-sync'ом.
  *
- * Тот же файл → те же таблицы (memory_graph_*, fast_context_index, …).
+ * Тот же файл → те же таблицы (memory_graph_*, memory_items, …).
  * WAL → concurrent доступ с main-процессом безопасен. Миграции по умолчанию
  * НЕ запускаются (main уже их выполнил при старте приложения).
  */
