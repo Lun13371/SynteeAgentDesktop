@@ -91,6 +91,15 @@ export function cleanupOrphanDraftFiles(
       for (const a of (m.attachments ?? []) as Attachment[]) {
         if (a?.path) keep.add(pathResolve(a.path).toLowerCase())
       }
+      // §steer — вложения реплик живут в toolSteps (не в message.attachments):
+      // без этого чипы карточек вели бы на удалённые файлы через 2 минуты
+      // (гейс свежести) после ближайшего cleanup.
+      for (const s of (m.toolSteps ?? []) as Array<{ type?: string; attachments?: Array<{ path?: string }> }>) {
+        if (s?.type !== 'steer') continue
+        for (const a of s.attachments ?? []) {
+          if (a?.path) keep.add(pathResolve(a.path).toLowerCase())
+        }
+      }
     }
   } catch { /* БД недоступна — ничего не удаляем (безопаснее) */ return { ok: true, removed: 0 } }
   let removed = 0

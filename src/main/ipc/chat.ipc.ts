@@ -74,7 +74,9 @@ import {
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache, clearFileCache } from '../../core/context/fileReadCache'
-import { attachAssistants, detachAssistants, onAgentEvent, onJanitorAction, onAssistantEvent, onRunDone } from '../assistants/bridge'
+import { attachAssistants, detachAssistants, onAgentEvent, onJanitorAction, onAssistantEvent, onRunDone, getAssistantsSettings } from '../assistants/bridge'
+import { compressStoredMessages } from '../../core/context/historyCompressor'
+import { getMessagesAfterLatestCompact, updateMessageToolSteps } from '../../core/db/messages'
 import { registerProjectWorkdir, setForegroundBusy } from '../../core/context/fastContextWatcher'
 import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
@@ -83,7 +85,8 @@ import { getSkillManager } from '../../core/skills/skillManager'
 import { getSkillInstructions } from '../../core/skills/skillInstructions'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import { getPluginManager } from '../../core/plugins/pluginManager'
-import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult, ReplyTarget } from '../../shared/types'
+import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult, ReplyTarget, SteerAttachmentMeta } from '../../shared/types'
+import { toSteerAttachmentMeta } from '../../shared/steer'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { parseCompactArgs } from '../../shared/slashCommands'
 import { messageToContextMessages, formatReplyQuote } from './chatContextHelpers'
@@ -2756,6 +2759,7 @@ function pathHash(value: string): string {
               // §steer — реплика пользователя, применённая внутри рана.
               steerId: rawStep.steerId,
               steerApplied: rawStep.steerApplied,
+              attachments: rawStep.attachments,
             }
             run.bufferedSteps.push(ts)
             run.checkpointDirty = true
@@ -2778,12 +2782,18 @@ function pathHash(value: string): string {
             }
             if (rawStep.type === 'steer' && typeof rawStep.steerId === 'string') {
               const card = run.bufferedLiveState.steers.find(s => s.steerId === rawStep.steerId)
-              if (card) card.applied = true
+              if (card) {
+                card.applied = true
+                // Мета вложений могла не доехать в card при принятии (renderer
+                // прислал, а push в steers был до обработки) — дозаполняем.
+                if (!card.attachments && Array.isArray(rawStep.attachments)) card.attachments = rawStep.attachments
+              }
               else run.bufferedLiveState.steers.push({
                 steerId: rawStep.steerId,
                 text: typeof rawStep.content === 'string' ? rawStep.content : '',
                 ts: Date.now(),
                 applied: true,
+                ...(Array.isArray(rawStep.attachments) ? { attachments: rawStep.attachments } : {}),
               })
             }
             if (summaryTaskId && rawStep.type === 'tool_result' && rawStep.success === true && (rawStep.toolName === 'edit_file' || rawStep.toolName === 'write_file') && msg.msgId === assistantMsgId) {
@@ -3794,6 +3804,9 @@ function pathHash(value: string): string {
             },
             ((msg.fullText as string) || run.bufferedText).trim() ? 'done' : 'error',
           )
+          // Сообщение уже в БД — сжимаем сохранённую историю (вариант B):
+          // следующий запрос получит сжатые tool-результаты вместо сырых.
+          persistHistoryCompression(params.chatId)
           // Воркер своё отработал — убиваем поток, иначе течёт ~40-120МБ на каждый запрос
           ;(worker as unknown as { _terminated?: boolean })._terminated = true
           disposeBrowserWorkerBroker(worker)
@@ -4538,6 +4551,33 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
     }
   })
 
+  // ── Персистентная компрессия истории (вариант B) ─────────────────────────
+  // Джанитор рана сжимает контекст только в памяти — БД хранит сырые
+  // tool-результаты, и каждый новый запрос разворачивает их заново
+  // (кольцо осциллирует: сжалось в ране → новый запрос вернуло всё).
+  // Детерминированная компрессия записей в БД на конце рана делает сжатие
+  // постоянным: следующий запрос сразу получает сжатую историю.
+  function persistHistoryCompression(chatId: string): void {
+    try {
+      const s = getAssistantsSettings()
+      if (!s.enabled || !s.janitorEnabled) return
+      const rows = getMessagesAfterLatestCompact(chatId)
+      const plans = compressStoredMessages(rows, { minSavingsTokens: s.janitorMinSavingsTokens, tailKeep: 4 })
+      let totalSaved = 0
+      for (const [id, plan] of plans) {
+        updateMessageToolSteps(id, plan.toolSteps, plan.iterations)
+        totalSaved += plan.savedTokens
+        onJanitorAction(chatId, 'persist_compress', `сжато в БД: ${plan.actions.join(', ')}`, plan.savedTokens)
+      }
+      if (plans.size > 0) {
+        invalidateHistoryCache(chatId)
+        log('[chat:send] history compressed in DB: chatId=%s rows=%d saved=%d tokens', chatId, plans.size, totalSaved)
+      }
+    } catch (e) {
+      log('[chat:send] history compression failed chatId=%s: %s', chatId, (e as Error).message)
+    }
+  }
+
   // ── chat:send — ядро вынесено в локальную chatSendHandler ───────────────
   // Регистрируется и как IPC-хендлер, и как programmatic-API (см.
   // sendChatMessageProgrammatic выше): DotManager будит Dot'ов из main.
@@ -4971,24 +5011,64 @@ ${await getSystemPrompt(dbChatId, params.incognito, params.oneShotSkill)}`
   //    НЕ ждёт завершения прогона: воркер передаёт его Agent'у, а тот вставит
   //    его в messages на границе следующего раунда (pendingSteers в Agent.ts).
   //    Текущий стрим/тул не обрывается — уже сделанная работа сохраняется.
+  //    Вложения (§steer как в обычной отправке): processAttachmentsAndStream
+  //    инлайнит текстовые файлы в AI-текст и собирает imageParts (vision) либо
+  //    пути analyze_image; displayText остаётся с [[attach:id]]-токенами —
+  //    карточка в ленте рендерит по ним чипы, история на следующих ходах
+  //    токены вычищает.
   //    accepted:false — активного рана нет (или он уже отдаёт done): renderer
   //    откатывается на обычную отправку, чтобы сообщение не пропало.
-  ipcMain.handle('chat:steer', (_, chatId: string, text: string, steerId: string) => {
-    const clean = typeof text === 'string' ? text.trim() : ''
-    if (!clean) return { accepted: false, reason: 'empty' }
+  ipcMain.handle('chat:steer', async (_, chatId: string, text: string, steerId: string, attachments?: Attachment[]) => {
+    const raw = typeof text === 'string' ? text.trim() : ''
+    if (!raw) return { accepted: false, reason: 'empty' }
     const id = typeof steerId === 'string' && steerId ? steerId : `steer-${Date.now()}`
     const run = activeRuns.get(chatId)
     if (!run || run.doneSent) return { accepted: false, reason: 'no_active_run' }
-    run.bufferedLiveState.steers.push({ steerId: id, text: clean, ts: Date.now(), applied: false })
+    // ── Вложения ── те же лимиты и тот же пайплайн, что в runChatSend
+    // (processAttachmentsAndStream). Прогресс vision_recognition шлём с
+    // msgId активного рана — shimmer встанет в его блок «хода работы».
+    let aiText = stripAttachTokens(raw)
+    let steerImageParts: typeof run.imageParts = []
+    let steerMeta: SteerAttachmentMeta[] | undefined
+    const atts = Array.isArray(attachments) ? attachments.filter(a => a && a.id) : []
+    if (atts.length > 0) {
+      steerMeta = atts.map(toSteerAttachmentMeta)
+      try {
+        const processed = await processAttachmentsAndStream(mainWindow.getWindow(), chatId, run.msgId, aiText, atts)
+        aiText = processed.content
+        steerImageParts = processed.imageParts
+      } catch (e) {
+        log('[chat:steer] attachments failed chatId=%s: %s', chatId, (e as Error).message)
+        // Продолжаем с чистым текстом — лучше чем уронить жест целиком
+      }
+      // Обработка картинок заняла время — ран мог завершиться в паузе. Тогда
+      // внедрять некуда: accepted:false → renderer откатится на обычную
+      // отправку (текст + вложения), ничего не потеряется.
+      if (run.doneSent) return { accepted: false, reason: 'no_active_run' }
+    }
+    run.bufferedLiveState.steers.push({
+      steerId: id,
+      text: raw,
+      ts: Date.now(),
+      applied: false,
+      ...(steerMeta?.length ? { attachments: steerMeta } : {}),
+    })
     try {
-      run.worker.postMessage({ type: 'steer', steerId: id, text: clean })
+      run.worker.postMessage({
+        type: 'steer',
+        steerId: id,
+        text: aiText,
+        ...(raw !== aiText ? { displayText: raw } : {}),
+        ...(steerImageParts.length ? { imageParts: steerImageParts } : {}),
+        ...(steerMeta?.length ? { attachments: steerMeta } : {}),
+      })
     } catch (e) {
       log('[chat:steer] worker недоступен chatId=%s: %s', chatId, (e as Error).message)
       const card = run.bufferedLiveState.steers.find(s => s.steerId === id)
       if (card) run.bufferedLiveState.steers = run.bufferedLiveState.steers.filter(s => s !== card)
       return { accepted: false, reason: 'worker_dead' }
     }
-    log('[chat:steer] внедряю в активный ран chatId=%s steerId=%s len=%d', chatId, id, clean.length)
+    log('[chat:steer] внедряю в активный ран chatId=%s steerId=%s len=%d atts=%d', chatId, id, aiText.length, steerMeta?.length ?? 0)
     return { accepted: true, steerId: id }
   })
 

@@ -98,6 +98,9 @@ export function updateAssistantsSettings(patch: Partial<AssistantsSettings>): As
 function applyModelSize(): void {
   const size: ModelSize = globalSettings.modelSize === 'auto' ? detectModelSize() : globalSettings.modelSize
   localModels.setModelSize(size)
+  // Контекст — аргумент запуска сервера: применяем здесь же, чтобы смена
+  // настройки не ждала следующего рестарта.
+  localModels.setCtxSetting(globalSettings.ctxSize)
 }
 
 export type { SetupProgress }
@@ -122,6 +125,24 @@ function serverReady(): boolean {
   return false
 }
 
+// Ожидание холодного старта: serverReady() лениво запускает ensureReady после
+// idle-выгрузки или на старте приложения. Раньше мы не ждали и сразу уходили
+// в fallback — инжектили сырые memory-хинты без LLM-судьи (главный источник
+// мусора у watcher'а). Несколько секунд ожидания для advisory-события ничего
+// не блокируют, а хинт всё равно consumed на следующей границе раунда.
+const SERVER_WAKE_TIMEOUT_MS = 12_000
+async function serverReadyOrWake(): Promise<boolean> {
+  if (serverReady()) return true
+  const deadline = Date.now() + SERVER_WAKE_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    // 'error' — сервер упал окончательно (исчерпал рестарты): ждём зря.
+    if (localModels.getState() === 'error') return false
+    await new Promise(r => setTimeout(r, 400))
+    if (serverReady()) return true
+  }
+  return false
+}
+
 export function attachAssistants(chatId: string, worker: Worker, opts: { projectWorkdir?: string; projectId?: string } = {}): void {
   if (!globalSettings.enabled) {
     log('[Assistants] attach skipped (disabled) chat=%s', chatId)
@@ -129,6 +150,9 @@ export function attachAssistants(chatId: string, worker: Worker, opts: { project
   }
   const dbPath = dbPathResolver?.() ?? ''
   const watcher = new Watcher(globalSettings, dbPath, opts)
+  // W1 feedback: веса источников (корректируются в onRunDone) влияют на
+  // отбор memory-хинтов — «расстроенный» источник замолкает.
+  watcher.setSourceWeightProvider((src) => sourceWeights.get(src) ?? 1)
   active.set(chatId, { watcher, chatId, worker, settings: globalSettings, capabilities: [], projectWorkdir: opts.projectWorkdir, lastHash: '', lastErrorHash: '' })
   worker.postMessage({ type: 'assistants_settings', settings: globalSettings })
   log('[Assistants] attached to chat %s (watcher=%s janitor=%s)', chatId, globalSettings.watcherEnabled, globalSettings.janitorEnabled)
@@ -156,7 +180,7 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
       a.lastErrorHash = eh
     }
     appendLog({ ts: Date.now(), role: 'watcher', kind: 'trigger', detail: `${trigger.kind}: оценка возможностей` })
-    const ready = serverReady()
+    const ready = await serverReadyOrWake()
     if (ready) {
       // Capability router: prefilter каталога → точный структурный вердикт.
       const caps = prefilterCapabilities(a.capabilities, ctx, 10)
@@ -253,7 +277,7 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
   const a = active.get(chatId)
   if (!a || !a.settings.enabled) return
   const s = a.settings
-  const ready = serverReady()
+  const ready = await serverReadyOrWake()
   const kind = String(evt.kind ?? '')
   const post = (hint: HintCandidate) => {
     a.worker?.postMessage({ type: 'hint', hint })
@@ -287,7 +311,15 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
       }
       case 'archivist': {
         if (!s.archivistEnabled || !ready) return
-        const facts = await distillSession(String(evt.transcript ?? ''))
+        const transcript = String(evt.transcript ?? '')
+        // Короткий ран (ответ «готово» без работы) — дистилляции там взяться
+        // неоткуда, не тратим слот локальной модели.
+        if (transcript.trim().length < 250) {
+          appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: `транскрипт слишком короткий (${transcript.trim().length} симв.) — дистилляция не запускалась` })
+          bump('archivist', 'skipped')
+          break
+        }
+        const facts = await distillSession(transcript)
         let savedCount = 0
         for (const f of facts) {
           if (await isE5Duplicate(f.content, evt.projectId as string | undefined)) {
@@ -306,6 +338,9 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
           appendLog({ ts: Date.now(), role: 'archivist', kind: 'distilled', detail: `сохранено ${savedCount} фактов в память` })
           bump('archivist', 'fired')
         } else {
+          // Пустой результат больше не молчаливый: сырой вывод модели виден
+          // в debug.log ([LlmClient] distill: ...), здесь — причина в UI-логе.
+          appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: '0 фактов: модель вернула пустоту/мусор (детали в debug.log) или все E5-дубли' })
           bump('archivist', 'skipped')
         }
         maybeDecay()

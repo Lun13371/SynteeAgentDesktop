@@ -1,4 +1,4 @@
-import type { Message } from '../../shared/types'
+import type { Message, ToolStep } from '../../shared/types'
 import { getDB } from './handle'
 import { touchChat } from './chats'
 import { deleteStreamingBuffer, deleteStreamingBuffersForChat } from './streamingBuffers'
@@ -152,6 +152,17 @@ export function getMessageById(messageId: string): Message | undefined {
     FROM messages WHERE id = ?
   `).get(messageId) as MessageRow | undefined
   return row ? parseMessageRow(row) : undefined
+}
+
+/** Точечная замена tool_steps + iterations (персистентная компрессия джанитора).
+ *  content не трогаем — FTS-триггер (AFTER UPDATE OF content) не срабатывает. */
+export function updateMessageToolSteps(id: string, toolSteps: ToolStep[], iterations: Message['iterations']): void {
+  getDB().prepare('UPDATE messages SET tool_steps = ?, iterations = ? WHERE id = ?')
+    .run(
+      toolSteps.length ? JSON.stringify(toolSteps) : null,
+      iterations && iterations.length ? JSON.stringify(iterations) : null,
+      id,
+    )
 }
 
 /**

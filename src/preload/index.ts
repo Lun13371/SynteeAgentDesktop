@@ -606,9 +606,11 @@ const synteeAPI = {
     // ── Steering: реплика пользователя ВНУТРЬ активного рана ──
     // Long-press на кнопке отправки: текст не встаёт в очередь, а влетает
     // в контекст работающего агента на границе следующего раунда.
+    // attachments — вложения реплики (как в chat:send: текстовые файлы
+    // инлайнятся, картинки идут в vision / analyze_image).
     // accepted:false — активного рана нет (renderer отправит обычным путём).
-    steer: (chatId: string, text: string, steerId: string) =>
-      ipcRenderer.invoke('chat:steer', chatId, text, steerId),
+    steer: (chatId: string, text: string, steerId: string, attachments?: unknown[]) =>
+      ipcRenderer.invoke('chat:steer', chatId, text, steerId, attachments),
     // Передумал: снять реплику, пока агент её не внедрил (карточка «ждёт»).
     steerCancel: (chatId: string, steerId: string) =>
       ipcRenderer.invoke('chat:steer:cancel', chatId, steerId),
@@ -992,8 +994,8 @@ const synteeAPI = {
       ipcRenderer.invoke('git:fileVersions', params),
     showFiles: (params: { workdir: string; hash: string }) =>
       ipcRenderer.invoke('git:showFiles', params),
-    branchList: (workdir: string) =>
-      ipcRenderer.invoke('git:branchList', workdir),
+    branchList: (workdir: string, all?: boolean) =>
+      ipcRenderer.invoke('git:branchList', workdir, all),
     checkout: (params: { workdir: string; branch: string }) =>
       ipcRenderer.invoke('git:checkout', params),
     branchCreate: (params: { workdir: string; branch: string; checkout?: boolean }) =>
@@ -1006,6 +1008,19 @@ const synteeAPI = {
       ipcRenderer.invoke('git:stashList', workdir),
     logFile: (params: { workdir: string; file: string; limit?: number }) =>
       ipcRenderer.invoke('git:logFile', params),
+    // Агрегат для поповера «Инструменты Git» (branch/ahead/behind +N −M).
+    repoSummary: (workdir: string) =>
+      ipcRenderer.invoke('git:repoSummary', workdir),
+    // Граф коммитов всех веток (окно «Git Graph»).
+    graph: (params: { workdir: string; limit?: number }) =>
+      ipcRenderer.invoke('git:graph', params),
+    // Сообщение коммита от локальной модели; lang — язык описания.
+    generateCommitMessage: (params: { workdir: string; lang?: 'ru' | 'en' }) =>
+      ipcRenderer.invoke('git:generateCommitMessage', params),
+    // git add -A («включить незастейдженные изменения»).
+    // Коммит + push одним действием.
+    commitAndPush: (params: { workdir: string; message: string; includeUnstaged?: boolean; push?: boolean }) =>
+      ipcRenderer.invoke('git:commitAndPush', params),
   },
 
   // Skills — markdown-инструкции в system prompt.

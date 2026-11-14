@@ -132,8 +132,9 @@ export interface ActiveRun {
     /** §steer — карточки реплик, внедрённых в этот ран. pending: applied:false
      *  (ждёт границы раунда), applied:true (агент уже вставил в messages).
      *  Возвращаются в chat:getLiveState → renderer восстанавливает их при
-     *  возврате в чат, поэтому карточка не исчезает при переключении вкладок. */
-    steers: Array<{ steerId: string; text: string; ts: number; applied: boolean }>
+     *  возврате в чат, поэтому карточка не исчезает при переключении вкладок.
+     *  attachments — мета для чипов карточки (id = [[attach:id]]-токены). */
+    steers: Array<{ steerId: string; text: string; ts: number; applied: boolean; attachments?: import('../../shared/types').SteerAttachmentMeta[] }>
   }
   // ── Периодический checkpoint стриминга в БД ──
   // Таймер сохраняет накопленный bufferedText/steps/thinking в БД каждые

@@ -8,7 +8,7 @@ import { isFinalAnswerToolName, takeFinalAnswerToolCalls } from '../../shared/fi
 import { NativeImageAnalysis } from './nativeImageAnalysis'
 import { needsApproval, resolveAutoModeSettings, mergeForbiddenPaths, isAllowlisted, isSecretPath, maskSecretValues, actionAllowlistKey } from './commandSafety'
 import { scanForInjection, wrapUntrustedContent, isMutatingTool, isScannedTool, isWebSourceTool, INJECTION_ESCALATION_STEPS } from './injectionGuard'
-import type { ProjectPermissionOverride, ApprovalAllowlistEntry, AllowScope } from '../../shared/types'
+import type { ProjectPermissionOverride, ApprovalAllowlistEntry, AllowScope, SteerAttachmentMeta } from '../../shared/types'
 import { updateStructuredMemory } from '../context/structuredMemory'
 import type { DiffEntry } from '../context/structuredMemory'
 import {
@@ -170,8 +170,17 @@ export class Agent {
    * «пользователь написал это во время работы» и продолжает, НЕ прерывая
    * текущий стрим и не теряя уже сделанное.
    * Никакого лимита: сколько прислали, столько и вставим, по порядку (FIFO).
+   * text — AI-текст (вложения уже инлайнены main'ом в processAttachmentsAndStream),
+   * displayText — как написал пользователь (с [[attach:id]]-токенами, для
+   * карточки и БД), imageParts — пиксели картинок для vision-модели.
    */
-  private pendingSteers: Array<{ id: string; text: string }> = []
+  private pendingSteers: Array<{
+    id: string
+    text: string
+    displayText?: string
+    imageParts?: ContentPart[]
+    attachments?: SteerAttachmentMeta[]
+  }> = []
 
   private pendingHints: HintCandidate[] = []
   private hintCooldown = 0
@@ -194,14 +203,26 @@ export class Agent {
   onAssistantEvent?: (evt: Record<string, unknown>) => void
 
   /**
-   * Вызывается из ai-worker по сообщению {type:'steer'}. Пустой текст — no-op.
-   * Метод потокобезопасен по смыслу: worker_threads однопоточны в рамках
-   * воркера, запись происходит в паузе между await-точками агента.
+   * Вызывается из ai-worker по сообщению {type:'steer'}. Пустой текст без
+   * картинок — no-op. Метод потокобезопасен по смыслу: worker_threads
+   * однопоточны в рамках воркера, запись происходит в паузе между await-точками
+   * агента.
    */
-  pushSteer(id: string, text: string): void {
+  pushSteer(
+    id: string,
+    text: string,
+    extra?: { displayText?: string; imageParts?: ContentPart[]; attachments?: SteerAttachmentMeta[] },
+  ): void {
     const clean = typeof text === 'string' ? text.trim() : ''
-    if (!clean) return
-    this.pendingSteers.push({ id: id || `steer-${Date.now()}`, text: clean })
+    const imageParts = extra?.imageParts?.length ? extra.imageParts : undefined
+    if (!clean && !imageParts) return
+    this.pendingSteers.push({
+      id: id || `steer-${Date.now()}`,
+      text: clean,
+      displayText: extra?.displayText?.trim() || clean,
+      imageParts,
+      attachments: extra?.attachments?.length ? extra.attachments : undefined,
+    })
   }
 
   /** Есть ли не применённые реплики (нужно воркеру/main для статистики ранa). */
@@ -338,19 +359,17 @@ export class Agent {
   }
 
   /** Watcher v2: каталог возможностей, доступных в этом ране (тулы/MCP/plugin/скиллы). */
-  private buildCapabilities(schemas: Array<{ function: { name: string; description?: string } }>): Capability[] {
-    const caps: Capability[] = []
-    for (const s of schemas) {
-      const name = s.function?.name ?? ''
-      if (!name) continue
-      const kind: Capability['kind'] = name.startsWith('mcp__') ? 'mcp' : name.startsWith('plugin__') ? 'plugin' : 'tool'
-      caps.push({ id: name, kind, name, desc: (s.function?.description ?? '').slice(0, 120) })
-    }
+  /** W2: каталог судьи watcher'а — только скиллы. Их инструкций нет в контексе,
+   *  пока скилл не вызван, поэтому подсказка несёт новую информацию. Builtin-тулы,
+   *  MCP и плагины агент и так видит в схемах каждого запроса — «подсказка»
+   *  write_file это эхо с нулевой ценностью, только мусор в контексте. */
+  private buildCapabilities(): Capability[] {
     try {
-      const skills = getSkillManager().getActiveSkillsForChat({ projectWorkdir: this.workdir, projectId: this.projectId })
-      for (const sk of skills) caps.push({ id: sk.name, kind: 'skill', name: sk.name, desc: (sk.description ?? '').slice(0, 120) })
+      return getSkillManager()
+        .getActiveSkillsForChat({ projectWorkdir: this.workdir, projectId: this.projectId })
+        .map(sk => ({ id: sk.name, kind: 'skill' as const, name: sk.name, desc: (sk.description ?? '').slice(0, 120) }))
     } catch { /* skills недоступны — не критично */ }
-    return caps
+    return []
   }
 
   get hasPendingHints(): boolean {
@@ -660,7 +679,7 @@ export class Agent {
       // не задерживать начало ответа модели.
       setImmediate(() => {
         try {
-          this.onAssistantEvent?.({ kind: 'capabilities', capabilities: this.buildCapabilities(activeSchemas) })
+          this.onAssistantEvent?.({ kind: 'capabilities', capabilities: this.buildCapabilities() })
         } catch { /* каталог не критичен */ }
       })
     }
@@ -793,10 +812,27 @@ export class Agent {
       if (this.pendingSteers.length > 0 && !signal?.aborted) {
         const incoming = this.pendingSteers.splice(0)
         for (const steer of incoming) {
-          messages.push({ role: 'user', content: `${STEER_MARKER}\n\n${steer.text}` })
+          const steerText = `${STEER_MARKER}\n\n${steer.text}`
+          // Картинки (vision) — multipart content, как у вложений обычной
+          // отправки (Agent.ts ~line 556). Пиксели уже нормализованы и
+          // бюджет-проверены в processAttachmentsAndStream на main-стороне.
+          messages.push({
+            role: 'user',
+            content: steer.imageParts?.length
+              ? [...steer.imageParts, { type: 'text' as const, text: steerText }]
+              : steerText,
+          })
           // Карточка в ленте рана: renderer заменит ею оптимистичную
           // pending-карточку (матчинг по steerId) и пометит «внедрено».
-          callbacks.onStep({ type: 'steer', content: steer.text, steerId: steer.id, steerApplied: true })
+          // content — displayText (с [[attach:id]]-токенами): карточка рендерит
+          // по ним чипы, история на следующих ходах токены вычищает.
+          callbacks.onStep({
+            type: 'steer',
+            content: steer.displayText || steer.text,
+            steerId: steer.id,
+            steerApplied: true,
+            ...(steer.attachments?.length ? { attachments: steer.attachments } : {}),
+          })
           log('[Agent] steer applied (round %s): %s', step, steer.text.slice(0, 120))
         }
         callbacks.onStatus?.('Учтено сообщение пользователя')
@@ -816,7 +852,9 @@ export class Agent {
             if (first) this.recentHintIds.delete(first)
           }
           callbacks.onStep({ type: 'hint', content: text, hintSource: hint.source, hintId: hint.id })
-          injected += text.length
+          // Бюджет задан в токенах (hintBudgetTokens=300), а не в символах —
+          // считаем оценкой ~3.5 символа/токен, иначе лимит срезал всё до 1 хинта.
+          injected += Math.ceil(text.length / 3.5)
           log('[Agent] hint injected (round %s): %s', step, text.slice(0, 100))
         }
         this.hintCooldown = this.assistantsSettings.hintCooldownRounds
@@ -888,7 +926,7 @@ export class Agent {
       // Watcher v2: периодический само-подход раз в 15 раундов + stuck-сигнал.
       if (this.assistantsSettings.enabled && this.assistantsSettings.watcherEnabled && this.onAssistantEvent) {
         if (step > 0 && step % 15 === 0) {
-          this.onAssistantEvent({ kind: 'capabilities', capabilities: this.buildCapabilities(activeSchemas) })
+          this.onAssistantEvent({ kind: 'capabilities', capabilities: this.buildCapabilities() })
           this.onAssistantEvent({ kind: 'watcher_trigger', trigger: { kind: 'periodic', text: formatTranscript(messages.slice(-8) as ChatMessage[]).slice(0, 600) } })
         }
         if (heavyRepeats) {

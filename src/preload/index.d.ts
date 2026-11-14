@@ -589,7 +589,7 @@ declare const synteeAPI: {
         getQueue: (chatId: string) => Promise<any>;
         queueRemove: (chatId: string, queueId: string) => Promise<any>;
         queueReorder: (chatId: string, queueIds: string[]) => Promise<any>;
-        steer: (chatId: string, text: string, steerId: string) => Promise<any>;
+        steer: (chatId: string, text: string, steerId: string, attachments?: unknown[]) => Promise<any>;
         steerCancel: (chatId: string, steerId: string) => Promise<any>;
         getSessionTimeline: (chatId: string) => Promise<any>;
         getLastTurnFilesChanged: (chatId: string) => Promise<any>;
@@ -945,7 +945,7 @@ declare const synteeAPI: {
             workdir: string;
             hash: string;
         }) => Promise<any>;
-        branchList: (workdir: string) => Promise<any>;
+        branchList: (workdir: string, all?: boolean) => Promise<any>;
         checkout: (params: {
             workdir: string;
             branch: string;
@@ -967,6 +967,21 @@ declare const synteeAPI: {
             workdir: string;
             file: string;
             limit?: number;
+        }) => Promise<any>;
+        repoSummary: (workdir: string) => Promise<any>;
+        graph: (params: {
+            workdir: string;
+            limit?: number;
+        }) => Promise<any>;
+        generateCommitMessage: (params: {
+            workdir: string;
+            lang?: "ru" | "en";
+        }) => Promise<any>;
+        commitAndPush: (params: {
+            workdir: string;
+            message: string;
+            includeUnstaged?: boolean;
+            push?: boolean;
         }) => Promise<any>;
     };
     skills: {

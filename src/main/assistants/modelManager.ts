@@ -59,6 +59,34 @@ export function getModelPath(size: ModelSize): string {
   return join(getModelsDir(), MODELS[size].fileName)
 }
 
+/** Настройка контекста локального сервера: 'auto' или фиксированный размер. */
+export type CtxSizeSetting = 'auto' | 4096 | 8192 | 16384 | 24576 | 32768
+
+export const CTX_SIZE_OPTIONS: Array<{ value: CtxSizeSetting; label: string }> = [
+  { value: 'auto', label: 'Авто (по объёму RAM)' },
+  { value: 4096, label: '4K токенов' },
+  { value: 8192, label: '8K токенов' },
+  { value: 16384, label: '16K токенов' },
+  { value: 24576, label: '24K токенов' },
+  { value: 32768, label: '32K токенов' },
+]
+
+/**
+ * Разрешение 'auto' в конкретный размер контекста по объёму RAM.
+ *
+ * Порог с запасом ~2× от веса модели (0.6–0.8 ГБ) плюс KV-кэш: иначе система
+ * уходит в swap и декод на CPU просаживается в разы. Большие значения юзер
+ * осознанно выбирает вручную — там уже его ответственность за память.
+ */
+export function resolveCtxSize(setting: CtxSizeSetting): number {
+  if (setting !== 'auto') return setting
+  const gb = totalmem() / 1024 ** 3
+  if (gb < 8) return 4096
+  if (gb < 16) return 8192
+  if (gb < 32) return 16384
+  return 24576
+}
+
 export function isModelDownloaded(size: ModelSize): boolean {
   const p = getModelPath(size)
   if (!existsSync(p)) return false

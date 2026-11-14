@@ -4,10 +4,13 @@ import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import ToolResultRenderer from './ToolResultRenderer'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
-import type { ToolOutputMode } from '../../../../../shared/types'
+import type { ToolOutputMode, SteerAttachmentMeta, Attachment } from '../../../../../shared/types'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
 import { useChatRemeasure } from '../MessageBubble/remeasure'
 import { removePendingSteer } from '../../../hooks/chatRunRuntime'
+import { stripAttachTokens } from '../../../../../shared/attachmentMarkdown'
+import { copyToClipboard } from '../../../utils/clipboard'
+import renderInlineAttachments from '../InlineAttachmentRenderer/InlineAttachmentRenderer'
 
 import { getToolMeta } from '../../../../../shared/toolMeta'
 import { isFinalAnswerToolName } from '../../../../../shared/finalAnswer'
@@ -47,6 +50,8 @@ export interface ToolStep {
   /** §steer: id реплики (ключ оптимистичной карточки) и признак применения. */
   steerId?: string
   steerApplied?: boolean
+  /** §steer — вложения реплики (чипы/миниатюры в карточке). */
+  attachments?: SteerAttachmentMeta[]
   hintSource?: import('../../../../../shared/assistants').HintSource
   hintId?: string
   janitorKind?: string
@@ -290,11 +295,15 @@ function truncate(s: string, n = 80) {
  *   • applied=true — «внедрено в контекст», реплика стала частью messages;
  *     откат здесь невозможен (только откатом сообщения), крестика нет.
  * Карточка не является тулом и не попадает в счётчик «N действий».
+ * Кнопка «копировать» доступна в обоих состояниях — в буфер уходит чистый
+ * текст реплики ([[attach:id]]-токены вычищаются), как если бы пользователь
+ * набрал его без чипов.
  */
 const SteerCard = memo(function SteerCard({ step, chatId }: { step: ToolStep; chatId?: string }) {
   const applied = step.steerApplied !== false
   const steerId = step.steerId
   const canCancel = !applied && !!chatId && !!steerId
+  const [copied, setCopied] = useState(false)
   const handleCancel = useCallback(() => {
     if (!chatId || !steerId) return
     // Сначала убираем карточку локально (мгновенный отклик), затем говорим
@@ -302,6 +311,19 @@ const SteerCard = memo(function SteerCard({ step, chatId }: { step: ToolStep; ch
     removePendingSteer(chatId, steerId)
     void window.syntee.chat.steerCancel(chatId, steerId)
   }, [chatId, steerId])
+  const handleCopy = useCallback(() => {
+    const text = stripAttachTokens(step.content).trim() || step.content.trim()
+    if (!text) return
+    void copyToClipboard(text).then(ok => {
+      if (!ok) return
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    })
+  }, [step.content])
+  // Мета вложений — чипы/миниатюры на местах [[attach:id]]-токенов, как в
+  // user-сообщении. renderInlineAttachments читает только id/kind/name/path,
+  // поэтому SteerAttachmentMeta структурно достаточен.
+  const steeredAtts = (step.attachments?.length ? step.attachments : undefined) as Attachment[] | undefined
   return (
     <motion.div
       className={`tc2-steer${applied ? ' tc2-steer--applied' : ' tc2-steer--pending'}`}
@@ -320,6 +342,14 @@ const SteerCard = memo(function SteerCard({ step, chatId }: { step: ToolStep; ch
           <span className={`tc2-steer-state${applied ? ' tc2-steer-state--applied' : ''}`}>
             {applied ? 'внедрено в контекст' : 'ждёт границы раунда'}
           </span>
+          <button
+            className={`tc2-steer-copy${canCancel ? '' : ' tc2-steer-copy--end'}`}
+            onClick={handleCopy}
+            title="Скопировать текст реплики"
+            aria-label="Скопировать текст реплики"
+          >
+            <AppIcon name={copied ? 'check' : 'copy'} size="xs" />
+          </button>
           {canCancel && (
             <button
               className="tc2-steer-cancel"
@@ -331,7 +361,13 @@ const SteerCard = memo(function SteerCard({ step, chatId }: { step: ToolStep; ch
             </button>
           )}
         </div>
-        <div className="tc2-steer-text">{step.content}</div>
+        <div className="tc2-steer-text">
+          {steeredAtts
+            ? renderInlineAttachments(step.content, steeredAtts)
+            // Меты нет, а токены есть (старые данные / гонка restore) —
+            // показываем чистый текст, без служебных [[attach:id]].
+            : step.content.includes('[[attach:') ? stripAttachTokens(step.content) : step.content}
+        </div>
       </div>
     </motion.div>
   )

@@ -54,7 +54,9 @@ function isPinned(msg: ChatMessage, index: number, total: number, coldThreshold:
   return false
 }
 
-function summarizeToolResult(toolName: string, content: string): string {
+/** Детерминированное структурное резюме tool-результата (пути/строки/ошибки).
+ *  Используется и в ране (summarize_stale), и в персистентной компрессии БД. */
+export function summarizeToolResult(toolName: string, content: string): string {
   const chars = content.length
   const lines = content.split('\n').length
   if (toolName === 'read_file' || toolName === 'read_files') {

@@ -19,7 +19,7 @@ import { ChatRemeasureContext } from '../../components/ui/MessageBubble/remeasur
 import ChatInput from '../../components/ui/ChatInput/ChatInput'
 import { useChatEditor } from '../../hooks/useChatEditor'
 import LiveTodoBar from '../../components/ui/LiveTodoBar/LiveTodoBar'
-import TaskSummary from '../../components/ui/TaskSummary/TaskSummary'
+import GitTools from '../../components/ui/GitTools/GitTools'
 import GoalCard from '../../components/ui/GoalCard/GoalCard'
 import AssistantsBanner from '../../components/ui/AssistantsBanner/AssistantsBanner'
 import ChatFilesPopover from '../../components/ui/ChatFilesPopover/ChatFilesPopover'
@@ -43,6 +43,7 @@ import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom, hydrateCommands } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
 import { stripAttachTokens } from '../../../../shared/attachmentMarkdown'
+import { toSteerAttachmentMeta } from '../../../../shared/steer'
 import { attachmentKindFromMime, mimeFromExt } from '../../../../shared/mentions'
 import type { Chat, Message, ToolOutputMode, Project, QueueItemMeta, CheckpointMeta, Attachment, ReplyTarget } from '../../../../shared/types'
 
@@ -252,7 +253,8 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   const liveMsgId = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.msgId : undefined) ?? null
   const liveToolProgress = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.toolProgress : undefined) ?? EMPTY_TOOL_PROGRESS
   const liveRateLimitSec = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.rateLimitSec : 0) ?? 0
-  const liveAgentStatus = useChatStore(s => s.currentChatId ? s.liveByChat[s.currentChatId]?.agentStatus : null)
+  // language — 'ru' (default) | 'en'. Нужен для текстов Git-инструментов в углу.
+  const lang = useSettingsStore(s => (s.settings['language'] as 'ru' | 'en') ?? 'ru')
   // hasLiveText — boolean: true пока live.text непустой. Примитив →
   // Object.is → НЕ ре-рендерит когда текст растёт (true → true).
   // Ре-рендер только при переходе empty→non-empty и обратно.
@@ -2277,24 +2279,41 @@ const chatId = compactingCurrentChatIdRef.current
   // раунда и продолжит тот же ран — стрим и тулы не обрываются, уже сделанное
   // не теряется. Откат на обычную отправку нужен на гонку «нажал, а ран как
   // раз закончился», иначе текст просто пропал бы.
-  const steerToContext = useCallback(async (text: string) => {
+  // Вложения — как в обычной отправке: летят в chat:steer целиком, main
+  // инлайнит файлы в контекст (processAttachmentsAndStream). Чипы снимаем
+  // только после acceptance: при откате handleSend должен отправить их
+  // обычным путём.
+  const steerToContext = useCallback(async (text: string, attachments: Attachment[] = []) => {
     const clean = text.trim()
     if (!clean || !currentChatId) return
     pinAutoscroll(true)
     const steerId = `steer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     // Оптимистичная карточка «ждёт границы раунда»: реакция на жест мгновенная,
     // иначе кажется, что сообщение не отправилось (применение может ждать
-    // столько, сколько идёт долгий тул).
-    appendPendingSteer(currentChatId, clean, steerId)
+    // столько, сколько идёт долгий тул). Мета вложений — для чипов карточки.
+    const steerMeta = attachments.map(toSteerAttachmentMeta)
+    appendPendingSteer(currentChatId, clean, steerId, steerMeta.length > 0 ? steerMeta : undefined)
     let accepted = false
     try {
-      const res = await window.syntee.chat.steer(currentChatId, clean, steerId) as { accepted?: boolean }
+      const res = await window.syntee.chat.steer(
+        currentChatId, clean, steerId,
+        attachments.length > 0 ? attachments : undefined,
+      ) as { accepted?: boolean }
       accepted = !!res?.accepted
     } catch { accepted = false }
-    if (accepted) return
+    if (accepted) {
+      // Вложения ушли в контекст рана — чистим чипы, как при обычной отправке
+      // (draft в БД + локальный ref; cleanup сирот в main уже учтён).
+      if (!isIncognito && attachments.length > 0) {
+        setDraftAttachments([])
+        draftAttachmentsRef.current = []
+        window.syntee.draft.clearAttachments(currentChatId).catch(() => {})
+      }
+      return
+    }
     removePendingSteer(currentChatId, steerId)
     await handleSend(text)
-  }, [currentChatId, handleSend, pinAutoscroll])
+  }, [currentChatId, handleSend, pinAutoscroll, isIncognito])
 
   const handlePin = useCallback(async (id: string) => {
     await window.syntee.chat.pin(id)
@@ -2482,6 +2501,18 @@ const chatId = compactingCurrentChatIdRef.current
 
   const overlayActive = isTyping || overlayTodo.length > 0
 
+  // План для панели «Обзор»: в отличие от оверлея над инпутом показываем и
+  // завершённый план — в панели полезно видеть прогресс N/N и что было сделано.
+  const planTodo = useMemo(() => {
+    type TodoItem = { text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }
+    if (liveTodo.length > 0) return liveTodo as TodoItem[]
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'assistant' && m.todo?.length) return m.todo as TodoItem[]
+    }
+    return [] as TodoItem[]
+  }, [liveTodo, messages])
+
   // Статистика сжатий сессии — кол-во compact-разделителей и суммарно
   // сэкономлено токенов. Берётся из messages (compactStats сохраняется в БД
   // у каждого compact-разделителя). Показывается в ContextRing панели.
@@ -2645,13 +2676,6 @@ const chatId = compactingCurrentChatIdRef.current
   // всплеск remeasure-вызовов (раскрытие нескольких тул-блоков подряд) в один
   // замер на следующем кадре вместо N синхронных reflow-циклов.
   const remeasureRafRef = useRef<number | null>(null)
-  const navigateToSummaryMessage = useCallback((messageId: string) => {
-    const index = displayMessages.findIndex(message => message.id === messageId)
-    if (index >= 0) {
-      virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
-      requestAnimationFrame(() => document.querySelector(`[data-msg-id="${CSS.escape(messageId)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
-    }
-  }, [displayMessages, virtualizer])
   const requestRemeasure = useCallback(() => {
     if (remeasureRafRef.current !== null) return
     remeasureRafRef.current = requestAnimationFrame(() => {
@@ -2711,18 +2735,17 @@ const chatId = compactingCurrentChatIdRef.current
           </div>}
           {isIncognito || !currentChatId || liveTodo.length === 0 ? <LiveTodoBar items={overlayTodo} active={overlayActive} /> : null}
 
-          {/* ── Кластер в правом верхнем углу: сводка задачи + файлы + редактор ── */}
+          {/* ── Кластер в правом верхнем углу: изменения/git + файлы + редактор ── */}
           <div className="chat-topright-actions">
-            {!isIncognito && currentChatId && <TaskSummary
-              key={currentChatId}
-              chatId={currentChatId}
-              workdir={currentWorkdir}
-              live={isTyping || isAgentRunning}
-              liveStatus={liveAgentStatus ?? undefined}
-              liveTodo={liveTodo}
-              onNavigateMessage={navigateToSummaryMessage}
-              onInsert={value => { setDraft(value); handleDraftChange(value) }}
-            />}
+            {!isIncognito && currentChatId && (
+              <GitTools
+                workdir={currentWorkdir}
+                chatId={currentChatId}
+                lang={lang}
+                todo={planTodo}
+                lastTurnChanges={lastTurnChanges}
+              />
+            )}
             <ChatFilesPopover messages={messages} workdir={currentWorkdir} />
             {!isIncognito && currentChatId && (
               <button

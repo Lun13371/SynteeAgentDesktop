@@ -317,6 +317,9 @@ export function ChatInputStatusRow({
         )}
       </AnimatePresence>
 
+      {/* Пилюля «Инструменты Git» переехала в правый верхний угол чата
+          (ChatPage → chat-topright-actions) на место чипа «Сводка». */}
+
       {/* Бейдж режима планирования — над инпут полем */}
       <AnimatePresence>
         {planningMode && (
