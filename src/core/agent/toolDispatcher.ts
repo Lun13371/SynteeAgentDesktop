@@ -10,7 +10,7 @@ import { statSync, existsSync } from 'fs'
 import {
   runCommand, readFile, writeFile, listDirectory,
   findFiles,
-  searchWeb, getSystemInfo, generateImage, analyzeImageFile, analyzeVideoFile, analyzeAudioFile,
+  searchWeb, generateImage, analyzeImageFile, analyzeVideoFile, analyzeAudioFile,
   readFiles, searchCode,
   fetchPage, searchImages, getDiagnostics,
   type SearchImagesOpts,
@@ -380,8 +380,6 @@ export class ToolDispatcher {
           gatewayToken: this.gatewayToken,
           gatewayApiUrl: this.gatewayApiUrl ?? process.env.SYNTEE_API_URL,
         })
-      case 'get_system_info':
-        return getSystemInfo()
       case 'generate_image':
         // gatewayToken — JWT Syntee-Gateway для image-провайдера (worker-поток:
         // тул сам токен не достанет, electron-store недоступен). userDataPath —

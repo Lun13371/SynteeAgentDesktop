@@ -1,4 +1,4 @@
-// ── Command/system tool schemas ──────────────────────────────────────────
+// ── Command tool schemas ─────────────────────────────────────────────────
 
 export const COMMAND_TOOL_SCHEMAS = [
   {
@@ -30,14 +30,6 @@ export const COMMAND_TOOL_SCHEMAS = [
           files: { type: 'array', items: { type: 'string' }, description: 'Specific files to check. If omitted, checks the whole project.' },
         },
       },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'get_system_info',
-      description: 'Get system information (OS, memory, uptime).',
-      parameters: { type: 'object', properties: {} },
     },
   },
 ] as const

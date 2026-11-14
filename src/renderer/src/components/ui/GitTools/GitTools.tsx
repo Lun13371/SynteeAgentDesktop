@@ -18,7 +18,6 @@
  * (локальная мини-модель), прогресс — `liveByChat[chatId].todo`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Check,
@@ -83,9 +82,20 @@ interface GitToolsProps {
   lastTurnChanges?: LastTurnChanges | null
 }
 
-const POPOVER_WIDTH = 320
-/** Отступ от стенки окна: тот же, что у кластера chat-topright-actions (right: 10px). */
-const EDGE_GAP = 10
+/**
+ * Переход между вьюхами панели (обзор ↔ ветки ↔ коммит).
+ *
+ * Варианты функциями + custom: AnimatePresence передаёт ВЫХОДЯЩЕМУ элементу
+ * актуальный custom, поэтому «назад» едет вправо, а «вперёд» — влево. С
+ * обычными объектами exit взял бы direction из предыдущего рендера и обе
+ * стороны ехали бы в одну сторону.
+ */
+const VIEW_VARIANTS = {
+  enter: (dir: number) => ({ opacity: 0, x: dir * 22 }),
+  center: { opacity: 1, x: 0 },
+  exit: (dir: number) => ({ opacity: 0, x: dir * -18 }),
+}
+
 
 export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTurnChanges }: GitToolsProps) {
   const t = (ru: string, en: string): string => (lang === 'en' ? en : ru)
@@ -93,7 +103,20 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   // Панель по стандарту раскрыта — прятать её каждый раз бессмысленно,
   // это основной рабочий инструмент, а не редкий поповер.
   const [open, setOpen] = useState(true)
-  const [view, setView] = useState<View>('panel')
+  // Переходы внутри панели анимируются: подвью «въезжает» справа, возврат к
+  // панели — слева. Направление храним рядом и оборачиваем сам setView, чтобы
+  // не трогать десяток мест с навигацией.
+  const [view, setViewState] = useState<View>('panel')
+  const [viewDir, setViewDir] = useState(1)
+  const viewDirRef = useRef(1)
+  const setView = useCallback((next: View): void => {
+    const dir = next === 'panel' ? -1 : 1
+    if (viewDirRef.current !== dir) {
+      viewDirRef.current = dir
+      setViewDir(dir)
+    }
+    setViewState(next)
+  }, [])
   const [menuOpen, setMenuOpen] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -112,9 +135,6 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
-
-  const chipRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -184,42 +204,20 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     }
   }, [workdir])
 
-  /**
-   * Панель прижата к правой стенке области чата (а когда правая панель закрыта —
-   * это стенка окна) и раскрывается вниз. Позиция пересчитывается на resize:
-   * панель большая, ей нельзя уезжать за край и нельзя наезжать на правую панель.
-   */
-  const place = useCallback((): void => {
-    const chip = chipRef.current
-    const rect = chip?.getBoundingClientRect()
-    if (!rect) return
-    // Ориентир — правый край области чата, а не чипа: чип висит с отступом,
-    // из-за которого панель раньше не доходила до стенки.
-    const host = chip?.closest('.chat-main') as HTMLElement | null
-    const rightBound = host ? host.getBoundingClientRect().right : window.innerWidth
-    const left = Math.max(EDGE_GAP, Math.min(rightBound, window.innerWidth) - POPOVER_WIDTH - EDGE_GAP)
-    const top = rect.bottom + 8
-    setPos({ left, top })
-    // Высоту ограничиваем по факту: панель висит вверху и не должна уезжать за экран.
-    const maxHeight = Math.max(280, window.innerHeight - top - 16)
-    document.documentElement.style.setProperty('--git-tools-max-h', `${maxHeight}px`)
-  }, [])
-
   const openPanel = useCallback((): void => {
-    place()
     setOpen(true)
     setView('panel')
     setFormError(null)
     void refresh()
     void loadBranches()
-  }, [place, refresh, loadBranches])
+  }, [refresh, loadBranches, setView])
 
   const close = useCallback((): void => {
     setOpen(false)
     setMenuOpen(false)
     setView('panel')
     setNewBranch(null)
-  }, [])
+  }, [setView])
 
   // Сводку показываем сразу, не дожидаясь открытия: чип должен с первого кадра
   // показывать реальные цифры, а не пустую плашку.
@@ -227,22 +225,6 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     const id = window.setTimeout(() => void refresh(), 0)
     return () => window.clearTimeout(id)
   }, [refresh])
-
-  // Позиция панели зависит от размера окна и от ширины области чата (правая
-  // панель может открыться/закрыться) — держим её актуальной.
-  useEffect(() => {
-    if (!open) return
-    place()
-    const onResize = (): void => place()
-    window.addEventListener('resize', onResize)
-    const host = chipRef.current?.closest('.chat-main') as HTMLElement | null
-    const observer = host ? new ResizeObserver(onResize) : null
-    if (host && observer) observer.observe(host)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      observer?.disconnect()
-    }
-  }, [open, place])
 
   // Пока панель открыта — обновляем сводку (ветку/статистику мог поменять агент).
   useEffect(() => {
@@ -264,7 +246,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [open, graphOpen, view, menuOpen, newBranch, close])
+  }, [open, graphOpen, view, menuOpen, newBranch, close, setView])
 
   useEffect(() => {
     if (view === 'commit') window.setTimeout(() => textareaRef.current?.focus(), 60)
@@ -327,7 +309,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         setBusy(false)
       }
     },
-    [workdir, busy, draft, includeUnstaged, generate, refresh, loadBranches, lang],
+    [workdir, busy, draft, includeUnstaged, generate, refresh, loadBranches, lang, setView],
   )
 
   const doPush = useCallback(async (): Promise<void> => {
@@ -366,7 +348,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         setBusy(false)
       }
     },
-    [workdir, busy, refresh, loadBranches, lang],
+    [workdir, busy, refresh, loadBranches, lang, setView, t],
   )
 
   const createBranch = useCallback(
@@ -388,7 +370,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         setBusy(false)
       }
     },
-    [workdir, busy, refresh, loadBranches, lang],
+    [workdir, busy, refresh, loadBranches, lang, setView, t],
   )
 
   if (!workdir) return null
@@ -409,7 +391,6 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   return (
     <>
       <button
-        ref={chipRef}
         type="button"
         className={`git-tools-chip${open ? ' is-open' : ''}`}
         onClick={() => (open ? close() : openPanel())}
@@ -432,13 +413,14 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         <ChevronDown size={12} className={`git-tools-chip-chevron${open ? ' is-open' : ''}`} />
       </button>
 
-      {createPortal(
-        <AnimatePresence>
-          {open && pos && (
+      {/* Панель живёт ВНУТРИ контейнера чата (не портал в body): так она
+          скрывается вместе со страницей и не висит поверх «Настроек».
+          Позиционируется абсолютно от кластера chat-topright-actions. */}
+      <AnimatePresence>
+        {open && (
             <motion.div
               ref={popRef}
               className="git-tools-popover"
-              style={{ left: pos.left, top: pos.top }}
               initial={{ opacity: 0, y: -6, scale: 0.985 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -6, scale: 0.985 }}
@@ -463,8 +445,16 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                 </div>
               </header>
 
+              <AnimatePresence initial={false}>
               {menuOpen && (
-                <div className="git-tools-menu">
+                <motion.div
+                  className="git-tools-menu"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                  style={{ overflow: 'hidden' }}
+                >
                   <button type="button" className="git-tools-menu-item" onClick={() => { setMenuOpen(false); void refresh() }}>
                     <RefreshCw size={13} />
                     {t('Обновить', 'Refresh')}
@@ -490,11 +480,22 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                     <FileDiff size={13} />
                     {t('Открыть панель Git', 'Open Git panel')}
                   </button>
-                </div>
+                </motion.div>
               )}
+              </AnimatePresence>
 
+              <AnimatePresence mode="wait" initial={false} custom={viewDir}>
               {view === 'panel' && (
-                <div className="git-tools-body">
+                <motion.div
+                  key="panel"
+                  className="git-tools-body"
+                  custom={viewDir}
+                  variants={VIEW_VARIANTS}
+                  initial="enter"
+                  animate="center"
+                  exit="exit"
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                >
                   {summaryError && <div className="git-tools-error">{summaryError}</div>}
 
                   <div className="git-tools-rows">
@@ -586,7 +587,13 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                       </div>
                       <ul className="git-tools-plan-list">
                         {planItems.map((item, i) => (
-                          <li key={`${i}-${item.text.slice(0, 24)}`} className={`git-tools-plan-item is-${item.status}`}>
+                          <motion.li
+                            key={`${i}-${item.text.slice(0, 24)}`}
+                            className={`git-tools-plan-item is-${item.status}`}
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1], delay: Math.min(i, 4) * 0.02 }}
+                          >
                             <span className="git-tools-plan-mark">
                               {item.status === 'done' ? (
                                 <Check size={10} />
@@ -597,16 +604,25 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                               )}
                             </span>
                             <span className="git-tools-plan-text">{item.text}</span>
-                          </li>
+                          </motion.li>
                         ))}
                       </ul>
                     </section>
                   )}
-                </div>
+                </motion.div>
               )}
 
               {view === 'branches' && (
-                <div className="git-tools-subview">
+                <motion.div
+                  key="branches"
+                  className="git-tools-subview"
+                  custom={viewDir}
+                  variants={VIEW_VARIANTS}
+                  initial="enter"
+                  animate="center"
+                  exit="exit"
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                >
                   <div className="git-tools-subview-head">
                     <button type="button" className="git-tools-icon-btn" onClick={() => setView('panel')} title={t('Назад', 'Back')}>
                       <ChevronLeft size={15} />
@@ -694,11 +710,20 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                     <ListChecks size={13} />
                     {t('Граф Git', 'Git Graph')}
                   </button>
-                </div>
+                </motion.div>
               )}
 
               {view === 'commit' && (
-                <div className="git-tools-subview">
+                <motion.div
+                  key="commit"
+                  className="git-tools-subview"
+                  custom={viewDir}
+                  variants={VIEW_VARIANTS}
+                  initial="enter"
+                  animate="center"
+                  exit="exit"
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                >
                   <div className="git-tools-subview-head">
                     <button type="button" className="git-tools-icon-btn" onClick={() => setView('panel')} title={t('Назад', 'Back')}>
                       <ChevronLeft size={15} />
@@ -773,13 +798,12 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                   >
                     {t('Отменить', 'Cancel')}
                   </button>
-                </div>
+                </motion.div>
               )}
+              </AnimatePresence>
             </motion.div>
-          )}
-        </AnimatePresence>,
-        document.body,
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Окно графа — с анимацией открытия и закрытия. */}
       <AnimatePresence>

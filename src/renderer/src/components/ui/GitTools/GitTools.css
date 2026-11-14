@@ -96,12 +96,16 @@
 /* ── Панель ───────────────────────────────────────────────────────────── */
 
 .git-tools-popover {
-  position: fixed;
+  /* Абсолютно от кластера chat-topright-actions: панель уезжает вместе со
+     страницей чата (портал в body оставался висеть поверх «Настроек»). */
+  position: absolute;
+  top: 30px;
+  right: 0;
   z-index: 2600;
   display: flex;
   flex-direction: column;
-  width: min(320px, calc(100vw - 24px)) !important;
-  max-height: var(--git-tools-max-h, min(470px, calc(100vh - 96px)));
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(470px, calc(100vh - 120px));
   overflow: hidden;
   border-radius: var(--radius-lg, 16px);
   background: var(--glass-bg, rgba(18, 18, 28, 0.97));

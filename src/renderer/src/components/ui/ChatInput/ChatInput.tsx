@@ -1224,7 +1224,12 @@ function ChatInput({
             onStop={onStop}
             onSend={handleSend}
             onSteer={onSteer ? handleSteer : undefined}
-            holdActive={enterHold && !!isGenerating && !!stripAttachTokens(liveText).trim() && attachments.length === 0}
+            // §steer — кольцо удержания Enter на кнопке: условие то же, что в
+            // canSteerKeyboard (текст ИЛИ вложения). Раньше здесь оставалось
+            // «нет вложений» — при вложениях внедрение срабатывало, а анимация
+            // на кнопке не показывалась.
+            holdActive={enterHold && !!isGenerating &&
+              (!!stripAttachTokens(liveText).trim() || attachments.length > 0)}
             onMicClick={handleMicClick}
           />
         </div>
