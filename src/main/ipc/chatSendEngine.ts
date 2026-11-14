@@ -2715,7 +2715,7 @@ ${await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill)}
       const s = getAssistantsSettings()
       if (!s.enabled || !s.janitorEnabled) return
       const rows = getMessagesAfterLatestCompact(chatId)
-      const plans = compressStoredMessages(rows, { minSavingsTokens: s.janitorMinSavingsTokens, tailKeep: 4 })
+      const plans = compressStoredMessages(rows, { minSavingsTokens: s.janitorMinSavingsTokens, tailKeep: Math.max(1, s.janitorTailSteps ?? 10) })
       let totalSaved = 0
       for (const [id, plan] of plans) {
         updateMessageToolSteps(id, plan.toolSteps, plan.iterations)

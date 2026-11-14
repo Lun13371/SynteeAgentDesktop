@@ -5,6 +5,11 @@ import AppIcon from '../AppIcon/AppIcon'
 import ToolResultRenderer, { CodeSurface } from './ToolResultRenderer'
 import FileChip from './FileChip'
 import { synthesizeDiffFromArgs, countDiffLines, asArgsObject } from '../../../utils/synthesizeDiff'
+import { ParsedContent, createMdComponents } from '../MessageBubble/markdownRenderer'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import { containsMathMarkers } from '@shared/mathNormalize'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import type { ToolOutputMode, SteerAttachmentMeta, Attachment } from '../../../../../shared/types'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
@@ -1431,7 +1436,7 @@ const ToolChips = memo(function ToolChips({
   prev.toolsStr === next.toolsStr,
 )
 
-const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, busy, label, elapsed, summary, toolProgress, thinkingText, thinkingMs, liveThinking, chatId, renderIterExtra }: {
+const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, busy, label, elapsed, summary, toolProgress, thinkingText, thinkingMs, liveThinking, chatId, workdir, renderIterExtra }: {
   steps?: ToolStep[]
   /** Полная лента сообщения: итерации с их рассуждениями. Приоритетнее steps. */
   sections?: ToolChainSection[]
@@ -1439,6 +1444,9 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
   isRunning: boolean
   /** §steer — chatId сообщения: нужен для крестика отмены pending-реплики. */
   chatId?: string
+  /** Рабочая директория чата — чтобы пути в тексте хода работы были
+   *  кликабельными, как в обычном сообщении. */
+  workdir?: string
   /** Прогон ещё идёт, но тулы сейчас не выполняются (агент пишет ответ).
    *  Пока busy — блок не сворачивается сам: пользователь видит ход работы
    *  до самого конца, а не «мигание» на финальном тексте. */
@@ -1478,6 +1486,20 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
   const remeasure = useChatRemeasure()
   const itersRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
+
+  // ── Текст модели в ленте рендерится тем же markdown-пайплайном, что ответ ──
+  // Наборы плагинов совпадают с MessageBubble: маршрут по наличию математики
+  // (KaTeX дорог — включаем только если реально есть формулы).
+  const textHasMath = useMemo(
+    () => sections?.some(s => (s.textBefore ?? '').length > 0 && containsMathMarkers(s.textBefore as string)) ?? false,
+    [sections],
+  )
+  const textRemarkPlugins = useMemo(() => (textHasMath ? [remarkGfm, remarkMath] : [remarkGfm]), [textHasMath])
+  const textRehypePlugins = useMemo(
+    () => (textHasMath ? [[rehypeKatex, { errorColor: 'var(--danger, #e5484d)' }]] : []),
+    [textHasMath],
+  )
+  const textMdComponents = useMemo(() => createMdComponents({ workdir }), [workdir])
   // Прилип ли автоскролл к хвосту ленты. true — новые действия подтягиваются
   // вниз; false — пользователь ушёл читать историю, его не трогаем.
   const pinnedRef = useRef(true)
@@ -1819,10 +1841,24 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
               // Обычный текст модели перед тулами — тоже внутри ленты, чтобы
               // при сворачивании хода работы он уходил вместе с ним, а не
               // оставался висеть в сообщении.
+              //
+              // Рендерим тем же markdown-пайплайном, что и обычный ответ
+              // (ParsedContent из markdownRenderer): одинаковое форматирование,
+              // шрифт и цвет. Раньше это был <div> с white-space: pre-wrap —
+              // серый монолит, в котором пустые строки стрима давали провалы.
               if (entry.kind === 'text') {
                 return (
                   <div key={entry.key} className="tc2-note">
-                    <div className="tc2-note-text">{entry.text}</div>
+                    <div className="tc2-note-text message-content selectable">
+                      <ParsedContent
+                        text={entry.text}
+                        allowPlanCard={false}
+                        remarkPlugins={textRemarkPlugins}
+                        rehypePlugins={textRehypePlugins}
+                        mdComponents={textMdComponents}
+                        workdir={workdir}
+                      />
+                    </div>
                   </div>
                 )
               }

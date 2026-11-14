@@ -1133,13 +1133,24 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
     setBranchSwitchLoading(branch)
     try {
       const result = await window.syntee.git.checkout({ workdir, branch }) as
-        { success: boolean; error?: string }
+        { success: boolean; error?: string; stashed?: boolean }
       if (result.success) {
         setBranchDropdownOpen(false)
         await refresh()
         await loadBranches()
+        useToast.getState().add(
+          result.stashed
+            ? `Переключено на ${branch} (правки сохранены в stash и возвращены)`
+            : `Переключено на ${branch}`,
+          'success',
+        )
+      } else {
+        // Раньше ошибка молча терялась — выглядело как «панель не переключает ветки».
+        useToast.getState().add(result.error ?? 'Не удалось переключить ветку', 'error')
       }
-    } catch { /* ok */ } finally { setBranchSwitchLoading(null) }
+    } catch (e) {
+      useToast.getState().add(String((e as Error)?.message ?? e), 'error')
+    } finally { setBranchSwitchLoading(null) }
   }, [workdir, refresh, loadBranches])
 
   const handleCreateBranch = useCallback(async () => {

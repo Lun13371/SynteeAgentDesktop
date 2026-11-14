@@ -1,5 +1,7 @@
 import { ipcMain } from 'electron'
 import { runGit } from '../git/runGit'
+import { parseBranchList } from '../../shared/git/parseBranches'
+import { buildCheckoutPlan, explainCheckoutError } from '../../shared/git/checkoutPlan'
 import { readGraph } from '../git/graph'
 import { generateCommitMessage } from '../git/commitMessage'
 import { readFile, stat } from 'fs/promises'
@@ -371,45 +373,34 @@ export function registerGitIPC(): void {
     }
   })
 
-  // ── git branchList — список всех веток ───────────────────────────────
-  // all=true → включаем удалённые ветки и отдаём объекты { name, current, remote }.
+  // ── git branchList — список веток ────────────────────────────────────
+  // all=true → объекты { name, current, remote } (включая удалённые).
+  // Без all → только локальные строки, это дефолт для панелей переключения.
   ipcMain.handle('git:branchList', async (_e, workdir: string, all?: boolean) => {
     if (!workdir) return { success: false, error: 'workdir is required', branches: [], current: null }
     try {
       if (all) {
+        // Парсинг — в src/shared/git/parseBranches.ts (там же объяснение бага с trim).
         const out = await runGit(workdir, [
           'branch', '--list', '--all',
           '--format=%(HEAD)%09%(refname)%09%(refname:short)',
         ])
-        const branches: Array<{ name: string; current: boolean; remote: boolean }> = []
-        let current: string | null = null
-        for (const line of out.split('\n')) {
-          const trimmed = line.trim()
-          if (!trimmed) continue
-          const [head, full, short] = trimmed.split('\t')
-          const name = (short || '').trim()
-          // origin/HEAD — это алиас, в списке он только мешает.
-          if (!name || name.endsWith('/HEAD')) continue
-          const isCurrent = head === '*'
-          if (isCurrent) current = name
-          branches.push({ name, current: isCurrent, remote: (full ?? '').startsWith('refs/remotes/') })
-        }
+        const { branches, current } = parseBranchList(out)
         return { success: true, branches, current }
       }
 
-      const out = await runGit(workdir, ['branch', '--list', '--format=%(HEAD)%(refname:short)'])
+      const out = await runGit(workdir, ['branch', '--list', '--format=%(HEAD)%09%(refname:short)'])
       const branches: string[] = []
       let current: string | null = null
-      for (const line of out.split('\n')) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-        if (trimmed.startsWith('*')) {
-          const name = trimmed.slice(1).trim()
-          current = name
-          branches.push(name)
-        } else {
-          branches.push(trimmed)
-        }
+      for (const rawLine of out.split('\n')) {
+        const line = rawLine.replace(/\r$/, '')
+        if (!line.trim()) continue
+        // «*» стоит в первой колонке, имя — после TAB (trim съел бы TAB у не-текущих).
+        const isCurrent = line.charAt(0) === '*'
+        const name = line.slice(line.indexOf('\t') + 1).trim()
+        if (!name) continue
+        if (isCurrent) current = name
+        branches.push(name)
       }
       return { success: true, branches, current }
     } catch (e) {
@@ -418,13 +409,46 @@ export function registerGitIPC(): void {
   })
 
   // ── git checkout — переключение ветки ────────────────────────────────
+  // Правки в рабочем дереве почти всегда есть (агент правит файлы), поэтому
+  // голый `checkout` падал с "local changes would be overwritten". План команд
+  // (stash → checkout → stash pop) строится в src/shared/git/checkoutPlan.ts.
   ipcMain.handle('git:checkout', async (_e, params: { workdir: string; branch: string }) => {
     if (!params.workdir || !params.branch) return { success: false, error: 'workdir and branch are required' }
     try {
-      const out = await runGit(params.workdir, ['checkout', params.branch])
-      return { success: true, output: out }
+      const { workdir, branch } = params
+      const [statusOut, localOut, remoteOut] = await Promise.all([
+        runGit(workdir, ['status', '--porcelain']).catch(() => ''),
+        runGit(workdir, ['branch', '--list', '--format=%(refname:short)']).catch(() => ''),
+        runGit(workdir, ['branch', '--remotes', '--format=%(refname:short)']).catch(() => ''),
+      ])
+      const lines = (s: string): string[] => s.split('\n').map(l => l.trim()).filter(Boolean)
+
+      const plan = buildCheckoutPlan(branch, {
+        localBranches: lines(localOut),
+        remoteBranches: lines(remoteOut),
+        dirty: lines(statusOut).length > 0,
+      })
+
+      let stashed = false
+      const output: string[] = []
+      for (let i = 0; i < plan.steps.length; i++) {
+        try {
+          output.push(await runGit(workdir, plan.steps[i].args))
+          if (plan.steps[i].args[0] === 'stash' && plan.steps[i].args[1] === 'push') stashed = true
+        } catch (stepErr) {
+          const raw = String((stepErr as Error)?.message ?? stepErr)
+          // Правки спрятаны, но переключение не удалось — вернуть их обратно,
+          // иначе пользователь останется на старой ветке без своих изменений.
+          if (plan.restoreOnFailureAt.includes(i) && stashed) {
+            await runGit(workdir, ['stash', 'pop']).catch(() => {})
+          }
+          return { success: false, error: explainCheckoutError(raw), stashed }
+        }
+      }
+
+      return { success: true, output: output.join('\n'), stashed }
     } catch (e) {
-      return { success: false, error: String((e as Error)?.message ?? e) }
+      return { success: false, error: explainCheckoutError(String((e as Error)?.message ?? e)) }
     }
   })
 
