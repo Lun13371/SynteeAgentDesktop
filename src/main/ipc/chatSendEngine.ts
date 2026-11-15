@@ -67,7 +67,7 @@ import { cleanupOrphanDraftFiles } from './mentions.ipc'
 import { emitTaskSummary } from './taskSummary.ipc'
 import { buildExtensionsReport, getSystemPrompt } from './chatSystemPrompt'
 import { processAttachmentsAndStream } from './chatAttachments'
-import { createCompactDivider, emitChatCompacted, getLiveMessages } from './chatCompaction'
+import { createCompactDivider, emitChatCompacted, getLiveMessages, persistTailToolTrim } from './chatCompaction'
 import { autoNameChat, isChatTitleDefault } from './chatAutoTitle'
 import { extractRecallKeywords, getRecallDedupKey, invalidateAutoRecallCache, searchAutoRecallCached } from './autoRecallCache'
 import {
@@ -374,8 +374,8 @@ export async function runChatSend(
         // результаты больше не видны — следующий follow-up инжектит как first.
         autoRecallInjectedKeys.delete(params.chatId)
         const triggerTokens = Math.floor(realContextWindow * ctxSettings.rollingTriggerPct / 100)
-        log('[chat:send] rolling-window компакция chatId=%s: contextWindow=%d triggerTokens=%d(=%d%%) removed=%d сообщений',
-          params.chatId, realContextWindow, triggerTokens, ctxSettings.rollingTriggerPct, result.removedCount)
+        log('[chat:send] rolling-window компакция chatId=%s: contextWindow=%d triggerTokens=%d(=%d%%) removed=%d сообщений, trimmed=%d tool-рез.',
+          params.chatId, realContextWindow, triggerTokens, ctxSettings.rollingTriggerPct, result.removedCount, result.trimmedToolResults ?? 0)
         processedHistory = result.messages
         contextCompressed = true
         if (result.summaryContent && !params.incognito) {
@@ -443,7 +443,11 @@ export async function runChatSend(
           // next round with no memory of the conversation. Now both writes
           // commit together or not at all.
           const tokensBefore = await perfPhaseAsync('chat.token_calc.before', () => estimateMessagesTokensAsync(rawHistory), { messageCount: rawHistory.length })
-          const tokensAfter = await perfPhaseAsync('chat.token_calc.after', () => estimateMessagesTokensAsync(result.messages), { messageCount: result.messages.length })
+          // Пост-сжатый footprint = tail + summary (summary живёт в system
+          // prompt следующих запросов) — иначе «сэкономлено» в divider'е
+          // и toast'е завышено.
+          const tailTokens = await perfPhaseAsync('chat.token_calc.after', () => estimateMessagesTokensAsync(result.messages), { messageCount: result.messages.length })
+          const tokensAfter = tailTokens + (result.summaryContent ? estimateTokens(result.summaryContent) : 0)
           const firstTailMsgId = result.messages.find(m => m.messageId)?.messageId
           const boundaryMsg = firstTailMsgId ? liveMessages.find(m => m.id === firstTailMsgId) : undefined
           const dividerCreatedAt = boundaryMsg ? boundaryMsg.createdAt - 1 : (userMsg.createdAt - 1)
@@ -457,6 +461,12 @@ export async function runChatSend(
           try {
             getDB().transaction(() => {
               if (result.summaryContent) setChatSummary(params.chatId, result.summaryContent)
+              // Персистентный трим tail'а (см. chatCompaction.persistTailToolTrim):
+              // иначе следующий запрос пересобрал бы из БД полный вес мега-хода.
+              const trimmedMsgs = persistTailToolTrim(result.messages, liveMessages)
+              if (trimmedMsgs > 0) {
+                log('[chat:send] персистентный трим tool_steps в %d Message (chatId=%s)', trimmedMsgs, params.chatId)
+              }
               saveMessage(divider)
             })()
           } catch (e) {

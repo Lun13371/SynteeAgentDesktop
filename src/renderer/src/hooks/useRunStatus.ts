@@ -111,6 +111,10 @@ export function useRunStatus() {
       }
       if (buf?.rateLimitCountdown) clearInterval(buf.rateLimitCountdown)
       buffers.delete(data.chatId)
+      // Сбрасываем бейдж изменений: после отката цифры последнего запроса
+      // больше не соответствуют состоянию диска (раньше бейдж оставался
+      // со старыми +N -M — расходился с панелью «Сессия»).
+      useChatStore.getState().setLastTurnChanges(data.chatId, null)
       const msgs = await window.syntee.chat.getMessages(data.chatId) as Message[]
       useChatStore.getState().setMessages(msgs)
     })

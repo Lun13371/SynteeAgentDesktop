@@ -171,7 +171,11 @@ export interface ChatMessage {
 export interface CompressResult {
   messages: ChatMessage[]
   compressed: boolean
+  /** Кол-во РЕАЛЬНЫХ сообщений (Message), ушедших в summary — не ChatMessages
+   *  (один Message разворачивается в десятки ChatMessages). */
   removedCount: number
+  /** Кол-во tool-результатов в tail, ужатых токен-капом (структура целая). */
+  trimmedToolResults?: number
   summaryAdded: boolean
   summaryContent?: string
   /** Фактическое кол-во ChatMessage оставленных в head. Нужно вызывающему
@@ -275,19 +279,19 @@ function smartSummarizeToolResult(toolName: string, content: string): string {
   return `[${toolName}] ${content.slice(0, 150).replace(/\n/g, ' ')}${content.length > 150 ? '…' : ''}`
 }
 
-// Pruning tool results перед суммаризацией — заменяем старые на компактные
-// но информативные сводки (smartSummarizeToolResult)
+// Pruning tool results перед суммаризацией: сырые результаты тулов (содержимое
+// файлов, выводы команд) заменяются компактными сводками (smartSummarizeToolResult).
+// Раньше функция искала маркер «[Использованные инструменты]» из старого
+// compact-trace формата — после перехода на нативную развёртку tool_calls
+// (messageToContextMessages) его никто не производит, и pruning никогда
+// не срабатывал. Теперь режем role='tool' напрямую: короткие результаты
+// остаются дословно (ошибки, подтверждения), длинные сжимаются в сводки —
+// иначе промпт суммаризатора превращается в свалку и резюме чаще упирается
+// в кап ~6000 токенов, теряя важное.
 function pruneToolOutputsForSummary(messages: ChatMessage[]): ChatMessage[] {
   return messages.map(m => {
-    if (m.role === 'assistant' && m.content.includes('[Использованные инструменты]')) {
-      const parts = m.content.split('[Использованные инструменты]')
-      const toolPart = parts[1] || ''
-      const prunedTools = toolPart.replace(/\[([^\]]+)\]: ([^[]*)/g, (_, name, result) => {
-        // Используем умный summarize вместо механической обрезки
-        const summary = smartSummarizeToolResult(name.trim(), result.trim())
-        return summary
-      })
-      return { ...m, content: parts[0] + '[Использованные инструменты]' + prunedTools }
+    if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > 400) {
+      return { ...m, content: smartSummarizeToolResult(m.name ?? 'tool', m.content) }
     }
     return m
   })
@@ -373,11 +377,13 @@ export function buildSummaryPrompt(messages: ChatMessage[], prevSummary?: string
     ? `Below is the existing summary. Incorporate the new messages into it.\nKEEP everything important from the existing summary — do not delete facts, files, decisions.\nAdd new information, update statuses (completed/in-progress), fix if something changed.\nIf the new dialogue has no information for a section — keep the old one.\n\n<existing_summary>\n${prevSummary}\n</existing_summary>\n\n`
     : ''
 
-  // Фокус пользователя (/compact last <текст>): приоритет при отборе деталей.
-  // Не отменяет шаблон — только подсвечивает, что нельзя потерять.
+  // Фокус пользователя (/compact [mode] <текст>): резюме строится ВОКРУГ
+  // фокуса — по нему максимально подробно (точные значения, пути, код,
+  // решения), остальное кратко. Шаблон не отменяется — фокус задаёт
+  // приоритет отбора деталей в каждом разделе.
   const trimmedFocus = focus?.trim()
   const focusBlock = trimmedFocus
-    ? `USER FOCUS FOR THIS COMPACTION — preserve these details above all else, in their own words:\n${trimmedFocus}\n(Still keep every other critical fact: the focus is a priority hint, not a filter.)\n\n`
+    ? `USER FOCUS FOR THIS COMPACTION — the user named what this compaction is FOR (their own words):\n${trimmedFocus}\n\nThe focus is the TOP priority for every section of the template:\n- Focus-related facts: preserve in MAXIMUM detail — exact values, file paths, code snippets, decisions with reasons, current status. When in doubt whether a detail belongs to the focus — include it.\n- Everything NOT related to the focus: compress hard, one line each, only critical facts (files touched, decisions, unfinished work).\n- The focus must be richly present in the summary — a thin mention is a failure.\n\n`
     : ''
 
   return {
@@ -385,6 +391,18 @@ export function buildSummaryPrompt(messages: ChatMessage[], prevSummary?: string
     userContent: `${updateInstruction}${focusBlock}---\nDialogue for summarization:\n\n${text}`,
   }
 }
+
+// ── Токен-кап на tail ────────────────────────────────────────────────────────
+// Tail — целые обмены, и последний агентский ход может весить сотни тысяч
+// токенов (сотня tool-результатов). Без капа /compact full «сжимал»
+// 307k→216k: весь мега-ход оставался живым, токены фактически не падали.
+const TAIL_MAX_TOKENS_PCT = 10      // кап = 10% окна контекста (min 3000)
+// Свежие tool-результаты tail'а остаются дословно — это рабочее «сейчас»
+// модели, по ним продолжается задача.
+const TAIL_VERBATIM_TOOL_RESULTS = 8
+// Старые tool-результаты в tail сжимаются до head+хвоста (структура пар
+// tool_call→tool_result не ломается, вопрос/ответ не трогаются).
+const TAIL_TOOL_CAP_CHARS = 400
 
 export async function applyRollingWindowAsync(
   messages: ChatMessage[],
@@ -402,61 +420,108 @@ export async function applyRollingWindowAsync(
   const limitTokens = settings.contextLimitTokens
   const triggerTokens = Math.floor(limitTokens * settings.rollingTriggerPct / 100)
 
-  // ── Пороги ─
-  // Авто-компакция (forceCompress=false): только если токенов >= trigger И
-  // сообщений достаточно чтобы middle был непустым (> keepLast). Head не
-  // держим в AI-контексте (модель «новый чат + summary»): head уходит в
-  // summary, AI видит только tail + summary (в system prompt).
-  // Ручная /compact (forceCompress=true): сразу к адаптации.
-  if (!forceCompress) {
-    if (totalTokens < triggerTokens) {
-      return { messages, compressed: false, removedCount: 0, summaryAdded: false }
-    }
-    if (messages.length <= settings.rollingKeepLast) {
-      return { messages, compressed: false, removedCount: 0, summaryAdded: false }
-    }
-  }
-
-  // Адаптация окна для коротких историй: keepLast не может превышать длину.
-  // Оставляем минимум 1 middle сообщение для сжатия.
-  // Если total = 5, keepLast=20 → берём keepLast=4 (5-1), middle = 1 сообщение.
-  //
-  // compactMode='last': keepLast=1 — оставляем только последнее сообщение,
-  // всё остальное уходит в summary. Экстремальное сжатие для длинных чатов.
-  const baseKeepLast = compactMode === 'last' ? 1 : settings.rollingKeepLast
-  const keepLast = Math.min(baseKeepLast, Math.max(0, messages.length - 1))
-  if (keepLast >= messages.length) {
-    // Совсем короткая история (1 сообщение) — сжать невозможно.
+  // ── Порог ─
+  // Авто-компакция (forceCompress=false): только если токенов >= trigger.
+  // Guard «история слишком коротка» делается ниже по сегментам (middle пуст
+  // → compressed=false): счёт ChatMessages врёт — один агентский ход
+  // разворачивается в десятки ChatMessages (assistant + tool-результаты +
+  // §steer/todo). Head не держим в AI-контексте (модель «новый чат +
+  // summary»): всё до tail уходит в summary, AI видит только tail +
+  // summary (в system prompt). Ручная /compact (forceCompress=true):
+  // сразу к выбору tail.
+  if (!forceCompress && totalTokens < triggerTokens) {
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
   }
 
-  let tailMessages = messages.slice(messages.length - keepLast)
-  // Если keepLast=0, slice(length-0) = slice(length) → []. Норм.
-
-  // Не разрываем tool-раунды: если tail начинается с tool-сообщения без
-  // парного assistant с tool_calls — отбрасываем непарные tool-сообщения.
-  while (tailMessages.length > 0 && tailMessages[0].role === 'tool') {
-    tailMessages = tailMessages.slice(1)
+  // ── Сегментация: один Message → один сегмент ──────────────────────────────
+  // Развёрнутые ChatMessages одного Message несут одинаковый messageId
+  // (проставляется в chat.ipc.ts / chatSendEngine.ts на flatMap). Tail
+  // выбирается по СЕГМЕНТАМ (реальным сообщениям), а не по счёту ChatMessages:
+  // сегмент = целое сообщение со всей его развёрткой → tool-раунды не рвутся
+  // (assistant с tool_calls не остаётся без своих tool-результатов), и
+  // boundary divider'а всегда совпадает с первым tail-Message.
+  const segments: ChatMessage[][] = []
+  for (const m of messages) {
+    const lastSeg = segments[segments.length - 1]
+    if (lastSeg && lastSeg[0].messageId && m.messageId && lastSeg[0].messageId === m.messageId) {
+      lastSeg.push(m)
+    } else {
+      segments.push([m])
+    }
   }
 
-  // middle = всё, что до tail (включая бывший head). Head не выделяем —
-  // он суммаризуется вместе с middle. Это даёт модели «чистый старт»:
-  // AI видит только summary (в system prompt) + последние tail-сообщения.
-  const middleMessages = messages.slice(0, messages.length - tailMessages.length)
+  // ── Индекс первого tail-сегмента ─
+  // full (и фокус-текст без режима): tail ПУСТОЙ — вся live-история уходит
+  // в summary. Модель начинает с «нового чата»: только резюме в system prompt.
+  // last: tail = последний сегмент — последнее сообщение (обычно ответ агента
+  // со всем его тул-трафиком). Остальное — в summary. Если это мега-ход,
+  // его tool-результаты ужимаются токен-капом (см. ниже).
+  const tailStart = compactMode === 'last'
+    ? Math.max(segments.length - 1, 0)
+    : segments.length
 
-  if (middleMessages.length === 0) {
+  // tail = целые сегменты после границы; middle = всё до неё. Это даёт
+  // модели «чистый старт»: AI видит только summary (в system prompt) +
+  // последние tail-сообщения.
+  const tailMessages = segments.slice(tailStart).flat()
+  const middleMessages = segments.slice(0, tailStart).flat()
+
+  // Токен-кап на tail: 10% окна (min 3000) — см. TAIL_MAX_TOKENS_PCT выше.
+  const tailCapTokens = Math.max(3000, Math.floor(limitTokens * TAIL_MAX_TOKENS_PCT / 100))
+
+  // Middle пуст (сжимать, кроме хвоста, нечего). Лёгкий хвост — честный отказ:
+  // короткий чат, /compact last на единственном сообщении, повторный /compact
+  // без новых сообщений. Тяжёлый хвост — TRIM-ONLY компакция: middle=[],
+  // новое summary не пишется (старое chat_summaries остаётся), вес съедает
+  // трим tool-результатов ниже (реальный кейс: единственный мега-ход на 195k
+  // с 231 tool-вызовом — без этого он был несжимаем).
+  if (middleMessages.length === 0 && await estimateMessagesTokensAsync(tailMessages) <= tailCapTokens) {
     return { messages, compressed: false, removedCount: 0, summaryAdded: false }
   }
 
-  let summaryContent: string
-  if (summaryFn) {
-    try {
-      const { systemPrompt, userContent } = buildSummaryPrompt(middleMessages, prevSummary, focus)
-      summaryContent = await summaryFn(systemPrompt, userContent)
-    } catch {
-      // Fallback: извлекаем ключевые факты структурно вместо механической
-      // обрезки. Пользовательские сообщения целиком (до 800 символов),
-      // ассистентские — кратко (до 400). Бюджет 3000 символов.
+  // ── Токен-кап на tail: старые tool-результаты ужимаются ────────────────────
+  // Считаем токены tail'а; если он тяжелее капа — режем содержимое tool-
+  // сообщений (кроме последних TAIL_VERBATIM_TOOL_RESULTS). Пары
+  // tool_call→tool_result и user/assistant остаются целыми, поэтому никакой
+  // ломки API и divider-механики: divider по-прежнему стоит перед первым
+  // tail-Message, а «лишний вес» хода съеден на содержимом результатов.
+  let trimmedToolResults = 0
+  if (await estimateMessagesTokensAsync(tailMessages) > tailCapTokens) {
+    let verbatim = 0
+    for (let i = tailMessages.length - 1; i >= 0; i--) {
+      const m = tailMessages[i]
+      if (m.role !== 'tool' || typeof m.content !== 'string') continue
+      verbatim++
+      if (verbatim <= TAIL_VERBATIM_TOOL_RESULTS) continue
+      if (m.content.length > TAIL_TOOL_CAP_CHARS) {
+        tailMessages[i] = { ...m, content: truncateToolResult(m.content, TAIL_TOOL_CAP_CHARS) }
+        trimmedToolResults++
+      }
+    }
+  }
+
+  // Summary строится только из middle. В trim-only компакции middle пуст —
+  // новое summary не пишется (старое chat_summaries остаётся как было),
+  // вес снижает трим.
+  let summaryContent: string | undefined
+  if (middleMessages.length > 0) {
+    if (summaryFn) {
+      try {
+        const { systemPrompt, userContent } = buildSummaryPrompt(middleMessages, prevSummary, focus)
+        summaryContent = await summaryFn(systemPrompt, userContent)
+      } catch {
+        // Fallback: извлекаем ключевые факты структурно вместо механической
+        // обрезки. Пользовательские сообщения целиком (до 800 символов),
+        // ассистентские — кратко (до 400). Бюджет 3000 символов.
+        summaryContent = middleMessages
+          .filter(m => m.role === 'user' || m.role === 'assistant')
+          .map(m => m.role === 'user'
+            ? `User: ${m.content.slice(0, 800)}`
+            : `AI: ${m.content.slice(0, 400)}`)
+          .join('\n\n')
+          .slice(0, 3000)
+      }
+    } else {
       summaryContent = middleMessages
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .map(m => m.role === 'user'
@@ -465,27 +530,19 @@ export async function applyRollingWindowAsync(
         .join('\n\n')
         .slice(0, 3000)
     }
-  } else {
-    summaryContent = middleMessages
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map(m => m.role === 'user'
-        ? `User: ${m.content.slice(0, 800)}`
-        : `AI: ${m.content.slice(0, 400)}`)
-      .join('\n\n')
-      .slice(0, 3000)
-  }
 
-  // Cap на размер summary: модель может выдать слишком много и
-  // иногда регургитирует вместо суммаризации. Ограничиваем ~6000 токенов
-  // (было 4000 — увеличено для сохранения больше деталей длинных диалогов).
-  // Транкейт по словам, чтобы не разрезать токен посередине.
-  const SUMMARY_MAX_TOKENS = 6000
-  // One native truncate instead of re-encoding every word: the old loop ran a
-  // BPE encode per word, which thrashed the 500-entry token cache and blocked
-  // the thread for the whole summary.
-  const cappedSummary = await truncateToTokensAsync(summaryContent, SUMMARY_MAX_TOKENS)
-  if (cappedSummary.truncated) {
-    summaryContent = cappedSummary.text + '\n[…резюме обрезано до ~6000 токенов]'
+    // Cap на размер summary: модель может выдать слишком много и
+    // иногда регургитирует вместо суммаризации. Ограничиваем ~6000 токенов
+    // (было 4000 — увеличено для сохранения больше деталей длинных диалогов).
+    // Транкейт по словам, чтобы не разрезать токен посередине.
+    const SUMMARY_MAX_TOKENS = 6000
+    // One native truncate instead of re-encoding every word: the old loop ran a
+    // BPE encode per word, which thrashed the 500-entry token cache and blocked
+    // the thread for the whole summary.
+    const cappedSummary = await truncateToTokensAsync(summaryContent, SUMMARY_MAX_TOKENS)
+    if (cappedSummary.truncated) {
+      summaryContent = cappedSummary.text + '\n[…резюме обрезано до ~6000 токенов]'
+    }
   }
 
   // summaryMsg НЕ добавляется в messages — summary живёт только в system
@@ -493,10 +550,14 @@ export async function applyRollingWindowAsync(
   // дублировался: один раз в history, второй — в system prompt. Теперь
   // AI получает summary единственный раз, в system prompt.
   return {
-    messages: [...tailMessages],
+    messages: tailMessages,
     compressed: true,
-    removedCount: middleMessages.length,
-    summaryAdded: true,
+    // Кол-во РЕАЛЬНЫХ сообщений (Message), ушедших в summary — не ChatMessages:
+    // один агентский ход разворачивается в десятки ChatMessages, и divider/
+    // toast с ними рисовали «удалено 47 сообщ.» при 3 реальных.
+    removedCount: segments.slice(0, tailStart).length,
+    trimmedToolResults,
+    summaryAdded: middleMessages.length > 0,
     summaryContent,
     headCount: 0,
     tailCount: tailMessages.length,

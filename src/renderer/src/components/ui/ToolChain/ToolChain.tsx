@@ -767,13 +767,9 @@ const DiffBlock = memo(function DiffBlock({ diff, path, isFail }: {
   })
   const shown = lines.slice(0, visible)
   // Счётчики как в шапке карточки правки: +добавлено / −удалено.
-  let added = 0
-  let removed = 0
-  for (const line of lines) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue
-    if (line.startsWith('+')) added++
-    else if (line.startsWith('-')) removed++
-  }
+  // countDiffLines — ЕДИНЫЙ парсер (shared/fileChanges.ts): тот же, что у
+  // бейджа над инпутом, «Сессии» и чипов сообщения — одна логика, не копия.
+  const { adds: added, dels: removed } = countDiffLines(diff)
   return (
     <div className={`tc2-diff${isFail ? ' tc2-diff--fail' : ''}`}>
       <div className="tc2-diff-head">
@@ -887,14 +883,9 @@ const IterationBlock = memo(function IterationBlock({
   const diffStats = useMemo(() => {
     const d = iter.result?.diff
     if (!d) return null
-    let added = 0
-    let removed = 0
-    for (const line of d.split('\n')) {
-      if (line.startsWith('+++') || line.startsWith('---')) continue
-      if (line.startsWith('+')) added++
-      else if (line.startsWith('-')) removed++
-    }
-    return { added, removed }
+    // Единый парсер (shared/fileChanges.ts) — как у бейджа, «Сессии» и чипов.
+    const { adds, dels } = countDiffLines(d)
+    return { added: adds, removed: dels }
   }, [iter.result?.diff])
 
   // Файловые тулы показывают в свёрнутой шапке не сырой путь, а плашку файла

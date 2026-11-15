@@ -954,3 +954,22 @@
   max-width: 220px;
   line-height: 1.4;
 }
+
+/* ── Пометка состояния файла: «создан» / «удалён» / «создан и удалён» ──
+   Файл, созданный запросом и тут же удалённый (временный скрипт), иначе
+   выглядел бы как файл без изменений — его кумулятивный дифф пуст. */
+.session-file-chip__state,
+.session-checkpoint__path-state {
+  font-size: 9px;
+  line-height: 1;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  padding: 2px 6px;
+  border-radius: var(--radius-pill, 999px);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.session-checkpoint__path-state {
+  padding: 1px 5px;
+}

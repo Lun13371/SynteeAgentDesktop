@@ -520,6 +520,7 @@ class ProjectMapManager {
         index.addFileNodes(relPath, raw.nodes)
         this.resolveAndWrite(index, raw)
         resolvedPaths.add(relPath)
+        await yieldNow()
       }
 
       // Перерезолвить импортёров изменённых файлов (их рёбра могли поменяться).
@@ -543,12 +544,15 @@ class ProjectMapManager {
         index.removeFile(relPath)
         index.addFileNodes(relPath, raw.nodes)
         this.resolveAndWrite(index, raw)
+        // Уступаем main между импортёрами: горячий файл может иметь десятки
+        // импортёров, sync-записи подряд без yield фризили UI.
+        await yieldNow()
       }
 
       if (removed > 0) store.pruneDanglingEdges(projectId)
       store.refreshCounts(projectId)
       const status = store.getStatus(projectId)
-      this.emit({ projectId, phase: 'ready', percent: 100, indexedFiles: status.indexedFiles, totalFiles: status.totalFiles, message: 'Карта обновлена', projectName: project.name, pendingProjects: this.queue.length })
+      this.emit({ projectId, phase: 'ready', percent: 100, indexedFiles: status.indexedFiles, totalFiles: status.totalFiles, message: 'Карта обновлена', projectName: project.name, pendingProjects: this.queue.length, incremental: true, changedFiles: changed.length })
     } catch (e) {
       console.warn('[projectMap] incremental failed:', e instanceof Error ? e.message : e)
     } finally {

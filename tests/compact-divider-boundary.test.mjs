@@ -19,13 +19,16 @@ import Database from 'better-sqlite3'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const chatSource = fs.readFileSync(path.join(root, 'src/main/ipc/chat.ipc.ts'), 'utf8')
+// compactDividerCreatedAt живёт в chatCompaction.ts с распила chat.ipc.ts
+// на модули (801a59d) — раньше тест искал его в chat.ipc.ts и падал.
+const compactionSource = fs.readFileSync(path.join(root, 'src/main/ipc/chatCompaction.ts'), 'utf8')
 
 function loadCompactDividerCreatedAt() {
-  const start = chatSource.indexOf('export function compactDividerCreatedAt(')
-  assert.ok(start >= 0, 'compactDividerCreatedAt not found in chat.ipc.ts')
-  const end = chatSource.indexOf('\n}', start) + 2
+  const start = compactionSource.indexOf('export function compactDividerCreatedAt(')
+  assert.ok(start >= 0, 'compactDividerCreatedAt not found in chatCompaction.ts')
+  const end = compactionSource.indexOf('\n}', start) + 2
   assert.ok(end > start, 'unterminated compactDividerCreatedAt')
-  const js = ts.transpileModule(chatSource.slice(start, end), {
+  const js = ts.transpileModule(compactionSource.slice(start, end), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText
   const module = { exports: {} }

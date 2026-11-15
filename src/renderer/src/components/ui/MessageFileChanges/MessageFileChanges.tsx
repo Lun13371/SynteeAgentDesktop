@@ -11,7 +11,7 @@
 // Данные приходят из collectFileChanges() — чистая функция в shared,
 // тестируется отдельно (tests/message-file-changes.test.mjs).
 
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import {
   collectFileChanges,
   displayFilePath,
@@ -51,9 +51,54 @@ export interface MessageFileChangesProps {
   workdir?: string
 }
 
+/** Пометка состояния файла: «создан и удалён» / «удалён» / «создан».
+ *  «Создан и удалён» — временный скрипт запроса (напр. смоук, удалённый
+ *  после прогона): чип иначе выглядел бы обычной правкой. */
+function fileStateLabel(f: { path: string; created: boolean }, removedOnDisk: Set<string>): string | null {
+  const gone = removedOnDisk.has(f.path)
+  if (f.created && gone) return 'создан и удалён'
+  if (gone) return 'удалён'
+  if (f.created) return 'создан'
+  return null
+}
+
 function MessageFileChanges({ steps, workdir }: MessageFileChangesProps): React.ReactElement | null {
   const files = useMemo(() => collectFileChanges(steps), [steps])
   const [expanded, setExpanded] = useState(false)
+  // Пути, которых нет на диске в момент рендера: файл удалён (в том же
+  // запросе или позже). Проверяется батч-IPC после расчёта чипов — до ответа
+  // пометок нет, чипы не «прыгают».
+  const [removedOnDisk, setRemovedOnDisk] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (files.length === 0) return
+    let cancelled = false
+    const rel: string[] = []
+    const abs: string[] = []
+    for (const f of files) {
+      if (/^[a-zA-Z]:[\\/]/.test(f.path) || f.path.startsWith('\\\\')) abs.push(f.path)
+      else rel.push(f.path)
+    }
+    const run = async (): Promise<void> => {
+      const gone = new Set<string>()
+      try {
+        // Относительные — одним батчем от workdir; абсолютные — по одному
+        // через statPath (checkFilesExist отсекает пути вне root).
+        if (rel.length > 0 && workdir) {
+          const res = await window.syntee.fs.checkFilesExist({ root: workdir, relPaths: rel })
+          const existing = new Set(res?.existing ?? [])
+          for (const p of rel) if (!existing.has(p)) gone.add(p)
+        }
+        for (const p of abs) {
+          const st = await window.syntee.fs.statPath(p).catch(() => null)
+          if (!st?.exists) gone.add(p)
+        }
+      } catch { /* IPC недоступен — чипы без пометок, это норм */ }
+      if (!cancelled && gone.size > 0) setRemovedOnDisk(gone)
+    }
+    void run()
+    return () => { cancelled = true }
+  }, [files, workdir])
 
   if (files.length === 0) return null
 
@@ -105,6 +150,9 @@ function MessageFileChanges({ steps, workdir }: MessageFileChangesProps): React.
                 <span className="is-add">+{f.adds}</span>
                 {f.dels > 0 && <span className="is-del">−{f.dels}</span>}
               </span>
+              {fileStateLabel(f, removedOnDisk) && (
+                <span className="message-file-change__state">{fileStateLabel(f, removedOnDisk)}</span>
+              )}
             </button>
           )
         })}

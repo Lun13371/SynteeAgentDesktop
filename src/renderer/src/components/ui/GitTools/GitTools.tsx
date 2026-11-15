@@ -238,6 +238,18 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     return () => window.clearInterval(id)
   }, [open, refresh])
 
+  // В конце запроса агент меняет файлы — чип «Обзор» в свёрнутом состоянии
+  // иначе оставался со старыми цифрами до ручного refresh. Новый чекпоинт
+  // = turn завершился → перечитываем сводку репозитория.
+  useEffect(() => {
+    const off = window.syntee.on('chat:checkpoint:created', (data: unknown) => {
+      const p = data as { chatId?: string }
+      if (!p?.chatId || p.chatId !== chatId) return
+      void refresh()
+    })
+    return () => { off() }
+  }, [chatId, refresh])
+
   // Esc — только навигация назад/закрыть меню. Клик по пустому месту панель
   // НЕ закрывает: состояний ровно два (открыто/свернуто), и переключает их чип.
   useEffect(() => {

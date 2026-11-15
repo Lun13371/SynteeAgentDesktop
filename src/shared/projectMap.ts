@@ -104,6 +104,10 @@ export interface CodeMapProgress {
   projectName?: string
   /** Сколько проектов ещё ждут фоновой индексации (очередь менеджера). */
   pendingProjects?: number
+  /** Точечное обновление после правки файла (не полная сборка). */
+  incremental?: boolean
+  /** Сколько файлов затронуто инкрементальным обновлением. */
+  changedFiles?: number
 }
 
 export interface GetGraphOptions {
