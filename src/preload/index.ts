@@ -1328,6 +1328,43 @@ const synteeAPI = {
       return () => ipcRenderer.removeListener('assistants:setupProgress', handler)
     },
   },
+
+  // Карта проекта — граф кода (файлы, символы, вызовы).
+  projectMap: {
+    getGraph: (projectId: string, opts?: import('../../shared/projectMap').GetGraphOptions) =>
+      ipcRenderer.invoke('projectMap:getGraph', projectId, opts) as Promise<import('../../shared/projectMap').CodeMapGraph>,
+    getFileGraph: (projectId: string, filePath: string) =>
+      ipcRenderer.invoke('projectMap:getFileGraph', projectId, filePath) as Promise<import('../../shared/projectMap').CodeMapGraph>,
+    getStatus: (projectId: string) =>
+      ipcRenderer.invoke('projectMap:getStatus', projectId) as Promise<import('../../shared/projectMap').CodeMapStatus>,
+    getStats: (projectId: string) =>
+      ipcRenderer.invoke('projectMap:getStats', projectId) as Promise<import('../../shared/projectMap').CodeMapStatus & { files: number }>,
+    listStats: () =>
+      ipcRenderer.invoke('projectMap:listStats') as Promise<import('../../shared/projectMap').ProjectMapProjectStats[]>,
+    getAutoInfo: () =>
+      ipcRenderer.invoke('projectMap:getAutoInfo') as Promise<import('../../shared/projectMap').ProjectMapAutoInfo>,
+    findNodes: (projectId: string, query: string, limit?: number) =>
+      ipcRenderer.invoke('projectMap:findNodes', projectId, query, limit) as Promise<import('../../shared/projectMap').CodeMapNode[]>,
+    getNeighbors: (projectId: string, nodeId: string) =>
+      ipcRenderer.invoke('projectMap:getNeighbors', projectId, nodeId) as Promise<{
+        node: import('../../shared/projectMap').CodeMapNode | null
+        callers: import('../../shared/projectMap').CodeMapEdge[]
+        callees: import('../../shared/projectMap').CodeMapEdge[]
+      }>,
+    getFileDeps: (projectId: string, filePath: string) =>
+      ipcRenderer.invoke('projectMap:getFileDeps', projectId, filePath) as Promise<{
+        imports: import('../../shared/projectMap').CodeMapEdge[]
+        importedBy: import('../../shared/projectMap').CodeMapEdge[]
+      }>,
+    rebuild: (projectId: string) => ipcRenderer.invoke('projectMap:rebuild', projectId) as Promise<boolean>,
+    ensure: (projectId: string) => ipcRenderer.invoke('projectMap:ensure', projectId) as Promise<boolean>,
+    setActiveProject: (projectId: string | null) => ipcRenderer.invoke('projectMap:setActiveProject', projectId) as Promise<boolean>,
+    onProgress: (cb: (p: import('../../shared/projectMap').CodeMapProgress) => void) => {
+      const handler = (_: unknown, p: import('../../shared/projectMap').CodeMapProgress) => cb(p)
+      ipcRenderer.on('projectMap:progress', handler)
+      return () => { ipcRenderer.removeListener('projectMap:progress', handler) }
+    },
+  },
 }
 
 contextBridge.exposeInMainWorld('syntee', synteeAPI)

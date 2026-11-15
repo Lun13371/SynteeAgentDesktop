@@ -16,6 +16,21 @@ export interface SidecarDefinition {
   parentName?: string
 }
 
+/** Structured import: module specifier as written + introduced binding names. */
+export interface SidecarImportDetail {
+  source: string
+  names: string[]
+  line: number
+}
+
+/** Positioned call site for project-map call edges. */
+export interface SidecarCallSite {
+  name: string
+  line: number
+  parentName?: string
+  receiver?: string
+}
+
 export interface SidecarHealthResult {
   ok: boolean
   status?: string
@@ -298,6 +313,29 @@ function normalizeDefinition(value: unknown): SidecarDefinition | null {
   }
 }
 
+function normalizeImportDetail(value: unknown): SidecarImportDetail[] {
+  if (!value || typeof value !== 'object') return []
+  const d = value as JsonRecord
+  if (typeof d.source !== 'string' || !d.source) return []
+  return [{
+    source: d.source,
+    names: Array.isArray(d.names) ? d.names.filter((n): n is string => typeof n === 'string') : [],
+    line: typeof d.line === 'number' ? d.line : 0,
+  }]
+}
+
+function normalizeCallSite(value: unknown): SidecarCallSite[] {
+  if (!value || typeof value !== 'object') return []
+  const d = value as JsonRecord
+  if (typeof d.name !== 'string' || !d.name) return []
+  return [{
+    name: d.name,
+    line: typeof d.line === 'number' ? d.line : 0,
+    parentName: typeof d.parentName === 'string' ? d.parentName : undefined,
+    receiver: typeof d.receiver === 'string' ? d.receiver : undefined,
+  }]
+}
+
 function databasePath(): string {
   const explicit = process.env.SYNTEE_DB_PATH
   if (explicit) return explicit
@@ -407,6 +445,8 @@ export interface SidecarSymbolsResult {
   definitions: SidecarDefinition[]
   imports: string[]
   references: string[]
+  importDetails: SidecarImportDetail[]
+  callSites: SidecarCallSite[]
   language: string | null
   /** 'tree-sitter' | 'lexical' | null — which backend parsed the file. */
   parser: string | null
@@ -436,6 +476,12 @@ export async function sidecarSymbols(
       : [],
     references: Array.isArray(result.references)
       ? result.references.filter((value): value is string => typeof value === 'string')
+      : [],
+    importDetails: Array.isArray(result.importDetails)
+      ? result.importDetails.flatMap(normalizeImportDetail)
+      : [],
+    callSites: Array.isArray(result.callSites)
+      ? result.callSites.flatMap(normalizeCallSite)
       : [],
     language: typeof result.language === 'string' ? result.language : null,
     parser: typeof result.parser === 'string' ? result.parser : null,

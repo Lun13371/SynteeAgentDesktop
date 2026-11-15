@@ -57,6 +57,11 @@ Parses one file and returns definitions, imports and call-site references.
 
 `parser` is `tree-sitter` for languages with a native grammar (`javascript`, `typescript`, `tsx`, `python`, `rust`, `go`, `c`, `cpp`, `java`, `c_sharp`, `ruby`, `php`, `bash`, `json`) and `lexical` for the remaining supported formats. `supported: false` means there is no parser at all for the extension (the caller should fall back to its own heuristics). `truncated: true` means a node/definition cap stopped extraction before the end of the file, so the outline is known to be incomplete. `references` are identifiers collected from the AST — comments and string literals are skipped, names defined in the same file and a fixed blacklist of common local names are removed — and it is empty when `skipReferences` is true.
 
+Two extra fields power the project map (both empty when `skipReferences` is true or for the lexical backend):
+
+- `importDetails`: structured imports `[{ "source": "./store", "names": ["load"], "line": 1 }]`. `source` is the module specifier as written (resolution to a file is the caller's job); `names` are the introduced bindings (aliases included). Covers TS/JS, Python, Rust, Go, C/C++, Java, C#, Ruby, PHP, Bash (`source`/`.`).
+- `callSites`: positioned calls `[{ "name": "load", "line": 4, "parentName": "alpha", "receiver": "store" }]`. `parentName` is the enclosing definition (function/method), `receiver` is the object of a member call (`store.load()` → `store`) when it is a plain identifier.
+
 ### `semanticEmbed`
 
 E5-эмбеддинги (384-dim) для пачки текстов. Модель — `Xenova/multilingual-e5-small`, веса `q8`.

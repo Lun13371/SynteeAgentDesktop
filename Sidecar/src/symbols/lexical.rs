@@ -19,11 +19,42 @@ pub struct SymbolDef {
     pub parent_name: Option<String>,
 }
 
+/// A structured import: the module specifier plus the bindings it introduces.
+/// `source` stays as written (`./store`, `fs`, `std::collections::HashMap`) —
+/// resolving it to a file is the caller's job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportDetail {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    #[serde(default)]
+    pub line: usize,
+}
+
+/// A positioned call site: which name is called, on which line, and from
+/// which enclosing definition. `receiver` is the object of a member call
+/// (`store.load()` → `store`) when it is a plain identifier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallSite {
+    pub name: String,
+    pub line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSymbols {
     pub definitions: Vec<SymbolDef>,
     pub imports: Vec<String>,
     pub references: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub import_details: Vec<ImportDetail>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub call_sites: Vec<CallSite>,
     /// True when a cap stopped extraction before the end of the file, so a
     /// consumer can tell an empty outline from a truncated one.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -128,6 +159,8 @@ pub fn extract_symbols(source: &str, language: &str, skip_references: bool) -> F
         definitions,
         imports: imports.into_iter().take(100).collect(),
         references,
+        import_details: Vec::new(),
+        call_sites: Vec::new(),
         truncated,
     }
 }

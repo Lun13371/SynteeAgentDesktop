@@ -216,6 +216,8 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                     "definitions": symbols.definitions,
                     "imports": symbols.imports,
                     "references": symbols.references,
+                    "importDetails": symbols.import_details,
+                    "callSites": symbols.call_sites,
                     "truncated": symbols.truncated,
                     "language": language,
                     "parser": parser,

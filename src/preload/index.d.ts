@@ -1328,6 +1328,30 @@ declare const synteeAPI: {
             error?: string;
         }) => void) => () => Electron.IpcRenderer;
     };
+    projectMap: {
+        getGraph: (projectId: string, opts?: import("../../shared/projectMap").GetGraphOptions) => Promise<import("../../shared/projectMap").CodeMapGraph>;
+        getFileGraph: (projectId: string, filePath: string) => Promise<import("../../shared/projectMap").CodeMapGraph>;
+        getStatus: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapStatus>;
+        getStats: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapStatus & {
+            files: number;
+        }>;
+        listStats: () => Promise<import("../../shared/projectMap").ProjectMapProjectStats[]>;
+        getAutoInfo: () => Promise<import("../../shared/projectMap").ProjectMapAutoInfo>;
+        findNodes: (projectId: string, query: string, limit?: number) => Promise<import("../../shared/projectMap").CodeMapNode[]>;
+        getNeighbors: (projectId: string, nodeId: string) => Promise<{
+            node: import("../../shared/projectMap").CodeMapNode | null;
+            callers: import("../../shared/projectMap").CodeMapEdge[];
+            callees: import("../../shared/projectMap").CodeMapEdge[];
+        }>;
+        getFileDeps: (projectId: string, filePath: string) => Promise<{
+            imports: import("../../shared/projectMap").CodeMapEdge[];
+            importedBy: import("../../shared/projectMap").CodeMapEdge[];
+        }>;
+        rebuild: (projectId: string) => Promise<boolean>;
+        ensure: (projectId: string) => Promise<boolean>;
+        setActiveProject: (projectId: string | null) => Promise<boolean>;
+        onProgress: (cb: (p: import("../../shared/projectMap").CodeMapProgress) => void) => () => void;
+    };
 };
 export type SynteeAPI = typeof synteeAPI;
 export {};

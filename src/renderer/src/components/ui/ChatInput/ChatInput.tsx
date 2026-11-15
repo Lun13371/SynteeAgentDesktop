@@ -23,6 +23,7 @@ import { ChatInputEditor, type EditorApi } from './ChatInputEditor'
 import { ChatInputMenus } from './ChatInputMenus'
 import { AudioVisualizerLayer } from './AudioVisualizerLayer'
 import { PluginInputActions } from './PluginInputActions'
+import ChatActivityStrip from '../ActivityStrip/ChatActivityStrip'
 import { getPluginsExt, type PluginAutoResult } from '../../../utils/pluginExtApi'
 import { ATTACH_TOKEN_RE, stripAttachTokens } from '../../../../../shared/attachmentMarkdown'
 import './ChatInput.css'
@@ -1236,6 +1237,7 @@ function ChatInput({
       </div>
 
       <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · @ — файлы и сущности · удержать Enter или кнопку отправки — внедрить в контекст работающего агента</p>
+      <ChatActivityStrip />
       </div>
 
       {/* Модалка превью вложения — лайтбокс для картинок, CodePreview для файлов */}

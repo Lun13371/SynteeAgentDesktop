@@ -105,6 +105,12 @@ export function getProjectById(id: string): Project | undefined {
   } as Project
 }
 
+/** Проект по рабочей папке (workdir UNIQUE). */
+export function getProjectByWorkdir(workdir: string): Project | undefined {
+  const row = getDB().prepare(`SELECT id FROM projects WHERE workdir = ?`).get(workdir) as { id: string } | undefined
+  return row ? getProjectById(row.id) : undefined
+}
+
 /** Парсит JSON-массив путей к .md файлам из БД. null/пусто → undefined. */
 function parseContextFiles(raw: string | null): string[] | undefined {
   if (!raw) return undefined

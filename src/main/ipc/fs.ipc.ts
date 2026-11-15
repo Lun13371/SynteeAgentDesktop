@@ -12,7 +12,7 @@ const VISIBLE_DOTFILES = new Set([
   '.cursorrules', '.windsurfrules', '.clinerules',
 ])
 
-const DEFAULT_IGNORE_DIRS = new Set(['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage', '.cache'])
+const DEFAULT_IGNORE_DIRS = new Set(['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage', '.cache', '.turbo', '.parcel-cache', 'target', '.gradle', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.vite', 'obj', 'release', 'storybook-static', '.docusaurus', 'cmake-build-debug', 'cmake-build-release'])
 
 export interface FsEntry {
   name: string

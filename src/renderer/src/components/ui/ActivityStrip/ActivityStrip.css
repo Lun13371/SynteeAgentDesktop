@@ -1,0 +1,97 @@
+/* Тонкая полоска активности в зазоре между инпутом и строкой подсказок.
+   Высота задаётся слотом (.chat-activity-slot) — сама полоска не влияет
+   на layout, поэтому чат не двигается при появлении/исчезновении. */
+.activity-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.activity-strip-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+.activity-strip-item + .activity-strip-item {
+  border-left: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent);
+  padding-left: 14px;
+}
+
+.activity-strip-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: activity-strip-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes activity-strip-spin { to { transform: rotate(360deg); } }
+
+.activity-strip-check {
+  color: #4ade80;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.activity-strip-err {
+  color: #f87171;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.activity-strip-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.activity-strip-detail {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.55;
+  flex-shrink: 1;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-strip-item--ready .activity-strip-label { color: #4ade80; opacity: 0.9; }
+.activity-strip-item--error .activity-strip-label { color: #f87171; opacity: 0.9; }
+
+.activity-strip-track {
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  overflow: hidden;
+}
+
+.activity-strip-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+.activity-strip-pct {
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}

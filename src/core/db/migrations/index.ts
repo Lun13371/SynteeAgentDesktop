@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { runInitialSchema } from './initialSchema'
 import { runIncrementalMigrations } from './incremental'
 import { runDelegatedChatSchema } from './delegatedChats'
+import { runCodeMapSchema } from './codeMap'
 
 export { runInitialSchema } from './initialSchema'
 export { runIncrementalMigrations } from './incremental'
@@ -15,4 +16,5 @@ export function runMigrations(db: Database.Database): void {
   runInitialSchema(db)
   runIncrementalMigrations(db)
   runDelegatedChatSchema(db)
+  runCodeMapSchema(db)
 }

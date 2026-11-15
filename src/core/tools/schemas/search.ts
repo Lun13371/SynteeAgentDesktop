@@ -73,4 +73,22 @@ export const SEARCH_TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'project_map',
+      description: 'Navigate the project code map (files, functions, classes, variables, and who-calls-whom) WITHOUT reading whole files — saves context. Built in the background from tree-sitter. Actions: "overview" (stats + most-imported files); "search" (find symbols by name, shows callers/callees of the top match); "callers" (who calls a symbol); "callees" (what a symbol calls); "file" (a file\'s symbols + imports + imported-by). Identify a symbol by "query" (name) or "nodeId"; identify a file by "path" (relative). Edge precision is marked: no mark = resolved, "~" = heuristic, "?" = ambiguous (several candidates). Prefer this over search_code for structural questions (dependencies, call chains, impact of a change). If the map is still building, fall back to search_code/read_file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['overview', 'search', 'callers', 'callees', 'file'], description: 'What to query.' },
+          query: { type: 'string', description: 'Symbol name to find (for search/callers/callees).' },
+          nodeId: { type: 'string', description: 'Exact node id (from a previous project_map result), alternative to query.' },
+          path: { type: 'string', description: 'Relative file path (for action=file).' },
+          limit: { type: 'number', description: 'Max rows (default 25, max 100).' },
+        },
+        required: ['action'],
+      },
+    },
+  },
 ] as const

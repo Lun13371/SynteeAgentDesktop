@@ -8,6 +8,7 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import { setActiveExtensionsProject, initExtensionsDetector } from '../../core/extensionsDetector'
 import { getProjectById } from '../../core/db'
+import { projectMapManager } from '../../core/projectMap/mapBuilder'
 
 let _initialized = false
 
@@ -23,5 +24,7 @@ export function registerExtensionsIPC(getWindow: () => BrowserWindow | null): vo
       workdir = getProjectById(projectId)?.workdir
     }
     setActiveExtensionsProject(projectId ?? null, workdir)
+    // Карта проекта: открытый проект получает приоритет фоновой индексации.
+    projectMapManager.setActiveProject(projectId ?? null)
   })
 }

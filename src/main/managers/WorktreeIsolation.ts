@@ -2,6 +2,8 @@ import { app } from 'electron'
 import { join } from 'path'
 import { createHash } from 'crypto'
 import { existsSync, writeFileSync, unlinkSync, rmSync, mkdirSync, readFileSync } from 'fs'
+import type { Dirent } from 'fs'
+import { readdir, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { runGit, isGitRepo, GIT_TIMEOUT_MS } from '../git/runGit'
 
@@ -227,6 +229,39 @@ export async function hasWorktreeChanges(worktreePath: string): Promise<boolean>
 }
 
 /**
+ * §worktree-gc — сносит build-артефакты у keep-нутого worktree (node_modules,
+ * cargo target/). Они в .gitignore, т.е. данных суб-агента не несут и в
+ * hasWorktreeChanges/merge-back не попадают — «сохранён для ручного разбора»
+ * перестаёт весить гигабайты и сводится к мегабайтам правок.
+ *
+ * Ограничения против ложных срабатываний: глубина ≤ 3, `target/` сносится
+ * только если рядом лежит Cargo.toml (rust-проект), `node_modules` — по имени.
+ * Best-effort: любые ошибки (локи файлов и т.п.) не роняют caller'а.
+ */
+export async function stripIgnoredHeavyDirs(worktreePath: string): Promise<void> {
+  const RM_OPTS = { recursive: true, force: true, maxRetries: 3, retryDelay: 200 } as const
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 3) return
+    let entries: Dirent[]
+    try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const full = join(dir, entry.name)
+      if (entry.name === 'node_modules') {
+        try { await rm(full, RM_OPTS) } catch { /* локи файлов — не критично */ }
+        continue
+      }
+      if (entry.name === 'target' && existsSync(join(dir, 'Cargo.toml'))) {
+        try { await rm(full, RM_OPTS) } catch { /* локи файлов — не критично */ }
+        continue
+      }
+      await walk(full, depth + 1)
+    }
+  }
+  try { await walk(worktreePath, 0) } catch { /* noop — best effort */ }
+}
+
+/**
  * Финализирует «осиротевший» worktree — суб-агент убит рестартом приложения
  * (loadPersisted ремонтирует запись в 'cancelled', но worktree и ветка
  * syntee-sub/* раньше оставались навсегда, а правки терялись). Есть
@@ -243,37 +278,43 @@ export async function cleanupAbandonedWorktree(
     try { await discardWorktree(parentWorkdir, info) } catch { /* noop */ }
     return null
   }
-  if (await hasWorktreeChanges(worktreePath)) return worktreePath
+  if (await hasWorktreeChanges(worktreePath)) {
+    // §worktree-gc — сохранённому для разбора worktree build-артефакты не нужны.
+    await stripIgnoredHeavyDirs(worktreePath)
+    return worktreePath
+  }
   try { await discardWorktree(parentWorkdir, info) } catch { /* noop */ }
   return null
 }
 
 /**
  * Удаляет worktree и ветку. Безусловный — вызывается при discard (error/cancel)
- * и при успешном cleanup после merge. Силой (--force), т.к. в worktree могут
- * быть незакоммиченные правки (при discard они уже не нужны).
+ * и при успешном cleanup после merge.
+ *
+ * Порядок: сначала физический rm папки, потом prune. НЕ `git worktree remove`:
+ * он выполняется под жёстким таймаутом runGit (GIT_TIMEOUT_MS = 8 c), которого
+ * не хватает на дерево с тяжёлым build-артефактами (cargo target/ — гигабайты,
+ * десятки тысяч файлов на Windows) — таймаут глотался тихо, и «удалённый»
+ * worktree оставался на диске. fs/promises.rm без таймаута и не блокирует
+ * event loop main-процесса; исчезнувшую папку добивает `worktree prune`.
  */
 export async function discardWorktree(
   parentWorkdir: string,
   info: WorktreeInfo,
 ): Promise<void> {
   try {
-    await runGit(parentWorkdir, ['worktree', 'remove', '--force', info.worktreePath])
+    if (existsSync(info.worktreePath)) {
+      await rm(info.worktreePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+    }
   } catch {
-    // worktree уже удалён или путь пропал — тихо игнорируем
+    // упало частично (локи антивируса и т.п.) — prune всё равно подчистит метаданные
   }
+  try { await runGit(parentWorkdir, ['worktree', 'prune']) } catch { /* noop */ }
   try {
     await runGit(parentWorkdir, ['branch', '-D', info.branch])
   } catch {
     // ветка может быть захвачена или уже удалена — игнорируем
   }
-  // Подчищаем директорию, если git не смог (например, файлы вне git)
-  try {
-    if (existsSync(info.worktreePath)) {
-      rmSync(info.worktreePath, { recursive: true, force: true })
-    }
-  } catch { /* noop */ }
-  try { await runGit(parentWorkdir, ['worktree', 'prune']) } catch { /* noop */ }
 }
 
 /** Синоним для cleanup после успешного merge — та же логика, что и discard. */

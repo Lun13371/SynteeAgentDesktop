@@ -13,6 +13,9 @@ import type { SpotlightWindow } from '../windows/SpotlightWindow'
 import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
 import type { HotkeyManager } from '../hotkeys/HotkeyManager'
 import { registerAssistantsIPC } from './assistants.ipc'
+import { registerProjectMapIPC } from './projectMap.ipc'
+import { projectMapManager } from '../../core/projectMap/mapBuilder'
+import { DEFAULT_PROJECT_MAP_SPEED, type ProjectMapSpeedSettings } from '../../shared/projectMap'
 
 interface IPCContext {
   store: Store
@@ -32,6 +35,12 @@ export function registerAllIPC(ctx: IPCContext): void {
   registerSpotlightIPC(ctx)
   registerTrayMenuIPC(ctx)
   registerAssistantsIPC()
+  registerProjectMapIPC()
+  projectMapManager.setConfigReader(() => ({
+    enabled: ctx.store.get('projectMapEnabled', true) !== false,
+    speed: (ctx.store.get('projectMapSpeed', DEFAULT_PROJECT_MAP_SPEED) as ProjectMapSpeedSettings) ?? DEFAULT_PROJECT_MAP_SPEED,
+  }))
+  projectMapManager.reloadConfig()
 }
 
 function registerWindowIPC({ mainWindow }: IPCContext): void {
@@ -94,6 +103,9 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
       void import('../managers/GitSyncManager').then(({ getGitSyncManager }) => {
         getGitSyncManager()?.setEnabled(value === true)
       })
+    }
+    if (key === 'projectMapEnabled' || key === 'projectMapSpeed') {
+      projectMapManager.reloadConfig()
     }
     // Перерегистрация глобальных хоткеев при изменении биндингов.
     // Без этого старые шорткаты остаются зарегистрированными до перезапуска.

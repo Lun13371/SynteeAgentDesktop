@@ -62,6 +62,7 @@ import {
 } from '../core/sidecar/sidecarClient'
 import { installRustTokenCounter } from '../core/tokens/rustTokenCounter'
 import { stopSemanticIndexer } from '../core/memory/semanticIndex'
+import { projectMapManager } from '../core/projectMap/mapBuilder'
 import { registerFsIPC } from './ipc/fs.ipc'
 import { registerGitIPC } from './ipc/git.ipc'
 import { registerSkillsIPC } from './ipc/skills.ipc'
@@ -638,6 +639,8 @@ app.on('before-quit', () => {
   // Останавливаем фоновую semantic E5-индексацию (semantic_embeddings):
   // снимаем таймеры, останавливаем текущий цикл, освобождаем ONNX pipeline.
   try { stopSemanticIndexer() } catch { /* ok — best-effort */ }
+  // Останавливаем менеджер карт проектов (снимает подписки на fileIndexer).
+  try { projectMapManager.stop() } catch { /* ok — best-effort */ }
   // Останавливаем file indexer для @mention-пикера.
   shutdownMentions().catch(() => { /* indexer опционален */ })
   // Уничтожаем пул SPA-renderer BrowserWindow — чтобы не было утечки.

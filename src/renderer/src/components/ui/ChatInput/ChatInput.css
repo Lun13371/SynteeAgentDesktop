@@ -17,11 +17,23 @@
 /* ОСНОВНОЙ БЛОК — бейджи + инпут. Todo-план вынесен в отдельный
     компонент LiveTodoBar вверху чата. */
 .chat-input-main {
-  padding: 0 8px 16px;
+  padding: 0 8px 10px;
   position: relative;
   isolation: isolate;
   max-width: 900px;
   margin: 0 auto;
+}
+
+/* Слот единой полоски активности (помощники / индексация) ПОД строкой
+   подсказок клавиш, в габаритах инпут-бара. Высотой управляет framer-motion
+   (0 когда нет активностей → не занимает разметку; 12px когда есть). */
+.chat-activity-slot {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
 }
 
 /* Rate limit бар над инпутом */
@@ -1439,7 +1451,7 @@
   font-size: 11px;
   color: var(--text-muted);
   text-align: center;
-  margin-top: 6px;
+  margin-top: 0;
   opacity: 0.6;
 }
 
