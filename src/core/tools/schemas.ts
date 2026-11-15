@@ -2,4 +2,4 @@
 // The actual schema definitions are now split by domain in schemas/*.ts
 // This file re-exports everything for backward compatibility.
 
-export * from './schemas/index'
+export * from '../../shared/toolSchemas/index'

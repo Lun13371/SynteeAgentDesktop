@@ -16,7 +16,7 @@ function load(path) {
   return module.exports
 }
 const settings = load('src/shared/toolSettings.ts')
-const { getToolSchemas } = load('src/core/tools/schemas/index.ts')
+const { getToolSchemas } = load('src/shared/toolSchemas/index.ts')
 const names = options => getToolSchemas(options).map(s => s.function.name)
 
 test('Master off preserves standard schemas and default settings enable optional tools', () => {
@@ -46,7 +46,7 @@ test('request_access stays available until browser and image capabilities are bo
   assert.ok(!names({ imageMode: true, browserMode: true }).includes('request_access'))
   assert.ok(names({ imageMode: true }).includes('generate_image'))
   assert.ok(names({ browserMode: true }).includes('browser_navigate'))
-  const schema = load('src/core/tools/schemas/browser.ts').REQUEST_ACCESS_SCHEMA
+  const schema = load('src/shared/toolSchemas/browser.ts').REQUEST_ACCESS_SCHEMA
   assert.deepEqual(schema.function.parameters.properties.capability.enum, ['browser_control', 'image_generation'])
 })
 

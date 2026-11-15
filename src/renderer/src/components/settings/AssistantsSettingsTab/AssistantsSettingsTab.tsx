@@ -11,7 +11,7 @@ import type { AssistantsSettings, AssistantLogEntry, AgentStatsMap } from '../..
 import { DEFAULT_ASSISTANTS_SETTINGS } from '../../../../../shared/assistants'
 import './AssistantsSettingsTab.css'
 
-type Status = { serverState: string; modelSize: string; ctxSize?: number; ctxSetting?: string; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded?: boolean; active?: number; queueLength?: number }
+type Status = { serverState: string; modelSize: string; ctxSize?: number; ctxSetting?: string; device?: string; activeDevice?: string | null; modelDownloaded: boolean; binaryReady: boolean; idleUnloaded?: boolean; active?: number; queueLength?: number }
 type SetupPhase = { phase: string; percent: number; error?: string }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -167,7 +167,7 @@ export default function AssistantsSettingsTab() {
       {isReady && !isSettingUp && (
         <div className="assistants-ready">
           <span className="assistants-dot assistants-dot--ready" />
-          <span>Работает · {status.modelSize} · всё локально{(status.active ?? 0) > 0 ? ` · в работе ${status.active}${status.queueLength ? `, в очереди ${status.queueLength}` : ''}` : ''}</span>
+          <span>Работает · {status.modelSize} · {status.activeDevice === 'gpu' ? 'GPU (Vulkan)' : 'CPU'} · всё локально{(status.active ?? 0) > 0 ? ` · в работе ${status.active}${status.queueLength ? `, в очереди ${status.queueLength}` : ''}` : ''}</span>
         </div>
       )}
 
@@ -211,6 +211,23 @@ export default function AssistantsSettingsTab() {
               { value: '16384', label: '16K токенов' },
               { value: '24576', label: '24K токенов' },
               { value: '32768', label: '32K токенов' },
+            ]}
+            disabled={!s.enabled}
+          />
+        </Field>
+
+        <Field
+          id="assistants-device"
+          label="Устройство мини-агентов"
+          description="На чём считать локальную модель. Авто — GPU (Vulkan), если видеокарта доступна, иначе CPU: в 3-5 раз быстрее ответы судей и watcher. GPU-движок (~150 МБ) скачается сам при первом запуске. Смена перезапустит сервер. Не включай GPU во время игры — видеокарта будет делиться"
+        >
+          <Select
+            value={s.device ?? 'auto'}
+            onChange={v => upd({ device: v as AssistantsSettings['device'] })}
+            options={[
+              { value: 'auto', label: 'Авто (GPU при доступности)' },
+              { value: 'cpu', label: 'Только CPU' },
+              { value: 'gpu', label: 'Только GPU (Vulkan)' },
             ]}
             disabled={!s.enabled}
           />

@@ -5,33 +5,53 @@ import { get } from 'https'
 import AdmZip from 'adm-zip'
 import { log } from '../../core/logger'
 
-const BINARY_URL = 'https://github.com/ggml-org/llama.cpp/releases/download/b12360/llama-b12360-bin-win-cpu-x64.zip'
-const BINARY_ZIP_NAME = 'llama-server-win-x64.zip'
+/**
+ * Две сборки llama.cpp из одного релиза:
+ *  - `cpu`    — обычная, работает везде;
+ *  - `vulkan` — с Vulkan-бэкендом: `--n-gpu-layers` уводит модель в VRAM
+ *    любой DX12-карты (NVIDIA/AMD/Intel). CUDA не берём — он только NVIDIA.
+ *
+ * ⚠️ DLL у сборок конфликтуют по именам (ggml.dll и др.), поэтому cpu живёт
+ * в `assistants/bin/` (как раньше — уже скачанное не перекачивается),
+ * vulkan — в `assistants/bin-vulkan/`.
+ */
+export type LlamaFlavor = 'cpu' | 'vulkan'
 
-export function getBinDir(): string {
-  const dir = join(app.getPath('userData'), 'assistants', 'bin')
+const RELEASE_TAG = 'b12360'
+const BINARY_URLS: Record<LlamaFlavor, string> = {
+  cpu: `https://github.com/ggml-org/llama.cpp/releases/download/${RELEASE_TAG}/llama-${RELEASE_TAG}-bin-win-cpu-x64.zip`,
+  vulkan: `https://github.com/ggml-org/llama.cpp/releases/download/${RELEASE_TAG}/llama-${RELEASE_TAG}-bin-win-vulkan-x64.zip`,
+}
+const BINARY_ZIP_NAMES: Record<LlamaFlavor, string> = {
+  cpu: 'llama-server-win-x64.zip',
+  vulkan: 'llama-server-win-vulkan-x64.zip',
+}
+
+function getBinDir(flavor: LlamaFlavor): string {
+  const sub = flavor === 'vulkan' ? 'bin-vulkan' : 'bin'
+  const dir = join(app.getPath('userData'), 'assistants', sub)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   return dir
 }
 
-export function getLlamaServerPath(): string {
-  return join(getBinDir(), 'llama-server.exe')
+export function getLlamaServerPath(flavor: LlamaFlavor = 'cpu'): string {
+  return join(getBinDir(flavor), 'llama-server.exe')
 }
 
-export function isBinaryReady(): boolean {
-  return existsSync(getLlamaServerPath())
+export function isBinaryReady(flavor: LlamaFlavor = 'cpu'): boolean {
+  return existsSync(getLlamaServerPath(flavor))
 }
 
 export type BinaryProgress = { phase: 'downloading' | 'extracting' | 'done' | 'error'; percent: number; error?: string }
 
-export function downloadBinary(onProgress: (p: BinaryProgress) => void): Promise<string> {
-  if (isBinaryReady()) {
+export function downloadBinary(flavor: LlamaFlavor, onProgress: (p: BinaryProgress) => void): Promise<string> {
+  if (isBinaryReady(flavor)) {
     onProgress({ phase: 'done', percent: 100 })
-    return Promise.resolve(getLlamaServerPath())
+    return Promise.resolve(getLlamaServerPath(flavor))
   }
 
-  const zipPath = join(getBinDir(), BINARY_ZIP_NAME)
-  log('[BinaryManager] starting download from %s', BINARY_URL)
+  const zipPath = join(getBinDir(flavor), BINARY_ZIP_NAMES[flavor])
+  log('[BinaryManager] starting %s download from %s', flavor, BINARY_URLS[flavor])
 
   return new Promise((resolve, reject) => {
     const download = (url: string, redirects: number) => {
@@ -69,19 +89,19 @@ export function downloadBinary(onProgress: (p: BinaryProgress) => void): Promise
                 const baseName = entry.entryName.split('/').pop() ?? ''
                 if (baseName === 'llama-server.exe' || baseName.endsWith('.dll')) {
                   const data = entry.getData()
-                  writeFileSync(join(getBinDir(), baseName), data)
+                  writeFileSync(join(getBinDir(flavor), baseName), data)
                   extracted++
                 }
               }
-              log('[BinaryManager] extracted %d files to %s', extracted, getBinDir())
-              if (!isBinaryReady()) {
+              log('[BinaryManager] extracted %d files to %s', extracted, getBinDir(flavor))
+              if (!isBinaryReady(flavor)) {
                 const err = 'llama-server.exe not found in zip'
                 onProgress({ phase: 'error', percent: 0, error: err })
                 reject(new Error(err))
                 return
               }
               onProgress({ phase: 'done', percent: 100 })
-              resolve(getLlamaServerPath())
+              resolve(getLlamaServerPath(flavor))
             } catch (e) {
               log('[BinaryManager] extraction failed: %s', (e as Error).message)
               onProgress({ phase: 'error', percent: 0, error: (e as Error).message })
@@ -96,6 +116,6 @@ export function downloadBinary(onProgress: (p: BinaryProgress) => void): Promise
         reject(e)
       })
     }
-    download(BINARY_URL, 0)
+    download(BINARY_URLS[flavor], 0)
   })
 }

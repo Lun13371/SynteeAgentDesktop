@@ -270,6 +270,32 @@
   caret-color: #10b981;
 }
 
+/* ── Inline-подсветка слеш-команды и enum-аргументов (Discord-стиль) ────────
+   Обычные inline-спаны вокруг текста: сериализацию не меняют, редактируются
+   как текст (Backspace/ввод внутри — на следующий input декорация
+   перестраивается). ce-cmd — акцентная пилюля команды, ce-arg — нейтральный
+   чип выбранного enum-значения. */
+.chat-input-editor .ce-cmd {
+  color: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  padding: 0 5px;
+  margin: 0 1px;
+  font-weight: 600;
+  white-space: pre;
+}
+.chat-input-editor .ce-arg {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 6px;
+  padding: 0 5px;
+  margin: 0 1px;
+  font-weight: 500;
+  white-space: pre;
+}
+
 /* ── Inline-чипы вложений в редакторе ─────────────────────────────────── */
 .ce-attach {
   display: inline-flex;

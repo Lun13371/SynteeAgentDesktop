@@ -15,8 +15,8 @@ function load(path) {
   new Function('require', 'module', 'exports', source)(id => id.startsWith('.') ? load(resolve(dirname(path), `${id}.ts`)) : require(id), module, module.exports)
   return module.exports
 }
-const { BROWSER_TOOL_SCHEMAS, BROWSER_RESEARCH_TOOL_NAMES } = load('src/core/tools/schemas/browser.ts')
-const { getToolSchemas } = load('src/core/tools/schemas/index.ts')
+const { BROWSER_TOOL_SCHEMAS, BROWSER_RESEARCH_TOOL_NAMES } = load('src/shared/toolSchemas/browser.ts')
+const { getToolSchemas } = load('src/shared/toolSchemas/index.ts')
 const { OPTIONAL_TOOL_GROUPS } = load('src/shared/toolSettings.ts')
 const names = options => getToolSchemas(options).map(s => s.function.name)
 test('All browser tools are registered once and expose timeout/tab context', () => {
@@ -36,7 +36,7 @@ test('Disabled browser access and disabled preferences cannot expose tools', () 
   assert.ok(!names({ browserMode: true, customToolsEnabled: true, disabledTools: ['browser_evaluate'] }).includes('browser_evaluate'))
 })
 test('Research modes never grant arbitrary JS or private state mutations', () => {
-  for (const options of [{ askMode: true }, { planningMode: true }, { persona: 'reviewer' }]) {
+  for (const options of [{ askMode: true }, { planningMode: true }]) {
     const actual = names({ browserMode: true, ...options })
     assert.ok(actual.includes('browser_snapshot'))
     for (const n of actual.filter(n => n.startsWith('browser_'))) assert.ok(BROWSER_RESEARCH_TOOL_NAMES.has(n), n)

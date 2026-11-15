@@ -15,9 +15,10 @@ import { existsSync, readFileSync, statSync } from 'fs'
 import { createHash } from 'crypto'
 import * as path from 'path'
 import * as os from 'os'
+import { log } from '../logger'
 import { getAllProjects, getProjectById, getProjectByWorkdir } from '../db'
 import { sidecarSymbols, type SidecarSymbolsResult } from '../sidecar/sidecarClient'
-import { startIndexing, getAllFiles, subscribeFileChanges } from '../mentions/fileIndexer'
+import { startIndexing, waitForIndexReady, getAllFiles, subscribeFileChanges } from '../mentions/fileIndexer'
 import type { CodeMapFile, CodeMapNode, CodeMapProgress, CodeMapEdge, ProjectMapSpeedSettings, ProjectMapAutoInfo } from '../../shared/projectMap'
 import { DEFAULT_PROJECT_MAP_SPEED } from '../../shared/projectMap'
 import * as store from './mapStore'
@@ -25,6 +26,9 @@ import {
   ProjectIndex, definitionsToNodes, containsEdges, resolveFileImports,
   resolveFileCalls, ensurePackages, loadTsconfigAliases,
 } from './mapResolver'
+import {
+  syncFileDocs, removeFileDocs, clearProjectDocs, semanticWorker,
+} from './mapSemantic'
 
 const CODE_EXTS = new Set([
   '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.rs', '.go',
@@ -126,6 +130,7 @@ class ProjectMapManager {
 
   setForegroundPredicate(fn: () => boolean): void {
     this.foregroundBusy = fn
+    semanticWorker.setForegroundPredicate(fn)
   }
 
   private emit(p: CodeMapProgress): void {
@@ -144,6 +149,7 @@ class ProjectMapManager {
   /** Активный проект (открытый чат) получает приоритет в очереди. */
   setActiveProject(projectId: string | null): void {
     this.activeProjectId = projectId
+    semanticWorker.setActiveProject(projectId)
     if (projectId) {
       this.queue = [projectId, ...this.queue.filter(id => id !== projectId)]
       this.ensureProject(projectId)
@@ -156,6 +162,10 @@ class ProjectMapManager {
     if (this.running) return
     this.running = true
     this.stopRequested = false
+    // Worker семантики: предикат «идёт сборка карты» → меньшие пачки и паузы,
+    // чтобы embed-запросы не конкурировали с парсингом в serial-sidecar.
+    semanticWorker.setMapBuildingPredicate(() => this.building !== null)
+    semanticWorker.start()
     // Отложенный старт: БД инициализируется в registerChatIPC (позже регистрации
     // IPC), а startup не должен конкурировать с индексацией. Паттерн semanticIndex.
     setTimeout(() => {
@@ -176,6 +186,7 @@ class ProjectMapManager {
   stop(): void {
     this.stopRequested = true
     this.running = false
+    semanticWorker.stop()
     for (const unsub of this.watchers.values()) unsub()
     this.watchers.clear()
     for (const t of this.debounceTimers.values()) clearTimeout(t)
@@ -183,9 +194,20 @@ class ProjectMapManager {
     this.indexCache.clear()
   }
 
-  /** Принудительная полная пересборка карты проекта. */
+  /** Принудительная полная пересборка карты проекта.
+   *  Прерывает текущую сборку (и целевую, и чужую, занявшую builder — чужая
+   *  достроится позже, hash-гейт делает это дешёвым), мгновенно чистит
+   *  семантику цели: worker перестаёт гресть старые документы, которые сейчас
+   *  будут удалены, и не тянет их до самого конца пересборки. */
   rebuildProject(projectId: string): void {
     this.forceRebuild.add(projectId)
+    const current = this.building
+    if (current) {
+      this.cancelBuild.add(current)
+      if (current !== projectId) this.enqueue(current)
+    }
+    clearProjectDocs(projectId)
+    semanticWorker.nudge()
     this.queue = [projectId, ...this.queue.filter(id => id !== projectId)]
     this.kick()
   }
@@ -219,6 +241,9 @@ class ProjectMapManager {
       try {
         const force = this.forceRebuild.has(projectId)
         this.forceRebuild.delete(projectId)
+        // Прошлый прогон этого проекта могли отменить ради пересборки — новый
+        // старт снимает отмену (иначе свежая сборка тут же прервёт сама себя).
+        this.cancelBuild.delete(projectId)
         await this.buildProject(projectId, force)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
@@ -233,6 +258,8 @@ class ProjectMapManager {
   }
 
   private forceRebuild = new Set<string>()
+  /** Сборки, прерванные явной пересборкой: buildProject проверяет в циклах. */
+  private cancelBuild = new Set<string>()
 
   private async waitWhileBusy(): Promise<void> {
     let waited = 0
@@ -364,6 +391,10 @@ class ProjectMapManager {
     const contains = containsEdges(index.projectId, meta.path, nodes)
     const edges: CodeMapEdge[] = [...importRes.edges, ...callEdges, ...contains]
     store.replaceFile(index.projectId, meta, nodes, edges)
+    // Семантика — производное карты: документы пересчитываются из узлов здесь же
+    // (полная сборка и инкрементал проходят через эту точку). Хэш-гейт в store
+    // сохраняет векторы неизменённых текстов, worker доэмбеддит только новое.
+    syncFileDocs(index.projectId, meta.path, nodes)
   }
 
   private async buildProject(projectId: string, force: boolean): Promise<void> {
@@ -380,6 +411,12 @@ class ProjectMapManager {
     this.emit({ projectId, phase: 'scanning', percent: 0, indexedFiles: 0, totalFiles: 0, projectName, pendingProjects: this.queue.length })
 
     await startIndexing(workdir)
+    // Если mention-индекс уже стартовал раньше и ещё досканивается — его кэш
+    // частичный: без ожидания карта собралась бы из случайного подмножества
+    // файлов (на Unity-проекте это выглядело как «проиндексировался только
+    // Library/PackageCache, а Assets вообще нет») и не пересматривалась.
+    const ready = await waitForIndexReady(workdir, 30_000)
+    if (!ready) log(`[mapBuilder] %s: mention-index not ready in 30s — строю по частичному списку`, projectName)
     this.ensureWatcher(projectId, workdir)
     const files = this.scanCodeFiles(workdir)
     const total = files.length
@@ -389,6 +426,7 @@ class ProjectMapManager {
     if (force) {
       index.aliases = this.loadAliases(workdir)
       store.clearProject(projectId)
+      clearProjectDocs(projectId)
       this.indexCache.set(projectId, index)
     }
     const existing = new Map(store.listFiles(projectId).map(f => [f.path, f]))
@@ -399,8 +437,9 @@ class ProjectMapManager {
 
     // ── Парсинг ──
     for (const f of files) {
-      if (this.stopRequested) return
+      if (this.stopRequested || this.cancelBuild.has(projectId)) return
       await this.waitWhileBusy()
+      if (this.stopRequested || this.cancelBuild.has(projectId)) return
       const prev = existing.get(f.relPath)
       if (!force && prev && prev.hash) {
         // Мгновенный фильтр: mtime+size совпали → файл не менялся, не читаем.
@@ -425,6 +464,7 @@ class ProjectMapManager {
         toResolve.push(raw)
       } else {
         store.removeFile(projectId, f.relPath)
+        removeFileDocs(projectId, f.relPath)
         index.removeFile(f.relPath)
       }
       this.emit({ projectId, phase: 'parsing', percent: Math.round((done / Math.max(1, total)) * 90), indexedFiles: done, totalFiles: total, projectName, pendingProjects: this.queue.length })
@@ -435,7 +475,7 @@ class ProjectMapManager {
     // ── Резолвинг + запись ──
     let resolved = 0
     for (const raw of toResolve) {
-      if (this.stopRequested) return
+      if (this.stopRequested || this.cancelBuild.has(projectId)) return
       this.resolveAndWrite(index, raw)
       resolved++
       this.emit({ projectId, phase: 'resolving', percent: 90 + Math.round((resolved / Math.max(1, toResolve.length)) * 10), indexedFiles: done, totalFiles: total, projectName, pendingProjects: this.queue.length })
@@ -448,8 +488,30 @@ class ProjectMapManager {
     for (const f of store.listFiles(projectId)) {
       if (!onDisk.has(f.path)) {
         store.removeFile(projectId, f.path)
+        removeFileDocs(projectId, f.path)
         index.removeFile(f.path)
         removed++
+      }
+    }
+
+    // ── Бэкфилл документов семантики ──
+    // syncFileDocs вызывается при переразборе файла; карта, построенная до
+    // появления семантического слоя, документов не имеет. Если документов
+    // меньше, чем файлов (каждый файл даёт минимум один документ), досинхро-
+    //низируем из тёплого индекса: чистые строковые операции, hash-гейт в store
+    // сохраняет уже существующие векторы, worker доэмбеддит новое.
+    const { total: docsTotal } = store.countDocs(projectId)
+    if (docsTotal < index.files.size) {
+      let backfilled = 0
+      let i = 0
+      for (const [filePath, fileNodes] of index.defsByFile) {
+        if (this.stopRequested || this.cancelBuild.has(projectId)) return
+        syncFileDocs(projectId, filePath, fileNodes)
+        backfilled++
+        if (++i % 100 === 0) await yieldNow()
+      }
+      if (backfilled > 0) {
+        log('[projectMap] semantic backfill: %d files synced for %s (was %d docs)', backfilled, projectName, docsTotal)
       }
     }
 
@@ -505,6 +567,7 @@ class ProjectMapManager {
         const absPath = path.join(workdir, relPath)
         if (!existsSync(absPath)) {
           store.removeFile(projectId, relPath)
+          removeFileDocs(projectId, relPath)
           index.removeFile(relPath)
           resolvedPaths.add(relPath)
           removed++

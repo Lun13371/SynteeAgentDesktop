@@ -1342,11 +1342,16 @@ declare const synteeAPI: {
         getGraph: (projectId: string, opts?: import("../../shared/projectMap").GetGraphOptions) => Promise<import("../../shared/projectMap").CodeMapGraph>;
         getFileGraph: (projectId: string, filePath: string) => Promise<import("../../shared/projectMap").CodeMapGraph>;
         getStatus: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapStatus>;
+        getSemanticStatus: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapSemanticStatus>;
         getStats: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapStatus & {
             files: number;
         }>;
         listStats: () => Promise<import("../../shared/projectMap").ProjectMapProjectStats[]>;
         getAutoInfo: () => Promise<import("../../shared/projectMap").ProjectMapAutoInfo>;
+        getSemanticDevice: () => Promise<{
+            requested: string;
+            active: string | null;
+        }>;
         findNodes: (projectId: string, query: string, limit?: number) => Promise<import("../../shared/projectMap").CodeMapNode[]>;
         getNeighbors: (projectId: string, nodeId: string) => Promise<{
             node: import("../../shared/projectMap").CodeMapNode | null;

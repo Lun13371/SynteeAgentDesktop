@@ -469,6 +469,76 @@ export function hydrateCommands(cmds: SlashCommand[]): SlashCommand[] {
   })
 }
 
+// ─── Контекст ввода команды (подсказки аргументов в инпуте) ─────────────────
+
+/**
+ * Эффективный список аргументов команды для подсказок.
+ *
+ * У команд со структурированными `arguments` — он сам. У команд без них, но с
+ * `placeholder`/`argumentHint`, синтезируется ОДИН свободный аргумент — так
+ * подсказки работают для всех команд (/goal, /sys, /web...) без правки
+ * определений. Имя чипа — короткое: argumentHint или первая фраза placeholder
+ * (сам placeholder длинный, это подсказка ввода, а не название аргумента).
+ */
+export function getCommandArguments(cmd: SlashCommand): CommandArgument[] {
+  if (cmd.arguments && cmd.arguments.length > 0) return cmd.arguments
+  const hint = cmd.argumentHint?.trim()
+  if (hint) return [{ name: hint, description: cmd.placeholder || hint }]
+  const ph = cmd.placeholder?.trim()
+  if (ph) {
+    const short = ph.split(/[,.;:—]/)[0].trim().slice(0, 28)
+    return [{ name: short || 'аргумент', description: ph }]
+  }
+  return []
+}
+
+/**
+ * Разбор ввода на активную команду + позицию аргумента у каретки.
+ *
+ * В отличие от parseSlashCommandWithCustom не требует точного совпадения всей
+ * строки — работает и пока юзер дописывает аргументы. Возвращает null, если
+ * текст не начинается с валидной `/команды`.
+ *
+ * level — индекс вводимого аргумента (0-базный): завершённые токены = введённые
+ * аргументы; если ввод кончается пробелом, следующий аргумент ещё не начат.
+ * НЕ клампится к длине arguments — вызывающий сам решает (для синтезированного
+ * одиночного аргумента всё лишнее схлопывается в последний уровень).
+ */
+export interface SlashContext {
+  command: SlashCommand
+  /** Head-токен целиком: '/name'. */
+  head: string
+  /** Текст после имени команды (может быть '' — аргументы ещё не начаты). */
+  after: string
+  /** after пуст — команда без пробела, подсказки аргументов не показываем. */
+  hasArgsRegion: boolean
+  /** Ввод кончается пробелом — текущий аргумент не начат, prefix=''. */
+  endsWithSpace: boolean
+  /** Завершённые токены аргументов (split по whitespace, без хвостового ''). */
+  tokens: string[]
+  /** Индекс вводимого аргумента. */
+  level: number
+  /** Частично введённый префикс текущего аргумента ('' — не начат). */
+  prefix: string
+}
+
+export function resolveSlashContext(text: string, customCommands: SlashCommand[] = []): SlashContext | null {
+  if (!text.startsWith('/') || text.includes('\n')) return null
+  const m = /^\/(\S+)/.exec(text)
+  if (!m) return null
+  const name = m[1].toLowerCase()
+  // Builtin имеет приоритет (как в parseSlashCommandWithCustom).
+  const command = SLASH_COMMANDS.find(c => c.name === name) ?? customCommands.find(c => c.name === name)
+  if (!command) return null
+  const after = text.slice(m[0].length)
+  const endsWithSpace = /\s$/.test(after)
+  const trimmed = after.trim()
+  const tokens = trimmed === '' ? [] : trimmed.split(/\s+/)
+  const level = endsWithSpace ? tokens.length : Math.max(0, tokens.length - 1)
+  const prefix = endsWithSpace || tokens.length === 0 ? '' : tokens[tokens.length - 1]
+  return { command, head: m[0], after, hasArgsRegion: after.length > 0, endsWithSpace, tokens, level, prefix }
+}
+
 // ─── /compact — разбор аргументов ───────────────────────────────────────────
 
 export type CompactMode = 'full' | 'last'

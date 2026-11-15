@@ -1,7 +1,7 @@
 // ── Tool schemas barrel: combines all domain schemas + helpers ──────────
 
-import type { McpToolRuntime, PluginToolRuntime } from '../../../shared/types'
-import { filterToolSchemas, type ToolSettings } from '../../../shared/toolSettings'
+import type { McpToolRuntime, PluginToolRuntime } from '../types'
+import { filterToolSchemas, type ToolSettings } from '../toolSettings'
 import { READ_TOOL_SCHEMAS } from './read'
 import { EDIT_TOOL_SCHEMAS } from './edit'
 import { COMMAND_TOOL_SCHEMAS } from './command'

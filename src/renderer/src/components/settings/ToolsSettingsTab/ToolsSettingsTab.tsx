@@ -32,7 +32,7 @@ export default function ToolsSettingsTab() {
     })}
     <Group id="tools-core" icon="shield" title="Основные инструменты" note="Защищены от отключения">
       <p className="settings-card-intro">Эти инструменты нельзя отключить здесь. Read-only режимы и разрешения по-прежнему ограничивают их доступность.</p>
-      {PROTECTED_CORE_TOOLS.map(name => <Field key={name} label={name} description="Основной системный инструмент"><Toggle value disabled /></Field>)}
+      {PROTECTED_CORE_TOOLS.map(name => <Field key={name} label={name} description="Основной системный инструмент"><Toggle value disabled onChange={() => {}} /></Field>)}
     </Group>
   </div>
 }

@@ -17,6 +17,7 @@ import { getToolSchemas } from '../../core/tools/index'
 import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
 import { teardownSidecar } from '../../core/sidecar/sidecarClient'
+import { log } from '../../core/logger'
 import { installRustTokenCounter } from '../../core/tokens/rustTokenCounter'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
@@ -1046,6 +1047,37 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 })
               })
               send({ type: 'recall_memory', chatId, msgId, replyId, ...params })
+            })
+          },
+          onProjectMap: (args) => {
+            // В worker-потоке БД нет (getDB бросает) — граф кода читает main.
+            // Таймаут 20с: потерянный reply не должен вешать тул до конца рана.
+            return new Promise((resolve) => {
+              const replyId = `pmap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              const started = Date.now()
+              let settled = false
+              const finish = (result: { success: boolean; output: string; error?: string }) => {
+                if (settled) return
+                settled = true
+                clearTimeout(timer)
+                replyHandlers.delete(replyId)
+                log('[ai-worker] project_map rpc %s in %dms', result.error && !result.output ? 'TIMEOUT/FAIL' : 'reply', Date.now() - started)
+                resolve(result)
+              }
+              const timer = setTimeout(() => finish({
+                success: false,
+                output: '',
+                error: 'project_map timed out after 20s (no reply from main) — try again, it usually means the map/index is still warming up',
+              }), 20_000)
+              replyHandlers.set(replyId, (reply) => {
+                finish({
+                  success: (reply.success as boolean) ?? false,
+                  output: (reply.output as string) ?? '',
+                  error: reply.error as string | undefined,
+                })
+              })
+              log('[ai-worker] project_map rpc send: action=%s project=%s', args.action, (args.projectId ?? '').slice(0, 8))
+              send({ type: 'project_map', chatId, msgId, replyId, ...args })
             })
           },
           onToolProgress: (p) => {

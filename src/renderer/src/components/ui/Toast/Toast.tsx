@@ -57,7 +57,15 @@ export default function ToastContainer() {
             initial={{ opacity: 0, y: 14, scale: 0.94, filter: 'blur(8px)' }}
             animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
             exit={{ opacity: 0, y: -8, scale: 0.97, filter: 'blur(6px)' }}
-            transition={{ type: 'spring', stiffness: 420, damping: 30, mass: 0.75 }}
+            // filter — tween (как в NotificationCard): пружина проскакивает
+            // ниже blur(0px), и Chromium ругается на blur(-0.0xpx) keyframes.
+            transition={{
+              type: 'spring',
+              stiffness: 420,
+              damping: 30,
+              mass: 0.75,
+              filter: { duration: 0.3, ease: 'easeOut' },
+            }}
             layout
           >
             <span className="toast-icon">{getToastIcon(toast.type)}</span>

@@ -29,6 +29,7 @@ import { AIClient } from '../../core/ai/AIClient'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
 import { getToolSchemas, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
+import { projectMapQuery } from '../../core/tools/projectMap'
 import { extractFinalPlan } from '../../shared/planParser'
 import { stripFinalMarkers } from '../../shared/finalAnswer'
 import { IPC_EVENTS } from '../../shared/constants'
@@ -2285,6 +2286,32 @@ export async function runChatSend(
                 results: [],
                 error: (e as Error).message,
               })
+            }
+          })()
+          break
+        }
+
+        // project_map runs in main: the worker thread has no initialized DB
+        // (pattern recall_memory). Зеркало случая в AgentManager (суб-агенты).
+        case 'project_map': {
+          ;(async () => {
+            const rpcStarted = Date.now()
+            try {
+              const result = await projectMapQuery(
+                {
+                  action: msg.action as 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview',
+                  query: msg.query as string | undefined,
+                  path: msg.path as string | undefined,
+                  nodeId: msg.nodeId as string | undefined,
+                  limit: msg.limit as number | undefined,
+                },
+                (msg.projectId as string | undefined) ?? undefined,
+              )
+              log('[project_map] rpc done in %dms (success=%s)', Date.now() - rpcStarted, result.success)
+              worker.postMessage({ type: 'project_map_reply', replyId: msg.replyId, ...result })
+            } catch (e) {
+              log('[project_map] rpc FAILED in %dms: %s', Date.now() - rpcStarted, (e as Error).message)
+              worker.postMessage({ type: 'project_map_reply', replyId: msg.replyId, success: false, output: '', error: (e as Error).message })
             }
           })()
           break

@@ -21,7 +21,11 @@ Requests are handled on the reader thread in arrival order, with exceptions serv
 
 ### `health`, `capabilities`
 
-`health` returns `status`, `protocolVersion` and `dbReady`. `capabilities` lists all methods, reports `tree-sitter (native) + lexical fallback` as `parserBackend` and `semantic: E5 cosine (onnx)` as `ranking`.
+`health` returns `status`, `protocolVersion`, `dbReady` and `semanticDevice` — the provider the E5 session was actually built with (`directml`, `cpu`, or `unknown` before the first model load). This is how the client shows what the auto mode picked. `capabilities` lists all methods, reports `tree-sitter (native) + lexical fallback` as `parserBackend` and `semantic: E5 cosine (onnx)` as `ranking`.
+
+### Semantic device selection
+
+`SYNTEE_SEMANTIC_DEVICE` env var: `auto` (default) — try DirectML first, fall back to CPU; `cpu` — never touch the GPU; `gpu`/`directml` — DirectML with CPU fallback when there is no DX12 adapter. Any fallback (at session build or on the first failed inference) is logged to stderr. `SYNTEE_SEMANTIC_THREADS` overrides intra-op threads (1..16, default 2).
 
 ### `foregroundBusy`
 

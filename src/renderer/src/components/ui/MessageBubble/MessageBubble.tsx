@@ -7,6 +7,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { formatTokens, formatTokensFull, formatDuration } from '@shared/format'
 import { containsMathMarkers } from '@shared/mathNormalize'
+import { SLASH_COMMANDS } from '@shared/slashCommands'
 import { useToast } from '../Toast/Toast'
 // ── Быстрый рендер код-блоков: языки подсветки ───────────────────────────
 // Регистрация ~23 языков в общем инстансе refractor — побочный эффект импорта.
@@ -469,6 +470,42 @@ type MsgIter = {
   steps: import('../ToolChain/ToolChain').ToolStep[]
 }
 
+// ── Инлайн-чипы слеш-команды в чате (Discord-стиль) ─────────────────────────
+//
+// User-сообщение с командой рендерится как: чип `/name` + чипы совпавших
+// enum-аргументов (позиционно, как в инпуте) + остальной текст как был.
+// Отдельная пилюля над сообщением остаётся только фолбэком — когда текст
+// контента почему-то не начинается с команды (старые данные).
+
+/** Разбор контента user-сообщения на команду и аргументы-чипы. */
+function splitInlineCommand(
+  content: string,
+  sc: { name: string; args: string },
+): { consumed: number; argChips: Array<{ text: string; index: number }> } | null {
+  const esc = sc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const m = new RegExp('^\\/' + esc + '(?=$|[\\s])').exec(content)
+  if (!m) return null
+  const argChips: Array<{ text: string; index: number }> = []
+  let pos = m[0].length
+  // Enum-аргументы по позициям (builtin-команды; custom без lookup — чипы
+  // аргументов у них не рисуем, сам чип команды работает).
+  const args = SLASH_COMMANDS.find(c => c.name === sc.name)?.arguments
+  if (args?.length) {
+    let idx = 0
+    for (;;) {
+      const ws = /^\s+/.exec(content.slice(pos))
+      if (!ws) break
+      const tok = /^(\S+)/.exec(content.slice(pos + ws[0].length))
+      if (!tok) break
+      if (!args[idx]?.choices?.some(c => c.toLowerCase() === tok[1].toLowerCase())) break
+      pos += ws[0].length + tok[1].length
+      argChips.push({ text: tok[1], index: idx })
+      idx++
+    }
+  }
+  return { consumed: pos, argChips }
+}
+
 // Мемоизированный тяжёлый контент сообщения
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
@@ -734,6 +771,25 @@ const MessageContent = memo(function MessageContent({
     [workdir, onOpenFile, onPreviewAttachment],
   )
 
+  // ── Инлайн-чипы слеш-команды (Discord-стиль) ──
+  // Контент user-сообщения с командой начинается с `/name` — первые токены
+  // рисуем чипами (команда + совпавшие enum-аргументы), остаток — обычным
+  // контентом. inlineCmd=null → чипов нет, рендер как раньше (и пилюля-фолбэк).
+  const inlineCmd = isUser && message.slashCommand
+    ? splitInlineCommand(content, message.slashCommand)
+    : null
+  const cmdRest = inlineCmd ? content.slice(inlineCmd.consumed) : content
+  const inlineCmdFrag = inlineCmd && message.slashCommand && (
+    <>
+      <span className="inline-cmd" title={`Slash-команда /${message.slashCommand.name}`}>
+        <span className="inline-cmd-slash">/</span>{message.slashCommand.name}
+      </span>
+      {inlineCmd.argChips.map(c => (
+        <span key={c.index} className="inline-cmd-arg">{c.text}</span>
+      ))}
+    </>
+  )
+
   return (
     <div
       ref={wrapRef}
@@ -755,8 +811,10 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
-        {/* Пилюлька слеш-команды */}
-        {isUser && message.slashCommand && (
+        {/* Пилюлька слеш-команды — фолбэк: инлайн-чипы в тексте невозможны,
+            когда контент не начинается с команды (старые/служебные данные).
+            Обычный случай рисуется чипами прямо в тексте (Discord-стиль). */}
+        {isUser && message.slashCommand && !inlineCmd && (
           <div className="message-slash-pill">
             <span className="message-slash-pill-icon">/</span>
             <span className="message-slash-pill-name">{message.slashCommand.name}</span>
@@ -1093,13 +1151,16 @@ const MessageContent = memo(function MessageContent({
                 <div className="message-content selectable">
                   <p style={{ whiteSpace: 'pre-wrap' }}>
                     {replyChips}
-                    {splitByAttachTokens(content).map((seg, i) =>
-                      seg.type === 'text' ? (
-                        <React.Fragment key={i}>{renderClickablePlainText(seg.text, workdir, onOpenFile)}</React.Fragment>
-                      ) : (
-                        <React.Fragment key={i}>{renderAttachChip(attMap.get(seg.id), onPreviewAttachment)}</React.Fragment>
-                      ),
-                    )}
+                    {inlineCmdFrag}
+                    {splitByAttachTokens(content).map((seg, i) => {
+                      // Первый текстовый сегмент содержит команду — она уже
+                      // отрисована чипами inlineCmdFrag, срезаем её из текста.
+                      if (seg.type === 'text') {
+                        const text = i === 0 && inlineCmd ? seg.text.slice(inlineCmd.consumed) : seg.text
+                        return <React.Fragment key={i}>{renderClickablePlainText(text, workdir, onOpenFile)}</React.Fragment>
+                      }
+                      return <React.Fragment key={i}>{renderAttachChip(attMap.get(seg.id), onPreviewAttachment)}</React.Fragment>
+                    })}
                   </p>
                 </div>
               )
@@ -1107,12 +1168,16 @@ const MessageContent = memo(function MessageContent({
             return (
               <div className="message-content selectable">
                 {isUser && !userMarkdown ? (
-                  <p style={{ whiteSpace: 'pre-wrap' }}>{replyChips}{renderClickablePlainText(content, workdir, onOpenFile)}</p>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{replyChips}{inlineCmdFrag}{renderClickablePlainText(cmdRest, workdir, onOpenFile)}</p>
                 ) : isUser ? (
-                  // User-сообщения с markdown: через ParsedContent (с кэшем)
-                  // вместо прямого renderParsedSegments — консистентно с
-                  // ассистентскими сообщениями и надёжнее.
-                  <ParsedContent text={content} allowPlanCard={false} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} workdir={workdir} />
+                  // User-сообщения с markdown: чипы команды + остаток через
+                  // ParsedContent (с кэшем) — консистентно с ассистентскими.
+                  <>
+                    {inlineCmdFrag}
+                    {cmdRest.trim() ? (
+                      <ParsedContent text={cmdRest} allowPlanCard={false} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} workdir={workdir} />
+                    ) : null}
+                  </>
                 ) : (
                   // Ассистентские сообщения — через ParsedContent с module-level
                   // кэшем: scroll-remount виртуализатора и hover (showActions)

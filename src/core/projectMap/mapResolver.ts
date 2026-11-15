@@ -337,6 +337,30 @@ function findDefInFile(index: ProjectIndex, filePath: string, name: string): Cod
   return defs.find(d => d.name === name && d.kind !== 'file') ?? null
 }
 
+/**
+ * Языковые семьи по расширению: heuristic-совпадение имени не должно
+ * перелетать границы (tsx-компонент «вызывает» python-функцию backend'а —
+ * почти всегда коллизия имён, как AdminLogin.tsx → backend login).
+ */
+const EXT_FAMILY: Record<string, string> = {}
+for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.d.ts']) EXT_FAMILY[ext] = 'web'
+for (const ext of ['.py', '.pyi']) EXT_FAMILY[ext] = 'python'
+for (const ext of ['.rs']) EXT_FAMILY[ext] = 'rust'
+for (const ext of ['.go']) EXT_FAMILY[ext] = 'go'
+for (const ext of ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx']) EXT_FAMILY[ext] = 'c'
+for (const ext of ['.java']) EXT_FAMILY[ext] = 'java'
+for (const ext of ['.cs']) EXT_FAMILY[ext] = 'csharp'
+for (const ext of ['.rb']) EXT_FAMILY[ext] = 'ruby'
+for (const ext of ['.php']) EXT_FAMILY[ext] = 'php'
+for (const ext of ['.sh', '.bash']) EXT_FAMILY[ext] = 'bash'
+
+function sameLanguageFamily(a: string, b: string): boolean {
+  const fa = EXT_FAMILY[a.toLowerCase()]
+  const fb = EXT_FAMILY[b.toLowerCase()]
+  if (!fa || !fb) return true // неизвестное расширение — не фильтруем
+  return fa === fb
+}
+
 function resolveCall(ctx: CallContext, call: SidecarCallSite): { toId: string; precision: CodeEdgePrecision } | null {
   const { index, fromFile, fileDefs, importedBindings } = ctx
   const name = call.name
@@ -370,9 +394,11 @@ function resolveCall(ctx: CallContext, call: SidecarCallSite): { toId: string; p
     return { toId: fileNodeId(importedFile), precision: 'heuristic' }
   }
 
-  // 4) Глобальное совпадение по имени.
-  const candidates = (index.defsByName.get(name) ?? []).filter(d => d.kind !== 'file' && d.kind !== 'package')
-  if (candidates.length === 0) return null
+  // 4) Глобальное совпадение по имени — только в той же языковой семье.
+  const all = (index.defsByName.get(name) ?? []).filter(d => d.kind !== 'file' && d.kind !== 'package')
+  if (all.length === 0) return null
+  const candidates = all.filter(d => sameLanguageFamily(fromFile, d.filePath))
+  if (candidates.length === 0) return null // коллизия через границу языков — ребро не даём
   if (candidates.length === 1) return { toId: candidates[0].id, precision: 'heuristic' }
 
   // Несколько кандидатов: предпочитаем тот же каталог, иначе ambiguous (до 3).
@@ -450,6 +476,7 @@ export function definitionsToNodes(
       lineEnd: d.lineEnd,
       signature: d.signature,
       exported: /^export\b/.test(d.signature),
+      doc: d.doc ?? null,
     })
   }
   return nodes

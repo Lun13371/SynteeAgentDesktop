@@ -10,6 +10,7 @@ import { getDB } from '../db/handle'
 import type {
   CodeMapNode, CodeMapEdge, CodeMapFile, CodeMapStatus, CodeMapGraph,
   CodeNodeKind, CodeEdgeType, CodeEdgePrecision, GetGraphOptions,
+  CodeMapDocInfo,
 } from '../../shared/projectMap'
 
 // ─── Детерминированные id ────────────────────────────────────────────────────
@@ -45,6 +46,7 @@ function rowToNode(row: Record<string, unknown>): CodeMapNode {
     lineEnd: (row.line_end as number) ?? 0,
     signature: (row.signature as string) ?? '',
     exported: Boolean(row.exported),
+    doc: (row.doc as string | null | undefined) ?? null,
   }
 }
 
@@ -99,11 +101,11 @@ export function replaceFile(
     ).run(projectId, file.path, file.language, file.hash, file.mtime, file.size, file.parser, file.truncated ? 1 : 0, file.indexedAt)
 
     const insNode = db.prepare(
-      `INSERT OR REPLACE INTO code_map_nodes (id, project_id, file_path, name, kind, parent_name, line_start, line_end, signature, exported)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO code_map_nodes (id, project_id, file_path, name, kind, parent_name, line_start, line_end, signature, exported, doc)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     for (const n of nodes) {
-      insNode.run(n.id, projectId, n.filePath, n.name, n.kind, n.parentName, n.lineStart, n.lineEnd, n.signature, n.exported ? 1 : 0)
+      insNode.run(n.id, projectId, n.filePath, n.name, n.kind, n.parentName, n.lineStart, n.lineEnd, n.signature, n.exported ? 1 : 0, n.doc ?? null)
     }
 
     const insEdge = db.prepare(
@@ -283,6 +285,189 @@ export function getFile(projectId: string, path: string): CodeMapFile | null {
 export function getIndexedProjectIds(): string[] {
   const rows = getDB().prepare(`SELECT DISTINCT project_id FROM code_map_files`).all() as { project_id: string }[]
   return rows.map(r => r.project_id)
+}
+
+// ─── Документы семантического слоя (code_map_docs) ───────────────────────────
+// Документы выводятся из узлов карты и всегда пересчитываются заново; вектор —
+// единственное «состояние». Hash-гейт: upsert сохраняет вектор, если текст
+// не изменился; saveEmbeddings пишет вектор только под актуальный text_hash.
+
+interface DocRow {
+  nodeId: string
+  filePath: string
+  kind: CodeNodeKind
+  tier: 1 | 2
+  text: string
+  textHash: string
+}
+
+/** Вставить/обновить документы файла. Вектор сохраняется при неизменном тексте. */
+export function upsertDocs(projectId: string, docs: DocRow[]): void {
+  if (docs.length === 0) return
+  const db = getDB()
+  const placeholders = docs.map(() => '?').join(',')
+  const ids = docs.map(d => d.nodeId)
+  const prev = db.prepare(
+    `SELECT node_id, text_hash, embedding, embed_hash, model, embedded_at
+     FROM code_map_docs WHERE project_id = ? AND node_id IN (${placeholders})`
+  ).all(projectId, ...ids) as Record<string, unknown>[]
+  const byId = new Map(prev.map(r => [r.node_id as string, r]))
+
+  const upsert = db.prepare(
+    `INSERT OR REPLACE INTO code_map_docs
+     (project_id, node_id, file_path, kind, tier, text, text_hash, embedding, embed_hash, model, embedded_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  const tx = db.transaction(() => {
+    for (const d of docs) {
+      const old = byId.get(d.nodeId)
+      // Текст не изменился → переносим вектор как есть (hash-гейт).
+      const keep = old && old.text_hash === d.textHash && old.embedding != null
+      upsert.run(
+        projectId, d.nodeId, d.filePath, d.kind, d.tier, d.text, d.textHash,
+        keep ? old!.embedding : null,
+        keep ? old!.embed_hash : null,
+        keep ? old!.model : null,
+        keep ? old!.embedded_at : null,
+      )
+    }
+  })
+  tx()
+}
+
+/** Документы файла: id → text_hash (для удаления осиротевших при sync). */
+export function listDocHashesByFile(projectId: string, filePath: string): Map<string, string> {
+  const rows = getDB().prepare(
+    `SELECT node_id, text_hash FROM code_map_docs WHERE project_id = ? AND file_path = ?`
+  ).all(projectId, filePath) as { node_id: string; text_hash: string }[]
+  return new Map(rows.map(r => [r.node_id, r.text_hash]))
+}
+
+/** Удалить документы узлов (осиротевшие после переразбора/удаления файла). */
+export function deleteDocsByIds(projectId: string, nodeIds: string[]): void {
+  if (nodeIds.length === 0) return
+  const db = getDB()
+  const placeholders = nodeIds.map(() => '?').join(',')
+  db.prepare(
+    `DELETE FROM code_map_docs WHERE project_id = ? AND node_id IN (${placeholders})`
+  ).run(projectId, ...nodeIds)
+}
+
+export function deleteDocsByFile(projectId: string, filePath: string): void {
+  getDB().prepare(
+    `DELETE FROM code_map_docs WHERE project_id = ? AND file_path = ?`
+  ).run(projectId, filePath)
+}
+
+export function clearDocs(projectId: string): void {
+  getDB().prepare(`DELETE FROM code_map_docs WHERE project_id = ?`).run(projectId)
+}
+
+/** Очередь worker'а: документы, чей вектор устарел или отсутствует. */
+export function listPendingDocs(projectId: string, limit: number): CodeMapDocInfo[] {
+  const rows = getDB().prepare(
+    `SELECT node_id, file_path, kind, tier, text, text_hash
+     FROM code_map_docs
+     WHERE project_id = ? AND (embed_hash IS NULL OR embed_hash != text_hash)
+     ORDER BY tier ASC, rowid ASC LIMIT ?`
+  ).all(projectId, limit) as Record<string, unknown>[]
+  return rows.map(r => ({
+    nodeId: r.node_id as string,
+    filePath: r.file_path as string,
+    kind: r.kind as CodeNodeKind,
+    tier: (r.tier as 1 | 2) ?? 2,
+    text: r.text as string,
+    textHash: r.text_hash as string,
+  }))
+}
+
+/** Проекты с неиндексированными документами (для выбора целей worker'а). */
+export function listPendingDocProjectIds(): string[] {
+  const rows = getDB().prepare(
+    `SELECT DISTINCT project_id FROM code_map_docs WHERE embed_hash IS NULL OR embed_hash != text_hash`
+  ).all() as { project_id: string }[]
+  return rows.map(r => r.project_id)
+}
+
+/**
+ * Записать векторы пачки. UPDATE с гардом text_hash = ? — если текст изменился,
+ * пока sidecar считал пачку, вектор не запишется (документ переэмбеддится).
+ */
+export function saveDocEmbeddings(
+  projectId: string,
+  items: { nodeId: string; textHash: string; embedding: Buffer; model: string; embeddedAt: number }[],
+): number {
+  if (items.length === 0) return 0
+  const db = getDB()
+  const upd = db.prepare(
+    `UPDATE code_map_docs
+     SET embedding = ?, embed_hash = text_hash, model = ?, embedded_at = ?
+     WHERE project_id = ? AND node_id = ? AND text_hash = ?`
+  )
+  let saved = 0
+  const tx = db.transaction(() => {
+    for (const it of items) {
+      const res = upd.run(it.embedding, it.model, it.embeddedAt, projectId, it.nodeId, it.textHash)
+      saved += res.changes
+    }
+  })
+  tx()
+  return saved
+}
+
+/** Счётчики для статуса/прогресса: всего документов и с актуальным вектором. */
+export function countDocs(projectId: string): { total: number; indexed: number } {
+  const db = getDB()
+  const total = (db.prepare(`SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ?`).get(projectId) as { c: number }).c
+  const indexed = (db.prepare(
+    `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND embed_hash = text_hash AND embedding IS NOT NULL`
+  ).get(projectId) as { c: number }).c
+  return { total, indexed }
+}
+
+/** Векторы проекта постранично (матрица для cosine строится лениво). */
+export function listDocVectors(projectId: string, pageSize = 2000): { nodeId: string; embedding: Buffer }[] {
+  const out: { nodeId: string; embedding: Buffer }[] = []
+  const db = getDB()
+  let offset = 0
+  for (;;) {
+    const rows = db.prepare(
+      `SELECT node_id, embedding FROM code_map_docs
+       WHERE project_id = ? AND embedding IS NOT NULL LIMIT ? OFFSET ?`
+    ).all(projectId, pageSize, offset) as { node_id: string; embedding: Buffer }[]
+    if (rows.length === 0) break
+    for (const r of rows) out.push({ nodeId: r.node_id, embedding: r.embedding })
+    offset += rows.length
+    if (rows.length < pageSize) break
+  }
+  return out
+}
+
+/** Тексты документов проекта постранично (инвертированный lexical-индекс). */
+export function listDocTexts(projectId: string, pageSize = 2000): CodeMapDocInfo[] {
+  const out: CodeMapDocInfo[] = []
+  const db = getDB()
+  let offset = 0
+  for (;;) {
+    const rows = db.prepare(
+      `SELECT node_id, file_path, kind, tier, text, text_hash
+       FROM code_map_docs WHERE project_id = ? LIMIT ? OFFSET ?`
+    ).all(projectId, pageSize, offset) as Record<string, unknown>[]
+    if (rows.length === 0) break
+    for (const r of rows) {
+      out.push({
+        nodeId: r.node_id as string,
+        filePath: r.file_path as string,
+        kind: r.kind as CodeNodeKind,
+        tier: (r.tier as 1 | 2) ?? 2,
+        text: r.text as string,
+        textHash: r.text_hash as string,
+      })
+    }
+    offset += rows.length
+    if (rows.length < pageSize) break
+  }
+  return out
 }
 
 // ─── Статус ──────────────────────────────────────────────────────────────────

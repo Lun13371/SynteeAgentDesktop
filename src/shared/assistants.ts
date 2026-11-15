@@ -31,6 +31,12 @@ export interface AssistantsSettings {
   modelSize: 'auto' | '1.2B' | '1B' | '0.8B'
   /** Контекст локальной модели: 'auto' — по RAM. */
   ctxSize: AssistantCtxSize
+  /**
+   * Устройство мини-агентов: 'auto' — Vulkan-GPU, если сервер поднялся и
+   * реально offload'ил слои, иначе CPU; 'gpu' — Vulkan с откатом на CPU;
+   * 'cpu' — никогда не трогать видеокарту.
+   */
+  device: 'auto' | 'cpu' | 'gpu'
   hintBudgetTokens: number
   hintCooldownRounds: number
   janitorScanInterval: number
@@ -52,6 +58,7 @@ export const DEFAULT_ASSISTANTS_SETTINGS: AssistantsSettings = {
   economistEnabled: true,
   modelSize: 'auto',
   ctxSize: 'auto',
+  device: 'auto',
   hintBudgetTokens: 300,
   hintCooldownRounds: 1,
   janitorScanInterval: 8,

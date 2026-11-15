@@ -80,6 +80,8 @@ const IGNORED_DIRS = new Set([
   'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.vite',
   'obj', 'release', 'storybook-static', '.docusaurus',
   'cmake-build-debug', 'cmake-build-release',
+  // Unity / Visual Studio / общий мусор (сравнение case-insensitive).
+  'library', 'temp', 'builds', 'bin', 'obj', 'logs',
 ])
 
 const IGNORED_EXTS = new Set([
@@ -105,12 +107,44 @@ const SCAN_DEBOUNCE_MS = 200
 
 interface GitignorePatterns {
   dirs: Set<string>
+  /** Паттерны директорий с путём: `Assets/polyperfect/` → 'Assets/polyperfect'. */
+  dirPaths: Set<string>
   files: Set<string>
+  /** Паттерны файлов с путём: `docs/generated.md` → матчим по суффиксу пути. */
+  filePaths: Set<string>
   exts: Set<string>
 }
 
-function parseGitignore(workdir: string): GitignorePatterns {
-  const result: GitignorePatterns = { dirs: new Set(), files: new Set(), exts: new Set() }
+/**
+ * Развернуть символьные классы `[abc]` в варианты строки. Unity-шные
+ * `.gitignore` пишут `[Ll]ibrary/`, `[Tt]emp/` — буквальное сравнение имён
+ * с ними не работало, и кэш движка (десятки тысяч файлов) попадал в индекс.
+ */
+export function expandCharClasses(pat: string): string[] {
+  if (!pat.includes('[') || !pat.includes(']')) return [pat]
+  let variants: string[] = ['']
+  let inClass = false
+  let cls = ''
+  for (const ch of pat) {
+    if (!inClass) {
+      if (ch === '[') { inClass = true; cls = '' }
+      else variants = variants.map(v => v + ch)
+    } else if (ch === ']') {
+      inClass = false
+      const opts = cls.length > 0 ? cls.split('') : []
+      // Слишком широкие/битые классы не разворачиваем — паттерн как literal.
+      if (opts.length === 0 || variants.length * opts.length > 64) return [pat]
+      variants = variants.flatMap(v => opts.map(o => v + o))
+    } else {
+      cls += ch
+    }
+  }
+  return inClass ? [pat] : variants
+}
+
+/** Экспортирован для тестов: работа с реальным .gitignore проекта. */
+export function parseGitignore(workdir: string): GitignorePatterns {
+  const result: GitignorePatterns = { dirs: new Set(), dirPaths: new Set(), files: new Set(), filePaths: new Set(), exts: new Set() }
   const giPath = workdir + sep + '.gitignore'
   if (!existsSync(giPath)) return result
   try {
@@ -120,32 +154,47 @@ function parseGitignore(workdir: string): GitignorePatterns {
       if (!line || line.startsWith('#')) continue
       // Убираем ведущий / (anchor to root) для упрощения
       const pat = line.replace(/^\//, '')
-      // Директория (заканчивается на /)
-      if (pat.endsWith('/')) {
-        result.dirs.add(pat.slice(0, -1))
-        continue
-      }
-      // Глоб расширения (*.log, *.tmp)
-      if (pat.startsWith('*.')) {
-        result.exts.add(pat.slice(1)) // '.log'
-        continue
-      }
-      // Точный файл/паттерн без слеша — добавляем как файл
-      if (!pat.includes('/')) {
-        result.files.add(pat)
+      for (const variant of expandCharClasses(pat)) {
+        // Директория (заканчивается на /)
+        if (variant.endsWith('/')) {
+          const name = variant.slice(0, -1)
+          if (name.includes('/')) result.dirPaths.add(name)
+          else result.dirs.add(name)
+          continue
+        }
+        // Глоб расширения (*.log, *.tmp)
+        if (variant.startsWith('*.')) {
+          result.exts.add(variant.slice(1)) // '.log'
+          continue
+        }
+        // Паттерн с путём — файл в конкретной папке (docs/generated.md)
+        if (variant.includes('/')) {
+          result.filePaths.add(variant)
+          continue
+        }
+        // Точный файл/паттерн без слеша — добавляем как файл
+        result.files.add(variant)
       }
     }
   } catch { /* ok */ }
   return result
 }
 
-function isIgnored(relPath: string, name: string, gitignore: GitignorePatterns): boolean {
+/** Экспортирован для тестов. */
+export function isIgnored(relPath: string, name: string, gitignore: GitignorePatterns): boolean {
   const segments = relPath.split('/')
   for (const seg of segments) {
-    if (IGNORED_DIRS.has(seg)) return true
+    // ФС Windows case-insensitive — 'TEMP' и 'temp' одно и то же; сравним так же.
+    if (IGNORED_DIRS.has(seg.toLowerCase())) return true
     if (gitignore.dirs.has(seg)) return true
   }
+  for (const dirPath of gitignore.dirPaths) {
+    if (relPath === dirPath || relPath.startsWith(dirPath + '/')) return true
+  }
   if (gitignore.files.has(name)) return true
+  for (const filePath of gitignore.filePaths) {
+    if (relPath === filePath || relPath.endsWith('/' + filePath)) return true
+  }
   const lower = name.toLowerCase()
   const dot = lower.lastIndexOf('.')
   if (dot >= 0) {
@@ -183,7 +232,7 @@ async function scanDir(
       const fullPath = dir + sep + d.name
       const relPath = relative(workdir, fullPath).split(sep).join('/')
       if (d.isDirectory()) {
-        if (IGNORED_DIRS.has(d.name) || gitignore.dirs.has(d.name)) continue
+        if (IGNORED_DIRS.has(d.name.toLowerCase()) || gitignore.dirs.has(d.name)) continue
         if (d.name.startsWith('.') && d.name !== '.env') continue
         stack.push({ dir: fullPath, depth: depth + 1 })
         continue
@@ -325,6 +374,21 @@ export async function stopAllIndexing(): Promise<void> {
 /** Готов ли индекс для workdir (первичный scan завершён). */
 export function isIndexReady(workdir: string): boolean {
   return _indexes.get(workdir)?.ready ?? false
+}
+
+/**
+ * Дождаться готовности первичного скана. Если индекс уже стартовал кем-то
+ * раньше (например, @mention в чате) — startIndexing вернётся мгновенно с
+ * НЕДОСКАНИРОВАННЫМ кэшем, а getAllFiles отдаст только его часть. Потребители
+ * полного списка (карта проекта) должны дожидаться ready.
+ */
+export async function waitForIndexReady(workdir: string, timeoutMs = 30_000): Promise<boolean> {
+  const started = Date.now()
+  while (!isIndexReady(workdir)) {
+    if (Date.now() - started > timeoutMs) return false
+    await new Promise(r => setTimeout(r, 200))
+  }
+  return true
 }
 
 /** Возвращает все файлы индекса (без фильтрации). Для отладки/экспорта. */

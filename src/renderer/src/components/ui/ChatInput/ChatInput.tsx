@@ -4,7 +4,7 @@ import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import { ProtectedVarsModal } from '../ProtectedVarsModal/ProtectedVarsModal'
-import { filterCommands } from '../../../../../shared/slashCommands'
+import { filterCommands, resolveSlashContext, getCommandArguments } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { findMentionTokenNearCaret, mentionToAttachment } from '../../../../../shared/mentions'
 import type { Attachment, MentionItem, ApprovalMode, AutoModeSettings, LastTurnChanges, ProjectPermissionOverride } from '../../../../../shared/types'
@@ -192,15 +192,23 @@ function ChatInput({
       setSecretsEnabled(l.filter(v => v.enabled).length)
     }).catch(() => {})
   }, [])
-  // ── Пикер аргументов команды (многоуровневый enum-пикер) ──
+  // ── Пикер аргументов команды (многоуровневый enum-пикер + free-text hint) ──
   // argPickerCmd — команда, для которой показываем пикер (null = скрыт).
   // argPickerLevel — индекс текущего аргумента в cmd.arguments.
   // argPickerChoices — отфильтрованные по префиксу опции текущего аргумента.
+  //   ПУСТОЙ массив при активной команде = free-text режим: аргумент без
+  //   choices — CommandArgMenu показывает подсказку-карточку.
   // argPickerIdx — выбранный индекс (как slashIdx).
+  // argPrefix — частично введённый токен текущего аргумента (подсветка опций).
   const [argPickerCmd, setArgPickerCmd] = useState<SlashCommand | null>(null)
   const [argPickerLevel, setArgPickerLevel] = useState(0)
   const [argPickerChoices, setArgPickerChoices] = useState<string[]>([])
   const [argPickerIdx, setArgPickerIdx] = useState(0)
+  const [argPrefix, setArgPrefix] = useState('')
+  // Команда, для которой подсказку закрыли вручную (Esc/клик) — не
+  // переоткрывать на каждое нажатие, пока юзер редактирует ту же команду.
+  // Сбрасывается при смене команды / уходе из командного контекста.
+  const argDismissedRef = useRef<string | null>(null)
   // ── @mention-меню ──
   // mentionItems — текущий список для дропдауна (fuzzy-отфильтрованный).
   // mentionIdx — выбранный индекс (как slashIdx).
@@ -410,9 +418,11 @@ function ChatInput({
   }, [liveText])
 
   // Сброс навигации по истории при смене чата — индекс относится к
-  // inputHistory предыдущего чата и не валиден для нового.
+  // inputHistory предыдущего чата и не валиден для нового. Там же — dismiss
+  // подсказок аргументов (относился к набору в предыдущем чате).
   useEffect(() => {
     historyIdxRef.current = null
+    argDismissedRef.current = null
   }, [chatId])
 
   // Обновляем слеш-меню и @mention-меню при вводе
@@ -434,43 +444,48 @@ function ChatInput({
       setSlashCmds([])
     }
 
-    // ── Пикер аргументов команды: синхронизация с ручным вводом ──
-    // Если argPicker активен — фильтруем choices текущего уровня по
-    // последнему вводимому токену-префиксу. Если юзер ушёл из формата
-    // /cmd или превысил уровень — закрываем пикер.
-    // Слишком длинный текст (вставка) — пикер закрываем: разбор /cmd args
+    // ── Контекст команды: подсказки аргументов (пикер + free-text hint) ──
+    // Выводится ИЗ ТЕКСТА (resolveSlashContext), а не только из выбора команды
+    // в меню: ручной набор `/compact ` теперь тоже открывает подсказки.
+    // Enum-аргументы → пикер опций, свободный текст → карточка-подсказка.
+    // Слишком длинный текст (вставка) — подсказки закрываем: разбор /cmd args
     // по сотням КБ не имеет смысла.
-    if (argPickerCmd && text.length > ARG_PICKER_MAX_CHARS) {
+    if (text.length > ARG_PICKER_MAX_CHARS) {
       closeArgPicker()
-    } else if (argPickerCmd) {
-      const cmd = argPickerCmd
-      // Slice-подход (а не regex m[2]) — \s* жадно съедает trailing-пробел,
-      // из-за чего для `/cmd choice ` rest терял финальный пробел и уровень
-      // считался на 1 меньше (picker показывал прошлый уровень, не следующий).
-      const head = text.match(/^\/(\S+)/)
-      if (!head || head[1].toLowerCase() !== cmd.name.toLowerCase()) {
-        closeArgPicker()
+    } else {
+      const ctx = text.startsWith('/') ? resolveSlashContext(text, customCommands) : null
+      if (!ctx || !ctx.hasArgsRegion) {
+        // Вне командного контекста (или `/cmd` ещё без аргументов — там своё
+        // слеш-меню) подсказки не нужны, dismiss сбрасываем: новая попытка
+        // набора той же команды снова покажет подсказки.
+        argDismissedRef.current = null
+        if (argPickerCmd) closeArgPicker()
+      } else if (argDismissedRef.current === ctx.command.name) {
+        // Закрыто вручную (Esc/клик мимо) — не переоткрываем на каждое
+        // нажатие, пока юзер редактирует ту же команду.
       } else {
-        const after = text.slice(head[0].length)
-        const trimmed = after.trim()
-        const endsWithSpace = after.length > 0 && /\s$/.test(after)
-        const tokens = trimmed === '' ? [] : trimmed.split(/\s+/)
-        const level = endsWithSpace ? tokens.length : tokens.length - 1
-        const arg = cmd.arguments?.[level]
-        if (!arg?.choices || arg.choices.length === 0 || level >= (cmd.arguments?.length ?? 0)) {
+        const args = getCommandArguments(ctx.command)
+        const level = Math.min(ctx.level, Math.max(0, args.length - 1))
+        const arg = args[level]
+        if (!arg) {
           closeArgPicker()
+        } else if (arg.choices && arg.choices.length > 0) {
+          // Пикер опций. Нет совпадений по префиксу → показываем ВСЕ опции:
+          // подсказка не мигает при опечатке, допустимые значения видны.
+          const filtered = ctx.endsWithSpace
+            ? arg.choices
+            : arg.choices.filter(c => c.toLowerCase().startsWith(ctx.prefix.toLowerCase()))
+          setArgPickerCmd(ctx.command)
+          setArgPickerLevel(level)
+          setArgPickerChoices(filtered.length > 0 ? filtered : arg.choices)
+          setArgPickerIdx(0)
+          setArgPrefix(ctx.endsWithSpace ? '' : ctx.prefix)
         } else {
-          const prefix = endsWithSpace ? '' : (tokens.length > 0 ? tokens[tokens.length - 1] : '')
-          const filtered = prefix
-            ? arg.choices.filter(c => c.toLowerCase().startsWith(prefix.toLowerCase()))
-            : arg.choices
-          if (filtered.length === 0) {
-            closeArgPicker()
-          } else {
-            setArgPickerLevel(level)
-            setArgPickerChoices(filtered)
-            setArgPickerIdx(0)
-          }
+          // Свободный текст — карточка-подсказка (choices пустой).
+          setArgPickerCmd(ctx.command)
+          setArgPickerLevel(level)
+          setArgPickerChoices([])
+          setArgPrefix(ctx.prefix)
         }
       }
     }
@@ -526,18 +541,25 @@ function ChatInput({
     // Заменяем ввод на "/command " и фокусируем
     const next = `/${cmd.name} `
     historyIdxRef.current = null
+    argDismissedRef.current = null
     applyLive(next)
     setSlashCmds([])
-    // Если у команды есть первый аргумент с choices — открываем пикер.
-    const firstArg = cmd.arguments?.[0]
+    // Подсказка первого аргумента: enum → пикер опций, свободный текст →
+    // карточка-подсказка (см. getCommandArguments — синтез из placeholder).
+    const firstArg = getCommandArguments(cmd)[0]
     if (firstArg?.choices && firstArg.choices.length > 0) {
       setArgPickerCmd(cmd)
       setArgPickerLevel(0)
       setArgPickerChoices(firstArg.choices)
       setArgPickerIdx(0)
-    } else {
-      setArgPickerCmd(null)
+      setArgPrefix('')
+    } else if (firstArg) {
+      setArgPickerCmd(cmd)
+      setArgPickerLevel(0)
       setArgPickerChoices([])
+      setArgPrefix('')
+    } else {
+      closeArgPicker()
     }
     setTimeout(() => editorApiRef.current?.focus(), 0)
   }
@@ -591,6 +613,15 @@ function ChatInput({
     setArgPickerChoices([])
     setArgPickerLevel(0)
     setArgPickerIdx(0)
+    setArgPrefix('')
+  }
+
+  // Закрытие подсказки с запоминанием команды: пока та же команда в поле,
+  // handleChange её не переоткроет (иначе Esc/клик мимо бессмысленны —
+  // следующий же символ снова поднял бы меню).
+  const dismissArgHint = () => {
+    argDismissedRef.current = argPickerCmd?.name ?? null
+    closeArgPicker()
   }
 
   const handleSend = () => {
@@ -811,7 +842,9 @@ function ChatInput({
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // Навигация по пикеру аргументов команды — высший приоритет
     // (открыт после выбора команды, пока юзер выбирает enum-опцию).
-    if (argPickerCmd && argPickerChoices.length > 0) {
+    // При активном @mention-меню приоритет у него (юзер явно жестом '@'
+    // запросил файлы) — пикер подсказки просто скрыт до конца mention.
+    if (argPickerCmd && argPickerChoices.length > 0 && mentionItems.length === 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault()
         setArgPickerIdx(i => (i - 1 + argPickerChoices.length) % argPickerChoices.length)
@@ -828,9 +861,16 @@ function ChatInput({
         return
       }
       if (e.key === 'Escape') {
-        closeArgPicker()
+        dismissArgHint()
         return
       }
+    }
+    // Free-text подсказка аргумента (choices пуст) — клавиши НЕ перехватываем:
+    // Enter отправляет сообщение, стрелки двигают каретку. Только Esc скрывает.
+    if (argPickerCmd && argPickerChoices.length === 0 && mentionItems.length === 0 && e.key === 'Escape') {
+      e.preventDefault()
+      dismissArgHint()
+      return
     }
     // Autocomplete-провайдер плагинов — навигация. Активен только когда
     // слеш/@mention меню закрыты (приоритет у штатных меню).
@@ -1042,19 +1082,24 @@ function ChatInput({
         <ChatInputMenus
           slashCmds={slashCmds}
           slashIdx={slashIdx}
+          slashQuery={liveText.startsWith('/') && !liveText.includes(' ') ? liveText.slice(1) : ''}
           mentionItems={mentionItems}
           mentionIdx={mentionIdx}
-          argPickerCmd={argPickerCmd}
+          // Активное @mention-меню скрывает пикер аргументов (два меню на одном
+          // якоре перекрывались бы; после резолюции mention пикер вернётся —
+          // состояние argPickerCmd не трогаем, гасим только отображение).
+          argPickerCmd={mentionItems.length > 0 ? null : argPickerCmd}
           argPickerLevel={argPickerLevel}
           argPickerChoices={argPickerChoices}
           argPickerIdx={argPickerIdx}
+          argPrefix={argPrefix}
           boxRef={boxRef}
           onSelectCommand={selectCommand}
           onCloseSlash={() => setSlashCmds([])}
           onSelectMention={selectMention}
           onCloseMention={() => { setMentionItems([]); mentionTokenRef.current = null }}
           onSelectArgChoice={selectArgChoice}
-          onCloseArgPicker={closeArgPicker}
+          onCloseArgPicker={dismissArgHint}
           pluginAuto={pluginAuto ? pluginAuto.data : null}
           pluginAutoIdx={pluginAuto?.idx ?? 0}
           onSelectPluginAuto={selectPluginAuto}
@@ -1184,6 +1229,7 @@ function ChatInput({
             onPreviewAttachment={handleChipPreview}
             replies={replyTo}
             onRemoveReply={onCancelReply}
+            customCommands={customCommands}
             editorApiRef={editorApiRef}
             editorRef={textareaRef}
             placeholder={
